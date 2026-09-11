@@ -89,6 +89,9 @@ export const updateFolder = (
   patch: Partial<Pick<ArtifactFolder, 'name' | 'icon' | 'parentId' | 'visibility' | 'editPolicy'>> & { editors?: KbEditor[] },
 ) => putJson<{ folder: ArtifactFolder }>(`/api/artifact-folders/${id}`, patch).then((r) => r.folder)
 
+export const duplicateFolder = (id: string) =>
+  postJson<{ folder: ArtifactFolder }>(`/api/artifact-folders/${id}/duplicate`).then((r) => r.folder)
+
 export const deleteFolder = (id: string) => delJson<{ ok: true }>(`/api/artifact-folders/${id}`)
 
 /** Upload a file (reuses the shared uploads store) → returns its id + metadata.
@@ -98,6 +101,9 @@ export const uploadFile = async (file: File): Promise<{ id: string; filename: st
   form.append('file', file)
   return postJson<{ id: string; filename: string; mime: string; size: number }>('/api/uploads', form)
 }
+
+export const duplicateArtifact = (id: string) =>
+  postJson<{ artifact: Artifact }>(`/api/artifacts/${id}/duplicate`).then((r) => r.artifact)
 
 export const deleteArtifact = (id: string) => delJson<{ ok: true }>(`/api/artifacts/${id}`)
 

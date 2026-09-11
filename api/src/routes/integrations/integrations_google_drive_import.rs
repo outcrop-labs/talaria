@@ -31,6 +31,14 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
+    // WHERE the import lands: optional, uuid, None = My Files root. The
+    // browse place's Import batches files into the source folder's twin —
+    // this is that address.
+    let folder_id: Option<String> = match obj.get("folderId") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+        _ => return house_error(StatusCode::BAD_REQUEST, "folderId must be a uuid string"),
+    };
 
     let actor = user
         .email
@@ -48,7 +56,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Some(&content.title),
         &actor,
         Some(&user.id),
-        None,
+        folder_id.as_deref(),
     )
     .await
     {

@@ -4,7 +4,143 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Changed
+
+- **The Files column headers breathe again.** The NAME/KIND/OWNER/MODIFIED
+  band sat flush under the toolbar with bottom-only padding — two borders
+  kissing and labels squeezed. It now carries its own margin from the
+  toolbar and even vertical padding, so the toolbar / column heads / rows
+  stack reads as three deliberate zones.
+
+### Added
+
+- **Files can manage Google Drive itself — rename, move, and trash, in place
+  and on Google's side.** The personal connection's scope moves from
+  drive.readonly to full drive (existing connections keep browsing read-only
+  until one reconnect; the Drive place shows a "Reconnect Google to manage
+  files" banner while that stands, and the write verbs stay hidden — a
+  disabled verb reads as broken, a hidden one reads as not-yours-here). The
+  org connection already carried full drive, so the Workspace Drive is
+  manageable today; org writes require an admin, the same discipline the org
+  connection's grant implies. Rename is the house prompt, Trash sits last
+  behind the separator with a confirm (labeled Trash — Drive's trash is
+  restorable), both on rows and on multi-selections. Drag-to-move works
+  INSIDE the Drive place — folder to folder, onto the breadcrumb — routed
+  through Google's addParents/removeParents, never Talaria's folders; a drag
+  carries its source so a Drive drag can never hit the local move path. The
+  Move dialog speaks Drive too: browses Drive folders, creates a Drive
+  folder inline. Every write is audited (drive.rename | drive.move |
+  drive.trash | drive.create_folder). Also gone: the no-op "Connect a
+  source" rail row.
+
+### Added
+
+- **Google Drive is a place in Files, browsed like every other place — the
+  import modal is retired.** The rail's Sources row opens the Drive place:
+  the same list/grid columns, the same selection and keyboard grammar,
+  breadcrumbs into Drive folders (walked server-side so a deep link rebuilds
+  its own path), server-side sorting (honest with pagination), and Load more
+  past the first hundred. The rail expands the ROSTER while you're in the
+  place — one row per browsable Drive, visually distinct: your My Drive,
+  shared drives your account joined, and the org connection's Workspace
+  Drive marked `org` — so personal and org files can't be confused. The URL
+  carries the selection (`/artifacts/drive?d=<drive>&f=<folder>`), the same
+  URL-is-the-selection rule as everywhere. Import is a first-class verb now:
+  select Drive files, Import, and they land in a My Files folder named for
+  the Drive folder they came from — sequential pulls (Google rate limits),
+  one summary toast, oversize files counted. New: GET
+  /api/integrations/google/drive/drives (the roster; 409 only when BOTH
+  connections are absent — that 409 is the Drive place's connect screen) and
+  GET .../drive/browse (folders included, paginated, with the walked path);
+  the import route gained `folderId`. The old flat /drive/files search route
+  is gone with its modal; the agent drive route is untouched.
+
+### Added
+
+- **Files learns to move, copy, and duplicate — the whole management
+  grammar.** Cut/copy/paste for files AND folders: ⌘X/⌘C/⌘V, the selection
+  bar's Cut/Copy/Move, row and breadcrumb context menus (Paste into), and a
+  Paste entry on right-clicking empty space. Cut dims the spoken-for rows;
+  Escape clears the clipboard before the selection (the more transient thing
+  first); a cut pasted back where it came from is a silent no-op while a copy
+  pasted in place duplicates — Drive semantics. Copy's engine is new on the
+  server: POST /api/artifacts/{id}/duplicate and
+  /api/artifact-folders/{id}/duplicate copy one record or a whole folder tree
+  in one transaction (recursive CTE, cycle-guarded). Copies are the caller's
+  and private, land beside their source under a "Copy of" name with a
+  bounded collision ladder, share the source's storage blob (safe — no
+  delete touches the blob), and never inherit public slugs, KB mirrors, or
+  Google linkage. And the Move dialog is finally here: a navigable folder
+  browser with breadcrumbs, a New-folder control, and self/descendant
+  destinations dimmed and refused.
+
+### Changed
+
+- **The Files view's selection is a first-class column, and the keyboard is a
+  first-class citizen.** The row checkbox used to float over the kind icon and
+  swap with it on hover — hovering a folder made it a checkbox and hid what the
+  thing WAS. Selection is now a permanent leading column: every row shows its
+  checkbox to the LEFT of its icon, always visible, and the column header
+  carries a select-all checkbox (⌘A's visible twin). The keyboard speaks the
+  desktop file-manager grammar: arrows move focus and select (Finder/Explorer
+  style), Shift extends from the anchor, ⌘/Ctrl+arrows move focus alone,
+  Space toggles, Enter or → opens, ← climbs a folder level, Home/End jump;
+  the grid view steps by tile instead. Rows carry a visible focus ring, focus
+  heals to the nearest surviving row after a delete, and modifier-clicks on a
+  row body select instead of opening. Verified end-to-end in a browser:
+  icons never disappear, select-all agrees with ⌘A, shift-ranges extend from
+  checkbox and body clicks alike, and every key above does what it says.
+
 ### Fixed
+
+- **The knowledgebase's first-ever landing stopped swallowing doc clicks.**
+  Land on `/knowledge` with no saved selection and the sidebar rendered the
+  first space's tree — but every doc click was a no-op, until you opened a
+  second space and came back. Two defects, one scene. The canonicalising
+  effect (put the first space in the URL) had returned at `!restored` on its
+  first run, and a plain `let` latch can never re-run an effect: on a landing
+  with nothing to restore, nothing ever changed the URL, so it stayed bare.
+  And on a bare URL a doc click called `setLoc(null, doc)` — which navigates
+  to that same bare URL. The latch is `$state` now, so the effect wakes when
+  the restore answers, and the restore's answer (`restoredSpace`) keeps the
+  first-space default from racing a real saved selection. The doc click
+  names its own space — the tree renders under the active space whether or
+  not the URL carries one. Verified end-to-end in a browser: first-ever
+  landing canonicalises to the first space, a saved selection still restores
+  to ITS space, a deleted space's memory still falls to the first space,
+  and a doc click on a fresh landing opens the document.
+
+- **Chats stopped 500ing — every conversation read, on every instance, since
+  the rooms cutover.** The cutover's migration said "every reader of
+  `tasks.conversation_id` was re-pointed before this drop," and six readers
+  were not: the conversation access predicates, the prior-turn transcript,
+  the notification audiences, and the task-delete unindex all still joined
+  the dropped column. Postgres validates a statement's whole text when it
+  plans it, so the mere presence of the dead reference broke EVERY
+  conversation detail and history read — ticket branch or not, chat or plan
+  or research — which is why a threads sidebar looked fine while opening
+  any thread answered 500. The dead legs are gone (no `kind='ticket'`
+  conversation can exist since the cutover deleted them all; a task's
+  thread is a channel room, gated by board membership on the channels
+  side), and the delete-task unindex is re-pointed to the room's
+  `channel_messages` — since the cutover it errored silently, leaving a
+  deleted ticket's comments answering searches. Verified against a
+  post-cutover database: the detail route answered 500 before the fix and
+  200 after, same row, same session.
+
+- **The boards list view's columns sit under their headers again.** Every
+  row carried the hover dither field (`dither-fill`), and the field's
+  canvas was inserted as a DIRECT child of the `<tr>` — but a table row
+  admits only cells, so the browser wrapped the stray canvas in an
+  anonymous cell of its own: a whole phantom column ahead of the checkbox,
+  walking every real column one to the right of its header. The header said
+  Status over nothing, the status pill sat under Priority, priorities under
+  Assignees, and the timestamps hung past the last header with none at all.
+  The canvas now hosts inside the row's first cell — it is absolutely
+  positioned against the row either way, so the full-row field is unchanged
+  (verified: 0 painted cells at rest, the full row painted on pointerenter).
+  One fix, every table that carries the field on a row: board list rows,
+  the fitness matrix's rows, and the public artifact tables.
 
 - **A cross-off no longer comes back with tomorrow's date on it.** The brief
   is one document per day, and a check-off lived only inside the day's own

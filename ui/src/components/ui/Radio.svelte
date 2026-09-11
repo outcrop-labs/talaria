@@ -19,7 +19,7 @@
     {name}
     {checked}
     {disabled}
-    onchange={(e) => e.currentTarget.checked && onChange(true)}
+    onchange={(e) => e.currentTarget.checked && onChange(true, e)}
     class={cn('accent-accent', focusRing)}
   />
   {#if typeof label === 'string'}{label}{:else if label}{@render label()}{/if}

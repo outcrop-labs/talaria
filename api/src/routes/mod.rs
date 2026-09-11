@@ -569,9 +569,34 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
-            "/api/integrations/google/drive/files",
-            get(integrations::integrations_google_drive_files::get)
+            "/api/integrations/google/drive/drives",
+            get(integrations::integrations_google_drive_drives::get)
                 .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/drive/browse",
+            get(integrations::integrations_google_drive_browse::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/drive/rename",
+            post(integrations::integrations_google_drive_manage::rename)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/move",
+            post(integrations::integrations_google_drive_manage::drive_move)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/trash",
+            post(integrations::integrations_google_drive_manage::trash)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/drive/create-folder",
+            post(integrations::integrations_google_drive_manage::create_folder)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/integrations/google/drive/import",
@@ -956,6 +981,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
+            "/api/artifacts/{id}/duplicate",
+            post(files::artifacts_id_duplicate::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/artifacts/{id}/export/google",
             post(files::artifacts_id_export_google::post)
                 .fallback(|| async { method_not_allowed("POST") }),
@@ -965,6 +995,11 @@ pub fn router(state: AppState) -> Router {
             get(files::artifact_folders::get)
                 .post(files::artifact_folders::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/artifact-folders/{id}/duplicate",
+            post(files::artifact_folders_id_duplicate::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/artifact-folders/{id}",

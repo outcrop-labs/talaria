@@ -48,7 +48,7 @@ export const scopeOf = (a: { ownerUserId: string | null }): Scope => (a.ownerUse
  *  else's, or nobody's. Folders exist only inside My Files — the rest are flat
  *  views across the whole store, the way Drive treats them, so a file you were
  *  looking for can't hide one level down. */
-export type Place = 'my' | 'shared' | 'workspace' | 'official' | 'recent' | 'secrets'
+export type Place = 'my' | 'shared' | 'workspace' | 'official' | 'recent' | 'secrets' | 'drive'
 export const PLACES: { id: Place; label: string; glyph: string; empty: string; hint?: string }[] = [
   { id: 'my', label: 'My Files', glyph: '◆', empty: 'Nothing here yet.', hint: 'Drop files anywhere to upload, or use New.' },
   { id: 'shared', label: 'Shared with me', glyph: '◇', empty: 'Nothing shared with you yet.' },
@@ -62,6 +62,12 @@ export const PLACES: { id: Place; label: string; glyph: string; empty: string; h
   // reach any of that, so it is never an artifact row — the cabinet is shared,
   // the store is not.
   { id: 'secrets', label: 'Secrets', glyph: '⚿', empty: 'No secrets yet.', hint: 'Credentials you are working with: sealed, shared deliberately, every reveal recorded.' },
+  // NOT in the Places partition: Drive is a SOURCE, browsed through the same
+  // stage but rendered from its own listing (its rows are Google's, not
+  // artifacts). It sits in the rail's Sources section; `d=` (which drive) and
+  // `f=` (which folder) are its selection, the URL-is-the-selection rule like
+  // everywhere else.
+  { id: 'drive', label: 'Google Drive', glyph: '🔾', empty: 'Nothing in this folder.', hint: 'Folders and files from the connected Google account.' },
 ]
 
 /** How each general-access tier reads to a person, not to the schema. Shared
@@ -74,7 +80,13 @@ export const VISIBILITY_LABEL: Record<string, string> = {
 
 /** A drag carries the whole SELECTION, not the one row under the cursor —
  *  dragging a selected row moves everything selected with it. */
-export type Drag = { folders: string[]; artifacts: string[] } | null
+export type Drag = {
+  folders: string[]
+  artifacts: string[]
+  /** Where the rows come from — a Drive drag is Google's to move, never
+   *  saveArtifact's; targets dispatch on this or misroute the payload. */
+  source?: 'local' | 'drive'
+} | null
 
 /** The payload also rides on the dataTransfer, not just component state, so
  *  targets OUTSIDE the browser (the breadcrumb, which is the only way to move
@@ -82,6 +94,13 @@ export type Drag = { folders: string[]; artifacts: string[] } | null
  *  the two components having to share a variable. `dragover` may only inspect
  *  `types`, never the data — which is exactly enough to know a drop is ours. */
 export const DRAG_MIME = 'application/x-talaria-files'
+
+/** The list browser's column grid — ONE template shared by the header row and
+ *  every list row so pane resizing keeps them locked together (it used to be
+ *  duplicated, and could drift). Track 1 is the selection checkbox lane
+ *  (1.75rem, BoardList's width); the checkbox is a permanent column, never a
+ *  hover trick that hides the row's kind icon. */
+export const ROW_GRID = 'grid-cols-[1.75rem_minmax(0,1fr)_7rem_10rem_8rem]'
 
 export type SortKey = 'name' | 'kind' | 'owner' | 'modified'
 export type SortDir = 'asc' | 'desc'
@@ -103,6 +122,42 @@ export interface Row {
   /** ISO timestamp — sorted as a string deliberately (ISO sorts correctly). */
   modified: string
   artifact: Artifact | null
+  /** Present ONLY on Drive rows — the row is Google's, not an artifact: open
+   *  goes to Drive's own view, Import pulls it into Talaria. */
+  drive?: {
+    entry: import('@/lib/google-drive').DriveEntry
+    driveKey: string
+    writable: boolean
+  }
+}
+
+const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder'
+const DRIVE_KIND: [prefix: string, kind: ArtifactKind, label: string][] = [
+  ['application/vnd.google-apps.document', 'doc', 'Google Doc'],
+  ['application/vnd.google-apps.spreadsheet', 'sheet', 'Google Sheet'],
+  ['application/vnd.google-apps.presentation', 'file', 'Slides'],
+  ['application/vnd.google-apps', 'file', 'Google file'],
+]
+
+/** A Drive entry in the browser's Row shape — same geometry, Google's facts.
+ *  The server already ordered (folders first, then the sort); the client does
+ *  not re-sort Drive rows. */
+export function driveRow(entry: import('@/lib/google-drive').DriveEntry, driveKey: string, writable: boolean, owner: string): Row {
+  const isFolder = entry.mimeType === DRIVE_FOLDER_MIME
+  const mapped = DRIVE_KIND.find(([p]) => entry.mimeType.startsWith(p))
+  return {
+    type: isFolder ? 'folder' : 'artifact',
+    id: entry.id,
+    name: entry.name,
+    icon: null,
+    kind: isFolder ? null : ((mapped?.[1] ?? 'file') as ArtifactKind),
+    kindLabel: isFolder ? 'Folder' : (mapped?.[2] ?? (entry.mimeType.split('/')[1] || 'File')),
+    owner,
+    scope: null,
+    modified: entry.modifiedTime ?? '',
+    artifact: null,
+    drive: { entry, driveKey, writable },
+  }
 }
 
 type Me = { id: string; email: string | null; name: string | null } | null

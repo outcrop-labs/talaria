@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-13 routes.
+15 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -18,11 +18,13 @@
 | [`/api/artifact-folders/{id}`](#apiartifact-foldersid) | GET | `session` |
 | [`/api/artifact-folders/{id}`](#apiartifact-foldersid) | PUT | `session` + `perm:artifacts.create` `perm:artifacts.publish` |
 | [`/api/artifact-folders/{id}`](#apiartifact-foldersid) | DELETE | `session` + `perm:artifacts.create` |
+| [`/api/artifact-folders/{id}/duplicate`](#apiartifact-foldersidduplicate) | POST | `session` |
 | [`/api/artifacts`](#apiartifacts) | GET | `dual` |
 | [`/api/artifacts`](#apiartifacts) | POST | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | GET | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | PUT | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | DELETE | `session` |
+| [`/api/artifacts/{id}/duplicate`](#apiartifactsidduplicate) | POST | `session` |
 | [`/api/artifacts/{id}/export/google`](#apiartifactsidexportgoogle) | POST | `dual` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | POST | `session` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | DELETE | `session` |
@@ -114,6 +116,20 @@ Source: [`api/src/routes/files/artifact_folders_id.rs`](../../api/src/routes/fil
 | `visibility` | `enum(private|org|public)?` |  |
 | `editPolicy` | `enum(owner|org|restricted)?` |  |
 
+## `/api/artifact-folders/{id}/duplicate`
+
+Source: [`api/src/routes/files/artifact_folders_id_duplicate.rs`](../../api/src/routes/files/artifact_folders_id_duplicate.rs)
+
+> /api/artifact-folders/{id}/duplicate. Copy a whole folder tree in one
+> transaction — copy/paste's engine on the folder side. Read-level like the
+> artifact twin: anyone who can read the folder can copy it; the copy (all of
+> it) becomes the caller's, folders keep their visibility (they are org-wide
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{folder}` | 200, 403, 404 | — |
+
 ## `/api/artifacts`
 
 Source: [`api/src/routes/files/artifacts.rs`](../../api/src/routes/files/artifacts.rs)
@@ -168,6 +184,20 @@ Source: [`api/src/routes/files/artifacts_id.rs`](../../api/src/routes/files/arti
 | `editPolicy` | `enum(owner|org|restricted)?` |  |
 | `official` | `bool?` |  |
 | `ragRouting` | `string?(60)` |  |
+
+## `/api/artifacts/{id}/duplicate`
+
+Source: [`api/src/routes/files/artifacts_id_duplicate.rs`](../../api/src/routes/files/artifacts_id_duplicate.rs)
+
+> /api/artifacts/{id}/duplicate. Copy one artifact — copy/paste's engine on
+> the file side. A READ-level act (anyone who can see it can copy it; the
+> source is never touched): the copy is the caller's, private, beside its
+> source, under a "Copy of" name. See artifacts::duplicate_artifact for the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{artifact}` | 200, 403, 404 | — |
 
 ## `/api/artifacts/{id}/export/google`
 

@@ -122,9 +122,9 @@ test('no memory restores nothing', () => {
 
 test('Artifacts remembers place, folder and open file together', () => {
   installStorage()
-  writeArtifactsSelection({ place: 'shared', folderId: 'f-1', activeId: 'a-1' })
+  writeArtifactsSelection({ place: 'shared', folderId: 'f-1', activeId: 'a-1', driveId: null })
   resetArtifactsSelection()
-  assert.deepEqual(readArtifactsSelection(), { place: 'shared', folderId: 'f-1', activeId: 'a-1' })
+  assert.deepEqual(readArtifactsSelection(), { place: 'shared', folderId: 'f-1', activeId: 'a-1', driveId: null })
 })
 
 test('a place that is no longer a place drops the whole memory', () => {
@@ -139,22 +139,22 @@ test('a deleted folder does not cost you the place', () => {
   // root of `my` when the place they were in is perfectly fine.
   assert.deepEqual(
     restorableArtifactsSelection(
-      { place: 'workspace', folderId: 'gone', activeId: 'a-1' },
+      { place: 'workspace', folderId: 'gone', activeId: 'a-1', driveId: null },
       { folderIds: ['f-1'], artifactIds: ['a-1'] },
     ),
     // The file goes with the folder: it would otherwise render detached from
     // the browser around it.
-    { place: 'workspace', folderId: null, activeId: null },
+    { place: 'workspace', folderId: null, activeId: null, driveId: null },
   )
 })
 
 test('a deleted file does not cost you the folder', () => {
   assert.deepEqual(
     restorableArtifactsSelection(
-      { place: 'my', folderId: 'f-1', activeId: 'gone' },
+      { place: 'my', folderId: 'f-1', activeId: 'gone', driveId: null },
       { folderIds: ['f-1'], artifactIds: ['a-1'] },
     ),
-    { place: 'my', folderId: 'f-1', activeId: null },
+    { place: 'my', folderId: 'f-1', activeId: null, driveId: null },
   )
 })
 
@@ -163,9 +163,9 @@ test('a roster that has not loaded takes its part on trust', () => {
   // same race in a new place.
   assert.deepEqual(
     restorableArtifactsSelection(
-      { place: 'my', folderId: 'f-1', activeId: 'a-1' },
+      { place: 'my', folderId: 'f-1', activeId: 'a-1', driveId: null },
       { folderIds: null, artifactIds: null },
     ),
-    { place: 'my', folderId: 'f-1', activeId: 'a-1' },
+    { place: 'my', folderId: 'f-1', activeId: 'a-1', driveId: null },
   )
 })

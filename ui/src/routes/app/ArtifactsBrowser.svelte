@@ -2,6 +2,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { untrack } from 'svelte'
   import { ArrowDown, ArrowUp, Share2, Upload } from '@lucide/svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -11,12 +12,17 @@
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { fade, listStagger } from '@/lib/motion'
-  import { deleteArtifact, deleteFolder, updateFolder, type Artifact } from '@/lib/artifacts'
+  import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, updateFolder, type Artifact } from '@/lib/artifacts'
   import { errorMessage } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
+  import { moveDriveFile, renameDriveFile, trashDriveFile } from '@/lib/google-drive'
   import ArtifactsRow from './ArtifactsRow.svelte'
   import ArtifactsTile from './ArtifactsTile.svelte'
-  import { DRAG_MIME, type Drag, type Row, type SortDir, type SortKey } from './artifacts'
+  import MoveDialog from './MoveDialog.svelte'
+  import {
+    clearClipboard, clipboard, copyClipboard, cutClipboard, isCut, pruneClipboard,
+  } from './files-clipboard.svelte'
+  import { DRAG_MIME, ROW_GRID, type Drag, type Row, type SortDir, type SortKey } from './artifacts'
 
   // The browser: the room you're standing in. Everything a file manager is
   // expected to do lives here — sortable columns, multi-select, drag to move,
@@ -32,10 +38,19 @@
     onSort,
     activeId,
     canOrganize,
+    folderId,
+    onPaste,
+    onOpenDriveFile,
+    onImport,
+    onDriveChange,
+    more = false,
+    onLoadMore,
+    importingCount = 0,
     emptyTitle,
     emptyHint,
     onOpenFolder,
     onOpenArtifact,
+    onAscend,
     onMove,
     onUpload,
     onRefresh,
@@ -54,10 +69,28 @@
     /** Flat places (Shared, Official, Recent) are views, not locations: moving
      *  and folder-making are meaningless there, so they're off. */
     canOrganize: boolean
+    /** Where the browser stands — the MoveDialog opens here, ⌘V pastes here. */
+    folderId: string | null
+    /** Paste the clipboard: undefined = the current folder, an id = into it. */
+    onPaste: (into?: string) => Promise<unknown>
+    /** Drive rows only: a file row opens GOOGLE's own view, not our editor. */
+    onOpenDriveFile: (url: string | null) => void
+    /** Drive rows only: pull the selected Drive files into Talaria. */
+    onImport: (fileIds: string[]) => Promise<unknown>
+    /** Drive rows only: a write landed — refetch the listing. */
+    onDriveChange: () => void
+    /** Drive rows only: another page waits. */
+    more?: boolean
+    onLoadMore?: () => void
+    /** Drive rows only: imports in flight — the bar's label. */
+    importingCount?: number
     emptyTitle: string
     emptyHint?: string
     onOpenFolder: (id: string) => void
     onOpenArtifact: (id: string) => void
+    /** ← (list view): climb one level — the parent folder, or nothing at the
+     *  place root. The page owns the folder trail, so it owns the climb. */
+    onAscend: () => void
     onMove: (drag: NonNullable<Drag>, folderId: string | null) => Promise<unknown>
     onUpload: (files: File[], intoFolderId?: string) => Promise<unknown>
     onRefresh: () => Promise<unknown>
@@ -79,6 +112,55 @@
   let overFolder = $state<string | null>(null)
   let fileOver = $state(false)
   let uploading = $state(false)
+  let moveDialog = $state(false)
+
+  // ── Focus: the roving tabindex ─────────────────────────────────────────────
+  // Exactly one row carries tabindex=0 (the focused one); arrows move it. A
+  // click or Tab focuses a row natively — onfocusin mirrors that into focusKey
+  // so the keyboard model and the DOM never disagree about where "here" is.
+  let focusKey = $state<string | null>(null)
+  let listEl = $state<HTMLDivElement | null>(null)
+
+  const focusIndex = (i: number | null) => {
+    if (i === null || i < 0 || i >= rows.length) return
+    focusKey = keyOf(rows[i]!)
+  }
+  const indexOfKey = (k: string | null) => (k ? rows.findIndex((r) => keyOf(r) === k) : -1)
+
+  // focusKey changes (arrow keys, healing) drive the REAL focus — the effect
+  // finds the row's button and focuses it, scrolling it into view. Reading
+  // rows keeps it honest across refreshes without stealing focus on mount:
+  // focusKey starts null and only the keyboard (or a click, via onfocusin)
+  // sets it.
+  $effect(() => {
+    void rows
+    const k = focusKey
+    if (!k || !listEl) return
+    const el = listEl.querySelector<HTMLButtonElement>(`[data-row-key="${CSS.escape(k)}"] > button`)
+    if (el && document.activeElement !== el) {
+      el.focus({ preventScroll: true })
+      el.scrollIntoView({ block: 'nearest' })
+    }
+  })
+
+  // After a list-changing action (delete, move), focus heals to the row that
+  // took the changed one's place — never to nothing, never to the top.
+  let pendingFocusIndex = $state<number | null>(null)
+  $effect(() => {
+    void rows
+    const p = pendingFocusIndex
+    if (p === null) return
+    pendingFocusIndex = null
+    focusIndex(Math.min(p, rows.length - 1))
+  })
+  const healFocusFrom = (key: string) => {
+    pendingFocusIndex = Math.min(Math.max(indexOfKey(key), 0), rows.length - 1)
+  }
+
+  // The checkbox toggle arrives as a `change` event, which carries no modifier
+  // state — the pointerdown that preceded it on the same row does. Body clicks
+  // pass their own event; the checkbox path reads this.
+  let lastPointerShift = false
 
   // A selection is only meaningful over the rows on screen. Changing place,
   // folder, or filter prunes it rather than leaving invisible items armed for
@@ -96,17 +178,31 @@
     if (next.size !== current.size) selected = next
   })
 
+  // The clipboard is pruned exactly like the selection — a deleted item must
+  // not stay armed for the next paste.
+  $effect(() => {
+    const sig = rows.map(keyOf).join(',')
+    if (sig !== lastSig) pruneClipboard(new Set(rows.map(keyOf)))
+  })
+
   const selectedRows = $derived(rows.filter((r) => selected.has(keyOf(r))))
   const dragOf = (r: Row): NonNullable<Drag> => {
     // Dragging a row that's part of the selection carries the whole selection;
     // dragging an unselected row carries just it (and takes the selection over).
     const set = selected.has(keyOf(r)) ? selectedRows : [r]
-    return { folders: set.filter((x) => x.type === 'folder').map((x) => x.id), artifacts: set.filter((x) => x.type === 'artifact').map((x) => x.id) }
+    return {
+      folders: set.filter((x) => x.type === 'folder').map((x) => x.id),
+      artifacts: set.filter((x) => x.type === 'artifact').map((x) => x.id),
+      source: r.drive ? 'drive' : 'local',
+    }
   }
 
-  const toggle = (r: Row, i: number, e: MouseEvent) => {
+  const toggle = (r: Row, i: number, e?: Event) => {
+    // Body clicks carry MouseEvent.shiftKey; a checkbox `change` carries
+    // nothing, and the pointerdown that caused it supplied `lastPointerShift`.
+    const shift = (e as MouseEvent | undefined)?.shiftKey ?? lastPointerShift
     const next = new Set(selected)
-    if (e.shiftKey && anchor !== null) {
+    if (shift && anchor !== null) {
       const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor]
       for (let k = lo; k <= hi; k++) {
         const row = rows[k]
@@ -125,9 +221,235 @@
     anchor = null
   }
 
-  const open = (r: Row) => (r.type === 'folder' ? onOpenFolder(r.id) : onOpenArtifact(r.id))
+  // ── Clipboard verbs — the selection bar's, the menus', and the keys' ──────
+  // After a cut or copy the selection IS the clipboard: clearing it here
+  // hands the rows back their normal look and leaves the paste armed.
+  const cut = () => {
+    if (!selected.size) return
+    cutClipboard([...selected], folderId)
+    clear()
+  }
+  const copy = () => {
+    if (!selected.size) return
+    copyClipboard([...selected], folderId)
+    clear()
+  }
+  const paste = (into?: string) => onPaste(into)
+
+  // ── Drive writes — the roster's writable flag gates every one ──────────
+  /** Move the drag's Drive rows into `target` (a Drive folder id or null for
+   *  the drive root). The remove end is always the folder you dragged from.
+   *  Google takes one PATCH per file — sequential, like import. */
+  const moveDriveDrag = async (d: NonNullable<Drag>, target: string | null) => {
+    const rows = [...d.folders, ...d.artifacts]
+    if (!rows.length) return
+    const key = rows.length ? (driveKeyOf() ?? null) : null
+    if (!key) return
+    const from = folderId
+    for (const id of rows) {
+      try {
+        await moveDriveFile(key, id, target, from)
+      } catch (e) {
+        pushToast({ title: 'Move failed', body: errorMessage(e), tone: 'danger' })
+        break
+      }
+    }
+    clear()
+    onDriveChange()
+  }
+
+  /** The drive key of the current listing — from the first drive row. */
+  const driveKeyOf = (): string | null => rows.find((r) => r.drive)?.drive?.driveKey ?? null
+
+  const renameDrive = async (r: Row) => {
+    if (!r.drive) return
+    const name = await prompt({ title: 'Rename in Drive', defaultValue: r.name, confirmLabel: 'Rename' })
+    if (!name?.trim() || name === r.name) return
+    try {
+      await renameDriveFile(r.drive.driveKey, r.id, name.trim())
+    } catch (e) {
+      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    onDriveChange()
+  }
+
+  const trashDrive = async (r: Row) => {
+    if (!r.drive) return
+    const n = selectedRows.length > 1 ? `${selectedRows.length} items` : `"${r.name}"`
+    if (!(await confirm({ title: 'Trash in Drive', message: `Move ${n} to Google Drive's trash? It stays recoverable in Drive.`, confirmLabel: 'Trash', danger: true }))) return
+    const rows = selected.size && selected.has(keyOf(r)) ? selectedRows : [r]
+    try {
+      for (const row of rows) await trashDriveFile(row.drive!.driveKey, row.id)
+    } catch (e) {
+      pushToast({ title: 'Trash failed', body: errorMessage(e), tone: 'danger' })
+    }
+    clear()
+    onDriveChange()
+  }
+
+  const duplicate = async (r: Row) => {
+    try {
+      if (r.type === 'folder') await duplicateFolder(r.id)
+      else await duplicateArtifact(r.id)
+    } catch (e) {
+      pushToast({ title: 'Could not duplicate', body: errorMessage(e), tone: 'danger' })
+      return
+    }
+    await onRefresh()
+  }
+
+  // ── Keyboard: the desktop file-manager grammar ─────────────────────────────
+  // Selection follows focus (Finder/Explorer): plain arrows move focus AND
+  // select just that row; Shift extends from the anchor; ⌘/Ctrl moves focus
+  // alone; Space toggles without opening; Enter/→ opens; ← climbs. Grid view
+  // trades the horizontal keys for tile steps.
+
+  /** One grid step: the tile at (or nearest in) the focused column, one tile
+   *  row up/down. Geometry, not arithmetic — the auto-fill column count is
+   *  the stylesheet's business, not ours. */
+  const gridStep = (dy: number): void => {
+    const i = indexOfKey(focusKey)
+    if (!listEl) return
+    if (i < 0) {
+      // Nothing focused yet — the first arrow keys the first tile, exactly
+      // like the list view's moveFocus seeding.
+      if (rows.length) focusIndex(0)
+      return
+    }
+    const elts = [...listEl.querySelectorAll<HTMLElement>('[data-row-key]')]
+    const from = elts[i]
+    if (!from) return
+    const top = from.offsetTop
+    const band = (t: number) => elts.filter((e) => Math.abs(e.offsetTop - t) < 2)
+    if (dy < 0) {
+      const above = elts.filter((e) => e.offsetTop < top - 2)
+      if (!above.length) return
+      const t = Math.max(...above.map((e) => e.offsetTop))
+      const row = band(t)
+      focusKey = row[Math.min(band(top).indexOf(from), row.length - 1)]?.dataset.rowKey ?? null
+    } else {
+      const below = elts.filter((e) => e.offsetTop > top + 2)
+      if (!below.length) return
+      const t = Math.min(...below.map((e) => e.offsetTop))
+      const row = band(t)
+      focusKey = row[Math.min(band(top).indexOf(from), row.length - 1)]?.dataset.rowKey ?? null
+    }
+  }
+
+  /** Focus + (unless modifier-held) single-select a row by index; the anchor
+   *  follows, so a later Shift+arrow extends from here. */
+  const moveFocus = (i: number, e: KeyboardEvent) => {
+    const row = rows[i]
+    if (!row) return
+    focusIndex(i)
+    if (e.metaKey || e.ctrlKey) return
+    if (e.shiftKey && anchor !== null) {
+      const next = new Set(selected)
+      const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor]
+      for (let k = lo; k <= hi; k++) {
+        const r = rows[k]
+        if (r) next.add(keyOf(r))
+      }
+      selected = next
+    } else {
+      selected = new Set([keyOf(row)])
+      anchor = i
+    }
+  }
+
+  const onKeydown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && selected.size) clear()
+    const t = e.target as HTMLElement | null
+    // Never steal a shortcut from a field someone is typing in.
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA)$/.test(t.tagName))) return
+    if ((e.metaKey || e.ctrlKey) && e.key === 'a' && rows.length) {
+      e.preventDefault()
+      selected = new Set(rows.map(keyOf))
+      return
+    }
+    // ⌘I / Alt+Enter — Get Info and Properties, on the two platforms whose
+    // habits a file browser inherits.
+    if (selectedRows.length === 1 && (((e.metaKey || e.ctrlKey) && e.key === 'i') || (e.altKey && e.key === 'Enter'))) {
+      e.preventDefault()
+      onProperties(selectedRows[0]!)
+      return
+    }
+    // A modal owns the keyboard while it is open.
+    if (document.querySelector('[role=dialog]')) return
+    // The clipboard keys. X and C only intercept with a selection — a bare
+    // ⌘C must keep copying text like everywhere else.
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'x' || e.key === 'c') && selected.size && canOrganize) {
+      e.preventDefault()
+      if (e.key === 'x') cut()
+      else copy()
+      return
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'v' && clipboard() && canOrganize) {
+      e.preventDefault()
+      void paste()
+      return
+    }
+    // Escape's ladder: the most transient thing first — a clipboard outlives
+    // a selection, so the selection clears before the clipboard does.
+    if (e.key === 'Escape') {
+      if (selected.size) clear()
+      else if (clipboard()) clearClipboard()
+      return
+    }
+    if (!rows.length) return
+    const i = indexOfKey(focusKey)
+    switch (e.key) {
+      case 'ArrowDown': {
+        e.preventDefault()
+        if (view === 'grid') { gridStep(1); if (!(e.metaKey || e.ctrlKey) && focusKey) moveFocus(Math.max(indexOfKey(focusKey), 0), e) }
+        else moveFocus(i < 0 ? 0 : Math.min(i + 1, rows.length - 1), e)
+        return
+      }
+      case 'ArrowUp': {
+        e.preventDefault()
+        if (view === 'grid') { gridStep(-1); if (!(e.metaKey || e.ctrlKey) && focusKey) moveFocus(Math.max(indexOfKey(focusKey), 0), e) }
+        else moveFocus(i < 0 ? rows.length - 1 : Math.max(i - 1, 0), e)
+        return
+      }
+      case 'ArrowRight': {
+        if (view === 'grid') { e.preventDefault(); if (i >= 0) focusIndex(Math.min(i + 1, rows.length - 1)) }
+        else if (i >= 0) { e.preventDefault(); open(rows[i]!) }
+        return
+      }
+      case 'ArrowLeft': {
+        if (view === 'grid') { e.preventDefault(); if (i > 0) focusIndex(i - 1) }
+        else { e.preventDefault(); onAscend() }
+        return
+      }
+      case 'Home':
+        e.preventDefault()
+        moveFocus(0, e)
+        return
+      case 'End':
+        e.preventDefault()
+        moveFocus(rows.length - 1, e)
+        return
+      case ' ':
+        if (i >= 0) { e.preventDefault(); toggle(rows[i]!, i) }
+        return
+      case 'Enter':
+        if (i >= 0) { e.preventDefault(); open(rows[i]!) }
+        return
+    }
+  }
+
+  const open = (r: Row) => {
+    if (r.drive) {
+      if (r.type === 'folder') onOpenFolder(r.id)
+      else onOpenDriveFile(r.drive.entry.webViewLink ?? null)
+      return
+    }
+    r.type === 'folder' ? onOpenFolder(r.id) : onOpenArtifact(r.id)
+  }
 
   const removeRow = async (r: Row) => {
+    healFocusFrom(keyOf(r))
     if (r.type === 'folder') {
       if (!(await confirm({ title: 'Delete folder', message: `Delete "${r.name}"? Everything inside moves up a level.`, confirmLabel: 'Delete', danger: true }))) return
       try {
@@ -152,6 +474,7 @@
   const removeSelection = async () => {
     const n = selectedRows.length
     if (!n) return
+    healFocusFrom(keyOf(selectedRows[0]!))
     const label = n === 1 ? `"${selectedRows[0]!.name}"` : `${n} items`
     if (!(await confirm({ title: 'Delete', message: `Delete ${label}? Folders keep their contents, moved up a level.`, confirmLabel: 'Delete', danger: true }))) return
     try {
@@ -185,6 +508,22 @@
   const downloadHref = (a: Artifact | null) => (a?.storageRef ? `/api/uploads/${a.storageRef}` : null)
 
   const rowMenu = (r: Row): ContextMenuEntry[] => {
+    if (r.drive) {
+      const items: ContextMenuEntry[] = [{ label: 'Open', onSelect: () => open(r) }]
+      if (r.drive.entry.webViewLink) {
+        items.push({ label: 'Open in Google Drive', onSelect: () => window.open(r.drive!.entry.webViewLink!, '_blank', 'noopener') })
+      }
+      if (r.drive.writable) {
+        items.push('sep', { label: 'Rename', onSelect: () => void renameDrive(r) })
+        if (r.type === 'artifact') {
+          items.push({ label: 'Import to Talaria', onSelect: () => void onImport([r.id]) })
+        }
+        items.push('sep', { label: 'Trash in Drive', danger: true, onSelect: () => void trashDrive(r) })
+      } else if (r.type === 'artifact') {
+        items.push('sep', { label: 'Import to Talaria', onSelect: () => void onImport([r.id]) })
+      }
+      return items
+    }
     const items: ContextMenuEntry[] = [{ label: 'Open', onSelect: () => open(r) }]
     // Share is the second verb for BOTH kinds: "share this folder with the
     // team" is the commonest sharing act there is, and a browser that only
@@ -199,6 +538,16 @@
       const href = downloadHref(r.artifact)
       if (href) items.push({ label: 'Download', onSelect: () => window.open(href, '_blank', 'noopener') })
     }
+    if (canOrganize) {
+      items.push('sep')
+      items.push({ label: 'Cut', onSelect: () => { clear(); cutClipboard([keyOf(r)], folderId) } })
+      items.push({ label: 'Copy', onSelect: () => { clear(); copyClipboard([keyOf(r)], folderId) } })
+      if (clipboard() && r.type === 'folder') {
+        items.push({ label: 'Paste into', disabled: !canOrganize, onSelect: () => void paste(r.id) })
+      }
+      items.push({ label: 'Duplicate', onSelect: () => void duplicate(r) })
+      items.push({ label: 'Move to…', onSelect: () => (moveDialog = true) })
+    }
     // Properties sits last among the safe actions, the way every file browser
     // puts Get Info / Properties at the foot of the menu.
     items.push({ label: 'Properties', onSelect: () => onProperties(r) })
@@ -211,12 +560,22 @@
   // (move) and an EXTERNAL file drag from the desktop (upload). `drag` being
   // set is what tells them apart — dataTransfer.types alone can't, because a
   // row drag also carries types.
-  const hasFiles = (e: DragEvent) => !drag && !!e.dataTransfer?.types.includes('Files')
+  const driveMode = $derived(rows.length > 0 && !!rows[0]!.drive)
+  const hasFiles = (e: DragEvent) => !drag && !driveMode && !!e.dataTransfer?.types.includes('Files')
 
   const dropOnFolder = async (e: DragEvent, folderId: string) => {
     e.preventDefault()
     e.stopPropagation()
     overFolder = null
+    if (driveMode) {
+      if (drag?.source === 'drive') {
+        const d = drag
+        drag = null
+        if (d.folders.includes(folderId)) return
+        await moveDriveDrag(d, folderId)
+      }
+      return
+    }
     if (drag) {
       const d = drag
       drag = null
@@ -242,6 +601,14 @@
   const dropOnBody = async (e: DragEvent) => {
     e.preventDefault()
     fileOver = false
+    if (driveMode) {
+      if (drag?.source === 'drive') {
+        const d = drag
+        drag = null
+        await moveDriveDrag(d, null)
+      }
+      return
+    }
     const files = Array.from(e.dataTransfer?.files ?? [])
     if (files.length) {
       uploading = true
@@ -268,24 +635,7 @@
   ]
 </script>
 
-<svelte:window
-  onkeydown={(e) => {
-    if (e.key === 'Escape' && selected.size) clear()
-    const t = e.target as HTMLElement | null
-    // Never steal a shortcut from a field someone is typing in.
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA)$/.test(t.tagName))) return
-    if ((e.metaKey || e.ctrlKey) && e.key === 'a' && rows.length) {
-      e.preventDefault()
-      selected = new Set(rows.map(keyOf))
-    }
-    // ⌘I / Alt+Enter — Get Info and Properties, on the two platforms whose
-    // habits a file browser inherits.
-    if (selectedRows.length === 1 && (((e.metaKey || e.ctrlKey) && e.key === 'i') || (e.altKey && e.key === 'Enter'))) {
-      e.preventDefault()
-      onProperties(selectedRows[0]!)
-    }
-  }}
-/>
+<svelte:window onkeydown={onKeydown} />
 
 <div
   class="relative flex h-full min-h-0 flex-col"
@@ -303,12 +653,30 @@
     if (e.currentTarget === e.target) fileOver = false
   }}
   ondrop={(e) => void dropOnBody(e)}
+  oncontextmenu={(e) => {
+    // The empty-space menu mirrors the surface's own verbs — one today: paste.
+    if ((e.target as HTMLElement).closest('[data-row-key]')) return
+    e.preventDefault()
+    menu.openMenu(e, [
+      { label: 'Paste', disabled: !clipboard() || !canOrganize, onSelect: () => void paste() },
+    ])
+  }}
 >
   {#if view === 'list' && (rows.length > 0 || loading)}
-    <!-- Column heads sit outside the scroller so they stay put; the grid
-         template is duplicated in ArtifactsRow, which is what keeps them
-         aligned as the pane resizes. -->
-    <div class="grid shrink-0 grid-cols-[minmax(0,1fr)_7rem_10rem_8rem] items-center gap-3 border-b border-line-subtle px-2 pb-1.5 pl-9">
+    <!-- Column heads sit outside the scroller so they stay put; ROW_GRID is
+         the one shared template (header + rows), which keeps them aligned as
+         the pane resizes. Track 1 is the selection column: the select-all
+         checkbox — ⌘A's visible twin. -->
+    <div class={cn('mt-1.5 grid shrink-0 items-center gap-3 border-b border-line-subtle px-2 py-2.5', ROW_GRID)}>
+      <Checkbox
+        bare
+        title="Select all"
+        checked={rows.length > 0 && rows.every((r) => selected.has(keyOf(r)))}
+        onChange={(checked) => {
+          selected = checked ? new Set(rows.map(keyOf)) : new Set()
+          anchor = null
+        }}
+      />
       {#each COLUMNS as c (c.key)}
         <button
           type="button"
@@ -338,18 +706,23 @@
     {:else}
       <!-- Icon view packs tight (§ desktop idiom): many small cells per row,
            hairline gaps, so a folder reads as a field of files at a glance. -->
-      <div class={cn(view === 'grid' && 'grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-0.5')} use:listStagger>
+      <div bind:this={listEl} class={cn(view === 'grid' && 'grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-0.5')} use:listStagger>
         {#each rows as r, i (keyOf(r))}
+          {@const k = keyOf(r)}
           {@const shared = {
             row: r,
-            selected: selected.has(keyOf(r)),
-            anySelected: selected.size > 0,
+            rowKey: k,
+            selected: selected.has(k),
+            cut: isCut(k),
+            focused: focusKey === k,
             active: r.type === 'artifact' && r.id === activeId,
             dropTarget: overFolder === r.id,
             onOpen: () => open(r),
-            onToggle: (e: MouseEvent) => toggle(r, i, e),
+            onToggle: (e?: Event) => toggle(r, i, e ?? undefined),
+            onFocusIn: () => (focusKey = k),
+            onPointerDown: (e: PointerEvent) => (lastPointerShift = e.shiftKey),
             onContextMenu: (e: MouseEvent) => {
-              if (!selected.has(keyOf(r))) clear()
+              if (!selected.has(k)) clear()
               menu.openMenu(e, rowMenu(r))
             },
             ondragstart: (e: DragEvent) => {
@@ -388,6 +761,11 @@
           {/if}
         {/each}
       </div>
+      {#if more && !loading}
+        <div class="grid place-items-center py-3">
+          <Button variant="ghost" size="xs" onclick={() => onLoadMore?.()}>Load more</Button>
+        </div>
+      {/if}
       {#if failure}
         <!-- Half the tree answered. Keep what loaded and say so — swapping a
              populated pane for an error loses more than it explains. -->
@@ -405,6 +783,16 @@
         <a href={downloadHref(selectedRows[0]!.artifact)} target="_blank" rel="noreferrer" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 transition-colors hover:text-fg hover:underline">
           Download
         </a>
+      {/if}
+      {#if driveMode}
+        <Button variant="ghost" size="xs" onclick={() => void onImport(selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id))}>
+          {importingCount ? `Importing ${importingCount}…` : 'Import'}
+        </Button>
+      {/if}
+      {#if canOrganize}
+        <Button variant="ghost" size="xs" onclick={cut}>Cut</Button>
+        <Button variant="ghost" size="xs" onclick={copy}>Copy</Button>
+        <Button variant="ghost" size="xs" onclick={() => (moveDialog = true)}>Move</Button>
       {/if}
       <DangerLink onClick={() => void removeSelection()}>Delete</DangerLink>
       <Button variant="ghost" size="xs" class="ml-auto" onclick={clear}>
@@ -425,5 +813,27 @@
     </div>
   {/if}
 
+  <MoveDialog
+    open={moveDialog}
+    onClose={() => (moveDialog = false)}
+    selection={selected.size
+      ? { folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id), artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id), source: driveMode ? 'drive' : 'local' }
+      : { folders: [], artifacts: [] }}
+    startAt={folderId}
+    driveKey={driveMode ? (rows[0]?.drive?.driveKey ?? null) : null}
+    onMove={async (target) => {
+      const payload = {
+        folders: selectedRows.filter((r) => r.type === 'folder').map((r) => r.id),
+        artifacts: selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id),
+        source: (driveMode ? 'drive' : 'local') as 'drive' | 'local',
+      }
+      if (driveMode) {
+        await moveDriveDrag(payload, target)
+        return
+      }
+      await onMove(payload, target)
+      clear()
+    }}
+  />
   <ContextMenu {menu} />
 </div>

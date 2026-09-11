@@ -7,7 +7,7 @@
   } from '@/lib/artifacts-selection'
   import { searchParams } from 'sv-router'
   import { navigate, route } from '@/router'
-  import { useQueryClient } from '@tanstack/svelte-query'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { ChevronRight, FolderPlus, HardDrive, Plus, Search, Upload, X } from '@lucide/svelte'
   import Rail from '@/components/app/Rail.svelte'
   import RailRow from '@/components/app/RailRow.svelte'
@@ -20,18 +20,26 @@
   import Input from '@/components/ui/Input.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
-  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { cn } from '@/lib/cn'
   import { errorMessage } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useUsers } from '@/lib/users'
-  import { createArtifact, createFolder, saveArtifact, updateFolder, uploadFile, useArtifacts, useFolders, type ArtifactKind } from '@/lib/artifacts'
+  import {
+    createArtifact, createFolder, duplicateArtifact, duplicateFolder,
+    saveArtifact, updateFolder, uploadFile, useArtifacts, useFolders, type ArtifactKind,
+  } from '@/lib/artifacts'
+  import { clearClipboard, clipboard } from './files-clipboard.svelte'
+  import {
+    browseDrivePage, importDriveFile, useDriveRoster, type DriveBrowse, type DriveRosterEntry,
+  } from '@/lib/google-drive'
+  import { driveRow } from './artifacts'
   import type { PermKind } from '@/lib/kb'
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ArtifactsBrowser from './ArtifactsBrowser.svelte'
   import SecretsVault from './SecretsVault.svelte'
-  import ArtifactsDriveImportModal from './ArtifactsDriveImportModal.svelte'
   import ArtifactsProperties from './ArtifactsProperties.svelte'
   import {
     AGENTS_ROOT,
@@ -83,6 +91,11 @@
   const folderId = $derived(rawFolder ? String(rawFolder) : null)
   const rawActive = $derived(searchParams.get('a'))
   const activeId = $derived(rawActive ? String(rawActive) : null)
+  // The Drive place's own selection: which drive (roster key) and which of
+  // ITS folders. Same axes, different alphabet — Drive ids are Google's, so
+  // nothing validates them against the local folder roster.
+  const driveKeyParam = $derived(place === 'drive' ? searchParams.get('d') : null)
+  const driveKey = $derived(driveKeyParam ? String(driveKeyParam) : null)
 
   const setActiveId = (id: string | null) => {
     if (id) searchParams.set('a', id)
@@ -94,6 +107,11 @@
     // Navigating with no `search` is what drops them.
     if (p === 'my') void navigate('/artifacts')
     else void navigate('/artifacts/:place', { params: { place: p } })
+  }
+  /** Switch Drive (roster key) — the folder resets with the drive. */
+  const goDrive = (key: string) => {
+    const search: Record<string, string> = { d: key }
+    void navigate('/artifacts/:place', { params: { place: 'drive' }, search })
   }
   const goFolder = (id: string | null) => {
     searchParams.delete('a')
@@ -110,7 +128,7 @@
   // land you at the root of "My files". All three parts travel together: the
   // right place with the wrong folder is its own kind of lost.
   $effect(() => {
-    if (onArtifacts) writeArtifactsSelection({ place, folderId, activeId })
+    if (onArtifacts) writeArtifactsSelection({ place, folderId, activeId, driveId: place === 'drive' ? driveKey : null })
   })
 
   // RESTORED ONCE, ON ARRIVAL. Latched on mount rather than keyed off a bare
@@ -142,7 +160,8 @@
     else void navigate('/artifacts/:place', { params: { place: saved.place }, search, replace: true })
   })
 
-  let importOpen = $state(false)
+  const crumbMenu = useContextMenu()
+
   /** The row whose Properties dialog is open (null = closed). */
   let propsRow = $state<Row | null>(null)
   /** The artifact whose sharing dialog is open. Sharing reuses the SAME
@@ -182,6 +201,100 @@
   let sortKey = $state<SortKey>('name')
   let sortDir = $state<SortDir>('asc')
   let view = $state<'list' | 'grid'>('list')
+
+
+  const rosterQuery = useDriveRoster()
+  const roster = $derived((rosterQuery.data?.drives ?? []) as DriveRosterEntry[])
+  const rosterEntry = $derived(roster.find((r) => r.key === driveKey) ?? null)
+  const notConnected = $derived(
+    place === 'drive' && !rosterQuery.isLoading && rosterQuery.data !== undefined && roster.length === 0,
+  )
+
+  // THE DRIVE LISTING — first page through svelte-query (cache, retry), more
+  // pages appended by Load-more. Drive rows are Google's facts in the
+  // browser's Row shape; the server's order (folders first, then sort) is the
+  // honest one with pagination, so the client never re-sorts them.
+  const driveQuery = createQuery(() => ({
+    queryKey: ['google-drive', 'browse', driveKey ?? '', folderId ?? '', q, sortKey, sortDir],
+    enabled: place === 'drive' && !!driveKey,
+    queryFn: () => browseDrivePage(driveKey!, folderId, q, `${sortKey}`),
+  }))
+  let driveMoreRows = $state<ReturnType<typeof driveRow>[]>([])
+  let driveMoreToken = $state<string | null>(null)
+  // New query = new standing: appended pages reset with the first page.
+  $effect(() => {
+    void driveQuery.data
+    void driveKey
+    void folderId
+    driveMoreRows = []
+    driveMoreToken = driveQuery.data?.nextPageToken ?? null
+  })
+  const loadMoreDrive = async () => {
+    const token = driveMoreToken
+    if (!token || !driveKey) return
+    try {
+      const page = await browseDrivePage(driveKey, folderId, q, `${sortKey}`, token)
+      driveMoreRows = [...driveMoreRows, ...page.files.map((e) => driveRow(e, driveKey, rosterEntry?.writable ?? false, rosterEntry?.email ?? rosterEntry?.name ?? ''))]
+      driveMoreToken = page.nextPageToken
+    } catch (e) {
+      pushToast({ title: 'Could not load more', body: errorMessage(e), tone: 'danger' })
+    }
+  }
+  const driveRows = $derived.by(() => {
+    const first = driveQuery.data?.files ?? []
+    const owner = rosterEntry?.email ?? rosterEntry?.name ?? ''
+    const writable = rosterEntry?.writable ?? false
+    return [
+      ...first.map((e) => driveRow(e, driveKey ?? '', writable, owner)),
+      ...driveMoreRows,
+    ]
+  })
+  const drivePath = $derived((driveQuery.data?.path ?? []) as DriveBrowse['path'])
+  const driveMore = $derived(!!driveMoreToken)
+
+  // HEALING: arriving at the Drive place with no drive picked lands on the
+  // roster's first entry. replace — housekeeping never pollutes history.
+  $effect(() => {
+    if (place !== 'drive' || !onArtifacts) return
+    if (driveKey || rosterQuery.isLoading || !roster.length) return
+    const search: Record<string, string> = { d: roster[0]!.key }
+    if (folderId) search.f = String(folderId)
+    void navigate('/artifacts/:place', { params: { place: 'drive' }, search, replace: true })
+  })
+
+  // IMPORT: the selection bar's Import button — each selected Drive FILE
+  // pulled into a Talaria folder named for the Drive folder it came from
+  // (root imports land in "Google Drive"). Sequential (Google rate limits
+  // parallel pulls), one summary toast, per-file failures counted not shown.
+  let importing = $state(0)
+  const importSelection = async (fileIds: string[]) => {
+    if (!fileIds.length) return
+    const folderName = drivePath.length ? drivePath[drivePath.length - 1]!.name : 'Google Drive'
+    let created: ReturnType<typeof createFolder> | null = null
+    let targetFolder: string | null = null
+    try {
+      const existing = folders.find((f) => f.name === folderName && !f.parentId)
+      targetFolder = existing?.id ?? (await createFolder(folderName, null)).id
+      void created
+    } catch {
+      targetFolder = null // a root import still works
+    }
+    let ok = 0
+    let failed = 0
+    for (const id of fileIds) {
+      importing++
+      try {
+        await importDriveFile(id, targetFolder)
+        ok++
+      } catch {
+        failed++
+      }
+      importing--
+    }
+    await refresh()
+    if (failed) pushToast({ title: `Imported ${ok}, failed ${failed}`, body: 'Files over 25 MB cannot be imported.', tone: 'danger' })
+    else pushToast({ title: `Imported ${ok} file${ok === 1 ? '' : 's'}`, body: `Into "${folderName}" in My Files.` })
+  }
   // View mode is a preference, not a selection — it belongs to the person, not
   // to the link they might paste to someone else.
   $effect(() => {
@@ -203,7 +316,14 @@
   }
 
   const agentsRootId = $derived(folders.find((f) => !f.parentId && f.name === AGENTS_ROOT)?.id ?? null)
-  const trail = $derived(ancestry(folderId, folders))
+  const trail = $derived(place === 'drive' ? [] : ancestry(folderId, folders))
+  // Drive crumbs: the roster entry's name is the root crumb, the walked path
+  // the segments. Same breadcrumb UI, Google's ancestry.
+  const driveCrumbs = $derived(
+    place === 'drive'
+      ? [{ id: '', name: rosterEntry?.name ?? 'Drive' }, ...drivePath.map((p) => ({ id: p.id, name: p.name }))]
+      : [],
+  )
   // Folders are locations; the flat places are views over everything.
   const canOrganize = $derived(place === 'my')
 
@@ -213,6 +333,7 @@
     workspace: artifacts.filter((a) => placeOf(a, me) === 'workspace').length,
     official: artifacts.filter((a) => a.official).length,
     recent: 0,
+    drive: 0,
     // Counted by the vault itself — this file deliberately does not fetch
     // secrets, so that no artifact code path ever holds one.
     secrets: 0,
@@ -252,6 +373,7 @@
   })
 
   const rows = $derived.by(() => {
+    if (place === 'drive') return driveRows
     let out: Row[] = []
     if (place === 'my') {
       // A location: the folders and files filed directly here.
@@ -286,7 +408,7 @@
   })
 
   const currentPlace = $derived(PLACES.find((p) => p.id === place) ?? PLACES[0]!)
-  const emptyTitle = $derived(q.trim() ? 'No matches.' : trail.length ? 'This folder is empty.' : currentPlace.empty)
+  const emptyTitle = $derived(q.trim() ? 'No matches.' : place === 'drive' ? 'Nothing in this Drive folder.' : trail.length ? 'This folder is empty.' : currentPlace.empty)
   const emptyHint = $derived(q.trim() ? 'Try a different search.' : canOrganize ? 'Drop files here to upload, or use New.' : currentPlace.hint)
 
   const refresh = () =>
@@ -341,6 +463,39 @@
     await refresh()
   }
 
+  /** Paste the clipboard into a folder (default: the one you're standing in).
+   *  Cut moves; copy duplicates into the destination. Pasting a cut batch
+   *  back where it came from is a silent no-op — nothing was asked for. */
+  const paste = async (into?: string | null) => {
+    const clip = clipboard()
+    if (!clip) return
+    const target = into === undefined ? folderId : into
+    const keys = clip.keys.filter((k) => k.startsWith('artifact:')).map((k) => k.slice('artifact:'.length))
+    const folderKeys = clip.keys.filter((k) => k.startsWith('folder:')).map((k) => k.slice('folder:'.length))
+    if (clip.mode === 'cut') {
+      if (target === clip.fromFolderId) {
+        clearClipboard()
+        return
+      }
+      await move({ artifacts: keys, folders: folderKeys }, target)
+    } else {
+      try {
+        for (const id of keys) {
+          const copy = await duplicateArtifact(id)
+          if (copy.folderId !== target) await saveArtifact(copy.id, { folderId: target })
+        }
+        for (const id of folderKeys) {
+          const copy = await duplicateFolder(id)
+          if (copy.parentId !== target) await updateFolder(copy.id, { parentId: target })
+        }
+      } catch (e) {
+        pushToast({ title: 'Paste failed', body: errorMessage(e), tone: 'danger' })
+      }
+      await refresh()
+    }
+    clearClipboard()
+  }
+
   // Breadcrumb segments accept drops, which is the only way to move something
   // UP a level now that there is no tree to drag it onto. The payload rides on
   // the dataTransfer (DRAG_MIME) rather than shared state, so the browser and
@@ -378,6 +533,7 @@
   <Rail>
     <RailSection label="Places">
       {#each PLACES as p (p.id)}
+        {#if p.id !== 'drive'}
         <RailRow active={place === p.id && !activeId} onClick={() => goPlace(p.id)}>
           <span class="grid w-4 shrink-0 place-items-center text-[13px] leading-none">{p.glyph}</span>
           <span class="min-w-0 flex-1 truncate">{p.label}</span>
@@ -385,21 +541,37 @@
             <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-ink-dim">{counts[p.id]}</span>
           {/if}
         </RailRow>
+        {/if}
       {/each}
     </RailSection>
 
     <RailSection label="Sources">
-      <!-- Google Drive is a one-shot import today. It sits here, beside the
-           places, because that is where a browsable connected Drive belongs the
-           moment the connector can serve one. -->
-      <RailRow onClick={() => (importOpen = true)}>
+      <!-- Google Drive IS the browsable source now: the row opens the place,
+           and while you're in it the roster expands underneath — one row per
+           Drive, visually distinct by connection and kind, the same expansion
+           grammar as the knowledgebase's spaces. -->
+      <RailRow active={place === 'drive'} onClick={() => goPlace('drive')}>
         <span class="grid w-4 shrink-0 place-items-center"><HardDrive size={13} /></span>
         <span class="min-w-0 flex-1 truncate">Google Drive</span>
+        {#if roster.length > 1}
+          <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-ink-dim">{roster.length}</span>
+        {/if}
       </RailRow>
-      <RailRow onClick={() => navigate('/settings')}>
-        <span class="grid w-4 shrink-0 place-items-center"><Plus size={13} /></span>
-        <span class="min-w-0 flex-1 truncate">Connect a source</span>
-      </RailRow>
+      {#if place === 'drive'}
+        <div class="ml-4 mt-1 space-y-0.5 border-l border-line-subtle pl-2">
+          {#each roster as d (d.key)}
+            <RailRow active={driveKey === d.key} onClick={() => goDrive(d.key)}>
+              <span class="grid w-4 shrink-0 place-items-center text-[12px] leading-none">
+                {#if d.kind === 'my'}◆{:else}◫{/if}
+              </span>
+              <span class="min-w-0 flex-1 truncate" title={d.email ?? undefined}>{d.name}</span>
+              {#if d.connection === 'org'}
+                <span class="shrink-0 font-mono text-[9px] uppercase tracking-[0.08em] text-ink-dim">org</span>
+              {/if}
+            </RailRow>
+          {/each}
+        </div>
+      {/if}
     </RailSection>
   </Rail>
 
@@ -416,10 +588,31 @@
               ondragover={(e) => crumbOver_(e, 'root')}
               ondragleave={() => (crumbOver = crumbOver === 'root' ? null : crumbOver)}
               ondrop={(e) => void crumbDrop(e, null)}
+              oncontextmenu={(e) => {
+                e.preventDefault()
+                crumbMenu.openMenu(e, [
+                  { label: 'Open', onSelect: () => goFolder(null) },
+                  { label: 'Paste into', disabled: !clipboard() || !canOrganize, onSelect: () => void paste(null) },
+                ])
+              }}
               class={cn('shrink-0 rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', trail.length ? 'text-muted hover:text-fg' : 'text-fg', crumbOver === 'root' && 'bg-raised ring-1 ring-accent/60')}
             >
-              {currentPlace.label}
+              {place === 'drive' ? (rosterEntry?.name ?? 'Google Drive') : currentPlace.label}
             </button>
+            {#if place === 'drive'}
+              {#each driveCrumbs as f, i (f.id || 'root')}
+                {#if i > 0}
+                  <ChevronRight size={13} class="shrink-0 text-ink-dim" />
+                  <button
+                    type="button"
+                    onclick={() => goFolder(f.id || null)}
+                    class={cn('min-w-0 truncate rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', i === driveCrumbs.length - 1 ? 'text-fg' : 'text-muted hover:text-fg')}
+                  >
+                    {f.name}
+                  </button>
+                {/if}
+              {/each}
+            {:else}
             {#each trail as f, i (f.id)}
               <ChevronRight size={13} class="shrink-0 text-ink-dim" />
               <button
@@ -428,11 +621,19 @@
                 ondragover={(e) => crumbOver_(e, f.id)}
                 ondragleave={() => (crumbOver = crumbOver === f.id ? null : crumbOver)}
                 ondrop={(e) => void crumbDrop(e, f.id)}
+                oncontextmenu={(e) => {
+                  e.preventDefault()
+                  crumbMenu.openMenu(e, [
+                    { label: 'Open', onSelect: () => goFolder(f.id) },
+                    { label: 'Paste into', disabled: !clipboard() || !canOrganize, onSelect: () => void paste(f.id) },
+                  ])
+                }}
                 class={cn('min-w-0 truncate rounded px-1.5 py-0.5 font-sans text-sm font-semibold transition-colors', i === trail.length - 1 ? 'text-fg' : 'text-muted hover:text-fg', crumbOver === f.id && 'bg-raised ring-1 ring-accent/60')}
               >
                 {f.id === agentsRootId ? AGENTS_ROOT : f.name}
               </button>
             {/each}
+            {/if}
           </nav>
         {/snippet}
         {#snippet actions()}
@@ -473,6 +674,20 @@
       {#key activeId}
         <ArtifactEditor id={activeId} onDeleted={() => setActiveId(null)} />
       {/key}
+    {:else if place === 'drive' && notConnected}
+      <!-- Both connections absent — the Drive place's front door. The anchor
+           passes through the router's api escape (router.ts) so the OAuth
+           dance runs for real. -->
+      <div class="grid h-full place-items-center">
+        <div class="flex max-w-xs flex-col items-center gap-3 p-6 text-center">
+          <HardDrive size={22} class="text-accent" />
+          <div class="font-sans text-sm font-medium text-fg">Browse Google Drive in Talaria</div>
+          <div class="font-sans text-xs leading-relaxed text-muted">Connect a Google account to browse its Drive — folders, shared drives, and one-click import into your files — right here.</div>
+          <a href="/api/integrations/google/connect" class="mt-1 rounded-md border border-line bg-panel px-3 py-1.5 font-sans text-sm text-fg transition-colors hover:bg-raised">
+            Connect Google
+          </a>
+        </div>
+      </div>
     {:else if place === 'secrets'}
       <!-- Its own surface, not rows in the table. A secret has no body, no
            preview, no export and no public page — feeding it through the
@@ -480,9 +695,21 @@
            refuse it, and the first one anybody forgets is the last one. -->
       <SecretsVault />
     {:else}
+      {#if place === 'drive' && rosterEntry && !rosterEntry.writable}
+        <!-- A pre-management connection: browsing works, writes don't, and the
+             banner says exactly what fixes it — one reconnect picks the new
+             scope up. Hidden menu entries, not disabled ones (a disabled verb
+             reads as broken; hidden reads as not-yours-to-do-here). -->
+        <div class="flex shrink-0 items-center justify-center gap-3 border-b border-line-subtle bg-panel px-4 py-2">
+          <span class="font-sans text-xs text-muted">This Drive is read-only under your current Google connection.</span>
+          <a href="/api/integrations/google/connect" class="rounded-md border border-line bg-surface px-2.5 py-1 font-sans text-xs text-fg transition-colors hover:bg-raised">
+            Reconnect Google to manage files
+          </a>
+        </div>
+      {/if}
       <ArtifactsBrowser
         {rows}
-        loading={artifactsQuery.isLoading || foldersQuery.isLoading}
+        loading={place === 'drive' ? driveQuery.isLoading : artifactsQuery.isLoading || foldersQuery.isLoading}
         {failure}
         {view}
         {sortKey}
@@ -492,8 +719,25 @@
         {canOrganize}
         {emptyTitle}
         {emptyHint}
+        {folderId}
+        onPaste={(into) => paste(into)}
         onOpenFolder={goFolder}
         onOpenArtifact={setActiveId}
+        onOpenDriveFile={(url) => url && window.open(url, '_blank', 'noopener')}
+        onImport={(fileIds) => importSelection(fileIds)}
+        onDriveChange={() => {
+          driveMoreRows = []
+          void driveQuery.refetch()
+        }}
+        more={place === 'drive' && driveMore}
+        onLoadMore={() => loadMoreDrive()}
+        importingCount={importing}
+        onAscend={() => {
+          // ← climbs one level: into the parent folder, or to the place root.
+          // The trail is the walked ancestry — its last-but-one segment is the
+          // parent; an empty trail means the browser is already at the root.
+          if (trail.length >= 1) goFolder(trail[trail.length - 2]?.id ?? null)
+        }}
         onMove={move}
         onUpload={upload}
         onRefresh={refresh}
@@ -556,14 +800,7 @@
     />
   {/if}
 
-  {#if importOpen}
-    <ArtifactsDriveImportModal
-      onClose={() => (importOpen = false)}
-      onImported={async (artifactId) => {
-        importOpen = false
-        await refresh()
-        setActiveId(artifactId)
-      }}
-    />
-  {/if}
+  <!-- The breadcrumb's own menu host (Open / Paste into — the crumb is a
+       destination, the keyboard/touch twin of its drop target). -->
+  <ContextMenu menu={crumbMenu} />
 </RailSurface>
