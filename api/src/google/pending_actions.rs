@@ -55,14 +55,37 @@ pub struct QueueAction<'a> {
     pub is_org: bool,
 }
 
+/// What a queueing produced. `already_pending` marks the converge case: the
+/// agent drafted an email a still-pending row already asks about, and the
+/// row it came back with is THAT row — nothing new was queued.
+pub struct QueuedAction {
+    pub action: PendingAction,
+    pub already_pending: bool,
+}
+
 /// An agent-drafted outbound action lands here, pending. `realtime` is the
 /// fan-out the announce rides; the announce itself is detached and silent
 /// (see the spawn below).
+///
+/// ONE PENDING DECISION PER DRAFT. An agent run that retried — a wedged
+/// request answered late, a crash after the queue said yes — re-drafts the
+/// same email, and every draft became its own p0 card: the dogfood brief
+/// held six SEND EMAIL lines for one reply, and approving two of them was a
+/// double-send to a client. So a gmail_send naming the same people in the
+/// same subject as a row already pending returns THAT row and queues
+/// nothing; the caller's answer says an identical draft is waiting. A
+/// decided row never matches — after a reject, a fresh draft is a fresh ask.
 pub async fn queue_action(
     pg: &PgPool,
     realtime: RealtimeDeps,
     input: &QueueAction<'_>,
-) -> Result<PendingAction, String> {
+) -> Result<QueuedAction, String> {
+    if let Some(action) = find_same_pending_draft(pg, input).await? {
+        return Ok(QueuedAction {
+            action,
+            already_pending: true,
+        });
+    }
     #[allow(clippy::type_complexity)] // the queued row's own columns, one each
     let row: (
         String,
@@ -124,7 +147,144 @@ pub async fn queue_action(
         );
         announce_approval(&deps, &format!("google_action:{id}")).await;
     });
-    Ok(action)
+    Ok(QueuedAction {
+        action,
+        already_pending: false,
+    })
+}
+
+/// The still-pending gmail_send row this draft duplicates, if any — matched
+/// by principal (a personal draft for one owner is never the same ask as an
+/// org draft) and by the `gmail_signature` of both payloads. Absent for any
+/// other kind: calendar has no signature yet, and a kind joins the dedupe by
+/// writing its own.
+async fn find_same_pending_draft(
+    pg: &PgPool,
+    input: &QueueAction<'_>,
+) -> Result<Option<PendingAction>, String> {
+    if input.kind != "gmail_send" {
+        return Ok(None);
+    }
+    let Some(signature) = gmail_signature(input.payload) else {
+        return Ok(None);
+    };
+    #[allow(clippy::type_complexity)] // the pending row's own columns, one each
+    let rows: Vec<(
+        String,
+        String,
+        Option<String>,
+        Value,
+        Option<String>,
+        Option<String>,
+        bool,
+        String,
+        i64,
+    )> = sqlx::query_as(
+        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, status, \
+                (trunc(extract(epoch from created_at) * 1000))::bigint \
+         from google_pending_actions \
+         where kind = 'gmail_send' and status = 'pending' \
+           and is_org = $1 and owner_user_id is not distinct from $2::uuid \
+         order by created_at desc",
+    )
+    .bind(input.is_org)
+    .bind(input.owner_user_id)
+    .fetch_all(pg)
+    .await
+    .map_err(|e| format!("google pending action dedupe read: {e}"))?;
+    let pending: Vec<PendingAction> = rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                kind,
+                summary,
+                payload,
+                agent_model,
+                owner_user_id,
+                is_org,
+                status,
+                created_ms,
+            )| {
+                PendingAction {
+                    id,
+                    kind,
+                    summary,
+                    payload,
+                    agent_model,
+                    owner_user_id,
+                    is_org,
+                    status,
+                    created_ms,
+                }
+            },
+        )
+        .collect();
+    Ok(pending
+        .into_iter()
+        .find(|action| gmail_signature(&action.payload).as_deref() == Some(signature.as_str())))
+}
+
+/// The human decision a gmail_send draft carries, with formatting boiled
+/// off: the email addresses it names (lowercased, order-free) and the
+/// subject with whitespace collapsed. A re-draft rewrites the body and
+/// reformats the recipients — "Gareth Lynch <Gareth@x>" becomes
+/// "Gareth@x" — while asking exactly the same question, so exact payload
+/// equality never fires on real retries. The BODY is deliberately out: a
+/// reworded draft is the same decision for the human, and putting it in
+/// would rebuild the six-cards bug one retry at a time.
+fn gmail_signature(payload: &Value) -> Option<String> {
+    let get = |k: &str| payload.get(k).and_then(Value::as_str);
+    let mut addresses: Vec<String> = ["to", "cc", "bcc"]
+        .into_iter()
+        .filter_map(get)
+        .flat_map(|field| field.split(','))
+        .filter_map(address_of)
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    if addresses.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}\u{1f}{}",
+        addresses.join(","),
+        collapse_whitespace(get("subject").unwrap_or_default())
+    ))
+}
+
+/// The address inside `Name <a@b.c>`, or the token itself when bare; None
+/// for anything without an @ (a display fragment, an empty field).
+fn address_of(raw: &str) -> Option<String> {
+    let token = raw.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let inner = token
+        .strip_suffix('>')
+        .and_then(|rest| rest.rsplit_once('<'))
+        .map(|(_, addr)| addr)
+        .unwrap_or(token);
+    let addr = inner.trim();
+    addr.contains('@').then(|| addr.to_lowercase())
+}
+
+/// Runs of whitespace folded to one space, ends trimmed.
+fn collapse_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    for ch in text.trim().chars() {
+        if ch.is_whitespace() {
+            pending_space = true;
+        } else {
+            if pending_space && !out.is_empty() {
+                out.push(' ');
+            }
+            pending_space = false;
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// A pending row as the route answers it — camelCase, `createdAt` an ISO
@@ -522,6 +682,67 @@ pub fn agent_from_address(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signature_boils_the_formatting_off_a_redraft() {
+        // The three live rows that became six brief cards differed exactly
+        // this way: display names dropped, case flipped, reworded body.
+        let a = json!({
+            "to": "Gareth Lynch <Gareth@cooperbev.com>, Toby@cooperbev.com",
+            "cc": "Luke Tierney <luke@growwithwaypoint.com>",
+            "subject": "Re: Proposal & Deck",
+            "body": "Just circling back on the proposal and deck I sent over on Tuesday."
+        });
+        let b = json!({
+            "to": "gareth@cooperbev.com, toby@cooperbev.com",
+            "cc": "luke@growwithwaypoint.com",
+            "subject": "Re:  Proposal\t& Deck ",
+            "body": "Just wanted to circle back and make sure you both got the proposal."
+        });
+        assert_eq!(gmail_signature(&a), gmail_signature(&b));
+    }
+
+    #[test]
+    fn signature_splits_on_the_fields_that_change_the_ask() {
+        let base = json!({"to": "a@x.com", "subject": "Hi", "body": "b"});
+        let other_to = json!({"to": "b@x.com", "subject": "Hi", "body": "b"});
+        let other_subject = json!({"to": "a@x.com", "subject": "Bye", "body": "b"});
+        let other_cc = json!({"to": "a@x.com", "cc": "c@x.com", "subject": "Hi", "body": "b"});
+        assert_ne!(gmail_signature(&base), gmail_signature(&other_to));
+        assert_ne!(gmail_signature(&base), gmail_signature(&other_subject));
+        assert_ne!(gmail_signature(&base), gmail_signature(&other_cc));
+    }
+
+    #[test]
+    fn signature_recipient_order_is_not_the_ask() {
+        let a = json!({"to": "a@x.com, b@x.com", "subject": "Hi"});
+        let b = json!({"to": "B@x.com , a@x.com", "subject": "Hi"});
+        assert_eq!(gmail_signature(&a), gmail_signature(&b));
+    }
+
+    #[test]
+    fn no_addresses_no_signature_so_no_dedupe() {
+        assert_eq!(gmail_signature(&json!({"subject": "Hi"})), None);
+        assert_eq!(
+            gmail_signature(&json!({"to": "not-an-address", "subject": "Hi"})),
+            None
+        );
+    }
+
+    #[test]
+    fn address_of_reads_display_names_and_bare_addresses() {
+        assert_eq!(
+            address_of(" Gareth Lynch <Gareth@X.com> ").as_deref(),
+            Some("gareth@x.com")
+        );
+        assert_eq!(
+            address_of("toby@cooperbev.com").as_deref(),
+            Some("toby@cooperbev.com")
+        );
+        assert_eq!(address_of(""), None);
+        assert_eq!(address_of("   "), None);
+        assert_eq!(address_of("no at sign"), None);
+    }
 
     #[test]
     fn plus_address_rules() {
