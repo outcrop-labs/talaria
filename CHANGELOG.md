@@ -93,6 +93,26 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **A wedged request no longer hangs a view until the page is reloaded.**
+  The agents roster reported it — often on first load, the skeleton stayed
+  for ever and only a refresh helped — but the hole was app-wide: browsers
+  give `fetch` no timeout, so a request whose connection silently died (a
+  dropped keep-alive after a server roll is the observed shape) stayed in
+  flight for ever; the query above it never errored, so it never retried,
+  and the surface waited on a skeleton nothing would ever claim. Two
+  deadlines close it. Every read through the app's one HTTP door
+  (`fetch-json`) now carries a 30s abort — a wedged read becomes an error
+  TanStack Query retries, so the roster heals itself instead of waiting for
+  a person to notice — and the SPA host's proxy to the Rust api carries a
+  deadline to FIRST RESPONSE (20s): the stale-keepalive race a container
+  roll leaves behind now answers a 502 the retry can act on. The proxy's
+  deadline disarms the moment headers arrive, so the SSE relay and every
+  other streaming body run unbounded, and mutations/uploads stay un-timed
+  by design. Verified end-to-end on the dev stack: with the api frozen
+  mid-request (SIGSTOP), a proxied read answers 502 at 20.0s and 200 in
+  15ms the moment the api resumes; the fake-timer tests pin both halves
+  (never-answering upstream → 502; streaming body outlives the deadline).
+
 - **The knowledgebase's first-ever landing stopped swallowing doc clicks.**
   Land on `/knowledge` with no saved selection and the sidebar rendered the
   first space's tree — but every doc click was a no-op, until you opened a

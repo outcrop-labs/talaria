@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { delJson, HttpError, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
+import { delJson, getJson, HttpError, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
 
 // The mutation door. The whole point of this file's subjects is the ERROR
 // CONTRACT — before they existed, 134 hand-rolled stanzas each decided for
@@ -110,5 +110,39 @@ describe('postStream — the streaming door', () => {
   it('throws when the body is missing — a caller reading it would crash otherwise', async () => {
     fetchMock.mockImplementationOnce(async () => new Response(null, { status: 200 }))
     await expect(postStream('/api/chat', {})).rejects.toBeInstanceOf(HttpError)
+  })
+})
+
+describe('the read deadline', () => {
+  // A wedged connection used to park a read for ever — no fetch timeout
+  // exists, so the query above never errored and never retried, and the
+  // surface hung on its skeleton until the page was reloaded (the agents
+  // roster reported exactly this). Reads now carry a deadline; mutations and
+  // streams deliberately do not.
+  it('every read carries an abort signal — the deadline is on the wire', async () => {
+    await getJson('/api/fleet/defs')
+    expect(lastInit().signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('a caller’s signal rides along with the deadline — aborting it fails the read', async () => {
+    const caller = new AbortController()
+    fetchMock.mockImplementationOnce(
+      (_url: string | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+        }),
+    )
+    // A caller that gives up while the request is in flight — TanStack
+    // aborts exactly like this on invalidation.
+    setTimeout(() => caller.abort(new Error('caller gave up')), 0)
+    await expect(getJson('/api/fleet/defs', { signal: caller.signal })).rejects.toThrow('caller gave up')
+  })
+
+  it('mutations and streams carry no automatic deadline — long posts are a caller decision', async () => {
+    await postJson('/api/fleet/create', { slug: 'x' })
+    await postStream('/api/chat', { m: 1 })
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.signal).toBeUndefined()
+    }
   })
 })

@@ -86,6 +86,17 @@ const HOP_BY_HOP = new Set(['host', 'connection', 'content-length', 'transfer-en
 // lands, and the belt is worthless if it stops at this boundary.
 const RESPONSE_HEADERS = ['content-type', 'cache-control', 'retry-after', 'x-request-id', 'location', 'x-conversation-id', 'x-message-id', 'pragma', 'referrer-policy', 'content-disposition', 'content-security-policy', 'x-content-type-options']
 
+// The upstream hop carries a deadline to FIRST RESPONSE, never to body end.
+// The api streams — the SSE relay rides this proxy — so a blanket timeout
+// would cut every long-lived body mid-flight; the timer below is cleared the
+// moment headers arrive and the body may run for hours. What must never
+// happen is waiting for headers for ever: a wedged pooled connection (the
+// stale-keepalive race a container roll leaves behind) parks the browser's
+// request with nothing on the wire, and the surface above hangs on its
+// skeleton because nothing ever settles. 20s is far past any honest handler;
+// when it fires the answer is a 502 the browser's own retry can act on.
+const UPSTREAM_HEADERS_TIMEOUT_MS = 20_000
+
 export async function maybeProxy(request: Request, pathname: string): Promise<Response | null> {
   const base = rustApiUrl()
   if (base === undefined || STAY_TS.some((r) => r.test(pathname))) return null
@@ -105,15 +116,24 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   if (!headers.has('x-forwarded-proto')) headers.set('x-forwarded-proto', incoming.protocol.replace(':', ''))
   if (!headers.has('x-forwarded-host')) headers.set('x-forwarded-host', incoming.host)
 
+  // Composed by hand rather than AbortSignal.any so the deadline half can be
+  // disarmed on its own: `signal` stays live for the whole body (the caller's
+  // disconnect still cuts an SSE relay), while `timer` only guards the wait
+  // for the response itself.
+  const deadline = new AbortController()
+  const timer = setTimeout(() => deadline.abort(new Error('upstream did not answer in time')), UPSTREAM_HEADERS_TIMEOUT_MS)
+  const signals = request.signal ? AbortSignal.any([request.signal, deadline.signal]) : deadline.signal
+
   const res = await fetch(target, {
     method: request.method,
     headers,
     body: request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer(),
-    signal: request.signal,
+    signal: signals,
     // The Rust api is loopback by design; a redirect would mean it is not
     // the api we configured — follow nothing.
     redirect: 'manual',
   }).catch((e: Error) => e)
+  clearTimeout(timer)
 
   if (res instanceof Error) {
     // Fixed sentence, the one this boundary already uses — the fetch error
