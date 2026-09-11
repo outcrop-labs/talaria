@@ -121,7 +121,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         }
     );
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
-    let action = match queue_action(
+    let queued = match queue_action(
         &state.pg,
         realtime,
         &QueueAction {
@@ -135,19 +135,22 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     )
     .await
     {
-        Ok(a) => a,
+        Ok(q) => q,
         Err(e) => {
             tracing::error!("[integrations/google/agent] queue failed: {e}");
             return thrown_internal_error();
         }
     };
+    let message = if queued.already_pending {
+        "An identical draft is already waiting for approval — nothing new queued."
+    } else if principal.is_org {
+        "Drafted — waiting for an admin to approve before it sends."
+    } else {
+        "Drafted — waiting for the owner to approve before it sends."
+    };
     Json(json!({
-        "pending": { "id": action.id, "status": "pending" },
-        "message": if principal.is_org {
-            "Drafted — waiting for an admin to approve before it sends."
-        } else {
-            "Drafted — waiting for the owner to approve before it sends."
-        },
+        "pending": { "id": queued.action.id, "status": "pending" },
+        "message": message,
     }))
     .into_response()
 }
