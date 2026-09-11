@@ -228,4 +228,93 @@ describe('maybeProxy', () => {
     expect(res!.headers.get('content-security-policy')).toBe("default-src 'none'; sandbox")
     expect(res!.headers.get('x-content-type-options')).toBe('nosniff')
   })
+
+  // THE HANG THIS BOUNDARY OWED AN ANSWER FOR: an upstream connection that
+  // wedges (the stale-keepalive race a container roll leaves behind) used to
+  // park the browser's request for ever — the fetch had no deadline, and the
+  // surface above showed a skeleton nothing ever claimed. The deadline is to
+  // FIRST RESPONSE only; the body may stream for the rest of the day.
+  it('a fetch that never answers becomes a 502 once the headers deadline fires', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.useFakeTimers()
+    // A stub that honors the abort signal the way the real fetch does —
+    // without that, the abort would fire into a promise nobody rejects and
+    // the test would hang exactly like the bug.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_target: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    )
+    try {
+      const pending = maybeProxy(req('/api/fleet/defs'), '/api/fleet/defs')
+      await vi.advanceTimersByTimeAsync(30_000)
+      const res = await pending
+      expect(res!.status).toBe(502)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a slow WRITE is never cut — fleet verbs and reconcile block on docker for minutes, on purpose', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.useFakeTimers()
+    let sawSignal: AbortSignal | null | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_target: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            sawSignal = init.signal
+            init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    )
+    try {
+      // POST /api/fleet/reconcile renders and starts containers before it
+      // answers — minutes are honest here. The promise must still be pending
+      // long past any deadline, and carry no armed timer signal of ours.
+      const pending = maybeProxy(req('/api/fleet/reconcile', { method: 'POST' }), '/api/fleet/reconcile')
+      const race = await Promise.race([pending.then(() => 'settled'), vi.advanceTimersByTimeAsync(600_000).then(() => 'still-pending')])
+      expect(race).toBe('still-pending')
+      expect(sawSignal?.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a body that streams past the deadline is not cut — the timer guards the wait for headers only', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.useFakeTimers()
+    let sawSignal: AbortSignal | null | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_target: string, init: RequestInit) => {
+        sawSignal = init.signal
+        // An SSE-shaped answer: headers now, body open for as long as the
+        // client stays.
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: hello\n\n'))
+          },
+        })
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+      }) as unknown as typeof globalThis.fetch,
+    )
+    try {
+      const res = await maybeProxy(req('/api/me/events'), '/api/me/events')
+      expect(res!.status).toBe(200)
+      // Far past the deadline — the response already arrived, so the timer
+      // is disarmed and the body keeps flowing.
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(sawSignal!.aborted).toBe(false)
+      const chunk = await res!.body!.getReader().read()
+      expect(new TextDecoder().decode(chunk.value)).toBe('data: hello\n\n')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

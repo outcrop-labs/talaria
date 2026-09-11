@@ -23,6 +23,29 @@ export class HttpError extends Error {
   }
 }
 
+// Every READ through this door carries a deadline. Browsers give fetch no
+// default timeout, so a request whose connection wedges — a dropped
+// keep-alive after a server roll is the observed case — stays in flight for
+// ever: the query above it never errors, so it never retries, and the
+// surface hangs on its skeleton until the page is reloaded (the agents
+// roster reported exactly this; the focus endpoints already abort their own
+// reads for the same reason — see requestSignal in inbox-focus.svelte.ts).
+// 30s is far past any honest read — the one deliberate exception in mind is
+// /api/brief, whose GET sweeps before answering and may spend seconds on a
+// model note inside that sweep — and short enough that the retry lands while
+// the person is still looking. Mutations stay un-timed here: an upload or a
+// long-running POST is a caller decision (pass your own `init.signal`), and
+// postStream is the streaming door by design.
+const READ_TIMEOUT_MS = 30_000
+/** Text bodies can be real files (previews), not JSON-sized reads — a longer
+ *  ceiling, still a ceiling. */
+const TEXT_TIMEOUT_MS = 60_000
+
+const withDeadline = (init: RequestInit | undefined, ms: number): RequestInit => {
+  const deadline = AbortSignal.timeout(ms)
+  return { ...init, signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline }
+}
+
 /** Read a JSON body, throwing on non-2xx with the server's `error` string when
  *  it sent one (API-CONVENTIONS: errors are `{ error: string }`).
  *
@@ -50,21 +73,21 @@ const SAME_ORIGIN: RequestInit = { credentials: 'same-origin' }
 /** GET a raw TEXT body (file previews) — same credentials door as the JSON
  *  verbs; throws on any non-2xx like its siblings. */
 export async function getText(url: string): Promise<string> {
-  const r = await fetch(url, { ...SAME_ORIGIN })
+  const r = await fetch(url, withDeadline(SAME_ORIGIN, TEXT_TIMEOUT_MS))
   if (!r.ok) throw new HttpError(r.status, `getText failed (${r.status})`)
   return r.text()
 }
 
 /** GET + parse. Throws on ANY non-2xx, 404 included. */
 export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
-  return readJson<T>(await fetch(url, { ...SAME_ORIGIN, ...init }))
+  return readJson<T>(await fetch(url, withDeadline({ ...SAME_ORIGIN, ...init }, READ_TIMEOUT_MS)))
 }
 
 /** GET + parse where a 404 is a legitimate ANSWER ("no such record, or you
  *  can't see it") rather than a failure: 404 → null, everything else still
  *  throws. Use only where the surface has a real "not found" story to tell. */
 export async function getJsonOr404<T>(url: string, init?: RequestInit): Promise<T | null> {
-  const r = await fetch(url, { ...SAME_ORIGIN, ...init })
+  const r = await fetch(url, withDeadline({ ...SAME_ORIGIN, ...init }, READ_TIMEOUT_MS))
   if (r.status === 404) return null
   return readJson<T>(r)
 }
@@ -74,7 +97,7 @@ export async function getJsonOr404<T>(url: string, init?: RequestInit): Promise<
  *  the Google panels treat 409/502 bodies ("not connected", "Google hiccup")
  *  as data to render, not failures to retry. */
 export async function getJsonOr<T>(url: string, statusesAsData: number[], init?: RequestInit): Promise<T> {
-  return readJson<T>(await fetch(url, { ...SAME_ORIGIN, ...init }), statusesAsData)
+  return readJson<T>(await fetch(url, withDeadline({ ...SAME_ORIGIN, ...init }, READ_TIMEOUT_MS)), statusesAsData)
 }
 
 /** GET a list read. API-CONVENTIONS say reads return a single named wrapper
