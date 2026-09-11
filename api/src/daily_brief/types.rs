@@ -31,6 +31,15 @@ pub fn is_terminal(kind: &str) -> bool {
     matches!(kind, "resolved" | "checked" | "dismissed")
 }
 
+/// The terminal kinds the OWNER wrote, as opposed to the source saying it is
+/// done. Only these carry across days: a person's verdict on an unchanged
+/// source is a standing fact about them and it, while a source-side
+/// `resolved` is a statement about a moment that has passed — if the source
+/// is live again, that is new information and deserves a fresh look.
+pub fn is_owner_verdict(kind: &str) -> bool {
+    matches!(kind, "checked" | "dismissed")
+}
+
 /// What an appended row IS. These are not statuses on a mutable row — they are
 /// the verbs of an append-only log, and each one is a row that exists forever:
 /// lede the assistant's opening read (seq 1, exactly once per brief); item a
