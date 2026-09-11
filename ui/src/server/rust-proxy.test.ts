@@ -251,9 +251,36 @@ describe('maybeProxy', () => {
     )
     try {
       const pending = maybeProxy(req('/api/fleet/defs'), '/api/fleet/defs')
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(30_000)
       const res = await pending
       expect(res!.status).toBe(502)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a slow WRITE is never cut — fleet verbs and reconcile block on docker for minutes, on purpose', async () => {
+    vi.stubEnv('TALARIA_RUST_API_URL', 'http://127.0.0.1:5274')
+    vi.useFakeTimers()
+    let sawSignal: AbortSignal | null | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_target: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            sawSignal = init.signal
+            init.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    )
+    try {
+      // POST /api/fleet/reconcile renders and starts containers before it
+      // answers — minutes are honest here. The promise must still be pending
+      // long past any deadline, and carry no armed timer signal of ours.
+      const pending = maybeProxy(req('/api/fleet/reconcile', { method: 'POST' }), '/api/fleet/reconcile')
+      const race = await Promise.race([pending.then(() => 'settled'), vi.advanceTimersByTimeAsync(600_000).then(() => 'still-pending')])
+      expect(race).toBe('still-pending')
+      expect(sawSignal?.aborted).toBe(false)
     } finally {
       vi.useRealTimers()
     }
