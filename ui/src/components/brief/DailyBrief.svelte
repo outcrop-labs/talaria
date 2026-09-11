@@ -202,6 +202,7 @@
                           onAsk={ask}
                           comms={day.comms.find((c) => c.sourceKey === line.key)}
                           onDecideReply={actions.decideReply}
+                          onDecideApproval={actions.decideApproval}
                           onDelegate={(channelId, granted) => void actions.setDelegated(channelId, granted)}
                           onMark={actions.markItem}
                         />
