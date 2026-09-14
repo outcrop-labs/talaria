@@ -3,6 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
+  import Textarea from '@/components/ui/Textarea.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
@@ -157,7 +158,11 @@
             <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">App ID</label>
             <Input size="sm" bind:value={appId} placeholder={status?.app.appId || 'e.g. 1234567'} class="w-40" />
             <label class="ml-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key</label>
-            <Input size="sm" type="password" bind:value={privateKey} placeholder={status?.app.keySet ? 'set (paste .pem to replace)' : 'paste the whole .pem'} class="min-w-0 flex-1" />
+            <!-- A TEXTAREA, not a password input: the HTML value sanitizer
+                 strips line breaks from single-line inputs on paste, and a
+                 .pem pasted as one line is a key nothing can parse. Multi-line
+                 paste must survive verbatim. -->
+            <Textarea rows={2} bind:value={privateKey} placeholder={status?.app.keySet ? 'set (paste .pem to replace)' : 'paste the whole .pem'} class="min-w-0 flex-1 font-mono text-xs" />
             <Button
               size="sm"
               disabled={busy || (!appId.trim() && !privateKey.trim())}

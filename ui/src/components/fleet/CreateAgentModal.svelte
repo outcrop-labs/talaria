@@ -57,6 +57,7 @@
   // is a progress label — the thing worth watching was never the braces.
   let purpose = $state('')
   let generating = $state(false)
+  let genSeconds = $state(0)
   let chat = $state<Array<{ role: 'user' | 'assistant'; content: string }>>([])
   let genErr = $state<string | null>(null)
 
@@ -109,6 +110,13 @@
     if (!instruction.trim()) return
     generating = true
     genErr = null
+    // A design is a whole-agent generation — tens of seconds normally, minutes
+    // on a slow provider day. The elapsed count (shown once it's genuinely
+    // taking a while) is what separates "working, slowly" from "wedged" — the
+    // difference between waiting it out and canceling a turn that was about to
+    // land.
+    genSeconds = 0
+    const tick = setInterval(() => (genSeconds += 1), 1000)
     try {
       const draft = await draftAgent({
         instruction: instruction.trim(),
@@ -124,6 +132,7 @@
     } catch (e) {
       genErr = (e as Error).message
     } finally {
+      clearInterval(tick)
       generating = false
     }
   }
@@ -192,7 +201,7 @@
         />
       </div>
       {#if generating}
-        <Generating site="fleet/agent-design" label="Designing the agent: identity, soul, and starter skills" lines={3} />
+        <Generating site="fleet/agent-design" label={`Designing the agent: identity, soul, and starter skills${genSeconds > 10 ? ` — ${genSeconds}s` : ''}`} lines={3} />
       {/if}
       {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
       <!-- The other entry path, a peer of describing: pick a role, the fields

@@ -218,7 +218,7 @@ Source: [`api/src/routes/agents/muse.rs`](../../api/src/routes/agents/muse.rs)
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apimuse-body) | `{value, model}` | 200, 400, 502 | SSE |
+| POST | `session` | [body](#post-apimuse-body) | `…` | 200, 400, 500, 502 | SSE |
 
 ### POST `/api/muse` body
 
