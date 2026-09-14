@@ -899,6 +899,24 @@ fn soul_md(soul_header: &str, coaching: &str, handles: &str, soul: &str) -> Stri
 
 // ── The git credential helper ─────────────────────────────────────────────────
 //
+// The app's ORIGIN (scheme://host:port, no path) as the fleet's containers
+// reach it: the credential helper below builds its URL from this. Derived by
+// stripping the gateway path off the app's own self-URL — the one value the
+// operator already maintains for the brain (TALARIA_GATEWAY_SELF_URL), so
+// there is no second knob to forget. A self-URL that does not end in the
+// gateway path cannot be stripped and is not ours to guess at: fall back to
+// the dev origin rather than minting a wrong URL.
+fn gateway_origin() -> String {
+    gateway_origin_of(&crate::fleet::brain::self_url())
+        .unwrap_or_else(|| "http://host.docker.internal:5273".to_string())
+}
+
+fn gateway_origin_of(self_url: &str) -> Option<String> {
+    self_url
+        .find("/api/llm/v1")
+        .map(|i| self_url[..i].to_string())
+}
+//
 // WHERE A HANDLE CANNOT REACH: handles substitute at the MCP gateway, which is
 // every tool call an agent makes through Talaria — but NOT the shell inside a
 // workbench sandbox, where a coding harness runs `git push` with its own bash
@@ -930,12 +948,18 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  [ \"$k\" = \"path\" ] && path=\"$v\"\n",
     "done\n",
     "[ -n \"$host\" ] || exit 0\n",
+    "# TALARIA_API_URL is the app as this container reaches it (rendered from\n",
+    "# the app's own view of itself); TALARIA_AGENT_KEY is THIS agent's own\n",
+    "# credential — the one /api/secrets/git-credential authenticates. The\n",
+    "# chassis's own server key is a different plane entirely and the route\n",
+    "# has never accepted it.\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-credential\"\n",
     "body=\"{\\\"host\\\":\\\"$host\\\",\\\"protocol\\\":\\\"$proto\\\",\\\"path\\\":\\\"$path\\\"}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
     "  resp=$(curl -sS --fail -X POST \"$url\" \\\n",
-    "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $API_SERVER_KEY\" \\\n",
-    "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) || exit 0\n",
+    "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
+    "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) \\\n",
+    "    || { echo \"talaria: no credential for $host\" >&2; exit 0; }\n",
     "elif command -v wget >/dev/null 2>&1; then\n",
     "  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived\n",
     "  # harness image) takes --post-data; GNU wget takes --body-data with\n",
@@ -943,11 +967,12 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  # through costs one failed call on GNU and works on both, which beats\n",
     "  # guessing the image.\n",
     "  resp=$(wget -qO- --post-data=\"$body\" \\\n",
-    "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $API_SERVER_KEY\" \\\n",
+    "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    --header=\"content-type: application/json\" \"$url\" 2>/dev/null)\n",
     "  [ -n \"$resp\" ] || resp=$(wget -qO- --method=POST --body-data=\"$body\" \\\n",
-    "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $API_SERVER_KEY\" \\\n",
-    "    --header=\"content-type: application/json\" \"$url\" 2>/dev/null) || exit 0\n",
+    "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
+    "    --header=\"content-type: application/json\" \"$url\" 2>/dev/null) \\\n",
+    "    || { echo \"talaria: no credential for $host\" >&2; exit 0; }\n",
     "else\n",
     "  echo \"talaria: no curl or wget in this image — cannot fetch a credential for $host\" >&2\n",
     "  exit 0\n",
@@ -1318,6 +1343,13 @@ pub async fn render_fleet(
                 crate::fleet::layout::agent_key_var(&def.slug)
             )),
         );
+        // The app's origin as the fleet reaches it — the git credential
+        // helper's URL, and anything else container-side that needs the app
+        // rather than the gateway path. Derived from the app's own view of
+        // itself (TALARIA_GATEWAY_SELF_URL, dev-defaulted), so a containerized
+        // stack and a host-app dev stack both render the truth without an
+        // operator wiring anything new.
+        env.insert("TALARIA_API_URL".into(), json!(gateway_origin()));
         env.insert(
             "TALARIA_HEARTBEAT_SECONDS".into(),
             json!("${TALARIA_HEARTBEAT_SECONDS:-45}"),
@@ -2112,10 +2144,11 @@ empty_list: []
             "#!/bin/sh\n",
             "[ \"$1\" = \"get\" ] || exit 0\n",
             "url=\"$TALARIA_API_URL/api/secrets/git-credential\"\n",
-            "-H \"X-Api-Key: $API_SERVER_KEY\" \\\n",
+            "-H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
             "wget -qO- --post-data=\"$body\" \\\n",
             "wget -qO- --method=POST --body-data=\"$body\" \\\n",
             "no curl or wget in this image",
+            "no credential for $host",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
         ] {
             assert!(
@@ -2123,6 +2156,13 @@ empty_list: []
                 "helper lost: {needle:?}"
             );
         }
+        // The chassis key is a different plane and the route has never
+        // accepted it — the helper must not read it (the 2026-09-14 incident:
+        // every git push from an agent 401'd with a key nothing checks).
+        assert!(
+            !GIT_CREDENTIAL_HELPER.contains("API_SERVER_KEY"),
+            "helper must authenticate as the agent, not the chassis"
+        );
         assert!(GIT_CREDENTIAL_HELPER.ends_with('\n'));
         assert_eq!(
             GITCONFIG,
@@ -2142,5 +2182,25 @@ empty_list: []
         let mode = std::fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "helper must be executable");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_gateway_origin_strips_the_brain_path_and_falls_back_when_it_cannot() {
+        use super::gateway_origin_of as origin;
+        // The containerized shape (what the deployed fleet runs): a service
+        // DNS self-URL loses its /api/llm/v1 tail.
+        assert_eq!(
+            origin("http://talaria:5273/api/llm/v1").as_deref(),
+            Some("http://talaria:5273")
+        );
+        // The dev default's shape strips the same way.
+        assert_eq!(
+            origin("http://host.docker.internal:5273/api/llm/v1").as_deref(),
+            Some("http://host.docker.internal:5273")
+        );
+        // A self-URL that is not the gateway path is not ours to strip — the
+        // caller falls back to the dev origin rather than guessing.
+        assert_eq!(origin("https://upstream.example/v1"), None);
+        assert_eq!(origin(""), None);
     }
 }

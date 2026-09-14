@@ -144,7 +144,7 @@ const WORKBENCH_KEY_ENV: &str = "LLM_WORKBENCH_API_KEY";
 // the app's service DNS (e.g. http://talaria-ui:3000/api/llm/v1).
 const DEFAULT_SELF_URL: &str = "http://host.docker.internal:5273/api/llm/v1";
 
-fn self_url() -> String {
+pub(crate) fn self_url() -> String {
     match std::env::var("TALARIA_GATEWAY_SELF_URL") {
         Ok(v) if !v.is_empty() => v,
         _ => DEFAULT_SELF_URL.into(),
