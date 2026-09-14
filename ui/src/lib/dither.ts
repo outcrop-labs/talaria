@@ -359,6 +359,7 @@ export class DitherEngine {
   private raf = 0
   private reduced = false
   private lastShimmerBucket = -1
+  private lastWaveBucket = -1
   private destroyed = false
   private mask: MaskRect[] | null = null
 
@@ -509,15 +510,29 @@ export class DitherEngine {
     const bucket = Math.floor(now / 160)
     const shimmerAdvanced = bucket !== this.lastShimmerBucket
 
-    if (tweening || hasWave || (shimmering && shimmerAdvanced)) {
-      this.lastShimmerBucket = bucket
-      this.paint(now)
-    } else if (!shimmering) {
-      this.paint(now)
-      return // fully static — stop the loop
-    }
+    // Waves ride a bucketed clock too (~12/s). A wave's speed is single-digit
+    // pixels per second — a sub-pixel step per bucket — so a bucketed wave is
+    // visually identical to a full-rate one, and paint is the app's single
+    // most expensive standing cost: an always-mounted wave field (the brief
+    // hero) at full rAF was ~80% of a core, forever, on the machine of
+    // anyone who parked on Home (the 2026-09-14 "browser crawls after a
+    // while" report measured 47.5s of script per minute on an idle tab).
+    // Tweens keep full rate — they are short and they are the transition
+    // itself.
+    const waveBucket = Math.floor(now / 80)
+    const waveAdvanced = waveBucket !== this.lastWaveBucket
 
-    if (tweening || hasWave || shimmering) this.schedule()
+    if (tweening || hasWave || shimmering) {
+      if (tweening || (hasWave && waveAdvanced) || (shimmering && shimmerAdvanced)) {
+        this.lastShimmerBucket = bucket
+        this.lastWaveBucket = waveBucket
+        this.paint(now)
+      }
+      this.schedule()
+    } else {
+      this.paint(now)
+      // fully static — stop the loop
+    }
   }
 
   private paint(now: number): void {
