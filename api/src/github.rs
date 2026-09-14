@@ -242,6 +242,42 @@ async fn gh_json(
     res.json().await.map_err(|e| format!("github decode: {e}"))
 }
 
+/// Re-insert the line breaks a single-line input strips: the admin form's
+/// password field runs the HTML value sanitizer, which deletes LF/CR from the
+/// pasted value, so a real .pem arrives (and gets STORED, envelope-encrypted)
+/// as `-----BEGIN RSA PRIVATE KEY-----base64…` on one line. That shape is
+/// unambiguous, so repair it here at parse time — storage-time validation
+/// could not heal the installs that already hold a stripped key. A PEM that
+/// still has any line break, or does not match the BEGIN…END frame, passes
+/// through untouched and fails parsing with its own honest error.
+fn reline_pem(s: &str) -> String {
+    if s.contains('\n') {
+        return s.to_string();
+    }
+    let Some(rest) = s.strip_prefix("-----BEGIN ") else {
+        return s.to_string();
+    };
+    let Some((label, rest)) = rest.split_once("-----") else {
+        return s.to_string();
+    };
+    let Some((body, _)) = rest.split_once("-----END") else {
+        return s.to_string();
+    };
+    let label = label.trim();
+    let body: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    let mut out = format!("-----BEGIN {label}-----\n");
+    for (i, c) in body.chars().enumerate() {
+        if i > 0 && i % 64 == 0 {
+            out.push('\n');
+        }
+        out.push(c);
+    }
+    out.push_str("\n-----END ");
+    out.push_str(label);
+    out.push_str("-----\n");
+    out
+}
+
 /// RS256 app JWT — GitHub Apps authenticate to /app endpoints with this.
 /// Header/payload are fixed literals in `JSON.stringify` key order; `iat` is
 /// backdated 60s and `exp` is +9m.
@@ -264,8 +300,9 @@ pub fn app_jwt_at(app_id: &str, private_key_pem: &str, now_secs: i64) -> Result<
     // KEY-----` (SEC1) PEMs; the TS signer handed the PEM to node's crypto,
     // which reads both labels. PKCS#8 first (the fixture's shape), then the
     // label GitHub actually ships — the same key either way.
-    let key = rsa::RsaPrivateKey::from_pkcs8_pem(private_key_pem)
-        .or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(private_key_pem))
+    let pem = reline_pem(private_key_pem);
+    let key = rsa::RsaPrivateKey::from_pkcs8_pem(&pem)
+        .or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(&pem))
         .map_err(|e| format!("github app key parse: {e}"))?;
     let signing = SigningKey::<Sha256>::new(key);
     let sig = signing.sign(unsigned.as_bytes());
