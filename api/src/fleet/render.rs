@@ -959,7 +959,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  resp=$(curl -sS --fail -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) \\\n",
-    "    || { echo \"talaria: no credential for $host\" >&2; exit 0; }\n",
+    "    || { echo \"talaria: no credential for $host${path:+/$path}\" >&2; exit 0; }\n",
     "elif command -v wget >/dev/null 2>&1; then\n",
     "  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived\n",
     "  # harness image) takes --post-data; GNU wget takes --body-data with\n",
@@ -972,7 +972,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  [ -n \"$resp\" ] || resp=$(wget -qO- --method=POST --body-data=\"$body\" \\\n",
     "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    --header=\"content-type: application/json\" \"$url\" 2>/dev/null) \\\n",
-    "    || { echo \"talaria: no credential for $host\" >&2; exit 0; }\n",
+    "    || { echo \"talaria: no credential for $host${path:+/$path}\" >&2; exit 0; }\n",
     "else\n",
     "  echo \"talaria: no curl or wget in this image — cannot fetch a credential for $host\" >&2\n",
     "  exit 0\n",
@@ -1354,6 +1354,14 @@ pub async fn render_fleet(
             "TALARIA_HEARTBEAT_SECONDS".into(),
             json!("${TALARIA_HEARTBEAT_SECONDS:-45}"),
         );
+        // A credential git cannot get must FAIL, not wait: with the terminal
+        // prompt enabled (git's default), a push to a repo the helper declines
+        // falls through to a username prompt that sits forever in a harness
+        // PTY — the agent reads as "stuck" (2026-09-14: Doug hung exactly
+        // there probing a repo off his grant list). Prompt-off turns every
+        // such case into git's immediate "could not read Username", which the
+        // toolkit skill already tells the agent to report_problem.
+        env.insert("GIT_TERMINAL_PROMPT".into(), json!("0"));
 
         // Workbench overlay — the agent's runtime profile. Harness state
         // PERSISTS on the department state volume (hand-offs: a session one
@@ -2148,7 +2156,7 @@ empty_list: []
             "wget -qO- --post-data=\"$body\" \\\n",
             "wget -qO- --method=POST --body-data=\"$body\" \\\n",
             "no curl or wget in this image",
-            "no credential for $host",
+            "no credential for $host${path:+/$path}",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
         ] {
             assert!(

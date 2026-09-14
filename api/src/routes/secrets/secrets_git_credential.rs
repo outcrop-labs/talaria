@@ -113,9 +113,14 @@ pub async fn post(
     let Some(cred) = cred else {
         // Reported to the OPERATOR, never elaborated to the caller: which
         // credentials exist and which hosts they cover is a map of the
-        // workspace, and git only needs to know it got nothing.
+        // workspace, and git only needs to know it got nothing. The operator
+        // log DOES name the path — the caller asked for it, an admin can see
+        // the grants anyway, and "which repo was the agent stuck on" is
+        // otherwise a guessing game (the 2026-09-14 hang needed the api logs
+        // AND the grant table to reconstruct).
+        let asked = path.as_deref().map(|p| format!(" {p}")).unwrap_or_default();
         tracing::warn!(
-            "[secrets] {} has no credential allowed for {host}",
+            "[secrets] {} has no credential allowed for {host}{asked}",
             caller.model
         );
         return house_error(StatusCode::NOT_FOUND, "no credential for that host");
