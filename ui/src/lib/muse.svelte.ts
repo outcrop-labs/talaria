@@ -75,11 +75,15 @@ export async function streamMuse(input: MuseRequest, onChunk: (piece: string) =>
  *  produced nothing usable" and "the gateway has no model" is a real difference,
  *  and both of them are things to say out loud rather than states to swallow. */
 async function draft<T>(input: MuseRequest, signal?: AbortSignal): Promise<T> {
-  // postJson throws the server's sentence on every non-2xx; the guard below is
-  // the one failure it cannot see — a 200 whose body never carried a `value`.
-  const { value } = await postJson<{ value?: T }>('/api/muse', input, { signal })
-  if (value === undefined) throw new Error('The server sent a reply this app could not read.')
-  return value
+  // postJson throws the server's sentence on every non-2xx; the guards below
+  // cover the two it cannot see — a 200 whose body never carried a `value`,
+  // and a late failure riding in a 200 because the muse's heartbeat answer
+  // (a slow draft keeps the body open so intermediaries don't kill it) can no
+  // longer change its status.
+  const data = await postJson<{ value?: T; error?: string }>('/api/muse', input, { signal })
+  if (data.error !== undefined) throw new Error(data.error)
+  if (data.value === undefined) throw new Error('The server sent a reply this app could not read.')
+  return data.value
 }
 
 export interface GatewayModel {

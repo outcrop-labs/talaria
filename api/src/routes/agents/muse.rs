@@ -50,11 +50,10 @@ use crate::harness_model::{MUSE_CHAIN, ModelSpec, ResolvedHarnessModel, resolve_
 use crate::org::{org_line, org_profile};
 use crate::session::require_user;
 use crate::state::AppState;
-use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -110,6 +109,63 @@ fn unusable(kind: &str) -> &'static str {
 }
 
 const NO_MODEL: &str = "no routable model found — add an endpoint with models on /models first";
+
+/// How long a structured draft may buffer before its answer must open the
+/// body — well inside Cloudflare's 100s idle ceiling, far past any honest
+/// fast run — and then the gap between heartbeats.
+const FIRST_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(45);
+const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The structured kinds' ONE answer shape, shared by the buffered path and
+/// the heartbeat path: `(status, body, x-muse-model)`. The buffered path
+/// keeps the real statuses — 400 for a configuration problem, 502 for a
+/// model problem, 500 for a run that threw; the heartbeat path's headers
+/// are already committed to 200, so its failures ride in the body and the
+/// client throws the `error` member either way.
+#[allow(clippy::type_complexity)]
+fn structured_answer(
+    res: Result<Result<crate::harness::run::HarnessResult, HarnessError>, tokio::task::JoinError>,
+    kind: &str,
+) -> (StatusCode, String, Option<String>) {
+    match res {
+        Ok(Ok(r)) => {
+            if let Some(value) = r.value {
+                let body = json!({ "value": value, "model": r.model.clone() }).to_string();
+                return (StatusCode::OK, body, r.model);
+            }
+            // No model at all is a CONFIGURATION problem and the admin needs
+            // the real sentence; a model that answered badly is a MODEL
+            // problem and the user needs something they can act on. Two
+            // failures, two status codes.
+            if r.model.is_none() {
+                let error = r.error.unwrap_or_else(|| NO_MODEL.to_string());
+                return (
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": error }).to_string(),
+                    None,
+                );
+            }
+            (
+                StatusCode::BAD_GATEWAY,
+                json!({ "error": unusable(kind), "detail": r.error }).to_string(),
+                None,
+            )
+        }
+        Ok(Err(HarnessError(e))) => {
+            tracing::error!("[muse] {kind} run failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": "Internal Server Error" }).to_string(),
+                None,
+            )
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": "Internal Server Error" }).to_string(),
+            None,
+        ),
+    }
+}
 
 /// The body's `chat` member: an optional array of prior turns, each
 /// `{ role: 'user' | 'assistant', content: ≤300k }`, at most 24 of them.
@@ -222,48 +278,115 @@ pub async fn post(
             org: org.clone(),
         })
         .expect("the draft input serializes");
+        // The model resolves BEFORE the run opens, for the same reason the
+        // prose half resolves before its first byte: "nothing routes" must be
+        // a 400 with an admin-readable sentence, not a 200 whose body says so
+        // after the headers committed — and the heartbeat answer below wants
+        // `x-muse-model` on headers it can no longer take back.
+        let user_spec = ModelSpec {
+            pin: Some("muse"),
+            role: None,
+            chain: Some(&MUSE_CHAIN),
+            user_id: Some(&user.id),
+        };
+        let resolved: Option<ResolvedHarnessModel> =
+            match resolve_harness_model(&state.pg, &user_spec).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!("[muse] model resolution failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        let Some(resolved) = resolved else {
+            return house_error(StatusCode::BAD_REQUEST, NO_MODEL);
+        };
         // `userId` is what arms the member model allowlist inside the chain
         // (see MUSE_MODEL) — a harness run without it would hand a member the
-        // expensive model an admin gated.
+        // expensive model an admin gated. The pinned model hands the
+        // pre-resolved answer over rather than asking the chain again.
         let ctx = RunContext {
             caller,
-            user_id: Some(user.id.clone()),
+            user_id: Some(user.id),
+            model: Some(resolved.model.clone()),
+            step: Some(resolved.step),
             ..Default::default()
         };
-        let def: HarnessDefinition = match kind.as_str() {
-            "cron" => muse_cron_harness(),
-            "agent" => muse_agent_harness(),
-            "ticket" => muse_ticket_harness(),
-            "skillForm" => muse_skill_form_harness(),
-            _ => muse_template_form_harness(),
-        };
-        let res = match run_harness(&state, &def, &input, ctx).await {
-            Ok(r) => r,
-            Err(HarnessError(e)) => {
-                tracing::error!("[muse] {kind} run failed: {e}");
-                return thrown_internal_error();
+        let run_state = state.clone();
+        let run_kind = kind.clone();
+        let mut done = tokio::spawn(async move {
+            let def: HarnessDefinition = match run_kind.as_str() {
+                "cron" => muse_cron_harness(),
+                "agent" => muse_agent_harness(),
+                "ticket" => muse_ticket_harness(),
+                "skillForm" => muse_skill_form_harness(),
+                _ => muse_template_form_harness(),
+            };
+            run_harness(&run_state, &def, &input, ctx).await
+        });
+
+        // Hold the answer the way the prose half holds its first token: a run
+        // that ends inside FIRST_HEARTBEAT answers with today's buffered JSON,
+        // statuses intact. A structured draft puts NOTHING on the wire until
+        // the whole validated JSON exists, so a slow generation (a cold
+        // provider minute is normal; the 2026-09-14 outcrop incident ran
+        // 2m20s) otherwise runs head-first into every intermediary's idle
+        // ceiling — Cloudflare's 100s first — and the browser gets a 524 the
+        // api never sees. A run that outlives the threshold gets an
+        // application/json body that drips `\n` (leading whitespace is legal
+        // JSON; the client's parse cannot tell) and ends with the same object.
+        tokio::select! {
+            res = &mut done => {
+                let (status, body, model) = structured_answer(res, &kind);
+                let mut resp = Response::builder()
+                    .status(status)
+                    .header(header::CACHE_CONTROL, "no-cache")
+                    .header(header::CONTENT_TYPE, "application/json");
+                if let Some(m) = model.as_deref() {
+                    resp = resp.header("x-muse-model", m);
+                }
+                return resp
+                    .body(Body::from(body))
+                    .expect("static headers build");
             }
-        };
-        if let Some(value) = res.value {
-            let mut resp = Json(json!({ "value": value, "model": res.model })).into_response();
-            resp.headers_mut().insert(
-                "x-muse-model",
-                axum::http::HeaderValue::from_str(res.model.as_deref().unwrap_or(""))
-                    .unwrap_or(axum::http::HeaderValue::from_static("")),
+            _ = tokio::time::sleep(FIRST_HEARTBEAT) => {}
+        }
+
+        let (btx, brx) = mpsc::unbounded_channel::<Result<Bytes, std::io::Error>>();
+        let pump_kind = kind.clone();
+        let model_header = resolved.model.clone();
+        tokio::spawn(async move {
+            let mut next = tokio::time::Instant::now() + HEARTBEAT_EVERY;
+            loop {
+                tokio::select! {
+                    res = &mut done => {
+                        let (_, body, _) = structured_answer(res, &pump_kind);
+                        let _ = btx.send(Ok(Bytes::from(body)));
+                        // Dropping the sender closes the body stream.
+                        drop(btx);
+                        break;
+                    }
+                    _ = tokio::time::sleep_until(next) => {
+                        let _ = btx.send(Ok(Bytes::from_static(b"\n")));
+                        next += HEARTBEAT_EVERY;
+                    }
+                }
+            }
+        });
+        let stream =
+            futures_util::stream::unfold(
+                brx,
+                |mut rx| async move { rx.recv().await.map(|i| (i, rx)) },
             );
-            return resp;
-        }
-        // No model at all is a CONFIGURATION problem and the admin needs the real
-        // sentence; a model that answered badly is a MODEL problem and the user
-        // needs something they can act on. Two failures, two status codes.
-        if res.model.is_none() {
-            let error = res.error.unwrap_or_else(|| NO_MODEL.to_string());
-            return house_error(StatusCode::BAD_REQUEST, &error);
-        }
-        let mut resp =
-            Json(json!({ "error": unusable(&kind), "detail": res.error })).into_response();
-        *resp.status_mut() = StatusCode::BAD_GATEWAY;
-        return resp;
+        // Header order on the wire is alphabetical — cache-control, then
+        // content-type, then x-muse-model (the prose answer below is the
+        // precedent for caring).
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-muse-model", &model_header)
+            .body(Body::from_stream(stream))
+            .expect("static headers build");
     }
 
     // ── The prose kinds: stream ─────────────────────────────────────────────
@@ -447,4 +570,67 @@ pub async fn post(
         .header("x-muse-model", &model)
         .body(Body::from_stream(stream))
         .expect("static headers build")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::run::HarnessResult;
+
+    fn result(
+        value: Option<Value>,
+        model: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<HarnessResult, HarnessError> {
+        Ok(HarnessResult {
+            value,
+            model: model.map(String::from),
+            step: None,
+            widened: false,
+            repairs: 0,
+            schema_valid: false,
+            answered: false,
+            refused: false,
+            findings: Vec::new(),
+            raw: None,
+            latency_ms: 0,
+            escalate: false,
+            error: error.map(String::from),
+        })
+    }
+
+    // The structured kinds' status split, pinned: a value is a 200 carrying
+    // the model header, a run that never reached a model is a 400 with the
+    // admin's sentence, a model that answered unusably is a 502 with the
+    // user's sentence — the same three answers the buffered path always
+    // gave, now shared with the heartbeat path where only the body can carry
+    // them.
+    #[test]
+    fn the_structured_answer_keeps_the_status_split() {
+        let (status, body, model) = structured_answer(
+            Ok(result(Some(json!({"name": "Casey"})), Some("m"), None)),
+            "agent",
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, r#"{"value":{"name":"Casey"},"model":"m"}"#);
+        assert_eq!(model.as_deref(), Some("m"));
+
+        let (status, body, model) = structured_answer(Ok(result(None, None, None)), "agent");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body, json!({ "error": NO_MODEL }).to_string());
+        assert_eq!(model, None);
+
+        let (status, body, model) =
+            structured_answer(Ok(result(None, Some("m"), Some("shape"))), "agent");
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            body,
+            json!({ "error": unusable("agent"), "detail": "shape" }).to_string()
+        );
+        assert_eq!(model, None);
+
+        let (status, _, model) = structured_answer(Ok(Err(HarnessError("boom".into()))), "agent");
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(model, None);
+    }
 }
