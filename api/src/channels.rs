@@ -1023,10 +1023,6 @@ async fn decorate_messages(
     Ok(())
 }
 
-/// A channel's MAIN flow (thread replies live in their panels), oldest first.
-/// `since_seq` fetches only newer ones. `include_threads` flattens everything
-/// back in — the distill/conclude summarizers want the whole conversation.
-
 /// A 'streaming' row whose writer died (a deploy mid-turn kills the bare
 /// spawned reply task — nothing closes it) would render as an agent replying
 /// forever. The chat plane repairs its own orphans on read (messages.rs's
@@ -1067,6 +1063,9 @@ async fn repair_dead_streams(pg: &PgPool, messages: &mut [ChannelMessageWire]) {
     }
 }
 
+/// A channel's MAIN flow (thread replies live in their panels), oldest first.
+/// `since_seq` fetches only newer ones. `include_threads` flattens everything
+/// back in — the distill/conclude summarizers want the whole conversation.
 pub async fn list_channel_messages(
     pg: &PgPool,
     channel_id: &str,
