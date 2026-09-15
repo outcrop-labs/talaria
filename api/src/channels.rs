@@ -1037,7 +1037,7 @@ async fn repair_dead_streams(pg: &PgPool, messages: &mut [ChannelMessageWire]) {
             continue;
         }
         let stale: Option<bool> = sqlx::query_scalar(
-            "select edited_at < now() - interval '15 minutes' \
+            "select coalesce(edited_at, created_at) < now() - interval '15 minutes' \
              from channel_messages where id = $1::uuid and status = 'streaming'",
         )
         .bind(&m.id)
