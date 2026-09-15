@@ -40,7 +40,24 @@ pub async fn get(
     let sb = state.secretbox().await.unwrap_or_default();
     let available = gh::list_reachable_repos(&state.pg, &sb).await;
     let granted = gh::granted_repos(&state.pg, &agent_id).await;
-    Json(json!({ "available": available, "granted": granted })).into_response()
+    // The rules live beside the grants, and each granted repo carries its
+    // live branch list for the pickers — the admin configures against what
+    // actually exists, not a free-text guess.
+    let rules = gh::repo_rules(&state.pg, &agent_id).await;
+    let mut branches = serde_json::Map::new();
+    for rule in &rules {
+        branches.insert(
+            rule.repo.clone(),
+            json!(gh::list_branches(&state.pg, &sb, &rule.repo).await),
+        );
+    }
+    Json(json!({
+        "available": available,
+        "granted": granted,
+        "rules": rules,
+        "branches": branches,
+    }))
+    .into_response()
 }
 
 pub async fn put(
@@ -75,6 +92,49 @@ pub async fn put(
     if let Err(e) = gh::set_granted_repos(&state.pg, &agent_id, &repos).await {
         tracing::error!("[workbench/repos] grant write failed: {e}");
         return thrown_internal_error();
+    }
+    // Rules ride the same PUT, optional: an array of {repo, baseBranch?,
+    // pushMode?, branchPrefix?}. Only rules for STILL-GRANTED repos are
+    // honored — a rule for a repo the same request revoked is a UI race, and
+    // the quiet drop is the honest resolution.
+    if let Some(v) = obj.get("rules") {
+        let arr = match v.as_array() {
+            Some(a) => a,
+            None => return house_error(StatusCode::BAD_REQUEST, "rules must be an array"),
+        };
+        for el in arr {
+            let Some(entry) = el.as_object() else {
+                return house_error(StatusCode::BAD_REQUEST, "rules entries must be objects");
+            };
+            let repo = match crate::body::string_member(entry, "repo", 3, 200) {
+                Ok(r) => r,
+                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            };
+            if !repos.contains(&repo) {
+                continue;
+            }
+            let rule = gh::RepoRule {
+                repo,
+                base_branch: crate::body::optional_max_string_member(entry, "baseBranch", 200)
+                    .ok()
+                    .flatten()
+                    .filter(|b| !b.is_empty()),
+                push_mode: {
+                    match crate::body::enum_member(entry, "pushMode", &["branches_only", "free"]) {
+                        Ok(m) => m.to_string(),
+                        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                    }
+                },
+                branch_prefix: crate::body::optional_max_string_member(entry, "branchPrefix", 100)
+                    .ok()
+                    .flatten()
+                    .filter(|p| !p.is_empty()),
+            };
+            if let Err(e) = gh::set_repo_rule(&state.pg, &agent_id, &rule).await {
+                tracing::error!("[workbench/repos] rule write failed: {e}");
+                return thrown_internal_error();
+            }
+        }
     }
     Json(json!({ "granted": repos })).into_response()
 }

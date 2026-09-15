@@ -988,13 +988,72 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "\n",
 );
 
+/// The PRE-PUSH hook — the platform's own branch gate. Git hands the hook the
+/// refs about to leave the container; the hook asks Talaria over the agent's
+/// own key, and a refusal becomes git's own "pre-push declined" with the rule
+/// on stderr. This is the gate that does not depend on GitHub's plan: it
+/// covers every granted repo, private ones included. The hook CHAINS to the
+/// repo's own .git/hooks/pre-push first when one exists, so a repo's own
+/// tooling (husky, a pre-push gate like this repo's) keeps working.
+const GIT_PRE_PUSH_HOOK: &str = concat!(
+    "#!/bin/sh\n",
+    "# Written by Talaria (fleet-render). Git gives this hook the refs about\n",
+    "# to be pushed; Talaria answers allow/deny against this agent's repo rules.\n",
+    "# The repo's own hook (if any) runs FIRST and its verdict stands.\n",
+    "if [ -x \"$GIT_DIR/hooks/pre-push\" ] && [ \"$GIT_DIR\" != \".\" ]; then\n",
+    "  \"$GIT_DIR/hooks/pre-push\" \"$@\" || exit 1\n",
+    "fi\n",
+    "remote=\"\"\n",
+    "# $1 is the remote name; resolve its URL from the config.\n",
+    "remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
+    "[ -n \"$remote_url\" ] || exit 0\n",
+    "# owner/repo from an https or ssh remote URL.\n",
+    "repo=$(printf %s \"$remote_url\" | sed -nE \n",
+    "  -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)(\\.git)?/?$#\\1#p' \n",
+    "  -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)(\\.git)?/?$#\\2#p')\n",
+    "[ -n \"$repo\" ] || exit 0\n",
+    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
+    "refs=\"\"; n=0\n",
+    "while read -r _ _ remote_ref _; do\n",
+    "  [ -n \"$remote_ref\" ] || continue\n",
+    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
+    "  n=$((n+1)); refs=\"$refs\\\"$remote_ref\\\",\"\n",
+    "done\n",
+    "[ \"$n\" -gt 0 ] || exit 0\n",
+    "refs=\"${refs%,}\"\n",
+    "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
+    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"refs\\\":[$refs]}\"\n",
+    "if command -v curl >/dev/null 2>&1; then\n",
+    "  resp=$(curl -sS -X POST \"$url\" \\\n",
+    "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
+    "    -H 'content-type: application/json' -d \"$body\" 2>/dev/null) || resp=\"\"\n",
+    "fi\n",
+    "if [ -z \"$resp\" ] && command -v wget >/dev/null 2>&1; then\n",
+    "  # TWO WGETS EXIST and they disagree — BusyBox takes --post-data, GNU\n",
+    "  # takes --body-data with --method=POST (the credential helper's law).\n",
+    "  resp=$(wget -qO- --post-data=\"$body\" \\\n",
+    "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
+    "    --header='content-type: application/json' \"$url\" 2>/dev/null)\n",
+    "  [ -n \"$resp\" ] || resp=$(wget -qO- --method=POST --body-data=\"$body\" \\\n",
+    "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
+    "    --header='content-type: application/json' \"$url\" 2>/dev/null)\n",
+    "fi\n",
+    "if [ -z \"$resp\" ]; then\n",
+    "  echo \"talaria: could not reach the push check — refusing\" >&2; exit 1\n",
+    "fi\n",
+    "case \"$resp\" in *'\"ok\":true'*) exit 0 ;; esac\n",
+    "reason=$(printf %s \"$resp\" | sed -n 's/.*\"error\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+    "echo \"talaria: push declined — ${reason:-the repo rules refused this push}\" >&2\n",
+    "exit 1\n",
+);
+
 /// SYSTEM-WIDE gitconfig, not the agent's ~/.gitconfig: a workbench job runs
 /// the harness as whatever user that image uses, and a helper only the root
 /// home knows about is a helper that silently does not run. `useHttpPath` is
 /// what makes git send the repo along with the host — without it a GitHub
 /// answer could only be scoped to github.com, i.e. every repo the
 /// installation can reach.
-const GITCONFIG: &str = "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n";
+const GITCONFIG: &str = "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n";
 
 /// Best-effort executable bit for the credential helper. (The write's
 /// create-mode only stamps newly created files; this also repairs a helper
@@ -1293,6 +1352,16 @@ pub async fn render_fleet(
             .await
             .map_err(|e| format!("{}: {e}", helper_path.display()))?;
         set_executable(&helper_path).await;
+        let hooks_dir = agent_dir.join("git-hooks");
+        tokio::fs::create_dir_all(&hooks_dir)
+            .await
+            .map_err(|e| format!("{}: {e}", hooks_dir.display()))?;
+        let hook_path = hooks_dir.join("pre-push");
+        tokio::fs::write(&hook_path, GIT_PRE_PUSH_HOOK)
+            .await
+            .map_err(|e| format!("{}: {e}", hook_path.display()))?;
+        set_executable(&hook_path).await;
+        result.files.push(hook_path.display().to_string());
         let gitconfig_path = agent_dir.join("gitconfig");
         tokio::fs::write(&gitconfig_path, GITCONFIG)
             .await
@@ -1506,6 +1575,10 @@ pub async fn render_fleet(
         vols.push(format!(
             "{}:/usr/local/bin/git-credential-talaria:ro",
             helper_path.display()
+        ));
+        vols.push(format!(
+            "{}:/usr/local/share/talaria-git-hooks:ro",
+            hooks_dir.display()
         ));
         vols.push(format!("{}:/etc/gitconfig:ro", gitconfig_path.display()));
         vols.push(format!(
@@ -2174,7 +2247,7 @@ empty_list: []
         assert!(GIT_CREDENTIAL_HELPER.ends_with('\n'));
         assert_eq!(
             GITCONFIG,
-            "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n"
+            "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n"
         );
         // The helper lands executable — a non-executable helper is a silent
         // no-op, the exact failure the portability block exists to prevent.
@@ -2189,6 +2262,38 @@ empty_list: []
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "helper must be executable");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_pre_push_hook_is_valid_shell_and_carries_the_gate() {
+        // The hook is generated THROUGH two layers of escaping (Rust string
+        // literals inside concat!); a wrong backslash anywhere still leaves
+        // valid RUST, so the only honest check is to hand the GENERATED bytes
+        // to a real shell's parser.
+        let dir =
+            std::env::temp_dir().join(format!("talaria-render-tests-{}-hook", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("pre-push");
+        std::fs::write(&p, GIT_PRE_PUSH_HOOK).unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("-n")
+            .arg(&p)
+            .output()
+            .expect("sh runs");
+        assert!(
+            out.status.success(),
+            "the generated pre-push hook is not valid shell: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        for needle in [
+            "git-push-check",
+            "X-Api-Key: $TALARIA_AGENT_KEY",
+            "$GIT_DIR/hooks/pre-push",
+            "push declined",
+        ] {
+            assert!(GIT_PRE_PUSH_HOOK.contains(needle), "hook lost: {needle:?}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

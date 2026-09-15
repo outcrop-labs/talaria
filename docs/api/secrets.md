@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-6 routes.
+7 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -18,6 +18,7 @@
 | [`/api/secrets/folders`](#apisecretsfolders) | GET | `session` |
 | [`/api/secrets/folders`](#apisecretsfolders) | POST | `session` |
 | [`/api/secrets/git-credential`](#apisecretsgit-credential) | POST | `agent` |
+| [`/api/secrets/git-push-check`](#apisecretsgit-push-check) | POST | `agent` |
 | [`/api/secrets/relay`](#apisecretsrelay) | POST | `session` |
 | [`/api/secrets/reveal`](#apisecretsreveal) | POST | `session` |
 | [`/api/secrets/share`](#apisecretsshare) | POST | `session` |
@@ -109,6 +110,27 @@ Source: [`api/src/routes/secrets/secrets_git_credential.rs`](../../api/src/route
 | `host` | `string(1, 253)` |  |
 | `protocol` | `string?(20)` |  |
 | `path` | `string?(400)` |  |
+
+## `/api/secrets/git-push-check`
+
+Source: [`api/src/routes/secrets/secrets_git_push_check.rs`](../../api/src/routes/secrets/secrets_git_push_check.rs)
+
+> /api/secrets/git-push-check.
+>
+> THE PRE-PUSH GATE — the platform's own answer to "whose call is main".
+> GitHub's branch protection enforces the posture where the org's plan
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apisecretsgit-push-check-body) | `{ok}` | 200, 400, 403, 404, 502 | — |
+
+### POST `/api/secrets/git-push-check` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `repo` | `string(3, 400)` |  |
+| `refs` | `string[](1, 200, 0, 50)` | The refs git handed the hook: full ref names, ≤200 chars each, ≤50 of them (one push cannot honestly carry more). |
 
 ## `/api/secrets/relay`
 

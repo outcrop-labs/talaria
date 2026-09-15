@@ -2926,6 +2926,17 @@ drop table if exists task_comments`,
   -- it named lives on in channel_messages with its ids carried verbatim.
 alter table tasks drop column if exists conversation_id`,
 
+  // Repo hygiene rules, per grant: the branch work is based on (null = the
+  // repo's own default), whether the agent may push the base at all
+  // ('branches_only' is the default posture — work lives on a branch and a
+  // human merges; 'free' is the explicit opt-in), and an optional required
+  // prefix for the agent's branches. Enforced by the rendered pre-push hook,
+  // not only GitHub's branch protection — private repos on a free plan have
+  // no protection, and the platform's own gate should not depend on the
+  // org's plan.
+  `alter table workbench_repos add column if not exists base_branch text`,
+  `alter table workbench_repos add column if not exists push_mode text not null default 'branches_only'`,
+  `alter table workbench_repos add column if not exists branch_prefix text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

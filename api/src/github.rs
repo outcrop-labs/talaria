@@ -594,8 +594,13 @@ pub async fn set_granted_repos(pg: &PgPool, agent_id: &str, keep: &[String]) -> 
         .begin()
         .await
         .map_err(|e| format!("workbench grant tx: {e}"))?;
-    sqlx::query("delete from workbench_repos where agent_id = $1::uuid")
+    // SET semantics, not replace-by-delete: rows that survive keep their
+    // hygiene rules, rows that leave go away, rows that arrive start at the
+    // defaults. A delete-everything write would wipe an admin's branch rules
+    // on every chip toggle.
+    sqlx::query("delete from workbench_repos where agent_id = $1::uuid and not (repo = any($2))")
         .bind(agent_id)
+        .bind(keep)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("workbench grant clear: {e}"))?;
@@ -613,6 +618,159 @@ pub async fn set_granted_repos(pg: &PgPool, agent_id: &str, keep: &[String]) -> 
     tx.commit()
         .await
         .map_err(|e| format!("workbench grant commit: {e}"))
+}
+
+// ── Repo hygiene rules ───────────────────────────────────────────────────────
+//
+// The per-grant branch law: work lives on a branch, a human merges. The
+// DEFAULT (columns null/'branches_only') already enforces that — an agent
+// with a grant and no configuration may push any branch except the base.
+// Configuration narrows or widens: name the base explicitly (a repo whose
+// default branch is not the integration target), require a prefix for the
+// agent's branches, or explicitly trust an agent with the base ('free').
+// GitHub's branch protection enforces the same posture where the plan
+// allows it; this is the platform's OWN gate, which works for every repo
+// including the private ones a free plan cannot protect.
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoRule {
+    pub repo: String,
+    /// The integration branch — never pushable in branches_only mode. Null
+    /// means "the repo's default branch", resolved live at check time.
+    pub base_branch: Option<String>,
+    /// 'branches_only' (the default posture) or 'free'.
+    pub push_mode: String,
+    /// When set, the agent's branches must start with this prefix.
+    pub branch_prefix: Option<String>,
+}
+
+pub async fn repo_rules(pg: &PgPool, agent_id: &str) -> Vec<RepoRule> {
+    let Ok(rows) = sqlx::query_as::<_, (String, Option<String>, String, Option<String>)>(
+        "select repo, base_branch, push_mode, branch_prefix from workbench_repos \
+         where agent_id = $1::uuid order by repo",
+    )
+    .bind(agent_id)
+    .fetch_all(pg)
+    .await
+    else {
+        return Vec::new();
+    };
+    rows.into_iter()
+        .map(|(repo, base_branch, push_mode, branch_prefix)| RepoRule {
+            repo,
+            base_branch,
+            push_mode,
+            branch_prefix,
+        })
+        .collect()
+}
+
+/// The one-row read the push check needs. None = no grant, which the caller
+/// answers exactly like the credential route's no-credential case.
+pub async fn repo_rule(pg: &PgPool, agent_id: &str, repo: &str) -> Option<RepoRule> {
+    sqlx::query_as::<_, (String, Option<String>, String, Option<String>)>(
+        "select repo, base_branch, push_mode, branch_prefix from workbench_repos \
+         where agent_id = $1::uuid and repo = $2",
+    )
+    .bind(agent_id)
+    .bind(repo)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten()
+    .map(|r| RepoRule {
+        repo: r.0,
+        base_branch: r.1,
+        push_mode: r.2,
+        branch_prefix: r.3,
+    })
+}
+
+/// Write one grant's rules. The repo must already be granted (the route
+/// validates); values are trusted to the route's own validation.
+pub async fn set_repo_rule(pg: &PgPool, agent_id: &str, rule: &RepoRule) -> Result<(), String> {
+    sqlx::query(
+        "update workbench_repos set base_branch = $3, push_mode = $4, branch_prefix = $5 \
+         where agent_id = $1::uuid and repo = $2",
+    )
+    .bind(agent_id)
+    .bind(&rule.repo)
+    .bind(&rule.base_branch)
+    .bind(if rule.push_mode == "free" {
+        "free"
+    } else {
+        "branches_only"
+    })
+    .bind(&rule.branch_prefix)
+    .execute(pg)
+    .await
+    .map_err(|e| format!("repo rule write: {e}"))?;
+    Ok(())
+}
+
+/// The decision the pre-push hook and the brief both read. Pure: given the
+/// rule, the repo's resolved default branch (for a null base_branch), and a
+/// ref being pushed, allow or refuse with a sentence for the agent.
+pub fn push_allowed(rule: &RepoRule, default_branch: &str, ref_name: &str) -> Result<(), String> {
+    if rule.push_mode == "free" {
+        return Ok(());
+    }
+    let branch = ref_name.trim_start_matches("refs/heads/");
+    let base = rule.base_branch.as_deref().unwrap_or(default_branch);
+    if branch == base {
+        return Err(format!(
+            "{base} is the base branch for {} — your work belongs on your own branch and a human merges it",
+            rule.repo
+        ));
+    }
+    if let Some(prefix) = rule.branch_prefix.as_deref().filter(|p| !p.is_empty())
+        && !branch.starts_with(prefix)
+    {
+        return Err(format!(
+            "branches for {} must start with \"{prefix}\" — got \"{branch}\"",
+            rule.repo
+        ));
+    }
+    Ok(())
+}
+
+/// A repo's default branch, via the installation — the base a null
+/// base_branch resolves to at check time.
+pub async fn repo_default_branch(pg: &PgPool, sb: &SecretBox, repo: &str) -> Option<String> {
+    let token = github_token(pg, sb, Some(repo)).await.ok()??;
+    let reply = gh_json(&format!("/repos/{repo}"), &token, "GET", None)
+        .await
+        .ok()?;
+    reply
+        .get("default_branch")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// A repo's branch names for the admin picker — the live list, capped.
+pub async fn list_branches(pg: &PgPool, sb: &SecretBox, repo: &str) -> Vec<String> {
+    let Some(token) = github_token(pg, sb, Some(repo)).await.ok().flatten() else {
+        return Vec::new();
+    };
+    let Ok(reply) = gh_json(
+        &format!("/repos/{repo}/branches?per_page=100"),
+        &token,
+        "GET",
+        None,
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    reply
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|b| b.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // ── The admin/status plane (workbench.github, the doctor verb) ────────────────
@@ -1262,6 +1420,34 @@ pub struct GitCredential {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_branch_law_decides_every_shape() {
+        use super::{RepoRule, push_allowed};
+        let rule = |base: Option<&str>, mode: &str, prefix: Option<&str>| RepoRule {
+            repo: "acme/widgets".into(),
+            base_branch: base.map(String::from),
+            push_mode: mode.into(),
+            branch_prefix: prefix.map(String::from),
+        };
+        // The DEFAULT posture: any branch but the base.
+        let d = rule(None, "branches_only", None);
+        assert!(push_allowed(&d, "main", "refs/heads/agent/thing").is_ok());
+        assert!(push_allowed(&d, "main", "refs/heads/main").is_err());
+        assert!(push_allowed(&d, "main", "refs/tags/v1").is_ok()); // tags are not branch pushes
+        // A named base wins over the repo default.
+        let named = rule(Some("release"), "branches_only", None);
+        assert!(push_allowed(&named, "main", "refs/heads/main").is_ok());
+        assert!(push_allowed(&named, "main", "refs/heads/release").is_err());
+        // A prefix narrows the agent's own branches.
+        let pfx = rule(None, "branches_only", Some("agent/"));
+        assert!(push_allowed(&pfx, "main", "refs/heads/agent/ticket-1").is_ok());
+        assert!(push_allowed(&pfx, "main", "refs/heads/feature-x").is_err());
+        // 'free' is the explicit trust: everything goes, base included.
+        let free = rule(None, "free", Some("agent/"));
+        assert!(push_allowed(&free, "main", "refs/heads/main").is_ok());
+    }
+
     use super::*;
 
     #[test]

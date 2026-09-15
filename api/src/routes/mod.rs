@@ -492,6 +492,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/secrets/git-push-check",
+            post(secrets::secrets_git_push_check::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/secrets/relay",
             post(secrets::secrets_relay::post).fallback(|| async { method_not_allowed("POST") }),
         )

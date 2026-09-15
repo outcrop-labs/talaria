@@ -5,6 +5,7 @@
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -1054,7 +1055,10 @@ CREATE TABLE public.workbench_repo_requests (
 CREATE TABLE public.workbench_repos (
     agent_id uuid NOT NULL,
     repo text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    base_branch text,
+    push_mode text DEFAULT 'branches_only'::text NOT NULL,
+    branch_prefix text
 );
 CREATE TABLE public.workspace_secret_entries (
     secret_id uuid NOT NULL,

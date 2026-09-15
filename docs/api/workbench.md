@@ -181,7 +181,7 @@ Source: [`api/src/routes/workbench/workbench_repos_agent_id.rs`](../../api/src/r
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{available, granted}` | 200, 404 | — |
+| GET | `session` + `perm:agents.manage` | — | `{available, granted, rules, branches}` | 200, 404 | — |
 | PUT | `session` + `perm:agents.manage` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | — |
 
 ### PUT `/api/workbench/repos/{agentId}` body

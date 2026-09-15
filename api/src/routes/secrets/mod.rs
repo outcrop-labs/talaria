@@ -2,6 +2,7 @@
 pub mod secrets;
 pub mod secrets_folders;
 pub mod secrets_git_credential;
+pub mod secrets_git_push_check;
 pub mod secrets_relay;
 pub mod secrets_reveal;
 pub mod secrets_share;

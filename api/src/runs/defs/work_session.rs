@@ -802,6 +802,33 @@ async fn dispatch_prompt(
                  for you to move it to."
             .to_string(),
     };
+    // The hygiene step is PERSONAL: this agent's own repo rules name the
+    // bases and prefixes the pre-push hook will enforce. An agent with no
+    // grants (or no rules) gets the standing default — branch-first is the
+    // posture regardless of configuration.
+    // Fail-open by design: the personalization is an ENHANCEMENT of step 5,
+    // never a precondition — a lookup that errors or misses falls back to the
+    // standing default and the session proceeds.
+    let agent_id = sqlx::query_scalar::<_, String>(
+        "select id::text from agent_defs where model = $1 and enabled",
+    )
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten();
+    let mut hygiene_block = match agent_id.as_deref() {
+        Some(id) => hygiene_step(pg, id).await.unwrap_or_default(),
+        None => String::new(),
+    };
+    if hygiene_block.is_empty() {
+        hygiene_block =
+            "5. REPO HYGIENE: push your work to a branch named for the ticket (never to main — \
+             main is protected and will refuse you), open a PR, and put the PR link in your \
+             outcome. A person reviews and merges; your work reaching main is their call, not \
+             yours.\n"
+                .to_string();
+    }
     Ok(dispatch_brief(
         &crate::harness::defs::work_session::DispatchPromptInput {
             task_id: &task.id,
@@ -811,8 +838,46 @@ async fn dispatch_prompt(
             board_name,
             workflow_block: &block,
             step2: &step2,
+            hygiene_block: Some(&hygiene_block),
         },
     ))
+}
+
+/// The personalized step 5: one line per granted repo stating ITS base and
+/// prefix law, closing with the merge rule that never varies. Collapses to
+/// None when there are no grants, so the caller uses the standing default.
+async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
+    let rules = crate::github::repo_rules(pg, agent_id).await;
+    if rules.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "5. REPO HYGIENE, per your granted repos (the pre-push hook enforces every line of \
+         this — git itself will refuse you):\n",
+    );
+    for r in &rules {
+        let base = r.base_branch.as_deref().unwrap_or("the default branch");
+        match r.push_mode.as_str() {
+            "free" => out.push_str(&format!("   - {}: push anywhere you judge best.\n", r.repo)),
+            _ => {
+                let prefix = r
+                    .branch_prefix
+                    .as_deref()
+                    .map(|p| format!(" under \"{p}\""))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "   - {}: branch{} off {base}; never push {base} — push your branch and \
+                     open a PR against {base}.\n",
+                    r.repo, prefix
+                ));
+            }
+        }
+    }
+    out.push_str(
+        "   Put each PR link in your outcome. A person reviews and merges; your work reaching \
+         the base branch is their call, not yours.\n",
+    );
+    Some(out)
 }
 
 /// The agent says it's finished but the ticket disagrees — one nudge to
