@@ -109,7 +109,8 @@ fn dispatch_fixture() -> String {
         "2. comment a one-line acknowledgment in the ticket's discussion thread (the board's humans read it), and triage_ticket to status \"in_progress\" while you work.",
         "3. If the work touches a repo, sync FIRST: fetch and rebase or re-clone so you are on latest origin/main — a checkout that has sat for days is stale, and `git fetch` alone does not move your working tree. Base any branch on what you just pulled.",
         "4. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.",
-        "5. report_outcome when genuinely finished — a human signs off from review. If blocked, set status \"blocked\" and comment why. Either of those ends the session.",
+        "5. REPO HYGIENE: push your work to a branch named for the ticket (never to main — main is protected and will refuse you), open a PR, and put the PR link in your outcome. A person reviews and merges; your work reaching main is their call, not yours.",
+        "6. report_outcome when genuinely finished — a human signs off from review. If blocked, set status \"blocked\" and comment why. Either of those ends the session.",
         STATUS_LINE,
     ]
     .join("\n")
@@ -306,8 +307,9 @@ pub fn dispatch_prompt(input: &DispatchPromptInput) -> String {
     p.push_str(&format!("2. {}\n", input.step2));
     p.push_str("3. If the work touches a repo, sync FIRST: fetch and rebase or re-clone so you are on latest origin/main — a checkout that has sat for days is stale, and `git fetch` alone does not move your working tree. Base any branch on what you just pulled.\n");
     p.push_str("4. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.\n");
-    p.push_str("5. report_outcome when genuinely finished — a human signs off from review. If blocked, set status \"blocked\" and comment why. Either of those ends the session.\n");
-    p.push_str("That status move in step 5 is your LAST one on this ticket. Once it is in review, or parked in blocked, only a person moves it again — triage_ticket will refuse you with a 403, and so will add_time once the ticket is closed. Don't retry it; comment instead, which stays open.\n");
+    p.push_str("5. REPO HYGIENE: push your work to a branch named for the ticket (never to main — main is protected and will refuse you), open a PR, and put the PR link in your outcome. A person reviews and merges; your work reaching main is their call, not yours.\n");
+    p.push_str("6. report_outcome when genuinely finished — a human signs off from review. If blocked, set status \"blocked\" and comment why. Either of those ends the session.\n");
+    p.push_str("That status move in step 6 is your LAST one on this ticket. Once it is in review, or parked in blocked, only a person moves it again — triage_ticket will refuse you with a 403, and so will add_time once the ticket is closed. Don't retry it; comment instead, which stays open.\n");
     p.push_str("\nBe honest about capability: if you genuinely can't do this properly (a tool or access you're missing, an org-specific process you'd be guessing at), don't improvise — report_gap once with what a flow would need, then block. Never report a gap for work you can simply do.\n");
     p.push_str(STATUS_LINE);
     p
@@ -954,10 +956,13 @@ mod tests {
         // one mistake every later step inherits.
         assert!(p.contains("3. If the work touches a repo, sync FIRST"));
         assert!(p.contains("4. Do the work in as many steps as it takes"));
-        assert!(p.contains("5. report_outcome when genuinely finished"));
+        // The hygiene law: main is a human's call, and the guardrail is real
+        // (GitHub declines the push) — the prompt says why before git does.
+        assert!(p.contains("5. REPO HYGIENE: push your work to a branch"));
+        assert!(p.contains("6. report_outcome when genuinely finished"));
         // The 403 paragraph and the honesty paragraph, in that order.
         let last_move = p
-            .find("That status move in step 5 is your LAST one")
+            .find("That status move in step 6 is your LAST one")
             .unwrap();
         let honesty = p.find("Be honest about capability").unwrap();
         assert!(last_move < honesty);
