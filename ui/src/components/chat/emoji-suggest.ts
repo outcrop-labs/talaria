@@ -2,6 +2,7 @@ import { flushSync, mount, unmount } from 'svelte'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
 import { PluginKey } from '@tiptap/pm/state'
+import { menuHandlesKey } from '@/components/chat/composer-keys'
 import EmojiList from './EmojiList.svelte'
 import { searchEmoji, type EmojiEntry } from '@/lib/emoji'
 
@@ -38,10 +39,15 @@ const suggestion: Omit<SuggestionOptions<EmojiEntry>, 'editor'> = {
   render: () => {
     let menu: MenuHandle | null = null
     let popup: HTMLDivElement | null = null
+    // The latest candidate list the menu was rendered with — what onKeyDown
+    // consults, so an armed-but-empty menu falls through instead of eating
+    // Enter (TALA-5).
+    let current: EmojiEntry[] = []
     // The ":" trigger fires with an EMPTY query (zero items — we require two
     // typed characters), so the menu must be creatable from onUpdate too, once
     // matches exist. onStart alone would race and never show anything.
     const ensure = (props: { items: EmojiEntry[]; command: (item: EmojiEntry) => void; clientRect?: (() => DOMRect | null) | null }) => {
+      current = props.items
       if (menu) {
         menu.update(props.items, (item: EmojiEntry) => props.command(item))
       } else if (props.items.length) {
@@ -66,6 +72,10 @@ const suggestion: Omit<SuggestionOptions<EmojiEntry>, 'editor'> = {
           popup = null
           return true
         }
+        // The pure decision (TALA-5): an empty menu claims NOTHING — Enter
+        // falls through to the send keymap; a populated menu claims its
+        // selection keys and the mounted component executes the pick.
+        if (!menuHandlesKey(props.event.key, current)) return false
         return menu?.onKeyDown(props.event) ?? false
       },
       onExit: () => {

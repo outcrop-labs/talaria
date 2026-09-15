@@ -10,6 +10,7 @@
   import { Extension } from '@tiptap/core'
   import { MentionSuggest } from '@/components/ui/mention-suggest'
   import { EmojiSuggest } from '@/components/chat/emoji-suggest'
+  import { shouldSendOnEnter } from '@/components/chat/composer-keys'
   import SendButton from '@/components/chat/SendButton.svelte'
   import StopButton from '@/components/chat/StopButton.svelte'
   import ComposerToolbar from './ComposerToolbar.svelte'
@@ -20,8 +21,10 @@
   // hood. Type syntax (**bold**, `code`, ``` blocks, > quotes, - lists) or use
   // the toolbar; @ mentions and : emoji autocomplete inline. Enter sends —
   // except inside a code block, where it makes a newline (Slack semantics);
-  // Shift+Enter is always a soft newline. Messages travel as markdown, which is
-  // exactly what the message list renders and agents read.
+  // Shift+Enter is always a soft newline. An armed-but-empty autocomplete
+  // menu claims nothing: Enter falls through and sends (TALA-5). Messages
+  // travel as markdown, which is exactly what the message list renders and
+  // agents read.
   //
   // Mercury anatomy (spec §7, updated): the editor sits in an INSET prompt well
   // — ground background, hairline border, radius 6, 14px padding all round —
@@ -99,7 +102,12 @@
       return {
         Enter: () => {
           // Inside a code block Enter writes code; everywhere else it sends.
-          if (this.editor.isActive('codeBlock')) return false
+          // An Enter that belongs to an IME composition is never a send — the
+          // composition's own confirm keydown must not fire the message
+          // (shouldSendOnEnter's belt to ProseMirror's suspend-on-compose).
+          if (!shouldSendOnEnter({ inCodeBlock: this.editor.isActive('codeBlock'), compositionActive: this.editor.view.composing })) {
+            return false
+          }
           submit()
           return true
         },

@@ -2,6 +2,7 @@ import { flushSync, mount, unmount } from 'svelte'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
 import { PluginKey } from '@tiptap/pm/state'
+import { menuHandlesKey } from '@/components/chat/composer-keys'
 import MentionList from './MentionList.svelte'
 import type { Mentionable } from '@/components/chat/mentions.svelte'
 
@@ -47,9 +48,14 @@ function buildSuggestion(items: () => Mentionable[]): Omit<SuggestionOptions<Men
     render: () => {
       let menu: MenuHandle | null = null
       let popup: HTMLDivElement | null = null
+      // The latest candidate list the menu was rendered with — what onKeyDown
+      // consults, so an armed-but-empty menu falls through instead of eating
+      // Enter (TALA-5). Named apart from the config's `items` getter above.
+      let current: Mentionable[] = []
       // Creatable from onUpdate too: if the first result set is empty (query
       // typed fast, filtered pool), onStart alone would never show the menu.
       const ensure = (props: { items: Mentionable[]; command: (item: Mentionable) => void; clientRect?: (() => DOMRect | null) | null }) => {
+        current = props.items
         if (menu) {
           menu.update(props.items, (item: Mentionable) => props.command(item))
         } else if (props.items.length) {
@@ -74,6 +80,10 @@ function buildSuggestion(items: () => Mentionable[]): Omit<SuggestionOptions<Men
             popup = null
             return true
           }
+          // The pure decision (TALA-5): an empty menu claims NOTHING — Enter
+          // falls through to the send keymap; a populated menu claims its
+          // selection keys and the mounted component executes the pick.
+          if (!menuHandlesKey(props.event.key, current)) return false
           return menu?.onKeyDown(props.event) ?? false
         },
         onExit: () => {
