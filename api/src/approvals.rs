@@ -1875,6 +1875,7 @@ mod tests {
                     board_id: run.subject_id.clone().unwrap_or_else(|| "unknown".into()),
                 }),
                 max_step_ms: 30_000,
+                idle_step_ms: None,
                 max_attempts: 3,
             }))
         })

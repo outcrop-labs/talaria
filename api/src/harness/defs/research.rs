@@ -2544,6 +2544,7 @@ pub fn tool_search_transport(
             let mut called: usize = 0;
             for round in 0..MAX_TOOL_ROUNDS {
                 let reply = (base)(TransportRequest {
+                    liveness: None,
                     messages: convo.clone(),
                     tool_defs: tool_defs.clone(),
                     caller: caller.clone(),
@@ -2679,6 +2680,7 @@ pub fn tool_search_transport(
                     tool_call_id: None,
                 });
                 text = (base)(TransportRequest {
+                    liveness: None,
                     messages: closing_messages,
                     caller,
                     ..req.clone()
@@ -3489,6 +3491,7 @@ mod tests {
 
     fn turn_req(model: &str, messages: Vec<Message>) -> TransportRequest {
         TransportRequest {
+            liveness: None,
             model: model.into(),
             messages,
             temperature: None,
