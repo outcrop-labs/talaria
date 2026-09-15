@@ -17,10 +17,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use sqlx::Row;
 
+use crate::boards::board_role;
 use crate::error::{house_error, thrown_internal_error};
 use crate::session::require_user;
 use crate::state::AppState;
-use crate::boards::board_role;
 
 pub async fn get(
     State(state): State<AppState>,
@@ -35,11 +35,12 @@ pub async fn get(
         Err(gate) => return gate,
     };
     // The task's board decides, exactly like every other read of the ticket.
-    let board: Option<(String,)> = sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
-        .bind(&id)
-        .fetch_optional(&state.pg)
-        .await
-        .unwrap_or(None);
+    let board: Option<(String,)> =
+        sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+            .bind(&id)
+            .fetch_optional(&state.pg)
+            .await
+            .unwrap_or(None);
     let Some((board_id,)) = board else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
