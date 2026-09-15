@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-9 routes.
+10 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -24,6 +24,7 @@
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | POST | `agent` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | POST | `session` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | DELETE | `session` |
+| [`/api/tasks/{id}/work-session`](#apitasksidwork-session) | GET | `session` |
 | [`/api/workflows`](#apiworkflows) | GET | `session` |
 | [`/api/workflows`](#apiworkflows) | POST | `session` + `perm:agents.manage` |
 | [`/api/workflows/{id}`](#apiworkflowsid) | PUT | `session` + `perm:agents.manage` |
@@ -198,6 +199,20 @@ Source: [`api/src/routes/tasks/tasks_id_watchers.rs`](../../api/src/routes/tasks
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `watcher` | `string(1, 200)` |  |
+
+## `/api/tasks/{id}/work-session`
+
+Source: [`api/src/routes/tasks/tasks_id_work_session.rs`](../../api/src/routes/tasks/tasks_id_work_session.rs)
+
+> GET /api/tasks/{id}/work-session. The LIVE WORK SESSION on a ticket, for
+> the detail view's ticker and its watch modal: the run row (state, phase,
+> the agent working it, the turn count) plus the tail of the agent's last
+> reply, read from the checkpoint the session persists before acting. This
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{session}` | 200, 403, 404 | — |
 
 ## `/api/workflows`
 

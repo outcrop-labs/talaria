@@ -98,6 +98,9 @@ export const WAITING_SITES = {
   'fleet/agent-hire': { role: 'tool', slot: 'inline', note: 'Rendering config, starting the container, waiting for health.' },
   'fleet/agent-apply': { role: 'tool', slot: 'inline', note: 'Rolling a new container up beside the old one.' },
   'fleet/cron-save': { role: 'submitting', slot: 'button', note: 'Cron form submitting.' },
+
+  /* ── Boards ──────────────────────────────────────────────────────────── */
+  'ticket/work-watch': { role: 'reasoning', slot: 'inline', note: 'An agent is working this ticket right now.' },
   'fleet/cron-design': { role: 'reasoning', slot: 'inline', note: 'Designing a job: name, schedule, prompt.' },
   'fleet/federate': { role: 'submitting', slot: 'button', note: 'Federating with another instance.' },
   'fleet/mcp-roll': { role: 'tool', slot: 'inline', note: 'An MCP server rolling in the agent detail tab.' },

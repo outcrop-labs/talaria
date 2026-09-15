@@ -226,6 +226,11 @@ pub fn router(state: AppState) -> Router {
             get(boards::boards_id_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/tasks/{id}/work-session",
+            get(tasks::tasks_id_work_session::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/tasks/{id}",
             get(tasks::tasks_id::get)
                 .put(tasks::tasks_id::put)

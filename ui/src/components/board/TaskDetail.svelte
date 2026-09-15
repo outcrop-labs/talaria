@@ -70,6 +70,7 @@
   import SubtaskAdd from './SubtaskAdd.svelte'
   import TicketMuseBar from './TicketMuseBar.svelte'
   import WorkbenchJobsStrip from './WorkbenchJobsStrip.svelte'
+  import WorkbenchTicker from './WorkbenchTicker.svelte'
 
   const MOVE: TaskStatus[] = [...TASK_STATUSES, ...OFF_BOARD_STATUSES]
 
@@ -320,6 +321,7 @@
             </div>
           {/if}
 
+          <WorkbenchTicker {taskId} />
           <WorkbenchJobsStrip {taskId} {canEdit} />
 
           {#key `ds-${t.id}`}
