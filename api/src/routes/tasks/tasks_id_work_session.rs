@@ -62,7 +62,7 @@ pub async fn get(
     let row = sqlx::query(
         "select id::text, state::text, phase, input, checkpoint \
          from runs \
-         where kind = 'work-session' and subject_id = $1::uuid \
+         where kind = 'work-session' and subject_id = $1 \
            and state in ('queued', 'running', 'awaiting') \
          order by created_at desc limit 1",
     )
