@@ -1008,9 +1008,7 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
     "[ -n \"$remote_url\" ] || exit 0\n",
     "# owner/repo from an https or ssh remote URL.\n",
-    "repo=$(printf %s \"$remote_url\" | sed -nE \n",
-    "  -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)(\\.git)?/?$#\\1#p' \n",
-    "  -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)(\\.git)?/?$#\\2#p')\n",
+    "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)(\\.git)?/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)(\\.git)?/?$#\\2#p')\n",
     "[ -n \"$repo\" ] || exit 0\n",
     "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
     "refs=\"\"; n=0\n",
@@ -2263,6 +2261,100 @@ empty_list: []
         let mode = std::fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "helper must be executable");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_pre_push_hook_answers_allow_and_deny_end_to_end() {
+        // `sh -n` proves syntax, not behavior — the first shipped hook was
+        // syntactically valid shell whose sed had lost a line continuation,
+        // so `repo` came back empty and the gate passed everything. This
+        // test RUNS the hook: a real git repo, a github-shaped remote, and a
+        // stub curl standing in for the check route, for both verdicts.
+        fn run(curl_body: &'static str) -> (i32, String) {
+            let dir = std::env::temp_dir().join(format!(
+                "talaria-hookrun-{}-{}",
+                std::process::id(),
+                curl_body.len()
+            ));
+            std::fs::create_dir_all(dir.join("repo")).unwrap();
+            std::fs::create_dir_all(dir.join("stub")).unwrap();
+            std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+            std::fs::write(
+                dir.join("stub/curl"),
+                format!("#!/bin/sh\nprintf '%s' '{curl_body}'\n"),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("stub/curl"), {
+                let mut p = std::fs::metadata(dir.join("stub/curl"))
+                    .unwrap()
+                    .permissions();
+                p.set_mode(0o755);
+                p
+            })
+            .unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir.join("repo"))
+                    .args(["init", "-q"])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir.join("repo"))
+                    .args([
+                        "remote",
+                        "add",
+                        "origin",
+                        "https://github.com/acme/widgets.git"
+                    ])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            // PATH is PREPENDED for real — env() does not expand "$PATH",
+            // and a literal "$PATH" entry would hide sed/git from the hook.
+            let mut stub_path = dir.join("stub").into_os_string();
+            stub_path.push(":");
+            stub_path.push(std::env::var_os("PATH").unwrap_or_default());
+            // The refs arrive as a FILE-backed stdin: no write race with a
+            // child that may exit before the parent writes.
+            let refs_file = dir.join("refs.txt");
+            std::fs::write(&refs_file, b"refs/heads/x 0 refs/heads/agent/y 0\n").unwrap();
+            let out = std::process::Command::new("sh")
+                .arg("pre-push")
+                .arg("origin")
+                .current_dir(dir.join("repo"))
+                .env("PATH", stub_path)
+                .env("TALARIA_API_URL", "http://talaria.test")
+                .env("API_SERVER_MODEL_NAME", "probe-eng")
+                .env("TALARIA_AGENT_KEY", "probe-key")
+                .env("GIT_DIR", ".git")
+                .stdin(std::fs::File::open(&refs_file).unwrap())
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            let script = GIT_PRE_PUSH_HOOK.to_string();
+            let _ = std::fs::remove_dir_all(&dir);
+            (
+                out.status.code().unwrap_or(-1),
+                format!("{stderr}\n---script---\n{script}"),
+            )
+        }
+        let (code, _) = run(r#"{"ok":true}"#);
+        assert_eq!(code, 0, "an allowed push must pass through");
+        let (code, err) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
+        assert_eq!(code, 1, "a refused push must abort");
+        assert!(
+            err.contains("push declined") && err.contains("not yours"),
+            "the refusal must carry the route's sentence: {err}"
+        );
     }
 
     #[test]
