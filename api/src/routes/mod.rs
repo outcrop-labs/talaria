@@ -160,6 +160,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
         )
         .route(
+            "/api/boards/{id}/work-sessions",
+            get(boards::boards_id_work_sessions::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/boards/{id}/members",
             get(boards::boards_id_members::get)
                 .post(boards::boards_id_members::post)
