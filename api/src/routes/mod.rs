@@ -1247,6 +1247,10 @@ pub fn router(state: AppState) -> Router {
             get(agents::runs_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/runs/{id}/watch",
+            get(agents::runs_watch::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/me/events",
             get(account::me_events::get).fallback(|| async { method_not_allowed("GET") }),
         )

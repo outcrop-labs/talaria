@@ -10,3 +10,4 @@ pub mod boards_id_statuses;
 pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
+pub mod boards_id_work_sessions;

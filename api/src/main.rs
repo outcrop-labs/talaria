@@ -5,7 +5,7 @@
 // routes::router, so integration tests drive the exact stack this serves.
 
 use std::sync::Arc;
-use talaria_api::{config, config::Config, db, jobs, routes, scheduler, state::AppState};
+use talaria_api::{config, config::Config, db, jobs, routes, runs, scheduler, state::AppState};
 
 #[tokio::main]
 async fn main() {
@@ -97,6 +97,11 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    // THE RUN DRIVERS, before anything else: abort every live step and let
+    // each drive's cleanup release its lease, so the instance that replaces
+    // this one resumes the work in seconds (its 30s sweep) rather than after
+    // each lease TTL — a roll must never stall work it can hand over.
+    runs::drivers::drain(5_000).await;
     // Draining means the scheduler's drain too: no new runs armed, in-flight
     // job work given its grace, then the pool. A job that ARCHIVES
     // conversations or MESSAGES people must not be killed half a second from

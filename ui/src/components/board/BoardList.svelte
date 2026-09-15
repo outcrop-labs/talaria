@@ -1,6 +1,11 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
+  import DitherLayer from '@/components/ui/DitherLayer.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
+  import WorkWatch from './WorkWatch.svelte'
+  import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
@@ -72,6 +77,11 @@
 
   const qc = useQueryClient()
   const menu = useContextMenu()
+  // Live work per card: one board-wide read; the working rows wear the
+  // dither and carry the watch affordance.
+  const work = useBoardWorkSessions(() => boardId)
+  let watchTask = $state<{ id: string; runId: string } | null>(null)
+  const working = (id: string) => work.data?.sessions?.[id] ?? null
   const fleetQuery = useAgents()
   const sessionQuery = useSession()
   const me = $derived(sessionQuery.data)
@@ -513,6 +523,33 @@
                         <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} class="opacity-0 group-hover:opacity-100" />
                       {/if}
                     </td>
+                    {#if working(t.id)}
+                      <!-- The working cell: the dither field plus the watch
+                           affordance, on the CARD itself — live work is
+                           visible from the list, not only from the detail. -->
+                      <td class="relative w-8 p-0" onclick={(e) => e.stopPropagation()}>
+                        <div class="relative h-full min-h-[28px] overflow-hidden">
+                          <DitherLayer
+                            sources={[
+                              { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.5 },
+                              { id: 'drift', kind: 'wave', axis: 'y', wavelength: 120, speed: 14, strength: 0.6 },
+                            ]}
+                            pitch={3}
+                            dot={1.2}
+                            alphaFloor={0.08}
+                            maxAlpha={0.5}
+                          />
+                          <button
+                            type="button"
+                            class="relative flex h-full w-full items-center justify-center text-accent hover:text-fg"
+                            title="{(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working — turn {working(t.id)!.turn ?? '?'} · watch the work"
+                            onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
+                          >
+                            <WaitingMark site="ticket/work-watch" size={12} />
+                          </button>
+                        </div>
+                      </td>
+                    {/if}
                     {#each cols as c (c.key)}
                       <td class={cn('px-3 py-2', c.align === 'right' && 'text-right')}>
                         {@render cell(t, c.key)}
@@ -527,6 +564,12 @@
         </table>
       {/if}
     </div>
+
+    {#if watchTask}
+      <Modal open={!!watchTask} onClose={() => (watchTask = null)} title="Work in progress" width="max-w-2xl">
+        <WorkWatch runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
+      </Modal>
+    {/if}
 
     <!-- Bulk action bar — appears with a selection, acts on every selected
         ticket, then clears. -->

@@ -125,6 +125,7 @@ pub async fn draft_reply(
             "transcript": transcript,
         }),
         RunContext {
+            watch: None,
             liveness: None,
             caller: "briefer:reply".into(),
             user_id: None,

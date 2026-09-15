@@ -11,6 +11,7 @@ pub mod gaps;
 pub mod gaps_id;
 pub mod muse;
 pub mod runs_events;
+pub mod runs_watch;
 pub mod skills;
 pub mod skills_owner_name;
 pub mod vision_describe;

@@ -456,6 +456,11 @@ pub struct RunContext {
     /// caller's idle clock. Absent for every single-shot harness — no ping,
     /// no deadline to feed.
     pub liveness: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// A Redis channel name to WATCH this turn on: every parsed stream event
+    /// (the agent's own words and tool calls, as they happen) is published
+    /// there and appended to the matching tail key, which the watch route
+    /// replays and relays. The terminal-in-the-browser half of observability.
+    pub watch: Option<String>,
 }
 
 /// Where the streamed deltas go as they arrive — the browser's chunks. Called
@@ -1142,6 +1147,7 @@ pub(crate) async fn execute(
             hold_ms: def.hold_ms,
             caller: caller.clone(),
             liveness: ctx.liveness.clone(),
+            watch: ctx.watch.clone(),
         };
         // The streamed deltas are accumulated as well as handed on, so a
         // transport that pumps into a browser and never assembles the text
@@ -3719,6 +3725,7 @@ mod tests {
         let state = AppState::new(crate::db::pool(&cfg), cfg);
         let req = TransportRequest {
             liveness: None,
+            watch: None,
             model: "qwen3-14b".into(),
             messages: vec![Message::user("x")],
             temperature: None,

@@ -40,7 +40,7 @@
       <WaitingMark site="ticket/work-watch" class="text-accent" size={13} />
       <span class="min-w-0 flex-1 truncate text-sm text-fg">
         {agentLabel} is working this ticket
-        {#if live.turn}<span class="text-muted"> · turn {live.turn}/12</span>{/if}
+        {#if live.turn}<span class="text-muted"> · turn {live.turn}</span>{/if}
         {#if live.phase}<span class="text-muted"> · {live.phase}</span>{/if}
       </span>
       <Button size="xs" variant="ghost" onclick={() => (watchOpen = true)}>Watch the work</Button>
