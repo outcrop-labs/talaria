@@ -1008,7 +1008,7 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
     "[ -n \"$remote_url\" ] || exit 0\n",
     "# owner/repo from an https or ssh remote URL.\n",
-    "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)(\\.git)?/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)(\\.git)?/?$#\\2#p')\n",
+    "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
     "[ -n \"$repo\" ] || exit 0\n",
     "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
     "refs=\"\"; n=0\n",
@@ -2270,7 +2270,7 @@ empty_list: []
         // so `repo` came back empty and the gate passed everything. This
         // test RUNS the hook: a real git repo, a github-shaped remote, and a
         // stub curl standing in for the check route, for both verdicts.
-        fn run(curl_body: &'static str) -> (i32, String) {
+        fn run(curl_body: &'static str) -> (i32, String, String) {
             let dir = std::env::temp_dir().join(format!(
                 "talaria-hookrun-{}-{}",
                 std::process::id(),
@@ -2281,7 +2281,9 @@ empty_list: []
             std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
             std::fs::write(
                 dir.join("stub/curl"),
-                format!("#!/bin/sh\nprintf '%s' '{curl_body}'\n"),
+                format!(
+                    "#!/bin/sh\n[ -n \"$TALARIA_CAPTURE\" ] && printf '%s' \"$*\" > \"$TALARIA_CAPTURE\"\nprintf '%s' '{curl_body}'\n"
+                ),
             )
             .unwrap();
             use std::os::unix::fs::PermissionsExt;
@@ -2336,20 +2338,31 @@ empty_list: []
                 .env("API_SERVER_MODEL_NAME", "probe-eng")
                 .env("TALARIA_AGENT_KEY", "probe-key")
                 .env("GIT_DIR", ".git")
+                .env("TALARIA_CAPTURE", dir.join("asked"))
                 .stdin(std::fs::File::open(&refs_file).unwrap())
                 .output()
                 .unwrap();
             let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
             let script = GIT_PRE_PUSH_HOOK.to_string();
+            let asked = std::fs::read_to_string(dir.join("asked")).unwrap_or_default();
             let _ = std::fs::remove_dir_all(&dir);
             (
                 out.status.code().unwrap_or(-1),
                 format!("{stderr}\n---script---\n{script}"),
+                asked,
             )
         }
-        let (code, _) = run(r#"{"ok":true}"#);
+        let (code, _, asked) = run(r#"{"ok":true}"#);
         assert_eq!(code, 0, "an allowed push must pass through");
-        let (code, err) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
+        // THE PARSE, pinned: a .git-suffixed https remote must arrive at the
+        // route as bare owner/repo — the first parse kept the suffix (the
+        // lazy `+?` is load-bearing) and every push 404'd against its own
+        // grant.
+        assert!(
+            asked.contains(r#""repo":"acme/widgets""#),
+            "the repo string must be .git-suffix-free: {asked}"
+        );
+        let (code, err, _) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
         assert_eq!(code, 1, "a refused push must abort");
         assert!(
             err.contains("push declined") && err.contains("not yours"),
