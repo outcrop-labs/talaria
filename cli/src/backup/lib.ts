@@ -15,7 +15,8 @@ import { envValue, envWins, parseEnv, stripQuotes } from '../envfile'
 // matches docker/dev-compose.yml — a dump is refused if the client is older
 // than the server, so bump this together with the server image.
 export const pgImage = (env: Env): string => env.TALARIA_PG_IMAGE || 'postgres:16-alpine'
-export const mcImage = (env: Env): string => env.TALARIA_MC_IMAGE || 'minio/mc:latest'
+// mc comes from quay — MinIO removed its Docker Hub namespace (2026-09)
+export const mcImage = (env: Env): string => env.TALARIA_MC_IMAGE || 'quay.io/minio/mc:latest'
 
 type Env = Record<string, string | undefined>
 
