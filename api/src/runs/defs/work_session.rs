@@ -41,7 +41,7 @@
 // keep resuming, and a renamed field would reset every live session
 // mid-work. Pinned by round-trip tests.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -855,10 +855,36 @@ async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
         "5. REPO HYGIENE, per your granted repos (the pre-push hook enforces every line of \
          this — git itself will refuse you):\n",
     );
+    let env_keys: HashMap<String, Vec<String>> =
+        sqlx::query_as("select repo, key from repo_env where repo = any($1) order by repo, key")
+            .bind(rules.iter().map(|r| r.repo.clone()).collect::<Vec<_>>())
+            .fetch_all(pg)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .fold(HashMap::new(), |mut m, (repo, key)| {
+                m.entry(repo).or_default().push(key);
+                m
+            });
     for r in &rules {
         let base = r.base_branch.as_deref().unwrap_or("the default branch");
+        // The project's env, when one exists: name the PATH, never the
+        // values — the agent sources the file the way a developer would.
+        let env_note = env_keys
+            .get(&r.repo)
+            .map(|keys| {
+                format!(
+                    " (project env with {} var(s): source /opt/workbench-env/{}.env)",
+                    keys.len(),
+                    r.repo
+                )
+            })
+            .unwrap_or_default();
         match r.push_mode.as_str() {
-            "free" => out.push_str(&format!("   - {}: push anywhere you judge best.\n", r.repo)),
+            "free" => out.push_str(&format!(
+                "   - {}: push anywhere you judge best.{env_note}\n",
+                r.repo
+            )),
             _ => {
                 let prefix = r
                     .branch_prefix
@@ -867,7 +893,7 @@ async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
                     .unwrap_or_default();
                 out.push_str(&format!(
                     "   - {}: branch{} off {base}; never push {base} — push your branch and \
-                     open a PR against {base}.\n",
+                     open a PR against {base}.{env_note}\n",
                     r.repo, prefix
                 ));
             }

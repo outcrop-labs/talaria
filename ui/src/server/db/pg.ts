@@ -2937,6 +2937,27 @@ alter table tasks drop column if exists conversation_id`,
   `alter table workbench_repos add column if not exists base_branch text`,
   `alter table workbench_repos add column if not exists push_mode text not null default 'branches_only'`,
   `alter table workbench_repos add column if not exists branch_prefix text`,
+  // ── PROJECT ENV STORES ────────────────────────────────────────────────────
+  //
+  // The dev-env half of the secret system: per-REPO KEY=VALUE stores an
+  // agent's build genuinely needs (a project's .env), sealed with the same
+  // envelope workspace_secret_entries uses. The VISIBILITY CLASS is the
+  // opposite of the vault and the table says so: these values ARE
+  // materialized into the agent's container by the fleet render, so an
+  // agent can read them — exactly what a developer's own .env is for. Never
+  // put an org credential here; that is what workspace_secrets (never
+  // revealed, substituted only at spend boundaries) exists for. Access
+  // control is the EXISTING repo grant: an agent granted the repo gets its
+  // env, nothing else does.
+  `create table if not exists repo_env (
+     repo text not null,
+     key text not null,
+     value_cipher text not null,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     primary key (repo, key)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-230 routes across 23 groups.
+231 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -32,7 +32,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 9 |
 | [`teams`](./teams.md) | Teams and their members. | 3 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 7 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 8 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):

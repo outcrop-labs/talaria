@@ -1360,6 +1360,40 @@ pub async fn render_fleet(
             .map_err(|e| format!("{}: {e}", hook_path.display()))?;
         set_executable(&hook_path).await;
         result.files.push(hook_path.display().to_string());
+        // ── Project env stores ────────────────────────────────────────────
+        // Every repo this agent is GRANTED that carries an env store gets its
+        // dotenv materialized here (0600 — the agent reads it, nothing else
+        // should) and mounted below at /opt/workbench-env/owner/repo.env.
+        // Access control was the grant; the value leaves the database exactly
+        // once, in this write.
+        let granted = crate::github::granted_repos(pg, &def.id).await;
+        let env_root = agent_dir.join("workbench-env");
+        let _ = tokio::fs::remove_dir_all(&env_root).await;
+        for repo in crate::repo_env::repos_with_env(pg).await {
+            if !granted.contains(&repo) {
+                continue;
+            }
+            let Some(body) = crate::repo_env::env_file(pg, sb, &repo)
+                .await
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let (owner, name) = repo.split_once('/').unwrap_or(("", &repo));
+            let dir = env_root.join(owner);
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            let file = dir.join(format!("{name}.env"));
+            tokio::fs::write(&file, body)
+                .await
+                .map_err(|e| format!("{}: {e}", file.display()))?;
+            // Plain 0644: the mount is :ro into THIS agent's container only,
+            // and the agent's own uid must be able to read what its build
+            // sources — a host-uid 0600 would arrive unreadable.
+            result.files.push(file.display().to_string());
+        }
         let gitconfig_path = agent_dir.join("gitconfig");
         tokio::fs::write(&gitconfig_path, GITCONFIG)
             .await
@@ -1578,6 +1612,12 @@ pub async fn render_fleet(
             "{}:/usr/local/share/talaria-git-hooks:ro",
             hooks_dir.display()
         ));
+        // The project env files, mounted only when the agent has any: an
+        // absent mount and an empty store are the same fact, and absence is
+        // cleaner than an empty dir in every image.
+        if tokio::fs::metadata(&env_root).await.is_ok() {
+            vols.push(format!("{}:/opt/workbench-env:ro", env_root.display()));
+        }
         vols.push(format!("{}:/etc/gitconfig:ro", gitconfig_path.display()));
         vols.push(format!(
             "{}:/opt/dept-skills:ro",

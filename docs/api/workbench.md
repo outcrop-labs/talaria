@@ -7,12 +7,14 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-7 routes.
+8 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/workbench`](#apiworkbench) | GET | `session` + `perm:agents.manage` |
 | [`/api/workbench`](#apiworkbench) | PUT | `session` + `perm:agents.manage` |
+| [`/api/workbench/env/{*repo}`](#apiworkbenchenvrepo) | GET | `session` + `perm:agents.manage` |
+| [`/api/workbench/env/{*repo}`](#apiworkbenchenvrepo) | PATCH | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | GET | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | PUT | `session` + `perm:agents.manage` |
 | [`/api/workbench/github`](#apiworkbenchgithub) | GET | `admin` |
@@ -56,6 +58,27 @@ Source: [`api/src/routes/workbench/workbench.rs`](../../api/src/routes/workbench
 | `enabled` | `bool?` |  |
 | `image` | `string?(200)` | ── admin-only below: these two reach the host, not just the sandbox ── |
 | `mounts` | `string[]?(0, 300, 20)` |  |
+
+## `/api/workbench/env/{*repo}`
+
+Source: [`api/src/routes/workbench/workbench_env_repo.rs`](../../api/src/routes/workbench/workbench_env_repo.rs)
+
+> /api/workbench/env/{repo}. The per-project env store's admin wire: PATCH
+> to set/delete entries (values sealed server-side, never echoed), GET for
+> the key list. The VALUES never leave the database through this route —
+> the only reader is the fleet render, which materializes them into the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `{repo, keys}` | 200, 400 | — |
+| PATCH | `session` + `perm:agents.manage` | [body](#patch-apiworkbenchenvrepo-body) | `{repo, keys}` | 200, 400 | audit |
+
+### PATCH `/api/workbench/env/{*repo}` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/workbench/flow`
 

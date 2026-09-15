@@ -84,6 +84,7 @@ pub mod push;
 pub mod ratelimit;
 pub mod realtime;
 pub mod refs;
+pub mod repo_env;
 pub mod research;
 pub mod research_origin;
 pub mod retrieval;

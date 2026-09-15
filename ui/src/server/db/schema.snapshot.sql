@@ -756,6 +756,14 @@ CREATE TABLE public.rag_points (
     content_hash text NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.repo_env (
+    repo text NOT NULL,
+    key text NOT NULL,
+    value_cipher text NOT NULL,
+    created_by text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.research_members (
     run_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -1274,6 +1282,8 @@ ALTER TABLE ONLY public.rag_points
     ADD CONSTRAINT rag_points_collection_id_source_type_source_id_key UNIQUE (collection_id, source_type, source_id);
 ALTER TABLE ONLY public.rag_points
     ADD CONSTRAINT rag_points_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.repo_env
+    ADD CONSTRAINT repo_env_pkey PRIMARY KEY (repo, key);
 ALTER TABLE ONLY public.research_members
     ADD CONSTRAINT research_members_pkey PRIMARY KEY (run_id, user_id);
 ALTER TABLE ONLY public.research_runs

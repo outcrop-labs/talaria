@@ -1,5 +1,6 @@
 // The workbench surface: flows, github, harnesses, jobs, repos.
 pub mod workbench;
+pub mod workbench_env_repo;
 pub mod workbench_flow;
 pub mod workbench_github;
 pub mod workbench_harnesses;

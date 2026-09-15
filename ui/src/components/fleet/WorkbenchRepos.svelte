@@ -5,7 +5,7 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { errorMessage, getJson, patchJson, putJson } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import { slide } from '@/lib/motion'
   import { p } from '@/router'
@@ -28,6 +28,7 @@
     granted: string[]
     rules?: RepoRule[]
     branches?: Record<string, string[]>
+    env?: Record<string, string[]>
   }
 
   const qc = useQueryClient()
@@ -49,6 +50,30 @@
       pushMode: 'branches_only',
       branchPrefix: null,
     }
+  // ── Project env stores ─────────────────────────────────────────────────
+  // Keys arrive from the server; values NEVER do (write-only, sealed at
+  // rest). An edit row holds a new key/value pair; saving sends {set:[...]}
+  // for rows with a value, {delete:[...]} for removed keys.
+  let envDeletes = $state<Record<string, string[]>>({})
+  let newEnvRow = $state<Record<string, { key: string; value: string }>>({})
+  const removeEnvKey = (repo: string, key: string) => {
+    envDeletes[repo] = [...(envDeletes[repo] ?? []), key]
+  }
+  const saveEnv = async (repo: string) => {
+    const set = []
+    if (newEnvRow[repo]?.key && newEnvRow[repo]?.value) set.push(newEnvRow[repo])
+    const del = envDeletes[repo] ?? []
+    if (set.length === 0 && del.length === 0) return
+    try {
+      await patchJson(`/api/workbench/env/${repo}`, { set, delete: del })
+      envDeletes[repo] = []
+      newEnvRow[repo] = { key: '', value: '' }
+    } catch (e) {
+      pushToast({ title: 'Env save failed', body: errorMessage(e), tone: 'danger' })
+    }
+    await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
+  }
+
   const toggle = async (repo: string, on: boolean) => {
     const granted = query.data?.granted ?? []
     const next = on ? [...granted, repo] : granted.filter((r) => r !== repo)
@@ -112,6 +137,21 @@
                 <option value="branches_only">branches only</option>
                 <option value="free">may push base</option>
               </Select>
+            </div>
+            {@const envKeys = d.env?.[repo] ?? []}
+            {@const pendingEnv = (envDeletes[repo]?.length ?? 0) > 0 || (newEnvRow[repo]?.key && newEnvRow[repo]?.value)}
+            <div class="flex flex-wrap items-center gap-1.5 px-2 py-1">
+              <span class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim" title="Values are sealed at rest, materialized into the agent's container, and never displayed again — project keys only, never org credentials">project env</span>
+              {#each envKeys as k (k)}
+                {#if !(envDeletes[repo] ?? []).includes(k)}
+                  <button type="button" class="rounded border border-line bg-raised/60 px-1.5 py-0.5 font-mono text-[11px] text-fg hover:border-danger hover:text-danger" title="Remove this variable" onclick={() => removeEnvKey(repo, k)}>{k} ×</button>
+                {/if}
+              {/each}
+              <Input size="sm" class="w-24 font-mono text-xs" placeholder="KEY" value={newEnvRow[repo]?.key ?? ''} oninput={(e) => (newEnvRow[repo] = { key: e.currentTarget.value.toUpperCase(), value: newEnvRow[repo]?.value ?? '' })} />
+              <Input size="sm" class="w-40 font-mono text-xs" type="password" placeholder="value" value={newEnvRow[repo]?.value ?? ''} oninput={(e) => (newEnvRow[repo] = { key: newEnvRow[repo]?.key ?? '', value: e.currentTarget.value })} />
+              {#if pendingEnv}
+                <button type="button" class="text-xs text-accent hover:underline" onclick={() => void saveEnv(repo)}>save env</button>
+              {/if}
             </div>
           {/each}
           {#if Object.keys(edits).length > 0}

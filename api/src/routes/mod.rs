@@ -1174,6 +1174,12 @@ pub fn router(state: AppState) -> Router {
                 .put(workbench::workbench_repos_agent_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
+        .route(
+            "/api/workbench/env/{*repo}",
+            get(workbench::workbench_env_repo::get)
+                .patch(workbench::workbench_env_repo::patch)
+                .fallback(|| async { method_not_allowed("GET, PATCH") }),
+        )
         // The MCP family — the registry plane: the roster read (agent wire +
         // the fleet's own config), server CRUD with oauth sniffing, the
         // per-user connect surface, the fleet version-edit hook, the
