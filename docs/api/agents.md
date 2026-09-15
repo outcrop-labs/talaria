@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-15 routes.
+16 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -25,6 +25,7 @@
 | [`/api/gaps/{id}`](#apigapsid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/muse`](#apimuse) | POST | `session` |
 | [`/api/runs/{id}/events`](#apirunsidevents) | GET | `session` |
+| [`/api/runs/{id}/watch`](#apirunsidwatch) | GET | `session` |
 | [`/api/skills`](#apiskills) | GET | `session` |
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | GET | `session` |
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | POST | `session` |
@@ -236,6 +237,20 @@ Source: [`api/src/routes/agents/runs_events.rs`](../../api/src/routes/agents/run
 > phase, terminal error). Auth-gated by the run's read ACL. This is what makes
 > a long action
 > attachable: a tab that was closed, a view that was navigated away from, or a
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `…` | 200, 403 | SSE |
+
+## `/api/runs/{id}/watch`
+
+Source: [`api/src/routes/agents/runs_watch.rs`](../../api/src/routes/agents/runs_watch.rs)
+
+> GET /api/runs/{id}/watch → SSE of the run's WORK TERMINAL: the agent's
+> own stream events (words as they land, tool calls as they start) as one
+> JSON line per `data:` frame — first a bounded replay of the current
+> turn's tail, then live frames as they publish. Same ACL as the run's
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

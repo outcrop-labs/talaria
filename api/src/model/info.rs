@@ -376,6 +376,7 @@ pub async fn rewrite_pending_blurbs(
         &blurb_writer_harness(),
         &input,
         RunContext {
+            watch: None,
             liveness: None,
             caller: "platform:blurb-writer".into(),
             user_id: None,

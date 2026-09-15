@@ -303,6 +303,7 @@ pub type TurnFn = Arc<
             String,
             String,
             LivenessTap,
+            String,
         ) -> BoxFuture<'static, Result<TurnOutput, String>>
         + Send
         + Sync,
@@ -380,8 +381,15 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
             })
         }),
         skill_names: Arc::new(|pg, agent_model| Box::pin(real_skill_names(pg, agent_model))),
-        turn: Arc::new(|state, agent_model, task_id, prompt, liveness| {
-            Box::pin(real_turn(state, agent_model, task_id, prompt, liveness))
+        turn: Arc::new(|state, agent_model, task_id, prompt, liveness, run_id| {
+            Box::pin(real_turn(
+                state,
+                agent_model,
+                task_id,
+                prompt,
+                liveness,
+                run_id,
+            ))
         }),
         log_activity: Arc::new(|pg, task_id, actor, kind, description| {
             Box::pin(async move {
@@ -519,7 +527,29 @@ async fn real_turn(
     task_id: String,
     prompt: String,
     liveness: LivenessTap,
+    run_id: String,
 ) -> Result<TurnOutput, String> {
+    // THE WATCH TEE: this turn's stream events are published to
+    // run-watch:<id> and appended to its tail, which the watch route replays
+    // and relays — the terminal-in-the-browser. The tail resets per turn
+    // (each turn is its own transcript) and expires with the session.
+    let watch = format!("run-watch:{run_id}");
+    {
+        let state = state.clone();
+        let key = format!("{watch}:tail");
+        let _ = tokio::spawn(async move {
+            if let Ok(mut conn) = state.redis().await {
+                let _ = redis::cmd("SET")
+                    .arg(&key)
+                    .arg("")
+                    .arg("EX")
+                    .arg(7_200)
+                    .query_async::<()>(&mut conn)
+                    .await;
+            }
+        })
+        .await;
+    }
     let run = run_harness(
         &state,
         &work_session_harness(),
@@ -538,6 +568,7 @@ async fn real_turn(
             }),
             deps: None,
             liveness,
+            watch: Some(watch),
         },
     )
     .await
@@ -1270,6 +1301,7 @@ pub async fn work_session_step(
             task_id.clone(),
             prompt,
             Some(ctx.activity.as_ping()),
+            ctx.run.id.clone(),
         )
         .await
         {
@@ -1725,7 +1757,7 @@ mod tests {
             }),
             workflows_for_task: Arc::new(|_pg, _t| Box::pin(async { Ok(vec![]) })),
             skill_names: Arc::new(|_pg, _a| Box::pin(async { Ok(HashSet::new()) })),
-            turn: Arc::new(move |_state, _agent, _task, _prompt, _liveness| {
+            turn: Arc::new(move |_state, _agent, _task, _prompt, _liveness, _run| {
                 Box::pin(async {
                     Ok(TurnOutput {
                         text: turn_text.to_string(),
@@ -2060,7 +2092,7 @@ mod tests {
     #[tokio::test]
     async fn a_turn_that_answers_nothing_fails_through_a_checkpoint() {
         let (mut deps, _rec) = recording_deps("unused");
-        deps.turn = Arc::new(|_s, _a, _t, _p, _l| {
+        deps.turn = Arc::new(|_s, _a, _t, _p, _l, _r| {
             Box::pin(async { Err("gateway completion 429: rate limited".to_string()) })
         });
         let cp = json!({"stage":"send","turn":2,"stageAttempt":0,"lastTail":""});

@@ -248,6 +248,9 @@ pub struct TransportRequest {
     /// everywhere else, and a transport that has nothing to ping simply
     /// ignores it.
     pub liveness: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// A Redis channel name the persona pump publishes each parsed stream
+    /// event to — the watch route's live half. See RunContext::watch.
+    pub watch: Option<String>,
 }
 
 impl TransportRequest {
@@ -1117,7 +1120,7 @@ pub async fn pump_persona_stream(
     body: ByteStream,
     emit: Option<&mut (dyn FnMut(&str) + Send)>,
 ) -> Result<PersonaTurn, String> {
-    pump_persona_stream_alive(body, emit, None).await
+    pump_persona_stream_alive(body, emit, None, None).await
 }
 
 /// The same pump with a LIVENESS TAP: every chunk from the agent's stream is
@@ -1129,6 +1132,7 @@ pub async fn pump_persona_stream_alive(
     mut body: ByteStream,
     mut emit: Option<&mut (dyn FnMut(&str) + Send)>,
     liveness: Option<&std::sync::Arc<dyn Fn() + Send + Sync>>,
+    watch: Option<&std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
 ) -> Result<PersonaTurn, String> {
     let mut parser = AgentStreamParser::new();
     let mut turn = PersonaTurn {
@@ -1143,13 +1147,44 @@ pub async fn pump_persona_stream_alive(
         }
         let chunk = chunk.map_err(|e| format!("persona stream: {e}"))?;
         for ev in parser.feed(&chunk) {
+            if let Some(tap) = watch
+                && let Some(line) = watch_line(&ev)
+            {
+                tap(&line);
+            }
             turn.fold(ev, &mut emit);
         }
     }
     for ev in parser.finish() {
+        if let Some(tap) = watch
+            && let Some(line) = watch_line(&ev)
+        {
+            tap(&line);
+        }
         turn.fold(ev, &mut emit);
     }
     Ok(turn)
+}
+
+/// One watch line per parsed stream event — the terminal the browser shows:
+/// the agent's words as they land, tool calls as they start, the turn's end.
+/// Reasoning is included (it is the agent thinking out loud); usage is not a
+/// terminal line and is skipped. One line of JSON each, newline-free by
+/// construction, appended to the tail and published to the channel verbatim.
+fn watch_line(ev: &crate::gateway::fleet_chat::AgentStreamEvent) -> Option<String> {
+    use crate::gateway::fleet_chat::AgentStreamEvent;
+    let v = match ev {
+        AgentStreamEvent::Content { text } => serde_json::json!({ "t": "d", "v": text }),
+        AgentStreamEvent::Reasoning { text } => serde_json::json!({ "t": "r", "v": text }),
+        AgentStreamEvent::Tool { name, status, .. } => serde_json::json!({
+            "t": "tool", "v": name, "s": status
+        }),
+        AgentStreamEvent::Usage { .. } => return None,
+        AgentStreamEvent::Error { message } => {
+            serde_json::json!({ "t": "err", "v": message })
+        }
+    };
+    Some(v.to_string())
 }
 
 /// The ledger row for a persona turn. It meters because nothing else will:
@@ -1222,7 +1257,38 @@ async fn persona_turn(
             ),
         });
     }
-    let turn = pump_persona_stream_alive(upstream.body, emit, req.liveness.as_ref()).await?;
+    let watch_tap = req.watch.clone().map(|channel| {
+        let state = state.clone();
+        std::sync::Arc::new(move |line: &str| {
+            let state = state.clone();
+            let channel = channel.clone();
+            let line = format!("{line}\n");
+            tokio::spawn(async move {
+                // PUBLISH for the live watchers, APPEND for the replay tail
+                // (one line per event). Quiet on every error: observability
+                // must never fail the turn it observes.
+                if let Ok(mut conn) = state.redis().await {
+                    let _ = redis::cmd("PUBLISH")
+                        .arg(&channel)
+                        .arg(line.trim_end())
+                        .query_async::<()>(&mut conn)
+                        .await;
+                    let _ = redis::cmd("APPEND")
+                        .arg(format!("{channel}:tail"))
+                        .arg(&line)
+                        .query_async::<()>(&mut conn)
+                        .await;
+                }
+            });
+        }) as std::sync::Arc<dyn Fn(&str) + Send + Sync>
+    });
+    let turn = pump_persona_stream_alive(
+        upstream.body,
+        emit,
+        req.liveness.as_ref(),
+        watch_tap.as_ref(),
+    )
+    .await?;
     // A failure frame is a failed call, not an empty one — the canned-stream
     // rule one layer up, for the error that arrives wearing a 200. The harness
     // gets the reason (the fitness sweep narrows on it; a work session
@@ -1541,6 +1607,7 @@ mod tests {
             hold_ms: None,
             caller: "test".into(),
             liveness: None,
+            watch: None,
         }
     }
 

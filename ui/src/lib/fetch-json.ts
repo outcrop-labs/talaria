@@ -202,3 +202,15 @@ export async function postStream(url: string, body?: unknown, init?: RequestInit
   // The null check above is the guarantee; the type just carries it out.
   return r as Response & { body: ReadableStream<Uint8Array> }
 }
+
+/** The GET twin of `postStream`: a streamed reply the CALLER drains — the
+ *  work-watch terminal (replay + live SSE in one body) is the shape it
+ *  exists for. Same error contract as every other verb. */
+export async function getStream(url: string, init?: RequestInit): Promise<Response & { body: ReadableStream<Uint8Array> }> {
+  const r = await fetch(url, { ...SAME_ORIGIN, method: 'GET', ...init })
+  if (!r.ok || !r.body) {
+    const data = (await r.json().catch(() => null)) as { error?: string } | null
+    throw new HttpError(r.status, data?.error ?? `request failed (${r.status})`)
+  }
+  return r as Response & { body: ReadableStream<Uint8Array> }
+}

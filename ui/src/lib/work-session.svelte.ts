@@ -35,3 +35,16 @@ export function useInvalidateWorkSession() {
   const qc = useQueryClient()
   return (taskId: string) => void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
 }
+
+/** The board's live work sessions, one map read for every card. The list
+ *  view's question — which tickets are being worked right now — answered in
+ *  one poll rather than one per row. */
+export function useBoardWorkSessions(boardId: () => string | null) {
+  return createQuery(() => ({
+    queryKey: ['board-work-sessions', boardId()],
+    enabled: !!boardId(),
+    refetchInterval: 5_000,
+    queryFn: (): Promise<{ sessions: Record<string, LiveWorkSession> }> =>
+      getJson<{ sessions: Record<string, LiveWorkSession> }>(`/api/boards/${boardId()}/work-sessions`),
+  }))
+}

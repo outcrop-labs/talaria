@@ -1064,6 +1064,7 @@ async fn write_lede(
         &daily_brief_lede_harness(),
         &json!({ "date": date, "zone": zone, "lines": lines }),
         RunContext {
+            watch: None,
             liveness: None,
             caller: "briefer:daily-open".into(),
             user_id: None,
@@ -1454,6 +1455,7 @@ async fn write_note(
         &daily_brief_note_harness(),
         &json!({ "changes": changes }),
         RunContext {
+            watch: None,
             liveness: None,
             caller: "briefer:daily-delta".into(),
             user_id: None,

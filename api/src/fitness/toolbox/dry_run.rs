@@ -399,6 +399,7 @@ mod tests {
     fn req() -> TransportRequest {
         TransportRequest {
             liveness: None,
+            watch: None,
             model: "test-model".into(),
             messages: vec![Message::user("fix it")],
             temperature: None,
