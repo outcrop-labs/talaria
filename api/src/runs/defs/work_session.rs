@@ -297,10 +297,20 @@ pub type SkillNamesFn = Arc<
 >;
 /// ONE TURN = ONE HARNESS RUN. Err when the turn produced nothing usable.
 pub type TurnFn = Arc<
-    dyn Fn(AppState, String, String, String) -> BoxFuture<'static, Result<TurnOutput, String>>
+    dyn Fn(
+            AppState,
+            String,
+            String,
+            String,
+            LivenessTap,
+        ) -> BoxFuture<'static, Result<TurnOutput, String>>
         + Send
         + Sync,
 >;
+
+/// The step's idle-deadline tap, handed to the turn so the transport's
+/// stream chunks re-arm the driver's step clock. None in every test dep.
+pub type LivenessTap = Option<std::sync::Arc<dyn Fn() + Send + Sync>>;
 pub type LogActivityFn = Arc<
     dyn Fn(PgPool, String, String, String, String) -> BoxFuture<'static, Result<(), String>>
         + Send
@@ -370,8 +380,8 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
             })
         }),
         skill_names: Arc::new(|pg, agent_model| Box::pin(real_skill_names(pg, agent_model))),
-        turn: Arc::new(|state, agent_model, task_id, prompt| {
-            Box::pin(real_turn(state, agent_model, task_id, prompt))
+        turn: Arc::new(|state, agent_model, task_id, prompt, liveness| {
+            Box::pin(real_turn(state, agent_model, task_id, prompt, liveness))
         }),
         log_activity: Arc::new(|pg, task_id, actor, kind, description| {
             Box::pin(async move {
@@ -508,6 +518,7 @@ async fn real_turn(
     agent_model: String,
     task_id: String,
     prompt: String,
+    liveness: LivenessTap,
 ) -> Result<TurnOutput, String> {
     let run = run_harness(
         &state,
@@ -526,6 +537,7 @@ async fn real_turn(
                 task_id: Some(task_id.clone()),
             }),
             deps: None,
+            liveness,
         },
     )
     .await
@@ -1166,6 +1178,7 @@ pub async fn work_session_step(
             agent_model.clone(),
             task_id.clone(),
             prompt,
+            Some(ctx.activity.as_ping()),
         )
         .await
         {
@@ -1326,16 +1339,28 @@ pub fn work_session_run() -> &'static Arc<RunDefinition> {
                 })
             }),
             audience: Arc::new(audience),
-            // ELEVEN MINUTES, because one step is one turn and one turn is
-            // one call to the work-session harness, whose hold is ten: an
-            // agent restarting under a config propagation refuses
-            // connections for tens of seconds and a fleet re-render
-            // mid-session must not kill the session. This is also the lease
-            // TTL, so a session whose instance died is reclaimable about
-            // eleven minutes later — the right answer, not an unfortunate
-            // one: coming back sooner would reclaim turns that are
-            // genuinely still running.
+            // ELEVEN MINUTES is the LEASE TTL's sizing, and it stays: a
+            // session whose instance died is reclaimable about eleven
+            // minutes later — the right answer, not an unfortunate one:
+            // coming back sooner would reclaim turns that are genuinely
+            // still running. (An agent restarting under a config propagation
+            // refuses connections for tens of seconds and a fleet re-render
+            // mid-session must not kill the session — that was this
+            // number's original whole job.)
             max_step_ms: 660_000,
+            // THE STEP DEADLINE IS IDLE-BASED, NOT WALL-CLOCK. A turn is an
+            // agent driving its tool loop — clone, build, test, iterate —
+            // and honest dev work runs for HOURS, not ten minutes. The
+            // wall-clock reading of the lease number hung up on a
+            // demonstrably working agent (2026-09-14: turn 2 was mid-flight,
+            // last model call 67 seconds before the ceiling killed the whole
+            // session, and the ticket sat in_progress silent for seven
+            // hours). Chat learned this law first — proxy_chat's "NO TOTAL
+            // TIMEOUT ON THE TURN": frames arriving means the turn runs,
+            // only silence ends it — and the session now says the same: each
+            // stream chunk from the agent pings the step's activity tap, and
+            // only TEN MINUTES OF SILENCE abandons the step.
+            idle_step_ms: Some(600_000),
             // FIVE, against the default three, and the reason is duration.
             // `attempt` counts drivers that DIED holding this run, and a
             // work session is the longest-lived run in the product — up to
@@ -1410,6 +1435,9 @@ mod tests {
         assert_eq!(def.kind, WORK_SESSION_KIND);
         assert_eq!(def.label, "Agent work session");
         assert_eq!(def.max_step_ms, 660_000);
+        // The step deadline is IDLE-BASED — a turn is an agent working, and
+        // honest work runs for hours. Only silence abandons it.
+        assert_eq!(def.idle_step_ms, Some(600_000));
         assert_eq!(def.max_attempts, 5);
         // The same Arc every time — register_run is once per process, and a
         // second registration would be the bug define.rs refuses.
@@ -1599,7 +1627,7 @@ mod tests {
             }),
             workflows_for_task: Arc::new(|_pg, _t| Box::pin(async { Ok(vec![]) })),
             skill_names: Arc::new(|_pg, _a| Box::pin(async { Ok(HashSet::new()) })),
-            turn: Arc::new(move |_state, _agent, _task, _prompt| {
+            turn: Arc::new(move |_state, _agent, _task, _prompt, _liveness| {
                 Box::pin(async {
                     Ok(TurnOutput {
                         text: turn_text.to_string(),
@@ -1639,6 +1667,7 @@ mod tests {
         // `false`, never aborted — which is the shape an uncontended run has.
         drop(tx);
         RunStepContext {
+            activity: crate::runs::define::StepActivity::new(),
             run: minimal_row(),
             input,
             checkpoint,
@@ -1933,7 +1962,7 @@ mod tests {
     #[tokio::test]
     async fn a_turn_that_answers_nothing_fails_through_a_checkpoint() {
         let (mut deps, _rec) = recording_deps("unused");
-        deps.turn = Arc::new(|_s, _a, _t, _p| {
+        deps.turn = Arc::new(|_s, _a, _t, _p, _l| {
             Box::pin(async { Err("gateway completion 429: rate limited".to_string()) })
         });
         let cp = json!({"stage":"send","turn":2,"stageAttempt":0,"lastTail":""});
@@ -1994,6 +2023,7 @@ mod tests {
         drop(tx);
         let err = work_session_step(
             RunStepContext {
+                activity: crate::runs::define::StepActivity::new(),
                 run: minimal_row(),
                 input: input(),
                 checkpoint: json!({"stage":"send","turn":3,"stageAttempt":0,"lastTail":""}),

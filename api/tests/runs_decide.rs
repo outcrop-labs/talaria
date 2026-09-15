@@ -537,6 +537,7 @@ type StepsSaw = Arc<Mutex<Vec<Option<DecisionAnswer>>>>;
 /// nothing else about access. This one pauses to the ticket's BOARD.
 fn handover(steps_saw: StepsSaw) -> Arc<RunDefinition> {
     Arc::new(RunDefinition {
+        idle_step_ms: None,
         kind: "test-decision-run".into(),
         label: "Ticket handover".into(),
         step: Arc::new(move |ctx| {

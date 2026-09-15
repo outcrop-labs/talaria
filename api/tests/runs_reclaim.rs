@@ -38,6 +38,7 @@ const NOW: i64 = 1_700_000_000_000;
 /// it, and the fake driver stands in for the actual stepping anyway.
 fn def(kind: &str, max_attempts: u32) -> Arc<RunDefinition> {
     Arc::new(RunDefinition {
+        idle_step_ms: None,
         kind: kind.into(),
         label: format!("{kind} kind"),
         step: Arc::new(|_| {

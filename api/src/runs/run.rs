@@ -826,6 +826,7 @@ async fn drive_loop(
 
         // ── One step ─────────────────────────────────────────────────────────
         let answer: Option<DecisionAnswer> = row.decision.as_ref().and_then(|d| d.answer.clone());
+        let activity = super::define::StepActivity::new();
         let ctx = RunStepContext {
             run: row.clone(),
             input: row.input.clone(),
@@ -834,23 +835,51 @@ async fn drive_loop(
             signal: super::define::StepSignal::from_sender(abort_tx),
             log: log.clone(),
             attempt: row.attempt,
+            activity: activity.clone(),
         };
 
         *steps += 1;
-        let raced = tokio::select! {
-            res = (def.step)(ctx) => match res {
-                Ok(result) => StepRace::Finished(result),
-                Err(message) => StepRace::Erred(message),
-            },
-            // The deadline is the definition's own statement of how long one
-            // unit of progress takes — not a guess about it.
-            _ = tokio::time::sleep(Duration::from_millis(def.max_step_ms)) => {
-                StepRace::Interrupted(StepInterrupt::Deadline)
+        // THE DEADLINE RACE. Wall-clock by default: the deadline is the
+        // definition's own statement of how long one unit of progress takes.
+        // Idle-based for definitions that declared `idle_step_ms` — steps
+        // awaiting outward work of unbounded honest duration — where each
+        // ping on the activity tap re-arms the clock and only SILENCE
+        // abandons the step. The abandon semantics are the same interrupt
+        // either way; what changes is that a step pinging steadily may run
+        // for hours on a lease the renewal loop keeps alive.
+        let raced = if let Some(idle_ms) = def.idle_step_ms {
+            let mut step_fut = (def.step)(ctx);
+            let mut deadline = tokio::time::Instant::now() + Duration::from_millis(idle_ms);
+            let raced = loop {
+                tokio::select! {
+                    res = &mut step_fut => match res {
+                        Ok(result) => break StepRace::Finished(result),
+                        Err(message) => break StepRace::Erred(message),
+                    },
+                    _ = tokio::time::sleep_until(deadline) => {
+                        break StepRace::Interrupted(StepInterrupt::Deadline)
+                    }
+                    _ = activity.waited() => {
+                        deadline = tokio::time::Instant::now() + Duration::from_millis(idle_ms);
+                    }
+                    _ = abort_fires(abort_tx) => break StepRace::Interrupted(StepInterrupt::LeaseLost),
+                }
+            };
+            drop(step_fut);
+            raced
+        } else {
+            tokio::select! {
+                res = (def.step)(ctx) => match res {
+                    Ok(result) => StepRace::Finished(result),
+                    Err(message) => StepRace::Erred(message),
+                },
+                // The deadline is the definition's own statement of how long one
+                // unit of progress takes — not a guess about it.
+                _ = tokio::time::sleep(Duration::from_millis(def.max_step_ms)) => {
+                    StepRace::Interrupted(StepInterrupt::Deadline)
+                }
+                _ = abort_fires(abort_tx) => StepRace::Interrupted(StepInterrupt::LeaseLost),
             }
-            // A lease lost mid-step reaches the step as `ctx.signal`, but a
-            // step is ALLOWED to ignore its signal, and the driver must still
-            // stop: dropping the future cancels it at its next await.
-            _ = abort_fires(abort_tx) => StepRace::Interrupted(StepInterrupt::LeaseLost),
         };
         if matches!(raced, StepRace::Interrupted(StepInterrupt::Deadline)) {
             // Tell any detached work the step spawned, best effort.
@@ -894,13 +923,26 @@ async fn drive_loop(
                 // step whose first copy may (through detached work) still be
                 // in flight. `max_step_ms` is the definition's OWN statement
                 // of how long a unit of progress takes; blowing it is a bug,
-                // and a visible error row is how a bug gets fixed.
-                let message = format!(
-                    "step exceeded maxStepMs ({}ms) at phase \"{}\". The step may still be \
-                     running; it will not be retried.",
-                    def.max_step_ms,
-                    phase()
-                );
+                // and a visible error row is how a bug gets fixed. The idle
+                // reading says SILENCE, not duration: the step was pinging
+                // life and stopped — a different failure (the far side went
+                // quiet), and the sentence names the clock that actually
+                // fired.
+                let message = if let Some(idle_ms) = def.idle_step_ms {
+                    format!(
+                        "step went silent for idleStepMs ({}ms) at phase \"{}\". The step may \
+                         still be running; it will not be retried.",
+                        idle_ms,
+                        phase()
+                    )
+                } else {
+                    format!(
+                        "step exceeded maxStepMs ({}ms) at phase \"{}\". The step may still be \
+                         running; it will not be retried.",
+                        def.max_step_ms,
+                        phase()
+                    )
+                };
                 tracing::error!("{LOG} {run_id} ({}): {message}", row.kind);
                 flush_progress(progress, run_id, token, &def.kind, owner, deps).await?;
                 if let Err(reason) = deps.store.fail(run_id, token, message.clone()).await? {

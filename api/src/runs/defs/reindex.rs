@@ -1155,6 +1155,7 @@ pub fn backfill_run() -> &'static Arc<RunDefinition> {
             // start it and only an admin should be able to see it stall.
             audience: Arc::new(|_| Authority::Admin { on_board: None }),
             max_step_ms: MAX_STEP_MS,
+            idle_step_ms: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     })
@@ -1180,6 +1181,7 @@ pub fn reindex_run() -> &'static Arc<RunDefinition> {
             }),
             audience: Arc::new(|_| Authority::Admin { on_board: None }),
             max_step_ms: MAX_STEP_MS,
+            idle_step_ms: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     })
@@ -1305,6 +1307,7 @@ mod tests {
     /// `attempt` is the one field the reclaim tests vary.
     fn ctx(checkpoint: Value, attempt: i32) -> RunStepContext {
         RunStepContext {
+            activity: crate::runs::define::StepActivity::new(),
             run: minimal_row(),
             input: json!({}),
             checkpoint,

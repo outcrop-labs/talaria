@@ -2109,6 +2109,7 @@ pub fn research_run() -> &'static Arc<RunDefinition> {
             // against the behavior it replaces, which was to wait forty-five
             // minutes and then mark the run failed.
             max_step_ms: 11 * 60_000,
+            idle_step_ms: None,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     })
@@ -2623,6 +2624,7 @@ mod tests {
             let mut row = row_for(input);
             row.attempt = attempt;
             let ctx = RunStepContext {
+                activity: crate::runs::define::StepActivity::new(),
                 run: row,
                 input: serde_json::to_value(input).expect("the test input serializes"),
                 checkpoint: checkpoint.clone(),
@@ -3254,6 +3256,7 @@ mod tests {
         row.checkpoint = checkpoint.clone();
         let res = research_step(
             RunStepContext {
+                activity: crate::runs::define::StepActivity::new(),
                 run: row,
                 input: serde_json::to_value(&inp).unwrap(),
                 checkpoint,
@@ -3321,6 +3324,7 @@ mod tests {
         row.checkpoint = checkpoint.clone();
         let res = research_step(
             RunStepContext {
+                activity: crate::runs::define::StepActivity::new(),
                 run: row,
                 input: serde_json::to_value(&inp).unwrap(),
                 checkpoint,

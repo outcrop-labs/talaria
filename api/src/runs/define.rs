@@ -297,6 +297,44 @@ pub struct RunStepContext {
     /// and refuse — not a substitute for a real guard, but enough to say "I
     /// have been here before" out loud.
     pub attempt: i32,
+    /// The idle-deadline tap (see `RunDefinition::idle_step_ms`). The driver
+    /// arms a fresh one per step; a step whose outward work shows life — a
+    /// stream chunk, a tool event — pings it, and each ping re-arms the idle
+    /// clock. Steps of definitions without `idle_step_ms` never need it.
+    pub activity: StepActivity,
+}
+
+/// One pingable liveness tap per step, shared between the driver's deadline
+/// race and the step's own outward work. `Notify` under a fresh permit per
+/// arm: a ping that lands while the race is parked elsewhere still counts.
+#[derive(Clone)]
+pub struct StepActivity(std::sync::Arc<tokio::sync::Notify>);
+
+impl StepActivity {
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(tokio::sync::Notify::new()))
+    }
+    /// Outward work showed life. Cheap enough to call per stream chunk.
+    pub fn ping(&self) {
+        self.0.notify_one();
+    }
+    /// The same signal as a plain callback, for handing to code that should
+    /// not depend on the runs engine's types (a harness transport's request).
+    pub fn as_ping(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        let inner = self.0.clone();
+        std::sync::Arc::new(move || inner.notify_one())
+    }
+    /// Driver-side: resolves when the tap pings. Private to the engine —
+    /// steps only ever PING.
+    pub(crate) async fn waited(&self) {
+        self.0.notified().await;
+    }
+}
+
+impl Default for StepActivity {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub type StepFn = Arc<
@@ -329,6 +367,16 @@ pub struct RunDefinition {
     /// not a timeout knob: it is also the lease TTL, so a crashed driver's
     /// run is reclaimable roughly this long after it stops renewing.
     pub max_step_ms: u64,
+    /// When set, the step deadline is IDLE-BASED, not wall-clock: every ping
+    /// on the step context's activity tap re-arms it, and only this much
+    /// SILENCE abandons the step. For steps that await outward work of
+    /// unbounded honest duration — a work session's turn is an agent driving
+    /// its tool loop for potentially hours, and a wall clock there hangs up
+    /// on a demonstrably working agent (the chat transport learned this law
+    /// first: frames arriving means the turn runs; only silence ends it).
+    /// `max_step_ms` keeps its OTHER role untouched: still the lease TTL,
+    /// renewed throughout by the live driver.
+    pub idle_step_ms: Option<u64>,
     /// How many times a driver may ENTER this run before it is given up on.
     /// IT COUNTS ENTRIES, NOT STEPS: a healthy run that takes four hundred
     /// steps must not exhaust its attempts by succeeding. The counter moves
@@ -474,6 +522,7 @@ mod tests {
         // Arc::ptr_eq check is the point: the second registration is REFUSED,
         // not merged.
         let first = register_run(RunDefinition {
+            idle_step_ms: None,
             kind: "test-double".into(),
             label: "first".into(),
             step: Arc::new(|_| {
@@ -488,6 +537,7 @@ mod tests {
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         });
         let second = register_run(RunDefinition {
+            idle_step_ms: None,
             kind: "test-double".into(),
             label: "second".into(),
             step: Arc::new(|_| {

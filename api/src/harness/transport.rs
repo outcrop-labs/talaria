@@ -242,6 +242,12 @@ pub struct TransportRequest {
     /// which is why ignoring it there is not a dropped field.
     pub hold_ms: Option<u64>,
     pub caller: String,
+    /// A tap the transport pings whenever the turn shows LIFE — per stream
+    /// chunk on the persona path. For callers with an idle-based deadline
+    /// (a work session awaiting an agent that may work for hours); absent
+    /// everywhere else, and a transport that has nothing to ping simply
+    /// ignores it.
+    pub liveness: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl TransportRequest {
@@ -1108,8 +1114,21 @@ impl PersonaTurn {
 /// delta on the way past. `emit` is the ONLY thing the streaming caller does
 /// differently — one loop, not one copy per surface.
 pub async fn pump_persona_stream(
+    body: ByteStream,
+    emit: Option<&mut (dyn FnMut(&str) + Send)>,
+) -> Result<PersonaTurn, String> {
+    pump_persona_stream_alive(body, emit, None).await
+}
+
+/// The same pump with a LIVENESS TAP: every chunk from the agent's stream is
+/// the agent working, and a caller whose deadline is idle-based re-arms on
+/// each one. This is the work session's "the turn is alive" signal — the
+/// chat transport's own law (frames arriving means the turn runs) made
+/// available to the runs engine.
+pub async fn pump_persona_stream_alive(
     mut body: ByteStream,
     mut emit: Option<&mut (dyn FnMut(&str) + Send)>,
+    liveness: Option<&std::sync::Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<PersonaTurn, String> {
     let mut parser = AgentStreamParser::new();
     let mut turn = PersonaTurn {
@@ -1119,6 +1138,9 @@ pub async fn pump_persona_stream(
         error: None,
     };
     while let Some(chunk) = body.next().await {
+        if let Some(ping) = liveness {
+            ping();
+        }
         let chunk = chunk.map_err(|e| format!("persona stream: {e}"))?;
         for ev in parser.feed(&chunk) {
             turn.fold(ev, &mut emit);
@@ -1200,7 +1222,7 @@ async fn persona_turn(
             ),
         });
     }
-    let turn = pump_persona_stream(upstream.body, emit).await?;
+    let turn = pump_persona_stream_alive(upstream.body, emit, req.liveness.as_ref()).await?;
     // A failure frame is a failed call, not an empty one — the canned-stream
     // rule one layer up, for the error that arrives wearing a 200. The harness
     // gets the reason (the fitness sweep narrows on it; a work session
@@ -1518,6 +1540,7 @@ mod tests {
             effort: None,
             hold_ms: None,
             caller: "test".into(),
+            liveness: None,
         }
     }
 

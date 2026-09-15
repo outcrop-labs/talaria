@@ -125,6 +125,7 @@ pub async fn draft_reply(
             "transcript": transcript,
         }),
         RunContext {
+            liveness: None,
             caller: "briefer:reply".into(),
             user_id: None,
             model: Some(req.agent_model.to_string()),

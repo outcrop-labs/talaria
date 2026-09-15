@@ -237,6 +237,7 @@ pub fn plan_draft_run() -> &'static Arc<RunDefinition> {
             // running. The price is the lease TTL: a driver killed mid-draft
             // is reclaimable about five minutes later.
             max_step_ms: 300_000,
+            idle_step_ms: None,
             // No override — the default three. A draft that killed three
             // drivers is a bug report, not a fourth try.
             max_attempts: crate::runs::define::DEFAULT_MAX_ATTEMPTS,
@@ -281,6 +282,7 @@ mod tests {
         // `false`, never aborted — which is the shape an uncontended run has.
         drop(tx);
         RunStepContext {
+            activity: crate::runs::define::StepActivity::new(),
             run: minimal_row(),
             input,
             checkpoint: serde_json::Value::Null,

@@ -753,6 +753,26 @@ fn definition(
         step,
         audience: Arc::new(|_| Authority::Nobody),
         max_step_ms,
+        idle_step_ms: None,
+        max_attempts: 3,
+    }
+}
+
+/// The idle-deadline twin of `definition`: a step whose outward work pings
+/// `ctx.activity` and may therefore run for as long as it stays alive.
+fn idle_definition(
+    kind: &str,
+    max_step_ms: u64,
+    idle_step_ms: u64,
+    step: talaria_api::runs::define::StepFn,
+) -> RunDefinition {
+    RunDefinition {
+        kind: kind.into(),
+        label: kind.into(),
+        step,
+        audience: Arc::new(|_| Authority::Nobody),
+        max_step_ms,
+        idle_step_ms: Some(idle_step_ms),
         max_attempts: 3,
     }
 }
@@ -1100,6 +1120,67 @@ async fn a_step_over_budget_is_an_error_row_never_retried() {
         Some(
             "step exceeded maxStepMs (50ms) at phase \"starting\". The step may still be \
              running; it will not be retried."
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_pinging_step_outlives_the_wall_clock() {
+    // THE LAW THE WORK SESSION RIDES: outward work that keeps showing life
+    // may run past max_step_ms — hours, honestly — and only SILENCE ends it.
+    // This step pings every 40ms for ~450ms under a 50ms wall clock and a
+    // 150ms idle ceiling: without the idle race the step dies at 50ms; with
+    // it, the drive reaches Done.
+    let fx = Fixture::with(idle_definition(
+        "longwork",
+        50,
+        150,
+        Arc::new(|ctx| {
+            Box::pin(async move {
+                for _ in 0..11 {
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    ctx.activity.ping();
+                }
+                Ok(StepResult::Done {
+                    result: json!({"worked": "hours"}),
+                })
+            })
+        }),
+    ));
+    let id = "run-longwork";
+    fx.store.seed(new_row(id, "longwork"));
+
+    let res = drive(id, &fx.deps).await.unwrap();
+    assert_eq!(res.stop, DriveStop::Done, "a live step is never timed out");
+    assert_eq!(fx.store.row(id).result, json!({"worked": "hours"}));
+}
+
+#[tokio::test]
+async fn a_silent_idle_step_is_abandoned_at_the_idle_ceiling() {
+    // Silence, not duration: a step that never pings is dead at idleStepMs
+    // even with a far larger wall clock, and the sentence names the idle
+    // ceiling — the clock that actually fired.
+    let fx = Fixture::with(idle_definition(
+        "quietwork",
+        3_600_000,
+        80,
+        Arc::new(|_ctx| {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                unreachable!("the idle ceiling must win")
+            })
+        }),
+    ));
+    let id = "run-quietwork";
+    fx.store.seed(new_row(id, "quietwork"));
+
+    let res = drive(id, &fx.deps).await.unwrap();
+    assert_eq!(res.stop, DriveStop::Error);
+    assert_eq!(
+        fx.store.row(id).error.as_deref(),
+        Some(
+            "step went silent for idleStepMs (80ms) at phase \"starting\". The step may still \
+             be running; it will not be retried."
         )
     );
 }

@@ -28,6 +28,8 @@
 //   inserted between our read and our write, and what they inserted is a live
 //   session for this exact ticket and agent, so standing down is correct.
 
+use std::sync::Arc;
+
 use crate::runs::define::is_terminal;
 use crate::runs::defs::work_session::{session_run_id, work_session_run};
 use crate::runs::run::{EnqueueOptions, RunDeps, enqueue};
@@ -223,6 +225,106 @@ pub async fn maybe_dispatch_ticket(
             }
         }
     }
+}
+
+// ── The self-heal sweep ──────────────────────────────────────────────────────
+//
+// Dispatch fires when a ticket ENTERS a pickup column, and only then — which
+// made a dead session the end of the work: the session errored (a slow turn
+// under an old wall-clock step ceiling, a deploy mid-drive, a driver that
+// could not be reclaimed), the ticket stayed put, and nothing ever asked
+// again. The 2026-09-14 incident was exactly this shape — turn 2 was
+// mid-flight and demonstrably working when the step ceiling killed the
+// session, and the ticket sat in_progress silent for seven hours.
+//
+// THE SWEEP is the missing pull side: every ticket that still sits in a
+// pickup column with agent assignees is re-offered to
+// `maybe_dispatch_ticket`, whose generation walk is the real gate — a live
+// or parked session stands down, a finished one advances to the next
+// generation, and the twenty-five cap says the loud sentence. All this sweep
+// adds is the asking. A SETTLE window skips tickets whose latest session
+// touched the runs table recently, so a session that just errored for a real
+// reason gets quiet before a generation is spent on it — and a live session
+// needs no protection from this filter at all, because the claim walk never
+// advances past a live run.
+pub const REDISPATCH_SETTLE_MS: i64 = 5 * 60_000;
+
+/// One sweep pass. Fire-and-forget by nature (a scheduler job calls it);
+/// every failure is logged here and never thrown.
+pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
+    type Row = (String, String, String, Option<Vec<String>>, Option<String>);
+    let rows: Vec<Row> = match sqlx::query_as(
+        "select t.id::text, t.board_id::text, t.status, t.assignees, t.archived_at::text \
+         from tasks t \
+         where t.assignees <> '[]'::jsonb \
+           and t.archived_at is null \
+           and not exists ( \
+             select 1 from runs r \
+             where r.kind = 'work-session' and r.subject_id = t.id::text \
+               and r.updated_at > now() - interval '5 minutes' \
+           )",
+    )
+    .fetch_all(pg)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("{LOG} sweep query failed: {e}");
+            return;
+        }
+    };
+    let mut offered = 0usize;
+    for (id, board_id, status, assignees, archived_at) in rows {
+        let Some(assignees) = assignees else { continue };
+        let task = DispatchTicket {
+            id,
+            board_id,
+            status,
+            assignees,
+            archived_at,
+        };
+        // Re-offering is the whole point: every internal gate (pickup column,
+        // agent refusal, the generation walk) re-decides from live state.
+        maybe_dispatch_ticket(pg, deps, &task, None).await;
+        offered += 1;
+    }
+    if offered > 0 {
+        tracing::info!("{LOG} sweep re-offered {offered} ticket(s) to their agents");
+    }
+}
+
+/// The sweep's cadence. Sixty seconds, matching the update-reconcile hand:
+/// a dead session costs a minute of silence, not an evening. The settle
+/// window (not the cadence) is what keeps a just-errored session from
+/// burning generations in a loop.
+const REDISPATCH_EVERY_MS: u64 = 60_000;
+
+pub fn redispatch_job_spec(
+    pg: sqlx::PgPool,
+    run: std::sync::Arc<RunDeps>,
+) -> crate::scheduler::JobSpec {
+    crate::scheduler::JobSpec {
+        name: crate::scheduler::JobName::WorkRedispatch,
+        every_ms: REDISPATCH_EVERY_MS,
+        first_run_delay_ms: Some(90_000),
+        max_run_ms: Some(30_000),
+        // NOT `per_instance`: the input is the tasks/runs tables, which every
+        // instance reaches — the fleet does one sweep per interval, and the
+        // generation walk is what makes a racing second sweeper a no-op.
+        per_instance: false,
+        run: Arc::new(move || {
+            let pg = pg.clone();
+            let run = run.clone();
+            Box::pin(async move {
+                redispatch_agent_work(&pg, &run).await;
+                Ok(None)
+            })
+        }),
+    }
+}
+
+pub fn register_redispatch_job(pg: sqlx::PgPool, run: std::sync::Arc<RunDeps>) {
+    crate::scheduler::register_job(redispatch_job_spec(pg, run));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

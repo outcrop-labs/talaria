@@ -76,6 +76,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     crate::digest::register_digest_job(real_digest_deps(state, rt.clone()));
     crate::digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
     crate::notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
+    crate::work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
     crate::runs::reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
         due: due_fn(run.store.clone()),
         definition_for: run.definition_for.clone(),

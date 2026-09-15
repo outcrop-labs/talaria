@@ -450,6 +450,12 @@ pub struct RunContext {
     /// wholesale, never merged per-field — the only spelling the tests have
     /// ever needed, with `real_deps` one call.
     pub deps: Option<Arc<HarnessDeps>>,
+    /// A liveness tap for callers whose deadline is IDLE-BASED (a work
+    /// session's turn awaits an agent that may work for hours): the
+    /// transports ping it per stream chunk, and each ping re-arms the
+    /// caller's idle clock. Absent for every single-shot harness — no ping,
+    /// no deadline to feed.
+    pub liveness: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Where the streamed deltas go as they arrive — the browser's chunks. Called
@@ -1135,6 +1141,7 @@ pub(crate) async fn execute(
             effort: effort.clone(),
             hold_ms: def.hold_ms,
             caller: caller.clone(),
+            liveness: ctx.liveness.clone(),
         };
         // The streamed deltas are accumulated as well as handed on, so a
         // transport that pumps into a browser and never assembles the text
@@ -3711,6 +3718,7 @@ mod tests {
         // any query could run.
         let state = AppState::new(crate::db::pool(&cfg), cfg);
         let req = TransportRequest {
+            liveness: None,
             model: "qwen3-14b".into(),
             messages: vec![Message::user("x")],
             temperature: None,

@@ -461,6 +461,7 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
             // filed as an error, not retried, because it is probably still
             // running.
             max_step_ms: 10 * 60_000,
+            idle_step_ms: None,
             // No override — the default three.
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
@@ -517,6 +518,7 @@ mod tests {
         // `false`, never aborted — which is the shape an uncontended run has.
         drop(tx);
         RunStepContext {
+            activity: crate::runs::define::StepActivity::new(),
             run: minimal_row(),
             input: serde_json::to_value(input).expect("the test input serializes"),
             checkpoint: checkpoint

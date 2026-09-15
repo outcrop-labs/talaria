@@ -1064,6 +1064,7 @@ async fn write_lede(
         &daily_brief_lede_harness(),
         &json!({ "date": date, "zone": zone, "lines": lines }),
         RunContext {
+            liveness: None,
             caller: "briefer:daily-open".into(),
             user_id: None,
             model: Some(model.to_string()),
@@ -1453,6 +1454,7 @@ async fn write_note(
         &daily_brief_note_harness(),
         &json!({ "changes": changes }),
         RunContext {
+            liveness: None,
             caller: "briefer:daily-delta".into(),
             user_id: None,
             model: Some(model.to_string()),
