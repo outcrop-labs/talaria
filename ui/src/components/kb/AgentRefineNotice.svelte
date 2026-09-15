@@ -90,7 +90,11 @@
     }
   }
 
-  let refined = $state<{ at: string; by: string | null } | null>(null)
+  // The ANNOUNCED revision — by id, at/by for the headline. Every fetch below
+  // goes through this id: a newer revision landing while the notice is open
+  // must never make the diff or the loaded text diverge from what was
+  // reviewed (the newer one gets its own announce once this is dismissed).
+  let refined = $state<{ id: string; at: string; by: string | null } | null>(null)
 
   // The text the viewer held when the refine landed — the diff's "before".
   // Captured at announce time because the surface can move under the notice
@@ -107,13 +111,17 @@
   let diff = $state<DiffLine[] | null>(null)
   let showDiff = $state(false)
   let summaryText = $state<string | null>(null)
+  /** A fetch for the announced revision's content failed. The notice STAYS —
+   *  vanishing would swallow the announce, the exact class of bug this ticket
+   *  is about — and says it could not load what changed; Show/Load retry. */
+  let loadError = $state(false)
 
   const revUrl = (revId: string) =>
     `/api/history?kind=${kind}&id=${encodeURIComponent(id)}&rev=${encodeURIComponent(revId)}`
 
-  /** Fetch the refined revision, set the summary and the diff. A failed fetch
-   *  takes the notice down rather than leaving a claim on screen that nothing
-   *  backs. */
+  /** Fetch the announced revision, set the summary and the diff. Failure is
+   *  surfaced (loadError), never eaten: the headline stays backed by a claim
+   *  the viewer can retry or dismiss, not one that quietly disappeared. */
   const hydrate = async (revId: string) => {
     try {
       const j = await getJson<{ content: string }>(revUrl(revId))
@@ -122,9 +130,9 @@
       savedText = saved
       summaryText = summarize(before, saved).text
       diff = diffLines(before, saved)
+      loadError = false
     } catch {
-      refined = null
-      markSeen(revId)
+      loadError = true
     }
   }
 
@@ -134,36 +142,45 @@
     const next = refineToAnnounce(revs, who, seenAt())
     if (!next) return
     beforeText = current?.() ?? null
-    refined = { at: next.createdAt, by: next.createdBy }
+    savedText = null
+    diff = null
+    summaryText = null
+    showDiff = false
+    loadError = false
+    refined = { id: next.id, at: next.createdAt, by: next.createdBy }
     void hydrate(next.id)
     onAnnounce?.()
   })
 
-  /** Open the diff panel — content and diff were computed at announce. */
+  /** Open the diff panel; a pending/failed fetch is retried here first. */
   const show = () => {
-    if (savedText === null) return
+    if (refined === null) return
+    if (savedText === null) void hydrate(refined.id)
     showDiff = true
   }
   const hide = () => (showDiff = false)
 
-  /** Load the revised text into the viewer's editor (not saved by this). */
+  /** Load the revised text into the viewer's editor (not saved by this).
+   *  The content is the ALREADY-REVIEWED text — hydrated from the announced
+   *  revision — so what lands in the editor is exactly what the diff showed. */
   const load = () => {
-    const latest = revisions[0]
-    if (!latest) return
-    getJson<{ content: string }>(
-      `/api/history?kind=${kind}&id=${encodeURIComponent(id)}&rev=${encodeURIComponent(latest.id)}`,
-    )
-      .then((j) => {
-        onLoad?.(snapshotBody(j.content))
-        refined = null
-        markSeen(latest.createdAt)
-      })
-      .catch(() => {})
+    if (refined === null) return
+    loadError = false
+    const run = async () => {
+      if (savedText === null) await hydrate(refined!.id)
+      if (savedText === null || refined === null) {
+        loadError = true // still unfetchable — the notice stays and says so
+        return
+      }
+      onLoad?.(savedText)
+      markSeen(refined.at)
+      refined = null
+    }
+    void run()
   }
 
   const dismiss = () => {
-    const latest = revisions[0]
-    if (latest) markSeen(latest.createdAt)
+    if (refined) markSeen(refined.at)
     refined = null
   }
 </script>
@@ -180,7 +197,10 @@
         {refined.by ? `${refined.by} updated this` : 'This document was updated'}
         {relativeTime(refined.at)}{#if summaryText}&nbsp;· {summaryText}{/if}
       </span>
-      {#if summaryText === null}
+      {#if loadError && summaryText === null}
+        <span class="text-danger">could not load changes</span>
+        <Button variant="outline" size="sm" class="shrink-0" onclick={show}>Retry</Button>
+      {:else if summaryText === null}
         <span class="text-ink-dim">…</span>
       {:else if diff === null}
         <span class="text-ink-dim">changed (diff unavailable)</span>
