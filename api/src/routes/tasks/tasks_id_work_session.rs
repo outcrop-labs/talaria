@@ -44,18 +44,12 @@ pub async fn get(
     let Some((board_id,)) = board else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
-    match board_role(&state.pg, &board_id, &user.id).await {
+    match board_role(&state.pg, &user.id, &board_id).await {
         Ok(Some(_)) => {}
         // Forbidden, not 404: the task's existence is already established
         // for this caller by the ticket being rendered — this gate only
         // decides visibility of the WORK state.
-        Ok(None) => {
-            tracing::warn!(
-                "[work-session] no board role for user {} on board {board_id} (task {id})",
-                user.id
-            );
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
-        }
+        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => {
             tracing::error!("[work-session] role read failed: {e}");
             return thrown_internal_error();
