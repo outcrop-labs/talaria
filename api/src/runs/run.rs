@@ -600,6 +600,11 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     // drivers.
     let lost = Arc::new(AtomicBool::new(false));
     let (abort_tx, _abort_rx) = watch::channel(false);
+    // Registered for the life of the drive so shutdown can abort this step
+    // and release this lease instead of leaving both to the TTL — the
+    // difference between a next-instance resume in seconds and one in eleven
+    // minutes plus a false attempt.
+    super::drivers::register(run_id, Arc::new(abort_tx.clone()));
     let renew_every = Duration::from_millis(1_000.max((lease_ms / 3) as u64));
     let renew_task = {
         let deps = deps.clone();
@@ -718,6 +723,7 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
             tracing::error!("{LOG} {run_id}: could not clear the row lease: {e}");
         }
     }
+    super::drivers::unregister(run_id);
     loop_result
 }
 
@@ -839,6 +845,28 @@ async fn drive_loop(
         };
 
         *steps += 1;
+        // THE PHASE MUST NOT LIE DURING A LONG STEP. Log lines flush at
+        // boundaries by design — but a work-session send runs for HOURS, and
+        // a device left reading the PRE-SEND sentence ("letting the
+        // interrupted turn settle") for that whole time is a device whose
+        // person files a stall report about healthy work. The intent lines a
+        // step says at its top ("turn N — waiting on…") are safe to persist
+        // early: they describe what is being attempted, never a result. Two
+        // seconds in, whatever the step has said so far goes to the row —
+        // the boundary flush remains the ordering rule for everything else.
+        let early_flush = {
+            let progress = progress.clone();
+            let deps = deps.clone();
+            let run_id = run_id.to_string();
+            let token = token.to_string();
+            let kind = def.kind.clone();
+            let owner = owner.map(str::to_string);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(2_000)).await;
+                let _ = flush_progress(&progress, &run_id, &token, &kind, owner.as_deref(), &deps)
+                    .await;
+            })
+        };
         // THE DEADLINE RACE. Wall-clock by default: the deadline is the
         // definition's own statement of how long one unit of progress takes.
         // Idle-based for definitions that declared `idle_step_ms` — steps
@@ -881,6 +909,7 @@ async fn drive_loop(
                 _ = abort_fires(abort_tx) => StepRace::Interrupted(StepInterrupt::LeaseLost),
             }
         };
+        early_flush.abort();
         if matches!(raced, StepRace::Interrupted(StepInterrupt::Deadline)) {
             // Tell any detached work the step spawned, best effort.
             abort_tx.send(true).ok();

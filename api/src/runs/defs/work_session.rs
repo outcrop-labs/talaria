@@ -1452,17 +1452,24 @@ pub fn work_session_run() -> &'static Arc<RunDefinition> {
             // stream chunk from the agent pings the step's activity tap, and
             // only TEN MINUTES OF SILENCE abandons the step.
             idle_step_ms: Some(600_000),
-            // FIVE, against the default three, and the reason is duration.
+            // EIGHT, against the default three, and the reason is duration.
             // `attempt` counts drivers that DIED holding this run, and a
-            // work session is the longest-lived run in the product — up to
-            // twelve model turns of up to ten minutes each — so it is the
-            // one kind that routinely spans more than one deploy. Three
-            // would file a healthy session as an error for the crime of a
-            // busy release day. The count is still bounded, and it is
-            // self-limiting in a way no other kind's is: every reclaim
-            // retires the turn it interrupted, so a session that keeps
-            // killing drivers spends its turn budget doing it.
-            max_attempts: 5,
+            // work session is the longest-lived run in the product — one
+            // turn is an agent's whole tool loop and runs for HOURS now
+            // that the step deadline is idle-based — so every deploy of a
+            // release-heavy day lands mid-turn and costs one attempt (the
+            // shutdown drain hands the lease over in seconds, but the
+            // interrupted-turn retire still spends the attempt, on purpose:
+            // it is the signal that keeps a re-entry from re-sending a turn
+            // the agent may already be working). Three filed healthy
+            // sessions as errors for the crime of a busy release day; five
+            // still burned to exhaustion across ten rolls (2026-09-15's
+            // "stuck for hours" report — zero model calls, every generation
+            // eaten by the deploy cadence). Eight survives a real release
+            // day, and the count is still bounded and still self-limiting:
+            // every reclaim retires the turn it interrupted, so a session
+            // that keeps losing drivers spends its TURN budget doing it.
+            max_attempts: 8,
         })
     })
 }
@@ -1529,7 +1536,7 @@ mod tests {
         // The step deadline is IDLE-BASED — a turn is an agent working, and
         // honest work runs for hours. Only silence abandons it.
         assert_eq!(def.idle_step_ms, Some(600_000));
-        assert_eq!(def.max_attempts, 5);
+        assert_eq!(def.max_attempts, 8);
         // The same Arc every time — register_run is once per process, and a
         // second registration would be the bug define.rs refuses.
         assert!(Arc::ptr_eq(def, work_session_run()));
