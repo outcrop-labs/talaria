@@ -252,7 +252,16 @@ pub const REDISPATCH_SETTLE_MS: i64 = 5 * 60_000;
 /// One sweep pass. Fire-and-forget by nature (a scheduler job calls it);
 /// every failure is logged here and never thrown.
 pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
-    type Row = (String, String, String, Option<Vec<String>>, Option<String>);
+    // `assignees` is JSONB (see tasks.rs's own read): decoded as a Value and
+    // mapped with the same json_strings law, not as TEXT[] — the trap the
+    // first night of this sweep found the loud way.
+    type Row = (
+        String,
+        String,
+        String,
+        Option<serde_json::Value>,
+        Option<String>,
+    );
     let rows: Vec<Row> = match sqlx::query_as(
         "select t.id::text, t.board_id::text, t.status, t.assignees, t.archived_at::text \
          from tasks t \
@@ -275,7 +284,13 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
     };
     let mut offered = 0usize;
     for (id, board_id, status, assignees, archived_at) in rows {
-        let Some(assignees) = assignees else { continue };
+        let Some(assignees) = assignees.filter(|v| !v.is_null()) else {
+            continue;
+        };
+        let assignees = tasks::json_strings(&assignees);
+        if assignees.is_empty() {
+            continue;
+        }
         let task = DispatchTicket {
             id,
             board_id,
