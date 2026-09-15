@@ -182,8 +182,7 @@
       </span>
       {#if summaryText === null}
         <span class="text-ink-dim">…</span>
-      {/if}
-      {#if diff === null}
+      {:else if diff === null}
         <span class="text-ink-dim">changed (diff unavailable)</span>
       {:else if !showDiff}
         <Button variant="outline" size="sm" class="shrink-0" onclick={show}>Show changes</Button>
