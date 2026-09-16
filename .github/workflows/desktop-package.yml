@@ -400,24 +400,26 @@ jobs:
       - name: Smoke test the app bundle
         run: |
           set -eu
-          dmg=$(ls "$RUNNER_TEMP/assets"/*.dmg)
-          mount=$RUNNER_TEMP/mnt
-          mkdir -p "$mount"
-          # An explicit -mountpoint, and -noautofsck: letting hdiutil pick a
-          # /Volumes path on a runner with no login session comes back
-          # "attach canceled" with nothing mounted (the first run of this step
-          # did exactly that).
-          hdiutil attach "$dmg" -nobrowse -readonly -noautofsck -mountpoint "$mount"
-          if [ ! -d "$mount/Talaria.app" ]; then
-            echo "::error::$dmg mounted but carries no Talaria.app:"
-            ls -la "$mount"
+          # The dmg is VERIFIED rather than mounted: hdiutil refuses to attach on
+          # this runner — "attach canceled", with or without an explicit
+          # -mountpoint — because there is no login session for DiskArbitration to
+          # hand a volume to. That is a property of the runner, not of the image,
+          # and hdiutil verify still reads and checksums the whole thing.
+          hdiutil verify "$RUNNER_TEMP/assets"/*.dmg
+
+          # The payload it carries is the same .app the zip does, so the launch
+          # happens from there: one bundle, two containers.
+          app=$RUNNER_TEMP/app
+          mkdir -p "$app"
+          ditto -x -k "$RUNNER_TEMP/assets"/*.app.zip "$app"
+          exe=$app/Talaria.app/Contents/MacOS/talaria-desktop
+          if [ ! -x "$exe" ]; then
+            echo "::error::the zip carries no launchable Talaria.app:"
+            find "$app" -maxdepth 4 | head -30
             exit 1
           fi
-          cp -R "$mount/Talaria.app" "$RUNNER_TEMP/Talaria.app"
-          hdiutil detach "$mount" >/dev/null
 
-          "$RUNNER_TEMP/Talaria.app/Contents/MacOS/talaria-desktop" \
-            >"$RUNNER_TEMP/app.log" 2>&1 &
+          "$exe" >"$RUNNER_TEMP/app.log" 2>&1 &
           pid=$!
           sleep 20
           if ! kill -0 "$pid" 2>/dev/null; then
