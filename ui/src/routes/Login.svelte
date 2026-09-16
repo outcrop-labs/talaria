@@ -3,6 +3,7 @@
   import { navigate } from '@/router'
   import LoginScreen from '@/components/auth/LoginScreen.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
+  import DesktopTitlebar from '@/components/app/DesktopTitlebar.svelte'
   import { useSession } from '@/lib/session'
 
   const session = useSession()
@@ -19,5 +20,10 @@
   })
 </script>
 
-<MercuryBackdrop />
-<LoginScreen {error} {domain} />
+<div class="flex h-screen flex-col">
+  <DesktopTitlebar />
+  <div class="relative min-h-0 flex-1 overflow-auto">
+    <MercuryBackdrop />
+    <LoginScreen {error} {domain} />
+  </div>
+</div>

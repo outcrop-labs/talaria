@@ -272,7 +272,7 @@ const CENSUS = [
       path.endsWith('.test.ts') ||
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
-      'ui/src/lib/fetch-json.ts': 7, // the door: getJson, getJsonOr404, getJsonOr, getText, sendJson, postStream, getStream
+      'ui/src/lib/fetch-json.ts': 8, // the door: getJson, getJsonOr404, getJsonOr, getText, getBlob, sendJson, postStream, getStream
       'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },

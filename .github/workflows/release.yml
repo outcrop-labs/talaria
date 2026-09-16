@@ -316,6 +316,7 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/desktop-package.yml
+    secrets: inherit
     with:
       ref: ${{ needs.resolve.outputs.ref }}
       version: ${{ needs.resolve.outputs.version }}

@@ -106,6 +106,11 @@ on:
         type: string
         required: false
         default: ''
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read # escalated in `attach` only
@@ -237,6 +242,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/assets"
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
+
+      - name: Sign the AppImage for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          img=$(ls "$RUNNER_TEMP/assets"/*.AppImage)
+          desktop/packaging/sign-update.sh "$img"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -385,8 +399,17 @@ jobs:
           # and a zip is the one scripted installs can fetch and unpack.
           ditto -c -k --keepParent macos/Talaria.app \
             "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.zip"
+          # The updater wants a .tar.gz of the same .app (not the dmg, not the zip).
+          tar -C macos -czf "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.tar.gz" Talaria.app
           ls -l "$RUNNER_TEMP/assets"
 
+      - name: Sign the app archive for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          desktop/packaging/sign-update.sh "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.tar.gz"
       # The dmg's payload is LAUNCHED here, not just built: an unsigned,
       # universal WKWebView app that cannot come up on a Mac is not something a
       # release should carry, and this runner is the only Mac in the pipeline.
@@ -503,6 +526,14 @@ jobs:
           if [ -d msi ]; then cp msi/*.msi "$RUNNER_TEMP/assets/"; fi
           ls -l "$RUNNER_TEMP/assets"
 
+      - name: Sign the NSIS installer for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          exe=$(ls "$RUNNER_TEMP/assets"/*-setup.exe)
+          desktop/packaging/sign-update.sh "$exe"
       # Install the artifact a release would carry and RUN it — an installer
       # that will not install, or an app that will not start, fails here instead
       # of on a user's machine. Whichever installer this run produced is the one
@@ -543,9 +574,10 @@ jobs:
           if-no-files-found: error
 
   # The only job that writes to anything outside the run: every installer, plus
-  # a checksum list, onto the release release.yml opened for this tag. It runs
-  # last so a half-built release never looks complete, and it is skipped
-  # entirely when there is no release to attach to (main pushes, dispatch).
+  # a checksum list (and on a stable tag, latest.json for the in-app updater),
+  # onto the release release.yml opened for this tag. It runs last so a
+  # half-built release never looks complete, and it is skipped entirely when
+  # there is no release to attach to (main pushes, dispatch).
   attach:
     name: attach installers to the release
     needs: [resolve, linux, linux-pacman, linux-flatpak, macos, windows]
@@ -555,6 +587,10 @@ jobs:
     permissions:
       contents: write # the release asset upload
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
       # packages-* only: binary-linux is an input to the two extra packagers,
       # not a download anyone should be handed.
       - uses: actions/download-artifact@v4
@@ -562,6 +598,26 @@ jobs:
           pattern: packages-*
           merge-multiple: true
           path: assets
+
+      # Stable tags only: /releases/latest is GitHub's moving stable pointer,
+      # so an RC must not publish latest.json. Missing signatures on a stable
+      # tag fail the job — shipping a release the installed app cannot update
+      # to is worse than a red attach.
+      - name: Updater manifest
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -eu
+          case "$VERSION" in
+            *-*)
+              echo "prerelease $VERSION — no latest.json (the updater reads /releases/latest)"
+              ;;
+            *)
+              python3 desktop/packaging/write-latest-json.py \
+                "$VERSION" "$TAG" "$GITHUB_REPOSITORY" assets
+              ;;
+          esac
 
       # Written to a file outside `assets` first: a redirect creates its target
       # before the glob expands, so the obvious one-liner hashes an empty
@@ -581,9 +637,8 @@ jobs:
         run: |
           set -eu
           ls -l assets
-          # --repo, explicitly: this job never checks the repository out (it only
-          # needs the artifacts), so `gh` has no .git to resolve the repository
-          # from and dies with "failed to run git: not a git repository". The
-          # first tag run stopped exactly there, after the checksums were written.
+          # --repo, explicitly: `gh` can resolve the repository from the
+          # checkout, but naming it keeps this step honest if the checkout
+          # ever goes away again.
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" assets/* --clobber
           echo "attached $(ls assets | wc -l) files to $TAG"

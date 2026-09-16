@@ -70,6 +70,11 @@ git tag v0.2.0 && git push origin v0.2.0
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
 `latest` moves on nothing else — only a `vX.Y.Z` tag with no suffix.
 
+A stable desktop release also attaches `latest.json` and `.sig` files so
+installed copies can update in-app. That needs the
+`TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey is in
+`desktop/src-tauri/tauri.conf.json`). An RC does not publish `latest.json`.
+
 ## Nightlies
 
 Every day at 03:17 UTC the workflow builds `testing`'s tip and publishes
