@@ -1640,10 +1640,13 @@ pub async fn render_fleet(
             // mechanism) at the exact CLAUDE_CONFIG_DIR / CODEX_HOME paths
             // under /opt/data. ANTHROPIC_API_KEY in the env (the Provider
             // auth above) is Claude Code's documented API-key path — no
-            // OAuth login; these files clear what remains. The skills ride a
-            // symlink mount: /opt/skills, the same tree Hermes reads, so the
-            // git and workbench discipline follows the work into whichever
-            // tool does it.
+            // OAuth login; these files clear what remains. The skills mount
+            // the FLEET SKILLS HOST DIRECTORY directly — the same source
+            // /opt/skills itself mounts from — NOT a symlink: a symlink to a
+            // container-only path is dangling on the host, and the docker
+            // daemon answers a dangling bind source with mkdir-then-"file
+            // exists", which 500s the whole agent up (the first roll after
+            // #369 landed proved it live).
             for slug in &wb.harnesses {
                 match slug.as_str() {
                     "claude-code" => {
@@ -1659,11 +1662,6 @@ pub async fn render_fleet(
                         )
                         .await
                         .map_err(|e| e.to_string())?;
-                        let link = wb_dir.join("claude--skills");
-                        let _ = tokio::fs::remove_file(&link).await;
-                        tokio::fs::symlink("/opt/skills", &link)
-                            .await
-                            .map_err(|e| e.to_string())?;
                         harness_mounts.push(format!(
                             "{}:/opt/data/workbench/harness/claude/.claude.json:ro",
                             wb_dir.join("claude--.claude.json").display()
@@ -1674,18 +1672,13 @@ pub async fn render_fleet(
                         ));
                         harness_mounts.push(format!(
                             "{}:/opt/data/workbench/harness/claude/skills:ro",
-                            link.display()
+                            fleet_skills.display()
                         ));
                     }
                     "codex" => {
-                        let link = wb_dir.join("codex--skills");
-                        let _ = tokio::fs::remove_file(&link).await;
-                        tokio::fs::symlink("/opt/skills", &link)
-                            .await
-                            .map_err(|e| e.to_string())?;
                         harness_mounts.push(format!(
                             "{}:/opt/data/workbench/harness/codex/skills:ro",
-                            link.display()
+                            fleet_skills.display()
                         ));
                     }
                     _ => {}
