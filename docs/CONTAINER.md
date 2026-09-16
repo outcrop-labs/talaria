@@ -189,7 +189,7 @@ compose file, with the app image as its centerpiece.
 
 The environment is the **only** config channel. There is no `ui/.env` in the
 image, and real env wins everywhere it exists
-([`server-entry.js`](../ui/server-entry.js) skips `.env` keys already in
+([`server-entry.ts`](../ui/server-entry.ts) skips `.env` keys already in
 `process.env`; the entrypoint follows the same rule against its generated
 file). Whatever your orchestrator sets is what runs.
 

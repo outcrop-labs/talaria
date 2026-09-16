@@ -1,6 +1,6 @@
 #!/bin/sh
 # Talaria container entrypoint. The image carries no config: the environment
-# is the ONLY channel (real env always wins — server-entry.js skips .env keys
+# is the ONLY channel (real env always wins — server-entry.ts skips .env keys
 # already in process.env, and this script follows the same contract). What the
 # environment doesn't supply, the entrypoint generates ONCE into the persistent
 # state dir and re-reads on later boots:
@@ -86,7 +86,7 @@ ensure_secret() { # <name> <bytes>
 }
 
 # Export generated values ONLY for vars the real env doesn't set — the
-# server-entry.js precedence, applied one layer earlier.
+# server-entry.ts precedence, applied one layer earlier.
 export_generated() {
   [ -f "$GEN_ENV" ] || return 0
   while IFS='=' read -r k v; do
@@ -179,6 +179,6 @@ case "${1:-}" in
     bun "$APP_DIR/docker/await-deps.mjs"
 
     say "starting Talaria on :${PORT:-5273}"
-    exec bun server-entry.js
+    exec bun server-entry.ts
     ;;
 esac

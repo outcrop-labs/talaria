@@ -1,6 +1,6 @@
 // Container readiness gate — the entrypoint runs this before exec'ing the app.
 //
-// The app runs database migrations as it boots (server-entry.js, before the
+// The app runs database migrations as it boots (server-entry.ts, before the
 // Rust api spawns; the pass itself lives in ui/src/server/db/pg.ts,
 // advisory-locked). That step is bounded and non-fatal, so a boot that races
 // Postgres degrades to a failed pass and a schema-less instance logging

@@ -1,7 +1,7 @@
 // Postgres — durable state (users, roles, per-agent access, conversations,
 // messages). postgres.js (no native build). Migrations run once per statement
 // ever (see schema_migrations below), under an advisory lock — eagerly at boot
-// (server-entry.js calls migrate()) and lazily on the first query thereafter.
+// (server-entry.ts calls migrate()) and lazily on the first query thereafter.
 // Cached on globalThis so HMR doesn't open a new pool each reload.
 
 import { createHash } from 'node:crypto'
@@ -3111,7 +3111,7 @@ export async function db(): Promise<Sql> {
  *  db() only fires on a table-backed query — and since the api cutover nothing
  *  in the boot path issues one (healthz is connectivity-only, and the api owns
  *  the tables but no DDL), so boot calls this explicitly: without it, a fresh
- *  database never migrates. See server-entry.js's boot step for the story. */
+ *  database never migrates. See server-entry.ts's boot step for the story. */
 export function migrate(): Promise<MigrationResult> {
   return ensureMigrated()
 }
