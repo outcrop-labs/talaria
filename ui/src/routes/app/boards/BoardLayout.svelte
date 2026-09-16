@@ -18,7 +18,10 @@
   // keyboard/touch paths that never hover.
   $effect(() => {
     const idle = requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 250))
-    const id = idle(() => void preload('/boards/:boardId/:taskId'))
+    // Swallow, don't surface twice: a warm-up that fails lands in the router's
+    // onError hook (reported to the recovery banner); the catch only keeps
+    // this fire-and-forget from ALSO raising an unhandled rejection.
+    const id = idle(() => void preload('/boards/:boardId/:taskId').catch(() => {}))
     return () => (cancelIdleCallback ?? clearTimeout)(id as number)
   })
 </script>

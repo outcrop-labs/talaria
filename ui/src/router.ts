@@ -1,4 +1,5 @@
 import { createRouter } from 'sv-router'
+import { reportNavigationFailure } from '@/lib/nav-failure.svelte'
 import NotFound from './routes/NotFound.svelte'
 
 // Server-path anchors vs. sv-router's global click interceptor.
@@ -176,10 +177,16 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     },
     layout: () => import('./routes/app/AppLayout.svelte'),
     hooks: {
-      onError(error) {
+      onError(error, context) {
         // A lazy chunk that no longer exists after a deploy lands here, as
-        // does a throw from a route module's top level. Log it; the shell's
-        // <svelte:boundary> is the visible net.
+        // does a throw from a route module's top level — and it lands here
+        // AFTER the click was already preventDefaulted and BEFORE the
+        // rethrow, so this hook is the only witness while the URL and the
+        // view are still untouched. Report the failure to the recovery
+        // banner (NavigationFailureBanner, in the app shell): without it
+        // the person's clicks read as dead — the sidebar navigation
+        // silently swallowed every failure until a manual refresh.
+        reportNavigationFailure(context?.pathname ?? location.pathname, error)
         console.error('[router]', error)
       },
     },

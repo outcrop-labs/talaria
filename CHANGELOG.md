@@ -6,6 +6,37 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **A navigation that fails no longer reads as a dead sidebar.** Clicking a
+  nav item whose route chunk fails to load (a deploy swapped the hashed
+  files out from under an open tab, or the connection dropped) did nothing
+  at all — no URL change, no view change, no error anywhere a person could
+  see — and every further click on a not-yet-loaded route re-failed the same
+  way until a full refresh. The mechanics: sv-router's click interceptor
+  preventDefaults the click BEFORE navigating, and when the lazy `import()`
+  of the route's chunks rejects, the route tree's only error handling was a
+  `console.error` in the router's `onError` hook — the throw happens outside
+  any component boundary, so the shell's `<svelte:boundary>` never sees it.
+  Now `onError` reports the failure to a recovery banner in the app shell:
+  what failed to open, an honest sentence classifying the failure (a chunk
+  load names reloading, because the browser caches the rejected import in
+  the document's module map — Try again alone would be a lie; a network
+  failure names the connection), Try again (re-navigates in this document),
+  and Reload. A later successful navigation retires the banner on its own,
+  and the fire-and-forget chunk warm-ups swallow their rejections — the
+  banner already surfaced them, and an unhandled rejection for the same
+  event would be noise. Verified: `bun run verify` green (check, svelte-check
+  0 errors, 1121 vitest tests across 61 files including new
+  `describeNavigationFailure` classification tests, mcp typecheck); and
+  end-to-end in a real headless browser driving the shell over CDP with
+  network emulation: the offline dead click (pre-fix: zero feedback) now
+  produces the banner with the failed href, the reload guidance, and both
+  recovery affordances, with URL and view untouched; with the network
+  restored, Try again honestly reports still failing (Chrome keeps the
+  rejected import failed in the document's module map — the message points
+  at Reload, which recovers), and after Reload the same nav item navigates
+  on one click with the banner retiring; screenshots filed as artifacts on
+  the ticket.
+
 - **The bundled Hermes github skill is pruned from fleet containers, and a
   Talaria-authored `github` skill stands in its place.** The image ships a
   gh-CLI-first github pack whose preflight (`gh auth status`) and auth

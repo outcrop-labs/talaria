@@ -23,7 +23,12 @@ interface WarmRouteOptions {
 
 export function warmRoute(node: HTMLElement, opts: WarmRouteOptions) {
   const fire = () => {
-    if (opts.path) void preload(opts.path)
+    // `void` on purpose — warm-up must never block intent — but a failing
+    // warm-up is not an unhandled rejection: the failure is already reported
+    // by the router's onError hook, and the recovery banner lives there. The
+    // catch keeps the console honest (no stray unhandledrejection noise for
+    // the same event the banner just surfaced).
+    if (opts.path) void preload(opts.path).catch(() => {})
     opts.warm?.()
   }
   node.addEventListener('pointerenter', fire)

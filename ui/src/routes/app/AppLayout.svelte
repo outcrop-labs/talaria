@@ -6,6 +6,7 @@
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
   import NavRail from '@/components/app/NavRail.svelte'
+  import NavigationFailureBanner from '@/components/app/NavigationFailureBanner.svelte'
   import { useNavCollapsed } from '@/components/app/nav-rail.svelte'
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
   import NotificationToasts from '@/components/app/NotificationToasts.svelte'
@@ -255,6 +256,10 @@
            confused colleague days later. Renders nothing for members, and
            nothing at all when there is nothing to say. -->
       <UnreadableSecretsBanner />
+      <!-- A nav click that died silently (failed route chunk, top-level throw
+           in a route module) surfaces here instead of reading as a dead
+           sidebar: the frame tells you when something under it broke. -->
+      <NavigationFailureBanner />
       <!-- Silent first-run timezone adoption. Renders nothing; see the
            component. Here, next to the banner, because both are "the shell
            quietly makes the workspace honest" — one about secrets, one about
