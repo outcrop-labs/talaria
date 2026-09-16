@@ -33,14 +33,20 @@ pub async fn conversation_accessible(
         "select 1 from conversations c \
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
            and (c.user_id = $2::uuid \
-             or (c.kind = 'plan' and exists( \
-               select 1 from conversation_members cm \
-               where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+             or (c.kind = 'plan' and ( \
+               exists(select 1 from conversation_members cm \
+                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
+               or exists(select 1 from conversation_teams ct \
+                         join team_members tm on tm.team_id = ct.team_id \
+                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
              or (c.kind = 'research' and exists( \
                select 1 from research_runs r \
                  left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                 where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null)))) \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $2::uuid))))) \
          limit 1",
     )
     .bind(conversation_id)
@@ -65,14 +71,20 @@ pub async fn accessible_conversation_agent(
         "select agent_model from conversations c \
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
            and (c.user_id = $2::uuid \
-             or (c.kind = 'plan' and exists( \
-               select 1 from conversation_members cm \
-               where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+             or (c.kind = 'plan' and ( \
+               exists(select 1 from conversation_members cm \
+                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
+               or exists(select 1 from conversation_teams ct \
+                         join team_members tm on tm.team_id = ct.team_id \
+                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
              or (c.kind = 'research' and exists( \
                select 1 from research_runs r \
                  left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                 where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null)))) \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $2::uuid))))) \
          limit 1",
     )
     .bind(conversation_id)
@@ -213,14 +225,20 @@ pub async fn accessible_conversation(
              from conversations c \
              where id = $1::uuid and kind in ('chat', 'plan', 'research') \
                and (user_id = $2::uuid \
-                 or (kind = 'plan' and exists( \
-                   select 1 from conversation_members cm \
-                   where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+                 or (kind = 'plan' and ( \
+                   exists(select 1 from conversation_members cm \
+                          where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
+                   or exists(select 1 from conversation_teams ct \
+                             join team_members tm on tm.team_id = ct.team_id \
+                             where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
                  or (kind = 'research' and exists( \
                    select 1 from research_runs r \
                      left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                     where r.conversation_id = c.id \
-                      and (r.owner_user_id = $2::uuid or rm.user_id is not null))))",
+                      and (r.owner_user_id = $2::uuid or rm.user_id is not null \
+                        or exists(select 1 from research_teams rt \
+                                  join team_members tm on tm.team_id = rt.team_id \
+                                  where rt.run_id = r.id and tm.user_id = $2::uuid)))))",
     )
     .bind(conversation_id)
     .bind(user_id)
@@ -316,9 +334,12 @@ pub async fn list_conversations(
          join users o on o.id = c.user_id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
          where c.archived = false and c.kind = $2 \
-           and (c.user_id = $1::uuid or ($2 = 'plan' and exists( \
-             select 1 from conversation_members cm \
-             where cm.conversation_id = c.id and cm.user_id = $1::uuid))) \
+           and (c.user_id = $1::uuid or ($2 = 'plan' and ( \
+             exists(select 1 from conversation_members cm \
+                    where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
+             or exists(select 1 from conversation_teams ct \
+                       join team_members tm on tm.team_id = ct.team_id \
+                       where ct.conversation_id = c.id and tm.user_id = $1::uuid)))) \
          order by c.updated_at desc",
     )
     .bind(user_id)
@@ -459,14 +480,20 @@ pub async fn get_conversation(
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
            and ( \
              c.user_id = $2::uuid \
-             or (c.kind = 'plan' and exists( \
-               select 1 from conversation_members cm \
-               where cm.conversation_id = c.id and cm.user_id = $2::uuid)) \
+             or (c.kind = 'plan' and ( \
+               exists(select 1 from conversation_members cm \
+                      where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
+               or exists(select 1 from conversation_teams ct \
+                         join team_members tm on tm.team_id = ct.team_id \
+                         where ct.conversation_id = c.id and tm.user_id = $2::uuid))) \
              or (c.kind = 'research' and exists( \
                select 1 from research_runs r \
                  left join research_members rm on rm.run_id = r.id and rm.user_id = $2::uuid \
                 where r.conversation_id = c.id \
-                  and (r.owner_user_id = $2::uuid or rm.user_id is not null))) \
+                  and (r.owner_user_id = $2::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $2::uuid)))) \
            )",
     )
     .bind(conversation_id)
@@ -552,6 +579,12 @@ pub struct PlanMember {
     pub role: String, // 'owner' | 'collaborator'
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct PlanTeam {
+    pub id: String,
+    pub name: String,
+}
+
 pub async fn list_plan_members(
     pg: &PgPool,
     conversation_id: &str,
@@ -588,7 +621,11 @@ pub async fn plan_role(
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(Option<String>,)> = sqlx::query_as(
         "select case when c.user_id = $2::uuid then 'owner' \
-                    when cm.user_id is not null then 'collaborator' end as role \
+                    when cm.user_id is not null then 'collaborator' \
+                    when exists(select 1 from conversation_teams ct \
+                                join team_members tm on tm.team_id = ct.team_id \
+                                where ct.conversation_id = c.id and tm.user_id = $2::uuid) \
+                         then 'collaborator' end as role \
          from conversations c \
          left join conversation_members cm on cm.conversation_id = c.id and cm.user_id = $2::uuid \
          where c.id = $1::uuid and c.kind = 'plan'",
@@ -635,6 +672,55 @@ pub async fn remove_plan_member(
     Ok(())
 }
 
+pub async fn list_plan_teams(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Vec<PlanTeam>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select t.id::text, t.name from conversation_teams ct \
+         join teams t on t.id = ct.team_id \
+         where ct.conversation_id = $1::uuid order by t.name",
+    )
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| PlanTeam { id, name })
+        .collect())
+}
+
+pub async fn add_plan_team(
+    pg: &PgPool,
+    conversation_id: &str,
+    team_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into conversation_teams (conversation_id, team_id) \
+         values ($1::uuid, $2::uuid) on conflict do nothing",
+    )
+    .bind(conversation_id)
+    .bind(team_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+pub async fn remove_plan_team(
+    pg: &PgPool,
+    conversation_id: &str,
+    team_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "delete from conversation_teams where conversation_id = $1::uuid and team_id = $2::uuid",
+    )
+    .bind(conversation_id)
+    .bind(team_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// The caller's total unread messages across conversations of one kind — a
 /// rail badge's number. The SAME predicate `list_conversations` counts per
 /// thread (keep the two in lockstep), including the plan-membership scoping
@@ -652,9 +738,12 @@ pub async fn conversation_unread_total(
            and m.seq > coalesce(cr.last_read_seq, -1) \
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
-           and (c.user_id = $1::uuid or ($2 = 'plan' and exists( \
-             select 1 from conversation_members cm \
-             where cm.conversation_id = c.id and cm.user_id = $1::uuid)))",
+           and (c.user_id = $1::uuid or ($2 = 'plan' and ( \
+             exists(select 1 from conversation_members cm \
+                    where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
+             or exists(select 1 from conversation_teams ct \
+                       join team_members tm on tm.team_id = ct.team_id \
+                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))))",
     )
     .bind(user_id)
     .bind(kind)

@@ -233,8 +233,9 @@ pub async fn list_users(
 /// Manage-section routes: default DENIED for members, granted explicitly via
 /// allowed_manage_views. Enabled apps extend this set with EVERY app view
 /// (work and manage) — apps are explicit-grant only.
-const MANAGE_VIEW_ROUTES: [&str; 6] = [
+pub(crate) const MANAGE_VIEW_ROUTES: [&str; 7] = [
     "/agents",
+    "/teams",
     "/models",
     "/mcp",
     "/templates",
@@ -516,10 +517,10 @@ pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
     }
     out
 }
-
 /// Views a member may NOT reach: their explicit work-view denials (DB order)
-/// PLUS every Manage view they haven't been granted. Admins are never
-/// restricted.
+/// PLUS every Manage view they haven't been granted. Team grants union in:
+/// a team's work denial adds to the user's, a team's manage grant opens the
+/// door. Admins are never restricted.
 pub async fn denied_views(
     pg: &PgPool,
     user_id: &str,
@@ -533,8 +534,18 @@ pub async fn denied_views(
             .bind(user_id)
             .fetch_optional(pg)
             .await?;
-    let (denied, allowed) = row.unwrap_or_default();
-    let allowed: HashSet<String> = allowed.unwrap_or_default().into_iter().collect();
+    let (mut denied, allowed) = row.unwrap_or_default();
+    let (team_denied, team_allowed) = crate::teams::team_view_grants_for_user(pg, user_id).await?;
+    for v in team_denied {
+        if !denied.contains(&v) {
+            denied.push(v);
+        }
+    }
+    let mut allowed: std::collections::HashSet<String> =
+        allowed.unwrap_or_default().into_iter().collect();
+    for v in team_allowed {
+        allowed.insert(v);
+    }
     let mut out = denied;
     out.extend(
         MANAGE_VIEW_ROUTES

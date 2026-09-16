@@ -74,9 +74,16 @@ pub async fn notify_plan_mentions(
                 .await
                 .unwrap_or_default();
             let item = guarded(&doc);
-            list_users(pg)
-                .await
-                .unwrap_or_default()
+            let users = list_users(pg).await.unwrap_or_default();
+            let mut team_map: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            for (id, _, _) in &users {
+                if let Ok(ids) = crate::teams::team_ids_for_user(pg, id).await {
+                    team_map.insert(id.clone(), ids);
+                }
+            }
+            let empty = Vec::new();
+            users
                 .into_iter()
                 .filter(|(id, email, name)| {
                     can_read(
@@ -84,6 +91,7 @@ pub async fn notify_plan_mentions(
                         Some(id),
                         email.as_deref().or(name.as_deref()),
                         &grants,
+                        team_map.get(id).unwrap_or(&empty),
                     )
                 })
                 .map(|(user_id, name, email)| Mentionee {

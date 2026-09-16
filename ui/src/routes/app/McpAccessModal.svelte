@@ -12,7 +12,7 @@
   import { useUsers } from '@/lib/users'
   import McpAccessRow from './McpAccessRow.svelte'
   import McpAddPickerButton from './McpAddPickerButton.svelte'
-  import { ALL_TOOLS, NO_ACCESS, patchServer, resolveScopePick, type McpServerRow } from './mcp'
+  import { ALL_TOOLS, NO_ACCESS, patchServer, resolveScopePick, useTeamsDirectory, type McpServerRow } from './mcp'
 
   // WHO MAY USE THIS SERVER — its own dialog rather than a third section of the
   // card. Access is a table that grows with the org: one row per agent and one
@@ -33,6 +33,8 @@
   // about strangers, on a server that grants tool use.
   const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
   const users = $derived(usersList.rows)
+  const teamsList = listQuery(useTeamsDirectory(), { title: 'Could not load teams', variant: 'inline' })
+  const teams = $derived(teamsList.rows)
   let error = $state<string | null>(null)
 
   const patch = async (body: unknown) => {
@@ -49,12 +51,13 @@
     const u = users.find((x) => x.id === id)
     return u?.name ?? u?.email ?? id.slice(0, 8)
   }
+  const teamLabel = (id: string) => teams.find((t) => t.id === id)?.name ?? id.slice(0, 8)
 </script>
 
 {#snippet title()}
   <span class="flex items-center gap-2">
     Access: {s.label}
-    <InfoTip text="Which agents carry this server, and which people may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
+    <InfoTip text="Which agents carry this server, and which people and teams may exercise it through agents acting for them. Tool cells narrow a row to a subset; empty = every tool. The gateway enforces all of it." />
   </span>
 {/snippet}
 
@@ -169,6 +172,57 @@
       </div>
     {/if}
     </div>
+
+  <!-- Teams -->
+  <div class="mt-3 border-t border-line-subtle pt-2.5">
+    <div class="flex items-center gap-2 pb-1">
+      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Teams</span>
+      <InfoTip text="A team rule grants or denies the team's people and agents. Tool cells narrow the grant; empty = every tool." />
+      <span class="flex-1"></span>
+      <McpAddPickerButton
+        title="Add a team rule"
+        placeholder="Search teams"
+        options={teams
+          .filter((t) => !s.teamAccess.some((r) => r.teamId === t.id))
+          .map((t) => ({ value: t.id, label: t.name }))}
+        onPick={(id) => void patch({ teamAccess: { teamId: id, allowed: true, tools: null } })}
+      />
+    </div>
+    {#if teamsList.notice}<QueryError {...teamsList.notice} />{/if}
+    {#if s.teamAccess.length === 0}
+      <EmptyState variant="inline" class="px-1.5 py-1 text-muted/70" title="No team rules. Add a team to grant or deny it as a group." />
+    {:else}
+      <div class="space-y-0.5">
+        {#each s.teamAccess as ta (ta.teamId)}
+          <McpAccessRow
+            name={teamLabel(ta.teamId)}
+            dim={!ta.allowed}
+            onRemove={() => void patch({ teamAccess: { teamId: ta.teamId, allowed: null, tools: null } })}
+            removeTitle="Remove this rule (back to default access)"
+          >
+            {#snippet tools()}
+              <Combobox
+                options={[
+                  { value: ALL_TOOLS, label: 'All tools' },
+                  { value: NO_ACCESS, label: 'No access' },
+                  ...toolOptions,
+                ]}
+                selected={ta.allowed ? (ta.tools ?? [ALL_TOOLS]) : [NO_ACCESS]}
+                onChange={(sel) => {
+                  const next = resolveScopePick(sel, { denied: !ta.allowed, tools: ta.tools })
+                  void patch({ teamAccess: { teamId: ta.teamId, allowed: !next.denied, tools: next.tools } })
+                }}
+                multiple
+                size="sm"
+                placeholder="All tools"
+                class="w-full"
+              />
+            {/snippet}
+          </McpAccessRow>
+        {/each}
+      </div>
+    {/if}
+  </div>
   </div>
   {#if error}<div transition:slide={{ duration: 150 }} class="mt-3 text-xs text-danger">{error}</div>{/if}
 </Modal>

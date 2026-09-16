@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-5 routes.
+6 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -20,6 +20,8 @@
 | [`/api/research/{id}/members`](#apiresearchidmembers) | GET | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | POST | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | DELETE | `session` |
+| [`/api/research/{id}/teams`](#apiresearchidteams) | POST | `session` |
+| [`/api/research/{id}/teams`](#apiresearchidteams) | DELETE | `session` |
 
 ## `/api/research`
 
@@ -104,7 +106,7 @@ Source: [`api/src/routes/research/research_id_members.rs`](../../api/src/routes/
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{members}` | 200, 404 | — |
+| GET | `session` | — | `{members, teams}` | 200, 404 | — |
 | POST | `session` | [body](#post-apiresearchidmembers-body) | `{members}` | 200, 400, 403 | — |
 | DELETE | `session` | [body](#delete-apiresearchidmembers-body) | `{members}` | 200, 400, 403 | — |
 
@@ -119,4 +121,30 @@ Source: [`api/src/routes/research/research_id_members.rs`](../../api/src/routes/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `userId` | `uuid` |  |
+
+## `/api/research/{id}/teams`
+
+Source: [`api/src/routes/research/research_id_teams.rs`](../../api/src/routes/research/research_id_teams.rs)
+
+> /api/research/{id}/teams.
+> POST { teamId } → grant a team (run owner). DELETE { teamId } → revoke
+> (run owner). Keeps the report artifact's editor grants in step when the
+> report exists.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiresearchidteams-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | [body](#delete-apiresearchidteams-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/research/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
+
+### DELETE `/api/research/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
 

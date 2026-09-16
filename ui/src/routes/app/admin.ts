@@ -55,12 +55,13 @@ export interface PermsData {
   overrides: Record<string, Record<string, boolean>>
 }
 
-export function useAdminPermissions() {
+export function useAdminPermissions(enabled?: () => boolean) {
   return createQuery(() => ({
     // Every permission chip on this page is gated on `perms` being truthy, so a
     // failed read used to make the whole permissions model DISAPPEAR — an admin
     // reads that as "nothing is restricted here". Non-2xx throws.
     queryKey: ['admin-permissions'],
+    enabled: enabled ? enabled() : true,
     queryFn: (): Promise<PermsData> => getJson<PermsData>('/api/admin/permissions'),
   }))
 }

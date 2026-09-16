@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { useQueryClient } from '@tanstack/svelte-query'
-  import { UserPlus, X } from '@lucide/svelte'
+  import { useQueryClient, createQuery } from '@tanstack/svelte-query'
+  import { UserPlus, Users, X } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import Combobox from '@/components/ui/Combobox.svelte'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
   import { fade } from '@/lib/motion'
-  import { delJson, errorMessage, postJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useResearchMembers } from '@/lib/research'
@@ -18,6 +19,7 @@
   const session = $derived(sessionQuery.data)
   const qc = useQueryClient()
   let adding = $state(false)
+  let addingTeam = $state(false)
   // Already rejected on non-2xx; this just routes it through the shared door so
   // the thrown message is the server's own. The avatars stay hidden on failure
   // — the run header has no room for an error, and hiding a SHARE control is
@@ -27,12 +29,27 @@
   // a mention to somebody who cannot open the report being discussed.
   const query = useResearchMembers(() => runId)
   const members = $derived(query.data?.members ?? [])
+  const teams = $derived(query.data?.teams ?? [])
   const isOwner = $derived(!!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId)
   const refresh = () => qc.invalidateQueries({ queryKey: ['research-members', runId] })
+  const dirQuery = createQuery(() => ({
+    queryKey: ['teams-directory'],
+    enabled: isOwner,
+    queryFn: () => getJson<{ teams: Array<{ id: string; name: string }> }>('/api/teams/directory'),
+  }))
+  const teamOptions = $derived(
+    (dirQuery.data?.teams ?? [])
+      .filter((t) => !teams.some((g) => g.id === t.id))
+      .map((t) => ({ value: t.id, label: t.name })),
+  )
   const remove = (userId: string) =>
     delJson(`/api/research/${runId}/members`, { userId })
       // Fire-and-forget from a hover chip in the run header — a toast is the
       // only surface this row has for a failed leave/remove.
+      .catch((e) => pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }))
+      .then(refresh)
+  const removeTeam = (teamId: string) =>
+    delJson(`/api/research/${runId}/teams`, { teamId })
       .catch((e) => pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }))
       .then(refresh)
 </script>
@@ -57,6 +74,21 @@
         </span>
       {/each}
     </span>
+    {#each teams as t (t.id)}
+      <span class="group relative flex items-center gap-0.5 rounded-full border border-line bg-card px-1.5 py-0.5 font-mono text-[10px]" title={t.name}>
+        <span class="max-w-24 truncate">{t.name}</span>
+        {#if isOwner}
+          <button
+            type="button"
+            title={`Remove ${t.name}`}
+            onclick={() => void removeTeam(t.id)}
+            class="hidden h-3.5 w-3.5 place-items-center rounded-full text-muted group-hover:grid hover:text-fg"
+          >
+            <X size={9} />
+          </button>
+        {/if}
+      </span>
+    {/each}
     {#if isOwner}
       {#if adding}
         <!-- Fade, not slide: an in-place swap in a horizontal row — a height
@@ -86,6 +118,36 @@
           class="grid h-6 w-6 place-items-center rounded-full border border-dashed border-line text-muted hover:text-fg"
         >
           <UserPlus size={12} />
+        </button>
+      {/if}
+      {#if addingTeam}
+        <div in:fade={{ duration: 150 }}>
+          <Combobox
+            size="sm"
+            class="w-48"
+            options={teamOptions}
+            selected={[]}
+            placeholder="Share with a team"
+            onChange={(next) => {
+              addingTeam = false
+              const id = next[0]
+              if (!id) return
+              void postJson(`/api/research/${runId}/teams`, { teamId: id })
+                .catch((e) => {
+                  void alert({ title: 'Could not share', message: errorMessage(e) })
+                })
+                .then(refresh)
+            }}
+          />
+        </div>
+      {:else}
+        <button
+          type="button"
+          title="Share this research with a team"
+          onclick={() => (addingTeam = true)}
+          class="grid h-6 w-6 place-items-center rounded-full border border-dashed border-line text-muted hover:text-fg"
+        >
+          <Users size={12} />
         </button>
       {/if}
     {/if}

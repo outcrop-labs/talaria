@@ -115,7 +115,13 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .filter(|a| {
                 a.visibility != "private"
                     || granted.contains(&a.id)
-                    || can_read_agent(&crate::artifacts::guarded(a), &name, owner.as_deref(), &[])
+                    || can_read_agent(
+                        &crate::artifacts::guarded(a),
+                        &name,
+                        owner.as_deref(),
+                        &[],
+                        &[],
+                    )
             })
             .collect();
         return Json(json!({ "artifacts": artifacts })).into_response();
@@ -147,6 +153,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     &crate::artifacts::guarded(a),
                     Some(&user.id),
                     who.as_deref(),
+                    &[],
                     &[],
                 )
         })

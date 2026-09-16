@@ -68,6 +68,7 @@ pub async fn resolve_refs(
     refs: &[MessageRef],
 ) -> Result<Vec<RefChip>, sqlx::Error> {
     let mut chips: Vec<RefChip> = Vec::new();
+    let team_ids = crate::teams::team_ids_for_user(pg, user.id).await?;
     for r in refs.iter().take(3) {
         if r.ref_type == "kb-doc" {
             let Some(doc) = get_doc(pg, &r.id).await? else {
@@ -79,6 +80,7 @@ pub async fn resolve_refs(
                 Some(user.id),
                 user.author(),
                 &effective.grants,
+                &team_ids,
             ) {
                 continue;
             }
@@ -105,6 +107,7 @@ pub async fn resolve_refs(
                 Some(user.id),
                 user.author(),
                 &grants,
+                &team_ids,
             ) {
                 continue;
             }

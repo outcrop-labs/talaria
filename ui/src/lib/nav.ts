@@ -20,6 +20,7 @@ import {
   PlugZap,
   Settings2,
   Telescope,
+  Users,
 } from '@lucide/svelte'
 
 export interface NavItem {
@@ -52,6 +53,7 @@ export const GATEABLE_VIEWS: { to: string; label: string }[] = [
  *  permissions: view access opens the door, permissions gate the actions). */
 export const MANAGE_VIEWS: { to: string; label: string }[] = [
   { to: '/agents', label: 'Agents' },
+  { to: '/teams', label: 'Teams' },
   { to: '/models', label: 'Models' },
   { to: '/mcp', label: 'MCP' },
   { to: '/templates', label: 'Templates' },
@@ -91,6 +93,7 @@ export const NAV: NavSection[] = [
     title: 'Manage',
     items: [
       { to: '/agents', label: 'Agents', icon: Bot },
+      { to: '/teams', label: 'Teams', icon: Users },
       { to: '/models', label: 'Models', icon: Cpu },
       { to: '/mcp', label: 'MCP', icon: PlugZap },
       { to: '/templates', label: 'Templates', icon: LayoutTemplate },

@@ -1,7 +1,7 @@
 // /api/mcp/servers/{id}.
-// One registry server: PUT patches config / assignment / user access / tool
-// refresh in one idempotent surface; DELETE unregisters (assignments, user
-// access, and connected accounts cascade). Fleet re-renders after mutations.
+// One registry server: PUT patches config / assignment / user access / team
+// access / tool refresh in one idempotent surface; DELETE unregisters
+// (assignments, user access, and connected accounts cascade). Fleet re-renders after mutations.
 
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
@@ -17,7 +17,7 @@ use crate::mcp::apply::{
 use crate::mcp::oauth::{ensure_oauth_config, set_manual_oauth_client};
 use crate::mcp::registry::{
     ServerPatch, delete_mcp_server, get_mcp_server, refresh_mcp_tools, remove_assignment,
-    set_assignment, set_user_access, update_mcp_server,
+    set_assignment, set_team_access, set_user_access, update_mcp_server,
 };
 use crate::session::{actor_of, require_perm};
 use crate::state::AppState;
@@ -270,6 +270,37 @@ pub async fn put(
         )
         .await;
     }
+    if let Some(team_access) = &patch.team_access {
+        if let Err(e) = set_team_access(
+            &state.pg,
+            &server.id,
+            &team_access.team_id,
+            team_access.allowed,
+            team_access.tools.as_deref(),
+        )
+        .await
+        {
+            tracing::error!("[mcp] team access failed: {e}");
+            return thrown_internal_error();
+        }
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor,
+                action: "mcp.team_access",
+                target_type: "mcp-server",
+                target_id: Some(&server.id),
+                target_label: Some(&server.name),
+                before: None,
+                after: Some(json!({
+                    "teamId": team_access.team_id,
+                    "allowed": team_access.allowed,
+                    "tools": team_access.tools,
+                })),
+            },
+        )
+        .await;
+    }
     let mut tools: Option<Vec<Value>> = None;
     if patch.refresh_tools {
         match refresh_mcp_tools(&state.pg, &sb, &server.id).await {
@@ -307,6 +338,23 @@ pub async fn put(
         let (pg, sb_, user_id) = (state.pg.clone(), sb.clone(), user_access.user_id.clone());
         spawn_roll(async move {
             roll_agent_for_user(&pg, &sb_, &user_id).await;
+        });
+    } else if let Some(team_access) = &patch.team_access {
+        let (pg, sb_, team_id) = (state.pg.clone(), sb.clone(), team_access.team_id.clone());
+        spawn_roll(async move {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "select distinct d.department from agent_defs d \
+                 where d.managed and d.enabled and ( \
+                   exists (select 1 from team_agents ta where ta.team_id = $1::uuid and ta.agent_model = d.model) \
+                   or exists (select 1 from team_members tm where tm.team_id = $1::uuid and tm.user_id = d.owner_user_id) \
+                 )",
+            )
+            .bind(&team_id)
+            .fetch_all(&pg)
+            .await
+            .unwrap_or_default();
+            let departments = rows.into_iter().map(|(d,)| d).collect::<Vec<_>>();
+            enqueue_rolls(&departments, &pg, &sb_);
         });
     }
     let mut out = Map::new();
@@ -400,6 +448,12 @@ struct UserAccessPatch {
     tools: Option<Vec<String>>,
 }
 
+struct TeamAccessPatch {
+    team_id: String,
+    allowed: Option<bool>,
+    tools: Option<Vec<String>>,
+}
+
 struct OauthClientPatch {
     client_id: String,
     client_secret: Option<String>,
@@ -418,6 +472,7 @@ struct Patch {
     assign: Option<AssignPatch>,
     unassign: Option<String>,
     user_access: Option<UserAccessPatch>,
+    team_access: Option<TeamAccessPatch>,
     oauth_client: Option<OauthClientPatch>,
 }
 
@@ -492,6 +547,35 @@ fn user_access_member(
     }))
 }
 
+/// `z.object({teamId: Uuid, allowed: z.boolean().nullable(), tools})`.
+fn team_access_member(
+    obj: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<TeamAccessPatch>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None);
+    };
+    let m = v
+        .as_object()
+        .ok_or_else(|| crate::body::object_msg(zod_type_name(v)))?;
+    let team_id = uuid_member(m, "teamId")?;
+    let allowed = match m.get("allowed") {
+        None => Err(crate::body::boolean_msg("undefined")),
+        Some(Value::Null) => Ok(None),
+        Some(_) => crate::body::boolean_member(m, "allowed").map(Some),
+    }?;
+    let tools = match m.get("tools") {
+        None => Err(array_msg("undefined")),
+        Some(Value::Null) => Ok(None),
+        Some(_) => optional_string_array_member(m, "tools", 0, 120, u32::MAX as usize),
+    }?;
+    Ok(Some(TeamAccessPatch {
+        team_id,
+        allowed,
+        tools,
+    }))
+}
+
 /// `z.object({clientId: z.string().min(1).max(200), clientSecret:
 /// z.string().max(500).nullable()})` — pre-registered OAuth app credentials
 /// for providers without dynamic registration.
@@ -554,6 +638,7 @@ fn parse_patch(obj: &Map<String, Value>) -> Result<Patch, String> {
     let assign = assign_member(obj, "assign")?;
     let unassign = optional_string_member_max(obj, "unassign", 200)?;
     let user_access = user_access_member(obj, "userAccess")?;
+    let team_access = team_access_member(obj, "teamAccess")?;
     let oauth_client = oauth_client_member(obj, "oauthClient")?;
     Ok(Patch {
         label,
@@ -568,6 +653,7 @@ fn parse_patch(obj: &Map<String, Value>) -> Result<Patch, String> {
         assign,
         unassign,
         user_access,
+        team_access,
         oauth_client,
     })
 }

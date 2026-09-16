@@ -47,11 +47,19 @@ pub async fn post(
         }
     };
     // The read gate the GET uses, owner arm included.
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[folders] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
     if !can_read(
         &guarded_folder(&src),
         Some(&user.id),
         who_of(&user).as_deref(),
         &editors,
+        &team_ids,
     ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { Plus, Users } from '@lucide/svelte'
   import { useHasPerm } from '@/lib/session'
+  import { navigate } from '@/router'
 
-  let { onNew, onTeams }: { onNew: () => void; onTeams: () => void } = $props()
+  let { onNew }: { onNew: () => void; onTeams?: () => void } = $props()
 
   const mayCreate = useHasPerm('boards.create')
 </script>
@@ -14,7 +15,7 @@
       <Plus size={13} class="shrink-0" /> New board
     </button>
   {/if}
-  <button onclick={onTeams} class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors duration-[120ms] hover:text-accent">
+  <button onclick={() => void navigate('/teams')} class="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted transition-colors duration-[120ms] hover:text-accent">
     <Users size={13} class="shrink-0" /> Manage teams
   </button>
 </div>

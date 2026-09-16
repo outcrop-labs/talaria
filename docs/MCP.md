@@ -39,9 +39,12 @@ drain, nobody's conversation dies. Tool-subset changes enforce per-call and need
 Per server:
 
 - **Agents** — all-agents, or an explicit assignment per agent; either way each row can narrow to a
-  tool subset ("All tools" is the explicit default).
+  tool subset ("All tools" is the explicit default). An agent on a team also carries that team's
+  MCP grants (union with its own assignment; a team grant counts as assignment on scoped servers).
 - **People** — per-person allow/deny plus optional tool subsets. For agents acting on someone's
   behalf (personal assistants), the person's allowance intersects the agent's.
+- **Teams** — the same people-plane rules as a person (`mcp_team_access`). A personal assistant
+  intersects its owner's allowance after team grants union in; a person's own deny still wins.
 
 ## Auth
 

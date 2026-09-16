@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-16 routes.
+17 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -32,6 +32,8 @@
 | [`/api/channels/{id}/plan`](#apichannelsidplan) | PATCH | `session` |
 | [`/api/channels/{id}/plan`](#apichannelsidplan) | DELETE | `session` |
 | [`/api/channels/{id}/read`](#apichannelsidread) | POST | `session` |
+| [`/api/channels/{id}/teams`](#apichannelsidteams) | POST | `session` |
+| [`/api/channels/{id}/teams`](#apichannelsidteams) | DELETE | `session` |
 | [`/api/chat`](#apichat) | POST | `session` + `perm:plans.create` |
 | [`/api/conversations`](#apiconversations) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
@@ -67,13 +69,13 @@ Source: [`api/src/routes/comms/channels.rs`](../../api/src/routes/comms/channels
 Source: [`api/src/routes/comms/channels_id.rs`](../../api/src/routes/comms/channels_id.rs)
 
 > /api/channels/{id}.
-> GET → channel detail (role + members + agents). PUT → rename / set topic
+> GET → channel detail (role + members + agents + teams). PUT → rename / set topic
 > (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
 > purges the channel's activity points so nothing orphans in the index).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{role, members, agents}` | 200, 403 | — |
+| GET | `session` | — | `{role, members, agents, teams}` | 200, 403 | — |
 | PUT | `session` | [body](#put-apichannelsid-body) | `{ok}` | 200, 400, 403 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
@@ -270,6 +272,32 @@ Source: [`api/src/routes/comms/channels_id_read.rs`](../../api/src/routes/comms/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `seq` | `number(0, 9007)` | seq: integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
+
+## `/api/channels/{id}/teams`
+
+Source: [`api/src/routes/comms/channels_id_teams.rs`](../../api/src/routes/comms/channels_id_teams.rs)
+
+> /api/channels/{id}/teams.
+> POST { teamId } → grant a team (any member). DELETE { teamId } → revoke
+> (owner, or any member removing a team they belong to). Direct messages
+> stay private.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apichannelsidteams-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | [body](#delete-apichannelsidteams-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/channels/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
+
+### DELETE `/api/channels/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
 
 ## `/api/chat`
 
