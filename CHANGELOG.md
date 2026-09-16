@@ -6,6 +6,8 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **Alex West (`alexwest1981`) has joined as a volunteer maintainer.** Named
+  in the README.
 - **Teams are first-class.** They are no longer a boards-only grouping:
   Manage → Teams (`/teams`) is a LibraryPane of org teams (people + agents),
   with admin view grants, permission overrides, and MCP tool rules on the

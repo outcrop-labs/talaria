@@ -159,6 +159,11 @@ dormant). Setup, architecture, conventions, and a link to every doc:
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). New contributors start with
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
+## Maintainers
+
+[Alex West](https://github.com/alexwest1981) (`alexwest1981`) has come on board as a
+volunteer maintainer. Welcome.
+
 ## License
 
 MIT, free forever ([`LICENSE`](./LICENSE)). Open source and self-hostable is the deal, and
