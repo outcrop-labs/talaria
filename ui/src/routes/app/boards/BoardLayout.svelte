@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { preload } from '@/router'
+import { scheduleIdleWarmup } from '@/lib/idle-warmup'
   import Board from './Board.svelte'
 
   // Persistent board shell (sv-router layout): navigating between
@@ -16,21 +17,7 @@
   // and the entrance has already elapsed by first paint: "the first ticket
   // you open doesn't animate". Card hover preloads too; this covers
   // keyboard/touch paths that never hover.
-  $effect(() => {
-    // `typeof`, never a bare reference: WebKit (Safari — and WebKitGTK, the
-    // desktop shell's engine) never shipped requestIdleCallback, and reading
-    // an absent global by name throws ReferenceError before a `??` fallback
-    // can run. "Can't find variable: requestIdleCallback" was exactly that.
-    // Swallow, don't surface twice: a warm-up that fails lands in the router's
-    // onError hook (reported to the recovery banner); the catch only keeps
-    // this fire-and-forget from ALSO raising an unhandled rejection.
-    if (typeof requestIdleCallback !== 'function') {
-      const t = setTimeout(() => void preload('/boards/:boardId/:taskId').catch(() => {}), 250)
-      return () => clearTimeout(t)
-    }
-    const id = requestIdleCallback(() => void preload('/boards/:boardId/:taskId').catch(() => {}))
-    return () => cancelIdleCallback(id)
-  })
+  $effect(() => scheduleIdleWarmup(() => preload('/boards/:boardId/:taskId')))
 </script>
 
 <Board />
