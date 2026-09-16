@@ -3,6 +3,13 @@ name = "talaria-desktop"
 version = "0.1.0"
 description = "Talaria Desktop — the multitenant shell around Talaria instances"
 edition = "2024"
+# Packaging metadata, not Rust metadata: the bundlers read license/authors out
+# of here (a .deb has no other place to get its maintainer or its copyright
+# stanza). version above stays decorative — the releasing tag is the version
+# (RELEASING.md), and release builds override it on the command line.
+authors = ["Outcrop Labs LLC"]
+license = "MIT"
+repository = "https://github.com/outcrop-labs/talaria"
 
 [lib]
 name = "talaria_desktop"

@@ -123,8 +123,87 @@ the binary directly as above.
 `cargo test` + `svelte-check`, the same list CI's `desktop` job runs. `bun run verify` is
 unchanged — the desktop surface gates per-surface, exactly like `api:check`.
 
+## Installers
+
+`.github/workflows/desktop-package.yml` builds every installer and attaches it to the
+GitHub Release a version tag opens — `release.yml` calls it after the image push
+(RELEASING.md has the operator's half). A push to main that touches `desktop/` builds the
+same set and leaves it as workflow artifacts.
+
+| Platform | Files |
+|---|---|
+| Linux | `.deb`, `.rpm`, `AppImage` from Tauri's bundlers; `.pkg.tar.zst` (pacman) and `.flatpak` from `packaging/` |
+| macOS | universal `.dmg` (Apple silicon and Intel) plus the `.app` as a zip |
+| Windows | NSIS `.exe`, plus an `.msi` when the version has no pre-release part |
+
+Bundle targets live per platform — `tauri.linux.conf.json`, `tauri.windows.conf.json`,
+`tauri.macos.conf.json`, which Tauri merges over the base config automatically — so
+`bun run build` in `desktop/` produces that platform's installers and nothing else. The
+released version is merged in at build time with `tauri build --config`; no file in the
+repo carries it, the same way tags are the version authority everywhere else.
+
+Tauri has no pacman or flatpak target, so `desktop/packaging/` builds both from ONE staged
+FHS tree: `linux/stage.sh` writes it, `linux/pack-pacman.sh` turns it into a package
+(`tar` + `.PKGINFO` — no `makepkg`, there is nothing to compile), and `flatpak/build.sh`
+builds the manifest next to it against the GNOME runtime. Building those two locally needs
+`zstd` and `tar` for pacman, and `flatpak` + `flatpak-builder` + the runtime named in the
+manifest for the flatpak.
+
+Nothing is signed or notarized: there is no Apple Developer certificate and no Windows
+signing key in this repo, so macOS wants a right-click → Open the first time (Gatekeeper)
+and Windows shows a SmartScreen warning. The assets carry a `SHA256SUMS`, and the honest
+account of where an installer came from is the workflow run that built it.
+
+Two packaging details worth knowing before editing those configs. The deb's `Depends` comes
+from Tauri's own defaults for the crates the shell links (`libwebkit2gtk-4.1-0`,
+`libgtk-3-0`); a list in `tauri.linux.conf.json` would only duplicate them, so the workflow
+asserts the built deb declares them instead. rpm has no defaults at all, which is why its
+dependencies are written out and the deb's are not.
+
+And the version is not free-form across the bundlers: Windows product versioning has a
+numeric fourth field, so an `.msi` can only be built from a version with no pre-release
+part. The workflow therefore bundles NSIS always and adds the msi only for a stable
+version — a `v0.2.0-rc.1` release ships the `.exe` and no `.msi`, rather than an `.msi`
+that claims to be `0.2.0`. Everything else takes the tag's version verbatim
+(`Talaria_0.2.0-rc.1_amd64.deb`, `Talaria-0.2.0-rc.1-1.x86_64.rpm`, the dmg, the flatpak
+bundle name).
+
+Separately, a local AppImage build does not work on Arch — linuxdeploy's bundled `strip`
+cannot read Arch's `.relr.dyn` sections, and Tauri's gtk plugin looks for gdk-pixbuf at a
+Debian path — which is a limitation of that toolchain on that host, not of this config: the
+AppImage is built on the Ubuntu runner. A pacman package can be built and checked locally
+on Arch (`stage.sh` → `pack-pacman.sh` → `pacman -Qip`), and the flatpak needs `flatpak`,
+`flatpak-builder` and `elfutils` (flatpak-builder's `eu-strip`) plus the runtime named in
+the manifest.
+
+The AppImage takes one extra pass for the same reason the other formats do not:
+linuxdeploy's gtk plugin deploys the build distro's `libwayland-client.so.0`, a library
+whose job is to talk to the *local* compositor and driver, and a bundle carrying a foreign
+one aborts before a window exists on a host with a different Wayland stack (Arch:
+`Could not create surfaceless EGL display: EGL_BAD_ALLOC`). The CLI has no way to ask for
+its exclusion — the config can only add files — so `packaging/linux/repack-appimage.sh`
+trims the AppDir and runs linuxdeploy once more with `--exclude-library`, on the same
+runner that built it (dependency resolution is host-based; a pass on another distro
+re-deploys that distro's libraries).
+
+Until a platform is exercised, "the installer built" and "the installer works" are
+different claims, so the pipeline makes the runners prove what they can: macOS mounts the
+dmg and launches the app, windows installs whichever installer the run produced and
+launches what it installed, and each job fails if the app is not still running twenty
+seconds later. When this pipeline was written, the Linux formats were installed in clean
+containers of their own distributions (Ubuntu, Fedora, Arch) and the AppImage was run on an
+Arch host, which is a one-off rather than something CI repeats.
+
+What no runner here can test: Gatekeeper and SmartScreen as a user meets them — an artifact
+built on a runner was never quarantined, and nothing here is signed — and the session
+isolation that `data_directory` does not provide on macOS or Windows.
+
 ## Deferred on purpose
 
-Rename/reorder instances, health badges, native notifications, tray, deep links,
-macOS/Windows (where `data_directory` is a no-op — macOS needs `data_store_identifier`),
-OAuth via external browser, bundle/installer targets.
+Rename/reorder instances, health badges, native notifications, tray, deep links, OAuth via
+external browser, code signing and notarization, a desktop auto-updater.
+
+macOS and Windows build and ship, but the session-isolation invariant above does not hold
+there yet: `data_directory` is a no-op on those platforms (macOS wants
+`data_store_identifier`), so two instances served from one host:port would share a cookie
+jar. Distinct origins — every hosted instance — are unaffected.

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Talaria
+Comment=A multitenant shell around Talaria instances
+Exec=talaria-desktop
+Icon=app.talaria.desktop
+Terminal=false
+Categories=Utility;Network;
+StartupWMClass=talaria-desktop

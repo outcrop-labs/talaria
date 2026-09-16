@@ -16,6 +16,11 @@
 #   app image — the api never compiles inside an image build. api-package.yml
 #   owns that story.
 #
+#   Every TAG publish also builds the DESKTOP INSTALLERS — linux deb/rpm/
+#   AppImage plus pacman and flatpak, macOS dmg, windows nsis/msi — and attaches
+#   them to the GitHub Release with a SHA256SUMS. Nightlies open no Release, so
+#   they carry none. desktop-package.yml owns that story.
+#
 # WHY GIT IS THE AUTHORITY AND THE package.json FILES ARE NOT. Every version
 #   field in this repo says "0.1.0" decoratively and nothing reads them; the
 #   TAG is the version. The workflow never edits a file to release — there is
@@ -281,3 +286,21 @@ jobs:
           else
             gh release create "$TAG" --verify-tag --title "$TAG" --notes "$notes" "${pre[@]}"
           fi
+
+  # The desktop installers, attached to the release the publish job just
+  # opened. Needs publish rather than running beside it: the assets land on an
+  # existing Release, and a tag whose image push failed has nothing to attach
+  # to — the ordering is the guarantee, not a retry loop.
+  #
+  # Nightlies are absent by construction (`release == true` is tag runs only):
+  # RELEASING.md's standing decision is that a nightly opens no Release, so
+  # there is nothing for an installer to attach to. Trunk installers come from
+  # desktop-package.yml's own main-push runs instead, as workflow artifacts.
+  desktop-package:
+    needs: [resolve, ci, publish]
+    if: needs.resolve.outputs.release == 'true'
+    uses: ./.github/workflows/desktop-package.yml
+    with:
+      ref: ${{ needs.resolve.outputs.ref }}
+      version: ${{ needs.resolve.outputs.version }}
+      release_tag: ${{ needs.resolve.outputs.ref }}
