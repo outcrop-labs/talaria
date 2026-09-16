@@ -64,9 +64,15 @@
   oncontextmenu={onContextMenu}
   class={cn('group relative cursor-grab active:cursor-grabbing', dim && 'opacity-40')}
 >
+  <!-- The copy button gives its corner to the watch affordance while work is
+       live — it only appears on hover anyway, and it slides left rather than
+       stacking on the spinner. -->
   <CopyLinkButton
     path={`/boards/${task.boardId}/${task.id}`}
-    class="absolute right-2 top-2 z-10 bg-raised opacity-0 shadow-[var(--theme-shadow-1)] group-hover:opacity-100"
+    class={cn(
+      'absolute top-2 z-10 bg-raised opacity-0 shadow-[var(--theme-shadow-1)] group-hover:opacity-100',
+      session ? 'right-16' : 'right-2',
+    )}
   />
   <!-- div, not <button>: the pills inside are buttons themselves. -->
   <div
@@ -101,7 +107,7 @@
     </div>
     <button
       type="button"
-      class="absolute bottom-2 right-2 z-10 flex items-center gap-1 rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
+      class="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
       title="watch the work — turn {session.turn ?? '…'}"
       onclick={(e) => {
         e.stopPropagation()

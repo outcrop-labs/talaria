@@ -523,39 +523,49 @@
                         <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} class="opacity-0 group-hover:opacity-100" />
                       {/if}
                     </td>
-                    {#if working(t.id)}
-                      <!-- The working cell: the dither field plus the watch
-                           affordance, on the CARD itself — live work is
-                           visible from the list, not only from the detail. -->
-                      <td class="relative w-8 p-0" onclick={(e) => e.stopPropagation()}>
-                        <div class="relative h-full min-h-[28px] overflow-hidden">
-                          <DitherLayer
-                            sources={[
-                              { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.5 },
-                              { id: 'drift', kind: 'wave', axis: 'y', wavelength: 120, speed: 14, strength: 0.6 },
-                            ]}
-                            pitch={3}
-                            dot={1.2}
-                            alphaFloor={0.08}
-                            maxAlpha={0.5}
-                          />
-                          <button
-                            type="button"
-                            class="relative flex h-full w-full items-center justify-center text-accent hover:text-fg"
-                            title="{(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working — turn {working(t.id)!.turn ?? '?'} · watch the work"
-                            onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
-                          >
-                            <WaitingMark site="ticket/work-watch" size={12} />
-                          </button>
-                        </div>
-                      </td>
-                    {/if}
                     {#each cols as c (c.key)}
                       <td class={cn('px-3 py-2', c.align === 'right' && 'text-right')}>
                         {@render cell(t, c.key)}
                       </td>
                     {/each}
                     <td></td>
+                    {#if working(t.id)}
+                      <!-- The working strip, BELOW the row's cells: it never
+                           adds a column, so the list's alignment stays exact
+                           whether or not work is live. The dither field plus
+                           the watch affordance live here. -->
+                      <tr class="dither-fill" onclick={(e) => e.stopPropagation()}>
+                        <td></td>
+                        <td colspan={cols.length + 1} class="!py-1">
+                          <div class="relative flex items-center gap-2 overflow-hidden rounded-md border border-line-subtle px-2 py-1">
+                            <DitherLayer
+                              sources={[
+                                { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.4 },
+                                { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
+                              ]}
+                              pitch={3}
+                              dot={1.2}
+                              alphaFloor={0.06}
+                              maxAlpha={0.4}
+                            />
+                            <div class="relative flex min-w-0 flex-1 items-center gap-2">
+                              <WaitingMark site="ticket/work-watch" size={12} class="text-accent" />
+                              <span class="truncate text-xs text-fg">
+                                {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
+                                {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              class="relative rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
+                              onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
+                            >
+                              watch
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    {/if}
                   </tr>
                 {/each}
               {/if}
