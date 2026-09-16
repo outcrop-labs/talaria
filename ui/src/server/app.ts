@@ -4,7 +4,7 @@
 // Consumed two ways:
 //   dev   vite.config.ts middleware ssrLoadModule()s this file per request
 //   prod  vite.server.config.ts bundles it to dist/server/server.js, which
-//         server-entry.js wraps in a Node http server (SSE pump, logging,
+//         server-entry.ts wraps in a Node http server (SSE pump, logging,
 //         graceful shutdown — all live there, not here)
 //
 // Importing every route eagerly keeps the table flat and total: what you see
@@ -80,7 +80,7 @@ async function handle(request: Request): Promise<Response> {
 }
 
 // The non-fetch exports, and the reason they must live HERE: only this
-// module's exports survive into dist/server/server.js. server-entry.js runs
+// module's exports survive into dist/server/server.js. server-entry.ts runs
 // the migration pass off `migrate` before it spawns the Rust api —
 // post-cutover, boot itself touches no table, so a fresh database never
 // migrated until this hook existed. And it converts every response's headers
