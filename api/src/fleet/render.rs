@@ -1517,10 +1517,44 @@ pub async fn render_fleet(
                 for (k, v) in &h.full_env {
                     env.insert(k.clone(), v.clone());
                 }
-                if let HarnessAuth::Provider { provider, env_var } = &h.def.auth
-                    && let Some((_, key_env)) = endpoints.iter().find(|(p, _)| p == provider)
-                {
-                    env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
+                if let HarnessAuth::Provider { provider, env_var } = &h.def.auth {
+                    // CLAUDE CODE RIDES ANY ENDPOINT THAT SPEAKS ITS
+                    // PROTOCOL: ANTHROPIC_BASE_URL toward a discovered
+                    // Anthropic-compatible surface beats a native key nobody
+                    // has — the org's model access already reaches such a
+                    // gateway in that case, and the same key opens it.
+                    if h.def.slug == "claude-code"
+                        && let Some((base, key_env)) =
+                            crate::workbench::harnesses::anthropic_surface(pg).await
+                    {
+                        env.insert("ANTHROPIC_BASE_URL".into(), json!(base));
+                        // AUTH_TOKEN is the bearer form Claude Code sends to
+                        // a custom base URL; API_KEY stays unset so the two
+                        // auth shapes never fight.
+                        env.insert(
+                            "ANTHROPIC_AUTH_TOKEN".into(),
+                            json!(format!("${{{key_env}}}")),
+                        );
+                    } else {
+                        match endpoints.iter().find(|(p, _)| p == provider) {
+                            Some((_, key_env)) => {
+                                env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
+                            }
+                            // A native-auth harness with no provider endpoint is
+                            // the claude-code-without-anthropic case: the harness
+                            // arms, its first run fails on a missing key, and the
+                            // agent hand-codes instead — the exact silence that
+                            // hid harness-nonuse across the fleet. Say it at
+                            // render time, where the fix (add the endpoint) is
+                            // one admin panel away.
+                            None => tracing::warn!(
+                                "[fleet] harness \"{}\" wants a {} provider key ({}), and no endpoint speaks the Anthropic protocol — add the endpoint or the key, or the harness runs unauthenticated",
+                                h.def.slug,
+                                provider,
+                                env_var,
+                            ),
+                        }
+                    }
                 }
             }
             obj.insert("environment".into(), Value::Object(env));
@@ -1550,6 +1584,9 @@ pub async fn render_fleet(
         // env-interpolated fleet key. Zero in-sandbox reconnection; grant
         // changes re-render, revocations bite at the gateway instantly.
         let wb_dir = agent_dir.join("workbench");
+        // Harness parity mounts — unattended-auth policy files and skills
+        // links, filled by the workbench pass below, applied to the volumes.
+        let mut harness_mounts: Vec<String> = Vec::new();
         if let Some(wb) = &wb {
             let mut names: Vec<String> = vec!["talaria".into()];
             for srv in &agent_servers {
@@ -1592,11 +1629,88 @@ pub async fn render_fleet(
                     .map_err(|e| format!("{}: {e}", p.display()))?;
                 written.push(mc.filename.clone());
             }
+
+            // ── Harness parity: unattended auth, and the same skills Hermes
+            // gets ─────────────────────────────────────────────────────────
+            // A harness running unattended in a container hits first-run
+            // walls nobody is there to click through — an onboarding/login
+            // prompt, a permission prompt on the first tool — and it never
+            // sees the fleet's skills. The walls are small POLICY files, not
+            // state: they mount read-only from this directory (the gitconfig
+            // mechanism) at the exact CLAUDE_CONFIG_DIR / CODEX_HOME paths
+            // under /opt/data. ANTHROPIC_API_KEY in the env (the Provider
+            // auth above) is Claude Code's documented API-key path — no
+            // OAuth login; these files clear what remains. The skills ride a
+            // symlink mount: /opt/skills, the same tree Hermes reads, so the
+            // git and workbench discipline follows the work into whichever
+            // tool does it.
+            for slug in &wb.harnesses {
+                match slug.as_str() {
+                    "claude-code" => {
+                        tokio::fs::write(
+                            wb_dir.join("claude--.claude.json"),
+                            "{\n  \"hasCompletedOnboarding\": true\n}\n",
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        tokio::fs::write(
+                            wb_dir.join("claude--settings.json"),
+                            "{\n  \"permissions\": { \"defaultMode\": \"bypassPermissions\" }\n}\n",
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        let link = wb_dir.join("claude--skills");
+                        let _ = tokio::fs::remove_file(&link).await;
+                        tokio::fs::symlink("/opt/skills", &link)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/claude/.claude.json:ro",
+                            wb_dir.join("claude--.claude.json").display()
+                        ));
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/claude/settings.json:ro",
+                            wb_dir.join("claude--settings.json").display()
+                        ));
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/claude/skills:ro",
+                            link.display()
+                        ));
+                    }
+                    "codex" => {
+                        let link = wb_dir.join("codex--skills");
+                        let _ = tokio::fs::remove_file(&link).await;
+                        tokio::fs::symlink("/opt/skills", &link)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/codex/skills:ro",
+                            link.display()
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            // The workspace pointers every harness reads in its working
+            // directory — where the skills live, whichever tool lands there.
+            let _ = tokio::fs::write(
+                wb_dir.join("AGENTS.md"),
+                "# Workspace skills\n\nThe fleet's skills live at `/opt/skills` (read-only). Read the one that matches your task before you start — especially `talaria-toolkit` and `workbench-driving`.\n",
+            )
+            .await;
+            let _ = tokio::fs::write(
+                wb_dir.join("CLAUDE.md"),
+                "# Workspace skills\n\nThe fleet's skills live at `/opt/skills` (read-only). Read the one that matches your task before you start — especially `talaria-toolkit` and `workbench-driving`.\n",
+            )
+            .await;
         }
 
         let mut vols: Vec<String> = Vec::new();
         if wb.is_some() {
             vols.push(format!("{}:/opt/workbench-config:ro", wb_dir.display()));
+        }
+        for m in &harness_mounts {
+            vols.push(m.clone());
         }
         if let Some(wb) = &wb {
             for m in &wb.mounts {

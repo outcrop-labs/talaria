@@ -108,7 +108,7 @@ fn dispatch_fixture() -> String {
         "1. get_ticket PLAT-118 for full context (comments, attachments, dependencies).",
         "2. comment a one-line acknowledgment in the ticket's discussion thread (the board's humans read it), and triage_ticket to status \"in_progress\" while you work.",
         "3. If the work touches a repo, sync FIRST: fetch and rebase or re-clone so you are on latest origin/main — a checkout that has sat for days is stale, and `git fetch` alone does not move your working tree. Base any branch on what you just pulled.",
-        "4. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.",
+        "4. Do the work in as many steps as it takes — and if this ticket touches CODE, your coding harness does the writing: run it, read its structured result, verify. You do NOT edit files yourself except trivial one-line fixes; if you cannot drive your harness, report_gap.",
         "5. REPO HYGIENE: push your work to a branch named for the ticket (never to main — main is protected and will refuse you), open a PR, and put the PR link in your outcome. A person reviews and merges; your work reaching main is their call, not yours.",
         "6. report_outcome when genuinely finished — a human signs off from review. If blocked, set status \"blocked\" and comment why. Either of those ends the session.",
         STATUS_LINE,
@@ -282,6 +282,9 @@ pub struct DispatchPromptInput<'a> {
     /// rules (base branches, required prefixes). None renders the standing
     /// default — branch-first is the posture even with no configuration.
     pub hygiene_block: Option<&'a str>,
+    /// The agent's SELECTED coding harness (workbench_harness on the def) —
+    /// the platform knows it, so the brief NAMES it rather than hedging.
+    pub harness: Option<&'a str>,
 }
 
 pub fn dispatch_prompt(input: &DispatchPromptInput) -> String {
@@ -310,7 +313,13 @@ pub fn dispatch_prompt(input: &DispatchPromptInput) -> String {
     ));
     p.push_str(&format!("2. {}\n", input.step2));
     p.push_str("3. If the work touches a repo, sync FIRST: fetch and rebase or re-clone so you are on latest origin/main — a checkout that has sat for days is stale, and `git fetch` alone does not move your working tree. Base any branch on what you just pulled.\n");
-    p.push_str("4. Do the work in as many steps as it takes — iterate with your tools and (if you have one) your workbench harness: run it, read its structured result, respond to it, verify with tests, repeat.\n");
+    p.push_str("4. Do the work in as many steps as it takes — and if this ticket touches CODE, your coding harness does the writing");
+    if let Some(h) = input.harness {
+        p.push_str(&format!(" — YOUR harness is {h}, selected on your agent settings: run `doctor` for its guide and probe, then drive it on the task"));
+    } else {
+        p.push_str(": run it on the task");
+    }
+    p.push_str(", read its structured result, respond to it, verify with tests, repeat. You do NOT edit files yourself except trivial one-line fixes — your own tools are for reading, running, and verifying. If you cannot drive your harness (not configured, no key, erroring), that is a report_gap, not a reason to hand-code the change.\n");
     p.push_str(input.hygiene_block.unwrap_or(
         "5. REPO HYGIENE: push your work to a branch named for the ticket (never to main — main is protected and will refuse you), open a PR, and put the PR link in your outcome. A person reviews and merges; your work reaching main is their call, not yours.\n",
     ));
@@ -915,6 +924,7 @@ mod tests {
             workflow_block: "Workflow \"Platform upkeep\":\n- triage\n- fix\n- verify",
             step2: "comment a one-line acknowledgment, and triage_ticket to status \"in_progress\" while you work.",
             hygiene_block: None,
+            harness: None,
         }
     }
 

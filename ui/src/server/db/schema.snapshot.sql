@@ -594,7 +594,8 @@ CREATE TABLE public.llm_endpoints (
     model_prices jsonb DEFAULT '{}'::jsonb NOT NULL,
     request_defaults jsonb DEFAULT '{}'::jsonb NOT NULL,
     api_key_cipher text,
-    model_efforts jsonb DEFAULT '{}'::jsonb NOT NULL
+    model_efforts jsonb DEFAULT '{}'::jsonb NOT NULL,
+    anthropic_base text
 );
 CREATE TABLE public.mcp_oauth_states (
     state text NOT NULL,
