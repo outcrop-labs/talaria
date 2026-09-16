@@ -60,9 +60,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
   Every armed harness also runs unattended-clean and skilled: onboarding
   cleared and permissions bypassed via read-only policy files mounted at its
-  CLAUDE_CONFIG_DIR paths, the fleet's /opt/skills tree symlinked into both
-  Claude Code's and Codex's skill directories, and AGENTS.md/CLAUDE.md
-  pointers in the workspace telling every harness where the skills live.
+  CLAUDE_CONFIG_DIR paths, the fleet skills HOST DIRECTORY bind-mounted
+  directly into Claude Code's and Codex's skill directories (a symlink to
+  the container-only /opt/skills dangles on the host, and the docker daemon
+  answers a dangling bind source with mkdir "file exists" — the first roll
+  after the initial merge 500'd every agent up; the direct mount is the
+  fix), and AGENTS.md/CLAUDE.md pointers in the workspace telling every
+  harness where the skills live.
 
 
 - **The last plain-JS sources are TypeScript now: `server-entry`, the svelte
