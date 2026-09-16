@@ -2958,6 +2958,13 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now(),
      primary key (repo, key)
    )`,
+  // The Anthropic-protocol surface cache: the harness auth plane's one-time
+  // lookup. When an endpoint's base URL answers /v1/messages (the probe in
+  // workbench/harnesses.rs), the verdict lands here — every later render
+  // arms Claude Code with zero network. The static reference table
+  // (gateway/provider.rs anthropic_base) answers the known providers before
+  // any probe runs.
+  `alter table llm_endpoints add column if not exists anthropic_base text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

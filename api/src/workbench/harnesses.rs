@@ -361,45 +361,79 @@ fn builtin_wires() -> Vec<Value> {
 
 // ── Anthropic-surface discovery ──────────────────────────────────────────────
 //
-// Claude Code speaks the Anthropic protocol (/v1/messages) — its documented
-// API-key path is ANTHROPIC_API_KEY against api.anthropic.com, or
-// ANTHROPIC_BASE_URL against any Anthropic-compatible surface. An org whose
-// model access rides OpenAI-compatible endpoints can STILL arm Claude Code
-// when any of those endpoints ALSO speaks the Anthropic protocol (a LiteLLM
-// or openrouter-style gateway often does): one cheap probe per endpoint —
-// GET {base}/v1/messages; 404 means no such route, anything else (401/405/
-// 400) means the route exists and wants auth. The probe is unauthenticated
-// on purpose: it asks "does the door exist", never "will my key open it".
+// Claude Code speaks the Anthropic protocol (/v1/messages). WHERE the org's
+// Anthropic-compatible access lives is answered in three steps, cheapest
+// first, network only as the last resort and only ONCE per endpoint:
+//
+//   1. THE REFERENCE TABLE (gateway/provider.rs `anthropic_base`): providers
+//      with a KNOWN, fixed surface — no network, answered by slug.
+//   2. THE CACHE (`llm_endpoints.anthropic_base`): a probe verdict from an
+//      earlier render, stored on the row — the lookup is then a column read.
+//   3. THE PROBE: derive {base}/v1/messages from the endpoint's own base
+//      URL and GET it — 404 means no such route, anything else (401/405/400)
+//      means the door exists and wants auth. Unauthenticated on purpose: it
+//      asks "does the door exist", never "will my key open it". A hit is
+//      written back to the cache, so the network half of this function runs
+//      at most once per endpoint for the life of the install.
+//
+// Returns (base_url_without_trailing_slash, the endpoint's key env var).
 pub async fn anthropic_surface(pg: &sqlx::PgPool) -> Option<(String, String)> {
-    let rows: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
-        "select base_url, api_key_env from llm_endpoints \
-         where base_url is not null and api_key_env is not null order by name",
+    let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "select provider, base_url, api_key_env, anthropic_base from llm_endpoints \
+         where api_key_env is not null order by name",
     )
     .fetch_all(pg)
     .await
     .ok()?;
-    for (base, key_env) in rows {
-        let Some(base) = base.filter(|b| !b.is_empty()) else {
-            continue;
-        };
+    for (provider, base_url, key_env, cached) in rows {
         let Some(key_env) = key_env.filter(|k| !k.is_empty()) else {
             continue;
         };
-        let trimmed = base.trim_end_matches('/');
+        // 1. The reference table — the known providers, no network.
+        if let Some(base) = crate::gateway::provider::anthropic_base(&provider) {
+            return Some((base.to_string(), key_env));
+        }
+        // 2. The cache — an earlier probe's verdict.
+        if let Some(base) = cached.filter(|b| !b.is_empty()) {
+            return Some((base, key_env));
+        }
+        // 3. The probe — the row's own base URL, or the ORIGIN of the
+        // provider's native base when the row rides native (endpoint rows
+        // are OpenAI-shaped by construction; native_base carries the /v1
+        // and the Anthropic surface, when the provider has one, lives
+        // beside it). Verified once, then cached on the row.
+        let candidate = base_url
+            .filter(|b| !b.is_empty())
+            .map(|b| b.trim_end_matches('/').to_string())
+            .or_else(|| {
+                crate::gateway::provider::native_base(&provider).map(|n| {
+                    let origin = n.trim_end_matches('/');
+                    origin.strip_suffix("/v1").unwrap_or(origin).to_string()
+                })
+            });
+        let Some(trimmed) = candidate.filter(|c| !c.is_empty()) else {
+            continue;
+        };
         let url = format!("{trimmed}/v1/messages");
         let probe = crate::gateway::provider::http()
             .get(&url)
             .timeout(std::time::Duration::from_secs(4))
             .send()
             .await;
-        match probe {
-            Ok(resp) if resp.status().as_u16() != 404 => {
-                tracing::info!(
-                    "[harnesses] {trimmed} answers the Anthropic protocol — claude-code rides it ({key_env})"
-                );
-                return Some((trimmed.to_string(), key_env));
-            }
-            _ => continue,
+        if let Ok(resp) = &probe
+            && resp.status().as_u16() != 404
+        {
+            let _ = sqlx::query(
+                "update llm_endpoints set anthropic_base = $2 where provider = $1 and anthropic_base is null",
+            )
+            .bind(&provider)
+            .bind(trimmed.clone())
+            .execute(pg)
+            .await;
+            tracing::info!(
+                "[harnesses] {trimmed} answers the Anthropic protocol — cached; claude-code rides it ({key_env})"
+            );
+            return Some((trimmed, key_env));
         }
     }
     None
