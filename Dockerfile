@@ -67,16 +67,16 @@ RUN cd ui && bun run build \
 #   docker build --build-arg TALARIA_API_IMAGE=talaria-api:local .
 FROM ${TALARIA_API_IMAGE} AS api
 
-# ── prod-deps ────────────────────────────────────────────────────────────────
-# Runtime node_modules, pruned to production deps. Kept as a separate stage so
-# the runtime never carries devDependencies (vite, svelte-check, tailwind…).
+# Runtime node_modules. The instance compiles installed apps, so the UI
+# install keeps the Vite/Svelte/Tailwind toolchain (it lives in
+# devDependencies of the checkout). mcp stays production-only.
 FROM docker.io/library/node:22-alpine AS prod-deps
 COPY --from=oven/bun:1.4.0-alpine /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /repo
 COPY ui/package.json ui/bun.lock ./ui/
 COPY mcp/package.json mcp/bun.lock ./mcp/
-RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --production --frozen-lockfile \
+RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --frozen-lockfile \
  # mcp's prepare script runs tsc — a devDependency — so a production install
  # must skip lifecycle scripts; the built dist/ comes from the build stage.
  && cd ../mcp && bun install --production --frozen-lockfile --ignore-scripts
@@ -133,6 +133,8 @@ WORKDIR /app
 COPY --from=build /repo/ui/server-entry.ts ./ui/
 COPY --from=build /repo/ui/dist ./ui/dist
 COPY --from=build /repo/ui/src/server/env.ts ./ui/src/server/env.ts
+COPY --from=build /repo/ui/svelte.config.ts ./ui/
+COPY --from=build /repo/ui/src/styles.css ./ui/src/styles.css
 COPY --from=build /repo/ui/package.json ./ui/
 COPY --from=prod-deps /repo/ui/node_modules ./ui/node_modules
 # mcp/: the fleet's toolkit service, spawned as a child process
@@ -187,6 +189,8 @@ ENV PORT=5273 \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
     TALARIA_APPS_DIR=/var/lib/talaria/apps \
+    TALARIA_APP_BUILDS_DIR=/var/lib/talaria/app-builds \
+    TALARIA_APP_DATA_DIR=/var/lib/talaria/app-data \
     # From ARG VERSION above: the LABEL carries it for `docker inspect`, this
     # carries it for the process and `docker exec`.
     TALARIA_VERSION=${VERSION}

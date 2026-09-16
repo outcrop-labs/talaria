@@ -10,6 +10,7 @@
 // are introduced so rotation stays complete.
 
 use crate::secretbox::{SecretBox, new_dek};
+use serde_json::Value;
 use sqlx::{PgPool, Row};
 
 /// Every table+column holding a secretbox ciphertext, with its primary key.
@@ -102,6 +103,38 @@ pub async fn rotate_secrets(
             }
             q.execute(tx.as_mut()).await.map_err(|e| e.to_string())?;
             reencrypted += 1;
+        }
+    }
+
+    // app_db_passwords is a JSON map of slug → ciphertext in app_settings,
+    // not a cipher column. Rotate each value in place.
+    let stored: Option<(Value,)> =
+        sqlx::query_as("select value from app_settings where key = 'app_db_passwords' for update")
+            .fetch_optional(tx.as_mut())
+            .await
+            .map_err(|e| e.to_string())?;
+    if let Some((mut value,)) = stored {
+        let mut changed = false;
+        if let Some(obj) = value.as_object_mut() {
+            for (_slug, v) in obj.iter_mut() {
+                let Some(cipher) = v.as_str().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let plain = sb.open(cipher).map_err(|e| e.to_string())?;
+                let resealed = sb
+                    .seal_with(&fresh, next_version, &plain)
+                    .map_err(|e| e.to_string())?;
+                *v = Value::String(resealed);
+                reencrypted += 1;
+                changed = true;
+            }
+        }
+        if changed {
+            sqlx::query("update app_settings set value = $1, updated_at = now() where key = 'app_db_passwords'")
+                .bind(&value)
+                .execute(tx.as_mut())
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 

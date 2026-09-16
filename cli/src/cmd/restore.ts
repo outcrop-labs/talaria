@@ -10,14 +10,25 @@
 // checkout's app. Full procedure, including the drill you should actually
 // run: docs/BACKUPS.md.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { argvOf, bucketUploadsPath, clientFor, dbLabel, liftAppEnv, manifestGet, mcRun, pgQuery, storageFromManifest, verifySums } from '../backup/lib'
+import { argvOf, bucketUploadsPath, clientFor, dbLabel, liftAppEnv, localAppDataDir, manifestGet, mcRun, pgQuery, storageFromManifest, verifySums } from '../backup/lib'
+
 
 export type RestoreWhat = 'all' | 'db' | 'uploads'
+
+
+function chmodDbEnvs(dir: string): void {
+  if (!existsSync(dir)) return
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name)
+    if (e.isDirectory()) chmodDbEnvs(p)
+    else if (e.name === 'db.env') chmodSync(p, 0o600)
+  }
+}
 
 export async function runRestore(
   ctx: Ctx,
@@ -39,8 +50,9 @@ export async function runRestore(
 
   // Confirmation is not optional theatre here: the usual way to lose data is
   // to restore a good snapshot over the wrong database.
-  const whatLabel = opts.what === 'all' ? 'the database and the upload blobs' : `the ${opts.what}`
+  const whatLabel = opts.what === 'all' ? 'the database, the upload blobs, and the app databases' : `the ${opts.what}`
   ctx.log.raw(`\n  This will REPLACE ${whatLabel} in \x1b[1m${dbLabel(target)}\x1b[0m\n\n`)
+
   if (!opts.yes) {
     if (!ctx.isTTY) ctx.log.die('refusing to restore non-interactively without --yes')
     const reply = await ctx.readLine('  Type \'restore\' to continue: ')
@@ -93,11 +105,24 @@ export async function runRestore(
     }
   }
 
+  if (opts.what === 'all') {
+    const appTar = join(snap, 'app-data.tar.gz')
+    if (existsSync(appTar)) {
+      const dest = localAppDataDir(ctx, env)
+      ctx.log.say(`App databases ← ${appTar}`)
+      mkdirSync(dest, { recursive: true })
+      await ctx.run('tar', ['-xzf', appTar, '-C', dest])
+      chmodDbEnvs(dest)
+      ctx.log.ok(`extracted to ${dest}`)
+    }
+  }
+
   ctx.log.raw(`
 Restored.
 
   Start the app, sign in, and open a message attachment — that exercises
-  both halves (row in Postgres, bytes in storage) in one click.
+  the catalog and the blobs in one click. App databases come up on next
+  spawn (dump.sql is applied then).
 `)
   return 0
 }

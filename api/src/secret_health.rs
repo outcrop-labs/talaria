@@ -454,6 +454,7 @@ pub async fn secret_health(
         "storage_config".to_string(),
         "github_config".to_string(),
         "rag_rerank_config".to_string(),
+        "app_db_passwords".to_string(),
     ])
     .fetch_all(pg)
     .await;
@@ -626,6 +627,36 @@ pub async fn secret_health(
         rows.push(row(f));
     }
 
+    let app_dbs = settings.get("app_db_passwords");
+    if let Some((val, at)) = app_dbs
+        && let Some(obj) = val.as_object()
+    {
+        for (slug, cipher) in obj {
+            let c = cipher.as_str().filter(|s| !s.is_empty());
+            let mut f = serde_json::Map::new();
+            f.insert(
+                "id".into(),
+                format!("setting:app_db_passwords:{slug}").into(),
+            );
+            f.insert("group".into(), "platform".into());
+            f.insert(
+                "label".into(),
+                format!("App database password ({slug})").into(),
+            );
+            f.insert(
+                "unlocks".into(),
+                "The app's own Postgres — clearing this locks the volume".into(),
+            );
+            f.insert("surface".into(), "Manage → Apps".into());
+            f.insert("href".into(), "/apps".into());
+            f.insert("state".into(), state_of(sb, c, None).into());
+            f.insert("scope".into(), "instance".into());
+            f.insert("setAt".into(), opt_iso(*at));
+            f.insert("clearable".into(), false.into());
+            rows.push(row(f));
+        }
+    }
+
     if !USER_SCOPED_METADATA {
         for r in rows.iter_mut() {
             if r.get("scope") == Some(&serde_json::json!("user"))
@@ -787,6 +818,7 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
         )
         .await
         .map_err(ClearError::from),
+        "setting" if n(0) == "app_db_passwords" => Err(ClearError::Unknown),
         "setting" => clear_setting_leaf(pg, n(0), &rest[1..].join(":")).await,
         _ => Err(ClearError::Unknown),
     }

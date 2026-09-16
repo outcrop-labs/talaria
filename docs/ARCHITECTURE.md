@@ -211,14 +211,18 @@ registry and cannot be removed.
 
 ## Apps
 
-Apps compile into the deployment — four `import.meta.glob`s reach into `apps/<slug>/`
-(manifests + servers, MCP modules, harnesses, client surfaces), with one deduped copy of
-svelte/svelte-query/sv-router in the build. The host dispatch does the trust work before an
-app sees anything: session → app enabled → view not denied → then the app's own server
-handler with `{ user, app, path, url, store }` — apps never see raw cookies or each other's
-data. The store is `storeFor(app)` over the shared `app_data` table, namespaced by slug.
-Apps are explicit-grant: enabling gives members nothing until an admin allows the view.
-Building them: `docs/APPS.md` + `docs/sdk/`.
+Apps are TypeScript codebases this instance compiles — they do not freeze into
+the host bundle. Four former `import.meta.glob`s are gone; loaders
+`import()` the app's current build (`/app-builds/<slug>/<key>/`) or, in dev,
+the source through Vite (`/@app/<slug>/`). Shared Svelte/SDK instances come
+from host `runtime/rt-*.js` entries. Each app gets its own Postgres
+(compose project, password sealed in `app_settings`); `ctx.store` is the
+document API, never a connection string. A throw in an app is isolated: the
+pane shows the crash, the host stays up. Enablement, install, and uninstall
+stay Rust; the UI process owns the compiler and the database spawn. Building
+them: `docs/APPS.md` + `docs/sdk/`.
+
+
 
 ## Jobs and durable runs
 

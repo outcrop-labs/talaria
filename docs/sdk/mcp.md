@@ -44,4 +44,4 @@ gates people. Your handler receives a gateway-authenticated agent identity — n
 session — and the same audit trail covers it. There is no "agent can call everything" mode
 to opt out of.
 
-The working example: [`apps/contacts/mcp.ts`](../../apps/).
+The starter: `bun talaria app new <slug>` writes an `mcp.ts`.

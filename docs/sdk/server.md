@@ -30,7 +30,7 @@ export default defineAppServer({
 | :--- | :--- |
 | `ctx.user` | The signed-in user (id, name, email, role) — already authenticated |
 | `ctx.app` | Your slug |
-| `ctx.path` | The part after `/api/apps/<slug>/` — e.g. `contacts/123` |
+| `ctx.path` | The part after `/api/apps/<slug>/` — e.g. `items/123` |
 | `ctx.url` | The parsed URL (query params) |
 | `ctx.store` | Your document store (below) |
 

@@ -213,6 +213,13 @@ export function localUploadsDir(ctx: Ctx, env: Env): string {
   return join(ctx.root, 'ui/.uploads')
 }
 
+/** Per-app Postgres volumes + compose files. Default `app-data/` at the repo
+ *  root, same as the UI process (`TALARIA_APP_DATA_DIR`). */
+export function localAppDataDir(ctx: Ctx, env: Env): string {
+  return env.TALARIA_APP_DATA_DIR || join(ctx.root, 'app-data')
+}
+
+
 /** Single-quote for the one place a shell string is unavoidable (the docker
  *  mc one-shot: alias set + the command must share one container lifetime). */
 const shq = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`

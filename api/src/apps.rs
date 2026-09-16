@@ -1,15 +1,14 @@
 // Talaria apps — the ADMIN half of the registry (the read
 // plane lives in users.rs): enablement, runtime install from git, the
 // marketplace catalog, and the app-data wipe. Apps are self-contained
-// codebases under apps/<slug>/ compiled INTO the deployment; their surfaces
-// and MCP dispatch are app runtime, which stays TS (rule 10) — this module
-// owns the registry state around them.
+// TypeScript codebases under apps/<slug>/ that this instance compiles and
+// runs without a host rebuild; their surfaces and MCP dispatch stay TS
+// (rule 10) — this module owns the registry state around them.
 //
 //   enablement   admin-controlled set in app_settings; disabled apps have no
 //                nav presence and their server routes 404
 //   install      marketplace/git: shallow-clone a repo into apps/<slug> —
-//                the code becomes part of the NEXT build and, like anything
-//                compiled into the deployment, runs fully trusted
+//                the UI process compiles it and spawns its Postgres
 //   catalog      the marketplace feed — JSON, source URL configurable,
 //                always through the SSRF guard
 
@@ -22,7 +21,10 @@ use sqlx::PgPool;
 
 use crate::gateway::settings::{get_setting, set_setting};
 use crate::secretbox::SecretBox;
-use crate::users::{apps_dir, discovered_apps, slug_ok};
+use crate::users::{
+    app_build_status, app_builds_dir, app_data_dir, apps_dir, discovered_apps, enable_block_reason,
+    slug_ok,
+};
 
 const ENABLED_KEY: &str = "apps_enabled";
 const INSTALLED_KEY: &str = "apps_installed";
@@ -95,8 +97,8 @@ pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
     }
 }
 
-/// Flip one app's enablement. Enabling an app this build
-/// doesn't ship is an error — the set must name real code.
+/// Flip one app's enablement. Enabling an app that is not on disk
+/// is an error — the set must name real code.
 pub async fn set_app_enabled(
     pg: &PgPool,
     sb: &SecretBox,
@@ -106,7 +108,10 @@ pub async fn set_app_enabled(
     let mut cur: BTreeSet<String> = enabled_app_slugs(pg).await.into_iter().collect();
     if enabled {
         if !discovered_apps().iter().any(|a| a.slug == slug) {
-            return Err(format!("no app \"{slug}\" in this build"));
+            return Err(format!("no app \"{slug}\" installed"));
+        }
+        if let Some(msg) = enable_block_reason(&app_build_status(slug)) {
+            return Err(msg);
         }
         cur.insert(slug.to_string());
     } else {
@@ -122,52 +127,70 @@ pub async fn set_app_enabled(
     Ok(())
 }
 
-/// Apps present on disk but NOT in this build — installed after the last
-/// compile; the dev server picks them up on reload, prod needs a rebuild.
-pub async fn pending_apps() -> Vec<String> {
-    let built: std::collections::HashSet<String> =
-        discovered_apps().into_iter().map(|a| a.slug).collect();
-    let Ok(mut entries) = tokio::fs::read_dir(apps_dir()).await else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    while let Ok(Some(e)) = entries.next_entry().await {
-        if !e.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let name = e.file_name().to_string_lossy().into_owned();
-        if !slug_ok(&name) || built.contains(&name) {
-            continue;
-        }
-        if tokio::fs::metadata(e.path().join("talaria.json"))
-            .await
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-        {
-            out.push(name);
+/// Drop enabled apps whose last compile/load failed. Called at api boot
+/// (and by the UI reconciler via `apps_enabled`); GET /admin/apps does not.
+pub async fn disable_broken_apps(pg: &PgPool, sb: &SecretBox) {
+    for slug in enabled_app_slugs(pg).await {
+        if app_build_status(&slug).status == "failed" {
+            let _ = set_app_enabled(pg, sb, &slug, false).await;
         }
     }
-    out
+}
+
+fn app_db_container(slug: &str) -> String {
+    let instance = std::env::var("TALARIA_WORKTREE")
+        .or_else(|_| std::env::var("TALARIA_DEVBOX"))
+        .unwrap_or_else(|_| "talaria".into());
+    format!("talaria-appdb-{instance}-{slug}")
+}
+
+async fn stop_app_db(slug: &str) {
+    let file = app_data_dir().join(slug).join("docker-compose.yml");
+    let project = app_db_container(slug);
+    if file.exists() {
+        let file_s = file.to_string_lossy().into_owned();
+        let _ = tokio::process::Command::new("docker")
+            .args([
+                "compose",
+                "-p",
+                &project,
+                "-f",
+                &file_s,
+                "down",
+                "--remove-orphans",
+            ])
+            .output()
+            .await;
+    }
+    let _ = tokio::process::Command::new("docker")
+        .args(["rm", "-f", &project])
+        .output()
+        .await;
+}
+
+async fn forget_app_db_password(pg: &PgPool, slug: &str) {
+    let mut stored = get_setting(pg, "app_db_passwords", Value::Object(Default::default())).await;
+    if let Some(obj) = stored.as_object_mut()
+        && obj.remove(slug).is_some()
+    {
+        let _ = set_setting(pg, "app_db_passwords", &stored).await;
+    }
 }
 
 /// Install an app by shallow-cloning its git repo into apps/<slug>.
-/// The code becomes part of the NEXT build (dev picks
-/// it up live) — and, like anything compiled into the deployment, runs fully
-/// trusted. The UI says so.
+/// This instance compiles it and spawns its Postgres — no host rebuild.
 pub async fn install_app_from_git(
     pg: &PgPool,
     url: &str,
     slug_override: Option<&str>,
-) -> Result<(String, bool), String> {
+) -> Result<String, String> {
     let u = url.trim();
-    // /^https:\/\/[^\s]+$/
     let https_ok = u
         .strip_prefix("https://")
         .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace));
     if !https_ok {
         return Err("install URL must be https://".into());
     }
-    // basename(url) minus .git, lowercased, minus a talaria-app- prefix.
     let base = u.rsplit('/').next().unwrap_or("");
     let derived = slug_override
         .unwrap_or(base)
@@ -222,8 +245,7 @@ pub async fn install_app_from_git(
     set_setting(pg, INSTALLED_KEY, &installed)
         .await
         .map_err(|e| e.to_string())?;
-    let pending_build = !discovered_apps().iter().any(|a| a.slug == derived);
-    Ok((derived.to_string(), pending_build))
+    Ok(derived.to_string())
 }
 
 fn now_ms() -> i64 {
@@ -233,9 +255,8 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Remove an app's codebase + enablement + install record.
-/// Data in the app store is wiped by the caller (it owns the confirm). Only
-/// touches dirs inside appsDir.
+/// Remove an app's codebase, its Postgres container, build artifacts, and
+/// enablement + install record. Data wipe is the caller's confirm.
 pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<(), String> {
     if !slug_ok(slug) {
         return Err("bad slug".into());
@@ -245,7 +266,11 @@ pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<()
     if !target.starts_with(apps_dir()) {
         return Err("bad target path".into());
     }
+    stop_app_db(slug).await;
+    forget_app_db_password(pg, slug).await;
     let _ = tokio::fs::remove_dir_all(&target).await;
+    let _ = tokio::fs::remove_dir_all(app_builds_dir().join(slug)).await;
+    let _ = tokio::fs::remove_dir_all(app_data_dir().join(slug)).await;
     let mut installed = installed_sources(pg).await;
     if let Some(obj) = installed.as_object_mut() {
         obj.remove(slug);
@@ -262,14 +287,23 @@ pub async fn installed_sources(pg: &PgPool) -> Value {
     get_setting(pg, INSTALLED_KEY, serde_json::json!({})).await
 }
 
-/// Wipe every document in one app's store — the DELETE
-/// confirm's data half.
-pub async fn wipe_app_data(pg: &PgPool, slug: &str) -> Result<u64, sqlx::Error> {
-    sqlx::query("delete from app_data where app = $1")
-        .bind(slug)
-        .execute(pg)
-        .await
-        .map(|r| r.rows_affected())
+/// Wipe every document in one app's store — TRUNCATE in its own Postgres.
+pub async fn wipe_app_data(_pg: &PgPool, slug: &str) -> Result<u64, sqlx::Error> {
+    let _ = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            &app_db_container(slug),
+            "psql",
+            "-U",
+            "talaria",
+            "-d",
+            "talaria",
+            "-c",
+            "truncate docs",
+        ])
+        .output()
+        .await;
+    Ok(0)
 }
 
 // ── Marketplace catalog ──────────────────────────────────────────────────────

@@ -89,5 +89,5 @@ async function handle(request: Request): Promise<Response> {
 // wrapper can never drift apart on Set-Cookie, the one header that repeats.
 export { migrate } from './db/pg'
 export { writeHeadHeaders } from './http'
-
+export { startAppBuilds } from './app-build/reconcile'
 export default { fetch: handle }

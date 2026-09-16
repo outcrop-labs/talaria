@@ -6,6 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 import { writeHeadHeaders } from './src/server/http'
+import { appRuntimeDev, appRuntimeHost } from './src/app-runtime/vite-plugin'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
 
@@ -126,19 +127,21 @@ export default defineConfig({
     (existsSync('../.git') && statSync('../.git').isFile() ? '.vite' : undefined),
   // Dev server reachable over the LAN/Tailscale. allowedHosts only affects the
   // dev server (not prod builds); `true` lets IPs and hostnames through.
-  // fs.allow ..: Talaria app codebases live in ../apps and compile into this
-  // build (import.meta.glob) — the dev server must be allowed to serve them.
+  // fs.allow ..: app sources live in ../apps and load through /@app/ in dev.
   server: { host: true, allowedHosts: true, fs: { allow: ['..'] } },
   build: {
     outDir: 'dist/client',
     rollupOptions: {
       // The SPA plus the service worker (src/sw.ts). The worker must land at a
       // STABLE, unhashed /sw.js — the registration URL in browser-notify.ts —
-      // and be a self-contained entry; every other entry keeps the hashed
-      // assets/ layout the stale-chunk 404 logic in server-entry.ts expects.
+      // and be a self-contained entry; runtime/rt-* shims are unhashed too so
+      // independently-built apps can import them by a stable URL. Every other
+      // entry keeps the hashed assets/ layout the stale-chunk 404 logic in
+      // server-entry.ts expects.
       input: { main: resolve(here, 'index.html'), sw: resolve(here, 'src/sw.ts') },
       output: {
-        entryFileNames: (chunk) => (chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js'),
+        entryFileNames: (chunk) =>
+          chunk.name === 'sw' ? 'sw.js' : chunk.name.startsWith('runtime/') ? '[name].js' : 'assets/[name]-[hash].js',
       },
     },
   },
@@ -162,6 +165,8 @@ export default defineConfig({
     viteTsConfigPaths({ projects: ['./tsconfig.json'], loose: true }),
     tailwindcss(),
     svelte(),
+    appRuntimeHost({ ssr: false }),
+    appRuntimeDev(),
     apiDev(),
     swDev(),
   ],
