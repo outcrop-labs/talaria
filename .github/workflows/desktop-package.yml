@@ -401,8 +401,18 @@ jobs:
         run: |
           set -eu
           dmg=$(ls "$RUNNER_TEMP/assets"/*.dmg)
-          mount=$(hdiutil attach "$dmg" -nobrowse -readonly | grep -o '/Volumes/.*' | head -1)
-          echo "mounted $dmg at $mount"
+          mount=$RUNNER_TEMP/mnt
+          mkdir -p "$mount"
+          # An explicit -mountpoint, and -noautofsck: letting hdiutil pick a
+          # /Volumes path on a runner with no login session comes back
+          # "attach canceled" with nothing mounted (the first run of this step
+          # did exactly that).
+          hdiutil attach "$dmg" -nobrowse -readonly -noautofsck -mountpoint "$mount"
+          if [ ! -d "$mount/Talaria.app" ]; then
+            echo "::error::$dmg mounted but carries no Talaria.app:"
+            ls -la "$mount"
+            exit 1
+          fi
           cp -R "$mount/Talaria.app" "$RUNNER_TEMP/Talaria.app"
           hdiutil detach "$mount" >/dev/null
 
