@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-11 routes.
+12 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -42,6 +42,7 @@
 | [`/api/boards/{id}/views`](#apiboardsidviews) | POST | `session` |
 | [`/api/boards/{id}/views`](#apiboardsidviews) | PUT | `session` |
 | [`/api/boards/{id}/views`](#apiboardsidviews) | DELETE | `session` |
+| [`/api/boards/{id}/work-sessions`](#apiboardsidwork-sessions) | GET | `session` |
 
 ## `/api/boards`
 
@@ -366,4 +367,18 @@ Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `viewId` | `uuid` |  |
+
+## `/api/boards/{id}/work-sessions`
+
+Source: [`api/src/routes/boards/boards_id_work_sessions.rs`](../../api/src/routes/boards/boards_id_work_sessions.rs)
+
+> GET /api/boards/{id}/work-sessions. The board's LIVE WORK SESSIONS as a
+> taskId → session map — the list view's question ("which cards are being
+> worked right now?") answered in one read instead of one per card. Gated by
+> board visibility exactly like the board read itself; the map carries only
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{sessions}` | 200, 403 | — |
 

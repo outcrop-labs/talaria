@@ -1317,6 +1317,8 @@ pub async fn render_fleet(
         skills_out.insert("external_dirs".into(), json!(ext_dirs));
         routed.insert("skills".into(), Value::Object(skills_out));
 
+        fleet_approvals(&mut routed);
+
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
             "# Rendered by Talaria — {} v{}. Do not hand-edit; edit in Talaria.\n{}",
@@ -1515,10 +1517,44 @@ pub async fn render_fleet(
                 for (k, v) in &h.full_env {
                     env.insert(k.clone(), v.clone());
                 }
-                if let HarnessAuth::Provider { provider, env_var } = &h.def.auth
-                    && let Some((_, key_env)) = endpoints.iter().find(|(p, _)| p == provider)
-                {
-                    env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
+                if let HarnessAuth::Provider { provider, env_var } = &h.def.auth {
+                    // CLAUDE CODE RIDES ANY ENDPOINT THAT SPEAKS ITS
+                    // PROTOCOL: ANTHROPIC_BASE_URL toward a discovered
+                    // Anthropic-compatible surface beats a native key nobody
+                    // has — the org's model access already reaches such a
+                    // gateway in that case, and the same key opens it.
+                    if h.def.slug == "claude-code"
+                        && let Some((base, key_env)) =
+                            crate::workbench::harnesses::anthropic_surface(pg).await
+                    {
+                        env.insert("ANTHROPIC_BASE_URL".into(), json!(base));
+                        // AUTH_TOKEN is the bearer form Claude Code sends to
+                        // a custom base URL; API_KEY stays unset so the two
+                        // auth shapes never fight.
+                        env.insert(
+                            "ANTHROPIC_AUTH_TOKEN".into(),
+                            json!(format!("${{{key_env}}}")),
+                        );
+                    } else {
+                        match endpoints.iter().find(|(p, _)| p == provider) {
+                            Some((_, key_env)) => {
+                                env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
+                            }
+                            // A native-auth harness with no provider endpoint is
+                            // the claude-code-without-anthropic case: the harness
+                            // arms, its first run fails on a missing key, and the
+                            // agent hand-codes instead — the exact silence that
+                            // hid harness-nonuse across the fleet. Say it at
+                            // render time, where the fix (add the endpoint) is
+                            // one admin panel away.
+                            None => tracing::warn!(
+                                "[fleet] harness \"{}\" wants a {} provider key ({}), and no endpoint speaks the Anthropic protocol — add the endpoint or the key, or the harness runs unauthenticated",
+                                h.def.slug,
+                                provider,
+                                env_var,
+                            ),
+                        }
+                    }
                 }
             }
             obj.insert("environment".into(), Value::Object(env));
@@ -1548,6 +1584,9 @@ pub async fn render_fleet(
         // env-interpolated fleet key. Zero in-sandbox reconnection; grant
         // changes re-render, revocations bite at the gateway instantly.
         let wb_dir = agent_dir.join("workbench");
+        // Harness parity mounts — unattended-auth policy files and skills
+        // links, filled by the workbench pass below, applied to the volumes.
+        let mut harness_mounts: Vec<String> = Vec::new();
         if let Some(wb) = &wb {
             let mut names: Vec<String> = vec!["talaria".into()];
             for srv in &agent_servers {
@@ -1590,11 +1629,81 @@ pub async fn render_fleet(
                     .map_err(|e| format!("{}: {e}", p.display()))?;
                 written.push(mc.filename.clone());
             }
+
+            // ── Harness parity: unattended auth, and the same skills Hermes
+            // gets ─────────────────────────────────────────────────────────
+            // A harness running unattended in a container hits first-run
+            // walls nobody is there to click through — an onboarding/login
+            // prompt, a permission prompt on the first tool — and it never
+            // sees the fleet's skills. The walls are small POLICY files, not
+            // state: they mount read-only from this directory (the gitconfig
+            // mechanism) at the exact CLAUDE_CONFIG_DIR / CODEX_HOME paths
+            // under /opt/data. ANTHROPIC_API_KEY in the env (the Provider
+            // auth above) is Claude Code's documented API-key path — no
+            // OAuth login; these files clear what remains. The skills mount
+            // the FLEET SKILLS HOST DIRECTORY directly — the same source
+            // /opt/skills itself mounts from — NOT a symlink: a symlink to a
+            // container-only path is dangling on the host, and the docker
+            // daemon answers a dangling bind source with mkdir-then-"file
+            // exists", which 500s the whole agent up (the first roll after
+            // #369 landed proved it live).
+            for slug in &wb.harnesses {
+                match slug.as_str() {
+                    "claude-code" => {
+                        tokio::fs::write(
+                            wb_dir.join("claude--.claude.json"),
+                            "{\n  \"hasCompletedOnboarding\": true\n}\n",
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        tokio::fs::write(
+                            wb_dir.join("claude--settings.json"),
+                            "{\n  \"permissions\": { \"defaultMode\": \"bypassPermissions\" }\n}\n",
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/claude/.claude.json:ro",
+                            wb_dir.join("claude--.claude.json").display()
+                        ));
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/claude/settings.json:ro",
+                            wb_dir.join("claude--settings.json").display()
+                        ));
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/claude/skills:ro",
+                            fleet_skills.display()
+                        ));
+                    }
+                    "codex" => {
+                        harness_mounts.push(format!(
+                            "{}:/opt/data/workbench/harness/codex/skills:ro",
+                            fleet_skills.display()
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            // The workspace pointers every harness reads in its working
+            // directory — where the skills live, whichever tool lands there.
+            let _ = tokio::fs::write(
+                wb_dir.join("AGENTS.md"),
+                "# Workspace skills\n\nThe fleet's skills live at `/opt/skills` (read-only). Read the one that matches your task before you start — especially `talaria-toolkit` and `workbench-driving`.\n",
+            )
+            .await;
+            let _ = tokio::fs::write(
+                wb_dir.join("CLAUDE.md"),
+                "# Workspace skills\n\nThe fleet's skills live at `/opt/skills` (read-only). Read the one that matches your task before you start — especially `talaria-toolkit` and `workbench-driving`.\n",
+            )
+            .await;
         }
 
         let mut vols: Vec<String> = Vec::new();
         if wb.is_some() {
             vols.push(format!("{}:/opt/workbench-config:ro", wb_dir.display()));
+        }
+        for m in &harness_mounts {
+            vols.push(m.clone());
         }
         if let Some(wb) = &wb {
             for m in &wb.mounts {
@@ -1772,6 +1881,24 @@ fn def_raw_config(config: &Value) -> Value {
         .get("raw")
         .cloned()
         .unwrap_or_else(|| Value::Object(Map::new()))
+}
+
+/// Fleet agents are driven through the api — an "unattended platform" in
+/// Hermes' approval model — and cron jobs run the same way: nobody is ever
+/// present to approve. Hermes' fail-closed defaults (`unattended_mode` /
+/// `cron_mode: deny`) therefore block execute_code outright and stall every
+/// dangerous-command prompt until it times out. The container is the sandbox
+/// and tirith is the guard, so the deny is a trap, not a protection: both
+/// modes go to approve, preserving any other approvals keys the def carries.
+fn fleet_approvals(routed: &mut Map<String, Value>) {
+    let mut cfg = routed
+        .get("approvals")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    cfg.insert("unattended_mode".into(), json!("approve"));
+    cfg.insert("cron_mode".into(), json!("approve"));
+    routed.insert("approvals".into(), Value::Object(cfg));
 }
 
 /// Claude Code's .mcp.json shape — `${VAR}` expands from the container env.
@@ -2186,6 +2313,34 @@ service:
         }
         // Quoted strings single-quote with '' escaping.
         assert_eq!(yaml11_quote("it's on"), "'it''s on'");
+    }
+
+    #[test]
+    fn fleet_approvals_flips_the_unattended_defaults_and_preserves_the_rest() {
+        // No authored approvals block: both modes land, nothing else appears.
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_approvals(&mut routed);
+        assert_eq!(
+            routed.get("approvals"),
+            Some(&json!({ "unattended_mode": "approve", "cron_mode": "approve" }))
+        );
+
+        // An authored block keeps its other keys; the two modes are
+        // overridden wherever a def tried to deny them.
+        let mut authored = Map::new();
+        authored.insert(
+            "approvals".into(),
+            json!({ "mode": "smart", "timeout": 300, "unattended_mode": "deny" }),
+        );
+        fleet_approvals(&mut authored);
+        assert_eq!(
+            authored.get("approvals"),
+            Some(&json!({
+                "mode": "smart", "timeout": 300,
+                "unattended_mode": "approve", "cron_mode": "approve"
+            }))
+        );
     }
 
     #[test]

@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher",
+  "description": "IPC for the local launcher webview only. Instance webviews (instance-*) get no capability and no remote-URL grant: pages loaded from instance origins cannot invoke Tauri commands at all.",
+  "windows": ["main"],
+  "webviews": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-list-instances",
+    "allow-add-instance",
+    "allow-activate-instance",
+    "allow-show-welcome",
+    "allow-remove-instance"
+  ]
+}

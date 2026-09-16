@@ -243,7 +243,10 @@ services:
     networks: [internal]
 
   minio:
-    image: docker.io/minio/minio:latest
+    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
+    # quay's latest is digest-identical to the last Hub-published build.
+    # Freshness of quay's images is tracked in issue #366.
+    image: quay.io/minio/minio:latest
     restart: unless-stopped
     command: ['server', '/data']
     environment:

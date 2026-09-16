@@ -87,7 +87,10 @@ services:
   # (AWS/Backblaze/R2/...). Creds must match the app's TALARIA_S3_* env — both
   # default to the same dev values; `talaria setup` generates a random secret.
   minio:
-    image: docker.io/minio/minio:latest
+    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
+    # quay's latest is digest-identical to the last Hub-published build.
+    # Freshness of quay's images is tracked in issue #366.
+    image: quay.io/minio/minio:latest
     container_name: ${TALARIA_MINIO_CONTAINER:-talaria-minio-dev}
     restart: unless-stopped
     command: ['server', '/data']

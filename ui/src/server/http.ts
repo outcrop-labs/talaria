@@ -7,7 +7,7 @@ export function json(data: unknown, init?: ResponseInit): Response {
 }
 
 /** A fetch Response's headers as a plain object for `res.writeHead()` — the
- *  conversion both HTTP wrappers (vite dev middleware, server-entry.js) run at
+ *  conversion both HTTP wrappers (vite dev middleware, server-entry.ts) run at
  *  their boundary. Exists because the obvious one-liner is wrong:
  *  `Object.fromEntries(response.headers.entries())` collapses duplicate keys,
  *  and Set-Cookie is the one header that legitimately repeats. The Google

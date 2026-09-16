@@ -49,7 +49,7 @@ const STAY_TS = [
 ] as const
 
 // The default target: in-box loopback on the same port `talaria dev` and
-// server-entry.js bind their api to. Both wire the env explicitly when they
+// server-entry.ts bind their api to. Both wire the env explicitly when they
 // own the api; this default covers everyone else — a bare `vite dev`, a
 // hand-started install — so "first spin-up assumes Rust" is a property of the
 // process, not of its operator's memory.
@@ -170,6 +170,6 @@ export async function maybeProxy(request: Request, pathname: string): Promise<Re
   // ported. The login/OAuth routes land here too, and they set two.
   for (const c of res.headers.getSetCookie()) out.append('set-cookie', c)
   // The body streams through with backpressure — both callers (vite dev,
-  // server-entry.js) pump Response.body; an SSE relay must not buffer.
+  // server-entry.ts) pump Response.body; an SSE relay must not buffer.
   return new Response(res.body, { status: res.status, headers: out })
 }

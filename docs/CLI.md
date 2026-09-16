@@ -14,7 +14,7 @@ which command when.
 
 | When | Command |
 | :--- | :--- |
-| First run on a machine | `talaria setup` → prints your admin credentials, brings up postgres/redis |
+| First run on a machine | `talaria setup` → brings up postgres/redis; claim the admin account in the app |
 | Every day after that | `talaria dev` → infra, readiness waits, the app on **http://localhost:5273** |
 | Something's wedged | `talaria reset --help` first; every reset is destructive and typed |
 | Shipping it | `talaria deploy up` → the container stack ([`CONTAINER.md`](./CONTAINER.md)) |

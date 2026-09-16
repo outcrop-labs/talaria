@@ -1,4 +1,4 @@
-// `validateEnv` is a boot gate: server-entry.js calls it and exits 1 on a throw.
+// `validateEnv` is a boot gate: server-entry.ts calls it and exits 1 on a throw.
 // That makes a false rejection an outage, so what is tested here is mostly the
 // ACCEPT side — the shapes a working deployment really has (a bare
 // `postgres://`, a URL with query params, AUTH_SECRET alone as the encryption

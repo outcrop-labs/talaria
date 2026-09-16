@@ -41,6 +41,157 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   real browser against an API stub: design in-progress state, draft lands
   in the review fields, refine in-flight state, receipt math on a trimmed
   soul, failed refine leaves the draft untouched, error line shows.
+- **`talaria deploy` honors `COMPOSE_FILE` — the registry-image flow works
+  through the wrappers, no build on the host.** Export the layered file list
+  (`docker/compose.yml:docker/compose.registry.yml[:your-vm override]`) and
+  every deploy leaf drops its explicit `-f` (docker's own precedence puts -f
+  ABOVE the env, so honoring the env means stepping aside); registry mode
+  pulls `talaria searxng-config` fail-fast and `up` runs WITHOUT `--build` —
+  the override swaps the image but cannot remove the base's `build:` key, so
+  a build would tag the checkout as the registry ref. `talaria service
+  install` captures the env into the systemd unit, and the env-drift warning
+  scans every file in the list (so `TALARIA_CHANNEL` and per-override knobs
+  join the checked set). Verified: `bun talaria deploy up/update/down` argv
+  under COMPOSE_FILE asserted in the CLI suite (pull-before-up ordering, no
+  --build, die-on-pull-failure), unit text with and without the env, drift
+  across a layered override, and the unset path byte-identical to before.
+
+- **Talaria Desktop — a Tauri v2 multitenant shell around Talaria instances
+  (`desktop/`, [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** One window, two
+  views: the launcher's welcome screen (the only local frontend — wing mark
+  on the signature dither, Mercury typography, the instance list, add), and
+  the active instance's own web UI as the entire window — the interior is
+  always the real UI, never a second codebase. Switching lives INSIDE the
+  product: the desktop switcher (`ui/src/components/app/DesktopSwitcher.svelte`)
+  wears the current instance's identity beside the logo in the nav rail and
+  in the login screen's corner, rendering only inside the shell
+  (`inDesktopShell()`, feature-detected — a browser gets nothing);
+  Ctrl/Cmd+Shift+H opens the launcher even on instances whose deployed UI
+  predates the switcher. Adding an instance validates it against the
+  instance beacon (`/api/well-known/talaria-instance`) and dedupes by
+  instance uuid; each instance webview gets its own data directory, so
+  sessions on the same host at different ports never collide, and hidden
+  webviews stay loaded (SSE survives a switch). Instance origins are granted
+  exactly three commands at runtime (list / activate / show-welcome) via
+  Tauri's dynamic-ACL — remote content can switch instances and nothing
+  else. `decorations: false` (no GTK titlebar where the WM shows none).
+  Gates: `bun run desktop:check` runs in a devbox and CI's new `desktop`
+  job; the GUI runs on the host — the devbox image gained the webkit2gtk
+  build deps. Verified live: devbox instance + the real hosted
+  `talaria.outcroplabs.com` added through the dialog, signed in, and
+  switched between via the in-UI switcher; the active instance fills the
+  window at any size (an earlier persistent-sidebar design stacked the two
+  webviews vertically inside WebKitGTK and drowned the app — exactly-one-
+  visible-webview is the fix; manual bounds remain as belt-and-suspenders).
+
+### Changed
+
+- **The coding harness is the mandated path for code work — named, keyed,
+  unblocked, and skilled.** Four pieces, one contract: the agent that was
+  handed a harness drives it instead of hand-coding. The dispatch brief now
+  NAMES the agent's selected harness (the platform knows workbench_harness —
+  no "whichever is configured" hedging) and points at `doctor` for its guide;
+  hand-editing files is reserved for trivial one-line fixes, and a harness
+  the agent cannot drive is a report_gap, never a reason to silently
+  hand-code. Claude Code's auth finds the org's model access wherever it
+  lives, through a three-step lookup that never needs an "anthropic" endpoint
+  to be configured (the platform's endpoint rows are OpenAI-shaped by
+  construction): a REFERENCE TABLE of providers with known fixed
+  Anthropic-protocol surfaces (anthropic native; OpenRouter's first-party
+  /api/anthropic; DeepSeek's /anthropic) answers by slug with zero network;
+  otherwise a one-time probe of {base}/v1/messages — the row's own base URL,
+  or the origin of the provider's native base — verifies the surface and
+  CACHES the verdict on the endpoint row (llm_endpoints.anthropic_base), so
+  the network half runs at most once per endpoint for the life of the
+  install; the hit becomes ANTHROPIC_BASE_URL with the same key riding
+  ANTHROPIC_AUTH_TOKEN — no OAuth login — and the no-key-anywhere case now
+  WARNS at render instead of arming a harness that fails silently
+  (the silence that hid harness non-use across the fleet: zero Claude Code
+  sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
+  Every armed harness also runs unattended-clean and skilled: onboarding
+  cleared and permissions bypassed via read-only policy files mounted at its
+  CLAUDE_CONFIG_DIR paths, the fleet skills HOST DIRECTORY bind-mounted
+  directly into Claude Code's and Codex's skill directories (a symlink to
+  the container-only /opt/skills dangles on the host, and the docker daemon
+  answers a dangling bind source with mkdir "file exists" — the first roll
+  after the initial merge 500'd every agent up; the direct mount is the
+  fix), and AGENTS.md/CLAUDE.md pointers in the workspace telling every
+  harness where the skills live.
+
+
+- **The last plain-JS sources are TypeScript now: `server-entry`, the svelte
+  config, and the service worker.** `server-entry.ts` is the one that
+  matters — it was outside the tsconfig `include`, so the production server
+  (env loading, static serving, the SSE pump, boot migrations, the Rust-api
+  supervisor) had never been typechecked; it now carries full types (the
+  dist bundle import is typed from `src/server/app.ts`, the one module
+  whose exports survive into it). `svelte.config.ts` is supported natively
+  by vite-plugin-svelte 6. The service worker moved from `public/sw.js`
+  (served verbatim) to `src/sw.ts` as a second client-build entry emitted
+  unhashed at `/sw.js` — the registration URL in browser-notify.ts is
+  unchanged — with a small dev middleware serving the same URL so
+  dev-mode registration keeps working. `bun server-entry.ts` replaces
+  `bun server-entry.js` in the start script, the container entrypoint, and
+  the image's runtime COPY.
+  The stdlib-only `.mjs` under `scripts/` and `docker/` stay as they are:
+  they must run under any node with no install, which `.ts` would break.
+  Verified: `bun run verify` green (typecheck now covering the entry), a
+  built-from-scratch `dist/` emits `sw.js` at the client root, and a boot
+  of the built server against a scratch database listens, answers
+  `/api/healthz`, and serves `/sw.js` with a JavaScript content type.
+
+### Fixed
+
+- **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
+  `BoardLayout.svelte` feature-detected the global with
+  `requestIdleCallback ?? fallback` — but reading an absent global by name
+  throws ReferenceError before `??` ever runs, so WebKit (Safari, and
+  WebKitGTK — the desktop shell's engine) died opening any board. The guard
+  is now `typeof requestIdleCallback !== 'function'`, with the fallback and
+  its cleanup correctly paired. Found in the desktop shell on 2026-09-15;
+  it was equally broken for browser Safari.
+- **ui's typecheck no longer sweeps gitignored subrepo apps.** Any machine
+  with `apps/leadworks`/`apps/waypoint` checked out sprayed ~100 phantom
+  "Cannot find module" errors into every svelte-check (subrepo imports
+  resolve against their own absent node_modules), which is why CI disagreed
+  with every local run. The subrepos are now excluded in `ui/tsconfig.json`,
+  and a new `bun run check` invariant (`subrepo-app-inside-the-ui-tsconfig`)
+  fails in seconds when a future subrepo appears unexcluded.
+- **The launcher's add-instance dialog rendered behind the content that
+  opened it** — the welcome content sits at `z-10` and the dialog had no
+  z-index. Both overlays are `z-50` now.
+- **The bundled Hermes github skill is pruned from fleet containers, and a
+  Talaria-authored `github` skill stands in its place.** The image ships a
+  gh-CLI-first github pack whose preflight (`gh auth status`) and auth
+  workflows pitch exactly what Talaria forbids — there is no `gh` in the
+  containers, and the credential is injected at git time, never visible.
+  Observed live on outcrop (2026-09-15): an agent opened the skill, noted it
+  "assumes gh CLI", and recovered only because its memory notes said
+  otherwise. The pack joins `CONFLICTING_SKILL_PACKS` (pruned on every
+  container roll, the same mechanism as the five note-tool packs), while
+  `scripts/skills/github` seeds the shared root with a signpost skill at the
+  exact name agents reach for — plain git over https, the workbench opens
+  the PR, no auth to set up — routing to the talaria-toolkit and
+  workbench-driving sections that carry the methodology. Verified in an
+  isolated worktree render: the skill seeds into the fleet shared root and
+  lists as a platform (admin-locked) skill beside the toolkit; the prune
+  path matches the live dogfood container's pack layout.
+
+- **`execute_code` works again on fleet agents: rendered configs now carry
+  `approvals: { unattended_mode: approve, cron_mode: approve }`.** Talaria
+  drives every agent through the Hermes api — an "unattended platform" in
+  Hermes' approval model — and cron jobs run the same way, so the fail-closed
+  defaults denied `execute_code` outright (the live error: "This session runs
+  on an unattended platform (api_server) with no user present to approve it")
+  and stalled every dangerous-command prompt until timeout; agents limped
+  back to terminal one-shots. The container is the sandbox and tirith is the
+  guard, so both modes flip to approve, preserving any other approvals keys
+  an agent def carries. Verified: a unit test pins the override (authored
+  keys preserved, both modes flipped), and a live render in an isolated
+  worktree emits the approvals block into the agent's config.yaml.
+
+### Added
+
 - **Watch the work is a terminal now: the agent's own words and tool calls,
   streaming live from the run — on the board card, not buried in the ticket.**
   A work-session turn tees every parsed stream event (prose as it lands,
@@ -361,6 +512,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   checkbox and body clicks alike, and every key above does what it says.
 
 ### Fixed
+
+- **Fresh deploys no longer die pulling minio — MinIO removed its Docker Hub
+  namespace, and every minio image reference now points at quay.io, which
+  hosts the same builds.** Symptom, from a customer deploy: `pull access
+  denied for minio/minio, repository does not exist or may require 'docker
+  login'` — verified upstream from two independent networks: the Docker Hub
+  repo 404s (the whole `minio` namespace, `minio/mc` too) while
+  `quay.io/minio/minio:latest` is digest-identical to the last Hub-published
+  build and pulls fine. Swapped `docker.io/minio/minio` → `quay.io/minio/minio`
+  in the deploy, dev, and devbox compose files, and `minio/mc` →
+  `quay.io/minio/mc` in `talaria box seed` and the backup sidecar's image
+  default — that last one would have broken existing installs' backup jobs on
+  their next mc pull, not just fresh deploys. Verified: `bun run check` green
+  (gen-docs current), tests 1118/1118, typecheck clean outside the gitignored
+  client subrepos (known local-only leak; CI is truth), all three compose
+  files parse via `docker compose config -q`, and both quay images pull on
+  this box (mc build 2025-09-07; `TALARIA_MC_IMAGE` still overrides).
 
 - **A wedged request no longer hangs a view until the page is reloaded.**
   The agents roster reported it — often on first load, the skeleton stayed
@@ -3774,6 +3942,22 @@ secrets encrypted at rest.
   unlock-everything key is never in a config. Admin → Encryption rotates the key
   and re-encrypts every secret (provider keys, agent secrets, OAuth tokens) in a
   single pass. All symmetric AES-256 — post-quantum-safe (no asymmetric crypto).
+
+### Documentation
+
+- **The README quick start covers both ways to run Talaria, with the commands
+  for each.** Dev (`bun talaria setup` → `talaria dev`) and server
+  (`bun talaria deploy up`, optional `bun talaria service install`) each get a
+  copy-paste block that starts from the clone — which the old section omitted —
+  under headings that make the choice explicit. Prerequisites now say plainly
+  that Docker and Bun are hard dependencies and Podman is untested. The stale
+  "prints your generated admin credentials" claim is corrected everywhere it
+  lived (README, DEVELOPERS.md, docs/CLI.md, docs/CONTAINER.md, ui/README.md,
+  the dev-loop skill, the entrypoint's header comment): there are no default
+  credentials; a fresh instance comes up empty and the account you create at
+  the claim screen is the admin — CONTAINER.md's dead `grep 'Sign in'` for the
+  credentials that no longer print is replaced by `bun talaria deploy creds`.
+  RELEASES/ left untouched as frozen history. Verified: `bun run check` green.
 
 ## [Unreleased]: Phase 6 — product depth (2026-07-06)
 

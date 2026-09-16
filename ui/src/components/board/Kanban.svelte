@@ -6,6 +6,9 @@
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import KanbanAddCard from './KanbanAddCard.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
+  import WorkWatch from './WorkWatch.svelte'
+  import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import KanbanCard from './KanbanCard.svelte'
   import { COL_ACCENT, fmtHours } from './kanban'
   import { cn } from '@/lib/cn'
@@ -32,6 +35,10 @@
   } = $props()
 
   const qc = useQueryClient()
+  // Live work per card (one board-wide read) + the shared watch modal.
+  const work = useBoardWorkSessions(() => board.id)
+  let watchTask = $state<{ id: string; runId: string } | null>(null)
+  const working = (id: string) => work.data?.sessions?.[id] ?? null
   const fleetQuery = useAgents()
   const sessionQuery = useSession()
   const me = $derived(sessionQuery.data)
@@ -196,6 +203,7 @@
               >
                 <KanbanCard
                   task={t}
+                  session={working(t.id)}
                   pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}
@@ -209,6 +217,7 @@
                   onDragEnd={() => (dragging = null)}
                   onOpen={() => onOpen(t.id)}
                   onContextMenu={(e) => cardMenu(e, t)}
+                  onWatch={() => working(t.id) && (watchTask = { id: t.id, runId: working(t.id)!.runId })}
                 />
               </div>
             {/each}
@@ -218,7 +227,13 @@
           </div>
         </div>
       {/each}
-      <ContextMenu {menu} />
+      {#if watchTask}
+    <Modal open={!!watchTask} onClose={() => (watchTask = null)} title="Work in progress" width="max-w-2xl">
+      <WorkWatch runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
+    </Modal>
+  {/if}
+
+  <ContextMenu {menu} />
     </div>
   </div>
 {/if}

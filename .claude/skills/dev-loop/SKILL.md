@@ -12,7 +12,7 @@ procedure only.
 ## Bring-up
 
 ```bash
-bun talaria setup      # first run only — prints the generated admin credentials
+bun talaria setup      # first run only — secrets, config, deps; the admin account is claimed in the app
 bun talaria dev        # dev infra + the app → http://localhost:5273
 bun run api            # the Rust api alone (:5274), when that's the surface in play
 ```

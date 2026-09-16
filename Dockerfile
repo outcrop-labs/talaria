@@ -116,7 +116,7 @@ LABEL org.opencontainers.image.title="Talaria" \
 RUN apk add --no-cache docker-cli docker-cli-compose git ca-certificates tzdata libgcc libstdc++
 
 COPY --from=oven/bun:1.4.0-alpine /usr/local/bin/bun /usr/local/bin/bun
-# The api binary: server-entry.js spawns it at boot (adopting any instance
+# The api binary: server-entry.ts spawns it at boot (adopting any instance
 # already on the port), so the SPA process and the api share one supervisor,
 # one log, and one SIGTERM. musl-static out of the package stage — no runtime
 # packages follow it (the package carries its own ca-certificates story; this
@@ -128,9 +128,9 @@ RUN chmod 755 /usr/local/bin/talaria-entrypoint
 
 WORKDIR /app
 # ui/: the built app. src/server/env.ts ships as SOURCE on purpose —
-# server-entry.js imports it by name at boot (Node >= 22.18 strips types; bun
+# server-entry.ts imports it by name at boot (Node >= 22.18 strips types; bun
 # executes TS natively), so it must exist next to the bundle.
-COPY --from=build /repo/ui/server-entry.js ./ui/
+COPY --from=build /repo/ui/server-entry.ts ./ui/
 COPY --from=build /repo/ui/dist ./ui/dist
 COPY --from=build /repo/ui/src/server/env.ts ./ui/src/server/env.ts
 COPY --from=build /repo/ui/package.json ./ui/
@@ -160,7 +160,7 @@ RUN adduser -D -u 10001 talaria \
 # could never act. Dormancy for image installs is the adoption gate (the
 # engine acts only on instances that explicitly handed over the keys), and an
 # operator who wants a hard switch sets TALARIA_UPDATER=off themselves.
-# TALARIA_API_BIN tells server-entry.js where the api binary it spawns lives —
+# TALARIA_API_BIN tells server-entry.ts where the api binary it spawns lives —
 # the path is fixed by the COPY above; the env keeps the entry from guessing a
 # repo-layout path that only exists on dev boxes.
 # TALARIA_JS_RUNTIME=bun because this image ships bun and NO node: the api's
@@ -193,6 +193,6 @@ ENV PORT=5273 \
 
 USER talaria
 WORKDIR /app/ui
-# Exec form: bun becomes PID 1 and receives SIGTERM (server-entry.js shuts down
+# Exec form: bun becomes PID 1 and receives SIGTERM (server-entry.ts shuts down
 # gracefully — in-flight requests drain, agents get a clean socket close).
 ENTRYPOINT ["/usr/local/bin/talaria-entrypoint"]

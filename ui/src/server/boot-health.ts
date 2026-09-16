@@ -1,5 +1,5 @@
 // The one fact only the boot process knows: whether the migration pass
-// survived. server-entry.js records a failure on globalThis (the same channel
+// survived. server-entry.ts records a failure on globalThis (the same channel
 // pg.ts uses for its pool handle and migration promise), and /api/healthz
 // turns it into a check — so a failed pass fails the probe (compose
 // healthcheck, deploy gates) instead of leaving a green container that 500s

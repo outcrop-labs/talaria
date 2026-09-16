@@ -127,7 +127,8 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
   const MCT = `devbox-${name}-seed-mc`
   try {
     await ctx.exec('docker', ['rm', '-f', MCT]).catch(() => {})
-    await ctx.exec('docker', ['create', '--name', MCT, '--entrypoint', 'sh', 'docker.io/minio/mc:latest', '-c', 'sleep infinity'])
+    // quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09)
+    await ctx.exec('docker', ['create', '--name', MCT, '--entrypoint', 'sh', 'quay.io/minio/mc:latest', '-c', 'sleep infinity'])
     await ctx.exec('docker', ['network', 'connect', `devbox-${name}_default`, MCT])
     await ctx.exec('docker', ['network', 'connect', 'talaria-dev_default', MCT])
     await ctx.exec('docker', ['start', MCT])

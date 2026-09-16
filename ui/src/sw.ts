@@ -1,3 +1,4 @@
+/// <reference lib="webworker" />
 // Talaria's service worker — the closed-tab half of notifications. It
 // exists for exactly two events and touches no other traffic (no fetch
 // handler: every request passes through untouched):
@@ -12,9 +13,19 @@
 //   notificationclick: the person answered. Bring a Talaria window to the
 //     front and land it on the notification's href; only when nothing is
 //     open does a window get opened.
+//
+// A build entry (vite.config.ts), not a public/ verbatim asset: it is
+// bundled to an unhashed /sw.js so the registration URL in
+// browser-notify.ts is the same in dev and prod. Must stay import-free —
+// service workers load as classic scripts, and the whole point of this file
+// is to be one self-contained bundle.
+
+// The app's lib is DOM, and when both libs load the DOM `self` (Window) wins
+// the global — bind the worker's view of it once, typed from the webworker lib.
+const sw = self as unknown as ServiceWorkerGlobalScope
 
 /** base64url → raw bytes, for the VAPID key /api/push/key hands out. */
-function urlB64ToUint8Array(b64u) {
+function urlB64ToUint8Array(b64u: string): Uint8Array<ArrayBuffer> {
   const pad = '='.repeat((4 - (b64u.length % 4)) % 4)
   const b64 = (b64u + pad).replace(/-/g, '+').replace(/_/g, '/')
   const raw = atob(b64)
@@ -24,7 +35,7 @@ function urlB64ToUint8Array(b64u) {
 }
 
 /** The PushSubscription in the wire shape /api/push/subscribe validates. */
-function subscriptionWire(sub) {
+function subscriptionWire(sub: PushSubscription) {
   const json = sub.toJSON()
   return {
     endpoint: json.endpoint,
@@ -35,8 +46,8 @@ function subscriptionWire(sub) {
   }
 }
 
-self.addEventListener('push', (event) => {
-  let note = null
+sw.addEventListener('push', (event: PushEvent) => {
+  let note: { id?: string; title?: string; body?: string; href?: string } | null = null
   try {
     note = event.data ? event.data.json() : null
   } catch {
@@ -45,12 +56,12 @@ self.addEventListener('push', (event) => {
   if (!note || !note.id) return
   event.waitUntil(
     (async () => {
-      const wins = await self.clients.matchAll({
+      const wins = await sw.clients.matchAll({
         type: 'window',
         includeUncontrolled: true,
       })
       if (wins.some((w) => w.visibilityState === 'visible')) return
-      await self.registration.showNotification(note.title, {
+      await sw.registration.showNotification(note.title ?? '', {
         body: note.body || '',
         // The notification row's id: one OS copy per row, so a re-delivery
         // replaces its own earlier copy instead of stacking.
@@ -61,12 +72,12 @@ self.addEventListener('push', (event) => {
   )
 })
 
-self.addEventListener('notificationclick', (event) => {
+sw.addEventListener('notificationclick', (event: NotificationEvent) => {
   const href = event.notification.data && event.notification.data.href
   event.notification.close()
   event.waitUntil(
     (async () => {
-      const wins = await self.clients.matchAll({
+      const wins = await sw.clients.matchAll({
         type: 'window',
         includeUncontrolled: true,
       })
@@ -85,7 +96,7 @@ self.addEventListener('notificationclick', (event) => {
         await win.focus()
         return
       }
-      await self.clients.openWindow(href || '/')
+      await sw.clients.openWindow(href || '/')
     })(),
   )
 })
@@ -94,14 +105,14 @@ self.addEventListener('notificationclick', (event) => {
 // subscriptions and report it here. Resubscribe against the instance's
 // CURRENT public key and re-file the row — otherwise every later delivery
 // 404s and the server prunes a browser that still wants its notifications.
-self.addEventListener('pushsubscriptionchange', (event) => {
+sw.addEventListener('pushsubscriptionchange', (event: PushSubscriptionChangeEvent) => {
   event.waitUntil(
     (async () => {
       try {
         const keyResp = await fetch('/api/push/key')
         if (!keyResp.ok) return
-        const { publicKey } = await keyResp.json()
-        const sub = await self.registration.pushManager.subscribe({
+        const { publicKey } = (await keyResp.json()) as { publicKey: string }
+        const sub = await sw.registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlB64ToUint8Array(publicKey),
         })

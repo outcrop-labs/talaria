@@ -26,7 +26,7 @@ From the **repo root** — the CLI owns the whole local stack (secrets, `ui/.env
 the dev containers):
 
 ```bash
-bun talaria setup   # generates ui/.env + admin credentials, brings up postgres + redis
+bun talaria setup   # generates ui/.env, brings up postgres + redis — then claim the admin in the app
 talaria dev         # the app → http://localhost:5273
 ```
 

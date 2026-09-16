@@ -21,7 +21,7 @@ pub enum InstallMode {
     /// A published image (TALARIA_INSTALL=image). The updater's domain:
     /// rolls are digest pulls of a new image and a slot cutover.
     Image,
-    /// A git checkout under `bun server-entry.js`. The git-updater's
+    /// A git checkout under `bun server-entry.ts`. The git-updater's
     /// domain; the container engine has nothing to say here.
     Checkout,
     /// Vite dev, or anything else unstamped. Reloads on file change;
@@ -60,7 +60,7 @@ pub fn mode_from(
     if install == Some("image") {
         return InstallMode::Image;
     }
-    // server-entry.js stamps prod-server before importing the app graph;
+    // server-entry.ts stamps prod-server before importing the app graph;
     // vite dev never does. The one honest signal for "a server install".
     if runtime != Some("prod-server") {
         return InstallMode::Dev;

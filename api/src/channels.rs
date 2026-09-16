@@ -1023,6 +1023,46 @@ async fn decorate_messages(
     Ok(())
 }
 
+/// A 'streaming' row whose writer died (a deploy mid-turn kills the bare
+/// spawned reply task — nothing closes it) would render as an agent replying
+/// forever. The chat plane repairs its own orphans on read (messages.rs's
+/// 15-minute rule); channels answer on the WIRE instead: a streaming row
+/// whose `edited_at` (the flush stamp) is more than fifteen minutes quiet gets
+/// its status flipped to 'error' in the row AND in what this read returns.
+/// Silence, not age — a live hour-long turn flushes every 400ms and never
+/// trips it.
+async fn repair_dead_streams(pg: &PgPool, messages: &mut [ChannelMessageWire]) {
+    for m in messages.iter_mut() {
+        if m.status != "streaming" {
+            continue;
+        }
+        let stale: Option<bool> = sqlx::query_scalar(
+            "select coalesce(edited_at, created_at) < now() - interval '15 minutes' \
+             from channel_messages where id = $1::uuid and status = 'streaming'",
+        )
+        .bind(&m.id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten();
+        if stale == Some(true) {
+            let _ = sqlx::query(
+                "update channel_messages set status = 'error', \
+                 content = case when length(content) > 0 then content \
+                                else '(reply interrupted)' end \
+                 where id = $1::uuid and status = 'streaming'",
+            )
+            .bind(&m.id)
+            .execute(pg)
+            .await;
+            if m.content.is_empty() {
+                m.content = "(reply interrupted)".into();
+            }
+            m.status = "error".into();
+        }
+    }
+}
+
 /// A channel's MAIN flow (thread replies live in their panels), oldest first.
 /// `since_seq` fetches only newer ones. `include_threads` flattens everything
 /// back in — the distill/conclude summarizers want the whole conversation.
@@ -1046,6 +1086,7 @@ pub async fn list_channel_messages(
         .await?;
     rows.reverse(); // newest-first fetch, oldest-first wire
     let mut messages: Vec<ChannelMessageWire> = rows.into_iter().map(msg_wire).collect();
+    repair_dead_streams(pg, &mut messages).await;
     decorate_messages(pg, &mut messages).await?;
     Ok(messages)
 }
@@ -1357,7 +1398,7 @@ pub async fn update_channel_message(
     content: &str,
     status: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("update channel_messages set content = $2, status = $3 where id = $1::uuid")
+    sqlx::query("update channel_messages set content = $2, status = $3, edited_at = now() where id = $1::uuid")
         .bind(message_id)
         .bind(content)
         .bind(status)

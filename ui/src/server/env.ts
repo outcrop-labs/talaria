@@ -1,11 +1,11 @@
-// Boot-time environment validation. `server-entry.js` calls validateEnv() once
+// Boot-time environment validation. `server-entry.ts` calls validateEnv() once
 // before listen(), so a misconfigured deploy fails at start with EVERY problem
 // listed at once — instead of at whichever request first happens to touch the
 // missing value (getSql(), getRedis() and kekMaterial() each throw lazily, which
 // surfaces as a random 500 hours later).
 //
 // Deliberately dependency-light: zod and node:fs only, no `@/` aliases and no
-// app imports. The production entry is plain JS and imports this module
+// app imports. The production entry (bun-run, outside the Vite graph) imports this module
 // directly, so anything pulled in here has to resolve without the Vite graph.
 
 import { readFileSync } from 'node:fs'

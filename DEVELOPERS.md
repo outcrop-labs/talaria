@@ -13,11 +13,10 @@ norms: [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 ## Quick start
 
 One script takes a blank machine to a running instance (it generates `ui/.env`, the fleet config
-plane, the `talaria` docker network, pulls infra images, installs deps, and prints your admin
-login):
+plane, the `talaria` docker network, pulls infra images, installs deps):
 
 ```bash
-bun talaria setup           # first-run setup — prints your generated admin credentials
+bun talaria setup           # first-run setup — then open the app and claim the admin account
 talaria dev                 # dev infra + the app → http://localhost:5273
 ```
 
@@ -73,6 +72,7 @@ App-level auth and data/infra details are in [`ui/README.md`](./ui/README.md).
 | [`plugin/talaria/`](./plugin/talaria) | **Hermes plugin** (dormant — nothing mounts it): registers, heartbeats for work, reports up to `quality_review` | `python3 -m py_compile plugin/talaria/*.py` |
 | [`docker/dev-compose.yml`](./docker) | **dev infra** — Postgres, Redis, Qdrant, TEI embeddings, MinIO, SearXNG. The app runs on the host; the fleet runs under its own compose project | `docker compose -f docker/dev-compose.yml config` |
 | [`cli/`](./cli) | **the `talaria` CLI** — setup, dev, boxes, worktrees, resets, deploys, backups: every way to drive the repo. Command table: [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md) | `bun talaria --help` |
+| [`desktop/`](./desktop) | **Talaria Desktop** — the Tauri v2 multitenant shell: one window, a sidebar, and one isolated webview per instance's own web UI. The story: [`docs/DESKTOP.md`](./docs/DESKTOP.md) | `bun run desktop` (dev; gates in the box, GUI on the host); `bun run desktop:check` |
 | [`RELEASING.md`](./RELEASING.md) | **release channels** — nightly/RC/stable, the branch model, how a release is cut, the GHCR tags | read it |
 | [`package.json`](./package.json) | **the runner hub** — Bun is the installer and runner for the whole repo. From the root: `bun run dev` (full stack), `build`, `start` (production server), `test`, `typecheck`, `check` (invariants + docs + generated references), `verify` (all of it) | `bun run verify` |
 
@@ -179,6 +179,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 |---|---|
 | [`docs/WORKTREES.md`](./docs/WORKTREES.md) | Parallel-branch dev stacks |
 | [`docs/DEVBOX.md`](./docs/DEVBOX.md) | Devboxes: a containerized dev environment per task, with the agent CLIs inside |
+| [`docs/DESKTOP.md`](./docs/DESKTOP.md) | Talaria Desktop: the Tauri shell — multitenant webviews, isolation model, security posture, the box-builds/host-runs dev split |
 | [`scripts/skills/`](./scripts/skills) | The repo's agent skills: subagent-driven development (2-stage review), the talaria toolkit playbook, workbench driving |
 | [`AGENTS.md`](./AGENTS.md) | Agent instructions — the canonical file for anyone (or anything) coding here: rules, commands, environment facts, traps; `CLAUDE.md` forwards to it |
 | [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, cut-release — plain markdown, natively discovered by Claude Code and opencode |

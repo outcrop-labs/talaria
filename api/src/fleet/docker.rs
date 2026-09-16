@@ -465,12 +465,13 @@ async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentConta
 /// parallel system of record (external note vaults, ungoverned email) and
 /// send agents flailing. Removed explicitly because the seed marks packs
 /// "user-modified", which opt-out --remove preserves.
-const CONFLICTING_SKILL_PACKS: [&str; 5] = [
+const CONFLICTING_SKILL_PACKS: [&str; 6] = [
     "note-taking", // obsidian — Talaria KB is the knowledgebase
     "productivity/notion",
     "productivity/airtable",
     "productivity/google-workspace", // Talaria's Google integration is confirm-send governed
     "email",                         // draft_email/read_recent_email govern mail through Talaria
+    "software-development/github", // gh-CLI-first pack, no gh exists here — the shared-root github skill carries the methodology
 ];
 
 /// Strip the image's conflicting bundled skills from a slot's container.
