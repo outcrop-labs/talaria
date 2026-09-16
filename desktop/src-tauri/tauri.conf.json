@@ -16,7 +16,7 @@
         "title": "Talaria",
         "width": 1280,
         "height": 800,
-        "minWidth": 900,
+        "minWidth": 760,
         "minHeight": 600,
         "decorations": false
       }

@@ -47,7 +47,7 @@
 //   a human can read and amend, and a false positive here costs one comment
 //   rewrite while a false negative costs another round.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -832,6 +832,56 @@ for (const rule of CENSUS) {
       ],
       found: [],
     })
+  }
+}
+
+// A SUBREPO APP IS NOT PART OF THE UI'S TYPESCRIPT PROJECT.
+//
+// apps/ holds two kinds of app: in-repo apps (contacts) whose deps come from
+// ui's node_modules, and client subrepos (gitignored, their own package.json
+// and dependency tree — leadworks, waypoint). ui/tsconfig.json includes
+// ../apps so in-repo apps typecheck under the UI project; a subrepo swept up
+// by that include sprays a hundred phantom errors into every svelte-check —
+// its imports resolve against ITS node_modules, which the UI check never
+// installs ("Cannot find module 'zod'" from ../apps/leadworks, every run, on
+// every machine with the subrepo checked out — which is why CI, without the
+// subrepos, disagreed with every local run).
+//
+// The exclude list in ui/tsconfig.json is the fix; this check keeps it honest.
+// A subrepo that is absent (fresh clone, CI) matches nothing — the exclude
+// entry is harmless against a missing path, and the check only fires where
+// the subrepo is actually present.
+{
+  const appsDir = join(ROOT, 'apps')
+  if (statSync(appsDir).isDirectory()) {
+    const tsconfig = JSON.parse(readFileSync(join(ROOT, 'ui/tsconfig.json'), 'utf8'))
+    const excluded = new Set(tsconfig.exclude ?? [])
+    const notExcluded = readdirSync(appsDir).filter(
+      (name) =>
+        statSync(join(appsDir, name)).isDirectory() &&
+        existsSync(join(appsDir, name, 'package.json')) &&
+        !excluded.has(`../apps/${name}`),
+    )
+    if (notExcluded.length) {
+      failures.push({
+        id: 'subrepo-app-inside-the-ui-tsconfig',
+        what: 'a subrepo app (own package.json under apps/) is not excluded from ui/tsconfig.json',
+        fix: [
+          'Subrepo apps resolve imports against their own node_modules, which the UI typecheck',
+          'never installs — including them sprays phantom "Cannot find module" errors into',
+          'every svelte-check run. Add to ui/tsconfig.json:',
+          ...notExcluded.map((name) => `  "exclude": [ ..., "../apps/${name}" ]`),
+          '',
+          'If the app is meant to be first-party (deps from ui), delete its package.json —',
+          'that marker is what makes this check (and the exclude) treat it as a subrepo.',
+        ],
+        found: notExcluded.map((name) => ({
+          path: `apps/${name}`,
+          line: 0,
+          text: 'subrepo app present but not in ui/tsconfig.json "exclude"',
+        })),
+      })
+    }
   }
 }
 

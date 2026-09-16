@@ -17,6 +17,7 @@
   "dependencies": {
     "@emoji-mart/data": "^1.2.1",
     "@lucide/svelte": "^1.28.0",
+    "@tauri-apps/api": "^2",
     "@tanstack/svelte-query": "^6.1.38",
     "@tiptap/core": "^2.27.2",
     "@tiptap/extension-code-block-lowlight": "^2.27.2",

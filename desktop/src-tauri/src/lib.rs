@@ -1,14 +1,19 @@
 // Talaria Desktop — the multitenant shell around Talaria instances.
 //
-// One window, webviews in two roles:
+// Two views, two webview roles:
 //
-//   * the launcher (label "main") — local content, the only webview with IPC
-//     (capabilities/launcher.json + the AppManifest gate in build.rs). It is
-//     the full-window welcome screen until an instance activates, then a
-//     240px sidebar beside it.
-//   * one webview per registered instance (label "instance-<id>") — remote
-//     content at that instance's own origin, each with its own data directory
-//     so cookie jars and localStorage never mix. No capability, no IPC.
+//   * welcome — the launcher (webview label "main", local content, the only
+//     webview with full IPC: capabilities/launcher.json + the AppManifest
+//     gate in build.rs) fills the window: brand, the instance list, add.
+//   * active — the instance's webview IS the window; the launcher is hidden
+//     but alive. Switching between instances happens INSIDE the instance UI
+//     (the desktop switcher beside the logo in ui/), so each registered
+//     instance origin is granted, at runtime, a minimal capability: exactly
+//     list_instances / activate_instance / show_welcome — nothing else.
+//
+// Every instance webview gets its own data directory, so cookie jars and
+// localStorage never mix; hidden webviews stay loaded (sessions and SSE
+// survive a switch).
 //
 // The shell owns all geometry: WebKitGTK mis-places new child webviews until
 // their first set_bounds (tauri#10420) and auto_resize breaks across resize
@@ -24,11 +29,20 @@ use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
 
 use tauri::Manager;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// The launcher fills the window: brand, instance list, add.
+    Welcome,
+    /// The active instance fills the window; the launcher is hidden.
+    Active,
+}
+
 pub struct ShellState {
     registry_path: PathBuf,
     data_root: PathBuf,
     instances: Mutex<Vec<registry::Instance>>,
     active: Mutex<Option<String>>,
+    view: Mutex<View>,
     http: reqwest::Client,
 }
 
@@ -44,6 +58,19 @@ impl ShellState {
     }
 }
 
+/// Grant one instance origin the minimal switcher command set — the only IPC
+/// remote content ever gets, and only for origins the user registered.
+fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
+    let capability = tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
+        .webview(format!("instance-{}", instance.id))
+        .remote(instance.url.clone())
+        .permission("allow-list-instances")
+        .permission("allow-activate-instance")
+        .permission("allow-show-welcome");
+    app.add_capability(capability)
+        .map_err(|e| format!("granting the instance switcher access: {e}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -54,11 +81,15 @@ pub fn run() {
             fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
             let registry_path = dir.join("instances.json");
             let instances = registry::load(&registry_path)?;
+            for instance in &instances {
+                grant_switcher(app.handle(), instance)?;
+            }
             app.manage(ShellState {
                 registry_path,
                 data_root: dir.join("instances"),
                 instances: Mutex::new(instances),
                 active: Mutex::new(None),
+                view: Mutex::new(View::Welcome),
                 http: reqwest::Client::builder()
                     .timeout(Duration::from_secs(8))
                     .redirect(reqwest::redirect::Policy::limited(3))

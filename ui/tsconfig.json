@@ -21,5 +21,9 @@
       "@talaria/sdk/server": ["./src/sdk/server.ts"]
     }
   },
-  "include": ["src", "vite.config.ts", "vite.server.config.ts", "../apps"]
+  "include": ["src", "vite.config.ts", "vite.server.config.ts", "../apps"],
+  "exclude": [
+    "../apps/leadworks",
+    "../apps/waypoint"
+  ]
 }

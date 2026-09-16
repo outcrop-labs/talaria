@@ -8,6 +8,7 @@
         "@emoji-mart/data": "^1.2.1",
         "@lucide/svelte": "^1.28.0",
         "@tanstack/svelte-query": "^6.1.38",
+        "@tauri-apps/api": "^2",
         "@tiptap/core": "^2.27.2",
         "@tiptap/extension-code-block-lowlight": "^2.27.2",
         "@tiptap/extension-image": "^2.27.2",
@@ -22,7 +23,6 @@
         "@tiptap/pm": "^2.27.2",
         "@tiptap/starter-kit": "^2.27.2",
         "@tiptap/suggestion": "^2.27.2",
-        "@types/nodemailer": "^8.0.1",
         "clsx": "^2.1.1",
         "highlight.js": "^11.11.1",
         "ioredis": "^5.11.1",
@@ -48,6 +48,7 @@
         "@sveltejs/vite-plugin-svelte": "^6.2.0",
         "@tailwindcss/vite": "^4.1.18",
         "@types/node": "^22.10.0",
+        "@types/nodemailer": "^8.0.1",
         "svelte-check": "^4.3.4",
         "tailwindcss": "^4.1.18",
         "typescript": "^5.7.2",
@@ -225,6 +226,8 @@
     "@tanstack/query-core": ["@tanstack/query-core@5.101.4", "", {}, "sha512-gNwcvOJcRbLWPOLG/2OBm+zM+Yv+MKsXKEOWC57USuZDEsI71hEErQsiEGx5wX9rzWWkfwM0fVSPoiIFSsxfiw=="],
 
     "@tanstack/svelte-query": ["@tanstack/svelte-query@6.1.38", "", { "dependencies": { "@tanstack/query-core": "5.101.4" }, "peerDependencies": { "svelte": "^5.25.0" } }, "sha512-oV5S/+uAot23p3lJChLAHr82+8ApgQMyIgroWPpN0d6Y6TlThRbLSXnhx6CoUk6AkwlCPxf9vh4SOHa0eXHiWg=="],
+
+    "@tauri-apps/api": ["@tauri-apps/api@2.11.1", "", {}, "sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA=="],
 
     "@tiptap/core": ["@tiptap/core@2.27.2", "", { "peerDependencies": { "@tiptap/pm": "^2.7.0" } }, "sha512-ABL1N6eoxzDzC1bYvkMbvyexHacszsKdVPYqhl5GwHLOvpZcv9VE9QaKwDILTyz5voCA0lGcAAXZp+qnXOk5lQ=="],
 

@@ -7,7 +7,7 @@
   const labelOf = (id: string) => shell.instances.find((i) => i.id === id)?.label ?? 'instance'
 </script>
 
-<nav class="flex-1 overflow-y-auto" aria-label="Instances">
+<nav class="overflow-y-auto" aria-label="Instances">
   {#if shell.instances.length === 0}
     <p class="px-4 py-3 text-xs text-dim">No instances yet.</p>
   {:else}
@@ -41,7 +41,7 @@
 </nav>
 
 {#if confirming}
-  <div class="fixed inset-0 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+  <div class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
     <div class="w-64 rounded-md border border-hairline bg-panel p-4">
       <p class="text-sm text-readout">Remove {labelOf(confirming)}?</p>
       <p class="mt-1 text-xs text-muted">

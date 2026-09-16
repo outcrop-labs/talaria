@@ -22,7 +22,7 @@
   }
 </script>
 
-<div class="fixed inset-0 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
+<div class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" role="dialog" aria-modal="true">
   <form
     class="w-[28rem] max-w-full rounded-md border border-hairline-strong bg-panel p-5"
     onsubmit={submit}

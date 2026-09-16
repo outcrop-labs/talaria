@@ -4,7 +4,7 @@
 
 use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl, Window};
 
-use crate::{ShellState, beacon, layout, registry, registry::Instance};
+use crate::{ShellState, View, beacon, layout, registry, registry::Instance};
 
 fn main_window(app: &AppHandle) -> Result<Window, String> {
     app.get_window("main")
@@ -13,6 +13,52 @@ fn main_window(app: &AppHandle) -> Result<Window, String> {
 
 fn instance_label(id: &str) -> String {
     format!("instance-{id}")
+}
+
+/// Injected into every instance webview: Ctrl/Cmd+Shift+H returns to the
+/// launcher. The in-UI switcher is the intended way back, but an instance
+/// running an older Talaria (the switcher ships with the UI) would otherwise
+/// be a one-way door — the shell itself provides the floor.
+const ESCAPE_HATCH: &str = r#"
+  if (window.__TAURI_INTERNALS__) {
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        window.__TAURI_INTERNALS__.invoke('show_welcome').catch(() => {});
+      }
+    });
+  }
+"#;
+
+/// Change the view: geometry via relayout, plus show/hide so a zero-width
+/// launcher webview can never flash. The active instance webview (hidden but
+/// loaded in welcome) is shown again by activate_instance.
+fn set_view(app: &AppHandle, view: View) -> Result<(), String> {
+    let state = app.state::<ShellState>();
+    let window = main_window(app)?;
+    *state.view.lock().unwrap() = view;
+    if let Some(launcher) = window.get_webview("main") {
+        match view {
+            View::Active => {
+                let _ = launcher.hide();
+            }
+            View::Welcome => {
+                let _ = launcher.show();
+            }
+        }
+    }
+    if view == View::Welcome {
+        for webview in window.webviews() {
+            if webview.label().starts_with("instance-") {
+                let _ = webview.hide();
+            }
+        }
+    }
+    layout::relayout(&window);
+    window
+        .set_title("Talaria")
+        .map_err(|e| format!("setting the window title: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -59,13 +105,16 @@ pub async fn add_instance(app: AppHandle, url: String) -> Result<Instance, Strin
     let mut instances = state.instances.lock().unwrap();
     instances.push(instance.clone());
     registry::save(&state.registry_path, &instances)?;
+    drop(instances);
+    // The new origin can host the in-UI switcher from the moment it loads.
+    crate::grant_switcher(&app, &instance)?;
     Ok(instance)
 }
 
 /// Show an instance: create its webview if this is the first open — born at
 /// its final rect (WebviewBuilder cannot create hidden, and WebKitGTK
-/// mis-places new children until a set_bounds, tauri#10420) — then position
-/// everything and reveal.
+/// mis-places new children until a set_bounds, tauri#10420) — then hand the
+/// whole window to it.
 #[tauri::command]
 pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
     let state = app.state::<ShellState>();
@@ -96,7 +145,9 @@ pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
             let rect = layout::creation_rect(&window);
             window
                 .add_child(
-                    WebviewBuilder::new(&label, WebviewUrl::External(url)).data_directory(dir),
+                    WebviewBuilder::new(&label, WebviewUrl::External(url))
+                        .data_directory(dir)
+                        .initialization_script(ESCAPE_HATCH),
                     rect.position,
                     rect.size,
                 )
@@ -111,7 +162,7 @@ pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
         }
         registry::save(&state.registry_path, &instances)?;
     }
-    layout::relayout(&window);
+    set_view(&app, View::Active)?;
     webview
         .show()
         .map_err(|e| format!("showing the instance webview: {e}"))?;
@@ -121,23 +172,13 @@ pub fn activate_instance(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Back to the welcome screen: every instance webview hidden (they stay
-/// loaded — sessions and SSE survive), launcher back to full-window.
+/// Back to the launcher: every instance webview hidden (they stay loaded —
+/// sessions and SSE survive), the welcome screen full-window. Reachable from
+/// the in-UI switcher ("manage instances") as well as the shell itself.
 #[tauri::command]
 pub fn show_welcome(app: AppHandle) -> Result<(), String> {
-    let state = app.state::<ShellState>();
-    let window = main_window(&app)?;
-    *state.active.lock().unwrap() = None;
-    for webview in window.webviews() {
-        if webview.label().starts_with("instance-") {
-            let _ = webview.hide();
-        }
-    }
-    layout::relayout(&window);
-    window
-        .set_title("Talaria")
-        .map_err(|e| format!("setting the window title: {e}"))?;
-    Ok(())
+    *app.state::<ShellState>().active.lock().unwrap() = None;
+    set_view(&app, View::Welcome)
 }
 
 /// Remove an instance: close its webview, delete its data dir (the saved
@@ -164,10 +205,7 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
     }
     if was_active {
         *state.active.lock().unwrap() = None;
-        layout::relayout(&window);
-        window
-            .set_title("Talaria")
-            .map_err(|e| format!("setting the window title: {e}"))?;
+        set_view(&app, View::Welcome)?;
     }
     Ok(state.instances.lock().unwrap().clone())
 }
