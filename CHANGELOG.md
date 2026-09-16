@@ -4,6 +4,33 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Added
+
+- **Talaria Desktop — a Tauri v2 multitenant shell around Talaria instances
+  (`desktop/`, [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** One window: a
+  sidebar (the only local frontend — a handful of Svelte files) plus one
+  isolated webview per instance, each loading that instance's own web UI
+  from its origin, so the interior is always the real UI, never a second
+  codebase. Adding an instance validates it against the instance beacon
+  (`/api/well-known/talaria-instance`) and dedupes by instance uuid; each
+  instance webview gets its own data directory, so sessions on the same host
+  at different ports never collide, and hidden webviews stay loaded (SSE
+  survives a switch). Instance webviews hold zero IPC — every shell command
+  is capability-gated to the launcher. The window is `decorations: false` —
+  no GTK client-side titlebar where the window manager shows none. Gates:
+  `bun run desktop:check` (fmt + clippy + tests + svelte-check) runs in a
+  devbox and CI's new `desktop` job; the GUI runs on the host (`bun run
+  desktop`) — the devbox image gained the webkit2gtk build deps for this.
+  Verified on the host: gates green in the box; two instances side by side —
+  the box's `http://127.0.0.1:5302` and the real
+  `https://talaria.outcroplabs.com` (added through the dialog, beacon
+  validated, signed in) — with the sidebar surviving repeated resizes
+  (manual bounds, the WebKitGTK multiwebview workarounds —
+  tauri#10420/#10131). One layout bug found and fixed on the way: the
+  launcher originally inferred sidebar vs welcome from a CSS media query,
+  which WebKitGTK scale arithmetic could strand — it now derives the mode
+  from its own state, which is what drove the activation in the first place.
+
 ### Fixed
 
 - **The bundled Hermes github skill is pruned from fleet containers, and a

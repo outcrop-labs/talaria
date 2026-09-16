@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-welcome"
+description = "Enables the show_welcome command without any pre-configured scope."
+commands.allow = ["show_welcome"]
+
+[[permission]]
+identifier = "deny-show-welcome"
+description = "Denies the show_welcome command without any pre-configured scope."
+commands.deny = ["show_welcome"]

@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+/* Mercury foundations (docs/design/mercury-spec.md): near-black instrument
+ * surfaces, cream readout, one warm gold as the only accent. Orange is
+ * reserved for failure/destructive — never decoration. */
+@theme {
+  --color-ground: #090a09;
+  --color-panel: #141312;
+  --color-raised: #1e1c1a;
+  --color-hover: #24221f;
+  --color-hairline: #302d29;
+  --color-hairline-strong: #4a4640;
+  --color-readout: #e7e2db;
+  --color-dim: #5f5a53;
+  --color-muted: #8e877e;
+  --color-gold: #c8b46c;
+  --color-success: #a0ca92;
+  --color-danger: #ee6018;
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ground);
+  color: var(--color-readout);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
