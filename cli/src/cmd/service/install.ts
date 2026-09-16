@@ -125,7 +125,10 @@ export async function runInstall(ctx: Ctx, o: InstallOpts = {}): Promise<number>
   // in journald's first boot.
   let running = ''
   try {
-    running = (await ctx.exec('docker', ['compose', '-f', COMPOSE_FILE, 'ps', '--quiet', '--status', 'running'], { cwd: ctx.root })).stdout.trim()
+    // Same law as the deploy wrappers: an explicit -f would beat the
+    // operator's COMPOSE_FILE env, so drop it when that env is set.
+    const fileArgs = ctx.env.COMPOSE_FILE?.trim() ? [] : ['-f', COMPOSE_FILE]
+    running = (await ctx.exec('docker', ['compose', ...fileArgs, 'ps', '--quiet', '--status', 'running'], { cwd: ctx.root })).stdout.trim()
   } catch {
     // compose too old for --status — treat as not running and let up decide
   }
@@ -141,7 +144,7 @@ export async function runInstall(ctx: Ctx, o: InstallOpts = {}): Promise<number>
   if (dockerBin === null) ctx.log.die(`docker not on PATH — the unit needs its absolute path (PATH=${ctx.env.PATH ?? 'unset'})`)
   if (/\s/.test(dockerBin)) ctx.log.die(`${dockerBin} contains whitespace — systemd's ExecStart splits on it; move docker to a path without spaces`)
 
-  const text = unitText({ root: ctx.root, dockerBin, upArgs })
+  const text = unitText({ root: ctx.root, dockerBin, upArgs, composeFile: ctx.env.COMPOSE_FILE?.trim() || undefined })
   if (existsSync(unitPath(host))) ctx.log.say('a talaria.service already exists — overwriting (re-install)')
   ctx.log.raw(text)
 
