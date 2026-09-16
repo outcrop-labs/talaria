@@ -22,7 +22,7 @@
 
 <div class={cn('space-y-2 rounded-lg border border-line p-3.5', busy && 'opacity-90')}>
   <div class="flex items-end gap-2.5">
-    <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
+    <Sparkles size={14} class={cn('mb-3 shrink-0 text-accent', busy && 'gd-pulse')} />
     <Textarea
       autoGrow
       rows={1}
@@ -51,8 +51,18 @@
       {busy ? 'Refining' : 'Refine'}
     </Button>
   </div>
-  {#if busy && preview !== null}
-    <pre class="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-2.5 font-mono text-[11px] leading-4 text-muted">{preview || 'Designing'}<span class="gd-pulse text-accent">▍</span></pre>
+  {#if busy}
+    <!-- THE IN-PROGRESS STATE: a whole-agent refine is a JSON contract, so
+         there is no token stream to show (the server validates and answers with
+         the finished draft). What is left to say is that it IS running and for
+         how long — the same honest "working, slowly" signal the describe step
+         shows. The disabled button alone was the silence Jon hit. -->
+    <div in:slide={{ duration: 150 }} class="rounded-md border border-line bg-surface px-2.5 py-2" data-refine-inflight="visible">
+      <div class="flex items-center gap-2 text-xs text-muted">
+        <span class="gd-pulse text-accent">▍</span>
+        <span>Refining the design: identity, soul, and starter skills{preview ? ` — ${preview}` : ''}</span>
+      </div>
+    </div>
   {/if}
   {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
 </div>
