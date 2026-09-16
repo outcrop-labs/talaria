@@ -4,6 +4,29 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Changed
+
+- **The coding harness is the mandated path for code work — named, keyed,
+  unblocked, and skilled.** Four pieces, one contract: the agent that was
+  handed a harness drives it instead of hand-coding. The dispatch brief now
+  NAMES the agent's selected harness (the platform knows workbench_harness —
+  no "whichever is configured" hedging) and points at `doctor` for its guide;
+  hand-editing files is reserved for trivial one-line fixes, and a harness
+  the agent cannot drive is a report_gap, never a reason to silently
+  hand-code. Claude Code's auth finds the org's model access wherever it
+  lives: any endpoint that answers the Anthropic protocol (one cheap
+  /v1/messages probe at render) becomes its ANTHROPIC_BASE_URL with the same
+  key riding ANTHROPIC_AUTH_TOKEN — no OAuth login — and the no-key-anywhere
+  case now WARNS at render instead of arming a harness that fails silently
+  (the silence that hid harness non-use across the fleet: zero Claude Code
+  sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
+  Every armed harness also runs unattended-clean and skilled: onboarding
+  cleared and permissions bypassed via read-only policy files mounted at its
+  CLAUDE_CONFIG_DIR paths, the fleet's /opt/skills tree symlinked into both
+  Claude Code's and Codex's skill directories, and AGENTS.md/CLAUDE.md
+  pointers in the workspace telling every harness where the skills live.
+
+
 ### Fixed
 
 - **The bundled Hermes github skill is pruned from fleet containers, and a

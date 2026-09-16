@@ -359,6 +359,52 @@ fn builtin_wires() -> Vec<Value> {
     ]
 }
 
+// ── Anthropic-surface discovery ──────────────────────────────────────────────
+//
+// Claude Code speaks the Anthropic protocol (/v1/messages) — its documented
+// API-key path is ANTHROPIC_API_KEY against api.anthropic.com, or
+// ANTHROPIC_BASE_URL against any Anthropic-compatible surface. An org whose
+// model access rides OpenAI-compatible endpoints can STILL arm Claude Code
+// when any of those endpoints ALSO speaks the Anthropic protocol (a LiteLLM
+// or openrouter-style gateway often does): one cheap probe per endpoint —
+// GET {base}/v1/messages; 404 means no such route, anything else (401/405/
+// 400) means the route exists and wants auth. The probe is unauthenticated
+// on purpose: it asks "does the door exist", never "will my key open it".
+pub async fn anthropic_surface(pg: &sqlx::PgPool) -> Option<(String, String)> {
+    let rows: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+        "select base_url, api_key_env from llm_endpoints \
+         where base_url is not null and api_key_env is not null order by name",
+    )
+    .fetch_all(pg)
+    .await
+    .ok()?;
+    for (base, key_env) in rows {
+        let Some(base) = base.filter(|b| !b.is_empty()) else {
+            continue;
+        };
+        let Some(key_env) = key_env.filter(|k| !k.is_empty()) else {
+            continue;
+        };
+        let trimmed = base.trim_end_matches('/');
+        let url = format!("{trimmed}/v1/messages");
+        let probe = crate::gateway::provider::http()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(4))
+            .send()
+            .await;
+        match probe {
+            Ok(resp) if resp.status().as_u16() != 404 => {
+                tracing::info!(
+                    "[harnesses] {trimmed} answers the Anthropic protocol — claude-code rides it ({key_env})"
+                );
+                return Some((trimmed.to_string(), key_env));
+            }
+            _ => continue,
+        }
+    }
+    None
+}
+
 // ── Effort → model (the platform's call, never the agent's) ──────────────────
 
 /// Effort → model: per-agent override first, then the global roles with a
