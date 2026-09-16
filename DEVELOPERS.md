@@ -13,11 +13,10 @@ norms: [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 ## Quick start
 
 One script takes a blank machine to a running instance (it generates `ui/.env`, the fleet config
-plane, the `talaria` docker network, pulls infra images, installs deps, and prints your admin
-login):
+plane, the `talaria` docker network, pulls infra images, installs deps):
 
 ```bash
-bun talaria setup           # first-run setup — prints your generated admin credentials
+bun talaria setup           # first-run setup — then open the app and claim the admin account
 talaria dev                 # dev infra + the app → http://localhost:5273
 ```
 

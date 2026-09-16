@@ -93,24 +93,41 @@ and the polish lands in the beta first. Come grow with it.
 
 ## Quick start
 
-One script takes a blank machine to a running instance (secrets, admin login, docker network,
-deps). You'll need [Docker](https://docs.docker.com/get-docker/), Node ≥ 20, and
-[Bun](https://bun.sh), the repo's runner:
+Two prerequisites, both hard: [Docker](https://docs.docker.com/get-docker/) (with its compose
+v2 plugin) and [Bun](https://bun.sh), the repo's runner. Podman is untested. From there it's
+two commands, whichever way you're going.
+
+### Kicking the tires
 
 ```bash
-bun talaria setup       # prints your generated admin credentials, and installs a plain `talaria` command on your PATH
-talaria dev             # dev infra + the app → http://localhost:5273
+git clone https://github.com/outcrop-labs/talaria && cd talaria
+bun talaria setup     # secrets, config, deps — also puts a plain `talaria` on your PATH
+talaria dev           # the whole dev stack → http://localhost:5273
 ```
 
-Then: sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set your
-organization in Admin, and describe your first agent on `/agents`.
+Open the app and claim the instance: the account you create there is the admin. Then add an
+LLM provider on `/models` (keys are encrypted in the DB), set your organization in Admin, and
+describe your first agent on `/agents`.
 
-> Back up `TALARIA_SECRET_KEY` from `ui/.env` somewhere a snapshot isn't: every stored secret is
-> sealed with it, and a database restored without it cannot read its own secrets.
+### Running it for real
 
-Running it for real? One command runs the whole stack as containers, zero required config,
-secrets generated on first boot: [`docs/CONTAINER.md`](./docs/CONTAINER.md). Prebuilt images
-(`nightly`, `rc`, versioned) are published to GHCR, see [`RELEASING.md`](./RELEASING.md).
+One command builds and runs the entire stack as containers — zero required config, secrets
+generated on first boot:
+
+```bash
+git clone https://github.com/outcrop-labs/talaria && cd talaria
+bun talaria deploy up         # build + start the stack → http://localhost:5273
+bun talaria service install   # optional, Linux: keep it running across reboots
+```
+
+Claim it like above — that account is the admin. Updates are `bun talaria deploy update`. The
+long version — env vars, TLS, orchestrators like Dokploy, prebuilt GHCR images:
+[`docs/CONTAINER.md`](./docs/CONTAINER.md).
+
+> Back up `TALARIA_SECRET_KEY` somewhere a snapshot isn't (`ui/.env` on a dev box, generated
+> in the server's state dir): every stored secret is sealed with it, and a database restored
+> without it cannot read its own secrets.
+
 Full setup detail, the dev loop, and the architecture: [`DEVELOPERS.md`](./DEVELOPERS.md).
 Just using Talaria, no interest in running it? The member guides live in
 [`docs/user/`](./docs/user/README.md).

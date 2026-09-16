@@ -5,7 +5,8 @@
 # environment doesn't supply, the entrypoint generates ONCE into the persistent
 # state dir and re-reads on later boots:
 #
-#   $STATE_DIR/env/generated.env   secrets + first-boot admin credentials
+#   $STATE_DIR/env/generated.env   secrets (the admin account is claimed in
+#                                   the app, never generated)
 #   $STATE_DIR/fleet/              chassis.yml + .env (user-editable after)
 #
 # State must be a HOST BIND mounted at the SAME path inside the container

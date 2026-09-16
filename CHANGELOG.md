@@ -3892,6 +3892,22 @@ secrets encrypted at rest.
   and re-encrypts every secret (provider keys, agent secrets, OAuth tokens) in a
   single pass. All symmetric AES-256 — post-quantum-safe (no asymmetric crypto).
 
+### Documentation
+
+- **The README quick start covers both ways to run Talaria, with the commands
+  for each.** Dev (`bun talaria setup` → `talaria dev`) and server
+  (`bun talaria deploy up`, optional `bun talaria service install`) each get a
+  copy-paste block that starts from the clone — which the old section omitted —
+  under headings that make the choice explicit. Prerequisites now say plainly
+  that Docker and Bun are hard dependencies and Podman is untested. The stale
+  "prints your generated admin credentials" claim is corrected everywhere it
+  lived (README, DEVELOPERS.md, docs/CLI.md, docs/CONTAINER.md, ui/README.md,
+  the dev-loop skill, the entrypoint's header comment): there are no default
+  credentials; a fresh instance comes up empty and the account you create at
+  the claim screen is the admin — CONTAINER.md's dead `grep 'Sign in'` for the
+  credentials that no longer print is replaced by `bun talaria deploy creds`.
+  RELEASES/ left untouched as frozen history. Verified: `bun run check` green.
+
 ## [Unreleased]: Phase 6 — product depth (2026-07-06)
 
 Turning the elegant shell into a capable product: one place to manage each

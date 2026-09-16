@@ -9,11 +9,12 @@ DOCKER_GID=$(stat -c %g /var/run/docker.sock) \
 ```
 
 The stack comes up with zero configuration: secrets the environment doesn't
-supply are generated on first boot, the admin credentials print once in the
-logs, and the app answers on `http://localhost:5273`.
+supply are generated on first boot, and the app answers on
+`http://localhost:5273`. No account is pre-created — open the app and claim
+the instance; the account you create at the claim screen is the admin.
 
 ```bash
-docker compose -f docker/compose.yml logs talaria | grep -A2 'Sign in'
+bun talaria deploy creds   # prints the same pointer, at the port compose actually listens on
 ```
 
 This is the deploy for a Docker host you point at once and drive afterwards
