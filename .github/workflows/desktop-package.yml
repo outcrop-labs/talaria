@@ -197,6 +197,15 @@ jobs:
         working-directory: desktop
         run: bun run build -- --config "{\"version\":\"$VERSION\"}"
 
+      # The AppImage gets one more pass, on this same runner: linuxdeploy's gtk
+      # plugin bundles the build distro's libwayland-client, which aborts on a
+      # host with a different Wayland stack (see the script's header). tauri has
+      # no way to ask it not to, so the AppDir is trimmed and linuxdeploy runs
+      # again with an exclusion that keeps it out.
+      - name: Repack the AppImage without the build host's Wayland client
+        working-directory: desktop
+        run: packaging/linux/repack-appimage.sh src-tauri/target/release/bundle/appimage "$VERSION"
+
       - name: Collect installers
         working-directory: desktop/src-tauri/target/release/bundle
         run: |
