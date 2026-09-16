@@ -35,7 +35,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   rejected import failed in the document's module map — the message points
   at Reload, which recovers), and after Reload the same nav item navigates
   on one click with the banner retiring; screenshots filed as artifacts on
-  the ticket.
+  the ticket. The boards warm-up's idle callback also got a WebKit guard:
+  `typeof requestIdleCallback !== 'function'`, never a bare reference —
+  WebKit (Safari, and WebKitGTK in the desktop shell) never shipped it, and
+  reading the absent global by name threw a ReferenceError that the `??`
+  fallback could not catch, breaking the board layout on those engines.
 
 - **The bundled Hermes github skill is pruned from fleet containers, and a
   Talaria-authored `github` skill stands in its place.** The image ships a
