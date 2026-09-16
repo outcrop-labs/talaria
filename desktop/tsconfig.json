@@ -13,17 +13,7 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "types": ["node", "vite/client", "svelte"],
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"],
-      "@talaria/sdk": ["./src/sdk/index.ts"],
-      "@talaria/sdk/server": ["./src/sdk/server.ts"]
-    }
+    "types": ["vite/client", "svelte"]
   },
-  "include": ["src", "server-entry.ts", "vite.config.ts", "vite.server.config.ts", "../apps"],
-  "exclude": [
-    "../apps/leadworks",
-    "../apps/waypoint"
-  ]
+  "include": ["src", "vite.config.ts", "svelte.config.ts"]
 }

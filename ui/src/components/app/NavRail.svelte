@@ -16,6 +16,7 @@
 <script lang="ts">
   import { ChevronsLeft, ChevronsRight, TriangleAlert } from '@lucide/svelte'
   import Brand from '@/components/Brand.svelte'
+  import DesktopSwitcher from './DesktopSwitcher.svelte'
   import WingMark from '@/components/WingMark.svelte'
   import CreateBoardModal from '@/components/board/CreateBoardModal.svelte'
   import TeamsModal from '@/components/board/TeamsModal.svelte'
@@ -196,6 +197,9 @@
     <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
       <WingMark class="h-5 w-5" />
     </div>
+    <!-- Only renders inside the Talaria desktop shell — a browser gets
+         nothing (feature-detected in the component). -->
+    <DesktopSwitcher collapsed />
 
     <!-- Collapsed tiles get the same room, for the same reason. -->
     <!-- `px-1` is room for the selected band, not decoration. `overflow-y-auto`
@@ -279,8 +283,9 @@
 {:else}
   <!-- ── Sidebar (208px, spec §5) ──────────────────────────────────────────── -->
   <div class="flex h-full w-[208px] flex-col px-3 pb-4 pt-5">
-    <div class="flex h-6 shrink-0 items-center">
+    <div class="flex h-6 shrink-0 items-center justify-between">
       <Brand />
+      <DesktopSwitcher />
     </div>
 
     <SidebarSearch />

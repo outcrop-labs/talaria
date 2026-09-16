@@ -17,9 +17,16 @@
   // you open doesn't animate". Card hover preloads too; this covers
   // keyboard/touch paths that never hover.
   $effect(() => {
-    const idle = requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 250))
-    const id = idle(() => void preload('/boards/:boardId/:taskId'))
-    return () => (cancelIdleCallback ?? clearTimeout)(id as number)
+    // `typeof`, never a bare reference: WebKit (Safari — and WebKitGTK, the
+    // desktop shell's engine) never shipped requestIdleCallback, and reading
+    // an absent global by name throws ReferenceError before a `??` fallback
+    // can run. "Can't find variable: requestIdleCallback" was exactly that.
+    if (typeof requestIdleCallback !== 'function') {
+      const t = setTimeout(() => void preload('/boards/:boardId/:taskId'), 250)
+      return () => clearTimeout(t)
+    }
+    const id = requestIdleCallback(() => void preload('/boards/:boardId/:taskId'))
+    return () => cancelIdleCallback(id)
   })
 </script>
 

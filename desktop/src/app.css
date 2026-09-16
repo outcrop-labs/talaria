@@ -1,0 +1,48 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+@import 'tailwindcss';
+
+/* Mercury foundations (docs/design/mercury-spec.md): near-black instrument
+ * surfaces, cream readout, one warm gold as the only accent. Orange is
+ * reserved for failure/destructive — never decoration. */
+@theme {
+  --color-ground: #090a09;
+  --color-panel: #141312;
+  --color-raised: #1e1c1a;
+  --color-hover: #24221f;
+  --color-hairline: #302d29;
+  --color-hairline-strong: #4a4640;
+  --color-readout: #e7e2db;
+  --color-dim: #5f5a53;
+  --color-muted: #8e877e;
+  --color-gold: #c8b46c;
+  --color-success: #a0ca92;
+  --color-danger: #ee6018;
+  /* Mercury typography (ui/src/styles.css): IBM Plex Sans for prose, IBM
+   * Plex Mono for mono AND display (labels, wordmark). */
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --font-display: var(--font-mono);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ground);
+  color: var(--color-readout);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* The dither engine (lib/dither.ts, ported from ui/) resolves live dot colors
+ * from these --theme-* names — same tokens the product UI defines. */
+:root {
+  --theme-text: #e7e2db;
+  --theme-accent: #c8b46c;
+  --theme-success: #a0ca92;
+  --theme-danger: #ee6018;
+  --theme-panel: #141312;
+}

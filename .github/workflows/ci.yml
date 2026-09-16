@@ -8,6 +8,7 @@
 #     cd mcp && typecheck + build
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #     cd api && fmt + clippy + cargo test       (the Rust port)
+#     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
 #   That is the whole thing. It takes a couple of minutes.
 #
 # WHY rc AND testing ARE IN THE PUSH LIST. They are the branches the release
@@ -350,3 +351,70 @@ jobs:
 
       - name: Test
         run: cargo test --quiet
+
+  # The desktop shell (docs/DESKTOP.md) — the same tripwire treatment for
+  # desktop/ that the jobs above give ui/, mcp/, cli/ and api/: fmt + clippy +
+  # tests for src-tauri, svelte-check for the launcher (`bun run
+  # desktop:check` from the root runs the same list). Unlike api/, this job
+  # DOES need an apt step: tauri's webkit/gtk sys crates run pkg-config even
+  # under `cargo check`, so a bare runner dies before compiling a line of
+  # ours. No bundle step — installers are a release-time concern, and they
+  # would drag linuxdeploy/appimage tooling into a tripwire.
+  desktop:
+    name: fmt + clippy + test + typecheck (desktop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # Same pin, same reason as the api job: desktop/src-tauri/rust-toolchain.toml
+      # pins 1.97.1 and devboxes install the same one.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Needed even for `cargo check`/clippy — the sys crates probe the
+      # webkit2gtk/gtk packages at build-script time. ubuntu-latest (24.04)
+      # ships libwebkit2gtk-4.1-dev; if a runner-image bump ever removes it,
+      # this is the line to read.
+      - name: Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev
+
+      # See "WHY BUN *AND* NODE" in the header: bun installs and drives, node
+      # executes the toolchain shebangs (svelte-check here).
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Format
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --quiet
+
+      - name: Typecheck
+        working-directory: desktop
+        run: bun run typecheck

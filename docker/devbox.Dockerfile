@@ -84,6 +84,19 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
  && /home/dev/.cargo/bin/rustup component add rustfmt clippy
 ENV PATH=/home/dev/.cargo/bin:${PATH}
 
+# Tauri desktop build deps (desktop/src-tauri — docs/DESKTOP.md). A separate
+# layer AFTER rustup on purpose: appending keeps the expensive layers above
+# cache-hit on rebuilds. Even `cargo check` needs these — the webkit/gtk sys
+# crates run pkg-config at check time. libwebkit2gtk-4.1-dev pulls gtk3,
+# javascriptcore and soup3 along; librsvg2-dev the icon rendering. libxdo/
+# appindicator stay out until the desktop app grows X11 automation or a tray.
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libwebkit2gtk-4.1-dev librsvg2-dev \
+ && rm -rf /var/lib/apt/lists/*
+USER dev
+
 WORKDIR /work/talaria
 # A shell host, not a process: the compose keeps it alive and everything
 # happens through `bun talaria box enter`.

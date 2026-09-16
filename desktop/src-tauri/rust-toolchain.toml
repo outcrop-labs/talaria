@@ -1,0 +1,6 @@
+# Same pin as api/rust-toolchain.toml — devboxes and CI install this exact
+# version (see .github/workflows/ci.yml), so the desktop crate must not drift
+# ahead of the environments it builds in.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
