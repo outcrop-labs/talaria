@@ -53,6 +53,10 @@
 name: desktop-package
 
 on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-package.yml'
   push:
     branches: [main]
     # Paths are safe here (chassis.yml's argument: nothing in this file is a
