@@ -1317,6 +1317,8 @@ pub async fn render_fleet(
         skills_out.insert("external_dirs".into(), json!(ext_dirs));
         routed.insert("skills".into(), Value::Object(skills_out));
 
+        fleet_approvals(&mut routed);
+
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
             "# Rendered by Talaria — {} v{}. Do not hand-edit; edit in Talaria.\n{}",
@@ -1774,6 +1776,24 @@ fn def_raw_config(config: &Value) -> Value {
         .unwrap_or_else(|| Value::Object(Map::new()))
 }
 
+/// Fleet agents are driven through the api — an "unattended platform" in
+/// Hermes' approval model — and cron jobs run the same way: nobody is ever
+/// present to approve. Hermes' fail-closed defaults (`unattended_mode` /
+/// `cron_mode: deny`) therefore block execute_code outright and stall every
+/// dangerous-command prompt until it times out. The container is the sandbox
+/// and tirith is the guard, so the deny is a trap, not a protection: both
+/// modes go to approve, preserving any other approvals keys the def carries.
+fn fleet_approvals(routed: &mut Map<String, Value>) {
+    let mut cfg = routed
+        .get("approvals")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    cfg.insert("unattended_mode".into(), json!("approve"));
+    cfg.insert("cron_mode".into(), json!("approve"));
+    routed.insert("approvals".into(), Value::Object(cfg));
+}
+
 /// Claude Code's .mcp.json shape — `${VAR}` expands from the container env.
 fn claude_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
     json!({
@@ -2186,6 +2206,34 @@ service:
         }
         // Quoted strings single-quote with '' escaping.
         assert_eq!(yaml11_quote("it's on"), "'it''s on'");
+    }
+
+    #[test]
+    fn fleet_approvals_flips_the_unattended_defaults_and_preserves_the_rest() {
+        // No authored approvals block: both modes land, nothing else appears.
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_approvals(&mut routed);
+        assert_eq!(
+            routed.get("approvals"),
+            Some(&json!({ "unattended_mode": "approve", "cron_mode": "approve" }))
+        );
+
+        // An authored block keeps its other keys; the two modes are
+        // overridden wherever a def tried to deny them.
+        let mut authored = Map::new();
+        authored.insert(
+            "approvals".into(),
+            json!({ "mode": "smart", "timeout": 300, "unattended_mode": "deny" }),
+        );
+        fleet_approvals(&mut authored);
+        assert_eq!(
+            authored.get("approvals"),
+            Some(&json!({
+                "mode": "smart", "timeout": 300,
+                "unattended_mode": "approve", "cron_mode": "approve"
+            }))
+        );
     }
 
     #[test]

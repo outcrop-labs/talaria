@@ -4,6 +4,38 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bundled Hermes github skill is pruned from fleet containers, and a
+  Talaria-authored `github` skill stands in its place.** The image ships a
+  gh-CLI-first github pack whose preflight (`gh auth status`) and auth
+  workflows pitch exactly what Talaria forbids — there is no `gh` in the
+  containers, and the credential is injected at git time, never visible.
+  Observed live on outcrop (2026-09-15): an agent opened the skill, noted it
+  "assumes gh CLI", and recovered only because its memory notes said
+  otherwise. The pack joins `CONFLICTING_SKILL_PACKS` (pruned on every
+  container roll, the same mechanism as the five note-tool packs), while
+  `scripts/skills/github` seeds the shared root with a signpost skill at the
+  exact name agents reach for — plain git over https, the workbench opens
+  the PR, no auth to set up — routing to the talaria-toolkit and
+  workbench-driving sections that carry the methodology. Verified in an
+  isolated worktree render: the skill seeds into the fleet shared root and
+  lists as a platform (admin-locked) skill beside the toolkit; the prune
+  path matches the live dogfood container's pack layout.
+
+- **`execute_code` works again on fleet agents: rendered configs now carry
+  `approvals: { unattended_mode: approve, cron_mode: approve }`.** Talaria
+  drives every agent through the Hermes api — an "unattended platform" in
+  Hermes' approval model — and cron jobs run the same way, so the fail-closed
+  defaults denied `execute_code` outright (the live error: "This session runs
+  on an unattended platform (api_server) with no user present to approve it")
+  and stalled every dangerous-command prompt until timeout; agents limped
+  back to terminal one-shots. The container is the sandbox and tirith is the
+  guard, so both modes flip to approve, preserving any other approvals keys
+  an agent def carries. Verified: a unit test pins the override (authored
+  keys preserved, both modes flipped), and a live render in an isolated
+  worktree emits the approvals block into the agent's config.yaml.
+
 ### Added
 
 - **Watch the work is a terminal now: the agent's own words and tool calls,
