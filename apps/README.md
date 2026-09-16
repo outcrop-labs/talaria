@@ -160,5 +160,5 @@ Push your app to a public https git repository with `talaria.json` at the root (
 it from **Manage → Apps → Discover → Install from Git**. To be listed in the marketplace, submit it
 to the catalog index (`outcrop-labs/talaria-apps`).
 
-The `contacts/` app in this directory is the working reference — three surfaces, an app server,
-MCP tools, and the store, in a handful of small files.
+Scaffold a new app with `bun talaria app new <slug>`. Core ships none enabled.
+

@@ -23,8 +23,8 @@ apps/<slug>/
 ```
 
 The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
-is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`; the worked
-example is [`apps/contacts`](../apps/) in the repo.
+is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`.
+
 
 
 ## Lifecycle

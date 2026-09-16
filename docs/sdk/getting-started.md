@@ -92,6 +92,6 @@ session, the theme.
    ([harnesses.md](./harnesses.md)).
 5. Enable in **Manage → Apps**; grant views in **Admin → People**.
 
-The working reference is still [`apps/contacts`](../../apps/) (three surfaces, CRM store,
-agent tools). Publishing and the marketplace: [APPS.md](../APPS.md).
+Publishing and the marketplace: [APPS.md](../APPS.md).
+
 

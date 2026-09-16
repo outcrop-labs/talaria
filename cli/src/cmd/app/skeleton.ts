@@ -1,5 +1,6 @@
 // The starter `talaria app new` writes. One work surface, a document-store
-// API, and one MCP tool — enough to enable and extend, not a clone of contacts.
+// API, and one MCP tool — enough to enable and extend.
+
 
 export const APP_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 

@@ -12,8 +12,9 @@ Talaria apps are **TypeScript** (Svelte 5 runes) that this instance compiles. Th
 ## Start
 
 1. Scaffold: `bun talaria app new <slug>` (optional `--name`, `--icon`). Writes `talaria.json`, `app.ts`, `Work.svelte`, `server.ts`, `mcp.ts`. Slug is lowercase kebab, same rule as install (`^[a-z0-9][a-z0-9-]{0,63}$`).
-2. If you have no CLI, create that same anatomy by hand under `apps/<slug>/`. Do not copy `apps/contacts` unless you need a CRM — it is the reference, not the starter.
+2. If you have no CLI, create that same anatomy by hand under `apps/<slug>/`.
 3. Enable in **Manage → Apps**. Members get nothing until an admin grants views in **Admin → People**.
+
 4. Read [references/sdk.md](references/sdk.md) before inventing imports.
 
 ## The reflexes
@@ -22,7 +23,8 @@ Talaria apps are **TypeScript** (Svelte 5 runes) that this instance compiles. Th
 
 **The host already did the trust work.** `server.ts` runs only after session, enablement, and view grant. `ctx.user` is authenticated. `ctx.store` is *this* app's Postgres — not Talaria's catalog. Never open `DATABASE_URL`. Never `process.exit`.
 
-**Surfaces fill the pane.** App views are not `PageSurface` (that's host chrome). Match contacts: `h-full overflow-y-auto p-8` and a centred column (`max-w-3xl`). Kit components only — Button, EmptyState, Input, Chip, SkeletonRows, confirm(). Destructive actions are quiet (`DangerLink` / confirm), never a giant red button.
+**Surfaces fill the pane.** App views are not `PageSurface` (that's host chrome). Match the skeleton: `h-full overflow-y-auto p-8` and a centred column (`max-w-3xl`). Kit components only — Button, EmptyState, Input, Chip, SkeletonRows, confirm(). Destructive actions are quiet (`DangerLink` / confirm), never a giant red button.
+
 
 **Platform data goes through `api()` on the client.** Boards, tickets, agents — `/api/…` as the signed-in user. Every ACL applies. An app cannot do more than the person using it.
 
@@ -51,4 +53,5 @@ Talaria apps are **TypeScript** (Svelte 5 runes) that this instance compiles. Th
 | Body validation | `parseBody(request, z.object({…}))` — 400 on failure |
 | Full docset | `/opt/skills` does not ship the SDK docs; the shapes are in [references/sdk.md](references/sdk.md) |
 
-Contacts (`apps/contacts`) is the worked example: three surfaces, store, MCP. Grow from the skeleton, not by inventing a second stack.
+Grow from the skeleton, not by inventing a second stack.
+

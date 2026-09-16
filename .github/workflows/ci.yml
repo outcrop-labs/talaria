@@ -129,10 +129,11 @@
 #     the migration — treat bun.lock as canonical and update both when deps
 #     change (or, post-alpha, delete the npm one and this note).
 #   - `ui/tsconfig.json` includes `../apps`, so this needs a full-repo checkout,
-#     not a sparse one. `apps/contacts` is Svelte and is therefore checked by
-#     the ui typecheck job, not by a job of its own.
+#     not a sparse one. Installed apps under `apps/` are Svelte and are checked
+#     by the ui typecheck job, not by a job of their own.
 #   - There is no committed route codegen to run: sv-router resolves
 #     `src/routes/**` at build time from the files themselves.
+
 
 name: CI
 

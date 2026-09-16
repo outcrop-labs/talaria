@@ -18,7 +18,8 @@ describe('app-runtime specifiers', () => {
 
   it('flags a bundled svelte module id', () => {
     expect(bundledShared(['/repo/ui/node_modules/svelte/src/internal/client/index.js'])).toHaveLength(1)
-    expect(bundledShared(['/repo/apps/contacts/app.ts'])).toEqual([])
+    expect(bundledShared(['/repo/apps/demo/app.ts'])).toEqual([])
+
   })
 
   it('lists the host SDK as a client specifier', () => {
