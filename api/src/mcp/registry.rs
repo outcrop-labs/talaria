@@ -3,6 +3,8 @@
 //   assignments  which agents carry a server, optionally a TOOL SUBSET
 //   user access  which users may exercise a server through agents acting for
 //                them, optionally their own tool subset
+//   team access  same, for a team (people via team_members, agents via
+//                team_agents) — expanded at auth time, never write-time fan-out
 //   credentials  per-user connected accounts: on auth_mode 'per-user' the
 //                gateway injects the ACTING user's sealed headers, so the same
 //                server acts as each user, never as a shared identity
@@ -754,7 +756,7 @@ pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── Assignments + user access ───────────────────────────────────────────────
+// ── Assignments + user/team access ──────────────────────────────────────────
 
 pub async fn list_assignments(
     pg: &PgPool,
@@ -836,6 +838,49 @@ pub async fn set_user_access(
     )
     .bind(server_id)
     .bind(user_id)
+    .bind(allowed)
+    .bind(tools)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+pub async fn list_team_access(
+    pg: &PgPool,
+    server_id: &str,
+) -> Result<Vec<(String, bool, Option<Vec<String>>)>, sqlx::Error> {
+    let rows: Vec<(String, bool, Option<Vec<String>>)> = sqlx::query_as(
+        "select team_id::text, allowed, tools from mcp_team_access where server_id::text = $1",
+    )
+    .bind(server_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn set_team_access(
+    pg: &PgPool,
+    server_id: &str,
+    team_id: &str,
+    allowed: Option<bool>,
+    tools: Option<&[String]>,
+) -> Result<(), sqlx::Error> {
+    if allowed.is_none() {
+        sqlx::query(
+            "delete from mcp_team_access where server_id::text = $1 and team_id::text = $2",
+        )
+        .bind(server_id)
+        .bind(team_id)
+        .execute(pg)
+        .await?;
+        return Ok(());
+    }
+    sqlx::query(
+        "insert into mcp_team_access (server_id, team_id, allowed, tools) values ($1::uuid, $2::uuid, $3, $4) \
+         on conflict (server_id, team_id) do update set allowed = $3, tools = $4",
+    )
+    .bind(server_id)
+    .bind(team_id)
     .bind(allowed)
     .bind(tools)
     .execute(pg)
@@ -956,9 +1001,33 @@ fn intersect(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<Strin
     }
 }
 
-/// What one AGENT may do on one server: assignment ∩ (for a personal
-/// assistant) its owner's user access — with the owner's credentials on
-/// per-user servers. None = no access at all.
+/// Union of tool allowlists. `None` = all tools, so it dominates.
+fn union_tools(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
+    match (a, b) {
+        (None, _) | (_, None) => None,
+        (Some(mut a), Some(b)) => {
+            let mut seen: HashSet<String> = a.iter().cloned().collect();
+            for t in b {
+                if seen.insert(t.clone()) {
+                    a.push(t);
+                }
+            }
+            Some(a)
+        }
+    }
+}
+
+fn union_tool_lists(lists: impl IntoIterator<Item = Option<Vec<String>>>) -> Option<Vec<String>> {
+    let mut iter = lists.into_iter();
+    match iter.next() {
+        None => None,
+        Some(first) => iter.fold(first, union_tools),
+    }
+}
+
+/// What one AGENT may do on one server: assignment ∪ team-agent grants,
+/// intersected (for a personal assistant) with its owner's user/team access —
+/// with the owner's credentials on per-user servers. None = no access at all.
 pub async fn effective_mcp_for(
     pg: &PgPool,
     sb: &SecretBox,
@@ -984,15 +1053,35 @@ pub async fn effective_mcp_for(
     .fetch_all(pg)
     .await
     .map_err(|e| e.to_string())?;
+    let team_agent_access: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
+        "select a.allowed, a.tools \
+         from mcp_team_access a \
+         join team_agents t on t.team_id = a.team_id \
+         where a.server_id::text = $1 and t.agent_model = $2",
+    )
+    .bind(&server.id)
+    .bind(agent_model)
+    .fetch_all(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let team_allow_lists: Vec<Option<Vec<String>>> = team_agent_access
+        .into_iter()
+        .filter(|(allowed, _)| *allowed)
+        .map(|(_, tools)| tools)
+        .collect();
     // All-agents servers carry everyone; assignment rows become per-agent
-    // tool OVERRIDES. Scoped servers require a row outright.
+    // tool OVERRIDES. Scoped servers require a row outright — or an allowed
+    // team grant for a team the agent is on.
     let agent_tools = if rows.is_empty() {
-        if !server.all_agents {
+        if server.all_agents {
+            None
+        } else if team_allow_lists.is_empty() {
             return Ok(None);
+        } else {
+            union_tool_lists(team_allow_lists)
         }
-        None
     } else {
-        rows[0].0.clone()
+        union_tool_lists(std::iter::once(rows[0].0.clone()).chain(team_allow_lists))
     };
 
     let owner = assistant_owner_for(pg, subject)
@@ -1016,7 +1105,33 @@ pub async fn effective_mcp_for(
         if access.as_ref().is_some_and(|(allowed, _)| !allowed) {
             return Ok(None);
         }
-        user_tools = access.and_then(|(_, tools)| tools);
+        let team_rows: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
+            "select a.allowed, a.tools \
+             from mcp_team_access a \
+             join team_members m on m.team_id = a.team_id \
+             where a.server_id::text = $1 and m.user_id::text = $2",
+        )
+        .bind(&server.id)
+        .bind(owner)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+        let any_team_deny = team_rows.iter().any(|(allowed, _)| !*allowed);
+        let any_team_allow = team_rows.iter().any(|(allowed, _)| *allowed);
+        let user_allow = access.as_ref().is_some_and(|(allowed, _)| *allowed);
+        if any_team_deny && !any_team_allow && !user_allow {
+            return Ok(None);
+        }
+        let mut allowed_lists = Vec::new();
+        if user_allow {
+            allowed_lists.push(access.and_then(|(_, tools)| tools));
+        }
+        for (allowed, tools) in team_rows {
+            if allowed {
+                allowed_lists.push(tools);
+            }
+        }
+        user_tools = union_tool_lists(allowed_lists);
         if server.auth_mode == "per-user" {
             if server.oauth_enabled {
                 let Some(bearer) =
@@ -1235,6 +1350,10 @@ pub async fn servers_for_agent(
          from mcp_servers s \
          where s.enabled and not s.builtin and (s.all_agents or exists ( \
            select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = $1 \
+         ) or exists ( \
+           select 1 from mcp_team_access t \
+           join team_agents ta on ta.team_id = t.team_id \
+           where t.server_id = s.id and ta.agent_model = $1 and t.allowed \
          )) \
          order by s.name",
     )
@@ -1369,5 +1488,20 @@ mod tests {
         let err = read_tool_result(Some(json!({ "error": { "message": "" } })), "exa", "search")
             .unwrap_err();
         assert_eq!(err, "MCP tool \"exa.search\" failed: ");
+    }
+
+    #[test]
+    fn union_tools_none_means_all() {
+        assert_eq!(union_tools(None, Some(vec!["a".into()])), None);
+        assert_eq!(union_tools(Some(vec!["a".into()]), None), None);
+        assert_eq!(
+            union_tools(Some(vec!["a".into()]), Some(vec!["b".into(), "a".into()])),
+            Some(vec!["a".into(), "b".into()])
+        );
+        assert_eq!(union_tool_lists(Vec::<Option<Vec<String>>>::new()), None);
+        assert_eq!(
+            union_tool_lists([Some(vec!["x".into()]), Some(vec!["y".into()])]),
+            Some(vec!["x".into(), "y".into()])
+        );
     }
 }

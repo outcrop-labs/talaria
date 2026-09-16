@@ -552,10 +552,19 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
         let Ok(Some(doc)) = crate::kb::get_doc(pg, &doc_id).await else {
             continue;
         };
-        if let Ok(effective) = crate::kb::effective_doc_perms(pg, &doc).await
-            && crate::kb::perms::can_read(&effective.perms, Some(user_id), who, &effective.grants)
-        {
-            return true;
+        if let Ok(effective) = crate::kb::effective_doc_perms(pg, &doc).await {
+            let team_ids = crate::teams::team_ids_for_user(pg, user_id)
+                .await
+                .unwrap_or_default();
+            if crate::kb::perms::can_read(
+                &effective.perms,
+                Some(user_id),
+                who,
+                &effective.grants,
+                &team_ids,
+            ) {
+                return true;
+            }
         }
     }
 
@@ -613,7 +622,12 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
         }
         let grant: Option<(i32,)> = sqlx::query_as(
             "select 1 as ok from kb_editors where item_type = 'artifact' and item_id = $1::uuid \
-             and principal_type = 'user' and principal_id = $2 limit 1",
+             and ( \
+               (principal_type = 'user' and principal_id = $2) \
+               or (principal_type = 'team' and principal_id in ( \
+                 select team_id::text from team_members where user_id = $2::uuid \
+               )) \
+             ) limit 1",
         )
         .bind(&id)
         .bind(user_id)

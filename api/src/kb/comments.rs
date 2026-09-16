@@ -69,7 +69,12 @@ pub async fn can_discuss_doc(pg: &PgPool, doc_id: &str, user_id: &str, who: Opti
         return false;
     };
     match effective_doc_perms(pg, &doc).await {
-        Ok(eff) => can_read(&eff.perms, Some(user_id), who, &eff.grants),
+        Ok(eff) => {
+            let team_ids = crate::teams::team_ids_for_user(pg, user_id)
+                .await
+                .unwrap_or_default();
+            can_read(&eff.perms, Some(user_id), who, &eff.grants, &team_ids)
+        }
         Err(_) => false,
     }
 }

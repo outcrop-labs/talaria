@@ -101,24 +101,33 @@ async fn can_read_snapshot_history(
     user: &SessionUser,
 ) -> bool {
     let who = user.email.as_deref().or(user.name.as_deref());
+    let team_ids = crate::teams::team_ids_for_user(&state.pg, &user.id)
+        .await
+        .unwrap_or_default();
     match kind {
         "artifact" => match get_artifact(&state.pg, owner_key).await {
             Ok(Some(a)) => match list_editors(&state.pg, ITEM_ARTIFACT, &a.id).await {
-                Ok(editors) => can_read(&guarded(&a), Some(&user.id), who, &editors),
+                Ok(editors) => can_read(&guarded(&a), Some(&user.id), who, &editors, &team_ids),
                 Err(_) => false,
             },
             _ => false,
         },
         "kb-doc" => match get_doc(&state.pg, owner_key).await {
             Ok(Some(d)) => match effective_doc_perms(&state.pg, &d).await {
-                Ok(eff) => can_read(&eff.perms, Some(&user.id), who, &eff.grants),
+                Ok(eff) => can_read(&eff.perms, Some(&user.id), who, &eff.grants, &team_ids),
                 Err(_) => false,
             },
             _ => false,
         },
         "kb-space" => match get_space(&state.pg, owner_key).await {
             Ok(Some(sp)) => match list_editors(&state.pg, ITEM_SPACE, &sp.id).await {
-                Ok(editors) => can_read(&guarded_of_space(&sp), Some(&user.id), who, &editors),
+                Ok(editors) => can_read(
+                    &guarded_of_space(&sp),
+                    Some(&user.id),
+                    who,
+                    &editors,
+                    &team_ids,
+                ),
                 Err(_) => false,
             },
             _ => false,

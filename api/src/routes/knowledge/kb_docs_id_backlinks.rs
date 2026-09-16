@@ -43,7 +43,20 @@ pub async fn get(
         }
     };
     let who = who_of(&user);
-    if !can_read(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    if !can_read(
+        &eff.perms,
+        Some(&user.id),
+        who.as_deref(),
+        &eff.grants,
+        &team_ids,
+    ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     match get_backlinks(&state.pg, &id).await {

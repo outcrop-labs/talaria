@@ -4,3 +4,4 @@ pub mod research_id;
 pub mod research_id_conversation;
 pub mod research_id_decide;
 pub mod research_id_members;
+pub mod research_id_teams;

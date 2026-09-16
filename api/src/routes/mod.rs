@@ -287,10 +287,15 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/teams/directory",
+            get(teams::teams_directory::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/teams/{id}",
-            axum::routing::patch(teams::teams_id::patch)
+            get(teams::teams_id::get)
+                .patch(teams::teams_id::patch)
                 .delete(teams::teams_id::delete)
-                .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
+                .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
         )
         .route(
             "/api/teams/{id}/members",
@@ -298,6 +303,19 @@ pub fn router(state: AppState) -> Router {
                 .post(teams::teams_id_members::post)
                 .delete(teams::teams_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/teams/{id}/agents",
+            get(teams::teams_id_agents::get)
+                .post(teams::teams_id_agents::post)
+                .delete(teams::teams_id_agents::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/teams/{id}/access",
+            get(teams::teams_id_access::get)
+                .put(teams::teams_id_access::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workflows",
@@ -368,6 +386,12 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{id}/members",
             post(comms::channels_id_members::post)
                 .delete(comms::channels_id_members::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/channels/{id}/teams",
+            post(comms::channels_id_teams::post)
+                .delete(comms::channels_id_teams::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
@@ -686,6 +710,12 @@ pub fn router(state: AppState) -> Router {
                 .post(research::research_id_members::post)
                 .delete(research::research_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/research/{id}/teams",
+            post(research::research_id_teams::post)
+                .delete(research::research_id_teams::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         .route(
             "/api/research/{id}/conversation",
@@ -1415,6 +1445,12 @@ pub fn router(state: AppState) -> Router {
                 .put(plans::plans_id_members::put)
                 .delete(plans::plans_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/plans/{id}/teams",
+            post(plans::plans_id_teams::post)
+                .delete(plans::plans_id_teams::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
         // The fleet defs detail trio: identity PATCH, the versioned edit,
         // and the version history.

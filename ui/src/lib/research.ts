@@ -145,6 +145,11 @@ export interface ResearchMember {
   role: 'owner' | 'collaborator'
 }
 
+export interface ResearchTeam {
+  id: string
+  name: string
+}
+
 /** THE ROOM. One definition because two surfaces read it now — the share
  *  control in the header, and the @mention list in the discussion — and a
  *  second spelling would eventually offer a mention to somebody who cannot open
@@ -152,5 +157,6 @@ export interface ResearchMember {
 export const useResearchMembers = (runId: () => string) =>
   createQuery(() => ({
     queryKey: ['research-members', runId()],
-    queryFn: (): Promise<{ members: ResearchMember[] }> => getJson<{ members: ResearchMember[] }>(`/api/research/${runId()}/members`),
+    queryFn: (): Promise<{ members: ResearchMember[]; teams?: ResearchTeam[] }> =>
+      getJson<{ members: ResearchMember[]; teams?: ResearchTeam[] }>(`/api/research/${runId()}/members`),
   }))

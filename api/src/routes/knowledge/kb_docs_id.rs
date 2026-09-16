@@ -95,7 +95,20 @@ pub async fn get(
                 return thrown_internal_error();
             }
         };
-        if !can_read_agent(&eff.perms, &reader.model, owner.as_deref(), &eff.grants) {
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &reader.model).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_read_agent(
+            &eff.perms,
+            &reader.model,
+            owner.as_deref(),
+            &eff.grants,
+            &team_ids,
+        ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         return Json(
@@ -108,7 +121,20 @@ pub async fn get(
         Err(gate) => return gate,
     };
     let who = who_of(&user);
-    if !can_read(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    if !can_read(
+        &eff.perms,
+        Some(&user.id),
+        who.as_deref(),
+        &eff.grants,
+        &team_ids,
+    ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     let governs =
@@ -215,8 +241,15 @@ pub async fn put(
                     return thrown_internal_error();
                 }
             };
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &name).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let may_edit = doc.created_by.as_deref() == Some(name.as_str())
-            || can_edit_agent(&name, &eff.grants)
+            || can_edit_agent(&name, &eff.grants, &team_ids)
             || elevated;
         if !may_edit {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -233,7 +266,20 @@ pub async fn put(
             Err(gate) => return gate,
         };
         let who = who_of(&user);
-        if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+        let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_edit_human(
+            &eff.perms,
+            Some(&user.id),
+            who.as_deref(),
+            &eff.grants,
+            &team_ids,
+        ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         // Marking OFFICIAL grounds every agent — a curation power of its own.
@@ -452,7 +498,20 @@ pub async fn delete(
             }
         };
         let who = who_of(&user);
-        if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+        let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_edit_human(
+            &eff.perms,
+            Some(&user.id),
+            who.as_deref(),
+            &eff.grants,
+            &team_ids,
+        ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         actor = actor_of(&user);

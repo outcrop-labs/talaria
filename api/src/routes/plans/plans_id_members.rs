@@ -1,13 +1,15 @@
 // /api/plans/{id}/members.
 // Multiplayer plan membership + presence.
-//   GET    → { members, active } — any member; active = user ids seen in the
+//   GET    → { members, active, teams } — any member; active = user ids seen in the
 //            last minute (Redis presence keys, 60s TTL).
 //   POST   { email }  → share (owner only; grants the doc, notifies them).
 //   DELETE { userId } → unshare (owner, or a collaborator leaving).
 //   PUT    → presence ping (any member).
 
 use crate::body::{as_object, email_member, parse, uuid_member};
-use crate::conversations::{add_plan_member, list_plan_members, plan_role, remove_plan_member};
+use crate::conversations::{
+    add_plan_member, list_plan_members, list_plan_teams, plan_role, remove_plan_member,
+};
 use crate::error::{house_error, thrown_internal_error};
 use crate::kb::perms::{EditorGrant, list_editors, set_editors};
 use crate::notify::{NotificationInput, NotifyDeps, add_notification};
@@ -118,7 +120,15 @@ pub async fn get(
             active.push(m.user_id.clone());
         }
     }
-    Json(json!({ "members": members_json(&members), "active": active })).into_response()
+    let teams = match list_plan_teams(&state.pg, &id).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("[plans] team read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    Json(json!({ "members": members_json(&members), "active": active, "teams": teams }))
+        .into_response()
 }
 
 pub async fn post(

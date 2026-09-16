@@ -28,10 +28,16 @@ export interface ChannelMember {
   role: ChannelRole
 }
 
+export interface ChannelTeam {
+  id: string
+  name: string
+}
+
 export interface ChannelDetail {
   role: ChannelRole
   members: ChannelMember[]
   agents: string[]
+  teams?: ChannelTeam[]
 }
 
 export interface ChannelMessage {
@@ -172,4 +178,10 @@ export const addChannelAgent = async (id: string, model: string): Promise<void> 
 }
 export const removeChannelAgent = async (id: string, model: string): Promise<void> => {
   await delJson<{ ok: true }>(`/api/channels/${id}/agents`, { model })
+}
+export const addChannelTeam = async (id: string, teamId: string): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/teams`, { teamId })
+}
+export const removeChannelTeam = async (id: string, teamId: string): Promise<void> => {
+  await delJson<{ ok: true }>(`/api/channels/${id}/teams`, { teamId })
 }

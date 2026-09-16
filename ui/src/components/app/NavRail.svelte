@@ -19,7 +19,6 @@
   import DesktopSwitcher from './DesktopSwitcher.svelte'
   import WingMark from '@/components/WingMark.svelte'
   import CreateBoardModal from '@/components/board/CreateBoardModal.svelte'
-  import TeamsModal from '@/components/board/TeamsModal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { activeAmong, isUnder } from '@/lib/route-tabs'
@@ -37,7 +36,7 @@
   import { useInboxFocus, useInboxFocusSummary } from '@/lib/inbox-focus.svelte'
   import { useDeniedViews } from '@/lib/session'
   import { useUnreads } from '@/lib/unreads.svelte'
-  import { route } from '@/router'
+  import { navigate, route } from '@/router'
 
   // The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
   // Boards sublist; collapsed: 36px icon tiles with tooltips. Active state
@@ -50,7 +49,6 @@
   const pathname = $derived(route.pathname)
   const denied = useDeniedViews()
   let creating = $state(false)
-  let teamsOpen = $state(false)
   const nav = useNavCollapsed()
   // Are we ON the Inbox? The full queue loads here and only a count elsewhere.
   //
@@ -169,7 +167,6 @@
 
 {#snippet modals()}
   <CreateBoardModal open={creating} onClose={() => (creating = false)} />
-  <TeamsModal open={teamsOpen} onClose={() => (teamsOpen = false)} />
 {/snippet}
 
 <!-- CollapsePane owns the collapse/expand width glide (the two variants used
@@ -355,7 +352,7 @@
                   {/if}
                 </a>
                 {#if item.to === '/boards' && isUnder(pathname, '/boards')}
-                  <BoardsSublist activePath={pathname} onNew={() => (creating = true)} onTeams={() => (teamsOpen = true)} />
+                  <BoardsSublist activePath={pathname} onNew={() => (creating = true)} onTeams={() => void navigate('/teams')} />
                 {/if}
               </li>
             {/each}

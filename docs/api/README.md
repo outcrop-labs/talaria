@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-234 routes across 23 groups.
+240 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -17,7 +17,7 @@
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views. | 12 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
-| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 16 |
+| [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 17 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 15 |
 | [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 20 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
@@ -26,12 +26,12 @@
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 9 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
-| [`plans`](./plans.md) | Living plans: draft doc, members. | 3 |
-| [`research`](./research.md) | Cited research reports and their conversations. | 5 |
+| [`plans`](./plans.md) | Living plans: draft doc, members. | 4 |
+| [`research`](./research.md) | Cited research reports and their conversations. | 6 |
 | [`secrets`](./secrets.md) | The sealed-secrets vault: folders, shares, reveal, relay. | 7 |
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 10 |
-| [`teams`](./teams.md) | Teams and their members. | 3 |
+| [`teams`](./teams.md) | Teams and their members. | 6 |
 | [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 8 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board

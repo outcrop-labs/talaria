@@ -10,6 +10,7 @@ pub mod channels_id_messages_msgid;
 pub mod channels_id_messages_msgid_reactions;
 pub mod channels_id_plan;
 pub mod channels_id_read;
+pub mod channels_id_teams;
 pub mod chat;
 pub mod conversations;
 pub mod conversations_id;
