@@ -22,12 +22,12 @@ Talaria is one multiplayer workspace where the whole workday actually happens, a
 
 | Surface | What it is |
 | :--- | :--- |
-| **Chat** | You know chat. You have four apps for it. This one has teammates who can also read the ticket, the doc, and the sheet, and answer in the thread, live, while you watch. |
-| **Boards** | Columns with convictions. Statuses mean something here, including exactly when an agent may start work and when it has to stop and wait for a person. |
-| **Docs** | Docs with a memory. Every version, every decision, every comment pinned to the sentence it's actually about. |
-| **Plans** | Think out loud beside an agent while a real plan takes shape on the other half of the screen; the whole team is in one conversation and the document builds itself beside it. When it's ready, it becomes tickets on the board, reviewed by you before anything moves. |
-| **Research** | Ask a real question, get a real answer, with receipts. Every claim carries its source, and the report files itself where the whole company can find it forever. |
-| **Files** | The stuff work produces: sheets, docs, sites, files. Versioned, shareable, hosted. |
+| **Chat** | One central chat between coworkers and agents. Agents get context from conversations and can work across Talaria and connected tools. |
+| **Boards** | Project management with agentic workflows and human-in-the-loop built in. |
+| **Knowledge** | Your company wiki and processes in one place. Knowledge accessible by humans and agents, contextualized across Talaria. |
+| **Plans** | Think out loud beside an agent and coworkers while a real plan takes shape on the other half of the screen. When it's ready, your agents can build tickets and organize your project. |
+| **Research** | Ask real questions, get a real answers with receipts. A Perplexity grade research harness, multiplayer by default. |
+| **Files** | The stuff work produces: sheets, docs, sites, files. Versioned and shareable. |
 
 ## Agents as coworkers
 
