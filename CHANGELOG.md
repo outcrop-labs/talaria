@@ -48,6 +48,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
   `cargo test --lib` on `hermes_comms`, `hermes_documents`, `talaria_tools`,
   `toolbox::sandbox`, `registry::tests`, and `score::tests`.
+- **Desktop updates itself from a GitHub Release.** Settings → Profile (and
+  the launcher) Check for updates reads `/releases/latest/download/latest.json`,
+  verifies a minisign signature, replaces the install, and relaunches. Stable
+  tags attach `latest.json` plus `.sig` files for the AppImage, the universal
+  `.app.tar.gz`, and the NSIS installer; RCs do not (GitHub's `/releases/latest`
+  is the stable pointer). Verified: `write-latest-json.py --self-test`; cargo
+  test + clippy on the new `check_for_update` / `install_update` commands.
 - **Teams are first-class.** They are no longer a boards-only grouping:
   Manage → Teams (`/teams`) is a LibraryPane of org teams (people + agents),
   with admin view grants, permission overrides, and MCP tool rules on the
@@ -383,6 +390,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   an agent def carries. Verified: a unit test pins the override (authored
   keys preserved, both modes flipped), and a live render in an isolated
   worktree emits the approvals block into the agent's config.yaml.
+
+- **Desktop switcher, titlebar, unnamed instances, and in-app files.** Four
+  desktop-app bugs in one pass. The instance switcher in the left nav opened
+  `align="right"`, so the menu painted off the left edge of the window —
+  dropdowns now clamp to the viewport and the switcher always opens to the
+  right of its trigger. macOS and Windows had no working titlebar
+  (`decorations: false` and no custom chrome): Settings → Profile (and the
+  launcher) now pick Themed / OS / None, Themed by default on every OS, with
+  drag + min/max/close following traffic-light side. Switching dropped
+  instances that had no company name because the row matched on a blank
+  label — the switcher now matches beacon uuid then origin, and labels fall
+  back to the host. Chat (and board) file chips opened `target="_blank"` on
+  `/api/uploads/…`, which in the desktop webview left the app with no Save;
+  every such file now opens an in-app modal (preview when we can, "cannot
+  be previewed" when we cannot, Download either way, like Drive). Verified:
+  `dropdownHorizStyle` and `findCurrentInstance` / `instanceDisplayLabel`
+  unit tests; `sanitizeFilename`; cargo tests for settings default/roundtrip.
 
 ### Added
 

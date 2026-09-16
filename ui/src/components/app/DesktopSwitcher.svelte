@@ -11,6 +11,7 @@
     shellShowWelcome,
     type ShellInstance,
   } from '@/lib/desktop-shell'
+  import { findCurrentInstance, instanceDisplayLabel } from '@/lib/desktop-instance'
 
   // The desktop instance switcher — exists ONLY inside the Talaria desktop
   // shell, where the shell grants this origin three commands. In a browser
@@ -22,35 +23,45 @@
   let instances = $state<ShellInstance[]>([])
   const branding = useInstanceBranding()
 
-  $effect(() => {
+  const refresh = async (): Promise<void> => {
     if (!inDesktopShell()) return
-    void shellListInstances().then((list) => (instances = list))
+    instances = await shellListInstances()
+  }
+
+  $effect(() => {
+    void refresh()
   })
 
   const current = $derived(
-    instances.find((i) => i.instanceId === branding.data?.instance),
+    findCurrentInstance(
+      instances,
+      branding.data?.instance,
+      typeof window === 'undefined' ? '' : window.location.origin,
+    ),
   )
-  const initial = $derived((current?.label ?? 'T').trim().charAt(0).toUpperCase())
+  const currentLabel = $derived(current ? instanceDisplayLabel(current) : 'Instance')
+  const initial = $derived(currentLabel.trim().charAt(0).toUpperCase())
 
   // A function, so the menu re-reads the live list on every open — switching
-  // elsewhere (or adding) shouldn't leave this dropdown stale.
+  // elsewhere (or adding) shouldn't leave this dropdown stale. Labels fall
+  // back to the host so an instance with no company name still has a row.
   const items = (): ContextMenuEntry[] => [
     ...instances.map((instance): ContextMenuEntry => ({
-      label: instance.label,
-      checked: instance.instanceId === branding.data?.instance,
+      label: instanceDisplayLabel(instance),
+      checked: instance.id === current?.id,
       onSelect: () => void shellActivateInstance(instance.id),
     })),
     ...(instances.length ? ['sep' as const] : []),
-    { label: 'Add or manage instances…', onSelect: () => void shellShowWelcome() },
+    { label: 'Add or manage instances', onSelect: () => void shellShowWelcome() },
   ]
 </script>
 
 {#if inDesktopShell()}
-  <DropdownMenu {items} align={collapsed ? 'left' : 'right'}>
+  <DropdownMenu {items} align="left" onWillOpen={refresh}>
     {#snippet trigger(open: boolean)}
       <button
         type="button"
-        title={current ? `Instances — showing ${current.label}` : 'Instances'}
+        title={current ? `Instances — showing ${currentLabel}` : 'Instances'}
         aria-label="Switch instance"
         class={cn(
           'flex items-center gap-1.5 rounded-md text-muted transition-colors duration-[120ms] hover:text-fg',
@@ -69,7 +80,7 @@
           {initial}
         </span>
         {#if !collapsed}
-          <span class="whitespace-nowrap text-[11px] leading-none">{current?.label ?? 'Instance'}</span>
+          <span class="whitespace-nowrap text-[11px] leading-none">{currentLabel}</span>
           <ChevronDown size={11} strokeWidth={1.5} class="shrink-0 opacity-70" />
         {/if}
       </button>
