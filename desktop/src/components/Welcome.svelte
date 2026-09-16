@@ -1,6 +1,12 @@
 <script lang="ts">
   import type { DitherSource } from '../lib/dither'
-  import type { TitlebarMode } from '../lib/instances'
+  import {
+    checkForUpdate,
+    errorText,
+    installUpdate,
+    type TitlebarMode,
+    type DesktopUpdate,
+  } from '../lib/instances'
   import DitherLayer from './DitherLayer.svelte'
   import InstanceList from './InstanceList.svelte'
   import WingMark from './WingMark.svelte'
@@ -30,6 +36,36 @@
     { id: 'os', label: 'OS' },
     { id: 'none', label: 'None' },
   ]
+
+  let update = $state<DesktopUpdate | null>(null)
+  let updateBusy = $state(false)
+  let updateMsg = $state('')
+
+  const check = async () => {
+    updateBusy = true
+    updateMsg = ''
+    update = null
+    try {
+      const found = await checkForUpdate()
+      if (found) update = found
+      else updateMsg = 'You are on the latest version'
+    } catch (e) {
+      updateMsg = errorText(e)
+    } finally {
+      updateBusy = false
+    }
+  }
+
+  const install = async () => {
+    updateBusy = true
+    updateMsg = ''
+    try {
+      await installUpdate()
+    } catch (e) {
+      updateMsg = errorText(e)
+      updateBusy = false
+    }
+  }
 </script>
 
 <main class="relative grid h-full w-full place-items-center overflow-y-auto bg-ground">
@@ -85,6 +121,32 @@
           </button>
         {/each}
       </div>
+    </div>
+
+    <div class="mt-6">
+      <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Updates</div>
+      {#if update}
+        <button
+          type="button"
+          class="rounded bg-gold px-5 py-2 text-xs font-semibold text-ground hover:brightness-110 disabled:opacity-50"
+          disabled={updateBusy}
+          onclick={() => void install()}
+        >
+          {updateBusy ? 'Installing' : `Install ${update.version}`}
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="rounded border border-hairline px-5 py-2 text-xs text-muted hover:text-readout disabled:opacity-50"
+          disabled={updateBusy}
+          onclick={() => void check()}
+        >
+          {updateBusy ? 'Checking' : 'Check for updates'}
+        </button>
+      {/if}
+      {#if updateMsg}
+        <p class="mt-2 text-xs text-muted">{updateMsg}</p>
+      {/if}
     </div>
   </div>
 </main>

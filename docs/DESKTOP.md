@@ -208,10 +208,22 @@ the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns nati
 on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
 screen both set it.
 
+## Updates
+
+A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
+the universal `.app.tar.gz`, and the NSIS installer. The running app checks
+`/releases/latest/download/latest.json` (Settings → Profile, or the launcher), verifies
+the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches.
+RCs do not publish `latest.json` — `/releases/latest` is GitHub's stable pointer.
+
+Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
+means installed copies can no longer verify a new payload. OS code signing
+(Gatekeeper / SmartScreen) is still absent; this signature is the updater's own.
+
 ## Deferred on purpose
 
 Rename/reorder instances, health badges, native notifications, tray, deep links, OAuth via
-external browser, code signing and notarization, a desktop auto-updater.
+external browser, code signing and notarization.
 
 macOS and Windows build and ship, but the session-isolation invariant above does not hold
 there yet: `data_directory` is a no-op on those platforms (macOS wants

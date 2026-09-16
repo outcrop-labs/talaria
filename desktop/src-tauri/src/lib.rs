@@ -61,8 +61,9 @@ impl ShellState {
     }
 }
 
-/// Grant one instance origin the switcher + window-chrome command set — the
-/// only IPC remote content ever gets, and only for origins the user registered.
+/// Grant one instance origin the switcher, window-chrome, and updater
+/// command set — the only IPC remote content ever gets, and only for origins
+/// the user registered.
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
     let capability = tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
         .webview(format!("instance-{}", instance.id))
@@ -72,13 +73,17 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         .permission("allow-show-welcome")
         .permission("allow-get-desktop-settings")
         .permission("allow-set-titlebar-mode")
-        .permission("allow-desktop-window");
+        .permission("allow-desktop-window")
+        .permission("allow-check-for-update")
+        .permission("allow-install-update");
     app.add_capability(capability)
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // The identifier in tauri.conf.json decides this path on Linux
             // (~/.local/share/app.talaria.desktop) — changing it orphans the
@@ -124,6 +129,8 @@ pub fn run() {
             commands::get_desktop_settings,
             commands::set_titlebar_mode,
             commands::desktop_window,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("talaria desktop shell exited unexpectedly");

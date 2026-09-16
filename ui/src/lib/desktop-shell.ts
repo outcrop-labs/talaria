@@ -64,3 +64,18 @@ export async function shellDesktopWindow(action: DesktopWindowAction): Promise<v
   if (!inDesktopShell()) return
   await ipc().then((invoke) => invoke('desktop_window', { action }))
 }
+
+export interface DesktopUpdate {
+  version: string
+  notes: string | null
+}
+
+export async function shellCheckForUpdate(): Promise<DesktopUpdate | null> {
+  if (!inDesktopShell()) return null
+  return ipc().then((invoke) => invoke<DesktopUpdate | null>('check_for_update'))
+}
+
+export async function shellInstallUpdate(): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) => invoke('install_update'))
+}

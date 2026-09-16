@@ -13,6 +13,8 @@
     "allow-remove-instance",
     "allow-get-desktop-settings",
     "allow-set-titlebar-mode",
-    "allow-desktop-window"
+    "allow-desktop-window",
+    "allow-check-for-update",
+    "allow-install-update"
   ]
 }

@@ -40,6 +40,15 @@ export const setTitlebarMode = (mode: TitlebarMode) =>
 export const desktopWindow = (action: DesktopWindowAction) =>
   invoke<void>('desktop_window', { action })
 
+export interface DesktopUpdate {
+  version: string
+  notes: string | null
+}
+
+export const checkForUpdate = () => invoke<DesktopUpdate | null>('check_for_update')
+
+export const installUpdate = () => invoke<void>('install_update')
+
 /** Strip an invoke rejection down to the message the shell sent. */
 export const errorText = (e: unknown): string =>
   String(e).replace(/^Error:\s*/, '').replace(/^"|"$/g, '')

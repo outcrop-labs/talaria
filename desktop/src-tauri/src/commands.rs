@@ -2,8 +2,9 @@
 //! in beacon.rs / registry.rs, geometry in layout.rs — these wire them to the
 //! window and its webviews.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl, Window};
+use tauri_plugin_updater::UpdaterExt;
 
 use crate::{ShellState, View, beacon, layout, registry, registry::Instance, settings};
 
@@ -264,4 +265,46 @@ pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String
             .map_err(|e| format!("starting a drag: {e}"))?,
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+    pub notes: Option<String>,
+}
+
+/// Compare this build to GitHub's latest stable `latest.json`. None means
+/// this version is current (or the endpoint had nothing newer).
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| format!("updater: {e}"))?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(UpdateInfo {
+            version: update.version,
+            notes: update.body,
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("checking for an update: {e}")),
+    }
+}
+
+/// Download the latest signed payload, apply it, and relaunch. The updater
+/// verifies the minisign signature against the pubkey in tauri.conf.json
+/// before touching the install.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| format!("updater: {e}"))?;
+    let Some(update) = updater
+        .check()
+        .await
+        .map_err(|e| format!("checking for an update: {e}"))?
+    else {
+        return Err("already on the latest version".into());
+    };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("installing the update: {e}"))?;
+    app.restart();
 }
