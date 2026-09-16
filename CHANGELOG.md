@@ -211,7 +211,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   ([nightly](https://github.com/outcrop-labs/talaria/actions/runs/35111665940)).
   `RELEASING.md` now names the two ways a nightly stops for good: the 60-day
   schedule rule, and a startup failure whose reason lives only in the run page's
-  banner.
+  banner. A second desktop-installer workflow, merged from a parallel session
+  after that release (triggering on the same `v*` tags, uploading to the same
+  release with `--clobber`, and asking Tauri for a `flatpak` bundle type it does
+  not have), was removed in favour of the one `release.yml` actually calls: one
+  publisher per tag.
 
 - **CI checks the surface that moved, not the whole tree.** A UI change no
   longer re-runs the Rust api's `fmt`/`clippy`/`test`, a desktop change does not
