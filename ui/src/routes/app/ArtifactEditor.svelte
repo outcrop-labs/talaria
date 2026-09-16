@@ -19,6 +19,7 @@
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
+  import { downloadFile } from '@/lib/download-file'
   import { errorMessage, postJsonOr } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
@@ -340,9 +341,15 @@
                 />
               </div>
               <div class="flex gap-2">
-                <a href={`/api/uploads/${artifact.storageRef}`} target="_blank" rel="noreferrer" class={buttonClasses({ size: 'sm' })}>
+                <Button
+                  size="sm"
+                  onclick={() =>
+                    void downloadFile(`/api/uploads/${artifact.storageRef}`, artifact.title).catch((e) =>
+                      pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' }),
+                    )}
+                >
                   Download
-                </a>
+                </Button>
                 {#if isOwner}
                   <label class={cn(buttonClasses({ size: 'sm', variant: 'outline' }), 'cursor-pointer')}>
                     <input type="file" class="hidden" onchange={(e) => void onPickFile(e.currentTarget.files?.[0])} />

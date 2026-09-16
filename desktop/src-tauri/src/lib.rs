@@ -8,8 +8,9 @@
 //   * active — the instance's webview IS the window; the launcher is hidden
 //     but alive. Switching between instances happens INSIDE the instance UI
 //     (the desktop switcher beside the logo in ui/), so each registered
-//     instance origin is granted, at runtime, a minimal capability: exactly
-//     list_instances / activate_instance / show_welcome — nothing else.
+//     instance origin is granted, at runtime, a minimal capability: the
+//     switcher commands plus window chrome (titlebar mode, min/max/close/drag)
+//     — no fs, nothing else.
 //
 // Every instance webview gets its own data directory, so cookie jars and
 // localStorage never mix; hidden webviews stay loaded (sessions and SSE
@@ -24,7 +25,7 @@ mod beacon;
 mod commands;
 mod layout;
 mod registry;
-
+mod settings;
 use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
 
 use tauri::Manager;
@@ -39,8 +40,10 @@ pub enum View {
 
 pub struct ShellState {
     registry_path: PathBuf,
+    settings_path: PathBuf,
     data_root: PathBuf,
     instances: Mutex<Vec<registry::Instance>>,
+    settings: Mutex<settings::DesktopSettings>,
     active: Mutex<Option<String>>,
     view: Mutex<View>,
     http: reqwest::Client,
@@ -58,15 +61,18 @@ impl ShellState {
     }
 }
 
-/// Grant one instance origin the minimal switcher command set — the only IPC
-/// remote content ever gets, and only for origins the user registered.
+/// Grant one instance origin the switcher + window-chrome command set — the
+/// only IPC remote content ever gets, and only for origins the user registered.
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
     let capability = tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
         .webview(format!("instance-{}", instance.id))
         .remote(instance.url.clone())
         .permission("allow-list-instances")
         .permission("allow-activate-instance")
-        .permission("allow-show-welcome");
+        .permission("allow-show-welcome")
+        .permission("allow-get-desktop-settings")
+        .permission("allow-set-titlebar-mode")
+        .permission("allow-desktop-window");
     app.add_capability(capability)
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
@@ -80,14 +86,21 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
             let registry_path = dir.join("instances.json");
+            let settings_path = dir.join("settings.json");
             let instances = registry::load(&registry_path)?;
+            let loaded_settings = settings::load(&settings_path)?;
             for instance in &instances {
                 grant_switcher(app.handle(), instance)?;
             }
+            if let Some(window) = app.get_window("main") {
+                settings::apply(&window, loaded_settings.titlebar)?;
+            }
             app.manage(ShellState {
                 registry_path,
+                settings_path,
                 data_root: dir.join("instances"),
                 instances: Mutex::new(instances),
+                settings: Mutex::new(loaded_settings),
                 active: Mutex::new(None),
                 view: Mutex::new(View::Welcome),
                 http: reqwest::Client::builder()
@@ -108,6 +121,9 @@ pub fn run() {
             commands::activate_instance,
             commands::show_welcome,
             commands::remove_instance,
+            commands::get_desktop_settings,
+            commands::set_titlebar_mode,
+            commands::desktop_window,
         ])
         .run(tauri::generate_context!())
         .expect("talaria desktop shell exited unexpectedly");

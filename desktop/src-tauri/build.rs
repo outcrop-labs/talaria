@@ -10,6 +10,9 @@ fn main() {
             "activate_instance",
             "show_welcome",
             "remove_instance",
+            "get_desktop_settings",
+            "set_titlebar_mode",
+            "desktop_window",
         ]),
     ))
     .expect("failed to run tauri-build");

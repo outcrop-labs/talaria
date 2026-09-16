@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "launcher",
-  "description": "IPC for the local launcher webview only. Instance webviews (instance-*) get no capability and no remote-URL grant: pages loaded from instance origins cannot invoke Tauri commands at all.",
+  "description": "IPC for the local launcher webview only. Instance webviews (instance-*) get a runtime grant for the switcher plus window chrome, scoped to that origin: no fs.",
   "windows": ["main"],
   "webviews": ["main"],
   "permissions": [
@@ -10,6 +10,9 @@
     "allow-add-instance",
     "allow-activate-instance",
     "allow-show-welcome",
-    "allow-remove-instance"
+    "allow-remove-instance",
+    "allow-get-desktop-settings",
+    "allow-set-titlebar-mode",
+    "allow-desktop-window"
   ]
 }

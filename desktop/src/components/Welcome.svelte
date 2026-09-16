@@ -1,11 +1,20 @@
 <script lang="ts">
   import type { DitherSource } from '../lib/dither'
+  import type { TitlebarMode } from '../lib/instances'
   import DitherLayer from './DitherLayer.svelte'
   import InstanceList from './InstanceList.svelte'
   import WingMark from './WingMark.svelte'
   import { shell } from '../lib/state.svelte'
 
-  let { onadd } = $props<{ onadd: () => void }>()
+  let {
+    onadd,
+    titlebar,
+    ontitlebar,
+  }: {
+    onadd: () => void
+    titlebar: TitlebarMode
+    ontitlebar: (mode: TitlebarMode) => Promise<unknown>
+  } = $props()
 
   // The signature ambient field, wearing the same shape the nav rail wears in
   // the product: a soft bloom off the top edge, a heavier foot at the bottom,
@@ -14,6 +23,12 @@
     { id: 'chrome', kind: 'edge', side: 'top', depth: 96, strength: 0.16 },
     { id: 'grain', kind: 'uniform', strength: 0.04 },
     { id: 'foot', kind: 'edge', side: 'bottom', depth: 128, strength: 0.1 },
+  ]
+
+  const modes: { id: TitlebarMode; label: string }[] = [
+    { id: 'themed', label: 'Themed' },
+    { id: 'os', label: 'OS' },
+    { id: 'none', label: 'None' },
   ]
 </script>
 
@@ -54,5 +69,22 @@
         {shell.error}
       </p>
     {/if}
+
+    <div class="mt-8">
+      <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Titlebar</div>
+      <div class="inline-flex rounded-md border border-hairline p-0.5">
+        {#each modes as m (m.id)}
+          <button
+            type="button"
+            class="rounded px-2.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] {titlebar === m.id
+              ? 'bg-raised text-readout'
+              : 'text-muted hover:text-readout'}"
+            onclick={() => void ontitlebar(m.id)}
+          >
+            {m.label}
+          </button>
+        {/each}
+      </div>
+    </div>
   </div>
 </main>

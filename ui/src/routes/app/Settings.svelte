@@ -26,6 +26,8 @@
   import McpConnectionsSection from './settings/McpConnectionsSection.svelte'
   import IntegrationsSection from './settings/IntegrationsSection.svelte'
   import ApiKeysSection from './settings/ApiKeysSection.svelte'
+  import DesktopSection from './settings/DesktopSection.svelte'
+  import { inDesktopShell } from '@/lib/desktop-shell'
 
   // Personal settings, tabbed by concern: Profile (identity + drafting model),
   // Assistant (the member's whole personal agent), Connections, API keys —
@@ -152,6 +154,7 @@
         <PreferredModelPicker />
         <TimezonePicker />
       </Panel>
+      {#if inDesktopShell()}<DesktopSection />{/if}
     {/if}
 
     {#if tab === 'notifications'}<NotificationsSection />{/if}
