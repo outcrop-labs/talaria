@@ -134,7 +134,7 @@ same set and leaves it as workflow artifacts.
 |---|---|
 | Linux | `.deb`, `.rpm`, `AppImage` from Tauri's bundlers; `.pkg.tar.zst` (pacman) and `.flatpak` from `packaging/` |
 | macOS | universal `.dmg` (Apple silicon and Intel) plus the `.app` as a zip |
-| Windows | NSIS `.exe` and `.msi` |
+| Windows | NSIS `.exe`, plus an `.msi` when the version has no pre-release part |
 
 Bundle targets live per platform — `tauri.linux.conf.json`, `tauri.windows.conf.json`,
 `tauri.macos.conf.json`, which Tauri merges over the base config automatically — so
@@ -158,12 +158,23 @@ Two packaging details worth knowing before editing those configs. The deb's `Dep
 from Tauri's own defaults for the crates the shell links (`libwebkit2gtk-4.1-0`,
 `libgtk-3-0`); a list in `tauri.linux.conf.json` would only duplicate them, so the workflow
 asserts the built deb declares them instead. rpm has no defaults at all, which is why its
-dependencies are written out and the deb's are not. Separately, a local AppImage build does
-not work on Arch — linuxdeploy's bundled `strip` cannot read Arch's `.relr.dyn` sections,
-and Tauri's gtk plugin looks for gdk-pixbuf at a Debian path — which is a limitation of
-that toolchain on that host, not of this config: the AppImage is built on the Ubuntu
-runner. A pacman package can be built and checked locally on Arch
-(`stage.sh` → `pack-pacman.sh` → `pacman -Qip`).
+dependencies are written out and the deb's are not.
+
+And the version is not free-form across the bundlers: Windows product versioning has a
+numeric fourth field, so an `.msi` can only be built from a version with no pre-release
+part. The workflow therefore bundles NSIS always and adds the msi only for a stable
+version — a `v0.2.0-rc.1` release ships the `.exe` and no `.msi`, rather than an `.msi`
+that claims to be `0.2.0`. Everything else takes the tag's version verbatim
+(`Talaria_0.2.0-rc.1_amd64.deb`, `Talaria-0.2.0-rc.1-1.x86_64.rpm`, the dmg, the flatpak
+bundle name).
+
+Separately, a local AppImage build does not work on Arch — linuxdeploy's bundled `strip`
+cannot read Arch's `.relr.dyn` sections, and Tauri's gtk plugin looks for gdk-pixbuf at a
+Debian path — which is a limitation of that toolchain on that host, not of this config: the
+AppImage is built on the Ubuntu runner. A pacman package can be built and checked locally
+on Arch (`stage.sh` → `pack-pacman.sh` → `pacman -Qip`), and the flatpak needs `flatpak`,
+`flatpak-builder` and `elfutils` (flatpak-builder's `eu-strip`) plus the runtime named in
+the manifest.
 
 ## Deferred on purpose
 

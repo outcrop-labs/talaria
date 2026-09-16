@@ -16,8 +16,12 @@
 #   macOS    a universal .app inside a .dmg, plus a zipped .app for scripted
 #            installs. Universal means both Apple targets ride in one download
 #            (Apple silicon and Intel alike).
-#   windows  an NSIS .exe and an .msi (WiX). The Tauri CLI downloads and drives
-#            both toolchains itself, so no extra setup lives in this file.
+#   windows  an NSIS .exe always, and an .msi (WiX) only when the stamped
+#            version has no pre-release part: Windows product versioning has a
+#            numeric fourth field and Tauri's msi bundler refuses anything else,
+#            so a `0.0.0-sha…` trunk build and a `0.2.0-rc.1` release ship the
+#            .exe while claiming no version they are not. The CLI downloads and
+#            drives both toolchains itself.
 #
 # THE VERSION IS INJECTED, NEVER COMMITTED. Git tags are the version authority
 # (RELEASING.md) and every version field in the repo still says 0.1.0
@@ -284,10 +288,15 @@ jobs:
         run: |
           set -eu
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+          # elfutils is flatpak-builder's stripping step: without eu-strip it
+          # fails after the module builds, which is where the first run of this
+          # job stopped.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder elfutils
           # Ubuntu 24.04 restricts unprivileged user namespaces (AppArmor), and
           # bwrap — the sandbox flatpak-builder builds inside — is exactly that.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # Tolerated if absent: the knob is a runner-image detail, and a
+          # sandbox that still refuses will say so in the build's own log.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           sudo flatpak install --noninteractive flathub \
             "org.gnome.Platform//$RUNTIME" "org.gnome.Sdk//$RUNTIME"
@@ -399,19 +408,37 @@ jobs:
         working-directory: desktop
         run: bun install --frozen-lockfile
 
-      # NSIS and WiX are downloaded by the CLI on first use (that is what
-      # tauri.windows.conf.json's downloadBootstrapper is about, one level up
-      # at install time for WebView2).
+      # NSIS is downloaded by the CLI on first use, and WiX for the msi (that is
+      # what tauri.windows.conf.json's downloadBootstrapper is about, one level
+      # up at install time for WebView2).
+      #
+      # The msi is added only for a version with no pre-release part: Windows
+      # product versioning has a numeric fourth field, and Tauri's msi bundler
+      # refuses anything else ("optional pre-release identifier in app version
+      # must be numeric-only" — the first run of this job stopped there, after
+      # nsis had already built). An RC's honest version is `0.2.0-rc.1`, so an
+      # RC ships the nsis installer and no msi, rather than an msi claiming to
+      # be `0.2.0`. The platform config keeps both targets for local builds,
+      # where the version is the decorative 0.1.0.
       - name: Build bundles
         working-directory: desktop
-        run: bun run build -- --config "{\"version\":\"$VERSION\"}"
+        run: |
+          set -eu
+          bundles=nsis
+          case "$VERSION" in
+            *-*) ;;
+            *) bundles=nsis,msi ;;
+          esac
+          echo "bundling: $bundles (version $VERSION)"
+          bun run build -- --bundles "$bundles" --config "{\"version\":\"$VERSION\"}"
 
       - name: Collect installers
         working-directory: desktop/src-tauri/target/release/bundle
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/assets"
-          cp nsis/*.exe msi/*.msi "$RUNNER_TEMP/assets/"
+          cp nsis/*.exe "$RUNNER_TEMP/assets/"
+          if [ -d msi ]; then cp msi/*.msi "$RUNNER_TEMP/assets/"; fi
           ls -l "$RUNNER_TEMP/assets"
 
       - uses: actions/upload-artifact@v4
