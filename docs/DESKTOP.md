@@ -93,6 +93,12 @@ In the app: *Add instance* → `http://127.0.0.1:5302`. Prove isolation with a s
 on the same host at a different port (another box, or the primary stack) — log into both and
 swap; both sessions survive.
 
+One dev-loop trap: `tauri dev`'s watcher kills and relaunches the app on source/config
+change, and on WebKitGTK that kill has been observed to corrupt the relaunched process
+(silent death, sometimes `free(): corrupted unsorted chunks`). If the window doesn't come
+back after a rebuild, stop the dev process and start it again — or, with vite still up,
+run the binary directly: `./src-tauri/target/debug/talaria-desktop`.
+
 ## Gates
 
 `bun run desktop:check` (root) = `cargo fmt --check` + `cargo clippy -D warnings` +
