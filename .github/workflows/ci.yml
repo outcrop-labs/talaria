@@ -358,8 +358,10 @@ jobs:
   # desktop:check` from the root runs the same list). Unlike api/, this job
   # DOES need an apt step: tauri's webkit/gtk sys crates run pkg-config even
   # under `cargo check`, so a bare runner dies before compiling a line of
-  # ours. No bundle step — installers are a release-time concern, and they
-  # would drag linuxdeploy/appimage tooling into a tripwire.
+  # ours. No bundle step — installers are a release-time concern and now have a
+  # home of their own (desktop-package.yml, built on every platform and pinned
+  # to a release); dragging linuxdeploy and the flatpak runtime into a tripwire
+  # would make it slow enough to be skipped.
   desktop:
     name: fmt + clippy + test + typecheck (desktop)
     runs-on: ubuntu-latest

@@ -40,7 +40,8 @@ git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
-and a GitHub **prerelease** opens with a stub body. The changelog is the
+the desktop installers are built for linux, macOS and Windows and attached to
+the release, and a GitHub **prerelease** opens with a stub body. The changelog is the
 record — edit the release notes afterwards if you want them to say more,
 or leave the stub pointing at CHANGELOG.md.
 
@@ -93,6 +94,27 @@ The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
 tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
 release's app-image build is actually pinned to.
 
+## The desktop installers
+
+Every tag publish also attaches the desktop app's installers to the GitHub
+Release (`desktop-package.yml`, called by `release.yml` once the image push is
+done — the assets land on a release that exists): linux
+`.deb`/`.rpm`/`AppImage`/`.pkg.tar.zst`/`.flatpak`, macOS a universal `.dmg`
+(and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, plus a
+`SHA256SUMS` over all of them.
+
+Nightlies open no Release (above), so they carry no installers, and a trunk
+build publishes none either — a push to main that touches `desktop/` leaves
+the same files as workflow artifacts, which expire. To re-attach installers to
+an existing release, re-run that release's `desktop-package` job, or dispatch
+`desktop-package` with `version` and `release_tag` filled in; `--clobber`
+makes either idempotent.
+
+Nothing is signed or notarized yet. That is a provisioning decision, not an
+oversight: it takes an Apple Developer certificate and a Windows signing key.
+Until then macOS needs a right-click → Open the first time (Gatekeeper) and
+Windows shows a SmartScreen warning.
+
 ## The trunk feed
 
 Beside the channels, main publishes continuously: `.github/workflows/app-image.yml`
@@ -129,7 +151,9 @@ itself, and it pushes to the package release.yml already made public.
 ## Deliberately not
 
 - No npm/PyPI publishing — the repo's published artifacts are the two
-  images (the app and the api package), nothing else.
-- No signed attestations.
+  images (the app and the api package) and the desktop installers, nothing
+  else.
+- No signed attestations, and no signed or notarized desktop installers (see
+  "The desktop installers" above).
 - No nightly-tag pruning (see above: negligible growth).
 - No auto-changelog; CHANGELOG.md is hand-maintained, and PRs update it.

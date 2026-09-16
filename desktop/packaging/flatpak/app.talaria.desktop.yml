@@ -1,0 +1,30 @@
+# The flatpak — built by build.sh, which stages the tree next to this file.
+#
+# Tauri has no flatpak target, so this is the standard shape: a manifest that
+# installs the staged FHS tree into /app. GNOME's runtime is the one that
+# carries WebKitGTK 4.1, which is what the shell links against.
+app-id: app.talaria.desktop
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: talaria-desktop
+
+finish-args:
+  # The shell is a client: every instance it shows is remote. Nothing else
+  # about the host is shared — no home, no host filesystem.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri # WebKit composites on the GPU wherever it can
+  - --talk-name=org.freedesktop.portal.* # browser-based OAuth, when it lands
+
+modules:
+  - name: talaria-desktop
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: staging
+    build-commands:
+      # staging is an FHS tree; /app IS the sandbox's /usr.
+      - cp -a usr/. /app/

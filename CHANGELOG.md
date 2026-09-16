@@ -34,6 +34,36 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   webviews vertically inside WebKitGTK and drowned the app — exactly-one-
   visible-webview is the fix; manual bounds remain as belt-and-suspenders).
 
+- **Talaria Desktop ships installers for all three desktops, built and
+  attached by CI (`.github/workflows/desktop-package.yml`,
+  [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** Tauri's bundlers cover linux
+  deb/rpm/AppImage, macOS as one universal build, and windows nsis/msi; the two
+  targets Tauri has none of — Arch's pacman and flatpak — are built from one
+  staged FHS tree in `desktop/packaging/` (`stage.sh`, then `pack-pacman.sh`,
+  or `flatpak-builder` against the GNOME 50 runtime). The bundle targets moved
+  out of the previously-empty `targets` list into per-platform config files
+  (`tauri.linux.conf.json`, `tauri.windows.conf.json`,
+  `tauri.macos.conf.json`), so `tauri build` produces that platform's
+  installers instead of a bare binary — and the released version is merged in
+  at build time (`--config`), because the tag is the version authority
+  (RELEASING.md) and nothing in the repo carries a released version. On a
+  `vX.Y.Z[-rc.N]` tag, `release.yml` calls the workflow once the image is
+  pushed and every installer lands on that GitHub Release with a
+  `SHA256SUMS`; a push to main touching `desktop/` leaves the same set as
+  workflow artifacts. Nothing is signed or notarized — no Apple Developer
+  certificate and no Windows signing key exist here — so macOS wants a
+  right-click → Open the first time and Windows warns through SmartScreen.
+  Verified: `bun run desktop:check` green (fmt, clippy, 14 tests,
+  svelte-check); a local `tauri build` produced the release binary and a
+  `.deb` stamped with the injected version (`Version: 0.0.0-test`,
+  `Depends: libwebkit2gtk-4.1-0, libgtk-3-0`); `packaging/linux/*.sh` turned
+  that binary into a `.pkg.tar.zst` that `pacman -Qip` reads back
+  (`talaria-desktop-bin 0.2.0_rc.1-1`, deps `webkit2gtk-4.1`/`gtk3`, x86_64);
+  the local AppImage failure was traced to the Arch host's toolchain
+  (`.relr.dyn` sections linuxdeploy's bundled `strip` cannot read, and the gtk
+  plugin's Debian gdk-pixbuf path) and not to this config; the full matrix then
+  ran in CI.
+
 ### Changed
 
 - **The coding harness is the mandated path for code work — named, keyed,
