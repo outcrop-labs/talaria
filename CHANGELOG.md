@@ -14,10 +14,18 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   hand-editing files is reserved for trivial one-line fixes, and a harness
   the agent cannot drive is a report_gap, never a reason to silently
   hand-code. Claude Code's auth finds the org's model access wherever it
-  lives: any endpoint that answers the Anthropic protocol (one cheap
-  /v1/messages probe at render) becomes its ANTHROPIC_BASE_URL with the same
-  key riding ANTHROPIC_AUTH_TOKEN — no OAuth login — and the no-key-anywhere
-  case now WARNS at render instead of arming a harness that fails silently
+  lives, through a three-step lookup that never needs an "anthropic" endpoint
+  to be configured (the platform's endpoint rows are OpenAI-shaped by
+  construction): a REFERENCE TABLE of providers with known fixed
+  Anthropic-protocol surfaces (anthropic native; OpenRouter's first-party
+  /api/anthropic; DeepSeek's /anthropic) answers by slug with zero network;
+  otherwise a one-time probe of {base}/v1/messages — the row's own base URL,
+  or the origin of the provider's native base — verifies the surface and
+  CACHES the verdict on the endpoint row (llm_endpoints.anthropic_base), so
+  the network half runs at most once per endpoint for the life of the
+  install; the hit becomes ANTHROPIC_BASE_URL with the same key riding
+  ANTHROPIC_AUTH_TOKEN — no OAuth login — and the no-key-anywhere case now
+  WARNS at render instead of arming a harness that fails silently
   (the silence that hid harness non-use across the fleet: zero Claude Code
   sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
   Every armed harness also runs unattended-clean and skilled: onboarding
