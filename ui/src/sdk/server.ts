@@ -28,8 +28,9 @@ export interface AppRequestContext {
   user: SessionUser
   /** This app's slug. */
   app: string
-  /** Path after /api/apps/<slug>/ — e.g. "contacts/123". */
+  /** Path after /api/apps/<slug>/ — e.g. "items/123". */
   path: string
+
   url: URL
   /** Namespaced document store: collections of JSON docs owned by this app. */
   store: AppStore

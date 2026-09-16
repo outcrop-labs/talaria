@@ -1,25 +1,26 @@
-// `talaria backup` — one snapshot of the two things that cannot be rebuilt:
-// the Postgres database and the upload blobs (local disk, the bundled MinIO
-// bucket, or an external S3 bucket — whichever Admin → Storage is using).
+// `talaria backup` — one snapshot of the things that cannot be rebuilt:
+// the Postgres catalog, the upload blobs, and each app's own database.
 // Port of scripts/backup.sh.
 //
 // Redis is deliberately NOT backed up: it holds sessions and ephemeral state,
 // so losing it signs everyone out and nothing more. Qdrant isn't either —
-// every vector is re-derivable from Postgres by reindexing.
+// every vector is re-derivable from Postgres by reindexing. App *builds*
+// aren't either — this instance recompiles them.
 //
 // Nothing here schedules itself; point cron/systemd at it. Retention + the
 // RESTORE procedure: docs/BACKUPS.md.
 
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import {
-  argvOf, bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, localUploadsDir, mcRun,
+  argvOf, bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, localAppDataDir, localUploadsDir, mcRun,
   stampOf, storageFromDb, writeSums,
 } from '../backup/lib'
 import { canonicalDir } from '../paths'
+
 
 /** The last `n` bytes of a file, as text — pg_dump writes its completion
  *  trailer only when it actually finished, so the tail of the plain dump is
@@ -55,6 +56,59 @@ export function pruneSnapshots(dest: string, keep: number): number {
   }
   return pruned
 }
+
+function instanceId(env: Record<string, string | undefined>): string {
+  return env.TALARIA_WORKTREE || env.TALARIA_DEVBOX || 'talaria'
+}
+
+/** Logical dump of each app DB (pg_dump when the container is up; otherwise
+ *  a copy of stopped PGDATA). db.env is 0600 on disk; the tar is still
+ *  plaintext — same rule as the catalog dump. */
+async function archiveAppData(ctx: Ctx, env: Record<string, string | undefined>, destTar: string): Promise<number> {
+  const root = localAppDataDir(ctx, env)
+  const stage = join(dirname(destTar), 'app-data-stage')
+  mkdirSync(stage, { recursive: true })
+  let n = 0
+  try {
+    if (existsSync(root)) {
+      for (const name of readdirSync(root)) {
+        const src = join(root, name)
+        if (!statSync(src).isDirectory()) continue
+        const dest = join(stage, name)
+        mkdirSync(dest, { recursive: true })
+        for (const f of ['db.env', 'docker-compose.yml']) {
+          const p = join(src, f)
+          if (existsSync(p)) copyFileSync(p, join(dest, f))
+        }
+        const container = `talaria-appdb-${instanceId(env)}-${name}`
+        let dumped = false
+        try {
+          const r = await ctx.exec(
+            'docker',
+            ['exec', container, 'pg_dump', '-U', 'talaria', '-d', 'talaria', '--clean', '--if-exists', '--no-owner', '--no-privileges'],
+            { timeoutMs: 300_000 },
+          )
+          if (r.stdout.trim()) {
+            writeFileSync(join(dest, 'dump.sql'), r.stdout.endsWith('\n') ? r.stdout : `${r.stdout}\n`)
+            dumped = true
+          }
+        } catch {
+          /* container missing or docker gone */
+        }
+        if (!dumped && existsSync(join(src, 'pg'))) {
+          cpSync(join(src, 'pg'), join(dest, 'pg'), { recursive: true })
+        }
+        n++
+      }
+    }
+    if (n === 0) await ctx.run('tar', ['-czf', destTar, '-T', '/dev/null'])
+    else await ctx.run('tar', ['-czf', destTar, '-C', stage, '.'])
+  } finally {
+    rmSync(stage, { recursive: true, force: true })
+  }
+  return n
+}
+
 
 export async function runBackup(ctx: Ctx, dest: string, keep: number): Promise<number> {
   const dockerOrPg = async (): Promise<boolean> => {
@@ -155,9 +209,16 @@ export async function runBackup(ctx: Ctx, dest: string, keep: number): Promise<n
       .filter((l) => l && !l.endsWith('/')).length
     ctx.log.ok(`${blobs} blob(s), ${humanSize(statSync(tarPath).size)} compressed`)
 
+    ctx.log.say('App databases')
+    const appDataRoot = localAppDataDir(ctx, env)
+    const appTar = join(stageAbs, 'app-data.tar.gz')
+    const appCount = await archiveAppData(ctx, env, appTar)
+    ctx.log.ok(`${appCount} app(s), ${humanSize(statSync(appTar).size)} compressed`)
+
     // Identifiers only — never credentials. `talaria restore` reads the
     // storage fields back out of here, because at restore time the database
-    // isn't there to ask.
+    // isn't there to ask. db.env inside app-data.tar.gz is a password file;
+    // treat the snapshot like the catalog dump.
     writeFileSync(
       join(stageAbs, 'manifest.txt'),
       [
@@ -171,12 +232,14 @@ export async function runBackup(ctx: Ctx, dest: string, keep: number): Promise<n
         `storage_prefix=${st.prefix}`,
         `uploads_dir=${uploadsDir}`,
         `blob_count=${blobs}`,
+        `app_data_dir=${appDataRoot}`,
+        `app_count=${appCount}`,
       ].join('\n') + '\n',
     )
-    await writeSums(stageAbs, ['db.sql.gz', 'uploads.tar.gz', 'manifest.txt'])
+    await writeSums(stageAbs, ['db.sql.gz', 'uploads.tar.gz', 'app-data.tar.gz', 'manifest.txt'])
 
     renameSync(stage, snap)
-    const total = statSync(join(snap, 'db.sql.gz')).size + statSync(join(snap, 'uploads.tar.gz')).size
+    const total = statSync(join(snap, 'db.sql.gz')).size + statSync(join(snap, 'uploads.tar.gz')).size + statSync(join(snap, 'app-data.tar.gz')).size
     ctx.log.ok(`snapshot complete — ${snap} (${humanSize(total)})`)
 
     if (keep > 0) {

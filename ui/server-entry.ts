@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -80,7 +80,7 @@ if (validateEnv) {
 // output with no type declarations, so a literal import fails module
 // resolution — the cast supplies the source module's types instead.
 const serverBundleUrl = './dist/server/server.js'
-const { default: server, migrate, writeHeadHeaders } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
+const { default: server, migrate, writeHeadHeaders, startAppBuilds } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
 
 // The boundary conversion for res.writeHead. A bundle built before
 // writeHeadHeaders existed exports none — same stale-dist case as `migrate`
@@ -145,6 +145,30 @@ async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promis
       res.end('Asset not found')
       return true
     }
+    return false
+  }
+}
+
+async function tryServeAppBuilds(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
+  const pathname = decodeURIComponent(url.pathname)
+  if (!pathname.startsWith('/app-builds/') || pathname.includes('..')) return false
+  const root = resolve(process.env.TALARIA_APP_BUILDS_DIR || join(__dirname, '..', 'app-builds'))
+  const filePath = resolve(root, pathname.slice('/app-builds/'.length))
+  if (filePath !== root && !filePath.startsWith(root + sep)) return false
+  try {
+    const fileStat = await stat(filePath)
+    if (!fileStat.isFile()) return false
+    const ext = extname(filePath).toLowerCase()
+    const data = await readFile(filePath)
+    res.writeHead(200, {
+      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+      'Content-Length': data.length,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    })
+    res.end(data)
+    return true
+  } catch {
     return false
   }
 }
@@ -312,6 +336,7 @@ function waitForDrain(res: ServerResponse): Promise<void> {
 
 async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' || req.method === 'HEAD') {
+    if (await tryServeAppBuilds(req, res)) return
     if (await tryServeStatic(req, res)) return
   }
 
@@ -667,4 +692,5 @@ process.on('exit', () => apiChild?.kill('SIGKILL'))
 
 httpServer.listen(port, host, () => {
   console.log(`[talaria-ui] listening on http://${host}:${port}`)
+  void startAppBuilds?.().catch((err: unknown) => console.error('[app-build]', err))
 })

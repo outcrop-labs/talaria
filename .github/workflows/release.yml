@@ -187,6 +187,17 @@ jobs:
   # tag must not move for a commit whose checks failed.
   api-package:
     needs: [resolve, ci]
+    # A nesting rule that only shows up the first time a tag is pushed: a called
+    # workflow's jobs can request no more than the CALLING JOB grants, and this
+    # file grants nothing but `contents: read` at the top. api-package.yml's
+    # `package` job asks for `packages: write`, which standalone runs (its own
+    # push trigger) happily grant themselves — nested, they are refused and the
+    # whole run dies as a startup failure before any job starts. The grant is
+    # here, on the call, rather than raised workflow-wide, so no other job gains
+    # a permission it does not use.
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/api-package.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}
@@ -299,6 +310,11 @@ jobs:
   desktop-package:
     needs: [resolve, ci, publish]
     if: needs.resolve.outputs.release == 'true'
+    # Same nesting rule as the api-package call above: desktop-package.yml's
+    # `attach` job writes release assets, so the call has to grant it. Its build
+    # jobs ask for nothing beyond reads.
+    permissions:
+      contents: write
     uses: ./.github/workflows/desktop-package.yml
     with:
       ref: ${{ needs.resolve.outputs.ref }}

@@ -1,7 +1,7 @@
 // @talaria/sdk — the surface Talaria apps build against.
 //
-// A Talaria app is a self-contained codebase in apps/<slug>/ that compiles
-// INTO the deployment and renders as native platform UI. It ships:
+// A Talaria app is a self-contained TypeScript codebase in apps/<slug>/ that
+// this instance compiles and runs without a host rebuild. It ships:
 //   talaria.json  manifest (name, icon, surfaces) — read by host + admin UI
 //   app.ts        defineApp({ work?, manage?, settings? }) — Svelte surfaces
 //   server.ts     optional defineAppServer(...) — API under /api/apps/<slug>/*
@@ -10,7 +10,8 @@
 // Mercury UI kit, session/query hooks, and a fetch helper wired to the app's
 // own server routes. Everything runs under the signed-in user's session, so
 // every platform permission and ACL applies unchanged — an app can never do
-// more than the person using it.
+// more than the person using it. App authors never write Rust.
+
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import type { Component, ComponentProps } from 'svelte'
 

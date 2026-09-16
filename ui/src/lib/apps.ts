@@ -1,9 +1,16 @@
 // Client registry for Talaria apps: which apps are enabled (server truth) and
-// how to load their compiled surface modules (build-time glob, code-split per
-// app — an app's bundle only downloads when one of its surfaces renders).
+// how to load their surface modules. Dev loads source through Vite (`/@app/`)
+// so authors keep HMR. Prod loads the independently-built chunk at
+// `/app-builds/<slug>/<key>/app.js` — the host bundle never contains app code.
 import { createQuery } from '@tanstack/svelte-query'
 import { getList } from '@/lib/fetch-json'
 import type { AppSurfaces } from '@/sdk'
+
+export interface AppBuildInfo {
+  status: 'ready' | 'building' | 'failed' | 'none'
+  key?: string
+  error?: string
+}
 
 export interface AppManifest {
   slug: string
@@ -13,6 +20,7 @@ export interface AppManifest {
   version: string
   surfaces: { work?: string; manage?: string; settings?: string }
   mcp?: boolean
+  build?: AppBuildInfo
 }
 
 export function useEnabledApps() {
@@ -23,12 +31,10 @@ export function useEnabledApps() {
   }))
 }
 
-// Both patterns during the Svelte migration: app.tsx entries become app.ts
-// (the surfaces object is pure TS importing .svelte components) in the apps
-// conversion wave; only one of the two exists per app at any time.
-const LOADERS = import.meta.glob(['../../../apps/*/app.ts', '../../../apps/*/app.tsx']) as Record<string, () => Promise<{ default: AppSurfaces }>>
-
-export function appLoader(slug: string): (() => Promise<{ default: AppSurfaces }>) | null {
-  const entry = Object.entries(LOADERS).find(([p]) => /apps\/([^/]+)\//.exec(p)?.[1] === slug)
-  return entry?.[1] ?? null
+export function appLoader(slug: string, key?: string | null): (() => Promise<{ default: AppSurfaces }>) | null {
+  if (import.meta.env.DEV) {
+    return () => import(/* @vite-ignore */ `/@app/${slug}/app.ts`)
+  }
+  if (!key) return null
+  return () => import(/* @vite-ignore */ `/app-builds/${slug}/${key}/app.js`)
 }

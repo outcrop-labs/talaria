@@ -14,6 +14,7 @@
   import { useRoleTemplates } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide } from '@/lib/motion'
   import { draftAgent, type AgentDraft } from '@/lib/muse.svelte'
+  import { appliedFields, summarizeSoul } from '@/lib/agent-onboard-refine'
   import RefineBar from './RefineBar.svelte'
   import SkillPreviewRow from './SkillPreviewRow.svelte'
 
@@ -103,6 +104,12 @@
     skills = d.skills
   }
 
+  // TALA-4 (onboarding surface): the refine used to end in a silent swap — the
+  // review fields just changed. The receipt says WHAT changed (±lines on the
+  // soul, which fields the design touched) and holds until the next refine.
+  type AppliedField = ReturnType<typeof appliedFields>[number]
+  let lastChange = $state<{ fields: AppliedField[]; soul: ReturnType<typeof summarizeSoul> } | null>(null)
+
   const currentDraftJson = () =>
     JSON.stringify({ name: displayName, handle: slug, department, role, soul, skills })
 
@@ -110,6 +117,7 @@
     if (!instruction.trim()) return
     generating = true
     genErr = null
+    lastChange = null
     // A design is a whole-agent generation — tens of seconds normally, minutes
     // on a slow provider day. The elapsed count (shown once it's genuinely
     // taking a while) is what separates "working, slowly" from "wedged" — the
@@ -127,6 +135,23 @@
       // whatever text it happened to emit — so a reply that needed a repair turn
       // does not teach the model its own broken shape on the way round again.
       chat = [...chat.slice(-8), { role: 'user', content: instruction.trim() }, { role: 'assistant', content: JSON.stringify(draft) }]
+      if (refining) {
+        // The receipt compares against what the viewer was looking at — the
+        // form's live values, not the last chat turn (hand edits between
+        // refines are changes too, and the model saw them via `current`).
+        lastChange = {
+          fields: appliedFields(
+            { role, soul, skills },
+            { role: draft.role, soul: draft.soul, skills: draft.skills },
+            [
+              { label: 'Role', key: 'role' },
+              { label: 'Soul', key: 'soul' },
+              { label: 'Starter skills', key: 'skills' },
+            ],
+          ),
+          soul: summarizeSoul(soul, draft.soul),
+        }
+      }
       applyDraft(draft)
       step = 'review'
     } catch (e) {
@@ -321,6 +346,30 @@
           error={genErr}
           onRefine={(text) => void generate(text, true)}
         />
+      {/if}
+
+      {#if lastChange}
+        <!-- THE REFINED RECEIPT: what the accepted draft changed, in place of
+             the silent field swap this step used to do. -->
+        <div
+          transition:slide={{ duration: 150 }}
+          class="flex items-center gap-2 rounded-md border border-line-subtle bg-surface px-2.5 py-1.5 text-[11px] text-muted"
+          data-refine-applied="visible"
+        >
+          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Refine applied</span>
+          <span class="truncate">
+            {#if lastChange.fields.length > 0}
+              {lastChange.fields.map((f) => f.label).join(', ')}
+              {#if !lastChange.soul.oversized}
+                · {lastChange.soul.text}
+              {/if}
+            {:else if lastChange.soul.text !== 'no text changes'}
+              {lastChange.soul.text}
+            {:else}
+              no changes to the design
+            {/if}
+          </span>
+        </div>
       {/if}
 
       <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />

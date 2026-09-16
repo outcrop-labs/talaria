@@ -49,6 +49,16 @@ A malformed tag (`v1.0`, `v1.0.0-beta.1`, `v1.0.0-RC.1` — the grammar is
 `vX.Y.Z-rc.N`, lowercase, exactly) fails the workflow loudly rather than
 publishing anything. Delete a misfire by deleting the tag.
 
+One trap when you re-cut a tag that already opened a release: **GitHub converts
+that release to a draft** when its tag goes away, and the next run finds the
+draft, refreshes its notes and uploads its assets into it — so the release looks
+done to anyone with push access and is invisible to everyone else. Publish it
+again once the re-run is green:
+
+```bash
+gh release edit v0.2.0-rc.1 --draft=false
+```
+
 ## Promoting to stable
 
 Same shape with a suffix-free tag:
@@ -72,8 +82,22 @@ Re-run one by hand from Actions → release → Run workflow (nightly from
 testing; `rc` pushes the moving `rc` tag from the rc tip — a dispatch
 cannot invent a version, only a tag carries one).
 
-If nightlies ever just stop: GitHub disables schedules after 60 days of
-repo inactivity. That is the first thing to check.
+If nightlies ever just stop, there are two things to check, and the second is
+the one that bit: GitHub disables schedules after 60 days of repo inactivity —
+but a run can also fail to START. A `startup_failure` produces **no jobs and no
+logs**, so it looks like nothing happened at all; that is how this channel sat
+dead from 2026-09-05 to 2026-09-16, with the run list the only evidence. Open
+the run's own page and read the banner (the API's log endpoints show nothing).
+The cause that time was a workflow-validation rule: a called workflow's jobs may
+request no more than the CALLING JOB grants, so the nested `api-package` call
+was refused for asking `packages: write` under a `contents: read` caller. Those
+grants now sit on the calls in `release.yml` — if a new nested call is added and
+the tag or nightly dies as a startup failure, that is the first thing to look at.
+
+`testing` also has to be current, and nothing enforces that: it sat at a
+2026-08-26 commit (no `api/`, no `desktop/`) until 2026-09-16, invisible while
+the channel was dead. Advance it as part of cutting an RC — a stale channel
+publishes stale code with a today's date on it.
 
 ## The tags on `ghcr.io/outcrop-labs/talaria`
 

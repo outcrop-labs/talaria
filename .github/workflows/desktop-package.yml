@@ -581,5 +581,9 @@ jobs:
         run: |
           set -eu
           ls -l assets
-          gh release upload "$TAG" assets/* --clobber
+          # --repo, explicitly: this job never checks the repository out (it only
+          # needs the artifacts), so `gh` has no .git to resolve the repository
+          # from and dies with "failed to run git: not a git repository". The
+          # first tag run stopped exactly there, after the checksums were written.
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" assets/* --clobber
           echo "attached $(ls assets | wc -l) files to $TAG"

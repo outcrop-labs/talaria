@@ -25,9 +25,27 @@
 name: migrations
 
 on:
+  # Filtered, unlike ci.yml's triggers: everything this job does hangs off the
+  # migration array in ui/src/server/db/pg.ts and the committed schema snapshot
+  # beside it, so a UI change, a Rust change or a docs push cannot make this job
+  # answer differently. It is not a required check (verified: main's protection
+  # asks for a review, no status checks), so a path filter here reports nothing
+  # rather than a pending check — and `bun run migrations:check` still runs on
+  # every api/... change that could carry SQL, because the api does not own the
+  # migrations (api/src/db.rs says so) and cannot touch them.
   pull_request:
+    paths:
+      - 'ui/src/server/db/**'
+      - 'ui/scripts/check-migrations.ts'
+      - 'ui/package.json'
+      - '.github/workflows/migrations.yml'
   push:
     branches: [main, rc, testing]
+    paths:
+      - 'ui/src/server/db/**'
+      - 'ui/scripts/check-migrations.ts'
+      - 'ui/package.json'
+      - '.github/workflows/migrations.yml'
 
 concurrency:
   group: migrations-${{ github.ref }}

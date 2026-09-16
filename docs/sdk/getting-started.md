@@ -1,8 +1,8 @@
 # Getting started
 
-An app is a self-contained codebase that compiles **into** the Talaria deployment and renders as
+An app is a self-contained TypeScript codebase this instance compiles and renders as
 native platform surfaces — same design system, same router, same session. Not an iframe, not
-webhooks.
+webhooks. Authors write against `@talaria/sdk`; they never write Rust.
 
 ## Anatomy
 
@@ -17,8 +17,8 @@ apps/<slug>/
   harnesses/     optional activity harnesses — one defineHarness per file
 ```
 
-Drop a directory under `apps/` (or install one from **Manage → Apps**, which git-clones it
-there), reload the dev server (rebuild in production), then enable it in **Manage → Apps**.
+Scaffold one with `bun talaria app new <slug>`, or drop a directory under `apps/` (or install
+from **Manage → Apps**). Enable it in **Manage → Apps**.
 
 ## The manifest
 
@@ -84,12 +84,14 @@ session, the theme.
 
 ## Ten minutes to a real app
 
-1. Copy [`apps/contacts`](../../apps/) to `apps/<slug>`, edit `talaria.json`.
+1. `bun talaria app new <slug>` — writes `apps/<slug>/` (work surface, server, MCP starter).
 2. Replace the surface with yours ([ui-kit.md](./ui-kit.md), [client.md](./client.md)).
-3. Add your API ([server.md](./server.md)) — or call platform APIs from the client and skip
+3. Grow the API ([server.md](./server.md)) — or call platform APIs from the client and skip
    a server entirely.
 4. Optional: give agents tools ([mcp.md](./mcp.md)) or model calls
    ([harnesses.md](./harnesses.md)).
 5. Enable in **Manage → Apps**; grant views in **Admin → People**.
 
 Publishing and the marketplace: [APPS.md](../APPS.md).
+
+

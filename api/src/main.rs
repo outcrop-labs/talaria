@@ -70,6 +70,18 @@ async fn main() {
         });
     }
 
+    // Drop apps whose last compile/load failed. Enablement already probes;
+    // this closes the window after a crash between boots. GET /admin/apps
+    // is a read — it must not mutate the enabled set.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Ok(sb) = state.secretbox().await {
+                talaria_api::apps::disable_broken_apps(&state.pg, &sb).await;
+            }
+        });
+    }
+
     // The toolkit child gets the same boot guarantee. It spawns on demand —
     // renders and comms reads are the only callers that summon it — so a
     // deploy's first agent session can beat the spawn, and a session whose
