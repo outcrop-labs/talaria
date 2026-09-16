@@ -12,7 +12,11 @@
 # WHAT EACH PLATFORM GETS
 #   linux    deb, rpm and AppImage from Tauri's own bundlers, plus pacman and
 #            flatpak — Tauri has no target for either, so packaging/linux and
-#            packaging/flatpak build them from ONE staged FHS tree.
+#            packaging/flatpak build them from ONE staged FHS tree. The AppImage
+#            takes a second linuxdeploy pass (packaging/linux/repack-appimage.sh)
+#            to drop the build host's libwayland-client, which linuxdeploy
+#            otherwise bundles and which aborts the app on any host whose
+#            Wayland stack differs from the runner's.
 #   macOS    a universal .app inside a .dmg, plus a zipped .app for scripted
 #            installs. Universal means both Apple targets ride in one download
 #            (Apple silicon and Intel alike).
@@ -57,10 +61,6 @@
 name: desktop-package
 
 on:
-  pull_request:
-    paths:
-      - 'desktop/**'
-      - '.github/workflows/desktop-package.yml'
   push:
     branches: [main]
     # Paths are safe here (chassis.yml's argument: nothing in this file is a

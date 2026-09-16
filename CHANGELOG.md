@@ -37,10 +37,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 - **Talaria Desktop ships installers for all three desktops, built and
   attached by CI (`.github/workflows/desktop-package.yml`,
   [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** Tauri's bundlers cover linux
-  deb/rpm/AppImage, macOS as one universal build, and windows nsis/msi; the two
-  targets Tauri has none of — Arch's pacman and flatpak — are built from one
-  staged FHS tree in `desktop/packaging/` (`stage.sh`, then `pack-pacman.sh`,
-  or `flatpak-builder` against the GNOME 50 runtime). The bundle targets moved
+  deb/rpm/AppImage, macOS as one universal build, and windows nsis (plus an
+  `.msi` when the version has no pre-release part — Windows product versions
+  have a numeric fourth field, so a `v0.2.0-rc.1` release ships the `.exe`
+  rather than an `.msi` claiming to be `0.2.0`); the two targets Tauri has none
+  of — Arch's pacman and flatpak — are built from one staged FHS tree in
+  `desktop/packaging/` (`stage.sh`, then `pack-pacman.sh`, or
+  `flatpak-builder` against the GNOME 50 runtime). The bundle targets moved
   out of the previously-empty `targets` list into per-platform config files
   (`tauri.linux.conf.json`, `tauri.windows.conf.json`,
   `tauri.macos.conf.json`), so `tauri build` produces that platform's
@@ -58,11 +61,22 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   `.deb` stamped with the injected version (`Version: 0.0.0-test`,
   `Depends: libwebkit2gtk-4.1-0, libgtk-3-0`); `packaging/linux/*.sh` turned
   that binary into a `.pkg.tar.zst` that `pacman -Qip` reads back
-  (`talaria-desktop-bin 0.2.0_rc.1-1`, deps `webkit2gtk-4.1`/`gtk3`, x86_64);
-  the local AppImage failure was traced to the Arch host's toolchain
-  (`.relr.dyn` sections linuxdeploy's bundled `strip` cannot read, and the gtk
-  plugin's Debian gdk-pixbuf path) and not to this config; the full matrix then
-  ran in CI.
+  (`talaria-desktop-bin 0.2.0_rc.1-1`, deps `webkit2gtk-4.1`/`gtk3`, x86_64).
+  The full matrix then ran in CI
+  ([run](https://github.com/outcrop-labs/talaria/actions/runs/35064711777)):
+  six jobs green, producing
+  `Talaria_<v>_amd64.{deb,AppImage}`, `Talaria-<v>-1.x86_64.rpm`,
+  `Talaria-<v>-x86_64.pkg.tar.zst`, `Talaria-<v>-x86_64.flatpak`,
+  `Talaria_<v>_universal.dmg` + `.app.zip`, and the NSIS `.exe` — whose
+  control metadata, `pacman -Qip` output, DMG/PE headers and the AppImage's
+  ELF were all read back afterwards. Two of those runs earned their keep:
+  flatpak-builder needs `eu-strip` (elfutils), and the msi bundler refuses a
+  pre-release version, hence the conditional `.msi`. A third did: the
+  CI-built AppImage aborted on Arch (`Could not create surfaceless EGL
+  display: EGL_BAD_ALLOC`) — bisected to linuxdeploy's bundled
+  `libwayland-client.so.0`, excluded by a second repack pass
+  (`packaging/linux/repack-appimage.sh`) — and the repacked artifact was then
+  run on that same host: window up, the registered instance loaded.
 
 ### Changed
 

@@ -176,6 +176,16 @@ on Arch (`stage.sh` → `pack-pacman.sh` → `pacman -Qip`), and the flatpak nee
 `flatpak-builder` and `elfutils` (flatpak-builder's `eu-strip`) plus the runtime named in
 the manifest.
 
+The AppImage takes one extra pass for the same reason the other formats do not:
+linuxdeploy's gtk plugin deploys the build distro's `libwayland-client.so.0`, a library
+whose job is to talk to the *local* compositor and driver, and a bundle carrying a foreign
+one aborts before a window exists on a host with a different Wayland stack (Arch:
+`Could not create surfaceless EGL display: EGL_BAD_ALLOC`). The CLI has no way to ask for
+its exclusion — the config can only add files — so `packaging/linux/repack-appimage.sh`
+trims the AppDir and runs linuxdeploy once more with `--exclude-library`, on the same
+runner that built it (dependency resolution is host-based; a pass on another distro
+re-deploys that distro's libraries).
+
 ## Deferred on purpose
 
 Rename/reorder instances, health badges, native notifications, tray, deep links, OAuth via
