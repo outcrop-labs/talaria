@@ -27,6 +27,18 @@
 #            .exe while claiming no version they are not. The CLI downloads and
 #            drives both toolchains itself.
 #
+# EVERY ARTIFACT A RUNNER CAN EXERCISE IS EXERCISED. macOS mounts the dmg and
+# launches the app; windows installs the installer it just built and launches
+# what it installed; both fail the job if the app is not still running twenty
+# seconds later, before anything is attached to a release. The linux AppImage
+# was run on a real Arch host while this file was written (it is the artifact
+# whose first build aborted there — see repack-appimage.sh), and the deb, rpm
+# and pacman packages were installed in clean containers of their own distros.
+# What no runner here can test: Gatekeeper and SmartScreen as a USER meets them
+# (an artifact built on a runner is never quarantined, and nothing is signed),
+# and macOS session isolation, which `data_directory` does not provide
+# (docs/DESKTOP.md).
+#
 # THE VERSION IS INJECTED, NEVER COMMITTED. Git tags are the version authority
 # (RELEASING.md) and every version field in the repo still says 0.1.0
 # decoratively — so the tag arrives as `tauri build --config`, which merges the
@@ -61,6 +73,10 @@
 name: desktop-package
 
 on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-package.yml'
   push:
     branches: [main]
     # Paths are safe here (chassis.yml's argument: nothing in this file is a
@@ -375,6 +391,35 @@ jobs:
             "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.zip"
           ls -l "$RUNNER_TEMP/assets"
 
+      # The dmg's payload is LAUNCHED here, not just built: an unsigned,
+      # universal WKWebView app that cannot come up on a Mac is not something a
+      # release should carry, and this runner is the only Mac in the pipeline.
+      # Gatekeeper is deliberately not part of this test — nothing downloaded the
+      # bundle, so nothing quarantined it; what this proves is that the dmg
+      # mounts, the binary starts, and it is still running twenty seconds later.
+      - name: Smoke test the app bundle
+        run: |
+          set -eu
+          dmg=$(ls "$RUNNER_TEMP/assets"/*.dmg)
+          mount=$(hdiutil attach "$dmg" -nobrowse -readonly | grep -o '/Volumes/.*' | head -1)
+          echo "mounted $dmg at $mount"
+          cp -R "$mount/Talaria.app" "$RUNNER_TEMP/Talaria.app"
+          hdiutil detach "$mount" >/dev/null
+
+          "$RUNNER_TEMP/Talaria.app/Contents/MacOS/talaria-desktop" \
+            >"$RUNNER_TEMP/app.log" 2>&1 &
+          pid=$!
+          sleep 20
+          if ! kill -0 "$pid" 2>/dev/null; then
+            echo "::error::the app exited within 20s — its output:"
+            cat "$RUNNER_TEMP/app.log"
+            exit 1
+          fi
+          echo "app still running after 20s (pid $pid)"
+          lsappinfo list 2>/dev/null | grep -i -m1 talaria \
+            || echo "(not registered with LaunchServices — the process is alive regardless)"
+          kill "$pid" || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: packages-macos
@@ -449,6 +494,39 @@ jobs:
           cp nsis/*.exe "$RUNNER_TEMP/assets/"
           if [ -d msi ]; then cp msi/*.msi "$RUNNER_TEMP/assets/"; fi
           ls -l "$RUNNER_TEMP/assets"
+
+      # Install the artifact a release would carry and RUN it — an installer
+      # that will not install, or an app that will not start, fails here instead
+      # of on a user's machine. Whichever installer this run produced is the one
+      # tested: the msi when the version was stable enough to have one, the nsis
+      # setup otherwise. PowerShell drives it because the parts that matter
+      # (msiexec, Start-Process, finding the installed exe) are its native work.
+      - name: Smoke test the installer
+        run: |
+          set -eu
+          cat >"$RUNNER_TEMP/smoke.ps1" <<'PS'
+          $ErrorActionPreference = 'Stop'
+          $assets = Join-Path $env:RUNNER_TEMP 'assets'
+          $msi = Get-ChildItem (Join-Path $assets '*.msi') -ErrorAction SilentlyContinue
+          if ($msi) {
+            Write-Host "installing $($msi.FullName)"
+            Start-Process msiexec.exe -Wait -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart')
+          } else {
+            $setup = Get-ChildItem (Join-Path $assets '*setup.exe') | Select-Object -First 1
+            Write-Host "installing $($setup.FullName)"
+            Start-Process $setup.FullName -Wait -ArgumentList @('/S')
+          }
+          Start-Sleep -Seconds 15   # the installer's own children settle after it returns
+          $exe = Get-ChildItem -Path $env:LOCALAPPDATA, $env:ProgramFiles -Filter talaria-desktop.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'talaria-desktop.exe was not installed where an installer should have put it' }
+          Write-Host "installed at $($exe.FullName)"
+          $app = Start-Process $exe.FullName -PassThru
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) { throw "the app exited within 20s (code $($app.ExitCode))" }
+          Write-Host "app still running after 20s (pid $($app.Id))"
+          Stop-Process -Id $app.Id -Force
+          PS
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$RUNNER_TEMP/smoke.ps1"
 
       - uses: actions/upload-artifact@v4
         with:
