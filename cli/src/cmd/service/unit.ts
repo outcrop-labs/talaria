@@ -10,11 +10,18 @@
 // Restart=on-failure only: systemd rejects Restart=always for a oneshot, and
 // the compose services' own restart policies cover the steady state.
 
-export type UnitOpts = { root: string; dockerBin: string; upArgs: string[] }
+export type UnitOpts = { root: string; dockerBin: string; upArgs: string[]; composeFile?: string }
 
 export function unitText(o: UnitOpts): string {
-  const up = [o.dockerBin, 'compose', '-f', 'docker/compose.yml', ...o.upArgs].join(' ')
-  const down = [o.dockerBin, 'compose', '-f', 'docker/compose.yml', 'down'].join(' ')
+  // COMPOSE_FILE set (the registry-image flow in CONTAINER.md): docker's
+  // precedence puts an explicit -f ABOVE the env, so honoring the env means
+  // dropping the -f and carrying it as a unit Environment instead — the same
+  // shape a shell export produces. Unset: byte-identical to the single-file
+  // unit the tests assert.
+  const fileArgs = o.composeFile ? [] : ['-f', 'docker/compose.yml']
+  const composeEnv = o.composeFile ? [`Environment=COMPOSE_FILE=${o.composeFile}`] : []
+  const up = [o.dockerBin, 'compose', ...fileArgs, ...o.upArgs].join(' ')
+  const down = [o.dockerBin, 'compose', ...fileArgs, 'down'].join(' ')
   return [
     '# /etc/systemd/system/talaria.service — installed by `talaria service install`.',
     "# Talaria's production stack is a docker compose project; this unit is only its",
@@ -38,6 +45,7 @@ export function unitText(o: UnitOpts): string {
     '# No --build here on purpose: boot starts what exists, `talaria deploy update`',
     '# rebuilds. Interpolation comes from docker/.env (compose loads it from the',
     '# compose file\'s own directory) — which is why install persists DOCKER_GID there.',
+    ...composeEnv,
     `ExecStart=${up}`,
     `ExecStop=${down}`,
     'TimeoutStartSec=20min',
