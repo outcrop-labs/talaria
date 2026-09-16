@@ -115,6 +115,8 @@ services:
       TALARIA_UPLOADS_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/uploads
       TALARIA_FLEET_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/fleet
       TALARIA_APPS_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/apps
+      TALARIA_APP_BUILDS_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/app-builds
+      TALARIA_APP_DATA_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}/app-data
       # Service DNS replaces every dev-loopback address. Password is the one
       # knob — user/db names are fixed into the DATABASE_URL default.
       DATABASE_URL: ${DATABASE_URL:-postgres://talaria:${POSTGRES_PASSWORD:-talaria}@postgres:5432/talaria}

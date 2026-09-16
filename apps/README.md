@@ -4,17 +4,17 @@
 > marketplace, publishing) and [`docs/sdk/`](../docs/sdk/README.md) (the complete `@talaria/sdk`
 > docset).
 
-Apps are self-contained codebases that compile **into** the Talaria deployment and render as
+Apps are self-contained TypeScript codebases this instance compiles and renders as
 **native platform surfaces** — same design system, same router, same session. Not iframes, not
 webhooks: your code becomes part of the product, and integrates with anything the signed-in user
-could already do.
+could already do. Authors import `@talaria/sdk` (+ svelte); they never write Rust.
 
 Apps are **Svelte 5** (runes) with `@tanstack/svelte-query` for data, like the host. Shared
 dependencies (svelte, svelte-query, zod, lucide icons) resolve from the host — apps install
 nothing, there is exactly one copy of each in the deployment.
 
 Each directory here is one app. Drop a codebase in (or install one from **Manage → Apps**, which
-git-clones it here), reload the dev server (or rebuild in production), then enable it in
+git-clones it here). The instance compiles it and starts its database; then enable it in
 **Manage → Apps**.
 
 ## Anatomy

@@ -16,10 +16,12 @@ which command when.
 | :--- | :--- |
 | First run on a machine | `talaria setup` → brings up postgres/redis; claim the admin account in the app |
 | Every day after that | `talaria dev` → infra, readiness waits, the app on **http://localhost:5273** |
+| New Talaria app | `talaria app new <slug>` → TypeScript skeleton in `apps/<slug>` ([`APPS.md`](./APPS.md), [`sdk/`](./sdk/README.md)) |
 | Something's wedged | `talaria reset --help` first; every reset is destructive and typed |
 | Shipping it | `talaria deploy up` → the container stack ([`CONTAINER.md`](./CONTAINER.md)) |
 | A host that reboots | `talaria service install` → the stack, supervised by systemd across reboots |
 | Before you need it | `talaria backup` ([`BACKUPS.md`](./BACKUPS.md)) |
+
 
 ## Parallel work
 

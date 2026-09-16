@@ -46,5 +46,6 @@ Talaria IS the company workspace: tickets, knowledge, documents, channels, resea
 | One person needs this now | `message_user` (sparingly — it's rate-limited) |
 | Reach outside (mail/calendar) | `draft_email` / `draft_calendar_event` |
 | Push to GitHub | plain `git` over `https://` — credentials are injected, none will be visible |
+| Build a Talaria app | **talaria-apps** skill — TypeScript, `@talaria/sdk`, never Rust |
 | A talaria tool isn't in your tool list | deferred, not missing — `tool_search("talaria")`, then call by exact name |
 | Something is broken | `report_problem` |

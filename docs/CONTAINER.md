@@ -394,12 +394,11 @@ can destroy or rewrite data (drop table, truncate, unscoped delete/update, …)
 unless it carries an inline `-- deliberate: <why>` comment.
 
 Installing an app from the marketplace clones it into
-`/var/lib/talaria/apps/`, but apps *compile into the image* at build time
-([`APPS.md`](./APPS.md)) — an install reports `pendingBuild` until a rebuild
-happens. In container mode that rebuild is a redeploy with the app present in
-the build context (a checkout's `apps/` — local apps included — or a fork that
-vendors it), which is exactly the orchestrator's job. Nothing breaks in the
-meantime; the app simply isn't live yet.
+`/var/lib/talaria/apps/`. This instance compiles it (artifacts under
+`TALARIA_APP_BUILDS_DIR`) and starts a dedicated Postgres container for its
+data (`TALARIA_APP_DATA_DIR`). No host-image rebuild. Uninstall stops the
+container and deletes both directories.
+
 
 One caveat for exotic setups: chassis mounts (workbench profiles, plugins)
 reference **host** paths — the rendered fleet compose resolves them on the

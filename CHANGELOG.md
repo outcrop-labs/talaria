@@ -20,6 +20,39 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   under COMPOSE_FILE asserted in the CLI suite (pull-before-up ordering, no
   --build, die-on-pull-failure), unit text with and without the env, drift
   across a layered override, and the unset path byte-identical to before.
+- **Enable compiles and loads the app first.** Manage → Apps runs a rebuild +
+  module probe before enable (UI surfaces, `server.ts` `fetch`, `mcp.ts` `tools`);
+  a failed compile or a module that will not load is refused with that error.
+  An already-enabled app whose `current.json` is `failed` is disabled by the
+  boot reconciler (api + UI), not by GET `/api/admin/apps`. Verified:
+  `enable_block_reason` names a failed compile and lets `ready` through;
+  `moduleHasFetch` / `moduleHasMcpTools` / `moduleHasSurfaces` accept the SDK
+  shapes and reject empty defaults; `clientArtifactOk` requires an ESM export.
+
+- **`talaria app new <slug>` scaffolds a TypeScript app** (work surface, document-store
+  server, MCP starter) into `apps/<slug>`. Authors stay on `@talaria/sdk`; never Rust.
+  The fleet skill `talaria-apps` is the playbook for building one. Verified: slug
+  guard refuses before write; existing dest dies; files land under `apps/<slug>`
+  (or `TALARIA_APPS_DIR`); skeleton embeds the slug in the client only.
+
+- **Apps compile on the instance, not into the host.** Installing an app no
+  longer requires rebuilding Talaria. The host emits stable `/runtime/rt-*.js`
+  entries; each app is a standalone Vite build against those, with its own
+  Postgres (a compose project, spawned on install, destroyed on uninstall).
+  The DB password is sealed in `app_settings` and written to a 0600 `db.env`,
+  never `docker run -e` and never HMAC of `TALARIA_SECRET_KEY`. `talaria backup`
+  dumps each app DB into `app-data.tar.gz`. A throw in an app's UI, server,
+  or MCP stays in that pane and shows the crash — the rest of the cockpit keeps
+  running. Authors write TypeScript against `@talaria/sdk`; they never write
+  Rust. Verified: `bun run verify` (svelte-check 0 errors, mcp `tsc --noEmit`,
+  1139 ui tests); `cargo fmt` + clippy `-D warnings` + 2112 api tests from
+  `api/` (the crate's rust-toolchain). Specifier derivation includes
+  `svelte/internal/client` and excludes the compiler; `sourceKey` is stable
+  then changes with a source edit; `isolateApp` swallows a throw into
+  `{ ok: false }`; `composeYaml` has no password; a compose down/up kept a
+  row; restore of `all` extracts `app-data.tar.gz`. Not live-exercised: enabling
+  contacts in the worktree UI.
+
 
 - **Talaria Desktop — a Tauri v2 multitenant shell around Talaria instances
   (`desktop/`, [`docs/DESKTOP.md`](./docs/DESKTOP.md)).** One window, two
