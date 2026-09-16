@@ -186,6 +186,18 @@ trims the AppDir and runs linuxdeploy once more with `--exclude-library`, on the
 runner that built it (dependency resolution is host-based; a pass on another distro
 re-deploys that distro's libraries).
 
+Until a platform is exercised, "the installer built" and "the installer works" are
+different claims, so the pipeline makes the runners prove what they can: macOS mounts the
+dmg and launches the app, windows installs whichever installer the run produced and
+launches what it installed, and each job fails if the app is not still running twenty
+seconds later. When this pipeline was written, the Linux formats were installed in clean
+containers of their own distributions (Ubuntu, Fedora, Arch) and the AppImage was run on an
+Arch host, which is a one-off rather than something CI repeats.
+
+What no runner here can test: Gatekeeper and SmartScreen as a user meets them — an artifact
+built on a runner was never quarantined, and nothing here is signed — and the session
+isolation that `data_directory` does not provide on macOS or Windows.
+
 ## Deferred on purpose
 
 Rename/reorder instances, health badges, native notifications, tray, deep links, OAuth via

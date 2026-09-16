@@ -77,6 +77,18 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   `libwayland-client.so.0`, excluded by a second repack pass
   (`packaging/linux/repack-appimage.sh`) — and the repacked artifact was then
   run on that same host: window up, the registered instance loaded.
+  Each platform's own job then proves the artifact comes up, not merely that
+  it built
+  ([run](https://github.com/outcrop-labs/talaria/actions/runs/35098785546)):
+  macOS verifies the dmg (`disk image (Apple_HFS : 4): verified`) and launches
+  the .app (still running 20 s later), windows installs the installer it just
+  produced and launches what it installed
+  (`C:\Users\…\AppData\Local\Talaria\talaria-desktop.exe`, still running), and
+  the deb, rpm, pacman and flatpak packages were each installed in a clean
+  container of their own distribution (Ubuntu, Fedora, Arch). What stays
+  unverified is what no runner can be: Gatekeeper and SmartScreen as a user
+  meets them — an artifact built on a runner was never quarantined — and
+  session isolation on macOS/Windows, which `data_directory` does not provide.
 
 ### Changed
 
