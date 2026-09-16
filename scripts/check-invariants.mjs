@@ -48,6 +48,7 @@
 //   rewrite while a false negative costs another round.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -817,6 +818,8 @@ for (const rule of CENSUS) {
     ['api/src/fitness/toolbox/talaria_tools.rs', 'fn models_every_tool_the_toolkit_registers'],
     ['api/src/fitness/toolbox/sandbox.rs', 'fn every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog'],
     ['api/src/fitness/toolbox/sandbox.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
+    ['api/src/fleet/hermes_skills.rs', 'fn every_catalogued_hermes_pack_is_classified'],
+    ['api/src/fleet/hermes_skills.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
   ]
   const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
   if (missing.length) {
@@ -834,6 +837,68 @@ for (const rule of CENSUS) {
       ],
       found: [],
     })
+  }
+}
+
+
+// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY REPLACED PACK MUST
+// HAVE A TALARIA SIGNPOST occupying the name agents reach for. Hermes adds
+// packs on image updates; a six-line prune array in docker.rs silently let
+// new conflicts in. The catalog is scripts/hermes-skill-authority.json —
+// classify a new path (replaced / keepExact / keepPrefix) before it teaches
+// the fleet a parallel vault. Signposts live in scripts/skills/<signpost>/.
+{
+  const catalogPath = join(ROOT, 'scripts/hermes-skill-authority.json')
+  if (!existsSync(catalogPath)) {
+    failures.push({
+      id: 'hermes-skill-authority-missing',
+      what: 'scripts/hermes-skill-authority.json is missing',
+      fix: [
+        'The Hermes bundled-skill authority catalog is the tripwire for packs',
+        'the image ships that conflict with Talaria. Restore the file, or the',
+        'fleet will prune an empty list and teach Notion again.',
+      ],
+      found: [],
+    })
+  } else {
+    const cat = loadAuthority(ROOT)
+    const replaced = cat.replaced || []
+    const unknown = unclassifiedHermes(cat.catalog || [], cat)
+    if (unknown.length) {
+      failures.push({
+        id: 'hermes-skill-unclassified',
+        what: 'Hermes bundled packs with no replace/keep classification',
+        fix: [
+          'Hermes shipped a pack this catalog has not classified. Add it to',
+          'replaced (and a scripts/skills/<signpost> SKILL.md), keepExact, or',
+          'keepPrefixes in scripts/hermes-skill-authority.json — do not let it',
+          'teach the fleet a parallel workspace by omission.',
+          ...unknown.map((u) => `  ${u}`),
+        ],
+        found: unknown.map((u) => ({ file: 'scripts/hermes-skill-authority.json', line: 1, excerpt: u })),
+      })
+    }
+    const missing = []
+    for (const r of replaced) {
+      const skill = join(ROOT, 'scripts/skills', r.signpost, 'SKILL.md')
+      if (!existsSync(skill)) {
+        missing.push(`${r.path} → scripts/skills/${r.signpost}/SKILL.md (${r.why})`)
+      }
+    }
+    if (missing.length) {
+      failures.push({
+        id: 'hermes-skill-signpost-missing',
+        what: 'replaced Hermes packs without a Talaria signpost skill',
+        fix: [
+          'Pruning a pack without occupying the name leaves agents searching',
+          'for "notion" / "github" / "email" and improvising. Add a short',
+          'SKILL.md at scripts/skills/<signpost>/ whose frontmatter name: is',
+          'the Hermes name, pointing at the talaria-toolkit playbook.',
+          ...missing.map((m) => `  ${m}`),
+        ],
+        found: [],
+      })
+    }
   }
 }
 

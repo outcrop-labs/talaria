@@ -796,6 +796,54 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true, "documentId": id }))
         }
 
+        "create_sheet" => {
+            let rows = a.get("rows").and_then(Value::as_array).ok_or_else(|| {
+                refuse("\"rows\" is required — a grid as string[][], row 0 the header")
+            })?;
+            if rows.is_empty() {
+                return Err(refuse(
+                    "rows must include a header row — row 0 is the header",
+                ));
+            }
+            let id = next_id("doc", w.documents.len());
+            w.documents.push(SandboxDocument {
+                id: id.clone(),
+                title: req_str(&a["title"], "title")?.to_string(),
+                markdown: serde_json::to_string(rows).unwrap_or_else(|_| "[]".into()),
+                folder: opt_str(&a["folder"]).map(str::to_string),
+                visibility: if w.assistant_for.is_some() {
+                    "private"
+                } else {
+                    opt_str(&a["visibility"]).unwrap_or("org")
+                }
+                .to_string(),
+                versions: 1,
+                exported_url: None,
+                kind: "sheet".to_string(),
+            });
+            Ok(json!({ "ok": true, "documentId": id, "kind": "sheet" }))
+        }
+
+        "create_page" => {
+            let id = next_id("doc", w.documents.len());
+            w.documents.push(SandboxDocument {
+                id: id.clone(),
+                title: req_str(&a["title"], "title")?.to_string(),
+                markdown: req_str(&a["html"], "html")?.to_string(),
+                folder: opt_str(&a["folder"]).map(str::to_string),
+                visibility: if w.assistant_for.is_some() {
+                    "private"
+                } else {
+                    opt_str(&a["visibility"]).unwrap_or("org")
+                }
+                .to_string(),
+                versions: 1,
+                exported_url: None,
+                kind: "microsite".to_string(),
+            });
+            Ok(json!({ "ok": true, "documentId": id, "kind": "microsite" }))
+        }
+
         "update_document" => {
             let idx = w
                 .documents
@@ -807,14 +855,43 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                         a["documentId"].as_str().unwrap_or("")
                     ))
                 })?;
-            if let Some(t) = opt_str(&a["title"]) {
-                w.documents[idx].title = t.to_string();
+            let kind = w.documents[idx].kind.clone();
+            if opt_str(&a["markdown"]).is_some() && (kind == "sheet" || kind == "microsite") {
+                return Err(refuse(if kind.as_str() == "sheet" {
+                    "this is a spreadsheet — pass rows (string[][], row 0 the header), not markdown; markdown would replace the grid with a single string"
+                } else {
+                    "this is a web page — pass html, not markdown; markdown would replace the page with a single string"
+                }));
             }
-            if let Some(m) = opt_str(&a["markdown"]) {
+            if a.get("rows").and_then(Value::as_array).is_some() && kind != "sheet" {
+                return Err(refuse(
+                    "rows is only for spreadsheets (create_sheet); this document is not a sheet",
+                ));
+            }
+            if opt_str(&a["html"]).is_some() && kind != "microsite" {
+                return Err(refuse(
+                    "html is only for web pages (create_page); this document is not a page",
+                ));
+            }
+            if let Some(title) = opt_str(&a["title"]) {
+                w.documents[idx].title = title.to_string();
+            }
+            if kind == "sheet" {
+                if let Some(rows) = a.get("rows").and_then(Value::as_array) {
+                    w.documents[idx].markdown =
+                        serde_json::to_string(rows).unwrap_or_else(|_| "[]".into());
+                }
+            } else if kind == "microsite" {
+                if let Some(html) = opt_str(&a["html"]) {
+                    w.documents[idx].markdown = html.to_string();
+                }
+            } else if let Some(m) = opt_str(&a["markdown"]) {
                 w.documents[idx].markdown = m.to_string();
             }
             w.documents[idx].versions += 1;
-            Ok(json!({ "ok": true, "version": w.documents[idx].versions }))
+            Ok(
+                json!({ "ok": true, "version": w.documents[idx].versions, "kind": w.documents[idx].kind }),
+            )
         }
 
         "list_documents" => Ok(json!({ "documents": w.documents.iter()
@@ -824,7 +901,7 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "get_document" => {
             let d = doc_of(w, &a["documentId"])?;
             Ok(
-                json!({ "id": d.id, "title": d.title, "markdown": d.markdown, "visibility": d.visibility, "version": d.versions }),
+                json!({ "id": d.id, "title": d.title, "markdown": d.markdown, "visibility": d.visibility, "version": d.versions, "kind": d.kind }),
             )
         }
 
@@ -893,20 +970,72 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         "read_channel" => {
             let idx = channel_idx(w, &a["channelId"])?;
             let since = a["sinceSeq"].as_f64().unwrap_or(-1.0);
+            let thread = opt_str(&a["threadId"]);
             Ok(json!({ "messages": w.channels[idx].messages.iter()
-                .filter(|m| (m.seq as f64) > since)
+                .filter(|m| {
+                    if (m.seq as f64) <= since {
+                        return false;
+                    }
+                    match thread {
+                        None => true,
+                        Some(t) => m.id == t || m.thread_root_id.as_deref() == Some(t),
+                    }
+                })
                 .collect::<Vec<_>>() }))
         }
 
         "post_to_channel" => {
             let idx = channel_idx(w, &a["channelId"])?;
             let seq = w.channels[idx].messages.len() as i64 + 1;
+            let thread = opt_str(&a["threadId"]).map(str::to_string);
+            if let Some(ref t) = thread {
+                let exists = w.channels[idx].messages.iter().any(|m| m.id == *t);
+                if !exists {
+                    return Err(refuse(format!(
+                        "no message \"{t}\" in this channel — read_channel returns the ids you can reply under"
+                    )));
+                }
+            }
+            let id = format!("msg-{seq}");
             w.channels[idx].messages.push(
                 serde_json::from_value(json!({
-                    "seq": seq, "author": w.agent, "body": req_str(&a["content"], "content")?
+                    "seq": seq,
+                    "author": w.agent,
+                    "body": req_str(&a["content"], "content")?,
+                    "id": id,
+                    "threadRootId": thread,
                 }))
                 .expect("a message deserializes"),
             );
+            Ok(json!({ "ok": true, "id": format!("msg-{seq}") }))
+        }
+
+        "react_to_message" => {
+            let idx = channel_idx(w, &a["channelId"])?;
+            let message_id = req_str(&a["messageId"], "messageId")?;
+            let emoji = req_str(&a["emoji"], "emoji")?;
+            let msg = w.channels[idx]
+                .messages
+                .iter_mut()
+                .find(|m| m.id == message_id)
+                .ok_or_else(|| {
+                    refuse(format!(
+                        "no message \"{message_id}\" in this channel — read_channel returns the ids you can react to"
+                    ))
+                })?;
+            if let Some(pos) = msg
+                .reactions
+                .iter()
+                .position(|r| r.emoji == emoji && r.author == w.agent)
+            {
+                msg.reactions.remove(pos);
+            } else {
+                msg.reactions
+                    .push(crate::fitness::toolbox::world::SandboxReaction {
+                        emoji: emoji.to_string(),
+                        author: w.agent.clone(),
+                    });
+            }
             Ok(json!({ "ok": true }))
         }
 
@@ -1413,6 +1542,8 @@ pub const BACKED_TOOLS: &[&str] = &[
     "delete_kb_doc",
     // ── Documents ────────────────────────────────────────────────────────
     "create_document",
+    "create_sheet",
+    "create_page",
     "update_document",
     "list_documents",
     "get_document",
@@ -1422,6 +1553,7 @@ pub const BACKED_TOOLS: &[&str] = &[
     "list_channels",
     "read_channel",
     "post_to_channel",
+    "react_to_message",
     "message_user",
     "list_teammates",
     "report_problem",
@@ -2033,6 +2165,53 @@ mod tests {
     }
 
     #[test]
+    fn creates_a_sheet_and_a_page_as_their_own_kinds() {
+        let mut s = sb();
+        let sheet = s.dispatch(
+            "create_sheet",
+            r#"{"title":"Vendors","rows":[["Vendor","Status"],["Acme","live"]]}"#,
+        );
+        assert!(sheet.text.contains("\"documentId\":\"doc-2\""));
+        assert!(sheet.text.contains("\"kind\":\"sheet\""));
+        assert_eq!(s.world.documents[1].kind, "sheet");
+        let page = s.dispatch("create_page", r#"{"title":"Status","html":"<h1>ok</h1>"}"#);
+        assert!(page.text.contains("\"kind\":\"microsite\""));
+        assert_eq!(s.world.documents[2].kind, "microsite");
+        assert_eq!(s.world.documents[2].markdown, "<h1>ok</h1>");
+    }
+
+    #[test]
+    fn refuses_markdown_updates_on_a_sheet_and_accepts_rows() {
+        let mut s = sb();
+        s.dispatch(
+            "create_sheet",
+            r#"{"title":"Vendors","rows":[["Vendor","Status"],["Acme","live"]]}"#,
+        );
+        let smashed = s.dispatch(
+            "update_document",
+            r#"{"documentId":"doc-2","markdown":"| Vendor | Status |"}"#,
+        );
+        assert!(smashed.text.contains("pass rows"), "{}", smashed.text);
+        let ok = s.dispatch(
+            "update_document",
+            r#"{"documentId":"doc-2","rows":[["Vendor","Status"],["Acme","gone"]]}"#,
+        );
+        assert!(!ok.is_error, "{}", ok.text);
+        assert!(s.world.documents[1].markdown.contains("gone"));
+        let page = s.dispatch("create_page", r#"{"title":"Status","html":"<h1>ok</h1>"}"#);
+        assert!(!page.is_error);
+        let html_on_doc = s.dispatch(
+            "update_document",
+            r#"{"documentId":"doc-1","html":"<p>nope</p>"}"#,
+        );
+        assert!(
+            html_on_doc.text.contains("web pages"),
+            "{}",
+            html_on_doc.text
+        );
+    }
+
+    #[test]
     fn saves_an_image_only_from_a_file_that_exists_in_the_agent_workspace() {
         let mut s = sb();
         let missing = s.dispatch(
@@ -2085,6 +2264,46 @@ mod tests {
         );
         assert!(tail.text.contains("new message"));
         assert!(!tail.text.contains("blocker for everything"));
+    }
+
+    #[test]
+    fn replies_in_a_thread_and_toggles_a_reaction_on_the_root() {
+        let mut s = sb();
+        let reply = s.dispatch(
+            "post_to_channel",
+            r#"{"channelId":"ch-platform","content":"we can ship without it","threadId":"msg-1"}"#,
+        );
+        assert!(!reply.is_error, "{}", reply.text);
+        assert_eq!(
+            s.world.channels[0].messages[1].thread_root_id.as_deref(),
+            Some("msg-1")
+        );
+        let invented = s.dispatch(
+            "post_to_channel",
+            r#"{"channelId":"ch-platform","content":"x","threadId":"msg-99"}"#,
+        );
+        assert!(invented.text.contains("read_channel"), "{}", invented.text);
+        let thread = s.dispatch(
+            "read_channel",
+            r#"{"channelId":"ch-platform","threadId":"msg-1"}"#,
+        );
+        assert!(thread.text.contains("we can ship without it"));
+        let reacted = s.dispatch(
+            "react_to_message",
+            r#"{"channelId":"ch-platform","messageId":"msg-1","emoji":"✅"}"#,
+        );
+        assert!(!reacted.is_error, "{}", reacted.text);
+        assert_eq!(s.world.channels[0].messages[0].reactions[0].emoji, "✅");
+        s.dispatch(
+            "react_to_message",
+            r#"{"channelId":"ch-platform","messageId":"msg-1","emoji":"✅"}"#,
+        );
+        assert!(s.world.channels[0].messages[0].reactions.is_empty());
+        let missing = s.dispatch(
+            "react_to_message",
+            r#"{"channelId":"ch-platform","messageId":"msg-99","emoji":"👍"}"#,
+        );
+        assert!(missing.text.contains("read_channel"), "{}", missing.text);
     }
 
     #[test]
@@ -2543,7 +2762,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            58,
+            61,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

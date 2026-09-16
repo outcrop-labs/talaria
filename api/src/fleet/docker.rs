@@ -461,27 +461,15 @@ async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentConta
         .collect())
 }
 
-/// Bundled skill packs that CONFLICT with the Talaria toolkit — they pitch a
-/// parallel system of record (external note vaults, ungoverned email) and
-/// send agents flailing. Removed explicitly because the seed marks packs
-/// "user-modified", which opt-out --remove preserves.
-const CONFLICTING_SKILL_PACKS: [&str; 6] = [
-    "note-taking", // obsidian — Talaria KB is the knowledgebase
-    "productivity/notion",
-    "productivity/airtable",
-    "productivity/google-workspace", // Talaria's Google integration is confirm-send governed
-    "email",                         // draft_email/read_recent_email govern mail through Talaria
-    "software-development/github", // gh-CLI-first pack, no gh exists here — the shared-root github skill carries the methodology
-];
-
 /// Strip the image's conflicting bundled skills from a slot's container.
-/// Surgical — only the conflict list goes; the rest of
-/// the bundled packs are genuinely useful and stay. Best-effort by contract:
-/// the caller treats false as "skip", never as failure.
+/// The classified list lives in `hermes_skills` (scripts/hermes-skill-authority.json)
+/// so a weekly Hermes pack cannot sneak a parallel workspace past a six-line
+/// array. Surgical — only replaced paths go; keepExact/keepPrefix packs stay.
+/// Best-effort by contract: the caller treats false as "skip", never as failure.
 pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
     let name = slot_container(department, slot);
-    let paths = CONFLICTING_SKILL_PACKS
-        .iter()
+    let paths = crate::fleet::hermes_skills::prune_paths()
+        .into_iter()
         .map(|p| format!("/opt/data/skills/{p}"))
         .collect::<Vec<_>>()
         .join(" ");

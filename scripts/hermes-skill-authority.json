@@ -1,0 +1,225 @@
+{
+  "comment": "Hermes bundled skills we have classified. catalog is a snapshot of the image's /opt/data/skills tree. A pack that appears in catalog (or in a live image) and is neither replaced nor under a keepPrefix / keepExact is unclassified. keepPrefixes is apple/ only \u2014 macOS-only, inert in these containers. Every other family is keepExact so a new creative/ or web/ pack cannot sneak in.",
+  "replaced": [
+    {
+      "path": "email",
+      "names": [
+        "email",
+        "email-inbox-triage",
+        "himalaya"
+      ],
+      "signpost": "email",
+      "why": "Mail is Talaria's confirm-send path (read_recent_email / draft_email). Himalaya and inbox-triage mint standing IMAP credentials."
+    },
+    {
+      "path": "note-taking",
+      "names": [
+        "obsidian"
+      ],
+      "signpost": "obsidian",
+      "why": "Talaria's knowledgebase is the company vault. The Obsidian pack teaches a local vault that does not exist here."
+    },
+    {
+      "path": "productivity/notion",
+      "names": [
+        "notion"
+      ],
+      "signpost": "notion",
+      "why": "Pages and databases are knowledge docs / boards. ntn CLI and Notion tokens are a parallel system of record."
+    },
+    {
+      "path": "productivity/airtable",
+      "names": [
+        "airtable"
+      ],
+      "signpost": "airtable",
+      "why": "Records are tickets or spreadsheets. Airtable REST + tokens are a parallel base."
+    },
+    {
+      "path": "productivity/google-workspace",
+      "names": [
+        "google-workspace"
+      ],
+      "signpost": "google-workspace",
+      "why": "Gmail/Calendar/Drive go through Talaria's governed tools (drafts await human approval). gws CLI bypasses confirm-send."
+    },
+    {
+      "path": "software-development/github",
+      "names": [
+        "github"
+      ],
+      "signpost": "github",
+      "why": "No gh CLI; credentials are injected at git time; PRs go through the workbench."
+    },
+    {
+      "path": "productivity/box",
+      "names": [
+        "box"
+      ],
+      "signpost": "box",
+      "why": "Company files live in Talaria Files (create_document / create_sheet / create_page). Box is a parallel drive."
+    },
+    {
+      "path": "productivity/xlsx",
+      "names": [
+        "xlsx"
+      ],
+      "signpost": "xlsx",
+      "why": "Spreadsheets are create_sheet (JSON grid, row 0 = header), not local .xlsx via openpyxl."
+    },
+    {
+      "path": "research/llm-wiki",
+      "names": [
+        "llm-wiki"
+      ],
+      "signpost": "llm-wiki",
+      "why": "An interlinked markdown KB is the Talaria knowledgebase. llm-wiki builds a second vault."
+    },
+    {
+      "path": "autonomous-ai-agents/claude-code",
+      "names": [
+        "claude-code"
+      ],
+      "signpost": "claude-code",
+      "why": "Coding harnesses are workbench jobs (workbench-driving). Raw Claude Code CLI skips plan gates and ticket-linked PRs."
+    },
+    {
+      "path": "autonomous-ai-agents/codex",
+      "names": [
+        "codex"
+      ],
+      "signpost": "codex",
+      "why": "Coding harnesses are workbench jobs (workbench-driving). Raw Codex CLI skips plan gates and ticket-linked PRs."
+    },
+    {
+      "path": "autonomous-ai-agents/opencode",
+      "names": [
+        "opencode"
+      ],
+      "signpost": "opencode",
+      "why": "Coding harnesses are workbench jobs (workbench-driving). Raw OpenCode CLI skips plan gates and ticket-linked PRs."
+    },
+    {
+      "path": "social-media/xurl",
+      "names": [
+        "xurl"
+      ],
+      "signpost": "xurl",
+      "why": "Ungoverned posting to X. Outbound from an agent is a draft a human approves, or a report_gap."
+    },
+    {
+      "path": "productivity/teams-meeting-pipeline",
+      "names": [
+        "teams-meeting-pipeline"
+      ],
+      "signpost": "teams-meeting-pipeline",
+      "why": "Meetings, notes, and tickets live in Talaria. Graph subscriptions and Teams pipelines are a parallel ops plane."
+    }
+  ],
+  "keepPrefixes": [
+    "apple/"
+  ],
+  "keepExact": [
+    "autonomous-ai-agents/computer-use",
+    "autonomous-ai-agents/hermes-agent",
+    "autonomous-ai-agents/merge-reconciler",
+    "creative/architecture-diagram",
+    "creative/ascii-video",
+    "creative/baoyu-infographic",
+    "creative/claude-design",
+    "creative/design-md",
+    "creative/humanizer",
+    "creative/manim-video",
+    "creative/p5js",
+    "creative/popular-web-designs",
+    "creative/songwriting-and-ai-music",
+    "devops/sdlc-review",
+    "media/gif-search",
+    "media/songsee",
+    "media/youtube-content",
+    "productivity/document-to-action-items",
+    "productivity/docx",
+    "productivity/maps",
+    "productivity/meeting-action-items",
+    "productivity/pdf",
+    "productivity/powerpoint",
+    "productivity/product-price-monitor",
+    "productivity/weekly-review-planning",
+    "research/arxiv",
+    "research/competitor-news-monitor",
+    "research/grounded-citations",
+    "software-development/codebase-inspection",
+    "software-development/dogfood",
+    "software-development/hermes-agent-skill-authoring",
+    "software-development/inspecting-hermes-desktop-dom",
+    "software-development/node-inspect-debugger",
+    "software-development/python-debugpy",
+    "software-development/requesting-code-review",
+    "software-development/simplify-code",
+    "software-development/spike",
+    "software-development/systematic-debugging",
+    "software-development/test-driven-development",
+    "web/blocked-page-recovery"
+  ],
+  "catalog": [
+    "apple/apple-notes",
+    "apple/apple-reminders",
+    "apple/findmy",
+    "apple/imessage",
+    "autonomous-ai-agents/claude-code",
+    "autonomous-ai-agents/codex",
+    "autonomous-ai-agents/computer-use",
+    "autonomous-ai-agents/hermes-agent",
+    "autonomous-ai-agents/merge-reconciler",
+    "autonomous-ai-agents/opencode",
+    "creative/architecture-diagram",
+    "creative/ascii-video",
+    "creative/baoyu-infographic",
+    "creative/claude-design",
+    "creative/design-md",
+    "creative/humanizer",
+    "creative/manim-video",
+    "creative/p5js",
+    "creative/popular-web-designs",
+    "creative/songwriting-and-ai-music",
+    "devops/sdlc-review",
+    "email/email-inbox-triage",
+    "email/himalaya",
+    "media/gif-search",
+    "media/songsee",
+    "media/youtube-content",
+    "note-taking/obsidian",
+    "productivity/airtable",
+    "productivity/box",
+    "productivity/document-to-action-items",
+    "productivity/docx",
+    "productivity/google-workspace",
+    "productivity/maps",
+    "productivity/meeting-action-items",
+    "productivity/notion",
+    "productivity/pdf",
+    "productivity/powerpoint",
+    "productivity/product-price-monitor",
+    "productivity/teams-meeting-pipeline",
+    "productivity/weekly-review-planning",
+    "productivity/xlsx",
+    "research/arxiv",
+    "research/competitor-news-monitor",
+    "research/grounded-citations",
+    "research/llm-wiki",
+    "social-media/xurl",
+    "software-development/codebase-inspection",
+    "software-development/dogfood",
+    "software-development/github",
+    "software-development/hermes-agent-skill-authoring",
+    "software-development/inspecting-hermes-desktop-dom",
+    "software-development/node-inspect-debugger",
+    "software-development/python-debugpy",
+    "software-development/requesting-code-review",
+    "software-development/simplify-code",
+    "software-development/spike",
+    "software-development/systematic-debugging",
+    "software-development/test-driven-development",
+    "web/blocked-page-recovery"
+  ]
+}
