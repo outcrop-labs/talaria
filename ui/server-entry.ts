@@ -1,8 +1,8 @@
 // Production server: a Node HTTP server wrapping the app's fetch handler
 // (dist/server/server.js) and serving the client assets (dist/client). Keeps the
 // streaming pump so SSE chat responses flush incrementally.
-import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, extname } from 'node:path'
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 // ── ui/.env, before anything reads process.env ───────────────────────────────
-// `vite dev` loads this file; `node server-entry.js` did not. Same install,
+// `vite dev` loads this file; a bare entry run did not. Same install,
 // two different views of the environment — and because setup.sh generates
 // AUTH_SECRET and TALARIA_SECRET_KEY as two SEPARATE random values, and
 // secretbox falls back from one to the other, that difference silently changed
@@ -23,7 +23,7 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 // REAL ENVIRONMENT WINS. A value already in process.env — systemd, docker,
 // Kubernetes, the shell — is never overwritten by the file. This is a fallback
 // for the single-box case, not a source of truth that can surprise a deploy.
-function loadEnvFile() {
+function loadEnvFile(): number {
   const path = join(__dirname, '.env')
   if (!existsSync(path)) return 0
   let loaded = 0
@@ -56,7 +56,7 @@ process.env.TALARIA_RUNTIME = 'prod-server'
 // a missing value. env.ts is TypeScript, which Node executes directly from
 // v22.18 (unflagged type stripping) — on an older runtime we say so and carry
 // on rather than refusing to start over a check we couldn't run.
-let validateEnv = null
+let validateEnv: typeof import('./src/server/env.ts').validateEnv | null = null
 try {
   ;({ validateEnv } = await import('./src/server/env.ts'))
 } catch (err) {
@@ -76,14 +76,18 @@ if (validateEnv) {
 
 // Imported AFTER the env is in place: a static import is hoisted above every
 // statement here, and the server graph reads process.env as it loads.
-const { default: server, migrate, writeHeadHeaders } = await import('./dist/server/server.js')
+// The specifier is non-literal on purpose: dist/server/server.js is build
+// output with no type declarations, so a literal import fails module
+// resolution — the cast supplies the source module's types instead.
+const serverBundleUrl = './dist/server/server.js'
+const { default: server, migrate, writeHeadHeaders } = (await import(serverBundleUrl)) as typeof import('./src/server/app.ts')
 
 // The boundary conversion for res.writeHead. A bundle built before
 // writeHeadHeaders existed exports none — same stale-dist case as `migrate`
 // below; the old one-liner conversion is kept as the fallback so a mismatched
 // dist degrades to the old behavior instead of 500ing every request, with
 // this line saying which box needs a rebuild.
-const headersForWriteHead =
+const headersForWriteHead: (response: Response) => Record<string, string | string[]> =
   typeof writeHeadHeaders === 'function'
     ? writeHeadHeaders
     : (response) => {
@@ -95,7 +99,7 @@ const CLIENT_DIR = join(__dirname, 'dist', 'client')
 const port = parseInt(process.env.PORT || '3000', 10)
 const host = process.env.HOST || '0.0.0.0'
 
-const MIME_TYPES = {
+const MIME_TYPES: Record<string, string> = {
   '.js': 'application/javascript',
   '.mjs': 'application/javascript',
   '.css': 'text/css',
@@ -114,7 +118,7 @@ const MIME_TYPES = {
   '.webmanifest': 'application/manifest+json',
 }
 
-async function tryServeStatic(req, res) {
+async function tryServeStatic(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`)
   const pathname = decodeURIComponent(url.pathname)
   if (pathname.includes('..')) return false
@@ -130,7 +134,7 @@ async function tryServeStatic(req, res) {
     if (!fileStat.isFile()) throw new Error('not a file')
     const ext = extname(filePath).toLowerCase()
     const data = await readFile(filePath)
-    const headers = { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream', 'Content-Length': data.length }
+    const headers: Record<string, string | number> = { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream', 'Content-Length': data.length }
     if (isAsset) headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     res.writeHead(200, headers)
     res.end(data)
@@ -194,16 +198,16 @@ const SENSITIVE_FRAGMENTS = ['token', 'secret', 'password', 'apikey', 'privateke
 // useful diagnostic. Report its length instead of trusting it.
 const MAX_LOGGED_VALUE = 64
 
-function isSensitiveParam(rawKey) {
+function isSensitiveParam(rawKey: string): boolean {
   const key = rawKey.toLowerCase().replace(/[^a-z0-9]/g, '')
   if (SENSITIVE_KEYS.has(key)) return true
   return SENSITIVE_FRAGMENTS.some((fragment) => key.includes(fragment))
 }
 
 /** `?code=4/0Ab…&state=xyz&next=/boards` -> `?code=[redacted]&state=[redacted]&next=%2Fboards` */
-export function redactQueryForLog(search) {
+export function redactQueryForLog(search: string): string {
   if (!search || search === '?') return ''
-  const parts = []
+  const parts: string[] = []
   for (const [rawKey, rawValue] of new URLSearchParams(search)) {
     const key = encodeURIComponent(rawKey)
     if (rawValue === '') {
@@ -225,18 +229,19 @@ export function redactQueryForLog(search) {
 // credential. The session cookie's VALUE is a bearer token, so only its
 // presence is recorded — "was this an anonymous request or a signed-in one".
 let requestSeq = 0
-function requestContext(req, url) {
+function requestContext(req: IncomingMessage, url: URL) {
   const cookies = req.headers.cookie || ''
   return {
     id: `${Date.now().toString(36)}-${(requestSeq = (requestSeq + 1) % 0xffffff).toString(36)}`,
     method: req.method || 'GET',
     path: url.pathname + redactQueryForLog(url.search),
     // x-forwarded-for is client-controlled; it is a hint for correlation only.
-    ip: (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '-',
+    ip: String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() || req.socket.remoteAddress || '-',
     auth: cookies.includes('talaria_session=') ? 'session' : 'anon',
     started: Date.now(),
   }
 }
+type RequestContext = ReturnType<typeof requestContext>
 
 // Errors that mean "the peer went away", not "this server is broken".
 const DISCONNECT_CODES = new Set([
@@ -251,10 +256,11 @@ const DISCONNECT_CODES = new Set([
 ])
 
 /** First abort-family code in the error's cause chain, or null. */
-function disconnectCode(err) {
-  for (let e = err, depth = 0; e && typeof e === 'object' && depth < 5; e = e.cause, depth += 1) {
-    if (typeof e.code === 'string' && DISCONNECT_CODES.has(e.code)) return e.code
-    if (e.name === 'AbortError') return 'ABORT_ERR'
+function disconnectCode(err: unknown): string | null {
+  for (let e: unknown = err, depth = 0; e && typeof e === 'object' && depth < 5; e = (e as { cause?: unknown }).cause, depth += 1) {
+    const code = (e as { code?: unknown }).code
+    if (typeof code === 'string' && DISCONNECT_CODES.has(code)) return code
+    if ((e as { name?: unknown }).name === 'AbortError') return 'ABORT_ERR'
   }
   return null
 }
@@ -265,14 +271,14 @@ function disconnectCode(err) {
 // signal this logging exists to provide. The socket has to actually be gone
 // before we downgrade, so an ECONNRESET from an *upstream* call (LLM provider,
 // MCP server) still gets logged as the server error it is.
-function clientDisconnect(err, req, res) {
+function clientDisconnect(err: unknown, req: IncomingMessage, res: ServerResponse): string | null {
   const code = disconnectCode(err)
   if (!code) return null
   const socketGone = res.destroyed || res.writableEnded || !res.writable || req.destroyed || req.aborted
   return socketGone ? code : null
 }
 
-function logClientDisconnect(ctx, code, isEventStream) {
+function logClientDisconnect(ctx: RequestContext, code: string, isEventStream: boolean) {
   // One line, no stack: routine, and only interesting in aggregate.
   console.warn(
     `[talaria-ui] client disconnect ${ctx.method} ${ctx.path} ${Date.now() - ctx.started}ms` +
@@ -280,7 +286,7 @@ function logClientDisconnect(ctx, code, isEventStream) {
   )
 }
 
-function logRequestError(ctx, err, note) {
+function logRequestError(ctx: RequestContext, err: unknown, note?: string) {
   console.error(
     `[talaria-ui] 500 ${ctx.method} ${ctx.path} ${Date.now() - ctx.started}ms` +
       ` id=${ctx.id} ip=${ctx.ip} auth=${ctx.auth}${note ? ` ${note}` : ''}`,
@@ -290,7 +296,7 @@ function logRequestError(ctx, err, note) {
 
 /** Resolve when the socket can take more bytes — or when it dies, so a stalled
  *  client can't leave this handler awaiting a 'drain' that never comes. */
-function waitForDrain(res) {
+function waitForDrain(res: ServerResponse): Promise<void> {
   return new Promise((resolve) => {
     const done = () => {
       res.off('drain', done)
@@ -304,7 +310,7 @@ function waitForDrain(res) {
   })
 }
 
-async function requestHandler(req, res) {
+async function requestHandler(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' || req.method === 'HEAD') {
     if (await tryServeStatic(req, res)) return
   }
@@ -315,19 +321,23 @@ async function requestHandler(req, res) {
     if (v) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
   }
 
-  let body = null
+  let body: Uint8Array<ArrayBuffer> | null = null
   if (req.method !== 'GET' && req.method !== 'HEAD') {
-    body = await new Promise((resolve) => {
-      const chunks = []
-      req.on('data', (c) => chunks.push(c))
-      req.on('end', () => resolve(Buffer.concat(chunks)))
+    // Copy into a plain Uint8Array<ArrayBuffer>: Buffer's ArrayBufferLike
+    // backing store isn't assignable to fetch's BodyInit.
+    body = await new Promise<Uint8Array<ArrayBuffer>>((resolve) => {
+      const chunks: Buffer[] = []
+      req.on('data', (c: Buffer) => chunks.push(c))
+      req.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))))
     })
   }
 
-  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half' })
+  // `duplex: 'half'` is an undici extension this TS's DOM lib doesn't know —
+  // cast the init rather than drop it (the runtime needs it for the body).
+  const request = new Request(url.toString(), { method: req.method, headers, body, duplex: 'half' } as RequestInit)
   const ctx = requestContext(req, url)
   let isEventStream = false
-  let reader = null
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   try {
     const response = await server.fetch(request)
     isEventStream = (response.headers.get('content-type') || '').includes('text/event-stream')
@@ -399,7 +409,7 @@ async function requestHandler(req, res) {
 // (`uncaughtException` is deliberately NOT handled: there the state genuinely
 // is unknown, and Node's default — print the stack, exit non-zero, let the
 // supervisor restart us — is the behaviour we want.)
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', (reason: unknown) => {
   const detail = reason instanceof Error ? reason.stack || reason.message : reason
   console.error('[talaria-ui] UNHANDLED REJECTION (process kept alive, this is a bug):', detail)
 })
@@ -431,8 +441,8 @@ async function runBootMigrations() {
     return
   }
   const started = Date.now()
-  let bell
-  const deadline = new Promise((resolve) => {
+  let bell: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<null>((resolve) => {
     bell = setTimeout(() => resolve(null), MIGRATION_BOOT_TIMEOUT_MS)
   })
   try {
@@ -454,9 +464,9 @@ async function runBootMigrations() {
     // deploy gate watching it) instead of a green container that 500s every
     // table query. A safe short code and a timestamp only, healthz's own law;
     // the full error is logged on the line below.
-    globalThis.__talariaBootMigrationError = {
-      code:
-        typeof err?.code === 'string' && /^[A-Z0-9_]{1,20}$/.test(err.code) ? err.code : 'MIGRATION_FAILED',
+    const errCode = (err as { code?: unknown } | null | undefined)?.code
+    ;(globalThis as { __talariaBootMigrationError?: { code: string; at: number } }).__talariaBootMigrationError = {
+      code: typeof errCode === 'string' && /^[A-Z0-9_]{1,20}$/.test(errCode) ? errCode : 'MIGRATION_FAILED',
       at: Date.now(),
     }
     console.error(
@@ -496,10 +506,10 @@ await runBootMigrations()
 const API_PORT = Number(process.env.TALARIA_API_PORT || 5274)
 const API_URL = process.env.TALARIA_RUST_API_URL || `http://127.0.0.1:${API_PORT}`
 
-let apiChild = null
+let apiChild: ChildProcess | null = null
 let shuttingDown = false
 
-async function apiUp(timeoutMs) {
+async function apiUp(timeoutMs: number): Promise<boolean> {
   try {
     await fetch(`${API_URL}/api/healthz`, { signal: AbortSignal.timeout(timeoutMs) })
     return true // any answer — healthy or its own 503 — means the api is THERE
@@ -579,8 +589,8 @@ const BOOT_PROBE_TIMEOUT_MS = 20_000
 async function bootProbe() {
   const started = Date.now()
   try {
-    let bell
-    const deadline = new Promise((resolve) => {
+    let bell: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<null>((resolve) => {
       bell = setTimeout(() => resolve(null), BOOT_PROBE_TIMEOUT_MS)
     })
     const probe = await Promise.race([
@@ -612,7 +622,7 @@ const httpServer = createServer(requestHandler)
 // stops arming job runs and drains in-flight work (a job that ARCHIVES
 // conversations or MESSAGES people must not be killed half a second in) —
 // then stop accepting connections and let in-flight requests finish.
-for (const signal of ['SIGTERM', 'SIGINT']) {
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     if (shuttingDown) return
     shuttingDown = true
@@ -627,7 +637,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
       process.exit(0)
     }, 15_000)
     forced.unref()
-    const closed = new Promise((resolve) => {
+    const closed = new Promise<void>((resolve) => {
       httpServer.close((err) => {
         if (err) console.error('[talaria-ui] http close error:', err)
         resolve()
@@ -636,11 +646,12 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
     // The api got its SIGTERM at the top; once the HTTP side is down, give it
     // a bounded window to finish its own drain before we exit — a bare `bun
     // run start` (no supervisor) would otherwise orphan it mid-drain.
-    const apiDown = new Promise((resolve) => {
-      if (!apiChild) return resolve()
-      apiChild.once('close', resolve)
+    const apiDown = new Promise<void>((resolve) => {
+      const child = apiChild
+      if (!child) return resolve()
+      child.once('close', resolve)
       const hard = setTimeout(() => {
-        apiChild.kill('SIGKILL')
+        child.kill('SIGKILL')
         resolve()
       }, 5_000)
       hard.unref()

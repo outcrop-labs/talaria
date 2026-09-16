@@ -27,7 +27,7 @@ Talaria is two server processes behind one origin, plus the fleet they render:
 
 **The app (`ui/`)** serves the client from one origin and forwards `/api/*` to the Rust
 api. In dev, Vite's middleware loads the real server handler (`src/server/app.ts`)
-in-process with HMR (`vite.config.ts`). In prod, `server-entry.js` wraps the SSR-bundled
+in-process with HMR (`vite.config.ts`). In prod, `server-entry.ts` wraps the SSR-bundled
 handler in a Node server, serves the built client, spawns or adopts the api, and owns
 graceful shutdown.
 

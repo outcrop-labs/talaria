@@ -1,4 +1,4 @@
-// boot-health — the bridge between server-entry.js's migration boot step and
+// boot-health — the bridge between server-entry.ts's migration boot step and
 // the healthz probe. The properties that matter: silence when the pass is
 // fine or merely slow (the check appears only when it has something to say),
 // and a failing check carrying nothing but a safe short code when it isn't.

@@ -34,6 +34,58 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   webviews vertically inside WebKitGTK and drowned the app — exactly-one-
   visible-webview is the fix; manual bounds remain as belt-and-suspenders).
 
+### Changed
+
+- **The coding harness is the mandated path for code work — named, keyed,
+  unblocked, and skilled.** Four pieces, one contract: the agent that was
+  handed a harness drives it instead of hand-coding. The dispatch brief now
+  NAMES the agent's selected harness (the platform knows workbench_harness —
+  no "whichever is configured" hedging) and points at `doctor` for its guide;
+  hand-editing files is reserved for trivial one-line fixes, and a harness
+  the agent cannot drive is a report_gap, never a reason to silently
+  hand-code. Claude Code's auth finds the org's model access wherever it
+  lives, through a three-step lookup that never needs an "anthropic" endpoint
+  to be configured (the platform's endpoint rows are OpenAI-shaped by
+  construction): a REFERENCE TABLE of providers with known fixed
+  Anthropic-protocol surfaces (anthropic native; OpenRouter's first-party
+  /api/anthropic; DeepSeek's /anthropic) answers by slug with zero network;
+  otherwise a one-time probe of {base}/v1/messages — the row's own base URL,
+  or the origin of the provider's native base — verifies the surface and
+  CACHES the verdict on the endpoint row (llm_endpoints.anthropic_base), so
+  the network half runs at most once per endpoint for the life of the
+  install; the hit becomes ANTHROPIC_BASE_URL with the same key riding
+  ANTHROPIC_AUTH_TOKEN — no OAuth login — and the no-key-anywhere case now
+  WARNS at render instead of arming a harness that fails silently
+  (the silence that hid harness non-use across the fleet: zero Claude Code
+  sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
+  Every armed harness also runs unattended-clean and skilled: onboarding
+  cleared and permissions bypassed via read-only policy files mounted at its
+  CLAUDE_CONFIG_DIR paths, the fleet's /opt/skills tree symlinked into both
+  Claude Code's and Codex's skill directories, and AGENTS.md/CLAUDE.md
+  pointers in the workspace telling every harness where the skills live.
+
+
+- **The last plain-JS sources are TypeScript now: `server-entry`, the svelte
+  config, and the service worker.** `server-entry.ts` is the one that
+  matters — it was outside the tsconfig `include`, so the production server
+  (env loading, static serving, the SSE pump, boot migrations, the Rust-api
+  supervisor) had never been typechecked; it now carries full types (the
+  dist bundle import is typed from `src/server/app.ts`, the one module
+  whose exports survive into it). `svelte.config.ts` is supported natively
+  by vite-plugin-svelte 6. The service worker moved from `public/sw.js`
+  (served verbatim) to `src/sw.ts` as a second client-build entry emitted
+  unhashed at `/sw.js` — the registration URL in browser-notify.ts is
+  unchanged — with a small dev middleware serving the same URL so
+  dev-mode registration keeps working. `bun server-entry.ts` replaces
+  `bun server-entry.js` in the start script, the container entrypoint, and
+  the image's runtime COPY.
+  The stdlib-only `.mjs` under `scripts/` and `docker/` stay as they are:
+  they must run under any node with no install, which `.ts` would break.
+  Verified: `bun run verify` green (typecheck now covering the entry), a
+  built-from-scratch `dist/` emits `sw.js` at the client root, and a boot
+  of the built server against a scratch database listens, answers
+  `/api/healthz`, and serves `/sw.js` with a JavaScript content type.
+
 ### Fixed
 
 - **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
@@ -54,9 +106,6 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 - **The launcher's add-instance dialog rendered behind the content that
   opened it** — the welcome content sits at `z-10` and the dialog had no
   z-index. Both overlays are `z-50` now.
-
-### Fixed
-
 - **The bundled Hermes github skill is pruned from fleet containers, and a
   Talaria-authored `github` skill stands in its place.** The image ships a
   gh-CLI-first github pack whose preflight (`gh auth status`) and auth

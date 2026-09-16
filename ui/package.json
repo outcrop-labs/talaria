@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite dev --port 5273",
     "build": "vite build && vite build --config vite.server.config.ts",
-    "start": "bun server-entry.js",
+    "start": "bun server-entry.ts",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "migrations:check": "bun scripts/check-migrations.ts",
     "migrations:snapshot": "bun scripts/check-migrations.ts --update-snapshot",

@@ -258,7 +258,7 @@ LLM_MODEL=
   }
 
   // The environment WINS over ui/.env at runtime. A stale export in a shell
-  // profile is how one install ran `vite dev` and `node server-entry.js`
+  // profile is how one install ran `vite dev` and `node server-entry.ts`
   // against two different roots, sealed under one and unable to read under
   // the other, with nothing rotated and nothing to see in any config file.
   const exported = ctx.env.TALARIA_SECRET_KEY

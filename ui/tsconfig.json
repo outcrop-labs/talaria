@@ -11,7 +11,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
-    "allowImportingTsExtensions": false,
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "types": ["node", "vite/client", "svelte"],
     "baseUrl": ".",
@@ -21,7 +21,7 @@
       "@talaria/sdk/server": ["./src/sdk/server.ts"]
     }
   },
-  "include": ["src", "vite.config.ts", "vite.server.config.ts", "../apps"],
+  "include": ["src", "server-entry.ts", "vite.config.ts", "vite.server.config.ts", "../apps"],
   "exclude": [
     "../apps/leadworks",
     "../apps/waypoint"

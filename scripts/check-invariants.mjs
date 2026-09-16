@@ -267,6 +267,8 @@ const CENSUS = [
     exempt: (path) =>
       path.startsWith('ui/src/server/') ||
       path.startsWith('ui/src/routes/api/') ||
+      path === 'ui/src/sw.ts' || // the service worker, like the SDK, is its own door: a classic script
+      // with no module graph, it cannot import the app's — and it must stay import-free
       path.endsWith('.test.ts') ||
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
