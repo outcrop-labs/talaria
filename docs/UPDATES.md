@@ -71,7 +71,7 @@ The mode is resolved fresh from the environment on every call
 | Mode | Signal | May roll? |
 |---|---|---|
 | `image` | the image itself sets `TALARIA_INSTALL=image` (only the published Dockerfile does) | yes — this is the updater's domain |
-| `checkout` | a git checkout under `bun server-entry.js` (`TALARIA_RUNTIME=prod-server`, no image signal) | no — the orchestrator that owns the checkout deploys it |
+| `checkout` | a git checkout under `bun server-entry.ts` (`TALARIA_RUNTIME=prod-server`, no image signal) | no — the orchestrator that owns the checkout deploys it |
 | `dev` | vite dev, or anything unstamped | no — dev reloads on file change; an update button would be a lie |
 | `off` | `TALARIA_UPDATER=off` | no — the kill switch deployments that supervise the process themselves have always had |
 

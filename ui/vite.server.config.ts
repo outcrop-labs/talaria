@@ -6,7 +6,7 @@ import viteTsConfigPaths from 'vite-tsconfig-paths'
 const here = fileURLToPath(new URL('.', import.meta.url))
 
 // Server bundle: src/server/app.ts → dist/server/server.js, the fetch handler
-// server-entry.js imports. Node builtins and node_modules deps stay external
+// server-entry.ts imports. Node builtins and node_modules deps stay external
 // (default SSR behaviour) — this bundle is run in place, not shipped alone.
 export default defineConfig({
   resolve: {
