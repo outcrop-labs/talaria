@@ -52,6 +52,8 @@ mkdir_state() {
            "$STATE_DIR/fleet/skills" \
            "$STATE_DIR/fleet/hooks" \
            "$STATE_DIR/apps" \
+           "$STATE_DIR/app-builds" \
+           "$STATE_DIR/app-data" \
            "$STATE_DIR/env" 2>/dev/null || {
     # The one failure that actually happens: docker auto-created the bind
     # source as root (or the operator forgot the chown) and uid 10001 can't

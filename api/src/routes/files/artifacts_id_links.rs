@@ -58,11 +58,19 @@ async fn gate(
             return Err(thrown_internal_error());
         }
     };
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[artifacts] team membership read failed: {e}");
+            return Err(thrown_internal_error());
+        }
+    };
     if !can_read(
         &guarded(&artifact),
         Some(&user.id),
         who_of(&user).as_deref(),
         &editors,
+        &team_ids,
     ) {
         return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }

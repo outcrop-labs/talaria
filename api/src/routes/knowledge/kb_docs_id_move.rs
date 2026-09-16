@@ -68,8 +68,15 @@ pub async fn post(
                     return thrown_internal_error();
                 }
             };
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &name).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let may_edit = existing.created_by.as_deref() == Some(name.as_str())
-            || can_edit_agent(&name, &eff.grants)
+            || can_edit_agent(&name, &eff.grants, &team_ids)
             || elevated;
         if !may_edit {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -81,7 +88,20 @@ pub async fn post(
             Err(gate) => return gate,
         };
         let who = who_of(&user);
-        if !can_edit_human(&eff.perms, Some(&user.id), who.as_deref(), &eff.grants) {
+        let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_edit_human(
+            &eff.perms,
+            Some(&user.id),
+            who.as_deref(),
+            &eff.grants,
+            &team_ids,
+        ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         actor = actor_of(&user);

@@ -3,6 +3,7 @@
 What a snapshot contains, how to take one on a schedule, and — the part that
 actually matters — how to put it back.
 
+
 Two commands, no daemon:
 
 ```
@@ -20,10 +21,11 @@ One directory per run, named for the UTC minute it started (`20260731T184421Z`):
 
 | File | What |
 |---|---|
-| `db.sql.gz` | `pg_dump` of the whole database — plain SQL, `--clean --if-exists --no-owner --no-privileges` |
+| `db.sql.gz` | `pg_dump` of the whole catalog — plain SQL, `--clean --if-exists --no-owner --no-privileges` |
 | `uploads.tar.gz` | every upload blob, flat, named `<upload-id><ext>` |
+| `app-data.tar.gz` | each installed app's database (`pg_dump` when the container is up, else stopped `pg/`), plus `db.env` and compose file. Older snapshots omit this file; restore skips it. |
 | `manifest.txt` | when, from which database, which storage mode + bucket. Identifiers only, never credentials |
-| `SHA256SUMS` | checksums of the three above; `talaria restore` verifies them before touching anything |
+| `SHA256SUMS` | checksums of the files above; `talaria restore` verifies them before touching anything |
 
 The blob archive has the **same shape in every storage mode** — the filename is
 both what `uploads.ts` writes on local disk and the tail of every bucket key. So
@@ -47,6 +49,8 @@ never delete a good one in favour of a broken one.
   `.env` converges instead of leaving containers presenting dead secrets. Render
   after a restore, then roll any agent whose credential changed
   ([AGENT-KEY-MIGRATION.md](./AGENT-KEY-MIGRATION.md)).
+- **App builds** (`TALARIA_APP_BUILDS_DIR`) — this instance recompiles them
+  against the host runtime.
 - **`TALARIA_SECRET_KEY`** — and this one needs saying out loud:
 
 > **The root secret is not in the backup, and the backup is useless without it.**
@@ -135,9 +139,9 @@ offsite is still yours.
 
 Restore is destructive: the dump drops and recreates every object it owns.
 
-1. **Stop the app.** It runs migrations as it boots (and on its first query as
-   a backstop) and holds a pool open; neither survives the schema being
-   swapped underneath it.
+1. **Stop the app** (and any app-DB containers). It runs migrations as it boots
+   (and on its first query as a backstop) and holds a pool open; neither survives
+   the schema being swapped underneath it.
 2. **Point at the right database.** `--target` beats `DATABASE_URL`, which beats
    `ui/.env`. Restoring into a *new, empty* database and repointing the app is
    always safer than restoring over a live one.
@@ -149,11 +153,15 @@ Restore is destructive: the dump drops and recreates every object it owns.
 
    It verifies `SHA256SUMS`, prints the target, and asks you to type `restore`
    (`--yes` for automation; it refuses to run non-interactively without it).
-   `--db-only` / `--uploads-only` restore one half.
+   `--db-only` / `--uploads-only` restore one half (and skip `app-data.tar.gz`).
+   A full restore extracts app databases into `TALARIA_APP_DATA_DIR` (default
+   `app-data/` at the repo root) and chmods each `db.env` to 0600.
 4. **Start the app.** Migrations pick up from wherever `schema_migrations` left
    off in the restored dump, so an older snapshot forward-migrates on boot.
+   App Postgres containers spawn on first use and apply `dump.sql` if present.
 5. **Verify by using it.** Sign in and open a message attachment — one click
-   exercises both halves: the row in Postgres and the bytes in storage.
+   exercises the catalog and the blobs. Open an app surface to prove its DB.
+
 
 Blobs go back to *this* instance's configured location, not the source's: local
 mode extracts into `TALARIA_UPLOADS_DIR`, bucket modes mirror back up to the

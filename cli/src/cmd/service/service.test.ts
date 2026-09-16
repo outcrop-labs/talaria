@@ -154,6 +154,22 @@ describe('unitText — the unit file', () => {
       'ExecStart=/usr/bin/docker compose -f docker/compose.yml up -d',
     )
   })
+
+  // COMPOSE_FILE (the registry-image flow in CONTAINER.md): an explicit -f
+  // would BEAT the env in docker's own precedence, so the unit drops the -f
+  // and carries the env instead. Unset stays byte-identical to the above.
+  test('composeFile set: no -f, Environment=COMPOSE_FILE rides the unit', () => {
+    const layered = unitText({
+      root: '/repo',
+      dockerBin: '/usr/bin/docker',
+      upArgs: ['up', '-d', '--wait'],
+      composeFile: 'docker/compose.yml:docker/compose.registry.yml',
+    })
+    expect(layered).toContain('Environment=COMPOSE_FILE=docker/compose.yml:docker/compose.registry.yml\n')
+    expect(layered).toContain('ExecStart=/usr/bin/docker compose up -d --wait\n')
+    expect(layered).toContain('ExecStop=/usr/bin/docker compose down\n')
+    expect(layered).not.toContain(' -f ')
+  })
 })
 
 describe('talaria service install — orchestration', () => {

@@ -394,12 +394,11 @@ can destroy or rewrite data (drop table, truncate, unscoped delete/update, …)
 unless it carries an inline `-- deliberate: <why>` comment.
 
 Installing an app from the marketplace clones it into
-`/var/lib/talaria/apps/`, but apps *compile into the image* at build time
-([`APPS.md`](./APPS.md)) — an install reports `pendingBuild` until a rebuild
-happens. In container mode that rebuild is a redeploy with the app present in
-the build context (a checkout's `apps/` — local apps included — or a fork that
-vendors it), which is exactly the orchestrator's job. Nothing breaks in the
-meantime; the app simply isn't live yet.
+`/var/lib/talaria/apps/`. This instance compiles it (artifacts under
+`TALARIA_APP_BUILDS_DIR`) and starts a dedicated Postgres container for its
+data (`TALARIA_APP_DATA_DIR`). No host-image rebuild. Uninstall stops the
+container and deletes both directories.
+
 
 One caveat for exotic setups: chassis mounts (workbench profiles, plugins)
 reference **host** paths — the rendered fleet compose resolves them on the
@@ -453,12 +452,33 @@ as a pull failure, not as a boot timeout. `pull_policy: always` in the
 override makes the registry the only image source even if a checkout is
 present. Updating is the same two commands again.
 
+### The same flow through `talaria deploy`
+
+The deploy wrappers honor docker's own `COMPOSE_FILE` env: export the layered
+file list and every wrapper (up/update/down/logs/status) drops its explicit
+`-f` so the env decides what runs — an explicit `-f` would beat it, which is
+exactly why the CLI steps aside. Registry mode changes two behaviors on
+purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
+the api-package pull) and `up` runs WITHOUT `--build` — the override swaps
+the image but cannot remove the base's `build:` key, so a build would tag the
+checkout AS the registry ref.
+
+```bash
+export COMPOSE_FILE=docker/compose.yml:docker/compose.registry.yml   # shell or profile
+bun talaria deploy update    # git pull --ff-only → compose pull → up -d
+```
+
+The env must live in the SHELL (or the systemd unit — `talaria service
+install` captures it into the unit as `Environment=COMPOSE_FILE=…` when it is
+exported at install time); compose does not read it from `docker/.env`. Extra
+layers (a per-host `docker/compose.vm.yml` for edge networks and labels)
+append to the same colon list — the env-drift warning scans every file in it.
+
 `docker inspect` on a pulled image answers "what exactly is this" without a
 checkout: the OCI labels carry the version, the revision, and the build time.
 
 How the tags get made, how to cut an RC, and the branch model behind them:
-[`RELEASING.md`](../RELEASING.md) (repo root). The `bun talaria deploy`
-wrappers stay checkout-build — this path is plain compose.
+[`RELEASING.md`](../RELEASING.md) (repo root).
 
 ## Troubleshooting
 

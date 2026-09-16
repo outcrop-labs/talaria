@@ -11,8 +11,7 @@
   import { errorMessage } from '@/lib/fetch-json'
   import { addTeamMember, removeTeamMember, useTeamMembers, type TeamRole } from '@/lib/teams'
 
-  // Members panel of TeamsModal.svelte (module-private there in React; its own
-  // file here because Svelte is one component per file).
+  // People roster for a team. Used by Manage → Teams.
   let { teamId, canManage }: { teamId: string; canManage: boolean } = $props()
 
   const qc = useQueryClient()

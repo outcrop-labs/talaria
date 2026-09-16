@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { useQueryClient } from '@tanstack/svelte-query'
+  import { useQueryClient, createQuery } from '@tanstack/svelte-query'
+  import { X } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
@@ -8,12 +9,15 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { fade, listStagger, slide } from '@/lib/motion'
   import UserPicker from '@/components/app/UserPicker.svelte'
+  import { getJson } from '@/lib/fetch-json'
   import {
     addChannelAgent,
     addChannelMember,
+    addChannelTeam,
     deleteChannel,
     removeChannelAgent,
     removeChannelMember,
+    removeChannelTeam,
     type ChannelDetail,
   } from '@/lib/channels.svelte'
   import type { AgentModel } from '@/lib/agents'
@@ -44,6 +48,23 @@
   const qc = useQueryClient()
   let error = $state<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['channel', channelId] })
+  const dirQuery = createQuery(() => ({
+    queryKey: ['teams-directory'],
+    enabled: open,
+    queryFn: () => getJson<{ teams: Array<{ id: string; name: string }> }>('/api/teams/directory'),
+  }))
+  const mineQuery = createQuery(() => ({
+    queryKey: ['teams'],
+    enabled: open,
+    queryFn: () => getJson<{ teams: Array<{ id: string }> }>('/api/teams'),
+  }))
+  const teams = $derived(detail.teams ?? [])
+  const mine = $derived(new Set((mineQuery.data?.teams ?? []).map((t) => t.id)))
+  const teamOptions = $derived(
+    (dirQuery.data?.teams ?? [])
+      .filter((t) => !teams.some((g) => g.id === t.id))
+      .map((t) => ({ value: t.id, label: t.name })),
+  )
 
   const run = async (fn: () => Promise<void>) => {
     error = null
@@ -72,6 +93,10 @@
   const pickUser = (u: DirectoryUser) => {
     const email = u.email
     if (email) void run(() => addChannelMember(channelId, email))
+  }
+  const pickTeam = (next: string[]) => {
+    const id = next[0]
+    if (id) void run(() => addChannelTeam(channelId, id))
   }
 
   const onDelete = async () => {
@@ -108,6 +133,28 @@
         {/each}
       </ul>
       <UserPicker class="mt-2" exclude={detail.members.map((m) => m.userId)} onPick={pickUser} />
+    </section>
+
+    <section>
+      <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Teams</div>
+      <ul class="mb-2 flex flex-wrap gap-1.5">
+        {#each teams as t (t.id)}
+          <li class="flex items-center gap-1 rounded-full border border-line bg-raised px-2 py-0.5 text-xs">
+            <span class="max-w-40 truncate">{t.name}</span>
+            {#if isOwner || mine.has(t.id)}
+              <button
+                type="button"
+                title={`Remove ${t.name}`}
+                onclick={() => void run(() => removeChannelTeam(channelId, t.id))}
+                class="grid h-3.5 w-3.5 place-items-center rounded-full text-muted hover:text-fg"
+              >
+                <X size={9} />
+              </button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      <Combobox options={teamOptions} selected={[]} onChange={pickTeam} placeholder="Add a team" />
     </section>
 
     <section>

@@ -112,7 +112,20 @@ pub async fn post(
                 return thrown_internal_error();
             }
         };
-        if !can_read_agent(&guarded(&artifact), &name, owner.as_deref(), &editors) {
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &name).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[artifacts] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_read_agent(
+            &guarded(&artifact),
+            &name,
+            owner.as_deref(),
+            &editors,
+            &team_ids,
+        ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         // Resolve the agent's Google identity (owner for personal assistants,
@@ -157,11 +170,19 @@ pub async fn post(
             Ok(u) => u,
             Err(gate) => return gate,
         };
+        let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[artifacts] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         if !can_read(
             &guarded(&artifact),
             Some(&user.id),
             who_of(&user).as_deref(),
             &editors,
+            &team_ids,
         ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }

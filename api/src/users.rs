@@ -233,8 +233,9 @@ pub async fn list_users(
 /// Manage-section routes: default DENIED for members, granted explicitly via
 /// allowed_manage_views. Enabled apps extend this set with EVERY app view
 /// (work and manage) — apps are explicit-grant only.
-const MANAGE_VIEW_ROUTES: [&str; 6] = [
+pub(crate) const MANAGE_VIEW_ROUTES: [&str; 7] = [
     "/agents",
+    "/teams",
     "/models",
     "/mcp",
     "/templates",
@@ -267,6 +268,89 @@ pub(crate) fn apps_dir() -> PathBuf {
             .unwrap_or_default()
             .join("apps"),
     }
+}
+
+pub(crate) fn app_builds_dir() -> PathBuf {
+    match std::env::var("TALARIA_APP_BUILDS_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => apps_dir()
+            .parent()
+            .map(|p| p.join("app-builds"))
+            .unwrap_or_else(|| PathBuf::from("app-builds")),
+    }
+}
+
+pub(crate) fn app_data_dir() -> PathBuf {
+    match std::env::var("TALARIA_APP_DATA_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => apps_dir()
+            .parent()
+            .map(|p| p.join("app-data"))
+            .unwrap_or_else(|| PathBuf::from("app-data")),
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+pub struct WireBuild {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub(crate) fn app_build_status(slug: &str) -> WireBuild {
+    let p = app_builds_dir().join(slug).join("current.json");
+    let Ok(raw) = std::fs::read_to_string(p) else {
+        return WireBuild {
+            status: "none".into(),
+            key: None,
+            error: None,
+        };
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return WireBuild {
+            status: "none".into(),
+            key: None,
+            error: None,
+        };
+    };
+    WireBuild {
+        status: v
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("none")
+            .to_string(),
+        key: v.get("key").and_then(|s| s.as_str()).map(String::from),
+        error: v.get("error").and_then(|s| s.as_str()).map(String::from),
+    }
+}
+
+/// Why enabling this app must wait or be refused. `ready` is the only
+/// status that means compile + load already succeeded. In a checkout (`none`)
+/// we still allow enable so `vite dev` can HMR without a prod artifact.
+pub(crate) fn enable_block_reason(build: &WireBuild) -> Option<String> {
+    match build.status.as_str() {
+        "ready" => None,
+        "failed" => Some(
+            build
+                .error
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "app failed to compile or load".into()),
+        ),
+        "building" => Some("app is still compiling".into()),
+        _ if compile_strict() => Some("app has not compiled yet".into()),
+        _ => None,
+    }
+}
+
+fn compile_strict() -> bool {
+    matches!(std::env::var("TALARIA_INSTALL").as_deref(), Ok("image"))
+        || matches!(
+            std::env::var("TALARIA_RUNTIME").as_deref(),
+            Ok("prod-server")
+        )
 }
 
 pub(crate) struct DiscoveredApp {
@@ -355,6 +439,7 @@ pub struct WireApp {
     pub version: String,
     pub surfaces: WireSurfaces,
     pub mcp: bool,
+    pub build: WireBuild,
 }
 
 #[derive(serde::Serialize)]
@@ -385,18 +470,22 @@ pub async fn enabled_apps(pg: &PgPool) -> Vec<WireApp> {
     discovered_apps()
         .into_iter()
         .filter(|a| enabled.contains(&a.slug))
-        .map(|a| WireApp {
-            slug: a.slug,
-            name: a.name,
-            icon: a.icon,
-            description: a.description,
-            version: a.version,
-            surfaces: WireSurfaces {
-                work: a.work,
-                manage: a.manage,
-                settings: a.settings,
-            },
-            mcp: a.mcp,
+        .map(|a| {
+            let build = app_build_status(&a.slug);
+            WireApp {
+                slug: a.slug,
+                name: a.name,
+                icon: a.icon,
+                description: a.description,
+                version: a.version,
+                surfaces: WireSurfaces {
+                    work: a.work,
+                    manage: a.manage,
+                    settings: a.settings,
+                },
+                mcp: a.mcp,
+                build,
+            }
         })
         .collect()
 }
@@ -428,10 +517,10 @@ pub async fn app_view_routes(pg: &PgPool) -> Vec<String> {
     }
     out
 }
-
 /// Views a member may NOT reach: their explicit work-view denials (DB order)
-/// PLUS every Manage view they haven't been granted. Admins are never
-/// restricted.
+/// PLUS every Manage view they haven't been granted. Team grants union in:
+/// a team's work denial adds to the user's, a team's manage grant opens the
+/// door. Admins are never restricted.
 pub async fn denied_views(
     pg: &PgPool,
     user_id: &str,
@@ -445,8 +534,18 @@ pub async fn denied_views(
             .bind(user_id)
             .fetch_optional(pg)
             .await?;
-    let (denied, allowed) = row.unwrap_or_default();
-    let allowed: HashSet<String> = allowed.unwrap_or_default().into_iter().collect();
+    let (mut denied, allowed) = row.unwrap_or_default();
+    let (team_denied, team_allowed) = crate::teams::team_view_grants_for_user(pg, user_id).await?;
+    for v in team_denied {
+        if !denied.contains(&v) {
+            denied.push(v);
+        }
+    }
+    let mut allowed: std::collections::HashSet<String> =
+        allowed.unwrap_or_default().into_iter().collect();
+    for v in team_allowed {
+        allowed.insert(v);
+    }
     let mut out = denied;
     out.extend(
         MANAGE_VIEW_ROUTES
@@ -719,6 +818,34 @@ mod tests {
         assert!(!slug_ok("Upper"));
         assert!(!slug_ok("under_score"));
         assert!(!slug_ok("sp ace"));
+    }
+
+    #[test]
+    fn enable_block_reason_names_a_failed_compile() {
+        let failed = WireBuild {
+            status: "failed".into(),
+            key: None,
+            error: Some("server.ts must default-export defineAppServer({ fetch })".into()),
+        };
+        assert_eq!(
+            enable_block_reason(&failed).as_deref(),
+            Some("server.ts must default-export defineAppServer({ fetch })")
+        );
+        let ready = WireBuild {
+            status: "ready".into(),
+            key: Some("abc".into()),
+            error: None,
+        };
+        assert_eq!(enable_block_reason(&ready), None);
+        let building = WireBuild {
+            status: "building".into(),
+            key: None,
+            error: None,
+        };
+        assert_eq!(
+            enable_block_reason(&building).as_deref(),
+            Some("app is still compiling")
+        );
     }
 
     #[test]

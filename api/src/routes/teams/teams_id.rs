@@ -1,23 +1,25 @@
-// /api/teams/{id}. PATCH { name } → rename (owner); DELETE → delete (owner)
-// — the member rows cascade and its boards survive as personal boards
+// /api/teams/{id}. GET → team + members + agents (member, or Manage → Teams).
+// PATCH { name?, description? } → rename / set blurb (owner); DELETE → delete
+// (owner) — the member rows cascade and its boards survive as personal boards
 // (team_id set null, not cascaded), which is why both are owner-gated. A
 // non-uuid {id} → the house 500. Gate order: uuid bind, then the owner
 // check, then the body — a non-owner with a bad body gets the 403.
 
 use crate::audit::{AuditEntry, log_audit};
-use crate::body::{as_object, parse, string_member};
+use crate::body::{as_object, parse, present_nullable_string_member, string_member};
 use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_user};
 use crate::state::AppState;
-use crate::teams::{delete_team, rename_team, team_role};
+use crate::teams::{
+    delete_team, get_team, list_team_agents, list_team_members, rename_team, set_team_description,
+    team_role,
+};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-/// The owner gate: Err(gate) is the response to return. Some(gate) shape
-/// (not Result<(), Response>) keeps clippy's large-Err lint quiet.
 fn uuid_gate(id: &str, action: &str) -> Option<Response> {
     crate::params::uuid_gate("teams", action, id)
 }
@@ -36,6 +38,66 @@ async fn owner_gate(
             Some(thrown_internal_error())
         }
     }
+}
+
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let user = match require_user(&state, &headers).await {
+        Ok(u) => u,
+        Err(gate) => return gate,
+    };
+    if let Some(gate) = uuid_gate(&id, "GET") {
+        return gate;
+    }
+    if let Some(gate) = super::reader_gate(&state, &headers, &user.id, &id, "GET").await {
+        return gate;
+    }
+    let role = match team_role(&state.pg, &user.id, &id).await {
+        Ok(r) => r.unwrap_or_default(),
+        Err(e) => {
+            tracing::error!("[teams] role read on GET failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let row = match get_team(&state.pg, &id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
+        Err(e) => {
+            tracing::error!("[teams] get failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let members = match list_team_members(&state.pg, &id).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("[teams] member list on GET failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let agents = match list_team_agents(&state.pg, &id).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!("[teams] agent list on GET failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    Json(json!({
+        "team": {
+            "id": row.0,
+            "name": row.1,
+            "description": row.2,
+            "createdAt": crate::agent_auth::epoch_ms_to_iso(row.3),
+            "role": role,
+            "memberCount": members.len() as i32,
+            "agentCount": agents.len() as i32,
+        },
+        "members": members,
+        "agents": agents,
+    }))
+    .into_response()
 }
 
 pub async fn patch(
@@ -59,13 +121,37 @@ pub async fn patch(
         Ok(o) => o,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let name = match string_member(obj, "name", 1, 120) {
+    let name = match obj.get("name") {
+        None => None,
+        Some(_) => match string_member(obj, "name", 1, 120) {
+            Ok(v) => Some(v),
+            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        },
+    };
+    let description = match present_nullable_string_member(obj, "description", 500) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    if let Err(e) = rename_team(&state.pg, &id, &name).await {
-        tracing::error!("[teams] rename failed: {e}");
-        return thrown_internal_error();
+    if name.is_none() && description.is_none() {
+        return house_error(StatusCode::BAD_REQUEST, "nothing to update");
+    }
+    if let Some(name) = &name {
+        match rename_team(&state.pg, &id, name).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!("[teams] rename failed: {e}");
+                return thrown_internal_error();
+            }
+        }
+    }
+    if let Some(desc) = &description {
+        match set_team_description(&state.pg, &id, desc.as_deref()).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!("[teams] description write failed: {e}");
+                return thrown_internal_error();
+            }
+        }
     }
     log_audit(
         &state.pg,
@@ -76,7 +162,7 @@ pub async fn patch(
             target_id: Some(&id),
             target_label: None,
             before: None,
-            after: Some(json!({ "name": name })),
+            after: Some(json!({ "name": name, "description": description })),
         },
     )
     .await;

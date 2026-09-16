@@ -986,6 +986,9 @@ pub async fn search_docs(
     .await?;
 
     use sqlx::Row;
+    let team_ids = crate::teams::team_ids_for_user(pg, viewer.user_id)
+        .await
+        .unwrap_or_default();
     let mut out: Vec<KbSearchHit> = Vec::new();
     for r in &hits {
         if out.len() >= 20 {
@@ -1009,6 +1012,7 @@ pub async fn search_docs(
                         Some(viewer.user_id),
                         viewer.who,
                         &grants,
+                        &team_ids,
                     )
                 }
                 _ => false,
@@ -1020,7 +1024,13 @@ pub async fn search_docs(
             .await
             {
                 Ok(Some(d)) => match effective_doc_perms(pg, &d).await {
-                    Ok(eff) => can_read(&eff.perms, Some(viewer.user_id), viewer.who, &eff.grants),
+                    Ok(eff) => can_read(
+                        &eff.perms,
+                        Some(viewer.user_id),
+                        viewer.who,
+                        &eff.grants,
+                        &team_ids,
+                    ),
                     Err(_) => false,
                 },
                 _ => false,

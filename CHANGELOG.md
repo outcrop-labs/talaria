@@ -48,6 +48,98 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
   `cargo test --lib` on `hermes_comms`, `hermes_documents`, `talaria_tools`,
   `toolbox::sandbox`, `registry::tests`, and `score::tests`.
+- **Teams are first-class.** They are no longer a boards-only grouping:
+  Manage → Teams (`/teams`) is a LibraryPane of org teams (people + agents),
+  with admin view grants, permission overrides, and MCP tool rules on the
+  team itself. Adding a team to a channel, plan, research run, KB doc, or
+  artifact expands at auth time — roster changes apply without rewriting
+  grants. Boards still use `boards.team_id` as ownership. Verified: `bun run
+  check`; `cargo clippy -D warnings`; `kb::perms` tests (10); minted an
+  admin session on the `teams` worktree stack (`:5305`) and created
+  Engineering via `POST /api/teams`, granted `/mcp` + `kb.official` via
+  `PUT /api/teams/{id}/access`, then opened Manage → Teams (nav, picker,
+  people/agents/access chips) and MCP → Manage access (Teams section).
+- **Agent refines announce themselves: the silent document swap is gone.**
+  When an agent edits an open document through its toolkit
+  (`edit_kb_doc`, `update_document`), the surface now says so — an
+  "Agent refine" notice on the KB doc and artifact views (read and edit
+  panes alike) naming who wrote the revision, when, and a change summary
+  (±lines), with a Show-changes diff against what the viewer held when the
+  refine landed, a Load-into-editor review path, and a per-viewer dismiss
+  that persists across remounts (localStorage, keyed by viewer identity).
+  The updated body appears without a manual reload: read panes follow the
+  server on announce; the editor's buffer is never yanked — the refine
+  stages behind the notice and lands only when the viewer loads it. A
+  viewer's own saves are never announced, detection polls `/api/history`
+  every 4s, and the notice announces the newest unseen revision only —
+  one refine at a time, the same way a reviewer reads. Decisions live in
+  `ui/src/lib/agent-refine` (unit-tested, 17 cases), the DOM in
+  `AgentRefineNotice.svelte`. The Muse accept stopped being a vanishing
+  act too: it folds with a ±line receipt, and the Draft/Refine button
+  carries a pulsing in-progress state while streaming. Muse failures keep
+  their error line. Verified in a real browser against an API stub: the
+  notice announces, the diff opens with the refined text, load stages and
+  saves, read panes refresh without a reload, the receipt shows the
+  accept's change, a failed Muse run shows the error, and the artifact
+  surface announces the same way (screenshots in the ticket).
+- **New-agent onboarding got the same treatment: the Muse refine of an
+  agent design is no longer a silent field swap.** On the review step of
+  the new-agent modal, a refine now shows an honest in-progress state
+  ("Refining the design: identity, soul, and starter skills" with a pulse)
+  for the seconds the whole-agent contract takes, and on landing it folds
+  with a "Refine applied" receipt — which fields the design touched and
+  the ±lines on the soul — that holds until the next refine. The describe
+  step's first design keeps its generating block. Decisions live in
+  `ui/src/lib/agent-onboard-refine` (unit-tested, 10 cases); verified in a
+  real browser against an API stub: design in-progress state, draft lands
+  in the review fields, refine in-flight state, receipt math on a trimmed
+  soul, failed refine leaves the draft untouched, error line shows.
+- **`talaria deploy` honors `COMPOSE_FILE` — the registry-image flow works
+  through the wrappers, no build on the host.** Export the layered file list
+  (`docker/compose.yml:docker/compose.registry.yml[:your-vm override]`) and
+  every deploy leaf drops its explicit `-f` (docker's own precedence puts -f
+  ABOVE the env, so honoring the env means stepping aside); registry mode
+  pulls `talaria searxng-config` fail-fast and `up` runs WITHOUT `--build` —
+  the override swaps the image but cannot remove the base's `build:` key, so
+  a build would tag the checkout as the registry ref. `talaria service
+  install` captures the env into the systemd unit, and the env-drift warning
+  scans every file in the list (so `TALARIA_CHANNEL` and per-override knobs
+  join the checked set). Verified: `bun talaria deploy up/update/down` argv
+  under COMPOSE_FILE asserted in the CLI suite (pull-before-up ordering, no
+  --build, die-on-pull-failure), unit text with and without the env, drift
+  across a layered override, and the unset path byte-identical to before.
+- **Enable compiles and loads the app first.** Manage → Apps runs a rebuild +
+  module probe before enable (UI surfaces, `server.ts` `fetch`, `mcp.ts` `tools`);
+  a failed compile or a module that will not load is refused with that error.
+  An already-enabled app whose `current.json` is `failed` is disabled by the
+  boot reconciler (api + UI), not by GET `/api/admin/apps`. Verified:
+  `enable_block_reason` names a failed compile and lets `ready` through;
+  `moduleHasFetch` / `moduleHasMcpTools` / `moduleHasSurfaces` accept the SDK
+  shapes and reject empty defaults; `clientArtifactOk` requires an ESM export.
+
+- **`talaria app new <slug>` scaffolds a TypeScript app** (work surface, document-store
+  server, MCP starter) into `apps/<slug>`. Authors stay on `@talaria/sdk`; never Rust.
+  The fleet skill `talaria-apps` is the playbook for building one. Verified: slug
+  guard refuses before write; existing dest dies; files land under `apps/<slug>`
+  (or `TALARIA_APPS_DIR`); skeleton embeds the slug in the client only.
+
+- **Apps compile on the instance, not into the host.** Installing an app no
+  longer requires rebuilding Talaria. The host emits stable `/runtime/rt-*.js`
+  entries; each app is a standalone Vite build against those, with its own
+  Postgres (a compose project, spawned on install, destroyed on uninstall).
+  The DB password is sealed in `app_settings` and written to a 0600 `db.env`,
+  never `docker run -e` and never HMAC of `TALARIA_SECRET_KEY`. `talaria backup`
+  dumps each app DB into `app-data.tar.gz`. A throw in an app's UI, server,
+  or MCP stays in that pane and shows the crash — the rest of the cockpit keeps
+  running. Authors write TypeScript against `@talaria/sdk`; they never write
+  Rust. Core ships no example app — scaffold with `bun talaria app new`.
+  Verified: `bun run verify` (svelte-check 0 errors, mcp `tsc --noEmit`,
+  1139 ui tests); `cargo fmt` + clippy `-D warnings` + 2112 api tests from
+  `api/` (the crate's rust-toolchain). Specifier derivation includes
+  `svelte/internal/client` and excludes the compiler; `sourceKey` is stable
+  then changes with a source edit; `isolateApp` swallows a throw into
+  `{ ok: false }`; `composeYaml` has no password; a compose down/up kept a
+  row; restore of `all` extracts `app-data.tar.gz`.
 
 
 - **Talaria Desktop — a Tauri v2 multitenant shell around Talaria instances
@@ -136,6 +228,58 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Changed
 
+- **The release pipeline ran for the first time, and the nightly feed came back
+  to life.** No `v*` tag had ever existed here, and every scheduled nightly for
+  at least the eleven runs before 2026-09-16 had died as a `startup_failure` —
+  a run with no jobs and no logs, which is why the channel could be dead for
+  eleven days without anyone noticing. Cutting `v0.1.0-rc.1` surfaced three
+  defects that only a real run could: **(1)** a called workflow's jobs may
+  request no more than the CALLING JOB grants, so `release.yml`'s nested
+  `api-package` call was refused for asking `packages: write` under a
+  `contents: read` caller — the grants now sit on the calls, not raised
+  workflow-wide; **(2)** the installers' `attach` job ran `gh release upload`
+  without ever checking the repository out, and `gh` resolves the repository
+  from a local clone, so the first run stopped at the very last step
+  (`failed to run git: not a git repository`) with every artifact correct and
+  in hand; **(3)** `testing`, the ref a nightly builds, was three weeks stale
+  (a 2026-08-26 tree with no `api/` and no `desktop/`), so the first nightly
+  that got as far as building found directories that did not exist. All three
+  are fixed, the channel was advanced, and `v0.1.0-rc.1` published: GHCR
+  `0.1.0-rc.1` + `rc` for both the app image and the api package, a GitHub
+  prerelease carrying every installer plus a `SHA256SUMS`
+  ([release](https://github.com/outcrop-labs/talaria/actions/runs/35111577866)),
+  and the first working nightly in the channel's recorded history —
+  `nightly` + `nightly-YYYYMMDD`
+  ([nightly](https://github.com/outcrop-labs/talaria/actions/runs/35111665940)).
+  `RELEASING.md` now names the two ways a nightly stops for good: the 60-day
+  schedule rule, and a startup failure whose reason lives only in the run page's
+  banner. A second desktop-installer workflow, merged from a parallel session
+  after that release (triggering on the same `v*` tags, uploading to the same
+  release with `--clobber`, and asking Tauri for a `flatpak` bundle type it does
+  not have), was removed in favour of the one `release.yml` actually calls: one
+  publisher per tag.
+
+- **CI checks the surface that moved, not the whole tree.** A UI change no
+  longer re-runs the Rust api's `fmt`/`clippy`/`test`, a desktop change does not
+  re-run the UI suite, and a docs-only push runs the invariants job and nothing
+  else — decided per job, inside the run, by a new `changes` job in
+  `.github/workflows/ci.yml` (`.github/workflows/migrations.yml` gets the
+  equivalent trigger filters, its only inputs being the migration array in
+  `ui/src/server/db/pg.ts` and the snapshot beside it). The invariants job stays
+  unconditional on purpose: it is seconds long, needs no install, and a
+  "docs-only" change is exactly what breaks a doc link. Trigger-level `paths:`
+  are still out — a workflow-level filter is as coarse as the file, and a
+  filtered-out required check would report "pending" forever — and every unknown
+  resolves to the safe side: a first push, an unresolvable diff range, or a
+  `release.yml` call runs EVERY surface, because a publish is never a partial
+  gate. Verified: the decision logic was extracted verbatim and run against a
+  fixture repository for every path (ui-only, api-only, desktop-only, docs-only,
+  workflow-file, zero-before push, called-from-release, unresolvable range), each
+  producing the intended set; and `main`'s protection was read back to confirm it
+  requires a review and **no status checks**, so a skipped job cannot wedge a
+  merge the way a filtered-out required check would. The skip path itself becomes
+  observable on the first push to main that touches no code.
+
 - **The coding harness is the mandated path for code work — named, keyed,
   unblocked, and skilled.** Four pieces, one contract: the agent that was
   handed a harness drives it instead of hand-coding. The dispatch brief now
@@ -160,9 +304,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   sessions ever, zero workbench jobs ever, Hermes hand-coding everything).
   Every armed harness also runs unattended-clean and skilled: onboarding
   cleared and permissions bypassed via read-only policy files mounted at its
-  CLAUDE_CONFIG_DIR paths, the fleet's /opt/skills tree symlinked into both
-  Claude Code's and Codex's skill directories, and AGENTS.md/CLAUDE.md
-  pointers in the workspace telling every harness where the skills live.
+  CLAUDE_CONFIG_DIR paths, the fleet skills HOST DIRECTORY bind-mounted
+  directly into Claude Code's and Codex's skill directories (a symlink to
+  the container-only /opt/skills dangles on the host, and the docker daemon
+  answers a dangling bind source with mkdir "file exists" — the first roll
+  after the initial merge 500'd every agent up; the direct mount is the
+  fix), and AGENTS.md/CLAUDE.md pointers in the workspace telling every
+  harness where the skills live.
 
 
 - **The last plain-JS sources are TypeScript now: `server-entry`, the svelte
@@ -254,9 +402,6 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   turn has produced so far, or says it is waiting for the next output. One
   new door verb, `getStream` (the GET twin of `postStream`), carries the
   client side through the one-HTTP-door invariant (count 7).
-
-
-### Added
 
 - **A ticket an agent is actively working wears the work: a dithered
   live-work strip with a Watch-the-work modal.** While a work session is

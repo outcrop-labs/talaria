@@ -1,13 +1,16 @@
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, errorMessage, getList, patchJson, postJson } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
 import { pushToast } from '@/lib/toast.svelte'
 
 export type TeamRole = 'owner' | 'member'
 export interface Team {
   id: string
   name: string
-  role: TeamRole
+  /** Caller's standing; `""` when listing every org team and they are not on it. */
+  role: TeamRole | ''
   memberCount: number
+  agentCount: number
+  description?: string | null
   createdAt: string
 }
 export interface TeamMember {
@@ -15,6 +18,21 @@ export interface TeamMember {
   email: string | null
   name: string | null
   role: TeamRole
+}
+export interface TeamAgent {
+  agentModel: string
+  label?: string | null
+}
+export interface TeamDirectoryEntry {
+  id: string
+  name: string
+  memberCount: number
+  agentCount: number
+}
+export interface TeamAccess {
+  deniedViews: string[]
+  allowedManageViews: string[]
+  permissions: Record<string, boolean>
 }
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -29,6 +47,22 @@ export function useTeams() {
   }))
 }
 
+/** Every org team. The Manage page; gated by the `/teams` view. */
+export function useTeamsAll() {
+  return createQuery(() => ({
+    queryKey: ['teams', 'all'],
+    queryFn: (): Promise<Team[]> => getList<Team>('/api/teams?all=1', 'teams'),
+  }))
+}
+
+/** Id + name + counts for share pickers — any signed-in caller. */
+export function useTeamDirectory() {
+  return createQuery(() => ({
+    queryKey: ['teams', 'directory'],
+    queryFn: (): Promise<TeamDirectoryEntry[]> => getList<TeamDirectoryEntry>('/api/teams/directory', 'teams'),
+  }))
+}
+
 export function useTeamMembers(teamId: MaybeGetter<string | null>) {
   return createQuery(() => {
     const id = resolve(teamId)
@@ -36,6 +70,38 @@ export function useTeamMembers(teamId: MaybeGetter<string | null>) {
       queryKey: ['team-members', id],
       enabled: !!id,
       queryFn: (): Promise<TeamMember[]> => getList<TeamMember>(`/api/teams/${id}/members`, 'members'),
+    }
+  })
+}
+
+/** Agent roster. Reads GET /api/teams/{id} (member or `/teams` view) so the
+ *  Manage list can show agents on teams the caller is not on; writes still
+ *  hit `/agents`. */
+export function useTeamAgents(teamId: MaybeGetter<string | null>) {
+  return createQuery(() => {
+    const id = resolve(teamId)
+    return {
+      queryKey: ['team-agents', id],
+      enabled: !!id,
+      queryFn: async (): Promise<TeamAgent[]> => {
+        const data = await getJson<{ agents: TeamAgent[] }>(`/api/teams/${id}`)
+        return data.agents
+      },
+    }
+  })
+}
+
+/** Admin-only view denials, manage grants, and perm overrides. */
+export function useTeamAccess(teamId: MaybeGetter<string | null>, enabled: MaybeGetter<boolean> = true) {
+  return createQuery(() => {
+    const id = resolve(teamId)
+    return {
+      queryKey: ['team-access', id],
+      enabled: !!id && resolve(enabled),
+      queryFn: async (): Promise<TeamAccess> => {
+        const data = await getJson<{ access: TeamAccess }>(`/api/teams/${id}/access`)
+        return data.access
+      },
     }
   })
 }
@@ -51,4 +117,18 @@ export const removeTeamMember = (teamId: string, userId: string) =>
   )
 export const renameTeam = (teamId: string, name: string) =>
   patchJson<{ ok: true }>(`/api/teams/${teamId}`, { name })
+export const patchTeam = (teamId: string, patch: { name?: string; description?: string | null }) =>
+  patchJson<{ ok: true }>(`/api/teams/${teamId}`, patch)
 export const deleteTeam = (teamId: string) => delJson<{ ok: true }>(`/api/teams/${teamId}`)
+export const addTeamAgent = (teamId: string, model: string) =>
+  postJson<{ ok: true }>(`/api/teams/${teamId}/agents`, { model })
+export const removeTeamAgent = (teamId: string, model: string) =>
+  delJson<{ ok: true }>(`/api/teams/${teamId}/agents`, { model })
+export const putTeamAccess = (
+  teamId: string,
+  body: {
+    deniedViews?: string[]
+    allowedManageViews?: string[]
+    permissions?: Record<string, boolean | null>
+  },
+) => putJson<{ access: TeamAccess }>(`/api/teams/${teamId}/access`, body)

@@ -1,12 +1,13 @@
 # Talaria apps — self-contained apps within the app
 
 Apps extend Talaria with whole new surfaces — a CRM, a support desk, a marketing planner — as
-**self-contained codebases that compile into the deployment** and render as native platform UI.
+**self-contained TypeScript codebases this instance compiles and runs** without a host rebuild.
 Not iframes, not webhooks: an app's views live in the same router, design system, and session as
-core surfaces, and its code ships with the deployment ("deploy within the deployment").
+core surfaces. Authors write TypeScript against `@talaria/sdk` — never Rust.
 
 Three parties build them: Outcrop (official apps, maintained outside core), your own developers,
 and the community. Core ships with none enabled.
+
 
 ## Anatomy
 
@@ -22,8 +23,9 @@ apps/<slug>/
 ```
 
 The programming model — `defineApp`, the app server, the document store, MCP tools, harnesses —
-is the [SDK docset](./sdk/README.md); the worked example is [`apps/contacts`](../apps/) in the
-repo.
+is the [SDK docset](./sdk/README.md). Scaffold with `bun talaria app new <slug>`.
+
+
 
 ## Lifecycle
 
@@ -31,15 +33,22 @@ repo.
    - from the **marketplace** (Manage → Apps → Discover): one click shallow-clones the repo;
    - from **any https git URL** with a `talaria.json` at its root;
    - or by hand: drop/clone a directory into `apps/`.
-2. **Build** — apps compile in with the host. The dev server picks new apps up live; production
-   deployments need a rebuild (the Apps view shows cloned-but-not-built apps as **awaiting build**).
-3. **Enable** — Manage → Apps (admin). Disabled apps have no nav presence, their API routes 404,
-   and their MCP server is retired (carriers get blue/green rolled).
+2. **Build** — this instance compiles the app against the host runtime (`/runtime/rt-*.js`)
+   and starts a dedicated Postgres container for its data. Dev loads sources through Vite
+   (HMR); production serves the compiled chunk. A failed build stays on that app.
+3. **Enable** — Manage → Apps (admin). Enable compiles and loads the app first
+   (UI surfaces, `server.ts` `fetch`, `mcp.ts` `tools`); a broken build is refused
+   with that error. An already-enabled app that later fails is turned off by the
+   boot reconciler — opening the Apps page is a read.
+
+
+
 4. **Grant** — apps are **explicit-grant**: enabling one gives members nothing. Admins allow each
    app view per person in Admin → People — the same checklist as core Manage views, enforced
    server-side at the app API gateway.
-5. **Uninstall** — removes the codebase and (optionally) wipes the app's stored data. Audited, like
-   enable/disable/install.
+5. **Uninstall** — removes the codebase, stops its database container, and (optionally) wipes
+   stored data. Audited, like enable/disable/install.
+
 
 ## The marketplace
 
@@ -66,11 +75,21 @@ rebuilding (managed update flows are on the roadmap).
 ## Operational notes
 
 - `TALARIA_APPS_DIR` overrides where app codebases live (default: `apps/` beside `ui/`).
-- App data lives in the `app_data` table, namespaced by slug — survives uninstall unless wiped.
+- `TALARIA_APP_BUILDS_DIR` holds compiled chunks; `TALARIA_APP_DATA_DIR` holds each app's
+  Postgres volume, compose file, and `db.env`. Both default beside the apps dir. Uninstall deletes them.
+- Each app gets its own Postgres (a compose project, image digest-pinned when the
+  local image has one). The password is sealed in `app_settings` and written to a
+  0600 `db.env` — never on `docker run -e` and never derived from `TALARIA_SECRET_KEY`.
+  `talaria backup` dumps each app DB into the snapshot. The document store (`ctx.store`)
+  is the API; app authors never see a connection string.
+
+- A throw in an app's UI, server, or MCP is isolated: the pane shows the crash, the rest of
+  Talaria keeps running.
 - App MCP servers appear in Manage → MCP badged **app**; their tool catalogs come from the module
   (no probe), and they cannot be deleted or re-pointed there — lifecycle belongs to Manage → Apps.
 - Everything an app's users do runs under their own session: platform permissions, resource ACLs,
   and the audit log apply exactly as in core surfaces.
+
 
 ## Shipping a harness
 

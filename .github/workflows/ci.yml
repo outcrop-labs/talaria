@@ -78,9 +78,18 @@
 #     type surface; a full build roughly triples the runtime for a weaker signal.
 #   - `plugin/` — no build or typecheck to run at all. `scripts/`
 #     is not typechecked either; it is EXECUTED, by the invariants job.
-#   - `paths:` filters. Tempting (a docs-only push does not need this), but a
-#     required status check that is skipped by a path filter reports "pending"
-#     forever and blocks the merge. Not worth the sixty seconds.
+#   - `paths:` filters ON THE TRIGGERS. Still out, and now for a reason that
+#     survives contact: a workflow-level filter is as coarse as the whole file,
+#     and one of these jobs — invariants, seconds, no install — has to see
+#     EVERY push, including the docs-only ones it is cheapest on (that is where
+#     a broken link lives). The old objection stands too: a filtered-out checks
+#     run that a branch protection rule requires reports "pending" forever and
+#     blocks the merge. What this file does instead is decide per job, inside
+#     the run, in the `changes` job below — same grain as the jobs, and a
+#     skipped job is a visible "skipped" rather than an absent run. Verified:
+#     `main` carries no required status checks today (protection asks for a
+#     review and nothing else), so a skip cannot wedge a merge; if that ever
+#     changes, `changes` is the thing to revisit.
 #
 # THE INVARIANTS JOB, and why a typechecker cannot replace it. `tsc` cannot see
 #   the failure this repo actually keeps having. Seven consecutive review rounds
@@ -120,10 +129,11 @@
 #     the migration — treat bun.lock as canonical and update both when deps
 #     change (or, post-alpha, delete the npm one and this note).
 #   - `ui/tsconfig.json` includes `../apps`, so this needs a full-repo checkout,
-#     not a sparse one. `apps/contacts` is Svelte and is therefore checked by
-#     the ui typecheck job, not by a job of its own.
+#     not a sparse one. Installed apps under `apps/` are Svelte and are checked
+#     by the ui typecheck job, not by a job of their own.
 #   - There is no committed route codegen to run: sv-router resolves
 #     `src/routes/**` at build time from the files themselves.
+
 
 name: CI
 
@@ -154,6 +164,110 @@ permissions:
   contents: read
 
 jobs:
+  # WHAT THIS RUN ACTUALLY HAS TO CHECK. One cheap job decides, and every heavy
+  # job consults it: a UI change does not re-run the Rust api's fmt+clippy+test,
+  # a desktop change does not re-run the UI suite, and a docs-only push runs the
+  # invariants job and nothing else. The surfaces are the paths whose change can
+  # break that job, and nothing wider.
+  #
+  # WHY NOT `paths:` ON THE TRIGGERS (which the header still rules out). This is
+  # ONE workflow with six unrelated jobs, so a workflow-level filter can only be
+  # as coarse as the whole file — and the invariants job, which is seconds and
+  # needs no install, is meant to run on every push, because doc links and the
+  # rule patterns are exactly what a "docs-only" change touches. Deciding per job
+  # inside the run keeps that grain and leaves the cheap check unconditional.
+  #
+  # A job whose surface did not move is SKIPPED, and that is honest rather than
+  # quiet: `main` carries no required status checks (protection asks for a review
+  # and nothing else — verified, not assumed), so a skipped job cannot wedge a
+  # merge the way a filtered-out required check would. If required checks are
+  # ever configured, this job list is the thing to revisit.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ui: ${{ steps.d.outputs.ui }}
+      mcp: ${{ steps.d.outputs.mcp }}
+      cli: ${{ steps.d.outputs.cli }}
+      api: ${{ steps.d.outputs.api }}
+      desktop: ${{ steps.d.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          # The diff below needs the base commit; a shallow clone does not have it.
+          fetch-depth: 0
+
+      - name: Which surfaces moved
+        id: d
+        env:
+          EVENT: ${{ github.event_name }}
+          # release.yml calls this file with a ref. A publish is a FULL gate —
+          # never a partial one — so the call short-circuits every surface on.
+          CALLED_REF: ${{ inputs.ref }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -eu
+
+          # The safe side of every unknown is "run everything": a missing base, a
+          # rewritten history, a diff that will not resolve. A skipped check is
+          # cheap; a check nobody ran is the thing this repo keeps paying for.
+          all=0
+          range=""
+          if [ -n "$CALLED_REF" ]; then
+            all=1
+            echo "called by release.yml — every surface runs"
+          elif [ "$EVENT" = push ]; then
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              all=1
+              echo "no usable before-sha (first push of a branch, or a rewrite) — every surface runs"
+            else
+              range="$BEFORE..$HEAD"
+            fi
+          else
+            # Three dots: the PR's OWN changes, not everything the base branch
+            # gained while the PR sat open.
+            range="$BASE...$HEAD"
+          fi
+
+          changed=""
+          if [ "$all" = 0 ]; then
+            if ! changed=$(git diff --name-only "$range" 2>/dev/null); then
+              all=1
+              echo "cannot diff $range — every surface runs"
+            fi
+          fi
+          echo "changed files:"; echo "$changed" | head -50
+
+          matches() {
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              for glob in "$@"; do
+                case "$file" in $glob) return 0 ;; esac
+              done
+            done <<<"$changed"
+            return 1
+          }
+
+          surface() {
+            name=$1; shift
+            if [ "$all" = 1 ] || matches "$@"; then on=true; else on=false; fi
+            printf '%s=%s\n' "$name" "$on" >> "$GITHUB_OUTPUT"
+            echo "  $name: $on"
+          }
+
+          # The workflow file is in EVERY list on purpose: an edit here changes
+          # what these jobs are, so the run that carries it should exercise all
+          # of them.
+          surface ui      'ui/*' 'apps/*' '.github/workflows/ci.yml'
+          surface mcp     'mcp/*' '.github/workflows/ci.yml'
+          surface cli     'cli/*' '.github/workflows/ci.yml'
+          surface api     'api/*' '.github/workflows/ci.yml'
+          surface desktop 'desktop/*' '.github/workflows/ci.yml'
+
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
   # learns that before the other jobs have finished installing.
@@ -185,6 +299,8 @@ jobs:
 
   ui:
     name: test + typecheck (ui)
+    needs: [changes]
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -227,6 +343,8 @@ jobs:
 
   mcp:
     name: typecheck + build (mcp)
+    needs: [changes]
+    if: needs.changes.outputs.mcp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -270,6 +388,8 @@ jobs:
   # under bun, which IS the product's execution path.
   cli:
     name: typecheck + test (cli)
+    needs: [changes]
+    if: needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -308,6 +428,8 @@ jobs:
   # --ignored`) and never here, so a red build always names a commit's bug.
   api:
     name: fmt + clippy + test (api)
+    needs: [changes]
+    if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -364,6 +486,8 @@ jobs:
   # would make it slow enough to be skipped.
   desktop:
     name: fmt + clippy + test + typecheck (desktop)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

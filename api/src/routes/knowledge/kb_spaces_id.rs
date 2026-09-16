@@ -61,7 +61,7 @@ pub(crate) fn parse_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>
         let inner = el
             .as_object()
             .ok_or_else(|| object_msg(zod_type_name(el)))?;
-        let principal_type = enum_member(inner, "principalType", &["user", "agent"])?;
+        let principal_type = enum_member(inner, "principalType", &["user", "agent", "team"])?;
         let principal_id = string_member(inner, "principalId", 1, 200)?;
         let role = match inner.get("role") {
             None | Some(Value::Null) => "viewer".to_string(), // role defaults to 'viewer'
@@ -123,11 +123,19 @@ pub async fn get(
         }
     };
     let who = who_of(&user);
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
     if !can_read(
         &guarded_of(&space),
         Some(&user.id),
         who.as_deref(),
         &editors,
+        &team_ids,
     ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
@@ -196,8 +204,15 @@ pub async fn put(
                     return thrown_internal_error();
                 }
             };
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &name).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let may_edit = space.created_by.as_deref() == Some(name.as_str())
-            || can_edit_agent(&name, &editors)
+            || can_edit_agent(&name, &editors, &team_ids)
             || elevated;
         if !may_edit {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -214,11 +229,19 @@ pub async fn put(
             Err(gate) => return gate,
         };
         let who = who_of(&user);
+        let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         if !can_edit_human(
             &guarded_of(&space),
             Some(&user.id),
             who.as_deref(),
             &editors,
+            &team_ids,
         ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
@@ -296,11 +319,19 @@ pub async fn delete(
         }
     };
     let who = who_of(&user);
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
     if !can_edit_human(
         &guarded_of(&space),
         Some(&user.id),
         who.as_deref(),
         &editors,
+        &team_ids,
     ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }

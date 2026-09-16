@@ -41,7 +41,7 @@ pub async fn get(
     let who = who_of(&user);
     let artifacts: Vec<_> = artifacts
         .iter()
-        .filter(|a| can_read(&guarded(a), Some(&user.id), who.as_deref(), &[]))
+        .filter(|a| can_read(&guarded(a), Some(&user.id), who.as_deref(), &[], &[]))
         .collect();
     Json(json!({ "artifacts": artifacts })).into_response()
 }

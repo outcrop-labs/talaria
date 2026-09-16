@@ -6,12 +6,19 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { slide } from '@/lib/motion'
   import { streamMuse } from '@/lib/muse.svelte'
+  import { summarize } from '@/lib/agent-refine'
 
   /** Muse as the knowledge worker — ALWAYS present under the doc (read and
    *  edit): describe a change and it drafts from the current document. With a
    *  SELECTION in scope it works surgically — the proposal is a replacement for
    *  just that passage, applied in place on accept. Refinements keep short chat
-   *  memory. */
+   *  memory.
+   *
+   *  TALA-4: the accept used to be a vanishing act — the proposal card left
+   *  the screen and the text underneath had changed with no word about what
+   *  changed. Accept now folds with a change summary (±lines), and the
+   *  Drafting state on the Refine button carries a pulse. */
+
   let {
     context,
     currentText,
@@ -40,11 +47,16 @@
   let abortCtl: AbortController | null = null
   $effect(() => () => abortCtl?.abort())
 
+  // The accept's change summary, held until the next generate overwrites it.
+  // `scope` rides alongside the RefineSummary (passage vs whole doc).
+  let lastChange = $state<(ReturnType<typeof summarize> & { scope: 'doc' | 'selection' }) | null>(null)
+
   const generate = async () => {
     const instr = instruction.trim()
     if (!instr || generating) return
     generating = true
     error = null
+    lastChange = null
     const prevProposal = proposal
     const prevScope = proposalScope
     proposal = ''
@@ -84,9 +96,12 @@
 
   const accept = () => {
     if (proposal === null) return
-    const md = proposal
+    const md = proposal.trim()
+    const scope = proposalScope
+    const before = scope === 'selection' ? (selection ?? '') : currentText()
+    lastChange = { ...summarize(before, md), scope }
     proposal = null
-    if (proposalScope === 'selection' && onAcceptSelection) void onAcceptSelection(md.trim())
+    if (scope === 'selection' && onAcceptSelection) void onAcceptSelection(md)
     else void onAccept(md)
   }
 </script>
@@ -115,6 +130,23 @@
     </div>
   {/if}
   {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}
+  {#if lastChange}
+    <!-- THE ACCEPT RECEIPT: what the accepted draft changed, in place of the
+         silent swap this bar used to do. -->
+    <div
+      transition:slide={{ duration: 150 }}
+      class="flex items-center gap-2 rounded-md border border-line-subtle bg-surface px-2.5 py-1.5 text-[11px] text-muted"
+      data-muse-accepted="visible"
+    >
+      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+        {lastChange.scope === 'selection' ? 'Passage replaced' : 'Draft accepted'}
+      </span>
+      <span>
+        {lastChange.adds} added · {lastChange.dels} removed
+        line{lastChange.adds === 1 && lastChange.dels === 0 ? '' : 's'}
+      </span>
+    </div>
+  {/if}
   <div class="flex items-end gap-2">
     <Sparkles size={14} class="mb-2.5 shrink-0 text-accent" />
     <Textarea
@@ -136,8 +168,16 @@
           : 'Edit with Muse: describe the change, or select text for inline edits'}
       class="max-h-32 text-sm"
     />
-    <Button size="sm" class="shrink-0" onclick={() => void generate()} disabled={generating || !instruction.trim()}>
-      {generating ? 'Drafting' : proposal !== null ? 'Refine' : 'Draft'}
+    <Button
+      size="sm"
+      class="shrink-0"
+      onclick={() => void generate()}
+      disabled={generating || !instruction.trim()}
+      data-muse-busy={generating ? 'true' : undefined}
+    >
+      <span class:gd-pulse={generating}>
+        {generating ? 'Drafting' : proposal !== null ? 'Refine' : 'Draft'}
+      </span>
     </Button>
     {#if proposal !== null && !generating}
       <Button size="sm" variant="outline" class="shrink-0" onclick={accept}>

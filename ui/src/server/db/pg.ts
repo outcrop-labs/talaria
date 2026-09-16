@@ -2965,6 +2965,50 @@ alter table tasks drop column if exists conversation_id`,
   // (gateway/provider.rs anthropic_base) answers the known providers before
   // any probe runs.
   `alter table llm_endpoints add column if not exists anthropic_base text`,
+
+  // First-class teams: an org principal (people + agents) that expands at
+  // auth time onto multiplayer surfaces, platform views/perms, and MCP tools.
+  // Boards keep boards.team_id as ownership; these tables are the rest.
+  `alter table teams add column if not exists description text`,
+  `alter table teams add column if not exists denied_views text[] not null default '{}'`,
+  `alter table teams add column if not exists allowed_manage_views text[] not null default '{}'`,
+  `create table if not exists team_agents (
+     team_id uuid not null references teams(id) on delete cascade,
+     agent_model text not null,
+     created_at timestamptz not null default now(),
+     primary key (team_id, agent_model)
+   )`,
+  `create table if not exists team_permissions (
+     team_id uuid not null references teams(id) on delete cascade,
+     perm text not null,
+     allowed boolean not null,
+     primary key (team_id, perm)
+   )`,
+  `create table if not exists mcp_team_access (
+     server_id uuid not null references mcp_servers(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     allowed boolean not null default true,
+     tools text[],
+     primary key (server_id, team_id)
+   )`,
+  `create table if not exists channel_teams (
+     channel_id uuid not null references channels(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (channel_id, team_id)
+   )`,
+  `create table if not exists conversation_teams (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (conversation_id, team_id)
+   )`,
+  `create table if not exists research_teams (
+     run_id uuid not null references research_runs(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (run_id, team_id)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

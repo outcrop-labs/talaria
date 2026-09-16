@@ -151,9 +151,10 @@ Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · living backlog
 ## For developers
 
 One repo: the app ([`ui/`](./ui), Vite + Svelte 5 + strict TypeScript), the agent-facing server
-([`mcp/`](./mcp)), the app platform and reference apps ([`apps/`](./apps)), the CLI
+([`mcp/`](./mcp)), the app platform ([`apps/`](./apps)), the CLI
 ([`cli/`](./cli)), and the per-agent plugin ([`plugin/talaria/`](./plugin/talaria), currently
 dormant). Setup, architecture, conventions, and a link to every doc:
+
 [`DEVELOPERS.md`](./DEVELOPERS.md). How the platform works:
 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). New contributors start with
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).

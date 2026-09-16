@@ -1,21 +1,26 @@
 # Permissions & access — who may do what
 
-Three mechanisms, each with one job:
+Four mechanisms, each with one job:
 
 1. **Roles** — `admin` / `member`. Admins hold every permission and see every view; the Admin
    console itself is role-locked.
 2. **Views** — which surfaces a person can reach at all.
 3. **Permissions** — what a person can *do* (13-entry catalog).
+4. **Teams** — first-class org principals (people + agents) that expand at auth time. A team's
+   view grants, permission overrides, and MCP tool rules apply to its human members; its agent
+   members inherit the team's resource ACL and MCP assignments. Manage → Teams is the home;
+   resource ACLs accept a team the same way they accept a person.
 
-Resource-level ACLs (board membership, KB editors, plan/research shares, personal-agent ownership)
+Resource-level ACLs (board membership, KB editors, plan/research/channel shares, personal-agent ownership)
 stay on the resources themselves: a permission says what you CAN DO, an ACL says what you can do it
-TO.
+TO. Adding a team to a resource does not fan out member rows — membership is expanded when the
+ACL is checked, so roster changes apply immediately.
 
 ## Views (Admin → People, one checklist)
 
 - **Work views** (Comms, Plan, Boards, Research, Knowledge, Artifacts) default **allowed**;
   denials are stored per person.
-- **Manage views** (Agents, Models, MCP, Templates, Observability, Apps) default **denied**;
+- **Manage views** (Agents, Teams, Models, MCP, Templates, Observability, Apps) default **denied**;
   explicit grants are stored per person. View access opens the door; permissions still gate the
   actions inside.
 - **App views** (`/x/<slug>`, `/x/<slug>/manage` — tagged `app` in the checklist) behave like
@@ -24,6 +29,13 @@ TO.
 
 Denied views aren't just hidden: the route bounces, the nav omits them, and the APIs that power
 them enforce the same resolution server-side (`requireView`).
+
+A team may carry the same two arrays (`denied_views`, `allowed_manage_views`). Effective views:
+
+- work denials = the person's denials ∪ every team they belong to;
+- manage grants = the person's grants ∪ every team they belong to.
+
+Admins set team view grants on Manage → Teams (not the roster owner).
 
 ## The permission catalog
 
@@ -43,11 +55,14 @@ Each ships a sensible member default; the ones that are **off** by default are `
 **Resolution, most specific wins:**
 
 1. per-user overrides (allow or deny),
-2. org-wide member defaults (Admin → People → Member defaults),
-3. the catalog's shipped defaults.
+2. team overrides (`bool_or` across teams the person belongs to — any allow wins; a perm only
+   denied across teams is denied),
+3. org-wide member defaults (Admin → People → Member defaults),
+4. the catalog's shipped defaults.
 
 Admins hold everything unconditionally. The Admin → People per-person chips show effective state
-and where it came from (override dot vs inherited).
+and where it came from (override dot vs inherited). Team chips on Manage → Teams show the team's
+own overrides, not a member's effective set.
 
 ## Personal assistants
 
@@ -114,6 +129,7 @@ courtesy, the 403 is the contract.
 ## Related
 
 - Agent allow-lists (which agents a member may use) live on the person in Admin → People.
-- MCP tool access (per-agent and per-person, per server) is its own governed system:
-  [MCP.md](./MCP.md).
+- MCP tool access (per-agent, per-person, and per-team, per server) is its own governed system:
+  [MCP.md](./MCP.md). Manage → Teams is where a team's platform views, permission overrides, and
+  roster (people + agents) live.
 - Sensitive mutations audit-log with a canonical actor; see the audit trail on /observability.

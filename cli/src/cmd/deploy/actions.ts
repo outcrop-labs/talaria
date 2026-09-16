@@ -17,18 +17,33 @@ import { envWins, parseEnv, writeSecret } from '../../envfile'
 const FILE = 'docker/compose.yml'
 const DOCKER_SOCK = '/var/run/docker.sock'
 
+/** An operator-provided COMPOSE_FILE (the registry-image flow in
+ *  CONTAINER.md). Docker's precedence puts an explicit -f ABOVE the env, so
+ *  honoring the env means dropping this file's -f entirely; cwd stays the
+ *  repo root so the relative paths inside a COMPOSE_FILE list resolve. Null
+ *  when unset — the canonical single-file path. */
+function composeFileEnv(ctx: Ctx): string | null {
+  const value = ctx.env.COMPOSE_FILE?.trim()
+  return value ? value : null
+}
+
 /** The documented invocation. Relative -f on purpose: it is what
  *  CONTAINER.md tells operators to type, and keeping the real argv and the
  *  printed equivalent literally the same string is what makes the print
  *  honest — which is also why this doesn't go through compose()'s helper
  *  (absolute paths, cwd-inherited): parity beats reuse here. */
 function deployCompose(ctx: Ctx, op: string[]): Promise<number> {
-  return ctx.run('docker', ['compose', '-f', FILE, ...op], { cwd: ctx.root })
+  const fileArgs = composeFileEnv(ctx) === null ? ['-f', FILE] : []
+  return ctx.run('docker', ['compose', ...fileArgs, ...op], { cwd: ctx.root })
 }
 
-/** The copy-pasteable line for what is about to run. */
-const plain = (envPrefix: string[], op: string[]): string =>
-  [...envPrefix, 'docker', 'compose', '-f', FILE, ...op].join(' ')
+/** The copy-pasteable line for what is about to run — COMPOSE_FILE included
+ *  when it is what a shell would have needed exported. */
+const plain = (ctx: Ctx, envPrefix: string[], op: string[]): string => {
+  const file = composeFileEnv(ctx)
+  const shown = file ? [...envPrefix, `COMPOSE_FILE=${file}`] : envPrefix
+  return [...shown, 'docker', 'compose', ...(file ? [] : ['-f', FILE]), ...op].join(' ')
+}
 
 /** docker/.env as compose will interpolate it, when present. */
 export function dockerEnvFile(ctx: Ctx): Record<string, string> {
@@ -133,17 +148,46 @@ export async function ensureSharedSecrets(ctx: Ctx, pgVolume = 'talaria_pg-data'
   }
 }
 
+/** Registry-image mode: COMPOSE_FILE layering docker/compose.registry.yml.
+ *  That override swaps the app's image but CANNOT remove the base file's
+ *  build: key (compose merges per service key), so `up --build` would build
+ *  the checkout and tag it AS the registry ref — the one thing this flow must
+ *  never do. Registry mode pulls the images compose resolves (TALARIA_CHANNEL
+ *  et al from docker/.env) and ups WITHOUT --build. */
+function registryMode(ctx: Ctx): boolean {
+  return (composeFileEnv(ctx) ?? '').includes('compose.registry.yml')
+}
+
+/** Fail-fast image pull for registry mode — the same law as pullApiPackage:
+ *  never run an up on whatever the daemon happens to have cached. */
+async function pullRegistryImages(ctx: Ctx): Promise<void> {
+  const op = ['pull', 'talaria', 'searxng-config']
+  ctx.log.say(plain(ctx, [], op))
+  if ((await deployCompose(ctx, op)) !== 0) {
+    ctx.log.die(
+      'docker compose pull failed — a registry-mode up must not run on whatever the daemon already has. ' +
+        'Fix reachability (or auth), then finish with `bun talaria deploy up`',
+    )
+  }
+}
+
 export async function runUp(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<number> {
   const prefix = ensureDockerGid(ctx, sock)
   await ensureSharedSecrets(ctx)
+  if (registryMode(ctx)) {
+    await pullRegistryImages(ctx)
+    const op = ['up', '-d']
+    ctx.log.say(plain(ctx, prefix, op))
+    return deployCompose(ctx, op)
+  }
   const op = ['up', '-d', '--build']
-  ctx.log.say(plain(prefix, op))
+  ctx.log.say(plain(ctx, prefix, op))
   return deployCompose(ctx, op)
 }
 
 export function runDown(ctx: Ctx, volumes: boolean): Promise<number> {
   const op = volumes ? ['down', '--volumes'] : ['down']
-  ctx.log.say(plain([], op))
+  ctx.log.say(plain(ctx, [], op))
   return deployCompose(ctx, op)
 }
 
@@ -186,8 +230,9 @@ async function pullApiPackage(ctx: Ctx): Promise<void> {
 
 /** CONTAINER.md's update flow is "a redeploy" — for a checkout-driven host
  *  that means get the new code, pull the api package the rebuild will bake
- *  in, then the same `up -d --build` as boot. The git pull is --ff-only: an
- *  update must never synthesize a merge commit on a deploy host. */
+ *  in, then the same `up -d --build` as boot. Registry mode swaps the package
+ *  pull for a compose pull of the channel images. The git pull is --ff-only:
+ *  an update must never synthesize a merge commit on a deploy host. */
 export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<number> {
   ctx.log.say('git pull --ff-only')
   if ((await ctx.run('git', ['pull', '--ff-only'], { cwd: ctx.root })) !== 0) {
@@ -195,13 +240,14 @@ export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<n
       'git pull failed — reconcile the checkout (or fetch/checkout your way), then finish with `bun talaria deploy up`',
     )
   }
-  await pullApiPackage(ctx)
+  if (registryMode(ctx)) await pullRegistryImages(ctx)
+  else await pullApiPackage(ctx)
   return runUp(ctx, sock)
 }
 
 export function runLogs(ctx: Ctx): Promise<number> {
   const op = ['logs', '-f']
-  ctx.log.say(plain([], op))
+  ctx.log.say(plain(ctx, [], op))
   ctx.log.skip('following every service — Ctrl-C to detach')
   return deployCompose(ctx, op)
 }
@@ -228,7 +274,7 @@ export async function runStatus(ctx: Ctx): Promise<number> {
   const state = effective.TALARIA_STATE_DIR ?? '/var/lib/talaria'
   const fleet = `${effective.TALARIA_FLEET_PROJECT ?? 'talaria-fleet'}/${effective.TALARIA_FLEET_NETWORK ?? 'talaria'}`
   ctx.log.say(`http://localhost:${port} · state ${state} · fleet ${fleet}`)
-  ctx.log.say(plain([], ['ps']))
+  ctx.log.say(plain(ctx, [], ['ps']))
   return deployCompose(ctx, ['ps'])
 }
 
@@ -258,7 +304,8 @@ export const downCommand: Leaf = {
 export const updateCommand: Leaf = {
   kind: 'leaf',
   name: 'update',
-  summary: 'git pull --ff-only, pull the api package, then the redeploy (up -d --build)',
+  summary:
+    'git pull --ff-only, pull what the deploy runs on (api package, or the registry images under COMPOSE_FILE), then the redeploy',
   usage: 'talaria deploy update',
   run: (ctx) => runUpdate(ctx),
 }

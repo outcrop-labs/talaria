@@ -1,12 +1,13 @@
 // /api/channels/{id}.
-// GET → channel detail (role + members + agents). PUT → rename / set topic
+// GET → channel detail (role + members + agents + teams). PUT → rename / set topic
 // (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
 // purges the channel's activity points so nothing orphans in the index).
 
 use crate::body::{as_object, optional_string_member, present_nullable_max_string_member};
 use crate::channels::{
     archive_channel, channel_role, delete_channel, is_task_room, list_channel_agents,
-    list_channel_members, list_task_room_agents, list_task_room_members, update_channel,
+    list_channel_members, list_channel_teams, list_task_room_agents, list_task_room_members,
+    update_channel,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::notify::NotifyDeps;
@@ -83,7 +84,15 @@ pub async fn get(
         };
         (m, a)
     };
-    Json(json!({ "role": role, "members": members, "agents": agents })).into_response()
+    let teams = match list_channel_teams(&state.pg, &id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[channels] team read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    Json(json!({ "role": role, "members": members, "agents": agents, "teams": teams }))
+        .into_response()
 }
 
 pub async fn put(

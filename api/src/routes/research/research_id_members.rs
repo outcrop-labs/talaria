@@ -8,8 +8,8 @@ use crate::error::{house_error, thrown_internal_error};
 use crate::kb::perms::{EditorGrant, list_editors, set_editors};
 use crate::notify::{NotificationInput, add_notification};
 use crate::research::{
-    add_research_member, list_research_members, remove_research_member, research_artifact_for,
-    research_role,
+    add_research_member, list_research_members, list_research_teams, remove_research_member,
+    research_artifact_for, research_role,
 };
 use crate::session::require_user;
 use crate::state::AppState;
@@ -66,10 +66,17 @@ pub async fn get(
             return thrown_internal_error();
         }
     }
-    match list_research_members(&state.pg, &id).await {
-        Ok(members) => Json(json!({ "members": members })).into_response(),
+    let members = match list_research_members(&state.pg, &id).await {
+        Ok(m) => m,
         Err(e) => {
             tracing::error!("[research] member list failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    match list_research_teams(&state.pg, &id).await {
+        Ok(teams) => Json(json!({ "members": members, "teams": teams })).into_response(),
+        Err(e) => {
+            tracing::error!("[research] team list failed: {e}");
             thrown_internal_error()
         }
     }

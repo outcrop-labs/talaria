@@ -61,6 +61,20 @@ pub async fn channel_role(
     if row.is_some() {
         return Ok(row.map(|(role,)| role));
     }
+    let team: Option<(String,)> = sqlx::query_as(
+        "select 'member' from channel_teams ct \
+         join team_members tm on tm.team_id = ct.team_id and tm.user_id = $2::uuid \
+         join channels c on c.id = ct.channel_id \
+         where ct.channel_id = $1::uuid and c.kind <> 'dm' \
+         limit 1",
+    )
+    .bind(channel_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    if team.is_some() {
+        return Ok(team.map(|(role,)| role));
+    }
     // Only the row-less cases reach the task-room probe — task rooms (which
     // never have rows) and ordinary-channel non-members (whose 403 pays one
     // cheap indexed miss).
@@ -234,6 +248,12 @@ pub struct ChannelMember {
     pub role: String,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct ChannelTeam {
+    pub id: String,
+    pub name: String,
+}
+
 /// Channels/relays/DMs the user belongs to, newest activity first. DMs carry
 /// the other person's identity so the UI can label them. unreadCount is the
 /// member's read cursor vs. others' complete messages — the not-self clause
@@ -260,21 +280,26 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
         i32,
     );
     let rows: Vec<MemberRow> = sqlx::query_as(
-        "select c.id::text, c.name, c.topic, c.kind, m.role, \
+        "select c.id::text, c.name, c.topic, c.kind, coalesce(m.role, 'member'), \
              (trunc(extract(epoch from c.created_at) * 1000))::bigint, \
              (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
              pu.id::text, pu.name, pu.email, \
              (select count(*)::int from channel_messages msg \
-               where msg.channel_id = c.id and msg.seq > m.last_read_seq \
+               where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
                  and msg.status = 'complete' \
                  and not (msg.author_type = 'user' \
                    and msg.author = coalesce(self.email, self.name, 'user'))) \
          from channels c \
-         join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
+         left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
          left join channel_members p on c.kind = 'dm' and p.channel_id = c.id and p.user_id <> $1::uuid \
          left join users pu on pu.id = p.user_id \
          where c.archived_at is null and c.task_id is null \
+           and (m.user_id is not null \
+             or (c.kind <> 'dm' and exists ( \
+               select 1 from channel_teams ct \
+               join team_members tm on tm.team_id = ct.team_id \
+               where ct.channel_id = c.id and tm.user_id = $1::uuid))) \
          order by c.updated_at desc",
     )
     .bind(user_id)
@@ -324,10 +349,15 @@ pub async fn channel_unread_total(pg: &PgPool, user_id: &str) -> Result<i32, sql
     let (n,): (i32,) = sqlx::query_as(
         "select count(*)::int from channel_messages msg \
          join channels c on c.id = msg.channel_id and c.archived_at is null \
-         join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
+         left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
          where c.task_id is null \
-           and msg.seq > m.last_read_seq and msg.status = 'complete' \
+           and (m.user_id is not null \
+             or (c.kind <> 'dm' and exists ( \
+               select 1 from channel_teams ct \
+               join team_members tm on tm.team_id = ct.team_id \
+               where ct.channel_id = c.id and tm.user_id = $1::uuid))) \
+           and msg.seq > coalesce(m.last_read_seq, 0) and msg.status = 'complete' \
            and not (msg.author_type = 'user' \
              and msg.author = coalesce(self.email, self.name, 'user'))",
     )
@@ -661,7 +691,13 @@ pub async fn list_channel_agents(
         return Ok(Vec::new());
     }
     let rows: Vec<(String,)> = sqlx::query_as(
-        "select agent_model from channel_agents where channel_id = $1::uuid order by agent_model",
+        "select agent_model from ( \
+           select agent_model from channel_agents where channel_id = $1::uuid \
+           union \
+           select ta.agent_model from team_agents ta \
+           join channel_teams ct on ct.team_id = ta.team_id \
+           where ct.channel_id = $1::uuid \
+         ) s order by agent_model",
     )
     .bind(channel_id)
     .fetch_all(pg)
@@ -720,8 +756,15 @@ pub async fn list_channels_for_agent(
         "select c.id::text, c.name, c.topic, c.kind, \
              (trunc(extract(epoch from c.created_at) * 1000))::bigint, \
              (trunc(extract(epoch from c.updated_at) * 1000))::bigint \
-         from channels c join channel_agents a on a.channel_id = c.id and a.agent_model = $1 \
-         where c.archived_at is null order by c.updated_at desc",
+         from channels c \
+         where c.archived_at is null \
+           and (exists (select 1 from channel_agents a \
+                        where a.channel_id = c.id and a.agent_model = $1) \
+             or (c.kind <> 'dm' and exists ( \
+               select 1 from channel_teams ct \
+               join team_agents ta on ta.team_id = ct.team_id \
+               where ct.channel_id = c.id and ta.agent_model = $1))) \
+         order by c.updated_at desc",
     )
     .bind(model)
     .fetch_all(pg)
@@ -827,6 +870,82 @@ pub async fn remove_channel_agent(
     sqlx::query("delete from channel_agents where channel_id = $1::uuid and agent_model = $2")
         .bind(channel_id)
         .bind(model)
+        .execute(&deps.pg)
+        .await?;
+    publish_channel(
+        &deps.realtime,
+        channel_id,
+        &ChannelEvent {
+            kind_tag: "channel",
+            message_id: None,
+            seq: None,
+            deleted: None,
+        },
+    );
+    Ok(())
+}
+
+pub async fn list_channel_teams(
+    pg: &PgPool,
+    channel_id: &str,
+) -> Result<Vec<ChannelTeam>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select t.id::text, t.name from channel_teams ct \
+         join teams t on t.id = ct.team_id \
+         where ct.channel_id = $1::uuid order by t.name",
+    )
+    .bind(channel_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| ChannelTeam { id, name })
+        .collect())
+}
+
+/// Grant a team. `Some(sentence)` is the 400 the route answers (DMs stay
+/// private); `None` is ok.
+pub async fn add_channel_team(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    team_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let kind: Option<(String,)> = sqlx::query_as("select kind from channels where id = $1::uuid")
+        .bind(channel_id)
+        .fetch_optional(&deps.pg)
+        .await?;
+    if kind.as_ref().is_some_and(|(k,)| k == "dm") {
+        return Ok(Some("direct messages stay private".into()));
+    }
+    sqlx::query(
+        "insert into channel_teams (channel_id, team_id) values ($1::uuid, $2::uuid) \
+         on conflict do nothing",
+    )
+    .bind(channel_id)
+    .bind(team_id)
+    .execute(&deps.pg)
+    .await?;
+    publish_channel(
+        &deps.realtime,
+        channel_id,
+        &ChannelEvent {
+            kind_tag: "channel",
+            message_id: None,
+            seq: None,
+            deleted: None,
+        },
+    );
+    Ok(None)
+}
+
+pub async fn remove_channel_team(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    team_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from channel_teams where channel_id = $1::uuid and team_id = $2::uuid")
+        .bind(channel_id)
+        .bind(team_id)
         .execute(&deps.pg)
         .await?;
     publish_channel(

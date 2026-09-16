@@ -109,11 +109,19 @@ pub async fn get(
                 return thrown_internal_error();
             }
         };
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &reader.model).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[artifacts] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         if !can_read_agent(
             &guarded(&artifact),
             &reader.model,
             owner.as_deref(),
             &editors,
+            &team_ids,
         ) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
@@ -124,11 +132,19 @@ pub async fn get(
         Ok(u) => u,
         Err(gate) => return gate,
     };
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[artifacts] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
     if !can_read(
         &guarded(&artifact),
         Some(&user.id),
         who_of(&user).as_deref(),
         &editors,
+        &team_ids,
     ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
@@ -186,7 +202,14 @@ pub async fn put(
                     return thrown_internal_error();
                 }
             };
-        let may_edit = can_edit_agent(&name, &editors) || elevated;
+        let team_ids = match crate::teams::team_ids_for_agent(&state.pg, &name).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[artifacts] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let may_edit = can_edit_agent(&name, &editors, &team_ids) || elevated;
         if !may_edit {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
@@ -202,7 +225,14 @@ pub async fn put(
             Err(gate) => return gate,
         };
         let who = who_of(&user);
-        if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors) {
+        let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[artifacts] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         actor = actor_of(&user);
@@ -411,11 +441,19 @@ pub async fn delete(
             return thrown_internal_error();
         }
     };
+    let team_ids = match crate::teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[artifacts] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
     if !can_edit_human(
         &guarded(&artifact),
         Some(&user.id),
         who_of(&user).as_deref(),
         &editors,
+        &team_ids,
     ) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }

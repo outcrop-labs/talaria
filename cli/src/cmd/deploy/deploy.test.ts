@@ -278,6 +278,74 @@ describe('talaria deploy down / logs / status / update', () => {
   })
 })
 
+describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
+  const FILES = 'docker/compose.yml:docker/compose.registry.yml'
+
+  // An explicit -f BEATS the COMPOSE_FILE env in docker's own precedence, so
+  // honoring the operator's layering means the CLI drops its -f entirely.
+  test('an exported COMPOSE_FILE drops the -f from every invocation', async () => {
+    const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES } })
+    ctx.root = makeDeployTree()
+    await runDown(ctx, false)
+    expect(ctx.calls.find((c) => c.cmd === 'docker')!.args).toEqual(['compose', 'down'])
+    // the printed equivalent shows the env a shell would have needed
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg === `COMPOSE_FILE=${FILES} docker compose down`)).toBe(true)
+  })
+
+  // compose.registry.yml swaps the image but cannot REMOVE the base's build:
+  // key — `up --build` would build the checkout and tag it as the registry
+  // ref. Registry mode pulls what compose resolves and ups without --build.
+  test('registry mode: pull talaria + searxng-config first, then up -d — never --build', async () => {
+    const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES } })
+    ctx.root = makeDeployTree()
+    await runUp(ctx, '/nonexistent-deploy-test-socket')
+    const pull = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('pull'))!
+    expect(pull.args).toEqual(['compose', 'pull', 'talaria', 'searxng-config'])
+    const up = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('up'))!
+    expect(up.args).toEqual(['compose', 'up', '-d'])
+    expect(ctx.calls.indexOf(pull)).toBeLessThan(ctx.calls.indexOf(up))
+  })
+
+  test('registry mode: update pulls via compose, not the api package', async () => {
+    const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES } })
+    ctx.root = makeDeployTree()
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'pull' && c.args[1] === 'ghcr.io/outcrop-labs/talaria-api:main')).toBe(false)
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args.includes('searxng-config'))).toBe(true)
+  })
+
+  test('a failed compose pull dies before the up — never run on the daemon cache', async () => {
+    const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES } })
+    ctx.root = makeDeployTree()
+    ctx.plant(['docker', ['compose', 'pull', 'talaria', 'searxng-config']], new Error('no route to ghcr'))
+    const msg = await attempt(() => runUp(ctx, '/nonexistent-deploy-test-socket'))
+    expect(msg).toContain('registry-mode up must not run')
+    expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
+  })
+
+  test('the drift check scans every file COMPOSE_FILE lists', () => {
+    const root = makeDeployTree()
+    writeFileSync(
+      join(root, 'docker/compose.registry.yml'),
+      'services:\n  talaria:\n    image: ghcr.io/outcrop-labs/talaria:${TALARIA_CHANNEL:-main}\n',
+    )
+    const ctx = fakeCtx({ env: { COMPOSE_FILE: FILES, TALARIA_CHANNEL: 'nightly' } })
+    ctx.root = root
+    warnEnvDrift(ctx)
+    const warn = ctx.logLines.find((l) => l.kind === 'warn')
+    expect(warn?.msg).toContain('TALARIA_CHANNEL')
+    // and a channel pinned in docker/.env is not drift
+    const clean = fakeCtx({ env: { COMPOSE_FILE: FILES, TALARIA_CHANNEL: 'nightly' } })
+    clean.root = makeDeployTree('TALARIA_CHANNEL=nightly\n')
+    writeFileSync(
+      join(clean.root, 'docker/compose.registry.yml'),
+      'services:\n  talaria:\n    image: ghcr.io/outcrop-labs/talaria:${TALARIA_CHANNEL:-main}\n',
+    )
+    warnEnvDrift(clean)
+    expect(clean.logLines.filter((l) => l.kind === 'warn')).toHaveLength(0)
+  })
+})
+
 describe('talaria deploy creds', () => {
   test('points at the claim screen — there is no generated password to print', async () => {
     const ctx = fakeCtx()

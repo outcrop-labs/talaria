@@ -362,7 +362,7 @@ export async function canUseAgentModel(userId: string, role: Role, model: string
 // module stays client-import-free. Enabled apps extend this set dynamically
 // with EVERY app view (work and manage) — apps are explicit-grant only, an
 // admin adds each one per person.
-const MANAGE_VIEW_ROUTES = ['/agents', '/models', '/mcp', '/templates', '/observability', '/apps']
+const MANAGE_VIEW_ROUTES = ['/agents', '/teams', '/models', '/mcp', '/templates', '/observability', '/apps']
 
 const allManageRoutes = async (): Promise<string[]> => {
   const { appViewRoutes } = await import('./apps')

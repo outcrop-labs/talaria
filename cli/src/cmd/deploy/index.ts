@@ -22,13 +22,25 @@ import { credsCommand, downCommand, logsCommand, statusCommand, updateCommand, u
  *  and neither is an empty export — `${VAR:-default}` treats empty as
  *  unset. */
 export function warnEnvDrift(ctx: Ctx): void {
-  const composeYml = join(ctx.root, 'docker/compose.yml')
-  if (!existsSync(composeYml)) return
-  // COMPOSE_PROJECT_NAME is honoured without appearing as ${…} in the file.
+  // Every compose file the next invocation will actually read: the base file
+  // plus whatever a COMPOSE_FILE env layers on top (the registry-image flow
+  // in CONTAINER.md) — its ${…}s interpolate the same way, so its knobs
+  // (TALARIA_CHANNEL, …) join the checked set. Missing files are skipped;
+  // the base path without the env stays exactly as it was.
+  const listed = ['docker/compose.yml', ...(ctx.env.COMPOSE_FILE ?? '').split(':')]
+    .map((p) => p.trim())
+    .filter(Boolean)
   const interpolated = new Set(['COMPOSE_PROJECT_NAME'])
-  for (const m of readFileSync(composeYml, 'utf8').matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)) {
-    interpolated.add(m[1]!)
+  let read = false
+  for (const rel of listed) {
+    const path = join(ctx.root, rel)
+    if (!existsSync(path)) continue
+    read = true
+    for (const m of readFileSync(path, 'utf8').matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      interpolated.add(m[1]!)
+    }
   }
+  if (!read) return
   const envFile = join(ctx.root, 'docker/.env')
   const fileKeys = new Set(existsSync(envFile) ? Object.keys(parseEnv(readFileSync(envFile, 'utf8'))) : [])
   const drifted = [...interpolated]

@@ -34,7 +34,7 @@ test('an unknown route falls back instead of throwing', () => {
 test('every route in the app map resolves to a labelled surface', () => {
   const paths = [
     '/', '/chat', '/comms', '/channels', '/inbox', '/boards', '/plan', '/research',
-    '/knowledge', '/artifacts', '/agents', '/studio', '/templates',
+    '/knowledge', '/artifacts', '/agents', '/teams', '/studio', '/templates',
     '/models', '/mcp', '/observability', '/apps', '/settings', '/admin',
   ]
   for (const path of paths) {
@@ -50,11 +50,11 @@ test('every surface the client can send, the server recognises', () => {
   // an id with no brief falls through to "no context" on the Rust side, which
   // looks exactly like the bug the surface was added to fix. This pins the
   // client's id list to the keys of `SURFACE_BRIEFS` in
-  // `api/src/harness/defs/inbox_focus.rs` — same 18, so a rename or an
+  // `api/src/harness/defs/inbox_focus.rs` — same 19, so a rename or an
   // addition on either side shows up here as a visible disagreement.
   const server = [
     'inbox', 'home', 'chat', 'comms', 'boards', 'plan', 'research', 'knowledge',
-    'artifacts', 'agents', 'studio', 'templates', 'models', 'mcp',
+    'artifacts', 'agents', 'teams', 'studio', 'templates', 'models', 'mcp',
     'observability', 'apps', 'settings', 'admin',
   ]
   assert.deepEqual([...ASSISTANT_SURFACE_IDS].sort(), [...server].sort())

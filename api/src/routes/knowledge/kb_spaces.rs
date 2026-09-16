@@ -69,7 +69,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .into_iter()
             .filter(|s| {
                 granted.contains(&s.id)
-                    || can_read_agent(&guarded_of(s), &caller.model, owner.as_deref(), &[])
+                    || can_read_agent(&guarded_of(s), &caller.model, owner.as_deref(), &[], &[])
             })
             .collect();
         return Json(json!({ "spaces": spaces })).into_response();
@@ -92,7 +92,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let spaces: Vec<_> = all
         .into_iter()
         .filter(|s| {
-            granted.contains(&s.id) || can_read(&guarded_of(s), Some(&user.id), who.as_deref(), &[])
+            granted.contains(&s.id)
+                || can_read(&guarded_of(s), Some(&user.id), who.as_deref(), &[], &[])
         })
         .collect();
     Json(json!({ "spaces": spaces })).into_response()

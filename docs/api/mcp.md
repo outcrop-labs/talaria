@@ -111,7 +111,7 @@ Source: [`api/src/routes/mcp/mcp_oauth_start.rs`](../../api/src/routes/mcp/mcp_o
 Source: [`api/src/routes/mcp/mcp_servers.rs`](../../api/src/routes/mcp/mcp_servers.rs)
 
 > /api/mcp/servers.
-> The org MCP registry. GET → servers + their assignments + user access
+> The org MCP registry. GET → servers + their assignments + user/team access
 > (admin/agents.manage view). POST → register a server. Every mutation
 > re-renders the fleet so configs pick the change up (Hermes re-reads on
 > …
@@ -138,9 +138,9 @@ Source: [`api/src/routes/mcp/mcp_servers.rs`](../../api/src/routes/mcp/mcp_serve
 Source: [`api/src/routes/mcp/mcp_servers_id.rs`](../../api/src/routes/mcp/mcp_servers_id.rs)
 
 > /api/mcp/servers/{id}.
-> One registry server: PUT patches config / assignment / user access / tool
-> refresh in one idempotent surface; DELETE unregisters (assignments, user
-> access, and connected accounts cascade). Fleet re-renders after mutations.
+> One registry server: PUT patches config / assignment / user access / team
+> access / tool refresh in one idempotent surface; DELETE unregisters
+> (assignments, user access, and connected accounts cascade). Fleet re-renders after mutations.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -163,6 +163,7 @@ Source: [`api/src/routes/mcp/mcp_servers_id.rs`](../../api/src/routes/mcp/mcp_se
 | `assign` | `assign` |  |
 | `unassign` | `optional_string_member_max` |  |
 | `userAccess` | `user_access` |  |
+| `teamAccess` | `team_access` |  |
 | `oauthClient` | `oauth_client` |  |
 
 ## `/api/mcp/test`

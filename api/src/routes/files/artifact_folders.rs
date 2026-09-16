@@ -62,7 +62,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .iter()
         .filter(|f| {
             granted.contains(&f.id)
-                || can_read(&guarded_folder(f), Some(&user.id), who.as_deref(), &[])
+                || can_read(&guarded_folder(f), Some(&user.id), who.as_deref(), &[], &[])
         })
         .collect();
     Json(json!({ "folders": folders })).into_response()

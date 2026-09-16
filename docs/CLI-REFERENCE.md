@@ -19,9 +19,10 @@
 | [`talaria box start`](#talaria-box-start) | restart a stopped devbox (and the shared TEI/SearXNG) |
 | [`talaria box rm`](#talaria-box-rm) | tear down a devbox — refuses unpushed work unless --force |
 | [`talaria box build`](#talaria-box-build) | rebuild the talaria-devbox:latest toolchain image |
+| [`talaria app new`](#talaria-app-new) | scaffold a TypeScript app into apps/<slug> |
 | [`talaria deploy up`](#talaria-deploy-up) | build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved |
 | [`talaria deploy down`](#talaria-deploy-down) | stop the stack (--volumes also deletes its data — destructive) |
-| [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, pull the api package, then the redeploy (up -d --build) |
+| [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, pull what the deploy runs on (api package, or the registry images under COMPOSE_FILE), then the redeploy |
 | [`talaria deploy logs`](#talaria-deploy-logs) | follow the stack's logs (Ctrl-C to detach) |
 | [`talaria deploy creds`](#talaria-deploy-creds) | where first-run access lives: the claim screen, not a generated password |
 | [`talaria deploy status`](#talaria-deploy-status) | effective port/state/fleet + compose ps |
@@ -144,6 +145,25 @@ talaria box build [--no-cache]
 | :--- | :--- | :--- | :--- |
 | `--no-cache` | bool | — | rebuild every layer |
 
+## `talaria app`
+
+scaffold Talaria apps (TypeScript against @talaria/sdk)
+
+### `talaria app new`
+
+scaffold a TypeScript app into apps/<slug>
+
+```
+talaria app new <slug>
+```
+
+Positional `<slug>` (required) — lowercase kebab, same rule as install
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--name` | value | — | display name (default: title-cased slug) |
+| `--icon` | value | — | nav icon (default: ⬡) |
+
 ## `talaria deploy`
 
 production compose wrappers — up/down/update/logs/creds/status (docs/CONTAINER.md)
@@ -170,7 +190,7 @@ talaria deploy down [--volumes]
 
 ### `talaria deploy update`
 
-git pull --ff-only, pull the api package, then the redeploy (up -d --build)
+git pull --ff-only, pull what the deploy runs on (api package, or the registry images under COMPOSE_FILE), then the redeploy
 
 ```
 talaria deploy update
