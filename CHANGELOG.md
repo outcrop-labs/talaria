@@ -294,6 +294,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **The auth hold stops being a dead screen past one round-trip (GH #327's
+  residual).** While the session read is in flight the app paints the brand
+  mark on Mercury ground and nothing else — right for one round-trip, but a
+  wedged `/api/auth/session` (a dropped keep-alive after a container roll;
+  the read deadline closes the forever-variant since v0.1.0) plus the query
+  client's one retry held a screen with zero interactive elements for the
+  better part of a minute, and the ticket's reporter refreshed at ~10s.
+  Past a 12s grace (`ui/src/lib/session-hold.ts`, plain TS on purpose — the
+  node vitest config has no Svelte compiler, so the reactivity stays in the
+  component's `$effect` and the arm/disarm pair is unit-tested: quiet under
+  grace, fires once at the boundary, disarms when the wait resolves, re-arms
+  for a new one) the hold grows a quiet exit under the mark — "Still
+  connecting…" with Retry and Reload, in the hold's own register rather than
+  error chrome — and it disappears whole the moment the session resolves.
+  Verified: `bun run check` green; the session-hold suite (6 cases) green
+  under `bun run test` in ui/; the pre-grace hold renders identically (brand
+  mark only) and the error-shell branch is untouched.
 - **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
   `BoardLayout.svelte` feature-detected the global with
   `requestIdleCallback ?? fallback` — but reading an absent global by name

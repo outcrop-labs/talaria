@@ -15,8 +15,11 @@
   import UnreadableSecretsBanner from '@/components/setup/UnreadableSecretsBanner.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Button from '@/components/ui/Button.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
+  import { fly } from '@/lib/motion'
+  import { startHoldGrace } from '@/lib/session-hold'
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
@@ -136,6 +139,25 @@
   // swaps in right after hydration (same store NavRail uses, so no jump).
   const nav = useNavCollapsed()
 
+  // THE HOLD OWES A WAY OUT PAST ONE ROUND-TRIP. The gate below paints the
+  // brand mark and nothing else while the session read is in flight — right
+  // for a round-trip, but a wedged read (the dropped-keep-alive shape
+  // fetch-json's deadline documents; the query client's one retry makes it
+  // read-deadline × 2) held a screen with zero interactive elements for the
+  // better part of a minute: GH #327's "requires a refresh to interact".
+  // Past SESSION_HOLD_GRACE_MS the hold grows its own quiet exit (sessionHold
+  // below). The effect's re-run IS the disarm — a resolved session re-runs it,
+  // the previous stop() runs first, and the flag resets with the branch.
+  let holdTimedOut = $state(false)
+  $effect(() => {
+    const pending = (session.isLoading || !user) && !session.isError
+    if (!pending) {
+      holdTimedOut = false
+      return
+    }
+    return startHoldGrace(() => pending, () => (holdTimedOut = true))
+  })
+
   // EVERY MARKED CONTROL GETS ITS FIELD FROM ONE PLACE. The `dither-*` classes
   // stay in the markup as the statement of intent — 127 call sites already
   // make it correctly — and this is what honours them. Doing it here rather
@@ -154,8 +176,27 @@
        not breathing — Mercury is matte, the wait is one round-trip, and motion
        here would perform rather than confirm. -->
   <MercuryBackdrop />
-  <div class="flex min-h-screen items-center justify-center">
+  <div class="flex min-h-screen flex-col items-center justify-center gap-6">
     <Brand size={40} class="opacity-70" />
+    <!-- The hold's quiet exit, and only past the grace (see the effect
+         above). It is NOT an error state — the read hasn't failed, it is just
+         taking far longer than one round-trip — so it speaks in the hold's
+         own register: one muted line under the mark, two quiet actions, no
+         banner, no error chrome. It disappears whole the moment the session
+         resolves, because it lives inside this branch. -->
+    {#if holdTimedOut}
+      <div class="flex flex-col items-center gap-3" in:fly={{ y: 6, duration: 200 }}>
+        <p class="text-xs text-muted">Still connecting…</p>
+        <div class="flex items-center gap-2">
+          <Button variant="outline" size="sm" onclick={() => void session.refetch()}>
+            Retry
+          </Button>
+          <Button variant="ghost" size="sm" onclick={() => window.location.reload()}>
+            Reload
+          </Button>
+        </div>
+      </div>
+    {/if}
   </div>
 {/snippet}
 
