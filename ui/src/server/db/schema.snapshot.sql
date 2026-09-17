@@ -645,7 +645,9 @@ CREATE TABLE public.mcp_servers (
     required_headers jsonb DEFAULT '[]'::jsonb NOT NULL,
     builtin boolean DEFAULT false NOT NULL,
     oauth jsonb,
-    app_slug text
+    app_slug text,
+    package jsonb,
+    env_enc text
 );
 CREATE TABLE public.mcp_team_access (
     server_id uuid NOT NULL,
