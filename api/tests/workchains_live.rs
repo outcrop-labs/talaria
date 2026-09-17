@@ -674,3 +674,443 @@ async fn deleting_a_chain_leaves_its_tasks_standing() {
 
     reset(pg, "chain-delete").await;
 }
+
+// ── The handoff engine + the workchain-aware heartbeat ──────────────────────
+
+/// A ticket with assignees — the engine and the heartbeat both key on them.
+async fn ticket_with(
+    pg: &PgPool,
+    board_id: &str,
+    title: &str,
+    status: &str,
+    assignees: serde_json::Value,
+) -> String {
+    let (id,): (String,) = sqlx::query_as(
+        "insert into tasks (board_id, title, status, priority, created_by, assignees) \
+         values ($1::uuid, $2, $3, 'medium', 'user', $4::jsonb) returning id::text",
+    )
+    .bind(board_id)
+    .bind(title)
+    .bind(status)
+    .bind(assignees)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    id
+}
+
+/// The engine's notification writes are detached (they must never cost the
+/// ticket write), so a test asserts on them by POLLING — bounded, with the
+/// query the assertion wants to run on every attempt.
+async fn await_notification(pg: &PgPool, user_id: &str, kind: &str) -> Option<(String, String)> {
+    for _ in 0..50 {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "select title, href from notifications \
+             where user_id = $1::uuid and kind = $2 and read_at is null",
+        )
+        .bind(user_id)
+        .bind(kind)
+        .fetch_all(pg)
+        .await
+        .unwrap();
+        if let Some(row) = rows.first() {
+            return Some(row.clone());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    None
+}
+
+/// A fleet agent: an agent_defs row (the model names no real provider, so
+/// nothing dispatches it), a minted per-agent key, and a board grant — the
+/// three things the heartbeat's policy gate asks for. Returns (agent id,
+/// model, key).
+async fn fleet_agent(state: &AppState, board_id: &str, tag: &str) -> (String, String, String) {
+    let pg = &state.pg;
+    // slug and model are each UNIQUE on agent_defs; both carry a uuid so a
+    // rerun of the suite cannot collide with a prior run's leftovers.
+    let model = format!("workchains-live-{tag}-{}", uuid::Uuid::new_v4());
+    let slug = format!("workchains-live-{tag}-{}", uuid::Uuid::new_v4());
+    let (id,): (String,) = sqlx::query_as(
+        "insert into agent_defs (slug, department, model, display_name) \
+         values ($1, 'personal', $2, 'Workchains Live Agent') returning id::text",
+    )
+    .bind(&slug)
+    .bind(&model)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    let sb = state
+        .secretbox()
+        .await
+        .expect("secretbox loads — TALARIA_SECRET_KEY must match (source ui/.env)");
+    let key = talaria_api::agent_auth::rotate_agent_api_key(pg, &sb, &id)
+        .await
+        .expect("agent key mints");
+    sqlx::query("insert into fleet_agents (name) values ($1)")
+        .bind(&model)
+        .execute(pg)
+        .await
+        .unwrap();
+    sqlx::query("insert into board_agents (board_id, agent_model) values ($1::uuid, $2)")
+        .bind(board_id)
+        .bind(&model)
+        .execute(pg)
+        .await
+        .unwrap();
+    (id, model, key)
+}
+
+/// One heartbeat through the REAL router, with the agent's own key — the
+/// exact credential a container presents.
+async fn heartbeat(state: &AppState, agent_id: &str, key: &str) -> (u16, Value) {
+    let res = routes::router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/agents/{agent_id}/heartbeat"))
+                .header("x-api-key", key)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+/// The heartbeat's work item ids — what the ordering guarantee is asserted
+/// against.
+fn work_item_ids(body: &Value) -> Vec<String> {
+    body["work_items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .map(|i| i["id"].as_str().expect("feed items carry ids").to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn done_hands_off_to_a_human_head_with_a_notification() {
+    let state = app_state().await;
+    let f = fixture(&state, "turn").await;
+    let pg = &state.pg;
+    let owner = sid(&state, &f.owner).await;
+
+    // A assigned to the owner, B assigned to the viewer: when A is signed
+    // off, B becomes the head and the viewer hears it is their turn.
+    let a = ticket_with(
+        pg,
+        &f.board_id,
+        "Write the brief",
+        "in_progress",
+        serde_json::json!([format!("user:{}", f.owner.id)]),
+    )
+    .await;
+    let b = ticket_with(
+        pg,
+        &f.board_id,
+        "Review the draft",
+        "in_progress",
+        serde_json::json!([format!("user:{}", f.viewer.id)]),
+    )
+    .await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Handoff").await;
+    for task_id in [&a, &b] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+
+    // No turn row before the sign-off — the engine fires on the write.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "PUT",
+        &format!("/api/tasks/{a}"),
+        Some(serde_json::json!({ "status": "done" })),
+    )
+    .await;
+    assert_eq!(status, 200, "done write failed: {body}");
+
+    // B is the head now, and the viewer (a human assignee) is told.
+    let row = await_notification(pg, &f.viewer.id, "workchain_turn").await;
+    let (title, href) = row.expect("the new head's human assignee gets a turn row");
+    assert!(
+        title.starts_with("It's your turn: "),
+        "the turn title names the ticket: {title}"
+    );
+    assert!(
+        title.contains("Review the draft"),
+        "title carries B: {title}"
+    );
+    assert_eq!(href, format!("/boards/{}/{}", f.board_id, b));
+
+    // The owner, who signed off, gets no turn row — the notification is the
+    // HANDOFF, not an echo of the move.
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "select 1 from notifications where user_id = $1::uuid and kind = 'workchain_turn'",
+    )
+    .bind(&f.owner.id)
+    .fetch_all(pg)
+    .await
+    .unwrap();
+    assert!(rows.is_empty(), "the actor gets no turn row");
+
+    reset(pg, "turn").await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn the_heartbeat_hides_blocked_steps_and_serves_the_ready_head() {
+    let state = app_state().await;
+    let f = fixture(&state, "ordering").await;
+    let owner = sid(&state, &f.owner).await;
+    let (agent_id, _model, key) = fleet_agent(&state, &f.board_id, "ordering").await;
+
+    // Both steps belong to the agent; only A is servable while it is live.
+    let a = ticket_with(
+        pg,
+        &f.board_id,
+        "First",
+        "in_progress",
+        serde_json::json!([_model]),
+    )
+    .await;
+    let b = ticket_with(
+        pg,
+        &f.board_id,
+        "Second",
+        "in_progress",
+        serde_json::json!([_model]),
+    )
+    .await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Ordering").await;
+    for task_id in [&a, &b] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+
+    // THE CORE ORDERING GUARANTEE: the agent is ASSIGNED to B, B's column
+    // is a working column, and still B is not in the feed while A is live.
+    let (status, body) = heartbeat(&state, &agent_id, &key).await;
+    assert_eq!(status, 200, "heartbeat failed: {body}");
+    let ids = work_item_ids(&body);
+    assert_eq!(ids, vec![a.clone()], "only the head may be served");
+    assert_eq!(
+        body["work_items"][0]["workchainReady"],
+        Value::Bool(true),
+        "the ready head carries its flag"
+    );
+
+    // Sign A off; B becomes the head and enters the feed flagged.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "PUT",
+        &format!("/api/tasks/{a}"),
+        Some(serde_json::json!({ "status": "done" })),
+    )
+    .await;
+    assert_eq!(status, 200, "done write failed: {body}");
+    let (status, body) = heartbeat(&state, &agent_id, &key).await;
+    assert_eq!(status, 200, "heartbeat failed: {body}");
+    let ids = work_item_ids(&body);
+    assert_eq!(ids, vec![b.clone()], "the new head is served");
+    assert_eq!(
+        body["work_items"][0]["workchainReady"],
+        Value::Bool(true),
+        "the new head is flagged as chain-ready"
+    );
+
+    // Sign B off too: nothing from this chain is left to serve.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "PUT",
+        &format!("/api/tasks/{b}"),
+        Some(serde_json::json!({ "status": "done" })),
+    )
+    .await;
+    assert_eq!(status, 200, "done write failed: {body}");
+    let (status, body) = heartbeat(&state, &agent_id, &key).await;
+    assert_eq!(status, 200, "heartbeat failed: {body}");
+    let ids = work_item_ids(&body);
+    assert!(
+        !ids.contains(&b) && !ids.contains(&a),
+        "an all-done chain serves nothing: {ids:?}"
+    );
+
+    reset(pg, "ordering").await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn failed_pauses_the_chain_and_tells_its_creator() {
+    let state = app_state().await;
+    let f = fixture(&state, "pause").await;
+    let owner = sid(&state, &f.owner).await;
+
+    let a = ticket(pg, &f.board_id, "Breaks", "in_progress").await;
+    let b = ticket(pg, &f.board_id, "Waits behind", "in_progress").await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Paused train").await;
+    for task_id in [&a, &b] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+
+    // 'failed' is an off-board terminal: the chain pauses, the creator hears.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "PUT",
+        &format!("/api/tasks/{a}"),
+        Some(serde_json::json!({ "status": "failed" })),
+    )
+    .await;
+    assert_eq!(status, 200, "failed write failed: {body}");
+
+    let paused: Option<(bool,)> =
+        sqlx::query_as("select paused from task_workchains where id = $1::uuid")
+            .bind(&chain)
+            .fetch_optional(pg)
+            .await
+            .unwrap();
+    assert_eq!(paused, Some((true,)), "the engine paused the chain");
+
+    let row = await_notification(pg, &f.owner.id, "workchain_paused").await;
+    let (title, href) = row.expect("the chain's creator hears about the pause");
+    assert!(
+        title.starts_with("Workchain paused: Paused train - "),
+        "the pause title names the chain and the ticket: {title}"
+    );
+    assert_eq!(href, format!("/boards/{}/{}", f.board_id, a));
+
+    // A human PATCH resumes the chain — and unpausing auto-advances
+    // nothing: the head is still B, exactly as the read endpoint reports.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "PATCH",
+        &format!("/api/workchains/{chain}"),
+        Some(serde_json::json!({ "paused": false })),
+    )
+    .await;
+    assert_eq!(status, 200, "unpause failed: {body}");
+    let (status, body) = call(
+        &state,
+        &owner,
+        "GET",
+        &format!("/api/boards/{}/workchains", f.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let steps = body["workchains"][0]["steps"].as_array().expect("steps");
+    assert_eq!(
+        steps[0]["state"], "done",
+        "'failed' is terminal for the chain"
+    );
+    assert_eq!(
+        steps[1]["state"], "head",
+        "unpausing derives the same head — nothing auto-advanced"
+    );
+    assert_eq!(
+        body["workchains"][0]["paused"],
+        Value::Bool(false),
+        "the PATCH carried"
+    );
+
+    reset(pg, "pause").await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn an_archived_step_reads_past_and_the_engine_leaves_it_alone() {
+    let state = app_state().await;
+    let f = fixture(&state, "archive").await;
+    let owner = sid(&state, &f.owner).await;
+
+    let a = ticket(pg, &f.board_id, "Retired mid-chain", "in_progress").await;
+    let b = ticket(pg, &f.board_id, "Next up", "in_progress").await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Archive read-past").await;
+    for task_id in [&a, &b] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+
+    // Archive A (a non-status write): the derived head reads past it, and no
+    // engine action fires — archival is not the engine's trigger.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "PUT",
+        &format!("/api/tasks/{a}"),
+        Some(serde_json::json!({ "archived": true })),
+    )
+    .await;
+    assert_eq!(status, 200, "archive write failed: {body}");
+    let (status, body) = call(
+        &state,
+        &owner,
+        "GET",
+        &format!("/api/boards/{}/workchains", f.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let steps = body["workchains"][0]["steps"].as_array().expect("steps");
+    assert_eq!(steps[0]["state"], "archived");
+    assert_eq!(
+        steps[1]["state"], "head",
+        "the head moved past the retired step"
+    );
+
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "select 1 from notifications where kind in ('workchain_turn', 'workchain_paused')",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap();
+    assert!(
+        rows.is_empty(),
+        "archival alone files no engine notification"
+    );
+
+    reset(pg, "archive").await;
+}

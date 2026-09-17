@@ -1,5 +1,5 @@
 // Board workchains — ordered pipelines of tickets (A -> B -> C) with
-// human/agent handoffs (TALA-30, data model + CRUD; no UI yet).
+// human/agent handoffs (TALA-30).
 //
 // The step state is derived, never stored: a step is 'done' when its task
 // sits in a done-category column (the one definition, StatusMeta::terminal),
@@ -7,8 +7,34 @@
 // later step is 'waiting'. Archived tickets never count as head — a retired
 // ticket is not work in flight, and reading past it is the answer the
 // chain's own reader needs.
+//
+// ── The handoff engine ────────────────────────────────────────────────────────
+//
+// advance_workchains is the write-side half of the same derived state: when a
+// task write lands a step's ticket in a terminal column, every chain the task
+// belongs to is re-derived FROM THE DATABASE and the new head's assignees
+// decide what happens next. Humans are TOLD (a workchain_turn row through
+// the one notification writer); agents are not — their visibility is the
+// heartbeat, which serves a ready head and hides a blocked step, so an agent
+// cannot read its chain position as an invitation to start early. An
+// off-board terminal (failed/cancelled) pauses the chain and tells its
+// creator, because a chain whose step failed is not a chain that advances.
+//
+// The engine fires on the ordinary status-write path only — the one door
+// update_task is — so a human sign-off (or a reviewer's approve) is the only
+// trigger. Agents cannot land a terminal column (the MCP guardrail), which
+// makes human approval the sole way a chain advances: nothing else calls
+// this, on purpose.
+//
+// IDEMPOTENT BY CONSTRUCTION: no chain state lives in memory. Each firing
+// re-reads the chain from the DB, so a retried status write re-derives the
+// same head and files nothing new (the head only changes when the DB does).
+// A head that is already terminal-derived cannot be re-notified — the
+// notification rides the TRANSITION, and a transition that didn't happen
+// derives the same answer twice, quietly.
 
-use crate::statuses::{StatusMeta, status_meta};
+use crate::notify::{NotificationInput, NotifyDeps};
+use crate::statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use sqlx::PgPool;
 use std::collections::HashMap;
 
@@ -179,6 +205,317 @@ pub async fn list_workchains(pg: &PgPool, board_id: &str) -> Result<Vec<Workchai
         .collect())
 }
 
+// ── The handoff engine ───────────────────────────────────────────────────────
+
+/// Everything the engine needs to decide a step's edge: the task's terminal
+/// category, if any. A done-category column is `Done`; the off-board keys are
+/// `OffBoard`; anything else is `Live` (archival is not a status — the
+/// derived head already reads past archived steps, and the engine does too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Terminal {
+    Live,
+    Done,
+    OffBoard,
+}
+
+/// Which terminal category a status names, per the board's own StatusMeta —
+/// the one definition (done_keys + OFF_BOARD_STATUSES), split the way the
+/// engine needs it because a done step ADVANCES its chain and a failed one
+/// PAUSES it.
+pub fn terminal_of(meta: &StatusMeta, status: &str) -> Terminal {
+    if OFF_BOARD_STATUSES.contains(&status) {
+        Terminal::OffBoard
+    } else if meta.done_keys.iter().any(|k| k == status) {
+        Terminal::Done
+    } else {
+        Terminal::Live
+    }
+}
+
+/// A head candidate row, in select order: task id, status, assignees, title,
+/// ticket ref (None when the board has no prefix), chain id, chain name,
+/// chain creator, chain paused.
+type HeadRow = (
+    String,
+    String,
+    serde_json::Value,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    bool,
+);
+
+/// Read the chain the task is a step of — its id, name, creator and paused
+/// flag — or None when the task belongs to no chain (the common case; most
+/// writes are ordinary tickets and cost one indexed lookup).
+async fn chain_of(pg: &PgPool, task_id: &str) -> Result<Option<HeadRow>, sqlx::Error> {
+    let row: Option<HeadRow> = sqlx::query_as(
+        "select t.id::text, t.status, t.assignees, t.title, \
+                case when t.ticket_no is not null \
+                     then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end, \
+                w.id::text, w.name, w.created_by, w.paused \
+         from task_workchain_steps s \
+         join task_workchains w on w.id = s.workchain_id \
+         join tasks t on t.id = s.task_id \
+         join boards b on b.id = t.board_id \
+         where s.task_id = $1::uuid",
+    )
+    .bind(task_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row)
+}
+
+/// The chain's head, derived the same way list_workchains derives it: the
+/// first step, in position order, whose task is not archived and not
+/// terminal. None when the chain has no live work left. Returns the head's
+/// task id, status and assignees (the engine's whole decision input).
+async fn head_of(
+    pg: &PgPool,
+    meta: &StatusMeta,
+    chain_id: &str,
+) -> Result<Option<(String, String, serde_json::Value)>, sqlx::Error> {
+    let rows: Vec<(String, String, serde_json::Value, Option<i64>)> = sqlx::query_as(
+        "select t.id::text, t.status, t.assignees, \
+                (trunc(extract(epoch from t.archived_at) * 1000))::bigint \
+         from task_workchain_steps s \
+         join tasks t on t.id = s.task_id \
+         where s.workchain_id = $1::uuid \
+         order by s.position, s.created_at",
+    )
+    .bind(chain_id)
+    .fetch_all(pg)
+    .await?;
+    for (id, status, assignees, archived_ms) in rows {
+        if archived_ms.is_some() {
+            continue;
+        }
+        if terminal_of(meta, &status) == Terminal::Live {
+            return Ok(Some((id, status, assignees)));
+        }
+    }
+    Ok(None)
+}
+
+/// Fire the engine after a task's status column was written. `board_id` and
+/// the task's CURRENT status name the state to derive from — the caller
+/// passes what update_task just wrote (next_status), so the DB read below
+/// agrees with the write that fired it.
+///
+/// DETACHED BY DESIGN: every notification is fire-and-forget through the one
+/// writer; a paused write or a failed row never costs the ticket write it
+/// rode in on. The chain read and the status_meta read are awaited (they
+/// must be: the notification's content derives from them) — one indexed
+/// lookup on a chain-less ticket, a chain read plus a column read on one
+/// that has a chain.
+pub async fn advance_workchains(
+    pg: &PgPool,
+    notify: &NotifyDeps,
+    board_id: &str,
+    task_id: &str,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    let meta = status_meta(pg, board_id).await?;
+    let category = terminal_of(&meta, status);
+    let Some((_, _, _, _, _, chain_id, chain_name, chain_creator, chain_paused)) =
+        chain_of(pg, task_id).await?
+    else {
+        return Ok(());
+    };
+    match category {
+        // Done: the chain advanced past this step. Tell the new head's
+        // HUMAN assignees it is their turn; an agent head hears nothing —
+        // its visibility is the heartbeat serving the ready head.
+        Terminal::Done => {
+            let Some((head_id, _, head_assignees)) = head_of(pg, &meta, &chain_id).await? else {
+                return Ok(());
+            };
+            let humans =
+                crate::tasks::human_assignee_ids(&crate::tasks::json_strings(&head_assignees));
+            if humans.is_empty() {
+                return Ok(());
+            }
+            let Some(t) = crate::tasks::get_task(pg, &head_id).await? else {
+                return Ok(());
+            };
+            let subject = match t.ticket_ref.as_deref() {
+                Some(r) => format!("{r} - {}", t.title),
+                None => t.title.clone(),
+            };
+            let href = format!("/boards/{}/{}", t.board_id, t.id);
+            for user_id in &humans {
+                let input = NotificationInput {
+                    kind: "workchain_turn",
+                    title: &format!("It's your turn: {subject}"),
+                    body: None,
+                    href: Some(&href),
+                };
+                if let Err(e) = crate::notify::add_notification(notify, user_id, &input).await {
+                    tracing::error!("[workchains] turn notification for {user_id} failed: {e}");
+                }
+            }
+        }
+        // Off-board (failed/cancelled): the chain stops advancing until a
+        // human resumes it. Pause and tell the chain's creator. Unpausing
+        // is a human PATCH — it re-derives the head on the next read and
+        // auto-advances nothing, exactly like the chain's own reader.
+        Terminal::OffBoard => {
+            if !chain_paused {
+                sqlx::query(
+                    "update task_workchains set paused = true, updated_at = now() \
+                     where id = $1::uuid",
+                )
+                .bind(&chain_id)
+                .execute(pg)
+                .await?;
+            }
+            let Some(creator) = chain_creator else {
+                return Ok(());
+            };
+            let Some(t) = crate::tasks::get_task(pg, task_id).await? else {
+                return Ok(());
+            };
+            let subject = match t.ticket_ref.as_deref() {
+                Some(r) => format!("{r} {}", t.title),
+                None => t.title.clone(),
+            };
+            // created_by is the human-readable attribution the POST stored
+            // (email, else name, else 'user') — resolve it to a users.id the
+            // notification writer can file a row against, the same email →
+            // id lookup notify_task_users uses for its actor.
+            let creator_id: Option<(String,)> =
+                sqlx::query_as("select id::text from users where lower(email) = $1 limit 1")
+                    .bind(creator.to_lowercase())
+                    .fetch_optional(pg)
+                    .await?;
+            let Some((creator_id,)) = creator_id else {
+                return Ok(());
+            };
+            let input = NotificationInput {
+                kind: "workchain_paused",
+                title: &format!("Workchain paused: {chain_name} - {subject}"),
+                body: None,
+                href: Some(&format!("/boards/{}/{}", t.board_id, t.id)),
+            };
+            if let Err(e) = crate::notify::add_notification(notify, &creator_id, &input).await {
+                tracing::error!("[workchains] paused notification for {creator} failed: {e}");
+            }
+        }
+        Terminal::Live => {}
+    }
+    Ok(())
+}
+
+// ── The heartbeat's ordering guarantee ───────────────────────────────────────
+
+/// The workchain answer for one servable-candidate ticket, derived the same
+/// instant the heartbeat reads it: `Blocked` when an earlier step of its
+/// chain is still live (the ticket must NOT be served, whatever its own
+/// column says), `Ready` when it IS its chain's head (serve it, flagged so
+/// the harness can prioritize chain work), `Free` when the ticket belongs to
+/// no chain (the ordinary heartbeat shape, unchanged).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readiness {
+    Free,
+    Ready,
+    Blocked,
+}
+
+impl Readiness {
+    /// The wire field rides only on chain tickets: a `Free` ticket keeps the
+    /// feed item shape it always had, a `Ready` one carries
+    /// `workchainReady: true` — the minimum-churn shape the harnesses read.
+    pub fn ready_flag(self) -> Option<bool> {
+        match self {
+            Readiness::Free => None,
+            Readiness::Ready => Some(true),
+            Readiness::Blocked => None,
+        }
+    }
+}
+
+/// Chain readiness for a batch of candidate tickets, ONE query for the whole
+/// heartbeat. The query carries NO rule of its own — it fetches the chains'
+/// steps (position order, the same tiebreak the chain read uses) and the
+/// terminal predicate is derived in Rust, through the one definition the
+/// board read uses. Spelling it in SQL is not possible without a second
+/// copy of the rule: done columns are per-board, and a board that never
+/// customized has NO board_statuses rows at all — its 'done' column is a
+/// virtual default only StatusMeta knows.
+///
+/// A candidate is Blocked when any EARLIER step of its chain is still live
+/// (not archived, not terminal). It is Ready when it IS that first live
+/// step. A PAUSED chain serves its head exactly as an unpaused one — pause
+/// is the creator-facing signal that the chain stopped advancing, not a
+/// gate on the work already at the front.
+///
+/// The map carries an entry for every LIVE step of the chains touched
+/// (Ready or Blocked); a candidate absent from it belongs to no chain and
+/// stays Free.
+pub async fn chain_readiness(
+    pg: &PgPool,
+    metas: &HashMap<String, StatusMeta>,
+    candidate_ids: &[String],
+) -> Result<HashMap<String, Readiness>, sqlx::Error> {
+    if candidate_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Every step of every chain a candidate belongs to, in the order the
+    // chain read walks them: position, then created_at. The chain's board
+    // rides along so the terminal predicate comes from that board's meta —
+    // a chain's steps are all its board's tickets (cross-board adds are
+    // refused), so ONE meta answers every step.
+    let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(
+        "select w.id::text, w.board_id::text, s.task_id::text, t.status, \
+                (t.archived_at is not null) \
+         from task_workchain_steps s \
+         join task_workchains w on w.id = s.workchain_id \
+         join tasks t on t.id = s.task_id \
+         where s.workchain_id in ( \
+             select workchain_id from task_workchain_steps where task_id = any($1::uuid[]) \
+         ) \
+         order by w.id, s.position, s.created_at",
+    )
+    .bind(candidate_ids)
+    .fetch_all(pg)
+    .await?;
+    let mut by_chain: HashMap<(&str, &str), Vec<(&str, &str, bool)>> = HashMap::new();
+    for (chain_id, board_id, task_id, status, archived) in &rows {
+        by_chain
+            .entry((chain_id.as_str(), board_id.as_str()))
+            .or_default()
+            .push((task_id.as_str(), status.as_str(), *archived));
+    }
+    // One walk per chain: the first live step is the head (Ready); every
+    // live step behind it is Blocked. The map ends up carrying an entry
+    // for every LIVE step of every chain touched — a candidate absent from
+    // it belongs to no chain and stays Free.
+    let mut out: HashMap<String, Readiness> = HashMap::new();
+    for ((_, board_id), steps) in &by_chain {
+        let Some(meta) = metas.get(*board_id) else {
+            continue;
+        };
+        let mut head_seen = false;
+        for (task_id, status, archived) in steps {
+            if *archived || terminal_of(meta, status) != Terminal::Live {
+                continue;
+            }
+            out.insert(
+                task_id.to_string(),
+                if head_seen {
+                    Readiness::Blocked
+                } else {
+                    Readiness::Ready
+                },
+            );
+            head_seen = true;
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +599,26 @@ mod tests {
         derive_states(&meta, &mut steps);
         assert_eq!(steps[0].state, "done");
         assert_eq!(steps[1].state, "done");
+    }
+
+    #[test]
+    fn terminal_of_splits_done_from_off_board() {
+        let meta = meta(&["done", "shipped"]);
+        assert_eq!(terminal_of(&meta, "done"), Terminal::Done);
+        assert_eq!(terminal_of(&meta, "shipped"), Terminal::Done);
+        assert_eq!(terminal_of(&meta, "failed"), Terminal::OffBoard);
+        assert_eq!(terminal_of(&meta, "cancelled"), Terminal::OffBoard);
+        assert_eq!(terminal_of(&meta, "inbox"), Terminal::Live);
+        assert_eq!(terminal_of(&meta, "blocked"), Terminal::Live);
+    }
+
+    #[test]
+    fn an_off_board_key_is_off_board_even_when_a_board_names_a_column_that_way() {
+        // OFF_BOARD_STATUSES wins over done_keys by the check order — the
+        // engine pauses on failed/cancelled whatever the board's columns
+        // say, matching StatusMeta::terminal's own precedence.
+        let meta = meta(&["failed"]);
+        assert_eq!(terminal_of(&meta, "failed"), Terminal::OffBoard);
+        assert!(meta.terminal("failed"));
     }
 }

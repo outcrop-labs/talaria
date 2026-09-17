@@ -32,6 +32,8 @@ pub const NOTIFY_CLASSES: &[(&str, &str)] = &[
     ("agent_blocked", "both"),
     ("gap_reported", "in_app"),
     ("work_complete", "in_app"),
+    ("workchain_turn", "both"),
+    ("workchain_paused", "in_app"),
 ];
 
 const DIGEST_PREF_KEY: &str = "digest";
