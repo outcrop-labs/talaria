@@ -11,6 +11,21 @@ export {
   type HeaderField,
 } from '@/lib/mcp-headers'
 
+/** A marketplace package install (npm/pypi/oci): how the runtime container
+ *  is built. Declarations only — env values are sealed server-side. */
+export interface LibraryPackageRow {
+  kind: 'npm' | 'pypi' | 'oci'
+  identifier: string
+  version: string | null
+  runtimeHint: string | null
+  transport: 'stdio' | 'http'
+  containerPort: number | null
+  transportPath: string | null
+  image: string
+  runArgs: Array<{ type?: string; name?: string; value?: string; default?: string | null; placeholder?: string | null; description?: string | null; isRequired?: boolean }>
+  declaredEnv: LibraryHeaderRow[]
+}
+
 export interface McpServerRow {
   id: string
   name: string
@@ -25,6 +40,10 @@ export interface McpServerRow {
   builtin: boolean
   appSlug: string | null
   oauthEnabled: boolean
+  /** Package installs: the stored declarations doc (never env values). */
+  package: LibraryPackageRow | null
+  /** Package runtime state: pulling | error | ready | idle | stopped. */
+  pkgStatus: string | null
   /** OAuth org connection state (null for header-auth servers). */
   orgConnected: boolean | null
   oauthMeta: {
@@ -122,6 +141,8 @@ export interface LibraryServerRow {
   icon: string | null
   tier: 'first-party' | 'verified' | 'community'
   requiredHeaders: LibraryHeaderRow[]
+  /** Package-shipping entries (no hosted endpoint): how to run them. */
+  package: LibraryPackageRow | null
 }
 
 // Outline chips in the mono chrome voice — gold reserved for the official tier.

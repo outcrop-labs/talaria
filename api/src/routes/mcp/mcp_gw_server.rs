@@ -90,7 +90,7 @@ pub async fn post(
             return thrown_internal_error();
         }
     };
-    let Some(eff) = eff else {
+    let Some(mut eff) = eff else {
         return house_error(StatusCode::FORBIDDEN, "no access to this MCP server");
     };
 
@@ -167,6 +167,47 @@ pub async fn post(
         };
     }
 
+    // Package servers (npm/pypi/oci from the marketplace): stdio packages
+    // converse through the pump this process owns — the tool gate above
+    // already ran on the same rpc body; oci-http packages relay like
+    // remotes against the container's resolved URL (a loopback or container
+    // DNS address, so the SSRF check below is skipped for them the same way
+    // it is for the builtin toolkit).
+    if let Some(spec) = eff
+        .server
+        .package
+        .as_ref()
+        .and_then(crate::mcp::pkg::PkgSpec::of)
+    {
+        if spec.transport == "http" {
+            let url = match crate::mcp::pkg::ensure_http(&sb, &eff.server, &spec).await {
+                Ok(u) => u,
+                Err(e) => return house_error(StatusCode::BAD_GATEWAY, &e),
+            };
+            eff.server = crate::mcp::registry::McpServer {
+                url,
+                ..eff.server.clone()
+            };
+        } else {
+            let rpc_body = rpc.clone().unwrap_or_else(|| json!({}));
+            return match crate::mcp::pkg::pkg_call(&state.pg, &sb, &eff.server, &spec, &rpc_body)
+                .await
+            {
+                Ok((status, out)) if out.is_null() => (
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                    Body::empty(),
+                )
+                    .into_response(),
+                Ok((status, out)) => (
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                    Json(out),
+                )
+                    .into_response(),
+                Err(e) => house_error(StatusCode::BAD_GATEWAY, &e),
+            };
+        }
+    }
+
     // App-published servers dispatch IN-PROCESS in TS through the app module
     // — authors' TS/node code, which rule 10 keeps on the TS side (the
     // never-port surface). `app-*` servers live there, not here; a direct
@@ -200,6 +241,7 @@ pub async fn post(
     // is this process's own loopback listener and skips the check (loopback is
     // exactly what it refuses).
     if !eff.server.builtin
+        && eff.server.package.is_none()
         && crate::safe_fetch::assert_fetchable_url(&eff.server.url)
             .await
             .is_err()
@@ -289,12 +331,33 @@ pub async fn get(
             return thrown_internal_error();
         }
     };
-    let Some(eff) = eff else {
+    let Some(mut eff) = eff else {
         return house_error(StatusCode::FORBIDDEN, "no access to this MCP server");
     };
     // App servers have no notification stream — decline politely.
     if eff.server.app_slug.is_some() {
         return (StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response();
+    }
+    // A stdio package has no notification stream either; an oci-http one
+    // relays to its container's resolved URL.
+    if let Some(spec) = eff
+        .server
+        .package
+        .as_ref()
+        .and_then(crate::mcp::pkg::PkgSpec::of)
+    {
+        if spec.transport == "http" {
+            let url = match crate::mcp::pkg::ensure_http(&sb, &eff.server, &spec).await {
+                Ok(u) => u,
+                Err(e) => return house_error(StatusCode::BAD_GATEWAY, &e),
+            };
+            eff.server = crate::mcp::registry::McpServer {
+                url,
+                ..eff.server.clone()
+            };
+        } else {
+            return (StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response();
+        }
     }
     // Same heal as POST: the builtin child may not be up when the client
     // opens its notification stream.
@@ -305,6 +368,7 @@ pub async fn get(
     // Same rule as POST: validate a non-builtin upstream URL before the hop;
     // the response is a live SSE relay, so the fetch itself stays raw.
     if !eff.server.builtin
+        && eff.server.package.is_none()
         && crate::safe_fetch::assert_fetchable_url(&eff.server.url)
             .await
             .is_err()

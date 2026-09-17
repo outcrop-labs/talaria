@@ -103,6 +103,7 @@ pub enum JobName {
     UpdateCheck,
     UpdateReconcile,
     BlurbRewrite,
+    McpPkgReconcile,
 }
 
 impl JobName {
@@ -121,6 +122,7 @@ impl JobName {
             JobName::UpdateCheck => "update-check",
             JobName::UpdateReconcile => "update-reconcile",
             JobName::BlurbRewrite => "blurb-rewrite",
+            JobName::McpPkgReconcile => "mcp-pkg-reconcile",
         }
     }
 }

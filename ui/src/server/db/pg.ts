@@ -234,6 +234,8 @@ const MIGRATIONS: string[] = [
   `alter table mcp_servers add column if not exists builtin boolean not null default false`,
   `alter table mcp_servers add column if not exists oauth jsonb`,
   `alter table mcp_servers add column if not exists app_slug text`,
+  `alter table mcp_servers add column if not exists package jsonb`,
+  `alter table mcp_servers add column if not exists env_enc text`,
   `create table if not exists mcp_oauth_states (
     state text primary key,
     server_id uuid not null references mcp_servers(id) on delete cascade,

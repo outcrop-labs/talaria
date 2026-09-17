@@ -82,17 +82,22 @@
       },
     ])
 
-  // The one status the header needs: connection first, then lifecycle.
+  // The one status the header needs: connection first, then lifecycle —
+  // for package installs the runtime state (pulling/ready/…) is the status.
   const status = $derived(
     !s.enabled
       ? { label: 'disabled', cls: 'border-line text-muted' }
-      : s.oauthEnabled && s.authMode === 'org' && !s.orgConnected
-        ? null // the Connect button IS the status
-        : s.oauthEnabled && s.authMode === 'per-user'
-          ? { label: 'per-user auth', cls: 'border-line text-muted' }
-          : s.oauthEnabled && s.orgConnected
-            ? { label: '✓ connected', cls: 'border-success/40 text-success' }
-            : null,
+      : s.pkgStatus === 'pulling'
+        ? { label: 'pulling image', cls: 'border-line text-muted' }
+        : s.pkgStatus === 'error'
+          ? { label: 'image failed', cls: 'border-danger/40 text-danger' }
+          : s.oauthEnabled && s.authMode === 'org' && !s.orgConnected
+            ? null // the Connect button IS the status
+            : s.oauthEnabled && s.authMode === 'per-user'
+              ? { label: 'per-user auth', cls: 'border-line text-muted' }
+              : s.oauthEnabled && s.orgConnected
+                ? { label: '✓ connected', cls: 'border-success/40 text-success' }
+                : null,
   )
 </script>
 
@@ -116,6 +121,13 @@
             title={`Published by the "${s.appSlug}" app; its tools run inside this deployment. Govern access below; lifecycle follows the app (Manage → Apps).`}
           >
             app
+          </Chip>
+        {:else if s.package}
+          <Chip
+            class="shrink-0"
+            title={`Runs as a hardened container from a ${s.package.kind.toUpperCase()} package. One org-shared credential, sealed at rest and spoken only to the container.`}
+          >
+            pkg
           </Chip>
         {:else if domain}
           <span class="truncate font-mono text-[11px] text-muted">{domain}</span>

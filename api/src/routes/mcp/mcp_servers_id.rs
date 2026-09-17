@@ -142,6 +142,11 @@ pub async fn put(
             tracing::error!("[mcp] server update failed: {e}");
             return thrown_internal_error();
         }
+        // A disabled package server stops running — its container exists to
+        // serve, and an idle one still holds sealed credentials in its env.
+        if patch.enabled == Some(false) && server.package.is_some() {
+            crate::mcp::pkg::stop_pkg(&server.name).await;
+        }
         if let Some(label) = &patch.label {
             audit_after.insert("label".into(), json!(label));
         }
