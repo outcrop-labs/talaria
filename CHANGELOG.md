@@ -6,6 +6,48 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Added
 
+- **Hermes bundled skills stay classified, and every pack we prune occupies
+  the name agents reach for.** Hermes ships Notion, Obsidian, Airtable, gh,
+  gws, Himalaya, Box, xlsx, llm-wiki, raw coding-harness CLIs, and more —
+  and adds packs on image updates. A six-path prune array in docker.rs
+  silently let new conflicts in, and only `github` had a Talaria signpost,
+  so a search for "notion" found a hole and the model improvised. Source of
+  truth is `scripts/hermes-skill-authority.json`: every snapshot path is
+  replaced, keepExact, or keepPrefix; unclassified fails `bun run check`.
+  Replaced packs are `rm -rf`'d on every container roll (`hermes_skills::
+  prune_paths`); a short SKILL.md at `scripts/skills/<signpost>/` occupies
+  the Hermes `name:` (email, obsidian, notion, airtable, google-workspace,
+  box, xlsx, llm-wiki, claude-code, codex, opencode, xurl,
+  teams-meeting-pipeline — github already existed). Fitness: `hermes:authority`
+  (six fixtures — Notion/Obsidian/Excel/Box/wiki/Airtable asks must hit
+  Talaria tools). keepPrefixes is apple/ only — every other family is
+  keepExact so a new creative/ or web/ pack cannot sneak in. The chassis boot
+  smoke `find`s SKILL.md in the live image and fails on unclassified packs.
+  `update_document` takes `rows`/`html` and refuses markdown on a sheet or
+  page (that would smash the grid). Soul-header bullets generate from
+  `TALARIA_TOOLS` so a new tool cannot miss the contract. `hermes:authority`
+  fails a reply that called the right tool then claimed "saved to Notion".
+  Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
+  `cargo test --lib` hermes_skills, hermes_authority, talaria_tools, sandbox,
+  org, registry.
+
+- **Agents can now author spreadsheets and web pages, reply in threads, and
+  react — and the fitness suite measures whether a model uses those tools.**
+  The built-in toolkit was missing three teammate-shaped verbs the HTTP API
+  already allowed: `create_sheet` (Files spreadsheet, JSON `string[][]` with
+  row 0 the header), `create_page` (HTML microsite), and `react_to_message`
+  (the dual-auth reaction route, under the agent's own identity).
+  `post_to_channel` takes `threadId` so a reply stays in the thread;
+  `read_channel` takes the same id to read one thread. The talaria-toolkit
+  skill teaches the reflexes (grid ≠ markdown table; a ✅ is not a new post).
+  Fitness: catalog 58 → 61 with sandbox backends; new `hermes:comms` harness
+  (six fixtures: read before post, react don't chatter, replies stay in
+  thread, the room not a DM, ids from listings, don't spam DMs) bound to the
+  workspace-agent fleet slot; `hermes:documents` gains a spreadsheet-vs-
+  markdown-table fixture. Guardrails unchanged (no assign, no complete).
+  Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
+  `cargo test --lib` on `hermes_comms`, `hermes_documents`, `talaria_tools`,
+  `toolbox::sandbox`, `registry::tests`, and `score::tests`.
 - **Desktop updates itself from a GitHub Release.** Settings → Profile (and
   the launcher) Check for updates reads `/releases/latest/download/latest.json`,
   verifies a minisign signature, replaces the install, and relaunches. Stable

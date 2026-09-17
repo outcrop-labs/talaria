@@ -1,6 +1,6 @@
 // CAN THIS MODEL BE A HERMES AGENT — when the answer needs RESEARCH.
 //
-// The fifth and last of the family, and the narrowest. Three tools, never asked
+// The fifth of the family, and the narrowest. Three tools, never asked
 // of a model: `research` starts a background run, `list_research` shows what has
 // been asked before, `research_status` polls one.
 //

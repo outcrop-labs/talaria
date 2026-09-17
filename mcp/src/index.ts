@@ -614,7 +614,7 @@ server.registerTool(
   'create_document',
   {
     description:
-      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
     inputSchema: {
       title: z.string().min(1).max(200).describe('Document title'),
       markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
@@ -626,16 +626,69 @@ server.registerTool(
 )
 
 server.registerTool(
-  'update_document',
+  'create_sheet',
   {
-    description: 'Edit a document you created (or were granted Editor access to): replace its title and/or markdown body. Each save is versioned.',
+    description:
+      'Create a spreadsheet (rows and columns, Talaria\'s Google-Sheets equivalent). Row 0 is the header. Use it for trackers, comparisons, and anything a person will sort or extend as a grid — not for a markdown table inside a document. Returns the document id (read it back with get_document).',
     inputSchema: {
-      documentId: z.string().describe('Document id (from create_document or list_documents)'),
-      title: z.string().max(200).optional(),
-      markdown: z.string().max(1_000_000).optional().describe('New full markdown body'),
+      title: z.string().min(1).max(200).describe('Spreadsheet title'),
+      rows: z.array(z.array(z.string().max(10_000)).max(50)).min(1).max(500).describe('Grid as string[][] — row 0 is the header, later rows are data. Keep columns aligned.'),
+      visibility: z.enum(['private', 'org', 'public']).optional().describe("Who can see it. Personal assistants always create private-to-owner sheets (this field is ignored); org agents default to 'org'"),
+      folder: z.string().max(120).optional().describe('File it under this folder name (find-or-create); omitted = your own folder'),
     },
   },
-  async ({ documentId, title, markdown }) => ok(await api('PUT', `/api/artifacts/${encodeURIComponent(documentId)}`, { title, body: markdown })),
+  async ({ title, rows, visibility, folder }) =>
+    ok(await api('POST', '/api/artifacts', { kind: 'sheet', title, body: JSON.stringify(rows), visibility, folder })),
+)
+
+server.registerTool(
+  'create_page',
+  {
+    description:
+      'Create a web page (raw HTML, rendered live at its public link). Use it for a status page, a one-pager, or anything that should be a page rather than a markdown doc. Returns the document id (read it back with get_document).',
+    inputSchema: {
+      title: z.string().min(1).max(200).describe('Page title'),
+      html: z.string().min(1).max(1_000_000).describe('Full HTML body — the page as it should render'),
+      visibility: z.enum(['private', 'org', 'public']).optional().describe("Who can see it. Personal assistants always create private-to-owner pages (this field is ignored); org agents default to 'org'. Public pages are reachable at their /a/… link."),
+      folder: z.string().max(120).optional().describe('File it under this folder name (find-or-create); omitted = your own folder'),
+    },
+  },
+  async ({ title, html, visibility, folder }) =>
+    ok(await api('POST', '/api/artifacts', { kind: 'microsite', title, body: html, visibility, folder })),
+)
+
+server.registerTool(
+  'update_document',
+  {
+    description:
+      'Edit a document you created (or were granted Editor access to). markdown replaces a markdown doc\'s body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.',
+    inputSchema: {
+      documentId: z.string().describe('Document id (from create_document, create_sheet, create_page, or list_documents)'),
+      title: z.string().max(200).optional(),
+      markdown: z.string().max(1_000_000).optional().describe('New full markdown body — markdown docs only'),
+      rows: z.array(z.array(z.string().max(10_000)).max(50)).min(1).max(500).optional().describe('New grid as string[][] — spreadsheets only; row 0 is the header'),
+      html: z.string().min(1).max(1_000_000).optional().describe('New full HTML body — web pages only'),
+    },
+  },
+  async ({ documentId, title, markdown, rows, html }) => {
+    const got = (await api('GET', `/api/artifacts/${encodeURIComponent(documentId)}`)) as { artifact?: { kind?: string }; kind?: string }
+    const kind = got.artifact?.kind ?? got.kind ?? 'doc'
+    if (markdown && (kind === 'sheet' || kind === 'microsite')) {
+      throw new Error(
+        kind === 'sheet'
+          ? 'this is a spreadsheet — pass rows (string[][], row 0 the header), not markdown; markdown would replace the grid with a single string'
+          : 'this is a web page — pass html, not markdown; markdown would replace the page with a single string',
+      )
+    }
+    if (rows && kind !== 'sheet') {
+      throw new Error('rows is only for spreadsheets (create_sheet); this document is not a sheet')
+    }
+    if (html && kind !== 'microsite') {
+      throw new Error('html is only for web pages (create_page); this document is not a page')
+    }
+    const body = kind === 'sheet' && rows ? JSON.stringify(rows) : kind === 'microsite' && html ? html : markdown
+    return ok(await api('PUT', `/api/artifacts/${encodeURIComponent(documentId)}`, { title, body }))
+  },
 )
 
 server.registerTool(
@@ -650,7 +703,7 @@ server.registerTool(
 server.registerTool(
   'get_document',
   {
-    description: "Read one document's full content (markdown body + metadata).",
+    description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata.",
     inputSchema: { documentId: z.string().describe('Document id') },
   },
   async ({ documentId }) => ok(await api('GET', `/api/artifacts/${encodeURIComponent(documentId)}`)),
@@ -699,27 +752,51 @@ server.registerTool(
 server.registerTool(
   'read_channel',
   {
-    description: 'Read recent messages in a channel you belong to. Pass sinceSeq to get only newer messages than a seq you already saw.',
+    description:
+      'Read recent messages in a channel you belong to. Pass sinceSeq to get only newer messages than a seq you already saw. Pass threadId to read one thread (the root plus its replies) instead of the channel feed.',
     inputSchema: {
       channelId: z.string().describe('Channel id (from list_channels)'),
       sinceSeq: z.number().int().optional().describe('Only messages with seq greater than this (default: all recent)'),
+      threadId: z.string().optional().describe('Message id of a thread root (from read_channel) — returns that thread only'),
     },
   },
-  async ({ channelId, sinceSeq }) =>
-    ok(await api('GET', `/api/channels/${encodeURIComponent(channelId)}/messages${sinceSeq !== undefined ? `?since=${sinceSeq}` : ''}`)),
+  async ({ channelId, sinceSeq, threadId }) => {
+    const q = new URLSearchParams()
+    if (sinceSeq !== undefined) q.set('since', String(sinceSeq))
+    if (threadId) q.set('thread', threadId)
+    const qs = q.toString() ? `?${q.toString()}` : ''
+    return ok(await api('GET', `/api/channels/${encodeURIComponent(channelId)}/messages${qs}`))
+  },
 )
 
 server.registerTool(
   'post_to_channel',
   {
     description:
-      "Post a message to a channel you belong to. Use @name to mention teammates. Post when you have something useful — progress, an answer, a blocker, a question — not chatter.",
+      "Post a message to a channel you belong to. Use @name to mention teammates. Post when you have something useful — progress, an answer, a blocker, a question — not chatter. Pass threadId to reply in an existing thread (the root's message id from read_channel) instead of starting a new top-level message.",
     inputSchema: {
       channelId: z.string().describe('Channel id (from list_channels)'),
       content: z.string().min(1).max(20_000).describe('Markdown message'),
+      threadId: z.string().optional().describe("Thread root's message id (from read_channel) — omit to post in the channel feed"),
     },
   },
-  async ({ channelId, content }) => ok(await api('POST', `/api/channels/${encodeURIComponent(channelId)}/messages`, { content })),
+  async ({ channelId, content, threadId }) =>
+    ok(await api('POST', `/api/channels/${encodeURIComponent(channelId)}/messages`, { content, threadRootId: threadId })),
+)
+
+server.registerTool(
+  'react_to_message',
+  {
+    description:
+      'Toggle a reaction on a channel message you can see. Agents react under their own identity. Use it to acknowledge without posting: a ✅ on "shipped" is a reaction, not a new message. Pass the message id from read_channel (never the seq). The same emoji again removes it.',
+    inputSchema: {
+      channelId: z.string().describe('Channel id (from list_channels)'),
+      messageId: z.string().describe('Message id (from read_channel)'),
+      emoji: z.string().min(1).max(16).describe('The emoji to toggle, e.g. ✅ or 👍'),
+    },
+  },
+  async ({ channelId, messageId, emoji }) =>
+    ok(await api('POST', `/api/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/reactions`, { emoji })),
 )
 
 // ── Knowledgebase (browse + read + edit granted docs) ──────────────────────
