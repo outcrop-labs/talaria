@@ -4,7 +4,27 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every page 404'd in production while `/api` kept working.** The server
+  build now splits into `dist/server/assets/*.js` chunks — one directory
+  deeper than the `dist/server/server.js` the SPA-shell lookup was anchored
+  to — so `readFile('../client/index.html', import.meta.url)` threw, the
+  handler cached `shell = null`, and all four deployed instances (dogfood ×3
+  + bbills) served plain `404 Not Found` for `/`, `/home`, `/login`, … Dev
+  mode never runs the shell path (vite serves `index.html` itself) and no
+  gate executed the built bundle, so CI was green on it. The shell now
+  resolves from `process.cwd()` (`ui/` in dev and under server-entry alike —
+  the rule `app-build/paths.ts` states). Verified: `bun scripts/check-prod-shell.ts`
+  red on the pre-fix build, green after; `bun run check`; ui test + typecheck.
+
 ### Added
+
+- **CI smokes the built bundle.** The `ui` CI job now runs
+  `bun run build` + `bun scripts/check-prod-shell.ts`: it imports the real
+  `dist/server/server.js` and asserts GET `/` (and a deep client route)
+  serve the SPA shell and that `/api` paths never leak it. This is the gate
+  that would have caught the 404 outage at PR time instead of on the fleet.
 
 - **Hermes bundled skills stay classified, and every pack we prune occupies
   the name agents reach for.** Hermes ships Notion, Obsidian, Airtable, gh,
@@ -48,6 +68,7 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
   `cargo test --lib` on `hermes_comms`, `hermes_documents`, `talaria_tools`,
   `toolbox::sandbox`, `registry::tests`, and `score::tests`.
+
 - **Desktop updates itself from a GitHub Release.** Settings → Profile (and
   the launcher) Check for updates reads `/releases/latest/download/latest.json`,
   verifies a minisign signature, replaces the install, and relaunches. Stable
