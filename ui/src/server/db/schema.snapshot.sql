@@ -277,6 +277,11 @@ CREATE TABLE public.channel_messages (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     guard jsonb
 );
+CREATE TABLE public.channel_teams (
+    channel_id uuid NOT NULL,
+    team_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.channels (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text NOT NULL,
@@ -300,6 +305,11 @@ CREATE TABLE public.conversation_reads (
     user_id uuid NOT NULL,
     last_read_seq integer DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.conversation_teams (
+    conversation_id uuid NOT NULL,
+    team_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.conversations (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -594,7 +604,8 @@ CREATE TABLE public.llm_endpoints (
     model_prices jsonb DEFAULT '{}'::jsonb NOT NULL,
     request_defaults jsonb DEFAULT '{}'::jsonb NOT NULL,
     api_key_cipher text,
-    model_efforts jsonb DEFAULT '{}'::jsonb NOT NULL
+    model_efforts jsonb DEFAULT '{}'::jsonb NOT NULL,
+    anthropic_base text
 );
 CREATE TABLE public.mcp_oauth_states (
     state text NOT NULL,
@@ -635,6 +646,12 @@ CREATE TABLE public.mcp_servers (
     builtin boolean DEFAULT false NOT NULL,
     oauth jsonb,
     app_slug text
+);
+CREATE TABLE public.mcp_team_access (
+    server_id uuid NOT NULL,
+    team_id uuid NOT NULL,
+    allowed boolean DEFAULT true NOT NULL,
+    tools text[]
 );
 CREATE TABLE public.mcp_user_access (
     server_id uuid NOT NULL,
@@ -797,6 +814,11 @@ CREATE TABLE public.research_sources (
     snippet text,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.research_teams (
+    run_id uuid NOT NULL,
+    team_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.runs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     kind text NOT NULL,
@@ -918,17 +940,30 @@ CREATE TABLE public.tasks (
     start_date timestamp with time zone,
     color text
 );
+CREATE TABLE public.team_agents (
+    team_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.team_members (
     team_id uuid NOT NULL,
     user_id uuid NOT NULL,
     role text DEFAULT 'member'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.team_permissions (
+    team_id uuid NOT NULL,
+    perm text NOT NULL,
+    allowed boolean NOT NULL
+);
 CREATE TABLE public.teams (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text NOT NULL,
     created_by uuid,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    description text,
+    denied_views text[] DEFAULT '{}'::text[] NOT NULL,
+    allowed_manage_views text[] DEFAULT '{}'::text[] NOT NULL
 );
 CREATE TABLE public.templates (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1174,12 +1209,16 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_channel_id_seq_key UNIQUE (channel_id, seq);
 ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.channel_teams
+    ADD CONSTRAINT channel_teams_pkey PRIMARY KEY (channel_id, team_id);
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_pkey PRIMARY KEY (conversation_id, user_id);
+ALTER TABLE ONLY public.conversation_teams
+    ADD CONSTRAINT conversation_teams_pkey PRIMARY KEY (conversation_id, team_id);
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_brief_entries
@@ -1246,6 +1285,8 @@ ALTER TABLE ONLY public.mcp_servers
     ADD CONSTRAINT mcp_servers_name_key UNIQUE (name);
 ALTER TABLE ONLY public.mcp_servers
     ADD CONSTRAINT mcp_servers_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.mcp_team_access
+    ADD CONSTRAINT mcp_team_access_pkey PRIMARY KEY (server_id, team_id);
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
@@ -1292,6 +1333,8 @@ ALTER TABLE ONLY public.research_sources
     ADD CONSTRAINT research_sources_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.research_sources
     ADD CONSTRAINT research_sources_run_id_idx_key UNIQUE (run_id, idx);
+ALTER TABLE ONLY public.research_teams
+    ADD CONSTRAINT research_teams_pkey PRIMARY KEY (run_id, team_id);
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.schema_migrations
@@ -1316,8 +1359,12 @@ ALTER TABLE ONLY public.task_workflows
     ADD CONSTRAINT task_workflows_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.team_agents
+    ADD CONSTRAINT team_agents_pkey PRIMARY KEY (team_id, agent_model);
 ALTER TABLE ONLY public.team_members
     ADD CONSTRAINT team_members_pkey PRIMARY KEY (team_id, user_id);
+ALTER TABLE ONLY public.team_permissions
+    ADD CONSTRAINT team_permissions_pkey PRIMARY KEY (team_id, perm);
 ALTER TABLE ONLY public.teams
     ADD CONSTRAINT teams_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.templates
@@ -1498,6 +1545,10 @@ ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channel_messages
     ADD CONSTRAINT channel_messages_thread_root_id_fkey FOREIGN KEY (thread_root_id) REFERENCES public.channel_messages(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_teams
+    ADD CONSTRAINT channel_teams_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.channel_teams
+    ADD CONSTRAINT channel_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.channels
@@ -1510,6 +1561,10 @@ ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_teams
+    ADD CONSTRAINT conversation_teams_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_teams
+    ADD CONSTRAINT conversation_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversations
@@ -1570,6 +1625,10 @@ ALTER TABLE ONLY public.mcp_oauth_tokens
     ADD CONSTRAINT mcp_oauth_tokens_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_server_agents
     ADD CONSTRAINT mcp_server_agents_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_team_access
+    ADD CONSTRAINT mcp_team_access_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_team_access
+    ADD CONSTRAINT mcp_team_access_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_user_access
@@ -1614,6 +1673,10 @@ ALTER TABLE ONLY public.research_runs
     ADD CONSTRAINT research_runs_parent_run_id_fkey FOREIGN KEY (parent_run_id) REFERENCES public.research_runs(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.research_sources
     ADD CONSTRAINT research_sources_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.research_runs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.research_teams
+    ADD CONSTRAINT research_teams_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.research_runs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.research_teams
+    ADD CONSTRAINT research_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.secret_folder_grants
@@ -1636,10 +1699,14 @@ ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.team_agents
+    ADD CONSTRAINT team_agents_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.team_members
     ADD CONSTRAINT team_members_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.team_members
     ADD CONSTRAINT team_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.team_permissions
+    ADD CONSTRAINT team_permissions_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.teams
     ADD CONSTRAINT teams_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.uploads

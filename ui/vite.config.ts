@@ -6,13 +6,14 @@ import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv, type Plugin, type ViteDevServer } from 'vite'
 import viteTsConfigPaths from 'vite-tsconfig-paths'
 import { writeHeadHeaders } from './src/server/http'
+import { appRuntimeDev, appRuntimeHost } from './src/app-runtime/vite-plugin'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
 
 // Talaria UI — Vite + Svelte 5 SPA, sv-router on the client, and the API
 // served from the same origin in both modes:
 //   dev   the middleware below routes /api/* through src/server/app.ts
-//   prod  server-entry.js wraps the built handler (see vite.server.config.ts)
+//   prod  server-entry.ts wraps the built handler (see vite.server.config.ts)
 // Tailwind v4 via the vite plugin; path alias `@/*` → `src/*` (see tsconfig).
 
 /** /api/* (+ /.well-known/*) in dev, answered by the real server handler.
@@ -23,7 +24,7 @@ function apiDev(): Plugin {
     name: 'talaria-api-dev',
     config(_config, { mode }) {
       // `vite dev` historically loaded ui/.env into the server's process.env
-      // (TanStack Start did this). Same rule as server-entry.js: the real
+      // (TanStack Start did this). Same rule as server-entry.ts: the real
       // environment wins; the file only fills gaps.
       const fileEnv = loadEnv(mode, here, '')
       for (const [key, value] of Object.entries(fileEnv)) {
@@ -60,7 +61,7 @@ function apiDev(): Plugin {
             new Request(url.toString(), { method: req.method, headers, body }),
           )
           // writeHeadHeaders (not the Object.fromEntries one-liner) so dev
-          // matches server-entry.js on multi-cookie responses — Set-Cookie is
+          // matches server-entry.ts on multi-cookie responses — Set-Cookie is
           // the one header that repeats, and the OAuth callback sends two.
           res.writeHead(response.status, writeHeadHeaders(response))
           if (!response.body) {
@@ -94,6 +95,29 @@ function apiDev(): Plugin {
   }
 }
 
+/** /sw.js in dev. The service worker is authored as src/sw.ts and built to an
+ *  unhashed /sw.js by the client build (below); dev has no build pass, so the
+ *  transformed module is served at the same URL browser-notify.ts registers. */
+function swDev(): Plugin {
+  return {
+    name: 'talaria-sw-dev',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/sw.js', (_req, res) => {
+        void server.transformRequest('/src/sw.ts').then((result) => {
+          if (!result) {
+            res.statusCode = 500
+            res.end('service worker transform failed')
+            return
+          }
+          res.setHeader('Content-Type', 'text/javascript')
+          res.end(result.code)
+        })
+      })
+    },
+  }
+}
+
 export default defineConfig({
   // Per-worktree Vite cache. Worktrees symlink the main node_modules (fast), but
   // that would SHARE node_modules/.vite — which concurrent dev servers corrupt.
@@ -103,10 +127,24 @@ export default defineConfig({
     (existsSync('../.git') && statSync('../.git').isFile() ? '.vite' : undefined),
   // Dev server reachable over the LAN/Tailscale. allowedHosts only affects the
   // dev server (not prod builds); `true` lets IPs and hostnames through.
-  // fs.allow ..: Talaria app codebases live in ../apps and compile into this
-  // build (import.meta.glob) — the dev server must be allowed to serve them.
+  // fs.allow ..: app sources live in ../apps and load through /@app/ in dev.
   server: { host: true, allowedHosts: true, fs: { allow: ['..'] } },
-  build: { outDir: 'dist/client' },
+  build: {
+    outDir: 'dist/client',
+    rollupOptions: {
+      // The SPA plus the service worker (src/sw.ts). The worker must land at a
+      // STABLE, unhashed /sw.js — the registration URL in browser-notify.ts —
+      // and be a self-contained entry; runtime/rt-* shims are unhashed too so
+      // independently-built apps can import them by a stable URL. Every other
+      // entry keeps the hashed assets/ layout the stale-chunk 404 logic in
+      // server-entry.ts expects.
+      input: { main: resolve(here, 'index.html'), sw: resolve(here, 'src/sw.ts') },
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.name === 'sw' ? 'sw.js' : chunk.name.startsWith('runtime/') ? '[name].js' : 'assets/[name]-[hash].js',
+      },
+    },
+  },
   // App codebases have no node_modules of their own; shared deps resolve from
   // the host's — the peer-dependency model (one Svelte, one router, one query
   // client across the whole deployment). dedupe (not alias) keeps Vite's
@@ -127,6 +165,9 @@ export default defineConfig({
     viteTsConfigPaths({ projects: ['./tsconfig.json'], loose: true }),
     tailwindcss(),
     svelte(),
+    appRuntimeHost({ ssr: false }),
+    appRuntimeDev(),
     apiDev(),
+    swDev(),
   ],
 })

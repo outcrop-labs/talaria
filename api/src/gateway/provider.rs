@@ -18,6 +18,33 @@ pub fn native_base(provider: &str) -> Option<&'static str> {
     })
 }
 
+/// THE ANTHROPIC-PROTOCOL REFERENCE TABLE: providers with a KNOWN,
+/// fixed Anthropic-compatible surface, addressed by provider slug. This is
+/// the no-network answer for "where does this provider speak /v1/messages"
+/// — the harness auth plane reads it to arm Claude Code without a probe.
+/// Providers NOT here may still speak the protocol (a custom LiteLLM/vLLM
+/// gateway at any base_url often does); `anthropic_surface` derives a
+/// candidate from the endpoint's own base URL, verifies it once, and caches
+/// the verdict on the row — so this table is the fast path, never the only
+/// one. Add a row the day a provider ships a fixed Anthropic surface.
+pub fn anthropic_base(provider: &str) -> Option<&'static str> {
+    Some(match provider {
+        "anthropic" => "https://api.anthropic.com",
+        // OpenRouter ships a first-party Anthropic-compatible surface —
+        // their Claude Code integration doc points ANTHROPIC_BASE_URL at
+        // /api/anthropic (NOT the OpenAI /api/v1).
+        "openrouter" => "https://openrouter.ai/api/anthropic",
+        // DeepSeek's own docs ("Using the Anthropic API") map the Anthropic
+        // format at /anthropic beside the OpenAI /v1.
+        "deepseek" => "https://api.deepseek.com/anthropic",
+        // x-ai advertises Anthropic-SDK compatibility off the same base as
+        // its OpenAI surface; the origin form feeds the probe, which
+        // verifies before anything is cached.
+        "x-ai" => "https://api.x.ai",
+        _ => return None,
+    })
+}
+
 pub fn default_key_env(provider: &str) -> Option<&'static str> {
     Some(match provider {
         "anthropic" => "ANTHROPIC_API_KEY",
@@ -843,6 +870,26 @@ pub fn http() -> reqwest::Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_anthropic_reference_table_answers_the_known_providers() {
+        assert_eq!(
+            anthropic_base("anthropic"),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            anthropic_base("openrouter"),
+            Some("https://openrouter.ai/api/anthropic")
+        );
+        assert_eq!(
+            anthropic_base("deepseek"),
+            Some("https://api.deepseek.com/anthropic")
+        );
+        // Unknown providers answer None — the probe and cache own the custom
+        // gateways; the table never guesses.
+        assert_eq!(anthropic_base("custom"), None);
+        assert_eq!(anthropic_base(""), None);
+    }
 
     #[test]
     fn env_gate_admits_only_provider_key_shapes() {

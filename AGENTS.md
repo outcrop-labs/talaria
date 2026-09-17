@@ -30,6 +30,8 @@ Bun is the runner for the whole repo (the root `package.json` is the hub):
 | `bun run api` | the Rust api (`cargo run`, :5274) |
 | `bun run check` | invariants + doc links + generated-reference drift — seconds, **needs no install** |
 | `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — the CI api job |
+| `bun run desktop` | Talaria Desktop (`tauri dev`) — run on the **host**, never in a box (no display); `docs/DESKTOP.md` |
+| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — the CI desktop job |
 | `bun run verify` | check + typecheck + test — the PR gate |
 | `bun run test` / `typecheck` / `build` / `start` | the ui/ scripts (typecheck is svelte-check) |
 | `bun run docs:api` | regenerate the generated references |

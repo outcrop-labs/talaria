@@ -1,8 +1,9 @@
-// Per-app document store — the "database" every Talaria app gets for free.
-// One shared table (app_data), namespaced by app slug and collection name;
-// docs are JSON with server-managed timestamps. Enough to build real tools
-// without migrations; apps with heavier needs can still call platform APIs.
-import { db } from './db/pg'
+// Per-app document store. Each app talks to its OWN Postgres (a docker
+// container spawned for that install — see app-db.ts), never to Talaria's
+// catalog. The API is unchanged: collections of JSON documents, no
+// migrations, invisible to other apps.
+import { randomUUID } from 'node:crypto'
+import { appSql } from './app-db'
 
 export interface AppDoc<T = Record<string, unknown>> {
   id: string
@@ -25,60 +26,72 @@ export interface AppStore {
 
 const ROW = `id, data, created_at as "createdAt", updated_at as "updatedAt"`
 
+function iso(v: unknown): string {
+  if (v instanceof Date) return v.toISOString()
+  if (typeof v === 'string') return v
+  return String(v ?? '')
+}
+
+function asDoc<T>(row: { id: string; data: T; createdAt: unknown; updatedAt: unknown }): AppDoc<T> {
+  return { id: row.id, data: row.data, createdAt: iso(row.createdAt), updatedAt: iso(row.updatedAt) }
+}
+
 export function storeFor(app: string): AppStore {
   return {
     async list(collection, opts) {
-      const sql = await db()
+      const sql = await appSql(app)
       const limit = Math.min(Math.max(opts?.limit ?? 200, 1), 1000)
       const offset = Math.max(opts?.offset ?? 0, 0)
       const dir = (opts?.newestFirst ?? true) ? sql.unsafe('desc') : sql.unsafe('asc')
-      return (await sql`
-        select ${sql.unsafe(ROW)} from app_data
-        where app = ${app} and collection = ${collection}
+      const rows = (await sql`
+        select ${sql.unsafe(ROW)} from docs
+        where collection = ${collection}
         order by created_at ${dir} limit ${limit} offset ${offset}
-      `) as never
+      `) as unknown as Array<{ id: string; data: Record<string, unknown>; createdAt: unknown; updatedAt: unknown }>
+      return rows.map((r) => asDoc(r)) as never
     },
     async get(collection, id) {
-      const sql = await db()
+      const sql = await appSql(app)
       const rows = (await sql`
-        select ${sql.unsafe(ROW)} from app_data where app = ${app} and collection = ${collection} and id = ${id}
-      `) as unknown as AppDoc[]
-      return (rows[0] as never) ?? null
+        select ${sql.unsafe(ROW)} from docs where collection = ${collection} and id = ${id}
+      `) as unknown as Array<{ id: string; data: Record<string, unknown>; createdAt: unknown; updatedAt: unknown }>
+      return rows[0] ? (asDoc(rows[0]) as never) : null
     },
     async insert(collection, data) {
-      const sql = await db()
+      const sql = await appSql(app)
+      const id = randomUUID()
       const rows = (await sql`
-        insert into app_data (app, collection, data) values (${app}, ${collection}, ${sql.json(data as never)})
+        insert into docs (collection, id, data) values (${collection}, ${id}, ${sql.json(data as never)})
         returning ${sql.unsafe(ROW)}
-      `) as unknown as AppDoc[]
-      return rows[0] as never
+      `) as unknown as Array<{ id: string; data: Record<string, unknown>; createdAt: unknown; updatedAt: unknown }>
+      return asDoc(rows[0]!) as never
     },
     async update(collection, id, patch) {
-      const sql = await db()
+      const sql = await appSql(app)
       const rows = (await sql`
-        update app_data set data = data || ${sql.json(patch as never)}, updated_at = now()
-        where app = ${app} and collection = ${collection} and id = ${id}
+        update docs set data = data || ${sql.json(patch as never)}, updated_at = now()
+        where collection = ${collection} and id = ${id}
         returning ${sql.unsafe(ROW)}
-      `) as unknown as AppDoc[]
-      return (rows[0] as never) ?? null
+      `) as unknown as Array<{ id: string; data: Record<string, unknown>; createdAt: unknown; updatedAt: unknown }>
+      return rows[0] ? (asDoc(rows[0]) as never) : null
     },
     async remove(collection, id) {
-      const sql = await db()
+      const sql = await appSql(app)
       const rows = await sql`
-        delete from app_data where app = ${app} and collection = ${collection} and id = ${id} returning id
+        delete from docs where collection = ${collection} and id = ${id} returning id
       `
       return rows.length > 0
     },
     async count(collection) {
-      const sql = await db()
+      const sql = await appSql(app)
       const rows = (await sql`
-        select count(*)::int as n from app_data where app = ${app} and collection = ${collection}
+        select count(*)::int as n from docs where collection = ${collection}
       `) as unknown as Array<{ n: number }>
       return rows[0]?.n ?? 0
     },
     async wipe() {
-      const sql = await db()
-      await sql`delete from app_data where app = ${app}`
+      const sql = await appSql(app)
+      await sql`truncate docs`
     },
   }
 }

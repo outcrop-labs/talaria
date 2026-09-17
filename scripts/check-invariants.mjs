@@ -47,7 +47,8 @@
 //   a human can read and amend, and a false positive here costs one comment
 //   rewrite while a false negative costs another round.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -267,10 +268,12 @@ const CENSUS = [
     exempt: (path) =>
       path.startsWith('ui/src/server/') ||
       path.startsWith('ui/src/routes/api/') ||
+      path === 'ui/src/sw.ts' || // the service worker, like the SDK, is its own door: a classic script
+      // with no module graph, it cannot import the app's — and it must stay import-free
       path.endsWith('.test.ts') ||
       !path.startsWith('ui/src/'), // the mcp/ and cli/ trees are not the browser app
     sites: {
-      'ui/src/lib/fetch-json.ts': 7, // the door: getJson, getJsonOr404, getJsonOr, getText, sendJson, postStream, getStream
+      'ui/src/lib/fetch-json.ts': 8, // the door: getJson, getJsonOr404, getJsonOr, getText, getBlob, sendJson, postStream, getStream
       'ui/src/sdk/index.ts': 1, // the published SDK's own door — it cannot import the app's
     },
   },
@@ -815,6 +818,8 @@ for (const rule of CENSUS) {
     ['api/src/fitness/toolbox/talaria_tools.rs', 'fn models_every_tool_the_toolkit_registers'],
     ['api/src/fitness/toolbox/sandbox.rs', 'fn every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog'],
     ['api/src/fitness/toolbox/sandbox.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
+    ['api/src/fleet/hermes_skills.rs', 'fn every_catalogued_hermes_pack_is_classified'],
+    ['api/src/fleet/hermes_skills.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
   ]
   const missing = ANCHORS.filter(([path, anchor]) => !readFileSync(join(ROOT, path), 'utf8').includes(anchor))
   if (missing.length) {
@@ -832,6 +837,118 @@ for (const rule of CENSUS) {
       ],
       found: [],
     })
+  }
+}
+
+
+// HERMES BUNDLED SKILLS MUST STAY CLASSIFIED, AND EVERY REPLACED PACK MUST
+// HAVE A TALARIA SIGNPOST occupying the name agents reach for. Hermes adds
+// packs on image updates; a six-line prune array in docker.rs silently let
+// new conflicts in. The catalog is scripts/hermes-skill-authority.json —
+// classify a new path (replaced / keepExact / keepPrefix) before it teaches
+// the fleet a parallel vault. Signposts live in scripts/skills/<signpost>/.
+{
+  const catalogPath = join(ROOT, 'scripts/hermes-skill-authority.json')
+  if (!existsSync(catalogPath)) {
+    failures.push({
+      id: 'hermes-skill-authority-missing',
+      what: 'scripts/hermes-skill-authority.json is missing',
+      fix: [
+        'The Hermes bundled-skill authority catalog is the tripwire for packs',
+        'the image ships that conflict with Talaria. Restore the file, or the',
+        'fleet will prune an empty list and teach Notion again.',
+      ],
+      found: [],
+    })
+  } else {
+    const cat = loadAuthority(ROOT)
+    const replaced = cat.replaced || []
+    const unknown = unclassifiedHermes(cat.catalog || [], cat)
+    if (unknown.length) {
+      failures.push({
+        id: 'hermes-skill-unclassified',
+        what: 'Hermes bundled packs with no replace/keep classification',
+        fix: [
+          'Hermes shipped a pack this catalog has not classified. Add it to',
+          'replaced (and a scripts/skills/<signpost> SKILL.md), keepExact, or',
+          'keepPrefixes in scripts/hermes-skill-authority.json — do not let it',
+          'teach the fleet a parallel workspace by omission.',
+          ...unknown.map((u) => `  ${u}`),
+        ],
+        found: unknown.map((u) => ({ file: 'scripts/hermes-skill-authority.json', line: 1, excerpt: u })),
+      })
+    }
+    const missing = []
+    for (const r of replaced) {
+      const skill = join(ROOT, 'scripts/skills', r.signpost, 'SKILL.md')
+      if (!existsSync(skill)) {
+        missing.push(`${r.path} → scripts/skills/${r.signpost}/SKILL.md (${r.why})`)
+      }
+    }
+    if (missing.length) {
+      failures.push({
+        id: 'hermes-skill-signpost-missing',
+        what: 'replaced Hermes packs without a Talaria signpost skill',
+        fix: [
+          'Pruning a pack without occupying the name leaves agents searching',
+          'for "notion" / "github" / "email" and improvising. Add a short',
+          'SKILL.md at scripts/skills/<signpost>/ whose frontmatter name: is',
+          'the Hermes name, pointing at the talaria-toolkit playbook.',
+          ...missing.map((m) => `  ${m}`),
+        ],
+        found: [],
+      })
+    }
+  }
+}
+
+// A SUBREPO APP IS NOT PART OF THE UI'S TYPESCRIPT PROJECT.
+//
+// apps/ holds two kinds of app: in-repo apps (contacts) whose deps come from
+// ui's node_modules, and client subrepos (gitignored, their own package.json
+// and dependency tree — leadworks, waypoint). ui/tsconfig.json includes
+// ../apps so in-repo apps typecheck under the UI project; a subrepo swept up
+// by that include sprays a hundred phantom errors into every svelte-check —
+// its imports resolve against ITS node_modules, which the UI check never
+// installs ("Cannot find module 'zod'" from ../apps/leadworks, every run, on
+// every machine with the subrepo checked out — which is why CI, without the
+// subrepos, disagreed with every local run).
+//
+// The exclude list in ui/tsconfig.json is the fix; this check keeps it honest.
+// A subrepo that is absent (fresh clone, CI) matches nothing — the exclude
+// entry is harmless against a missing path, and the check only fires where
+// the subrepo is actually present.
+{
+  const appsDir = join(ROOT, 'apps')
+  if (statSync(appsDir).isDirectory()) {
+    const tsconfig = JSON.parse(readFileSync(join(ROOT, 'ui/tsconfig.json'), 'utf8'))
+    const excluded = new Set(tsconfig.exclude ?? [])
+    const notExcluded = readdirSync(appsDir).filter(
+      (name) =>
+        statSync(join(appsDir, name)).isDirectory() &&
+        existsSync(join(appsDir, name, 'package.json')) &&
+        !excluded.has(`../apps/${name}`),
+    )
+    if (notExcluded.length) {
+      failures.push({
+        id: 'subrepo-app-inside-the-ui-tsconfig',
+        what: 'a subrepo app (own package.json under apps/) is not excluded from ui/tsconfig.json',
+        fix: [
+          'Subrepo apps resolve imports against their own node_modules, which the UI typecheck',
+          'never installs — including them sprays phantom "Cannot find module" errors into',
+          'every svelte-check run. Add to ui/tsconfig.json:',
+          ...notExcluded.map((name) => `  "exclude": [ ..., "../apps/${name}" ]`),
+          '',
+          'If the app is meant to be first-party (deps from ui), delete its package.json —',
+          'that marker is what makes this check (and the exclude) treat it as a subrepo.',
+        ],
+        found: notExcluded.map((name) => ({
+          path: `apps/${name}`,
+          line: 0,
+          text: 'subrepo app present but not in ui/tsconfig.json "exclude"',
+        })),
+      })
+    }
   }
 }
 

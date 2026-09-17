@@ -355,6 +355,9 @@ pub async fn list_research_runs(
              or research_runs.owner_user_id = $1::uuid \
              or exists(select 1 from research_members rm \
                        where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
+             or exists(select 1 from research_teams rt \
+                       join team_members tm on tm.team_id = rt.team_id \
+                       where rt.run_id = research_runs.id and tm.user_id = $1::uuid) \
              order by research_runs.created_at desc limit $2"
         ));
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
@@ -384,11 +387,14 @@ pub async fn research_role(
     viewer_user_id: Option<&str>,
     run_id: &str,
 ) -> Result<Option<&'static str>, sqlx::Error> {
-    let row: Option<(Option<String>, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(
+    let row: Option<(Option<String>, bool, bool, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(
         format!(
             "select owner_user_id::text, \
                     exists(select 1 from research_members rm \
                            where rm.run_id = research_runs.id and rm.user_id = $1::uuid), \
+                    exists(select 1 from research_teams rt \
+                           join team_members tm on tm.team_id = rt.team_id \
+                           where rt.run_id = research_runs.id and tm.user_id = $1::uuid), \
                     ({ORG_AGENT_RUN}) as org_agent_run \
              from research_runs where id = $2::uuid",
         )
@@ -398,7 +404,7 @@ pub async fn research_role(
     .bind(run_id)
     .fetch_optional(pg)
     .await?;
-    let Some((owner, member, org_agent_run)) = row else {
+    let Some((owner, member, team_member, org_agent_run)) = row else {
         return Ok(None);
     };
     if owner.is_none() || org_agent_run {
@@ -407,7 +413,11 @@ pub async fn research_role(
     if viewer_user_id.is_some_and(|v| owner.as_deref() == Some(v)) {
         return Ok(Some("owner"));
     }
-    Ok(if member { Some("member") } else { None })
+    Ok(if member || team_member {
+        Some("member")
+    } else {
+        None
+    })
 }
 
 /// One member of a run.
@@ -478,6 +488,59 @@ pub async fn remove_research_member(
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+pub struct ResearchTeam {
+    pub id: String,
+    pub name: String,
+}
+
+pub async fn list_research_teams(
+    pg: &PgPool,
+    run_id: &str,
+) -> Result<Vec<ResearchTeam>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select t.id::text, t.name from research_teams rt \
+         join teams t on t.id = rt.team_id \
+         where rt.run_id = $1::uuid order by t.name",
+    )
+    .bind(run_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| ResearchTeam { id, name })
+        .collect())
+}
+
+pub async fn add_research_team(
+    pg: &PgPool,
+    run_id: &str,
+    team_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "insert into research_teams (run_id, team_id) values ($1::uuid, $2::uuid) \
+         on conflict do nothing",
+    )
+    .bind(run_id)
+    .bind(team_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+pub async fn remove_research_team(
+    pg: &PgPool,
+    run_id: &str,
+    team_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("delete from research_teams where run_id = $1::uuid and team_id = $2::uuid")
+        .bind(run_id)
+        .bind(team_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
 /// The in-flight run for a question, if there is one — the double-click
 /// guard.
 ///
@@ -530,6 +593,9 @@ pub async fn briefable_research(
            where research_runs.owner_user_id = $1::uuid \
               or exists(select 1 from research_members rm \
                         where rm.run_id = research_runs.id and rm.user_id = $1::uuid) \
+              or exists(select 1 from research_teams rt \
+                        join team_members tm on tm.team_id = rt.team_id \
+                        where rt.run_id = research_runs.id and tm.user_id = $1::uuid) \
          ) s \
          where s.status in ('queued', 'running', 'awaiting') \
             or (s.status = 'error' and s.created_at > now() - interval '7 days') \

@@ -1,0 +1,644 @@
+# Talaria Desktop installers — the shell, packaged for Linux, macOS and Windows.
+#
+# WHY THIS EXISTS. ci.yml gates the desktop crate (fmt, clippy, tests,
+# svelte-check) but has never BUILT an installer: tauri.conf.json shipped with
+# an empty `targets` list, so `tauri build` produced a bare binary, and
+# docs/DESKTOP.md listed "bundle/installer targets" as deferred on purpose.
+# This file is that deferral closed. Every platform's installers are built on
+# GitHub's runners, attached to the GitHub Release a version tag opens
+# (release.yml calls this file for exactly that), and left as workflow
+# artifacts on a push to main.
+#
+# WHAT EACH PLATFORM GETS
+#   linux    deb, rpm and AppImage from Tauri's own bundlers, plus pacman and
+#            flatpak — Tauri has no target for either, so packaging/linux and
+#            packaging/flatpak build them from ONE staged FHS tree. The AppImage
+#            takes a second linuxdeploy pass (packaging/linux/repack-appimage.sh)
+#            to drop the build host's libwayland-client, which linuxdeploy
+#            otherwise bundles and which aborts the app on any host whose
+#            Wayland stack differs from the runner's.
+#   macOS    a universal .app inside a .dmg, plus a zipped .app for scripted
+#            installs. Universal means both Apple targets ride in one download
+#            (Apple silicon and Intel alike).
+#   windows  an NSIS .exe always, and an .msi (WiX) only when the stamped
+#            version has no pre-release part: Windows product versioning has a
+#            numeric fourth field and Tauri's msi bundler refuses anything else,
+#            so a `0.0.0-sha…` trunk build and a `0.2.0-rc.1` release ship the
+#            .exe while claiming no version they are not. The CLI downloads and
+#            drives both toolchains itself.
+#
+# EVERY ARTIFACT A RUNNER CAN EXERCISE IS EXERCISED. macOS mounts the dmg and
+# launches the app; windows installs the installer it just built and launches
+# what it installed; both fail the job if the app is not still running twenty
+# seconds later, before anything is attached to a release. The linux AppImage
+# was run on a real Arch host while this file was written (it is the artifact
+# whose first build aborted there — see repack-appimage.sh), and the deb, rpm
+# and pacman packages were installed in clean containers of their own distros.
+# What no runner here can test: Gatekeeper and SmartScreen as a USER meets them
+# (an artifact built on a runner is never quarantined, and nothing is signed),
+# and macOS session isolation, which `data_directory` does not provide
+# (docs/DESKTOP.md).
+#
+# THE VERSION IS INJECTED, NEVER COMMITTED. Git tags are the version authority
+# (RELEASING.md) and every version field in the repo still says 0.1.0
+# decoratively — so the tag arrives as `tauri build --config`, which merges the
+# version into the config for this build only. A release therefore stamps the
+# real version into every installer without a version-bump commit. A main-push
+# build gets `0.0.0-sha<sha12>`: honest about being a trunk build, and still
+# the semver every bundler demands.
+#
+# NOT SIGNED, DELIBERATELY. There is no Apple Developer certificate and no
+# Windows signing key in this repo, so macOS builds are not notarized
+# (Gatekeeper wants a right-click → Open the first time) and Windows builds
+# carry no publisher signature (SmartScreen warns). The honest answer to "is
+# this installer really Talaria's?" is to build it from the tag or to read the
+# workflow run that produced it — which is why the assets ship with a
+# SHA256SUMS. Signing is a provisioning decision, recorded with the other
+# deliberate omissions in RELEASING.md.
+#
+# ONE CARGO BUILD PER RUN, THREE LINUX PACKAGERS. linux-pacman and
+# linux-flatpak consume the binary the `linux` job built rather than compiling
+# again: the artifact is the app, and a packager only arranges files around it.
+#
+# WHY THE ATTACH STEP LIVES HERE AND NOT IN release.yml. The assets are this
+# file's artifacts; release.yml hands over the tag and the work follows. A
+# re-run of this workflow alone re-attaches everything (--clobber), and the
+# release body — which release.yml owns — never has to name files this file
+# decides the names of.
+#
+# WHY CANCEL-IN-PROGRESS IS SAFE HERE, unlike in release.yml's publish: nothing
+# below moves a channel tag. Assets land on an existing release one at a time
+# and --clobber makes a re-run idempotent, so cancelling costs a re-run, never
+# a release that lies about itself.
+name: desktop-package
+
+on:
+  push:
+    branches: [main]
+    # Paths are safe here (chassis.yml's argument: nothing in this file is a
+    # required check) and they keep the trunk build meaningful — a desktop push
+    # rebuilds the installers, anything else leaves the last artifacts alone.
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-package.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'version to stamp (empty: 0.0.0-sha<sha12> for a branch, the tag minus v for a tag)'
+        type: string
+        required: false
+      release_tag:
+        description: 'release to attach the installers to (empty leaves them as workflow artifacts)'
+        type: string
+        required: false
+  workflow_call:
+    inputs:
+      ref:
+        description: 'the ref to build (release.yml passes the tag it is publishing)'
+        type: string
+        required: true
+      version:
+        description: 'version to stamp (release.yml passes the tag minus v)'
+        type: string
+        required: true
+      release_tag:
+        description: 'the release to attach the installers to'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
+
+permissions:
+  contents: read # escalated in `attach` only
+
+concurrency:
+  group: desktop-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Pure event→outputs math, no checkout — release.yml's `resolve` in miniature,
+  # so one job decides the version every build stamps and whether anything
+  # uploads to a release.
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      version: ${{ steps.r.outputs.version }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+    steps:
+      - name: Work out what this run builds
+        id: r
+        env:
+          IN_VERSION: ${{ inputs.version }}
+          IN_RELEASE_TAG: ${{ inputs.release_tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          version="$IN_VERSION"
+          tag="$IN_RELEASE_TAG"
+          if [ -z "$version" ]; then
+            if [ "$REF_TYPE" = tag ]; then
+              case "$REF_NAME" in
+                v[0-9]*.[0-9]*.[0-9]*)
+                  version="${REF_NAME#v}"
+                  [ -n "$tag" ] || tag="$REF_NAME" ;;
+                *)
+                  echo "::error::$REF_NAME is neither vX.Y.Z nor vX.Y.Z-rc.N — refusing to stamp a version nobody can reconstruct."
+                  exit 1 ;;
+              esac
+            else
+              version="0.0.0-sha$(echo "$SHA" | cut -c1-12)"
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "release_tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "building version $version (release: ${tag:-<none, artifacts only>})"
+
+  linux:
+    name: linux (deb + rpm + appimage)
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # Same pin as the ci.yml desktop job: desktop/src-tauri/rust-toolchain.toml
+      # pins 1.97.1 and devboxes install the same one.
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      # release-profile cargo build of the whole tauri tree — minutes cold,
+      # and the one place in this file where a cache pays for itself.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # webkit2gtk/gtk sys crates probe these at build-script time (ci.yml's
+      # desktop job says the same), and `rpm` is the only extra: its
+      # /usr/bin/rpmbuild is what Tauri's rpm bundler shells out to. dpkg is
+      # NOT needed — the deb bundler writes its own ar members.
+      - name: Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev rpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      # The bundle targets come from tauri.linux.conf.json (tauri merges the
+      # platform file automatically); --config adds the version on top. The
+      # AppImage bundler downloads linuxdeploy and runs it — Tauri sets
+      # APPIMAGE_EXTRACT_AND_RUN, so no FUSE is required on the runner.
+      - name: Build bundles
+        working-directory: desktop
+        run: bun run build -- --config "{\"version\":\"$VERSION\"}"
+
+      # The AppImage gets one more pass, on this same runner: linuxdeploy's gtk
+      # plugin bundles the build distro's libwayland-client, which aborts on a
+      # host with a different Wayland stack (see the script's header). tauri has
+      # no way to ask it not to, so the AppDir is trimmed and linuxdeploy runs
+      # again with an exclusion that keeps it out.
+      - name: Repack the AppImage without the build host's Wayland client
+        working-directory: desktop
+        run: packaging/linux/repack-appimage.sh src-tauri/target/release/bundle/appimage "$VERSION"
+
+      - name: Collect installers
+        working-directory: desktop/src-tauri/target/release/bundle
+        run: |
+          set -eu
+          # The deb's Depends is deliberately NOT in tauri.linux.conf.json: the
+          # bundler appends its own defaults (libwebkit2gtk-4.1-0, libgtk-3-0)
+          # and a list here would only duplicate them. That makes the retro
+          # dependencies implicit, so assert them instead — a bundler that ever
+          # stopped declaring them would produce an installer that fails at
+          # startup, and this is the moment to find out.
+          deps=$(dpkg-deb -f deb/*.deb Depends)
+          echo "deb Depends: $deps"
+          case "$deps" in
+            *webkit2gtk*gtk-3*) ;;
+            *) echo "::error::the deb declares no webkit2gtk/gtk dependency — see docs/DESKTOP.md (installers)"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/assets"
+          cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
+          ls -l "$RUNNER_TEMP/assets"
+
+      - name: Sign the AppImage for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          img=$(ls "$RUNNER_TEMP/assets"/*.AppImage)
+          desktop/packaging/sign-update.sh "$img"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-linux
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+      # The pacman and flatpak jobs package THIS binary. Artifacts do not carry
+      # the executable bit reliably, which is why both jobs chmod it back.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-linux
+          path: desktop/src-tauri/target/release/talaria-desktop
+          if-no-files-found: error
+
+  linux-pacman:
+    name: linux (pacman)
+    needs: [resolve, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-linux
+          path: build
+
+      - name: Stage and pack
+        run: |
+          set -eu
+          chmod +x build/talaria-desktop
+          desktop/packaging/linux/stage.sh build/talaria-desktop "$RUNNER_TEMP/tree"
+          mkdir -p "$RUNNER_TEMP/assets"
+          desktop/packaging/linux/pack-pacman.sh \
+            "$RUNNER_TEMP/tree" "$VERSION" \
+            "$RUNNER_TEMP/assets/Talaria-$VERSION-$(uname -m).pkg.tar.zst"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-linux-pacman
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  linux-flatpak:
+    name: linux (flatpak)
+    needs: [resolve, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      # Keep in step with packaging/flatpak/app.talaria.desktop.yml's
+      # runtime-version — this is the runtime the manifest is built against.
+      RUNTIME: '50'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-linux
+          path: build
+
+      - name: Flatpak tools + the GNOME runtime
+        run: |
+          set -eu
+          sudo apt-get update
+          # elfutils is flatpak-builder's stripping step: without eu-strip it
+          # fails after the module builds, which is where the first run of this
+          # job stopped.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder elfutils
+          # Ubuntu 24.04 restricts unprivileged user namespaces (AppArmor), and
+          # bwrap — the sandbox flatpak-builder builds inside — is exactly that.
+          # Tolerated if absent: the knob is a runner-image detail, and a
+          # sandbox that still refuses will say so in the build's own log.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install --noninteractive flathub \
+            "org.gnome.Platform//$RUNTIME" "org.gnome.Sdk//$RUNTIME"
+
+      - name: Build the bundle
+        run: |
+          set -eu
+          chmod +x build/talaria-desktop
+          desktop/packaging/flatpak/build.sh \
+            build/talaria-desktop "$VERSION" "$RUNNER_TEMP/assets"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-linux-flatpak
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  macos:
+    name: macos (dmg)
+    needs: [resolve]
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      # universal-apple-darwin is a lipo of both, and tauri refuses the target
+      # without both installed. The runner is arm64; the Intel slice is a
+      # cross-build, which is why the rustup target matters more than the host.
+      - name: Add the Apple targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Build bundles
+        working-directory: desktop
+        run: bun run build -- --target universal-apple-darwin --config "{\"version\":\"$VERSION\"}"
+
+      - name: Collect installers
+        working-directory: desktop/src-tauri/target/universal-apple-darwin/release/bundle
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/assets"
+          cp dmg/*.dmg "$RUNNER_TEMP/assets/"
+          # The .app rides along zipped: dragging from a dmg is the human path,
+          # and a zip is the one scripted installs can fetch and unpack.
+          ditto -c -k --keepParent macos/Talaria.app \
+            "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.zip"
+          # The updater wants a .tar.gz of the same .app (not the dmg, not the zip).
+          tar -C macos -czf "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.tar.gz" Talaria.app
+          ls -l "$RUNNER_TEMP/assets"
+
+      - name: Sign the app archive for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          desktop/packaging/sign-update.sh "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.tar.gz"
+      # The dmg's payload is LAUNCHED here, not just built: an unsigned,
+      # universal WKWebView app that cannot come up on a Mac is not something a
+      # release should carry, and this runner is the only Mac in the pipeline.
+      # Gatekeeper is deliberately not part of this test — nothing downloaded the
+      # bundle, so nothing quarantined it; what this proves is that the dmg
+      # mounts, the binary starts, and it is still running twenty seconds later.
+      - name: Smoke test the app bundle
+        run: |
+          set -eu
+          # The dmg is VERIFIED rather than mounted: hdiutil refuses to attach on
+          # this runner — "attach canceled", with or without an explicit
+          # -mountpoint — because there is no login session for DiskArbitration to
+          # hand a volume to. That is a property of the runner, not of the image,
+          # and hdiutil verify still reads and checksums the whole thing.
+          hdiutil verify "$RUNNER_TEMP/assets"/*.dmg
+
+          # The payload it carries is the same .app the zip does, so the launch
+          # happens from there: one bundle, two containers.
+          app=$RUNNER_TEMP/app
+          mkdir -p "$app"
+          ditto -x -k "$RUNNER_TEMP/assets"/*.app.zip "$app"
+          exe=$app/Talaria.app/Contents/MacOS/talaria-desktop
+          if [ ! -x "$exe" ]; then
+            echo "::error::the zip carries no launchable Talaria.app:"
+            find "$app" -maxdepth 4 | head -30
+            exit 1
+          fi
+
+          "$exe" >"$RUNNER_TEMP/app.log" 2>&1 &
+          pid=$!
+          sleep 20
+          if ! kill -0 "$pid" 2>/dev/null; then
+            echo "::error::the app exited within 20s — its output:"
+            cat "$RUNNER_TEMP/app.log"
+            exit 1
+          fi
+          echo "app still running after 20s (pid $pid)"
+          lsappinfo list 2>/dev/null | grep -i -m1 talaria \
+            || echo "(not registered with LaunchServices — the process is alive regardless)"
+          kill "$pid" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-macos
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  windows:
+    name: windows (nsis + msi)
+    needs: [resolve]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # One shell for every step: quoting the version JSON into a native binary is
+    # the same problem in every leg, and bash solves it the same way in all
+    # three (windows runners ship Git Bash).
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      # NSIS is downloaded by the CLI on first use, and WiX for the msi (that is
+      # what tauri.windows.conf.json's downloadBootstrapper is about, one level
+      # up at install time for WebView2).
+      #
+      # The msi is added only for a version with no pre-release part: Windows
+      # product versioning has a numeric fourth field, and Tauri's msi bundler
+      # refuses anything else ("optional pre-release identifier in app version
+      # must be numeric-only" — the first run of this job stopped there, after
+      # nsis had already built). An RC's honest version is `0.2.0-rc.1`, so an
+      # RC ships the nsis installer and no msi, rather than an msi claiming to
+      # be `0.2.0`. The platform config keeps both targets for local builds,
+      # where the version is the decorative 0.1.0.
+      - name: Build bundles
+        working-directory: desktop
+        run: |
+          set -eu
+          bundles=nsis
+          case "$VERSION" in
+            *-*) ;;
+            *) bundles=nsis,msi ;;
+          esac
+          echo "bundling: $bundles (version $VERSION)"
+          bun run build -- --bundles "$bundles" --config "{\"version\":\"$VERSION\"}"
+
+      - name: Collect installers
+        working-directory: desktop/src-tauri/target/release/bundle
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/assets"
+          cp nsis/*.exe "$RUNNER_TEMP/assets/"
+          if [ -d msi ]; then cp msi/*.msi "$RUNNER_TEMP/assets/"; fi
+          ls -l "$RUNNER_TEMP/assets"
+
+      - name: Sign the NSIS installer for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          exe=$(ls "$RUNNER_TEMP/assets"/*-setup.exe)
+          desktop/packaging/sign-update.sh "$exe"
+      # Install the artifact a release would carry and RUN it — an installer
+      # that will not install, or an app that will not start, fails here instead
+      # of on a user's machine. Whichever installer this run produced is the one
+      # tested: the msi when the version was stable enough to have one, the nsis
+      # setup otherwise. PowerShell drives it because the parts that matter
+      # (msiexec, Start-Process, finding the installed exe) are its native work.
+      - name: Smoke test the installer
+        run: |
+          set -eu
+          cat >"$RUNNER_TEMP/smoke.ps1" <<'PS'
+          $ErrorActionPreference = 'Stop'
+          $assets = Join-Path $env:RUNNER_TEMP 'assets'
+          $msi = Get-ChildItem (Join-Path $assets '*.msi') -ErrorAction SilentlyContinue
+          if ($msi) {
+            Write-Host "installing $($msi.FullName)"
+            Start-Process msiexec.exe -Wait -ArgumentList @('/i', "`"$($msi.FullName)`"", '/qn', '/norestart')
+          } else {
+            $setup = Get-ChildItem (Join-Path $assets '*setup.exe') | Select-Object -First 1
+            Write-Host "installing $($setup.FullName)"
+            Start-Process $setup.FullName -Wait -ArgumentList @('/S')
+          }
+          Start-Sleep -Seconds 15   # the installer's own children settle after it returns
+          $exe = Get-ChildItem -Path $env:LOCALAPPDATA, $env:ProgramFiles -Filter talaria-desktop.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'talaria-desktop.exe was not installed where an installer should have put it' }
+          Write-Host "installed at $($exe.FullName)"
+          $app = Start-Process $exe.FullName -PassThru
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) { throw "the app exited within 20s (code $($app.ExitCode))" }
+          Write-Host "app still running after 20s (pid $($app.Id))"
+          Stop-Process -Id $app.Id -Force
+          PS
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$RUNNER_TEMP/smoke.ps1"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-windows
+          path: ${{ runner.temp }}/assets/*
+          if-no-files-found: error
+
+  # The only job that writes to anything outside the run: every installer, plus
+  # a checksum list (and on a stable tag, latest.json for the in-app updater),
+  # onto the release release.yml opened for this tag. It runs last so a
+  # half-built release never looks complete, and it is skipped entirely when
+  # there is no release to attach to (main pushes, dispatch).
+  attach:
+    name: attach installers to the release
+    needs: [resolve, linux, linux-pacman, linux-flatpak, macos, windows]
+    if: needs.resolve.outputs.release_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the release asset upload
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # packages-* only: binary-linux is an input to the two extra packagers,
+      # not a download anyone should be handed.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: assets
+
+      # Stable tags only: /releases/latest is GitHub's moving stable pointer,
+      # so an RC must not publish latest.json. Missing signatures on a stable
+      # tag fail the job — shipping a release the installed app cannot update
+      # to is worse than a red attach.
+      - name: Updater manifest
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -eu
+          case "$VERSION" in
+            *-*)
+              echo "prerelease $VERSION — no latest.json (the updater reads /releases/latest)"
+              ;;
+            *)
+              python3 desktop/packaging/write-latest-json.py \
+                "$VERSION" "$TAG" "$GITHUB_REPOSITORY" assets
+              ;;
+          esac
+
+      # Written to a file outside `assets` first: a redirect creates its target
+      # before the glob expands, so the obvious one-liner hashes an empty
+      # SHA256SUMS into SHA256SUMS.
+      - name: Checksums
+        run: |
+          set -eu
+          cd assets
+          sha256sum ./* >"../SHA256SUMS"
+          mv ../SHA256SUMS ./SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -eu
+          ls -l assets
+          # --repo, explicitly: `gh` can resolve the repository from the
+          # checkout, but naming it keeps this step honest if the checkout
+          # ever goes away again.
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" assets/* --clobber
+          echo "attached $(ls assets | wc -l) files to $TAG"

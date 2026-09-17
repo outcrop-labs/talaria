@@ -19,11 +19,13 @@
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
+  import { downloadFile } from '@/lib/download-file'
   import { errorMessage, postJsonOr } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
+  import AgentRefineNotice from '@/components/kb/AgentRefineNotice.svelte'
   import { deleteArtifact, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
   import { KIND_LABEL } from './artifacts'
   import ArtifactHistory from './ArtifactHistory.svelte'
@@ -262,11 +264,38 @@
           {#key `${id}-${seed}`}
             <RichEditor bind:this={editorRef} value={artifact.body} slash prose autosave onSave={() => void saveBody()} placeholder="Start writing" fill class="min-w-0 flex-1" />
           {/key}
+          <!-- TALA-4: announce agent refines (update_document) inside the
+               editing surface too. -->
+          {#if artifact}
+            <AgentRefineNotice
+              kind="artifact"
+              id={id}
+              current={() => editorRef?.getMarkdown() ?? artifact.body}
+              onLoad={(md) => {
+                // Match the KB grammar: the staged text is saved (the viewer's
+                // acceptance) and the editor reseeds with the saved content.
+                void save({ body: md }).then(() => (seed += 1))
+              }}
+              {me}
+              class="shrink-0"
+            />
+          {/if}
         {:else}
           <!-- Tab-pane grammar on the READ pane only: the edit pane holds live
                editor state (and is seed-keyed for Muse/revision swaps), so it
                keeps its hard cut rather than replaying an entrance. -->
           <div in:fly={{ y: 6, duration: 200 }} class="re-prose min-w-0 flex-1 overflow-y-auto">
+            {#if artifact}
+              <AgentRefineNotice
+                kind="artifact"
+                id={id}
+                current={() => artifact.body}
+                onLoad={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
+                onAnnounce={() => void qc.invalidateQueries({ queryKey: ['artifact', id] })}
+                {me}
+                class="mx-auto w-full max-w-[46rem] shrink-0"
+              />
+            {/if}
             {#if artifact.body.trim()}
               <Markdown class="tiptap" children={artifact.body} />
             {:else}
@@ -312,9 +341,15 @@
                 />
               </div>
               <div class="flex gap-2">
-                <a href={`/api/uploads/${artifact.storageRef}`} target="_blank" rel="noreferrer" class={buttonClasses({ size: 'sm' })}>
+                <Button
+                  size="sm"
+                  onclick={() =>
+                    void downloadFile(`/api/uploads/${artifact.storageRef}`, artifact.title).catch((e) =>
+                      pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' }),
+                    )}
+                >
                   Download
-                </a>
+                </Button>
                 {#if isOwner}
                   <label class={cn(buttonClasses({ size: 'sm', variant: 'outline' }), 'cursor-pointer')}>
                     <input type="file" class="hidden" onchange={(e) => void onPickFile(e.currentTarget.files?.[0])} />

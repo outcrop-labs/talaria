@@ -2,7 +2,7 @@
 //
 //   visibility  (read):  private → owner only · org → members · public → link
 //   edit_policy (write):  owner → owner only · org → any reader · restricted →
-//                         owner + an explicit editor list (users and/or agents)
+//                         owner + an explicit editor list (users, agents, and/or teams)
 //
 // Agents never get implicit edit rights: even under 'org' they must be named in
 // the editor list. That keeps automated edits deliberate.
@@ -112,15 +112,20 @@ pub fn is_owner(item: &Guarded, user_id: Option<&str>, author: Option<&str>) -> 
 }
 
 /// The set of item ids (of a type) a user has any grant on, for filtering
-/// lists (tree, folder list) so granted private items still show.
+/// lists (tree, folder list) so granted private items still show. Team
+/// membership expands `principal_type = 'team'` grants at read time.
 pub async fn granted_item_ids(
     pg: &PgPool,
     item_type: &str,
     user_id: &str,
 ) -> Result<std::collections::HashSet<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "select item_id::text from kb_editors \
-         where item_type = $1 and principal_type = 'user' and principal_id = $2",
+        "select item_id::text from kb_editors where item_type = $1 and ( \
+           (principal_type = 'user' and principal_id = $2) \
+           or (principal_type = 'team' and principal_id in ( \
+             select team_id::text from team_members where user_id = $2::uuid \
+           )) \
+         )",
     )
     .bind(item_type)
     .bind(user_id)
@@ -130,14 +135,19 @@ pub async fn granted_item_ids(
 }
 
 /// Same, for an agent (by model) — used when an agent lists items over MCP.
+/// `team_agents` expands team grants the same way `team_members` does for humans.
 pub async fn granted_item_ids_for_agent(
     pg: &PgPool,
     item_type: &str,
     agent_model: &str,
 ) -> Result<std::collections::HashSet<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
-        "select item_id::text from kb_editors \
-         where item_type = $1 and principal_type = 'agent' and principal_id = $2",
+        "select item_id::text from kb_editors where item_type = $1 and ( \
+           (principal_type = 'agent' and principal_id = $2) \
+           or (principal_type = 'team' and principal_id in ( \
+             select team_id::text from team_agents where agent_model = $2 \
+           )) \
+         )",
     )
     .bind(item_type)
     .bind(agent_model)
@@ -180,33 +190,54 @@ pub async fn can_govern(
     Ok(gate(&model))
 }
 
+/// True when this grant names the user directly, or a team they belong to.
+fn grant_covers_user(g: &EditorGrant, user_id: &str, team_ids: &[String]) -> bool {
+    match g.principal_type.as_str() {
+        "user" => g.principal_id == user_id,
+        "team" => team_ids.iter().any(|t| t == &g.principal_id),
+        _ => false,
+    }
+}
+
+/// True when this grant names the agent directly, or a team it belongs to.
+fn grant_covers_agent(g: &EditorGrant, agent_model: &str, team_ids: &[String]) -> bool {
+    match g.principal_type.as_str() {
+        "agent" => g.principal_id == agent_model,
+        "team" => team_ids.iter().any(|t| t == &g.principal_id),
+        _ => false,
+    }
+}
+
 /// Can this signed-in human edit the item? Owner, an org-wide edit policy (any
 /// reader edits), or an explicit *editor* grant. A viewer grant is read-only.
+/// `team_ids` expands `principal_type = 'team'` grants; pass `&[]` when the
+/// caller has no membership (or the grant list cannot contain teams).
 pub fn can_edit_human(
     item: &Guarded,
     user_id: Option<&str>,
     author: Option<&str>,
     grants: &[EditorGrant],
+    team_ids: &[String],
 ) -> bool {
     let Some(user_id) = user_id else { return false };
     if is_owner(item, Some(user_id), author) {
         return true;
     }
-    if item.edit_policy == "org" && can_read(item, Some(user_id), author, grants) {
+    if item.edit_policy == "org" && can_read(item, Some(user_id), author, grants, team_ids) {
         return true;
     }
     grants
         .iter()
-        .any(|g| g.principal_type == "user" && g.principal_id == user_id && g.role == "editor")
+        .any(|g| grant_covers_user(g, user_id, team_ids) && g.role == "editor")
 }
 
 /// Can this agent (by model) edit the item? Only via an explicit editor grant.
 /// Agents never get implicit edit rights — even under an 'org' policy they must
 /// be named in the editor list, which keeps automated edits deliberate.
-pub fn can_edit_agent(agent_model: &str, grants: &[EditorGrant]) -> bool {
+pub fn can_edit_agent(agent_model: &str, grants: &[EditorGrant], team_ids: &[String]) -> bool {
     grants
         .iter()
-        .any(|g| g.principal_type == "agent" && g.principal_id == agent_model && g.role == "editor")
+        .any(|g| grant_covers_agent(g, agent_model, team_ids) && g.role == "editor")
 }
 
 /// Can this agent (by model) read the item? Org/public visibility, any grant
@@ -223,6 +254,7 @@ pub fn can_read_agent(
     agent_model: &str,
     owner_user_id: Option<&str>,
     grants: &[EditorGrant],
+    team_ids: &[String],
 ) -> bool {
     if item.visibility != "private" {
         return true;
@@ -232,16 +264,18 @@ pub fn can_read_agent(
     }
     grants
         .iter()
-        .any(|g| g.principal_type == "agent" && g.principal_id == agent_model)
+        .any(|g| grant_covers_agent(g, agent_model, team_ids))
 }
 
 /// Can this signed-in human read the item? Owner, org/public visibility, or any
-/// explicit grant (viewer or editor) on a private item.
+/// explicit grant (viewer or editor) on a private item. Team grants count when
+/// `team_ids` contains the grant's principal.
 pub fn can_read(
     item: &Guarded,
     user_id: Option<&str>,
     author: Option<&str>,
     grants: &[EditorGrant],
+    team_ids: &[String],
 ) -> bool {
     let Some(user_id) = user_id else { return false };
     if item.visibility != "private" {
@@ -252,7 +286,7 @@ pub fn can_read(
     }
     grants
         .iter()
-        .any(|g| g.principal_type == "user" && g.principal_id == user_id)
+        .any(|g| grant_covers_user(g, user_id, team_ids))
 }
 
 #[cfg(test)]
@@ -279,14 +313,14 @@ mod tests {
     #[test]
     fn can_read_never_anonymous() {
         // No user id → nothing is readable, not even public.
-        assert!(!can_read(&guarded("public", None), None, None, &[]));
+        assert!(!can_read(&guarded("public", None), None, None, &[], &[]));
     }
 
     #[test]
     fn org_and_public_are_member_readable() {
         for v in ["org", "public"] {
             assert!(
-                can_read(&guarded(v, Some("u-1")), Some("u-2"), None, &[]),
+                can_read(&guarded(v, Some("u-1")), Some("u-2"), None, &[], &[]),
                 "{v}"
             );
         }
@@ -296,29 +330,32 @@ mod tests {
     fn private_reads_need_ownership_or_a_grant() {
         let g = guarded("private", Some("u-1"));
         // A stranger with no grant: no.
-        assert!(!can_read(&g, Some("u-2"), None, &[]));
+        assert!(!can_read(&g, Some("u-2"), None, &[], &[]));
         // The owner: yes.
-        assert!(can_read(&g, Some("u-1"), None, &[]));
+        assert!(can_read(&g, Some("u-1"), None, &[], &[]));
         // Any explicit grant — viewer counts as much as editor.
         assert!(can_read(
             &g,
             Some("u-2"),
             None,
-            &[grant("user", "u-2", "viewer")]
+            &[grant("user", "u-2", "viewer")],
+            &[],
         ));
         // A grant naming someone else: no.
         assert!(!can_read(
             &g,
             Some("u-2"),
             None,
-            &[grant("user", "u-3", "editor")]
+            &[grant("user", "u-3", "editor")],
+            &[],
         ));
         // Agent grants never satisfy a human read.
         assert!(!can_read(
             &g,
             Some("u-2"),
             None,
-            &[grant("agent", "u-2", "editor")]
+            &[grant("agent", "u-2", "editor")],
+            &[],
         ));
     }
 
@@ -328,13 +365,19 @@ mod tests {
         // string (email or name) is the owner.
         let mut g = guarded("private", None);
         g.created_by = Some("whoever@x.com".into());
-        assert!(can_read(&g, Some("u-1"), Some("whoever@x.com"), &[]));
-        assert!(!can_read(&g, Some("u-1"), Some("someone-else"), &[]));
+        assert!(can_read(&g, Some("u-1"), Some("whoever@x.com"), &[], &[]));
+        assert!(!can_read(&g, Some("u-1"), Some("someone-else"), &[], &[]));
         // But once an owner id exists, ONLY that id owns it — the author
         // string no longer matters.
         let owned = guarded("private", Some("u-9"));
-        assert!(!can_read(&owned, Some("u-1"), Some("creator@x.com"), &[]));
-        assert!(can_read(&owned, Some("u-9"), None, &[]));
+        assert!(!can_read(
+            &owned,
+            Some("u-1"),
+            Some("creator@x.com"),
+            &[],
+            &[]
+        ));
+        assert!(can_read(&owned, Some("u-9"), None, &[], &[]));
     }
 
     #[test]
@@ -347,28 +390,31 @@ mod tests {
             &private,
             Some("u-2"),
             None,
-            &[grant("user", "u-2", "viewer")]
+            &[grant("user", "u-2", "viewer")],
+            &[],
         ));
         assert!(can_edit_human(
             &private,
             Some("u-2"),
             None,
-            &[grant("user", "u-2", "editor")]
+            &[grant("user", "u-2", "editor")],
+            &[],
         ));
         assert!(!can_edit_human(
             &private,
             Some("u-2"),
             None,
-            &[grant("agent", "u-2", "editor")]
+            &[grant("agent", "u-2", "editor")],
+            &[],
         ));
-        assert!(can_edit_human(&private, Some("u-1"), None, &[]));
+        assert!(can_edit_human(&private, Some("u-1"), None, &[], &[]));
 
         let mut org_edit = guarded("org", Some("u-1"));
         org_edit.edit_policy = "org".into();
-        assert!(can_edit_human(&org_edit, Some("u-2"), None, &[]));
+        assert!(can_edit_human(&org_edit, Some("u-2"), None, &[], &[]));
 
         // Anonymous (no user id) can never edit, even on an org policy.
-        assert!(!can_edit_human(&org_edit, None, None, &[]));
+        assert!(!can_edit_human(&org_edit, None, None, &[], &[]));
     }
 
     #[test]
@@ -377,29 +423,39 @@ mod tests {
         // only the editor list gives them WRITE.
         let mut item = guarded("org", Some("u-1"));
         item.edit_policy = "org".into();
-        assert!(can_read_agent(&item, "opus", None, &[]));
-        assert!(!can_edit_agent("opus", &[]));
-        assert!(can_edit_agent("opus", &[grant("agent", "opus", "editor")]));
-        assert!(!can_edit_agent("opus", &[grant("agent", "opus", "viewer")]));
+        assert!(can_read_agent(&item, "opus", None, &[], &[]));
+        assert!(!can_edit_agent("opus", &[], &[]));
+        assert!(can_edit_agent(
+            "opus",
+            &[grant("agent", "opus", "editor")],
+            &[]
+        ));
+        assert!(!can_edit_agent(
+            "opus",
+            &[grant("agent", "opus", "viewer")],
+            &[]
+        ));
         // A grant naming a different agent never counts.
         assert!(!can_edit_agent(
             "opus",
-            &[grant("agent", "sonnet", "editor")]
+            &[grant("agent", "sonnet", "editor")],
+            &[]
         ));
     }
 
     #[test]
     fn agent_reads_follow_visibility_like_human_reads() {
         let private = guarded("private", Some("u-1"));
-        assert!(!can_read_agent(&private, "opus", None, &[]));
+        assert!(!can_read_agent(&private, "opus", None, &[], &[]));
         assert!(can_read_agent(
             &private,
             "opus",
             None,
-            &[grant("agent", "opus", "viewer")]
+            &[grant("agent", "opus", "viewer")],
+            &[],
         ));
         let public = guarded("public", Some("u-1"));
-        assert!(can_read_agent(&public, "opus", None, &[]));
+        assert!(can_read_agent(&public, "opus", None, &[], &[]));
     }
 
     #[test]
@@ -408,14 +464,49 @@ mod tests {
         // personal assistant reads what its owner reads. The owner arm is a
         // mirror of is_owner — the OWNER's id, never the agent's.
         let private = guarded("private", Some("u-1"));
-        assert!(can_read_agent(&private, "opus", Some("u-1"), &[]));
+        assert!(can_read_agent(&private, "opus", Some("u-1"), &[], &[]));
         // Another human's private item stays closed, owner or no owner.
-        assert!(!can_read_agent(&private, "opus", Some("u-2"), &[]));
+        assert!(!can_read_agent(&private, "opus", Some("u-2"), &[], &[]));
         // An ownerless (agent-created) private item has no human whose reach
         // could be inherited — grants remain the only door.
         let orphan = guarded("private", None);
-        assert!(!can_read_agent(&orphan, "opus", Some("u-1"), &[]));
+        assert!(!can_read_agent(&orphan, "opus", Some("u-1"), &[], &[]));
         // And the arm buys READ, never edit — that stays grant-only.
-        assert!(!can_edit_agent("opus", &[]));
+        assert!(!can_edit_agent("opus", &[], &[]));
+    }
+
+    #[test]
+    fn team_grants_cover_members_and_not_strangers() {
+        let g = guarded("private", Some("u-1"));
+        let team = [grant("team", "t-eng", "viewer")];
+        let on_team = ["t-eng".to_string()];
+        assert!(can_read(&g, Some("u-2"), None, &team, &on_team));
+        assert!(!can_read(&g, Some("u-2"), None, &team, &[]));
+        assert!(!can_read(
+            &g,
+            Some("u-2"),
+            None,
+            &team,
+            &["t-other".to_string()]
+        ));
+        // A team viewer grant is read-only; editor is write.
+        assert!(!can_edit_human(&g, Some("u-2"), None, &team, &on_team));
+        let editor = [grant("team", "t-eng", "editor")];
+        assert!(can_edit_human(&g, Some("u-2"), None, &editor, &on_team));
+        // Team grants never satisfy a human who isn't on the team, even as editor.
+        assert!(!can_edit_human(&g, Some("u-2"), None, &editor, &[]));
+    }
+
+    #[test]
+    fn team_grants_cover_team_agents() {
+        let private = guarded("private", Some("u-1"));
+        let team = [grant("team", "t-eng", "viewer")];
+        let on_team = ["t-eng".to_string()];
+        assert!(can_read_agent(&private, "opus", None, &team, &on_team));
+        assert!(!can_read_agent(&private, "opus", None, &team, &[]));
+        assert!(!can_edit_agent("opus", &team, &on_team));
+        let editor = [grant("team", "t-eng", "editor")];
+        assert!(can_edit_agent("opus", &editor, &on_team));
+        assert!(!can_edit_agent("opus", &editor, &[]));
     }
 }

@@ -40,13 +40,24 @@ git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
-and a GitHub **prerelease** opens with a stub body. The changelog is the
+the desktop installers are built for linux, macOS and Windows and attached to
+the release, and a GitHub **prerelease** opens with a stub body. The changelog is the
 record — edit the release notes afterwards if you want them to say more,
 or leave the stub pointing at CHANGELOG.md.
 
 A malformed tag (`v1.0`, `v1.0.0-beta.1`, `v1.0.0-RC.1` — the grammar is
 `vX.Y.Z-rc.N`, lowercase, exactly) fails the workflow loudly rather than
 publishing anything. Delete a misfire by deleting the tag.
+
+One trap when you re-cut a tag that already opened a release: **GitHub converts
+that release to a draft** when its tag goes away, and the next run finds the
+draft, refreshes its notes and uploads its assets into it — so the release looks
+done to anyone with push access and is invisible to everyone else. Publish it
+again once the re-run is green:
+
+```bash
+gh release edit v0.2.0-rc.1 --draft=false
+```
 
 ## Promoting to stable
 
@@ -58,6 +69,11 @@ git tag v0.2.0 && git push origin v0.2.0
 
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
 `latest` moves on nothing else — only a `vX.Y.Z` tag with no suffix.
+
+A stable desktop release also attaches `latest.json` and `.sig` files so
+installed copies can update in-app. That needs the
+`TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey is in
+`desktop/src-tauri/tauri.conf.json`). An RC does not publish `latest.json`.
 
 ## Nightlies
 
@@ -71,8 +87,22 @@ Re-run one by hand from Actions → release → Run workflow (nightly from
 testing; `rc` pushes the moving `rc` tag from the rc tip — a dispatch
 cannot invent a version, only a tag carries one).
 
-If nightlies ever just stop: GitHub disables schedules after 60 days of
-repo inactivity. That is the first thing to check.
+If nightlies ever just stop, there are two things to check, and the second is
+the one that bit: GitHub disables schedules after 60 days of repo inactivity —
+but a run can also fail to START. A `startup_failure` produces **no jobs and no
+logs**, so it looks like nothing happened at all; that is how this channel sat
+dead from 2026-09-05 to 2026-09-16, with the run list the only evidence. Open
+the run's own page and read the banner (the API's log endpoints show nothing).
+The cause that time was a workflow-validation rule: a called workflow's jobs may
+request no more than the CALLING JOB grants, so the nested `api-package` call
+was refused for asking `packages: write` under a `contents: read` caller. Those
+grants now sit on the calls in `release.yml` — if a new nested call is added and
+the tag or nightly dies as a startup failure, that is the first thing to look at.
+
+`testing` also has to be current, and nothing enforces that: it sat at a
+2026-08-26 commit (no `api/`, no `desktop/`) until 2026-09-16, invisible while
+the channel was dead. Advance it as part of cutting an RC — a stale channel
+publishes stale code with a today's date on it.
 
 ## The tags on `ghcr.io/outcrop-labs/talaria`
 
@@ -92,6 +122,27 @@ Pin anything you care about to the right-hand column.
 The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
 tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
 release's app-image build is actually pinned to.
+
+## The desktop installers
+
+Every tag publish also attaches the desktop app's installers to the GitHub
+Release (`desktop-package.yml`, called by `release.yml` once the image push is
+done — the assets land on a release that exists): linux
+`.deb`/`.rpm`/`AppImage`/`.pkg.tar.zst`/`.flatpak`, macOS a universal `.dmg`
+(and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, plus a
+`SHA256SUMS` over all of them.
+
+Nightlies open no Release (above), so they carry no installers, and a trunk
+build publishes none either — a push to main that touches `desktop/` leaves
+the same files as workflow artifacts, which expire. To re-attach installers to
+an existing release, re-run that release's `desktop-package` job, or dispatch
+`desktop-package` with `version` and `release_tag` filled in; `--clobber`
+makes either idempotent.
+
+Nothing is signed or notarized yet. That is a provisioning decision, not an
+oversight: it takes an Apple Developer certificate and a Windows signing key.
+Until then macOS needs a right-click → Open the first time (Gatekeeper) and
+Windows shows a SmartScreen warning.
 
 ## The trunk feed
 
@@ -129,7 +180,9 @@ itself, and it pushes to the package release.yml already made public.
 ## Deliberately not
 
 - No npm/PyPI publishing — the repo's published artifacts are the two
-  images (the app and the api package), nothing else.
-- No signed attestations.
+  images (the app and the api package) and the desktop installers, nothing
+  else.
+- No signed attestations, and no signed or notarized desktop installers (see
+  "The desktop installers" above).
 - No nightly-tag pruning (see above: negligible growth).
 - No auto-changelog; CHANGELOG.md is hand-maintained, and PRs update it.

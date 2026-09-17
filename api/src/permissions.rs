@@ -1,7 +1,8 @@
-// Fine-grained permissions. Three layers, most specific wins:
+// Fine-grained permissions. Four layers, most specific wins:
 //   1. per-user overrides        (user_permissions rows — allow or deny)
-//   2. org-wide member defaults  (app_settings 'member_default_permissions')
-//   3. the catalog's shipped defaults below
+//   2. team overrides            (team_permissions, bool_or across the user's teams)
+//   3. org-wide member defaults  (app_settings 'member_default_permissions')
+//   4. the catalog's shipped defaults below
 // The label/hint/group strings are the admin console's copy, and the
 // 13-entry ORDER is pinned: it is the wire order of the GET catalog, of a
 // member's resolved perms array, and of the enum option list in the PUT
@@ -220,8 +221,9 @@ pub async fn set_user_perm_override(
     Ok(())
 }
 
-/// The user's effective permission set: per-user override → org default → the
-/// catalog's shipped default. Admins: everything, in catalog order.
+/// The user's effective permission set: per-user override → team override →
+/// org default → the catalog's shipped default. Admins: everything, in
+/// catalog order.
 pub async fn user_permissions(
     pg: &PgPool,
     user_id: &str,
@@ -237,14 +239,15 @@ pub async fn user_permissions(
             .bind(user_id)
             .fetch_all(pg)
             .await?;
-    // Later duplicate rows win, same as a map insert.
     let overrides: HashMap<String, bool> = rows.into_iter().collect();
+    let team = crate::teams::team_perm_overrides_for_user(pg, user_id).await?;
     Ok(PERMISSIONS
         .iter()
         .filter(|p| {
             overrides
                 .get(p.id)
                 .copied()
+                .or_else(|| team.get(p.id).copied())
                 .or_else(|| org.get(p.id).and_then(|v| v.as_bool()))
                 .unwrap_or(p.member_default)
         })
@@ -252,7 +255,7 @@ pub async fn user_permissions(
         .collect())
 }
 
-/// One permission, resolved through the same override → org-default →
+/// One permission, resolved through the same override → team → org-default →
 /// catalog chain. Admins: everything.
 pub async fn has_perm(
     pg: &PgPool,
@@ -269,15 +272,18 @@ pub async fn has_perm(
             .fetch_all(pg)
             .await?;
     let overrides: HashMap<String, bool> = rows.into_iter().collect();
+    if let Some(v) = overrides.get(perm).copied() {
+        return Ok(v);
+    }
+    let team = crate::teams::team_perm_overrides_for_user(pg, user_id).await?;
+    if let Some(v) = team.get(perm).copied() {
+        return Ok(v);
+    }
     let org = get_org_default_perms(pg).await;
-    Ok(overrides
-        .get(perm)
-        .copied()
-        .or_else(|| {
-            org.as_object()
-                .and_then(|o| o.get(perm))
-                .and_then(|v| v.as_bool())
-        })
+    Ok(org
+        .as_object()
+        .and_then(|o| o.get(perm))
+        .and_then(|v| v.as_bool())
         .or_else(|| {
             PERMISSIONS
                 .iter()

@@ -103,6 +103,21 @@ pub struct SandboxMessage {
     pub seq: i64,
     pub author: String,
     pub body: String,
+    /// Production messages have UUIDs; `react_to_message` and thread replies
+    /// take this id, never the seq.
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_root_id: Option<String>,
+    #[serde(default)]
+    pub reactions: Vec<SandboxReaction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxReaction {
+    pub emoji: String,
+    pub author: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,6 +533,9 @@ pub fn base_world() -> SandboxWorld {
                 seq: 1,
                 author: "user:priya".into(),
                 body: "Ledger migration is the blocker for everything this month.".into(),
+                id: "msg-1".into(),
+                thread_root_id: None,
+                reactions: Vec::new(),
             }],
         }],
         teammates: vec![

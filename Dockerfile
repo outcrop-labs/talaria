@@ -67,16 +67,16 @@ RUN cd ui && bun run build \
 #   docker build --build-arg TALARIA_API_IMAGE=talaria-api:local .
 FROM ${TALARIA_API_IMAGE} AS api
 
-# ── prod-deps ────────────────────────────────────────────────────────────────
-# Runtime node_modules, pruned to production deps. Kept as a separate stage so
-# the runtime never carries devDependencies (vite, svelte-check, tailwind…).
+# Runtime node_modules. The instance compiles installed apps, so the UI
+# install keeps the Vite/Svelte/Tailwind toolchain (it lives in
+# devDependencies of the checkout). mcp stays production-only.
 FROM docker.io/library/node:22-alpine AS prod-deps
 COPY --from=oven/bun:1.4.0-alpine /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /repo
 COPY ui/package.json ui/bun.lock ./ui/
 COPY mcp/package.json mcp/bun.lock ./mcp/
-RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --production --frozen-lockfile \
+RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --frozen-lockfile \
  # mcp's prepare script runs tsc — a devDependency — so a production install
  # must skip lifecycle scripts; the built dist/ comes from the build stage.
  && cd ../mcp && bun install --production --frozen-lockfile --ignore-scripts
@@ -116,7 +116,7 @@ LABEL org.opencontainers.image.title="Talaria" \
 RUN apk add --no-cache docker-cli docker-cli-compose git ca-certificates tzdata libgcc libstdc++
 
 COPY --from=oven/bun:1.4.0-alpine /usr/local/bin/bun /usr/local/bin/bun
-# The api binary: server-entry.js spawns it at boot (adopting any instance
+# The api binary: server-entry.ts spawns it at boot (adopting any instance
 # already on the port), so the SPA process and the api share one supervisor,
 # one log, and one SIGTERM. musl-static out of the package stage — no runtime
 # packages follow it (the package carries its own ca-certificates story; this
@@ -128,11 +128,13 @@ RUN chmod 755 /usr/local/bin/talaria-entrypoint
 
 WORKDIR /app
 # ui/: the built app. src/server/env.ts ships as SOURCE on purpose —
-# server-entry.js imports it by name at boot (Node >= 22.18 strips types; bun
+# server-entry.ts imports it by name at boot (Node >= 22.18 strips types; bun
 # executes TS natively), so it must exist next to the bundle.
-COPY --from=build /repo/ui/server-entry.js ./ui/
+COPY --from=build /repo/ui/server-entry.ts ./ui/
 COPY --from=build /repo/ui/dist ./ui/dist
 COPY --from=build /repo/ui/src/server/env.ts ./ui/src/server/env.ts
+COPY --from=build /repo/ui/svelte.config.ts ./ui/
+COPY --from=build /repo/ui/src/styles.css ./ui/src/styles.css
 COPY --from=build /repo/ui/package.json ./ui/
 COPY --from=prod-deps /repo/ui/node_modules ./ui/node_modules
 # mcp/: the fleet's toolkit service, spawned as a child process
@@ -160,7 +162,7 @@ RUN adduser -D -u 10001 talaria \
 # could never act. Dormancy for image installs is the adoption gate (the
 # engine acts only on instances that explicitly handed over the keys), and an
 # operator who wants a hard switch sets TALARIA_UPDATER=off themselves.
-# TALARIA_API_BIN tells server-entry.js where the api binary it spawns lives —
+# TALARIA_API_BIN tells server-entry.ts where the api binary it spawns lives —
 # the path is fixed by the COPY above; the env keeps the entry from guessing a
 # repo-layout path that only exists on dev boxes.
 # TALARIA_JS_RUNTIME=bun because this image ships bun and NO node: the api's
@@ -187,12 +189,14 @@ ENV PORT=5273 \
     TALARIA_UPLOADS_DIR=/var/lib/talaria/uploads \
     TALARIA_FLEET_DIR=/var/lib/talaria/fleet \
     TALARIA_APPS_DIR=/var/lib/talaria/apps \
+    TALARIA_APP_BUILDS_DIR=/var/lib/talaria/app-builds \
+    TALARIA_APP_DATA_DIR=/var/lib/talaria/app-data \
     # From ARG VERSION above: the LABEL carries it for `docker inspect`, this
     # carries it for the process and `docker exec`.
     TALARIA_VERSION=${VERSION}
 
 USER talaria
 WORKDIR /app/ui
-# Exec form: bun becomes PID 1 and receives SIGTERM (server-entry.js shuts down
+# Exec form: bun becomes PID 1 and receives SIGTERM (server-entry.ts shuts down
 # gracefully — in-flight requests drain, agents get a clean socket close).
 ENTRYPOINT ["/usr/local/bin/talaria-entrypoint"]

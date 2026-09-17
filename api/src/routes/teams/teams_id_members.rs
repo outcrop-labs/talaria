@@ -27,23 +27,6 @@ fn uuid_gate(id: &str, action: &str) -> Option<Response> {
     Some(thrown_internal_error())
 }
 
-/// The member gate: any role on the team passes (None = proceed).
-async fn member_gate(
-    state: &AppState,
-    user_id: &str,
-    team_id: &str,
-    action: &str,
-) -> Option<Response> {
-    match team_role(&state.pg, user_id, team_id).await {
-        Ok(Some(_)) => None,
-        Ok(None) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
-    }
-}
-
 /// The owner gate: PATCH/DELETE-grade (None = proceed).
 async fn owner_gate(
     state: &AppState,
@@ -73,7 +56,7 @@ pub async fn get(
     if let Some(gate) = uuid_gate(&id, "GET members") {
         return gate;
     }
-    if let Some(gate) = member_gate(&state, &user.id, &id, "GET members").await {
+    if let Some(gate) = super::reader_gate(&state, &headers, &user.id, &id, "GET members").await {
         return gate;
     }
     match list_team_members(&state.pg, &id).await {

@@ -28,6 +28,7 @@
   import { pushToast } from '@/lib/toast.svelte'
   import { deleteDoc, saveDoc, useBacklinks, useDoc, type KbDocMeta } from '@/lib/kb'
   import KbArtifactAttachments from './KbArtifactAttachments.svelte'
+  import AgentRefineNotice from '@/components/kb/AgentRefineNotice.svelte'
   import KbCommentsPanel from './KbCommentsPanel.svelte'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import KbHistoryRail from './KbHistoryRail.svelte'
@@ -447,6 +448,22 @@
               class="min-w-0 flex-1"
             />
           {/key}
+          <!-- TALA-4: an agent refining this document while it is open now
+               announces itself here, in the editing surface. -->
+          {#if doc}
+            <AgentRefineNotice
+              kind="kb-doc"
+              id={docId}
+              current={() => editorRef?.getMarkdown() ?? doc.body}
+              onLoad={(md) => {
+                // Same grammar as a Muse accept: the staged text is saved
+                // (viewer-stamped as the review) and the editor reseeds.
+                void save({ title, body: md }).then(() => (seed += 1))
+              }}
+              {me}
+              class="shrink-0"
+            />
+          {/if}
           <KbMuseBar
             context={`Knowledge document “${title || doc.title}”${folderName ? ` in the “${folderName}” space` : ''}.`}
             currentText={() => editorRef?.getMarkdown() ?? doc.body}
@@ -479,6 +496,26 @@
              editor state (seed-keyed for Muse/revisions), so it keeps its hard
              cut rather than replaying an entrance. -->
         <div in:fly={{ y: 6, duration: 200 }} class="flex min-w-0 flex-1 flex-col">
+          <!-- TALA-4: read mode gets the same announcement at the top of the
+               pane — an agent refine lands while you are reading. The pane
+               holds no buffer of its own, so it follows the server on
+               announce; the updated text appears without a manual reload. -->
+          {#if doc}
+            <AgentRefineNotice
+              kind="kb-doc"
+              id={docId}
+              current={() => doc.body}
+              onLoad={(md) => {
+                // Read mode has no buffer of its own: refresh the view from
+                // the server (already saved there) rather than re-saving.
+                void md
+                void qc.invalidateQueries({ queryKey: ['kb-doc', docId] })
+              }}
+              onAnnounce={() => void qc.invalidateQueries({ queryKey: ['kb-doc', docId] })}
+              {me}
+              class="mx-auto w-full max-w-[46rem] shrink-0"
+            />
+          {/if}
           <div
             bind:this={readRef}
             class="re-prose relative min-w-0 flex-1 overflow-y-auto"

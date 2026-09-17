@@ -24,6 +24,7 @@ export interface McpServerRow {
   toolsRefreshedAt: string | null
   assignments: Array<{ agentModel: string; tools: string[] | null }>
   userAccess: Array<{ userId: string; allowed: boolean; tools: string[] | null }>
+  teamAccess: Array<{ teamId: string; allowed: boolean; tools: string[] | null }>
 }
 
 export const connectPopup = (serverId: string, scope: 'org' | 'me') =>
@@ -35,6 +36,21 @@ export function useMcpServers() {
     // "No MCP servers yet" invites an admin to register one they may already
     // have. Only a genuine empty registry earns that screen.
     queryFn: (): Promise<McpServerRow[]> => getList<McpServerRow>('/api/mcp/servers', 'servers'),
+  }))
+}
+
+export interface TeamDirectoryEntry {
+  id: string
+  name: string
+  memberCount: number
+  agentCount: number
+}
+
+export function useTeamsDirectory() {
+  return createQuery(() => ({
+    queryKey: ['teams-directory'],
+    queryFn: (): Promise<TeamDirectoryEntry[]> => getList<TeamDirectoryEntry>('/api/teams/directory', 'teams'),
+    staleTime: 30_000,
   }))
 }
 

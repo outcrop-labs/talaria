@@ -15,6 +15,8 @@
     "docs:api": "bun scripts/gen-docs.mjs",
     "api": "cargo run --quiet --manifest-path api/Cargo.toml",
     "api:check": "cargo fmt --manifest-path api/Cargo.toml --check && cargo clippy --manifest-path api/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path api/Cargo.toml --quiet",
+    "desktop": "cd desktop && bun run dev",
+    "desktop:check": "cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check && cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path desktop/src-tauri/Cargo.toml --quiet && cd desktop && bun run typecheck",
     "api:vectors": "bun scripts/gen-secretbox-vectors.mjs && bun scripts/gen-yaml-vectors.mjs",
     "api:vectors:check": "bun scripts/gen-secretbox-vectors.mjs --check && bun scripts/gen-yaml-vectors.mjs --check",
     "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs && bun scripts/gen-docs.mjs --check",

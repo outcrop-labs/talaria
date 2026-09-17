@@ -6,6 +6,7 @@
 use serde_json::json;
 use sqlx::PgPool;
 
+use crate::fitness::toolbox::talaria_tools::toolkit_group_lines;
 use crate::gateway::settings::get_setting;
 
 #[derive(Debug, Clone, Default)]
@@ -91,21 +92,19 @@ pub fn voice_soul_header() -> String {
 /// this, agents flail through bundled note-tool skills and filesystem greps
 /// hunting for knowledge that lives one tool call away.
 pub fn toolkit_soul_header() -> String {
-    "<!-- toolkit contract, rendered by Talaria -->\n\
-     Talaria IS your workspace, and the `talaria` MCP tools are your FIRST reach for anything workspace-shaped — check them before any other tool:\n\
-     - Company knowledge & memory: search_knowledge (anything anyone said, decided, or documented), list_kb_spaces / list_kb_docs / read_kb_doc / create_kb_space / edit_kb_space (a space's landing page — where an intro or table of contents belongs) / create_kb_doc / edit_kb_doc / move_kb_doc (re-file, don't duplicate) / delete_kb_doc (your own docs only). Drafts stay unofficial until a human marks them official.\n\
-     - Documents & deliverables: create_document / update_document / list_documents / get_document, save_image_artifact.\n\
-     - Research: research (recon/brief/expedition) + research_status — cited web research; never improvise your own scraping pipeline first.\n\
-     - Work: list_boards / list_tickets / create_ticket / triage_ticket / comment / report_outcome (comment lands in the ticket's discussion thread — the room where the assigned agent and the board's humans talk); channels: list_channels / read_channel / post_to_channel. Before report_outcome, self-review: check your work against the ticket's requirements, and for code run the requesting-code-review skill — reviewers come after you, not instead of you.\n\
-     - Attached files: tickets and chats carry an attachments array — fetch_attachment reads a file by id (text as text, images you can see); ref-type entries are knowledge docs/artifacts (read_kb_doc / get_document).\n\
-     - Email & calendar: read_recent_email / draft_email, read_calendar / draft_calendar_event (drafts await human approval).\n\
-     - Reaching a teammate directly: message_user — starts a real conversation in their inbox; use it when something genuinely needs THAT person now (their work blocked on you, a decision needed, a deadline slipping), not for status updates. It is rate-limited; respect a declined send.\n\
-     The company has NO Notion, Obsidian, Airtable, or local note vaults — never hunt for them or grep the filesystem for company knowledge; Talaria is the system of record. \
-     Reach for other tools only where the toolkit genuinely doesn't cover the job (writing code, browsing the public web for something search_knowledge and research can't answer). \
-     The full playbook — when to reach for what, ticket rhythm, attachment handling — is the talaria-toolkit skill in /opt/skills; read it when in doubt.\n\
-     When something BREAKS — a tool errors, a connection refuses, credentials are missing — never expose the technical internals (endpoints, ports, credentials, protocols, error dumps) to a teammate unless they are clearly technical and working at that level with you. \
-     Instead: call report_problem with the technical details (it alerts the workspace admin and files a Helpdesk ticket), tell the person in one plain sentence that something went wrong on your side and the admin has been notified, and offer whatever you can still do in the meantime."
-        .into()
+    // The group bullets are generated from TALARIA_TOOLS so a new MCP tool
+    // cannot miss the contract every rendered soul carries.
+    format!(
+        "<!-- toolkit contract, rendered by Talaria -->\n\
+Talaria IS your workspace, and the `talaria` MCP tools are your FIRST reach for anything workspace-shaped — check them before any other tool:\n\
+{}\n\
+The company has NO Notion, Obsidian, Airtable, or local note vaults — never hunt for them or grep the filesystem for company knowledge; Talaria is the system of record. \
+Reach for other tools only where the toolkit genuinely doesn't cover the job (writing code, browsing the public web for something search_knowledge and research can't answer). \
+The full playbook — when to reach for what, ticket rhythm, attachment handling — is the talaria-toolkit skill in /opt/skills; read it when in doubt.\n\
+When something BREAKS — a tool errors, a connection refuses, credentials are missing — never expose the technical internals (endpoints, ports, credentials, protocols, error dumps) to a teammate unless they are clearly technical and working at that level with you. \
+Instead: call report_problem with the technical details (it alerts the workspace admin and files a Helpdesk ticket), tell the person in one plain sentence that something went wrong on your side and the admin has been notified, and offer whatever you can still do in the meantime.",
+        toolkit_group_lines()
+    )
 }
 
 #[cfg(test)]
@@ -156,5 +155,8 @@ mod tests {
         assert!(t.starts_with("<!-- toolkit contract, rendered by Talaria -->\n"));
         assert!(t.contains("the talaria-toolkit skill in /opt/skills"));
         assert!(t.contains("call report_problem"));
+        assert!(t.contains("create_sheet"));
+        assert!(t.contains("react_to_message"));
+        assert!(t.contains("NO Notion, Obsidian, Airtable"));
     }
 }

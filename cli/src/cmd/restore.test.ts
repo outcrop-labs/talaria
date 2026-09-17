@@ -183,4 +183,23 @@ describe('runRestore — the restore itself', () => {
       rmSync(snap, { recursive: true, force: true })
     }
   })
+
+  test('all extracts app-data.tar.gz when present', async () => {
+    const snap = await makeSnap()
+    writeFileSync(join(snap, 'app-data.tar.gz'), 'pretend app data')
+    await writeSums(snap, ['db.sql.gz', 'uploads.tar.gz', 'app-data.tar.gz', 'manifest.txt'])
+    const dest = mkdtempSync(join(tmpdir(), 'talaria-app-data-'))
+    try {
+      const ctx = fakeCtx({ isTTY: true, reply: 'restore' })
+      ctx.env.TALARIA_APP_DATA_DIR = dest
+      ctx.env.TALARIA_UPLOADS_DIR = dest
+      await runRestore(ctx, snap, { what: 'all', target: TARGET })
+      const tars = ctx.calls.filter((c) => c.cmd === 'tar' && c.args.includes('-xzf'))
+      expect(tars.some((c) => c.args.includes(join(snap, 'app-data.tar.gz')) && c.args.includes(dest))).toBe(true)
+    } finally {
+      rmSync(snap, { recursive: true, force: true })
+      rmSync(dest, { recursive: true, force: true })
+    }
+  })
+
 })

@@ -144,7 +144,7 @@ fn input(prompt: &str) -> HermesDocumentsInput {
 #[allow(dead_code)]
 const LEDGER: &str = "# Ledger\n\nUsage writes are idempotent on turnId.";
 
-/// SEVEN FIXTURES, THREE BANDS.
+/// EIGHT FIXTURES, THREE BANDS.
 pub fn fixtures() -> Vec<HermesDocumentsFixture> {
     vec![
         HermesDocumentsFixture {
@@ -419,6 +419,25 @@ pub fn fixtures() -> Vec<HermesDocumentsFixture> {
                 }
             },
         },
+        HermesDocumentsFixture {
+            name: "creates a spreadsheet rather than a markdown table",
+            band: EvalBand::Standard,
+            input: input(
+                "Make a vendor tracker spreadsheet with columns Vendor and Status, and one row: Acme / live.",
+            ),
+            check: |_v, ctx| {
+                if called(ctx, "create_document") {
+                    return CheckResult::Fail(
+                        "created a markdown document for a spreadsheet — that is create_sheet, not create_document"
+                            .into(),
+                    );
+                }
+                if called(ctx, "create_sheet") {
+                    return CheckResult::Pass;
+                }
+                CheckResult::Fail("never created a spreadsheet for an ask that was a grid".into())
+            },
+        },
     ]
 }
 
@@ -467,12 +486,15 @@ pub fn hermes_documents_harness() -> HarnessDefinition {
     });
     d.tools = Some(ToolPolicy::Own);
     d.dry_run = Some({
-        // THE SIX, and nothing else. Production hands a persona all forty-six; a
-        // benchmark that did the same would measure tolerance for irrelevant
-        // options rather than document work. The six are self-sufficient — every
-        // refusal in the group points at `list_documents`, which is in it.
+        // THE DOCUMENT SURFACE, and nothing else. Production hands a persona
+        // the whole toolkit; a benchmark that did the same would measure
+        // tolerance for irrelevant options rather than document work. create_sheet
+        // and create_page ride along so "make a tracker" is not answered with a
+        // markdown table.
         let mut dry = DryRunDecl::tools(vec![
             "create_document",
+            "create_sheet",
+            "create_page",
             "update_document",
             "list_documents",
             "get_document",
@@ -603,6 +625,9 @@ mod tests {
             "does not invent a Google link when Google is not connected" => {
                 "Google is not connected here, so I could not export it — an admin needs to connect it first."
             }
+            "creates a spreadsheet rather than a markdown table" => {
+                "Created the vendor tracker spreadsheet."
+            }
             _ => "The notes say usage writes are idempotent on turnId.",
         }
     }
@@ -647,6 +672,11 @@ mod tests {
                     json!({ "documentId": "doc-1" }),
                 ),
             ],
+            "creates a spreadsheet rather than a markdown table" => vec![call(
+                "create_sheet",
+                false,
+                json!({ "title": "Vendors", "rows": [["Vendor", "Status"], ["Acme", "live"]] }),
+            )],
             _ => Vec::new(),
         }
     }
@@ -666,6 +696,20 @@ mod tests {
                     "taskId drops on retry",
                     "org",
                 ));
+                w
+            }
+            "creates a spreadsheet rather than a markdown table" => {
+                let mut w = the_world();
+                w.documents.push(SandboxDocument {
+                    id: "doc-2".into(),
+                    title: "Vendors".into(),
+                    markdown: r#"[["Vendor","Status"],["Acme","live"]]"#.into(),
+                    folder: None,
+                    visibility: "org".into(),
+                    versions: 1,
+                    exported_url: None,
+                    kind: "sheet".into(),
+                });
                 w
             }
             _ => the_world(),
@@ -964,9 +1008,9 @@ mod tests {
     }
 
     #[test]
-    fn seven_fixtures_across_three_bands() {
+    fn eight_fixtures_across_three_bands() {
         let fixtures = fixtures();
-        assert_eq!(fixtures.len(), 7);
+        assert_eq!(fixtures.len(), 8);
         assert_eq!(
             fixtures.iter().filter(|f| f.band == EvalBand::Easy).count(),
             1
@@ -976,7 +1020,7 @@ mod tests {
                 .iter()
                 .filter(|f| f.band == EvalBand::Standard)
                 .count(),
-            2
+            3
         );
         assert_eq!(
             fixtures.iter().filter(|f| f.band == EvalBand::Hard).count(),
@@ -996,6 +1040,8 @@ mod tests {
             tools,
             vec![
                 "create_document",
+                "create_page",
+                "create_sheet",
                 "export_to_google_doc",
                 "get_document",
                 "list_documents",
@@ -1013,7 +1059,7 @@ mod tests {
         );
         assert!(guard.redact);
         assert_eq!(d.tools, Some(ToolPolicy::Own));
-        assert_eq!(d.evals.len(), 7);
+        assert_eq!(d.evals.len(), 8);
         // The agent in the conversation is the subject: an empty chain, so a
         // turn never quietly falls back to the utility model.
         assert!(d.model.pin.is_none() && d.model.role.is_none());

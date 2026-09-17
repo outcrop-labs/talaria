@@ -45,6 +45,8 @@ on:
     paths:
       - 'scripts/chassis.template.yml'
       - 'scripts/chassis-boot-smoke.mjs'
+      - 'scripts/hermes-skill-authority.json'
+      - 'scripts/hermes-skill-authority.mjs'
       - 'ui/src/server/fleet-render.ts'
       - 'ui/src/server/fleet-docker.ts'
       - 'scripts/workbench.Dockerfile'
@@ -54,6 +56,8 @@ on:
     paths:
       - 'scripts/chassis.template.yml'
       - 'scripts/chassis-boot-smoke.mjs'
+      - 'scripts/hermes-skill-authority.json'
+      - 'scripts/hermes-skill-authority.mjs'
       - 'ui/src/server/fleet-render.ts'
       - 'ui/src/server/fleet-docker.ts'
       - 'scripts/workbench.Dockerfile'

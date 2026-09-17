@@ -1,7 +1,8 @@
 <script lang="ts">
   import { createRawSnippet, mount, unmount, type Component, type Snippet } from 'svelte'
+  import { createQuery } from '@tanstack/svelte-query'
   import { useHasPerm } from '@/lib/session'
-  import { Globe, Lock, Building2, Bot, X, Check, Copy } from '@lucide/svelte'
+  import { Globe, Lock, Building2, Bot, Users, X, Check, Copy } from '@lucide/svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -12,6 +13,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import { useUsers } from '@/lib/users'
   import { useAgents } from '@/lib/agents'
+  import { getList } from '@/lib/fetch-json'
   import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type PermKind, type Visibility } from '@/lib/kb'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
@@ -68,9 +70,17 @@
   // and no way to retry it. The picker beside it silently lost every person too.
   const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
   const agentsQuery = useAgents()
+  const teamsList = listQuery(
+    createQuery(() => ({
+      queryKey: ['teams-directory'],
+      queryFn: (): Promise<Array<{ id: string; name: string; memberCount: number }>> =>
+        getList('/api/teams/directory', 'teams'),
+    })),
+    { title: 'Could not load teams', variant: 'inline' },
+  )
   // Until both principal lists resolve, grants would render as raw ids and the
   // add picker would be empty — hold the list's shape instead.
-  const principalsLoading = $derived(usersList.pending || agentsQuery.isLoading)
+  const principalsLoading = $derived(usersList.pending || agentsQuery.isLoading || teamsList.pending)
   let vis = $state<Visibility>(visibility)
   // `save()` PUTs the grant list back WHOLESALE, so this list is never allowed
   // to hold a value nobody read off the server. It is derived, not copied: the
@@ -118,6 +128,9 @@
       const u = usersList.rows.find((x) => x.id === g.principalId)
       return u?.name ?? u?.email ?? g.principalId
     }
+    if (g.principalType === 'team') {
+      return teamsList.rows.find((x) => x.id === g.principalId)?.name ?? g.principalId
+    }
     return (agentsQuery.data?.agents ?? []).find((a) => a.id === g.principalId)?.label ?? g.principalId
   }
 
@@ -134,7 +147,7 @@
       },
     }))
 
-  // People/agents not already granted — the "add" picker.
+  // People/agents/teams not already granted — the "add" picker.
   const addOptions = $derived.by((): ComboOption[] => {
     const has = new Set(grants.map((g) => `${g.principalType}:${g.principalId}`))
     return [
@@ -154,6 +167,14 @@
           sub: `Agent · ${a.role}`,
           icon: componentIcon(Bot, { size: 12 }, 'grid h-5 w-5 place-items-center rounded-full bg-card2 text-muted'),
         })),
+      ...teamsList.rows
+        .filter((t) => !has.has(`team:${t.id}`))
+        .map((t) => ({
+          value: `team:${t.id}`,
+          label: t.name,
+          sub: `Team · ${t.memberCount} ${t.memberCount === 1 ? 'person' : 'people'}`,
+          icon: componentIcon(Users, { size: 12 }, 'grid h-5 w-5 place-items-center rounded-full bg-card2 text-muted'),
+        })),
     ]
   })
 
@@ -165,7 +186,7 @@
   }
   const addGrant = (val: string) => {
     const [type, pid] = [val.slice(0, val.indexOf(':')), val.slice(val.indexOf(':') + 1)]
-    if (type !== 'user' && type !== 'agent') return
+    if (type !== 'user' && type !== 'agent' && type !== 'team') return
     editGrants((g) => [...g, { principalType: type, principalId: pid, role: 'viewer' }])
   }
   const setRole = (i: number, role: GrantRole) => editGrants((g) => g.map((x, j) => (j === i ? { ...x, role } : x)))
@@ -220,16 +241,16 @@
         {/if}
       </div>
     {:else}
-      <!-- People & agents -->
+      <!-- People, agents & teams -->
       <div>
         <!-- §8 section header: 10px mono uppercase 0.08em ink-dim. -->
-        <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People &amp; agents</div>
+        <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">People, agents &amp; teams</div>
         {#if canManage}
           <Combobox
             options={addOptions}
             selected={[]}
             onChange={(v) => v[0] && addGrant(v[0])}
-            placeholder="Add a person or agent"
+            placeholder="Add a person, agent or team"
             size="sm"
             disabled={!known}
             class="mb-2"
@@ -257,6 +278,7 @@
                  Without this line an id in an access list reads as the grant
                  itself being junk. -->
             {#if usersList.notice}<QueryError {...usersList.notice} />{/if}
+            {#if teamsList.notice}<QueryError {...teamsList.notice} />{/if}
             <!-- Owner row (implicit editor) -->
             <div class="flex items-center gap-2.5 rounded-lg px-1 py-1.5">
               <Avatar name={label} class="h-7 w-7 shrink-0 text-[10px]" />
@@ -267,6 +289,8 @@
               <div class="flex items-center gap-2.5 rounded-lg px-1 py-1">
                 {#if g.principalType === 'user'}
                   <Avatar name={nameOf(g)} class="h-7 w-7 shrink-0 text-[10px]" />
+                {:else if g.principalType === 'team'}
+                  <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-card2 text-muted"><Users size={14} /></span>
                 {:else}
                   <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-card2 text-muted"><Bot size={14} /></span>
                 {/if}

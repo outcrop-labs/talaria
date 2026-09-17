@@ -24,7 +24,7 @@
   let busy = $state<string | null>(null)
   let notice = $state<string | null>(null)
 
-  const installed = $derived(new Set((query.data?.apps ?? []).map((a) => a.slug).concat(query.data?.pending ?? [])))
+  const installed = $derived(new Set((query.data?.apps ?? []).map((a) => a.slug)))
 
   const install = async (url: string, slug?: string) => {
     busy = slug ?? url
@@ -34,9 +34,7 @@
       if (r.error) {
         void alert({ title: 'Install failed', message: r.error })
       } else {
-        notice = r.pendingBuild
-          ? `Installed apps/${r.slug}. It compiles into the next build; reload the dev server (or rebuild), then enable it under Installed.`
-          : `Installed apps/${r.slug}. Enable it under Installed.`
+        notice = `Installed apps/${r.slug}. This instance will compile it and start its database; enable it under Installed.`
         gitUrl = ''
         await qc.invalidateQueries({ queryKey: ['admin-apps'] })
         await qc.invalidateQueries({ queryKey: ['admin-apps-catalog'] })

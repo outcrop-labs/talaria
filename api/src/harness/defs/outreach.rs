@@ -748,10 +748,10 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
         // invitation to do exactly that. Eight covers the observed tail and
         // no more.
         max_turns: Some(8),
-        // SEVEN OF FIFTY-FIVE (the catalog count `TALARIA_TOOLS.len()` pins),
+        // SEVEN OF SIXTY-ONE (the catalog count `TALARIA_TOOLS.len()` pins),
         // and the deviation is deliberate — the same argument work-session
         // states. Production hands the persona its whole MCP surface; benching
-        // that would measure a model's tolerance for forty-eight irrelevant
+        // that would measure a model's tolerance for fifty-four irrelevant
         // options rather than whether it knows when to stay quiet. These seven
         // are what the job needs plus the escape hatch whose MISUSE is a
         // thing worth measuring.

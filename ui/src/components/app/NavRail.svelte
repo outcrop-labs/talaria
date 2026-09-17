@@ -16,9 +16,9 @@
 <script lang="ts">
   import { ChevronsLeft, ChevronsRight, TriangleAlert } from '@lucide/svelte'
   import Brand from '@/components/Brand.svelte'
+  import DesktopSwitcher from './DesktopSwitcher.svelte'
   import WingMark from '@/components/WingMark.svelte'
   import CreateBoardModal from '@/components/board/CreateBoardModal.svelte'
-  import TeamsModal from '@/components/board/TeamsModal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { activeAmong, isUnder } from '@/lib/route-tabs'
@@ -36,7 +36,7 @@
   import { useInboxFocus, useInboxFocusSummary } from '@/lib/inbox-focus.svelte'
   import { useDeniedViews } from '@/lib/session'
   import { useUnreads } from '@/lib/unreads.svelte'
-  import { route } from '@/router'
+  import { navigate, route } from '@/router'
 
   // The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
   // Boards sublist; collapsed: 36px icon tiles with tooltips. Active state
@@ -49,7 +49,6 @@
   const pathname = $derived(route.pathname)
   const denied = useDeniedViews()
   let creating = $state(false)
-  let teamsOpen = $state(false)
   const nav = useNavCollapsed()
   // Are we ON the Inbox? The full queue loads here and only a count elsewhere.
   //
@@ -168,7 +167,6 @@
 
 {#snippet modals()}
   <CreateBoardModal open={creating} onClose={() => (creating = false)} />
-  <TeamsModal open={teamsOpen} onClose={() => (teamsOpen = false)} />
 {/snippet}
 
 <!-- CollapsePane owns the collapse/expand width glide (the two variants used
@@ -196,6 +194,9 @@
     <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
       <WingMark class="h-5 w-5" />
     </div>
+    <!-- Only renders inside the Talaria desktop shell — a browser gets
+         nothing (feature-detected in the component). -->
+    <DesktopSwitcher collapsed />
 
     <!-- Collapsed tiles get the same room, for the same reason. -->
     <!-- `px-1` is room for the selected band, not decoration. `overflow-y-auto`
@@ -279,8 +280,9 @@
 {:else}
   <!-- ── Sidebar (208px, spec §5) ──────────────────────────────────────────── -->
   <div class="flex h-full w-[208px] flex-col px-3 pb-4 pt-5">
-    <div class="flex h-6 shrink-0 items-center">
+    <div class="flex h-6 shrink-0 items-center justify-between">
       <Brand />
+      <DesktopSwitcher />
     </div>
 
     <SidebarSearch />
@@ -350,7 +352,7 @@
                   {/if}
                 </a>
                 {#if item.to === '/boards' && isUnder(pathname, '/boards')}
-                  <BoardsSublist activePath={pathname} onNew={() => (creating = true)} onTeams={() => (teamsOpen = true)} />
+                  <BoardsSublist activePath={pathname} onNew={() => (creating = true)} onTeams={() => void navigate('/teams')} />
                 {/if}
               </li>
             {/each}

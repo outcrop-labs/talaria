@@ -519,6 +519,9 @@ pub async fn collections_for_principal(
                     /* text-side compare: the '' sentinel must not hit a uuid cast */ \
                     select 1 from team_members tm where tm.team_id::text = a.principal_id and tm.user_id::text = $1 \
                   )) \
+              or (a.principal_type = 'team' and $2 <> '' and exists ( \
+                    select 1 from team_agents ta where ta.team_id::text = a.principal_id and ta.agent_model = $2 \
+                  )) \
            order by c.name asc \
          ) t"
     )))

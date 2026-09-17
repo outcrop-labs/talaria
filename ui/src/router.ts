@@ -144,6 +144,7 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     },
     '/fleet': () => import('./routes/app/Fleet.svelte'),
     '/studio': () => import('./routes/app/Studio.svelte'),
+    '/teams': () => import('./routes/app/Teams.svelte'),
     '/templates': {
       '/': () => import('./routes/app/Templates.svelte'),
       '/:tab': () => import('./routes/app/Templates.svelte'),

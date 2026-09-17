@@ -5,14 +5,14 @@
 
 use crate::apps::{
     catalog_url, enabled_app_slugs, fetch_catalog, install_app_from_git, installed_sources,
-    pending_apps, set_app_enabled, set_catalog_url, uninstall_app, wipe_app_data,
+    set_app_enabled, set_catalog_url, uninstall_app, wipe_app_data,
 };
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{as_object, parse};
 use crate::error::{house_error, thrown_internal_error};
 use crate::session::{actor_of, require_admin, require_view};
 use crate::state::AppState;
-use crate::users::discovered_apps;
+use crate::users::{app_build_status, discovered_apps};
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
@@ -25,13 +25,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         return gate;
     }
     let enabled = enabled_app_slugs(&state.pg).await;
-    let pending = pending_apps().await;
     let sources = installed_sources(&state.pg).await;
+
     let apps = discovered_apps()
         .into_iter()
         .map(|a| {
-            // wire order: the manifest's fields, then enabled + source;
-            // surfaces nested with only its truthy keys.
             let mut surfaces = serde_json::Map::new();
             if let Some(w) = &a.work {
                 surfaces.insert("work".into(), serde_json::json!(w));
@@ -47,6 +45,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
                 .and_then(|s| s.get("source"))
                 .cloned()
                 .unwrap_or(Value::Null);
+            let build = app_build_status(&a.slug);
             serde_json::json!({
                 "slug": a.slug,
                 "name": a.name,
@@ -57,6 +56,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
                 "mcp": a.mcp,
                 "enabled": enabled.contains(&a.slug),
                 "source": source,
+                "build": build,
             })
         })
         .collect::<Vec<_>>();
@@ -78,7 +78,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     Json(serde_json::json!({
         "apps": apps,
-        "pending": pending,
         "catalog": catalog,
         "catalogUrl": catalog_url(&state.pg).await,
     }))
@@ -224,7 +223,7 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     match install_app_from_git(&state.pg, &install_url, slug_override.as_deref()).await {
-        Ok((slug, pending_build)) => {
+        Ok(slug) => {
             log_audit(
                 &state.pg,
                 AuditEntry {
@@ -238,7 +237,7 @@ pub async fn post(
                 },
             )
             .await;
-            Json(serde_json::json!({ "slug": slug, "pendingBuild": pending_build })).into_response()
+            Json(serde_json::json!({ "slug": slug })).into_response()
         }
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
     }

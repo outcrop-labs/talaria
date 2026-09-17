@@ -8,7 +8,7 @@
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { p } from '@/router'
-  import { delJson, errorMessage } from '@/lib/fetch-json'
+  import { delJson, errorMessage, postJson } from '@/lib/fetch-json'
   import { fetchAdminApps, post, type InstalledApp } from './apps'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
@@ -26,9 +26,32 @@
   const toggle = async (a: InstalledApp) => {
     busy = a.slug
     try {
+      if (!a.enabled) {
+        const health = await postJson<{ ok: boolean; error?: string }>(`/api/apps/${a.slug}/rebuild`, {})
+        if (!health.ok) {
+          void alert({ title: `${a.name} cannot be enabled`, message: health.error ?? 'app failed to compile or load' })
+          await refresh()
+          return
+        }
+      }
       const r = await post({ app: a.slug, enabled: !a.enabled })
       if (r.error) void alert({ title: 'Could not update app', message: r.error })
       await refresh()
+    } catch (e) {
+      void alert({ title: 'Could not update app', message: errorMessage(e) })
+    } finally {
+      busy = null
+    }
+  }
+
+  const rebuild = async (a: InstalledApp) => {
+    busy = a.slug
+    try {
+      const health = await postJson<{ ok: boolean; error?: string }>(`/api/apps/${a.slug}/rebuild`, {})
+      if (!health.ok) void alert({ title: `${a.name} is still broken`, message: health.error ?? 'app failed to compile or load' })
+      await refresh()
+    } catch (e) {
+      void alert({ title: 'Could not rebuild', message: errorMessage(e) })
     } finally {
       busy = null
     }
@@ -37,7 +60,7 @@
   const uninstall = async (a: InstalledApp) => {
     const ok = await confirm({
       title: `Uninstall ${a.name}?`,
-      message: 'Removes the app codebase from this deployment and deletes the data it stored. This cannot be undone.',
+      message: 'Removes the app codebase from this deployment, stops its database, and deletes the data it stored. This cannot be undone.',
       confirmLabel: 'Uninstall',
       danger: true,
     })
@@ -54,7 +77,6 @@
   }
 
   const apps = $derived(query.data?.apps ?? [])
-  const pending = $derived(query.data?.pending ?? [])
 </script>
 
 {#snippet surfaceChips(surfaces: InstalledApp['surfaces'], mcp?: boolean)}
@@ -69,19 +91,14 @@
 {#if query.isLoading}
   <SkeletonRows rows={4} />
 {:else if !query.data}
-  <!-- Without this branch a failed read told an admin their deployment has no
-       apps — the same sentence the honest empty case shows, and the one that
-       sends someone reinstalling an app that was never gone. -->
   <QueryError error={query.error} title="Could not load installed apps" onRetry={() => void query.refetch()} />
-{:else if apps.length === 0 && pending.length === 0}
+{:else if apps.length === 0}
   <EmptyState
     icon="⬡"
     title="No apps installed"
     hint="Discover community and official apps in the next tab, or drop a codebase into apps/ (see apps/README.md for building your own)"
   />
 {:else}
-  <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
-       targets — these cards cascade on the page entrance. -->
   <div class="space-y-3" data-app-cards>
     {#each apps as a (a.slug)}
       <div class="flex items-center gap-4 rounded-lg border border-line bg-panel p-4">
@@ -91,8 +108,13 @@
             <span class="font-sans text-sm font-medium text-fg">{a.name}</span>
             <span class="font-mono text-[10px] tracking-[0.05em] text-muted">v{a.version}</span>
             {@render surfaceChips(a.surfaces, a.mcp)}
+            {#if a.build?.status === 'building'}<Chip>compiling</Chip>{/if}
+            {#if a.build?.status === 'failed'}<Chip tone="danger" title={a.build.error}>build failed</Chip>{/if}
           </div>
           <div class="truncate font-sans text-xs text-muted">{a.description}</div>
+          {#if a.build?.status === 'failed' && a.build.error}
+            <div class="mt-1 truncate font-mono text-[11px] text-danger">{a.build.error}</div>
+          {/if}
         </div>
         {#if a.enabled && a.surfaces.work}
           <a href={p('/x/:app', { params: { app: a.slug } })} class="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
@@ -100,6 +122,9 @@
           </a>
         {/if}
         {#if isAdmin}
+          {#if a.build?.status === 'failed'}
+            <Button size="sm" variant="ghost" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
+          {/if}
           <Button size="sm" variant={a.enabled ? 'ghost' : 'primary'} disabled={busy === a.slug} onclick={() => void toggle(a)}>
             {a.enabled ? 'Disable' : 'Enable'}
           </Button>
@@ -112,18 +137,6 @@
             <Trash2 size={14} />
           </button>
         {/if}
-      </div>
-    {/each}
-    {#each pending as slug (slug)}
-      <div class="flex items-center gap-4 rounded-lg border border-dashed border-line bg-panel p-4 opacity-80">
-        <span class="w-8 text-center text-2xl text-accent">⧗</span>
-        <div class="min-w-0 flex-1">
-          <div class="font-sans text-sm font-medium text-fg">{slug}</div>
-          <div class="font-sans text-xs text-muted">
-            Installed on disk but not compiled into this build yet. Reload the dev server or rebuild the deployment to activate.
-          </div>
-        </div>
-        <Chip>awaiting build</Chip>
       </div>
     {/each}
   </div>

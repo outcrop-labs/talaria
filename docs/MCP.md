@@ -39,9 +39,12 @@ drain, nobody's conversation dies. Tool-subset changes enforce per-call and need
 Per server:
 
 - **Agents** — all-agents, or an explicit assignment per agent; either way each row can narrow to a
-  tool subset ("All tools" is the explicit default).
+  tool subset ("All tools" is the explicit default). An agent on a team also carries that team's
+  MCP grants (union with its own assignment; a team grant counts as assignment on scoped servers).
 - **People** — per-person allow/deny plus optional tool subsets. For agents acting on someone's
   behalf (personal assistants), the person's allowance intersects the agent's.
+- **Teams** — the same people-plane rules as a person (`mcp_team_access`). A personal assistant
+  intersects its owner's allowance after team grants union in; a person's own deny still wins.
 
 ## Auth
 
@@ -76,4 +79,4 @@ gets, with the same auditability as everything else (every registry mutation is 
 
 ## The workbench surface
 
-`workbench` is a Talaria-owned server in this same registry — in-process like app surfaces, **not** all-agents: access is an explicit per-agent grant. Its tools are the governed execution lifecycle (`doctor`, `list_repos`, `start_job`, `job_status`, `merge_to_testing`, `finish_job`) — see [`WORKBENCH.md`](./WORKBENCH.md). Chosen coding harnesses that can serve MCP (Claude Code, Codex) additionally register as stdio servers on the agent's own Hermes config, and the agent's grants from THIS registry are rendered into each harness's native MCP config at render time (the pass-through) — so a sandboxed harness sees exactly the same governed tool world the agent does, with zero in-sandbox reconnection.
+`workbench` is a Talaria-owned server in this same registry — in-process like app surfaces, **not** all-agents: access is an explicit per-agent grant. Its tools are the governed execution lifecycle (`doctor`, `list_repos`, `start_job`, `job_status`, `merge_to_testing`, `finish_job`) — see [`WORKBENCH.md`](./WORKBENCH.md). Coding harnesses (opencode, Pi, Oh My Pi) authenticate through Talaria's gateway; the agent's grants from THIS registry are rendered into each harness's native MCP config at render time (the pass-through) — so a sandboxed harness sees exactly the same governed tool world the agent does, with zero in-sandbox reconnection.

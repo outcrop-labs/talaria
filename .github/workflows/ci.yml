@@ -8,6 +8,7 @@
 #     cd mcp && typecheck + build
 #     cd cli && typecheck + bun test            (the `talaria` CLI)
 #     cd api && fmt + clippy + cargo test       (the Rust port)
+#     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
 #   That is the whole thing. It takes a couple of minutes.
 #
 # WHY rc AND testing ARE IN THE PUSH LIST. They are the branches the release
@@ -77,9 +78,18 @@
 #     type surface; a full build roughly triples the runtime for a weaker signal.
 #   - `plugin/` — no build or typecheck to run at all. `scripts/`
 #     is not typechecked either; it is EXECUTED, by the invariants job.
-#   - `paths:` filters. Tempting (a docs-only push does not need this), but a
-#     required status check that is skipped by a path filter reports "pending"
-#     forever and blocks the merge. Not worth the sixty seconds.
+#   - `paths:` filters ON THE TRIGGERS. Still out, and now for a reason that
+#     survives contact: a workflow-level filter is as coarse as the whole file,
+#     and one of these jobs — invariants, seconds, no install — has to see
+#     EVERY push, including the docs-only ones it is cheapest on (that is where
+#     a broken link lives). The old objection stands too: a filtered-out checks
+#     run that a branch protection rule requires reports "pending" forever and
+#     blocks the merge. What this file does instead is decide per job, inside
+#     the run, in the `changes` job below — same grain as the jobs, and a
+#     skipped job is a visible "skipped" rather than an absent run. Verified:
+#     `main` carries no required status checks today (protection asks for a
+#     review and nothing else), so a skip cannot wedge a merge; if that ever
+#     changes, `changes` is the thing to revisit.
 #
 # THE INVARIANTS JOB, and why a typechecker cannot replace it. `tsc` cannot see
 #   the failure this repo actually keeps having. Seven consecutive review rounds
@@ -119,10 +129,11 @@
 #     the migration — treat bun.lock as canonical and update both when deps
 #     change (or, post-alpha, delete the npm one and this note).
 #   - `ui/tsconfig.json` includes `../apps`, so this needs a full-repo checkout,
-#     not a sparse one. `apps/contacts` is Svelte and is therefore checked by
-#     the ui typecheck job, not by a job of its own.
+#     not a sparse one. Installed apps under `apps/` are Svelte and are checked
+#     by the ui typecheck job, not by a job of their own.
 #   - There is no committed route codegen to run: sv-router resolves
 #     `src/routes/**` at build time from the files themselves.
+
 
 name: CI
 
@@ -153,6 +164,110 @@ permissions:
   contents: read
 
 jobs:
+  # WHAT THIS RUN ACTUALLY HAS TO CHECK. One cheap job decides, and every heavy
+  # job consults it: a UI change does not re-run the Rust api's fmt+clippy+test,
+  # a desktop change does not re-run the UI suite, and a docs-only push runs the
+  # invariants job and nothing else. The surfaces are the paths whose change can
+  # break that job, and nothing wider.
+  #
+  # WHY NOT `paths:` ON THE TRIGGERS (which the header still rules out). This is
+  # ONE workflow with six unrelated jobs, so a workflow-level filter can only be
+  # as coarse as the whole file — and the invariants job, which is seconds and
+  # needs no install, is meant to run on every push, because doc links and the
+  # rule patterns are exactly what a "docs-only" change touches. Deciding per job
+  # inside the run keeps that grain and leaves the cheap check unconditional.
+  #
+  # A job whose surface did not move is SKIPPED, and that is honest rather than
+  # quiet: `main` carries no required status checks (protection asks for a review
+  # and nothing else — verified, not assumed), so a skipped job cannot wedge a
+  # merge the way a filtered-out required check would. If required checks are
+  # ever configured, this job list is the thing to revisit.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ui: ${{ steps.d.outputs.ui }}
+      mcp: ${{ steps.d.outputs.mcp }}
+      cli: ${{ steps.d.outputs.cli }}
+      api: ${{ steps.d.outputs.api }}
+      desktop: ${{ steps.d.outputs.desktop }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          # The diff below needs the base commit; a shallow clone does not have it.
+          fetch-depth: 0
+
+      - name: Which surfaces moved
+        id: d
+        env:
+          EVENT: ${{ github.event_name }}
+          # release.yml calls this file with a ref. A publish is a FULL gate —
+          # never a partial one — so the call short-circuits every surface on.
+          CALLED_REF: ${{ inputs.ref }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -eu
+
+          # The safe side of every unknown is "run everything": a missing base, a
+          # rewritten history, a diff that will not resolve. A skipped check is
+          # cheap; a check nobody ran is the thing this repo keeps paying for.
+          all=0
+          range=""
+          if [ -n "$CALLED_REF" ]; then
+            all=1
+            echo "called by release.yml — every surface runs"
+          elif [ "$EVENT" = push ]; then
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              all=1
+              echo "no usable before-sha (first push of a branch, or a rewrite) — every surface runs"
+            else
+              range="$BEFORE..$HEAD"
+            fi
+          else
+            # Three dots: the PR's OWN changes, not everything the base branch
+            # gained while the PR sat open.
+            range="$BASE...$HEAD"
+          fi
+
+          changed=""
+          if [ "$all" = 0 ]; then
+            if ! changed=$(git diff --name-only "$range" 2>/dev/null); then
+              all=1
+              echo "cannot diff $range — every surface runs"
+            fi
+          fi
+          echo "changed files:"; echo "$changed" | head -50
+
+          matches() {
+            while IFS= read -r file; do
+              [ -n "$file" ] || continue
+              for glob in "$@"; do
+                case "$file" in $glob) return 0 ;; esac
+              done
+            done <<<"$changed"
+            return 1
+          }
+
+          surface() {
+            name=$1; shift
+            if [ "$all" = 1 ] || matches "$@"; then on=true; else on=false; fi
+            printf '%s=%s\n' "$name" "$on" >> "$GITHUB_OUTPUT"
+            echo "  $name: $on"
+          }
+
+          # The workflow file is in EVERY list on purpose: an edit here changes
+          # what these jobs are, so the run that carries it should exercise all
+          # of them.
+          surface ui      'ui/*' 'apps/*' '.github/workflows/ci.yml'
+          surface mcp     'mcp/*' '.github/workflows/ci.yml'
+          surface cli     'cli/*' '.github/workflows/ci.yml'
+          surface api     'api/*' '.github/workflows/ci.yml'
+          surface desktop 'desktop/*' '.github/workflows/ci.yml'
+
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
   # learns that before the other jobs have finished installing.
@@ -184,6 +299,8 @@ jobs:
 
   ui:
     name: test + typecheck (ui)
+    needs: [changes]
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -224,8 +341,23 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # The prod bundles are what ships — test + typecheck never execute
+      # them. Build for real and smoke the BUILT fetch handler: GET / must
+      # serve the SPA shell (2026-09-17: a vite output change moved the
+      # handler into dist/server/assets/*.js, one directory deeper than the
+      # shell lookup was anchored to, and every page on every instance
+      # 404'd while dev mode, unit tests, and typecheck were all green —
+      # nothing ran the built bundle).
+      - name: Build (prod bundles)
+        run: bun run build
+
+      - name: Prod smoke (SPA shell from the built bundle)
+        run: bun scripts/check-prod-shell.ts
+
   mcp:
     name: typecheck + build (mcp)
+    needs: [changes]
+    if: needs.changes.outputs.mcp == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -269,6 +401,8 @@ jobs:
   # under bun, which IS the product's execution path.
   cli:
     name: typecheck + test (cli)
+    needs: [changes]
+    if: needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -307,6 +441,8 @@ jobs:
   # --ignored`) and never here, so a red build always names a commit's bug.
   api:
     name: fmt + clippy + test (api)
+    needs: [changes]
+    if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -350,3 +486,74 @@ jobs:
 
       - name: Test
         run: cargo test --quiet
+
+  # The desktop shell (docs/DESKTOP.md) — the same tripwire treatment for
+  # desktop/ that the jobs above give ui/, mcp/, cli/ and api/: fmt + clippy +
+  # tests for src-tauri, svelte-check for the launcher (`bun run
+  # desktop:check` from the root runs the same list). Unlike api/, this job
+  # DOES need an apt step: tauri's webkit/gtk sys crates run pkg-config even
+  # under `cargo check`, so a bare runner dies before compiling a line of
+  # ours. No bundle step — installers are a release-time concern and now have a
+  # home of their own (desktop-package.yml, built on every platform and pinned
+  # to a release); dragging linuxdeploy and the flatpak runtime into a tripwire
+  # would make it slow enough to be skipped.
+  desktop:
+    name: fmt + clippy + test + typecheck (desktop)
+    needs: [changes]
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # Same pin, same reason as the api job: desktop/src-tauri/rust-toolchain.toml
+      # pins 1.97.1 and devboxes install the same one.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Needed even for `cargo check`/clippy — the sys crates probe the
+      # webkit2gtk/gtk packages at build-script time. ubuntu-latest (24.04)
+      # ships libwebkit2gtk-4.1-dev; if a runner-image bump ever removes it,
+      # this is the line to read.
+      - name: Tauri system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev
+
+      # See "WHY BUN *AND* NODE" in the header: bun installs and drives, node
+      # executes the toolchain shebangs (svelte-check here).
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Format
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: desktop/src-tauri
+        run: cargo test --quiet
+
+      - name: Typecheck
+        working-directory: desktop
+        run: bun run typecheck

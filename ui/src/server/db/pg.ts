@@ -1,7 +1,7 @@
 // Postgres — durable state (users, roles, per-agent access, conversations,
 // messages). postgres.js (no native build). Migrations run once per statement
 // ever (see schema_migrations below), under an advisory lock — eagerly at boot
-// (server-entry.js calls migrate()) and lazily on the first query thereafter.
+// (server-entry.ts calls migrate()) and lazily on the first query thereafter.
 // Cached on globalThis so HMR doesn't open a new pool each reload.
 
 import { createHash } from 'node:crypto'
@@ -2958,6 +2958,77 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now(),
      primary key (repo, key)
    )`,
+  // The Anthropic-protocol surface cache: the harness auth plane's one-time
+  // lookup. When an endpoint's base URL answers /v1/messages (the probe in
+  // workbench/harnesses.rs), the verdict lands here — every later render
+  // arms Claude Code with zero network. The static reference table
+  // (gateway/provider.rs anthropic_base) answers the known providers before
+  // any probe runs.
+  `alter table llm_endpoints add column if not exists anthropic_base text`,
+
+  // First-class teams: an org principal (people + agents) that expands at
+  // auth time onto multiplayer surfaces, platform views/perms, and MCP tools.
+  // Boards keep boards.team_id as ownership; these tables are the rest.
+  `alter table teams add column if not exists description text`,
+  `alter table teams add column if not exists denied_views text[] not null default '{}'`,
+  `alter table teams add column if not exists allowed_manage_views text[] not null default '{}'`,
+  `create table if not exists team_agents (
+     team_id uuid not null references teams(id) on delete cascade,
+     agent_model text not null,
+     created_at timestamptz not null default now(),
+     primary key (team_id, agent_model)
+   )`,
+  `create table if not exists team_permissions (
+     team_id uuid not null references teams(id) on delete cascade,
+     perm text not null,
+     allowed boolean not null,
+     primary key (team_id, perm)
+   )`,
+  `create table if not exists mcp_team_access (
+     server_id uuid not null references mcp_servers(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     allowed boolean not null default true,
+     tools text[],
+     primary key (server_id, team_id)
+   )`,
+  `create table if not exists channel_teams (
+     channel_id uuid not null references channels(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (channel_id, team_id)
+   )`,
+  `create table if not exists conversation_teams (
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (conversation_id, team_id)
+   )`,
+  `create table if not exists research_teams (
+     run_id uuid not null references research_runs(id) on delete cascade,
+     team_id uuid not null references teams(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (run_id, team_id)
+   )`,
+
+  // Workbench builtins are opencode, Pi, and Oh My Pi. Claude Code and Codex
+  // are retired: strip them from every profile, reset the shipped `dev`
+  // profile to the canonical list, and clear per-agent picks that named a
+  // retired harness (null = Auto = the profile's first = opencode).
+  `update workbench_profiles
+     set harnesses = coalesce((
+       select jsonb_agg(value)
+       from jsonb_array_elements(harnesses) as t(value)
+       where value #>> '{}' not in ('claude-code', 'codex')
+     ), '[]'::jsonb)
+     where harnesses @> '["claude-code"]'::jsonb
+        or harnesses @> '["codex"]'::jsonb`,
+  `update workbench_profiles
+     set harnesses = '["opencode", "pi", "oh-my-pi"]'::jsonb,
+         description = 'A sandboxed development environment: coding harnesses (opencode, Pi, Oh My Pi) working repo checkouts under the platform-owned git flow.'
+     where slug = 'dev'`,
+  `update agent_defs
+     set workbench_harness = null
+     where workbench_harness in ('claude-code', 'codex')`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
@@ -3111,7 +3182,7 @@ export async function db(): Promise<Sql> {
  *  db() only fires on a table-backed query — and since the api cutover nothing
  *  in the boot path issues one (healthz is connectivity-only, and the api owns
  *  the tables but no DDL), so boot calls this explicitly: without it, a fresh
- *  database never migrates. See server-entry.js's boot step for the story. */
+ *  database never migrates. See server-entry.ts's boot step for the story. */
 export function migrate(): Promise<MigrationResult> {
   return ensureMigrated()
 }

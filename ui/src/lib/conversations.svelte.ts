@@ -44,6 +44,11 @@ export interface PlanMember {
   role: 'owner' | 'collaborator'
 }
 
+export interface PlanTeam {
+  id: string
+  name: string
+}
+
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
 type MaybeGetter<T> = T | (() => T)
@@ -71,8 +76,8 @@ export function usePlanMembers(planId: MaybeGetter<string | null>) {
     return {
       queryKey: ['plan-members', id],
       enabled: !!id,
-      queryFn: (): Promise<{ members: PlanMember[]; active: string[] }> =>
-        getJson<{ members: PlanMember[]; active: string[] }>(`/api/plans/${id}/members`),
+      queryFn: (): Promise<{ members: PlanMember[]; active: string[]; teams?: PlanTeam[] }> =>
+        getJson<{ members: PlanMember[]; active: string[]; teams?: PlanTeam[] }>(`/api/plans/${id}/members`),
     }
   })
 }
@@ -85,6 +90,16 @@ export const unsharePlan = async (planId: string, userId: string): Promise<void>
   // The call site fires and forgets (`.then(refresh)`, no catch), so a refused
   // remove is surfaced here rather than left as an unhandled rejection.
   await delJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { userId }).catch((e: unknown) =>
+    pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
+  )
+}
+
+export const sharePlanTeam = async (planId: string, teamId: string): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/plans/${planId}/teams`, { teamId })
+}
+
+export const unsharePlanTeam = async (planId: string, teamId: string): Promise<void> => {
+  await delJson<{ ok: true }>(`/api/plans/${planId}/teams`, { teamId }).catch((e: unknown) =>
     pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
   )
 }

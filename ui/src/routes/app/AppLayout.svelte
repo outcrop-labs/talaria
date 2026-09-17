@@ -6,6 +6,8 @@
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
   import NavRail from '@/components/app/NavRail.svelte'
+  import DesktopTitlebar from '@/components/app/DesktopTitlebar.svelte'
+  import FileViewerHost from '@/components/app/FileViewerHost.svelte'
   import NavigationFailureBanner from '@/components/app/NavigationFailureBanner.svelte'
   import { useNavCollapsed } from '@/components/app/nav-rail.svelte'
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
@@ -155,14 +157,14 @@
        not breathing — Mercury is matte, the wait is one round-trip, and motion
        here would perform rather than confirm. -->
   <MercuryBackdrop />
-  <div class="flex min-h-screen items-center justify-center">
+  <div class="flex h-full items-center justify-center">
     <Brand size={40} class="opacity-70" />
   </div>
 {/snippet}
 
 {#snippet shellSkeleton(content: Snippet | undefined)}
   <MercuryBackdrop />
-  <div class="flex h-screen">
+  <div class="flex h-full">
     {#if nav.collapsed}
       <nav class="flex h-full w-16 shrink-0 flex-col items-center gap-3 border-r border-line bg-sidebar pb-5 pt-3">
         <div class="grid h-9 w-9 place-items-center">
@@ -227,6 +229,9 @@
   />
 {/snippet}
 
+<div class="flex h-screen flex-col">
+  <DesktopTitlebar />
+  <div class="min-h-0 flex-1 overflow-hidden">
 {#if session.isError && !user}
   <!-- The session read FAILED (not "signed out" — that is a 200 with a null user).
        Say so inside the real chrome and offer a retry. Shimmering forever would be
@@ -237,7 +242,7 @@
   {@render sessionHold()}
 {:else}
   <MercuryBackdrop />
-  <div bind:this={shell} class="flex h-screen">
+  <div bind:this={shell} class="flex h-full">
     <NavRail {user} />
     <!-- THE ASSISTANT DRAWER IS A PEER OF THE NAV RAIL, not of the page body.
          It used to open inside `vt-view`, below the top strip and the banner,
@@ -283,3 +288,6 @@
     <Toasts />
   </div>
 {/if}
+  </div>
+  <FileViewerHost />
+</div>

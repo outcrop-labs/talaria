@@ -1,0 +1,36 @@
+[package]
+name = "talaria-desktop"
+version = "0.1.0"
+description = "Talaria Desktop — the multitenant shell around Talaria instances"
+edition = "2024"
+# Packaging metadata, not Rust metadata: the bundlers read license/authors out
+# of here (a .deb has no other place to get its maintainer or its copyright
+# stanza). version above stays decorative — the releasing tag is the version
+# (RELEASING.md), and release builds override it on the command line.
+authors = ["Outcrop Labs LLC"]
+license = "MIT"
+repository = "https://github.com/outcrop-labs/talaria"
+
+[lib]
+name = "talaria_desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = ["unstable"] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+
+# NOTE: tauri is pinned exactly (=2.11.5), not semver-ranged. Multiwebview
+# (Window::add_child) rides behind the `unstable` cargo feature, and unstable
+# features are exempt from semver guarantees — a caret here could silently
+# change child-webview behavior under a patch bump. Upgrades are deliberate.

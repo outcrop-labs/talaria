@@ -109,7 +109,7 @@ export async function initSecretbox(sql: Sql): Promise<void> {
     // safe to rotate is how a database ends up unable to read itself.
     //
     // It is also how the two run modes diverged: `vite dev` loads ui/.env and
-    // sees TALARIA_SECRET_KEY, a bare `node server-entry.js` did not — and
+    // sees TALARIA_SECRET_KEY, a bare `node server-entry.ts` did not — and
     // `talaria setup` generates the two secrets as separate randoms, so whichever
     // happened to be visible when this row was written became the key. Refusing
     // here means a database can never be created under an accident.

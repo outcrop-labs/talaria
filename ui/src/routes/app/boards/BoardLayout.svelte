@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { preload } from '@/router'
-import { scheduleIdleWarmup } from '@/lib/idle-warmup'
+  import { scheduleIdleWarmup } from '@/lib/idle-warmup'
   import Board from './Board.svelte'
 
   // Persistent board shell (sv-router layout): navigating between

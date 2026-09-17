@@ -12,7 +12,7 @@
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
-//     hermes      58 tools, over MCP, inside the agent container   THIS FILE
+//     hermes      61 tools, over MCP, inside the agent container   THIS FILE
 //     platform     handed to a model by a harness via `toolDefs`   research.rs (search)
 //
 // WHY A COPY AND NOT AN IMPORT. The real registrations live in `mcp/src/index.ts`,
@@ -507,7 +507,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "create_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -522,13 +522,55 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             needs_google: false,
         },
         SandboxTool {
+            name: "create_sheet",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Create a spreadsheet (rows and columns, Talaria's Google-Sheets equivalent). Row 0 is the header. Use it for trackers, comparisons, and anything a person will sort or extend as a grid — not for a markdown table inside a document. Returns the document id (read it back with get_document).",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": str_schema("Spreadsheet title"),
+                    "rows": json!({ "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "Grid as string[][] — row 0 is the header, later rows are data. Keep columns aligned." }),
+                    "visibility": one_of(&["private", "org", "public"], "Who can see it. Personal assistants always create private-to-owner sheets (this field is ignored); org agents default to 'org'"),
+                    "folder": str_schema("File it under this folder name (find-or-create); omitted = your own folder"),
+                },
+                "required": ["title", "rows"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "create_page",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Create a web page (raw HTML, rendered live at its public link). Use it for a status page, a one-pager, or anything that should be a page rather than a markdown doc. Returns the document id (read it back with get_document).",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": str_schema("Page title"),
+                    "html": str_schema("Full HTML body — the page as it should render"),
+                    "visibility": one_of(&["private", "org", "public"], "Who can see it. Personal assistants always create private-to-owner pages (this field is ignored); org agents default to 'org'. Public pages are reachable at their /a/… link."),
+                    "folder": str_schema("File it under this folder name (find-or-create); omitted = your own folder"),
+                },
+                "required": ["title", "html"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
             name: "update_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Edit a document you created (or were granted Editor access to): replace its title and/or markdown body. Each save is versioned.",
+            description: "Edit a document you created (or were granted Editor access to). markdown replaces a markdown doc's body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.",
             parameters: json!({
                 "type": "object",
-                "properties": { "documentId": str_schema("Document id (from create_document or list_documents)"), "title": str_schema("New title"), "markdown": str_schema("New full markdown body") },
+                "properties": {
+                    "documentId": str_schema("Document id (from create_document, create_sheet, create_page, or list_documents)"),
+                    "title": str_schema("New title"),
+                    "markdown": str_schema("New full markdown body — markdown docs only"),
+                    "rows": json!({ "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "New grid as string[][] — spreadsheets only; row 0 is the header" }),
+                    "html": str_schema("New full HTML body — web pages only"),
+                },
                 "required": ["documentId"],
             }),
             assistant_only: false,
@@ -547,7 +589,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "get_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Read one document's full content (markdown body + metadata).",
+            description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata.",
             parameters: json!({ "type": "object", "properties": { "documentId": str_schema("Document id") }, "required": ["documentId"] }),
             assistant_only: false,
             needs_google: false,
@@ -592,10 +634,14 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "read_channel",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Comms,
-            description: "Read recent messages in a channel you belong to. Pass sinceSeq to get only newer messages than a seq you already saw.",
+            description: "Read recent messages in a channel you belong to. Pass sinceSeq to get only newer messages than a seq you already saw. Pass threadId to read one thread (the root plus its replies) instead of the channel feed.",
             parameters: json!({
                 "type": "object",
-                "properties": { "channelId": str_schema("Channel id (from list_channels)"), "sinceSeq": num_schema("Only messages with seq greater than this (default: all recent)") },
+                "properties": {
+                    "channelId": str_schema("Channel id (from list_channels)"),
+                    "sinceSeq": num_schema("Only messages with seq greater than this (default: all recent)"),
+                    "threadId": str_schema("Message id of a thread root (from read_channel) — returns that thread only"),
+                },
                 "required": ["channelId"],
             }),
             assistant_only: false,
@@ -605,8 +651,33 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "post_to_channel",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Comms,
-            description: "Post a message to a channel you belong to. Use @name to mention teammates. Post when you have something useful — progress, an answer, a blocker, a question — not chatter.",
-            parameters: json!({ "type": "object", "properties": { "channelId": str_schema("Channel id (from list_channels)"), "content": str_schema("Markdown message") }, "required": ["channelId", "content"] }),
+            description: "Post a message to a channel you belong to. Use @name to mention teammates. Post when you have something useful — progress, an answer, a blocker, a question — not chatter. Pass threadId to reply in an existing thread (the root's message id from read_channel) instead of starting a new top-level message.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "channelId": str_schema("Channel id (from list_channels)"),
+                    "content": str_schema("Markdown message"),
+                    "threadId": str_schema("Thread root's message id (from read_channel) — omit to post in the channel feed"),
+                },
+                "required": ["channelId", "content"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "react_to_message",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Toggle a reaction on a channel message you can see. Agents react under their own identity. Use it to acknowledge without posting: a ✅ on \"shipped\" is a reaction, not a new message. Pass the message id from read_channel (never the seq). The same emoji again removes it.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "channelId": str_schema("Channel id (from list_channels)"),
+                    "messageId": str_schema("Message id (from read_channel)"),
+                    "emoji": str_schema("The emoji to toggle, e.g. ✅ or 👍"),
+                },
+                "required": ["channelId", "messageId", "emoji"],
+            }),
             assistant_only: false,
             needs_google: false,
         },
@@ -945,6 +1016,24 @@ pub fn tools_in_group(groups: &[ToolGroup]) -> Vec<&'static str> {
         .filter(|t| groups.contains(&t.group))
         .map(|t| t.name)
         .collect()
+}
+
+/// One bullet per tool group, names in catalog order — the soul header's map,
+/// generated so a new tool cannot miss the contract the agent is told.
+pub fn toolkit_group_lines() -> String {
+    let mut groups: Vec<(ToolGroup, Vec<&'static str>)> = Vec::new();
+    for t in TALARIA_TOOLS.iter() {
+        if let Some((_, names)) = groups.iter_mut().find(|(g, _)| *g == t.group) {
+            names.push(t.name);
+        } else {
+            groups.push((t.group, vec![t.name]));
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(g, names)| format!("- {}: {}", g.as_str(), names.join(" / ")))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -1338,12 +1427,25 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_carries_fifty_eight_distinct_tools() {
-        // Fifty-eight of the toolkit's fifty-eight registrations, and a name that
-        // appeared twice would shadow itself in `tools_named` and hand a harness
-        // the wrong entry.
-        assert_eq!(TALARIA_TOOLS.len(), 58);
+    fn the_catalog_carries_sixty_one_distinct_tools() {
+        // A name that appeared twice would shadow itself in `tools_named` and
+        // hand a harness the wrong entry.
+        assert_eq!(TALARIA_TOOLS.len(), 61);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 58);
+        assert_eq!(names.len(), 61);
+    }
+
+    #[test]
+    fn soul_header_lines_name_every_catalogued_tool() {
+        let lines = toolkit_group_lines();
+        for t in TALARIA_TOOLS.iter() {
+            assert!(
+                lines.contains(t.name),
+                "toolkit_group_lines omitted {} — the soul header would not mention it",
+                t.name
+            );
+        }
+        assert!(lines.contains("create_sheet"));
+        assert!(lines.contains("react_to_message"));
     }
 }

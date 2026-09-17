@@ -1,5 +1,5 @@
 // /api/mcp/servers.
-// The org MCP registry. GET → servers + their assignments + user access
+// The org MCP registry. GET → servers + their assignments + user/team access
 // (admin/agents.manage view). POST → register a server. Every mutation
 // re-renders the fleet so configs pick the change up (Hermes re-reads on
 // mtime — no restarts).
@@ -15,7 +15,7 @@ use crate::error::{house_error, thrown_internal_error};
 use crate::mcp::oauth::{ensure_oauth_config, has_oauth_tokens, oauth_meta};
 use crate::mcp::registry::{
     NewServer, create_mcp_server, get_mcp_server, list_assignments, list_mcp_servers,
-    list_user_access, server_wire,
+    list_team_access, list_user_access, server_wire,
 };
 use crate::secretbox::SecretBox;
 use crate::session::{actor_of, require_perm};
@@ -187,6 +187,18 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 return thrown_internal_error();
             }
         };
+        let team_access = match list_team_access(&state.pg, &s.id).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(team_id, allowed, tools)| {
+                    json!({ "teamId": team_id, "allowed": allowed, "tools": tools })
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                tracing::error!("[mcp] team access read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
         let org_connected = if s.oauth_enabled {
             match has_oauth_tokens(&state.pg, &s.id, "org").await {
                 Ok(b) => json!(b),
@@ -212,6 +224,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         if let Some(o) = wire.as_object_mut() {
             o.insert("assignments".into(), Value::Array(assignments));
             o.insert("userAccess".into(), Value::Array(user_access));
+            o.insert("teamAccess".into(), Value::Array(team_access));
             o.insert("orgConnected".into(), org_connected);
             o.insert("oauthMeta".into(), oauth_meta_v);
         }

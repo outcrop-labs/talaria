@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher",
+  "description": "IPC for the local launcher webview only. Instance webviews (instance-*) get a runtime grant for the switcher plus window chrome, scoped to that origin: no fs.",
+  "windows": ["main"],
+  "webviews": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-list-instances",
+    "allow-add-instance",
+    "allow-activate-instance",
+    "allow-show-welcome",
+    "allow-remove-instance",
+    "allow-get-desktop-settings",
+    "allow-set-titlebar-mode",
+    "allow-desktop-window",
+    "allow-check-for-update",
+    "allow-install-update"
+  ]
+}

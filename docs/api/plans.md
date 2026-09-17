@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-3 routes.
+4 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -21,6 +21,8 @@
 | [`/api/plans/{id}/members`](#apiplansidmembers) | POST | `session` |
 | [`/api/plans/{id}/members`](#apiplansidmembers) | PUT | `session` |
 | [`/api/plans/{id}/members`](#apiplansidmembers) | DELETE | `session` |
+| [`/api/plans/{id}/teams`](#apiplansidteams) | POST | `session` |
+| [`/api/plans/{id}/teams`](#apiplansidteams) | DELETE | `session` |
 
 ## `/api/plans/{id}/doc`
 
@@ -78,13 +80,13 @@ Source: [`api/src/routes/plans/plans_id_members.rs`](../../api/src/routes/plans/
 
 > /api/plans/{id}/members.
 > Multiplayer plan membership + presence.
->   GET    → { members, active } — any member; active = user ids seen in the
+>   GET    → { members, active, teams } — any member; active = user ids seen in the
 >            last minute (Redis presence keys, 60s TTL).
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{members, active}` | 200, 404 | — |
+| GET | `session` | — | `{members, active, teams}` | 200, 404 | — |
 | POST | `session` | [body](#post-apiplansidmembers-body) | `{members}` | 200, 400, 403 | — |
 | PUT | `session` | — | `{ok}` | 200, 404 | — |
 | DELETE | `session` | [body](#delete-apiplansidmembers-body) | `{members}` | 200, 400, 403 | — |
@@ -100,4 +102,29 @@ Source: [`api/src/routes/plans/plans_id_members.rs`](../../api/src/routes/plans/
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `userId` | `uuid` |  |
+
+## `/api/plans/{id}/teams`
+
+Source: [`api/src/routes/plans/plans_id_teams.rs`](../../api/src/routes/plans/plans_id_teams.rs)
+
+> /api/plans/{id}/teams.
+> POST { teamId } → grant a team (owner). DELETE { teamId } → revoke (owner).
+> Keeps the plan doc's editor grants in step with the team principal.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiplansidteams-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | [body](#delete-apiplansidteams-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/plans/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
+
+### DELETE `/api/plans/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
 

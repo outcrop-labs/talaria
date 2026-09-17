@@ -12,6 +12,7 @@
 
 <script lang="ts">
   import Brand from '@/components/Brand.svelte'
+  import DesktopSwitcher from '@/components/app/DesktopSwitcher.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -47,7 +48,14 @@
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && (adminLogin = false)} />
 
-<div class="relative flex min-h-screen items-center justify-center px-4">
+<div class="relative flex h-full min-h-full items-center justify-center px-4">
+  <!-- The desktop instance switcher renders only inside the Talaria desktop
+       shell (feature-detected; a browser gets nothing). Pre-login there is no
+       nav rail to host it, and without it the login screen would be a dead
+       end: no switching away, no adding, no managing. -->
+  <div class="absolute left-4 top-4 flex items-center gap-1">
+    <DesktopSwitcher />
+  </div>
   <div class="absolute right-4 top-4">
     <ThemeToggle />
   </div>

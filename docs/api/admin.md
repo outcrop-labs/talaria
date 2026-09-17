@@ -82,8 +82,8 @@ Source: [`api/src/routes/admin/admin_apps.rs`](../../api/src/routes/admin/admin_
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `view:/apps` | — | `{apps, pending, catalog, catalogUrl}` | 200 | — |
-| POST | `admin` | [body](#post-apiadminapps-body) | `{slug, pendingBuild}` | 200, 400 | audit |
+| GET | `session` + `view:/apps` | — | `{apps, catalog, catalogUrl}` | 200 | — |
+| POST | `admin` | [body](#post-apiadminapps-body) | `{slug}` | 200, 400 | audit |
 | PUT | `admin` | [body](#put-apiadminapps-body) | `{ok, catalogUrl}` | 200, 400 | audit |
 | DELETE | `admin` | [body](#delete-apiadminapps-body) | `{ok}` | 200, 400 | audit |
 

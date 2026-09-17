@@ -14,7 +14,7 @@ export type EditPolicy = 'owner' | 'org' | 'restricted'
 export type PermKind = 'docs' | 'spaces' | 'artifacts' | 'artifact-folders'
 export type GrantRole = 'viewer' | 'editor'
 export interface KbEditor {
-  principalType: 'user' | 'agent'
+  principalType: 'user' | 'agent' | 'team'
   principalId: string
   role: GrantRole
 }

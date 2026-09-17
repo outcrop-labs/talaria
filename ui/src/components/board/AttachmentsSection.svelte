@@ -3,6 +3,7 @@
   import { p } from '@/router'
   import AttachButton from '@/components/chat/AttachButton.svelte'
   import { attachmentUrl, humanSize, isImage, splitAttachments, type Attachment } from '@/lib/attachments'
+  import { openFileViewer } from '@/lib/file-viewer.svelte'
   import { updateTask } from '@/lib/boards.svelte'
   import { listStagger } from '@/lib/motion'
   import type { Task } from '@/lib/task-const'
@@ -33,7 +34,17 @@
                 <span class="truncate">{a.filename}</span>
               </a>
             {:else}
-              <a href={attachmentUrl(a.id)} target="_blank" rel="noreferrer" class="inline-flex max-w-48 items-center gap-2 truncate text-fg transition-colors hover:text-accent">
+              <button
+                type="button"
+                class="inline-flex max-w-48 items-center gap-2 truncate text-fg transition-colors hover:text-accent"
+                onclick={() =>
+                  openFileViewer({
+                    url: attachmentUrl(a.id),
+                    title: a.filename,
+                    contentType: a.mime,
+                    sizeBytes: a.size,
+                  })}
+              >
                 {#if isImage(a.mime)}
                   <img src={attachmentUrl(a.id)} alt="" class="h-5 w-5 rounded object-cover" />
                 {:else}
@@ -41,7 +52,7 @@
                 {/if}
                 <span class="truncate">{a.filename}</span>
                 {#if a.size > 0}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">{humanSize(a.size)}</span>{/if}
-              </a>
+              </button>
             {/if}
             {#if canEdit}
               <button
