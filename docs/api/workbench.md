@@ -148,6 +148,8 @@ Source: [`api/src/routes/workbench/workbench_harnesses.rs`](../../api/src/routes
 | `modelPrefix` | `string?(40)` |  |
 | `invoke` | `string(1, 500)` |  |
 | `jsonInvoke` | `string?(500)` |  |
+| `continueInvoke` | `string?(500)` |  |
+| `continueJsonInvoke` | `string?(500)` |  |
 | `guide` | `string(1, 2000)` |  |
 
 ## `/api/workbench/jobs`

@@ -81,7 +81,7 @@
         "claude-code"
       ],
       "signpost": "claude-code",
-      "why": "Coding harnesses are workbench jobs (workbench-driving). Raw Claude Code CLI skips plan gates and ticket-linked PRs."
+      "why": "Claude Code is not a Talaria workbench harness. The signpost points at Pi / Oh My Pi / opencode via workbench-driving."
     },
     {
       "path": "autonomous-ai-agents/codex",
@@ -89,7 +89,7 @@
         "codex"
       ],
       "signpost": "codex",
-      "why": "Coding harnesses are workbench jobs (workbench-driving). Raw Codex CLI skips plan gates and ticket-linked PRs."
+      "why": "Codex is not a Talaria workbench harness. The signpost points at Pi / Oh My Pi / opencode via workbench-driving."
     },
     {
       "path": "autonomous-ai-agents/opencode",
@@ -97,7 +97,7 @@
         "opencode"
       ],
       "signpost": "opencode",
-      "why": "Coding harnesses are workbench jobs (workbench-driving). Raw OpenCode CLI skips plan gates and ticket-linked PRs."
+      "why": "Raw OpenCode CLI skips plan gates. The signpost teaches the workbench job path (start_job / jsonRun / finish_job)."
     },
     {
       "path": "social-media/xurl",
