@@ -26,6 +26,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **The api package image failed to compile on `main`.** `hermes_skills.rs`
+  `include_str!`s `scripts/hermes-skill-authority.json` from repo root;
+  `package.Dockerfile` had flattened `api/` onto `/repo`, so the path was
+  `/scripts/...` and missing. The build now keeps the repo layout
+  (`/repo/api` + `/repo/scripts/...`). Verified: the previous `main` package
+  job failed on that exact error; this file is the fix.
+
 - **Every page 404'd in production while `/api` kept working.** The server
   build now splits into `dist/server/assets/*.js` chunks — one directory
   deeper than the `dist/server/server.js` the SPA-shell lookup was anchored
