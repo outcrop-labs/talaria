@@ -95,11 +95,15 @@ export interface WorkbenchHarnessDefinition {
   env?: Record<string, string>
   /** Prefix model ids need for this harness's CLI (e.g. "openai/"). */
   modelPrefix?: string
-  /** Invocation template — <model> and <task> placeholders. */
+  /** Invocation template — `<model>`, `<task>`, `<sessionDir>` placeholders. */
   invoke: string
   /** Structured-output form — REQUIRED for good drivers; agents are taught
    *  to read structured results, never scrape logs. */
   jsonInvoke?: string
+  /** Follow-up on the same session (`-c` / continue). Same placeholders.
+   *  Omit when every run in the workdir continues the project session. */
+  continueInvoke?: string
+  continueJsonInvoke?: string
   /** How to run the harness AS an MCP server (stdio) — the preferred
    *  integration: agents drive it with tools. */
   mcpServe?: { command: string; args: string[] }

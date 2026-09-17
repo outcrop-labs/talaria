@@ -154,6 +154,12 @@ fn definition_of(obj: &Map<String, Value>) -> Result<Value, String> {
     if let Some(j) = optional_max_string_member(obj, "jsonInvoke", 500)? {
         out.insert("jsonInvoke".into(), json!(j));
     }
+    if let Some(j) = optional_max_string_member(obj, "continueInvoke", 500)? {
+        out.insert("continueInvoke".into(), json!(j));
+    }
+    if let Some(j) = optional_max_string_member(obj, "continueJsonInvoke", 500)? {
+        out.insert("continueJsonInvoke".into(), json!(j));
+    }
     if let Some(v) = obj.get("mcpServe") {
         let m = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
         let mut stored = Map::new();

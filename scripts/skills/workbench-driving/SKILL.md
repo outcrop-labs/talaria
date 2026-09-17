@@ -1,18 +1,20 @@
 # workbench-driving
 
-When to use: whenever you run coding work through your workbench — start_job, a coding harness (opencode, Claude Code, Codex, Oh My Pi), finish_job. This is the discipline that makes you a good driver, not a dispatcher.
+When to use: whenever you run coding work through your workbench — start_job, a coding harness (opencode, Pi, Oh My Pi), finish_job. This is the discipline that makes you a good driver, not a dispatcher.
+
+You do **not** write the code yourself except trivial one-line fixes. You are the orchestrator; the chosen harness is the pair programmer. Clone, drive it turn by turn, read each structured result, steer, verify, `finish_job`. Never one-shot a feature. A harness you cannot drive is `report_gap`, never a reason to hand-code or to "fix the workbench".
 
 ## Before you build — be curious
 
 1. Read the ticket like an engineer, not a courier. If the requirement is ambiguous — unclear scope, missing acceptance criteria, two plausible interpretations — **ask on the ticket first** (a comment with your specific question) instead of guessing. A sharp question early beats a wrong PR later.
 2. Read the code you're about to change. Use get_ticket for context, clone, and look before planning. Your plan should mention real files, not hopes.
-3. Know your harness. start_job returns a `guide` for your chosen harness — read it. Know how it reports results, how sessions resume, what it can and can't verify.
+3. Know your harness. start_job returns a `guide` for your chosen harness — read it. Know how it reports results, how sessions resume (`continueJsonRun` / `-c`, or another run in the same workdir), what it can and can't verify.
 
 ## While you build — drive, don't fling
 
-4. One workspace per job: clone into the `workdir` start_job gives you and never work outside it — concurrent jobs stay isolated that way. Your harness's session history lives under `/opt/data/workbench/harness/`, persists across restarts, and is shared with your department: resume your own earlier sessions, or pick up a teammate's hand-off instead of starting cold.
-5. Prefer the harness's **MCP tools** when they're registered on your config — you get structured tool results, not text to guess at. Otherwise use the `jsonRun` invocation and read the structured result object (result text, files touched, session id). Never scrape raw logs for meaning.
-6. Iterate in conversation with the harness: run, read the structured result, ask follow-ups (resume the session where supported) until you understand what changed and why. If the harness's answer surprises you, dig — surprise is information. Your work session spans MANY turns — Talaria keeps the conversation going until the ticket reaches review or blocked, so never compress real work into one pass to "finish the reply".
+4. One workspace per job: clone into the `workdir` start_job gives you and never work outside it. Git over https:// just works — Talaria injects the credential at git time. Never `gh`, never a token in a remote URL, never diagnose access by looking for auth (you will correctly find none).
+5. First turn: `jsonRun` (or `run`) with ONE scoped ask — a function, a failing test, "read src/foo.ts and propose the change". Not the whole ticket. cwd = workdir. Fill `<task>` yourself.
+6. Every later turn: `continueJsonRun` / `continueRun` (or another opencode `run` in the same workdir) against `sessionDir`. That is the conversation. Read the structured result, then steer: "the test failed on X, fix that path", "now add the error case", "git diff looks right, run the suite". If the answer surprises you, dig. Never `--no-session`. Never the TUI.
 7. Test UIs like a user, not a compiler: for anything with a front end, drive it in a real browser with Playwright (`npx playwright`) — load the page, click the flow, assert what a human would see, and screenshot the result as evidence for the ticket. A UI change without a browser check is unverified.
 8. You own the result, not the harness. After it works: read your own diff (`git diff`), run the repo's tests or verify commands, and check the change does only what the ticket asked.
 
