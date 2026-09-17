@@ -568,8 +568,9 @@ pub struct NewServer<'a> {
 }
 
 pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<McpServer, String> {
-    // name/description/isSecret/placeholder, with the nullish defaults
-    // baked in.
+    // The full InputWithVariables shape, with the nullish defaults baked in —
+    // `value`/`variables` carry the registry's credential templates that
+    // drive the connect forms.
     let declared: Vec<Value> = input
         .required_headers
         .as_array()
@@ -579,9 +580,14 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
                     serde_json::json!({
                         "name": h.get("name").cloned().unwrap_or(Value::Null),
                         "description": h.get("description").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "isRequired": h.get("isRequired").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Bool(false)),
                         // `h.isSecret ?? false` — absent AND null both land on false.
                         "isSecret": h.get("isSecret").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Bool(false)),
                         "placeholder": h.get("placeholder").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "default": h.get("default").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "choices": h.get("choices").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "value": h.get("value").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "variables": h.get("variables").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
                     })
                 })
                 .collect()

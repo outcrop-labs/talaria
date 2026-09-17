@@ -128,7 +128,7 @@
         {status.label}
       </span>
     {/if}
-    {#if s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.dcr || s.oauthMeta?.clientSet)}
+    {#if s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.clientSet || (s.oauthMeta?.dcr && !s.oauthMeta.dcrRejected))}
       <Button
         size="sm"
         variant="accent-soft"
@@ -146,8 +146,8 @@
     {/if}
   </div>
 
-  {#if s.oauthEnabled && s.oauthMeta && !s.oauthMeta.dcr && !s.oauthMeta.clientSet}
-    <McpOauthAppSetup serverId={s.id} {domain} docs={s.oauthMeta.documentation} onSaved={refresh} />
+  {#if s.oauthEnabled && s.oauthMeta && !s.oauthMeta.clientSet && (!s.oauthMeta.dcr || s.oauthMeta.dcrRejected)}
+    <McpOauthAppSetup serverId={s.id} {domain} docs={s.oauthMeta.documentation} rejected={!!s.oauthMeta.dcrRejected} onSaved={refresh} />
   {/if}
 
   <!-- ── Tools strip ── -->

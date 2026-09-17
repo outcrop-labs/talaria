@@ -2,6 +2,14 @@
 import { createQuery } from '@tanstack/svelte-query'
 import { errorMessage, getList, putJson } from '@/lib/fetch-json'
 export { isInternalServer } from '@/lib/mcp-servers'
+export {
+  composeHeader,
+  composeHeaders,
+  headerFields,
+  literalHeaders,
+  type HeaderDecl,
+  type HeaderField,
+} from '@/lib/mcp-headers'
 
 export interface McpServerRow {
   id: string
@@ -19,7 +27,14 @@ export interface McpServerRow {
   oauthEnabled: boolean
   /** OAuth org connection state (null for header-auth servers). */
   orgConnected: boolean | null
-  oauthMeta: { dcr: boolean; clientSet: boolean; documentation: string | null } | null
+  oauthMeta: {
+    dcr: boolean
+    clientSet: boolean
+    documentation: string | null
+    /** The upstream's error code when it refused our registration (Vercel:
+     *  "invalid_redirect_uri"); null when never refused or since cleared. */
+    dcrRejected: string | null
+  } | null
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
   assignments: Array<{ agentModel: string; tools: string[] | null }>
@@ -89,6 +104,13 @@ export interface LibraryHeaderRow {
   placeholder: string | null
   default: string | null
   choices: string[] | null
+  /** The registry's template ("Bearer {api_key}") — null when the whole
+   *  header is user-supplied; a brace-free string is a fixed header. */
+  value: string | null
+  variables: Record<
+    string,
+    { description: string | null; isSecret: boolean; placeholder: string | null; default: string | null; choices: string[] | null }
+  > | null
 }
 
 export interface LibraryServerRow {

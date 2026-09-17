@@ -5,10 +5,13 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import type { LibraryServerRow } from './mcp'
+  import { composeHeaders, headerFields, literalHeaders, type LibraryServerRow } from './mcp'
 
   /** Credential capture for servers that declare required headers — schema-
-   *  driven: secret fields mask, choices become selects, placeholders and
+   *  driven: a registry `value` template ("Bearer {api_key}") becomes one
+   *  field per variable composed back into the final header; a value-less
+   *  declaration prompts for the whole header; a fixed value applies itself.
+   *  Secret fields mask, choices become selects, placeholders and
    *  descriptions come from the publisher. Per-user mode skips values here and
    *  lets each person connect their own account in Settings. */
   let {
@@ -24,14 +27,22 @@
   } = $props()
 
   let authMode = $state<'org' | 'per-user'>('org')
+  const fields = $derived(l.requiredHeaders.flatMap((h) => headerFields(h)))
   let values = $state<Record<string, string>>(
-    Object.fromEntries(l.requiredHeaders.filter((h) => h.default).map((h) => [h.name, h.default!])),
+    Object.fromEntries(fields.filter((f) => f.default).map((f) => [f.key, f.default!])),
   )
-  const missing = $derived(authMode === 'org' && l.requiredHeaders.some((h) => h.isRequired && !values[h.name]?.trim()))
+  const missing = $derived(authMode === 'org' && fields.some((f) => f.isRequired && !values[f.key]?.trim()))
   const submit = () => {
     if (busy || missing) return
-    const headers = Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim()))
-    onInstall(authMode === 'org' ? { headers } : { authMode: 'per-user' })
+    if (authMode === 'org') {
+      const headers = composeHeaders(l.requiredHeaders, values)
+      onInstall(Object.keys(headers).length ? { headers } : {})
+    } else {
+      // Fixed publisher-set headers ride on the org row in both modes; the
+      // per-person secret is entered later in Settings → Connections.
+      const headers = literalHeaders(l.requiredHeaders)
+      onInstall(Object.keys(headers).length ? { headers, authMode: 'per-user' } : { authMode: 'per-user' })
+    }
   }
 </script>
 
@@ -56,18 +67,23 @@
         placeholder="Auth mode"
       />
     </div>
-    {#if authMode === 'org'}
+    {#if authMode === 'org' && fields.length === 0}
+      <p class="mt-3 font-sans text-xs text-muted">
+        The publisher sets every credential this server needs — there's nothing to enter.
+      </p>
+    {:else if authMode === 'org'}
       <div class="mt-3 space-y-3">
-        {#each l.requiredHeaders as h (h.name)}
+        {#each fields as f (f.key)}
           <div>
             <label class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-              {h.name}
-              {#if h.isRequired}<span class="text-accent">*</span>{/if}
+              {f.label}
+              {#if f.isRequired}<span class="text-accent">*</span>{/if}
+              {#if f.header !== f.label}<span class="normal-case text-ink-dim/70">→ {f.header}</span>{/if}
             </label>
-            {#if h.choices?.length}
-              <Select size="sm" value={values[h.name] ?? ''} onchange={(e) => (values = { ...values, [h.name]: e.currentTarget.value })} class="w-full">
+            {#if f.choices?.length}
+              <Select size="sm" value={values[f.key] ?? ''} onchange={(e) => (values = { ...values, [f.key]: e.currentTarget.value })} class="w-full">
                 <option value="">Pick one</option>
-                {#each h.choices as c (c)}
+                {#each f.choices as c (c)}
                   <option value={c}>
                     {c}
                   </option>
@@ -75,20 +91,19 @@
               </Select>
             {:else}
               <Input
-                type={h.isSecret ? 'password' : 'text'}
-                value={values[h.name] ?? ''}
-                oninput={(e) => (values = { ...values, [h.name]: e.currentTarget.value })}
-                placeholder={h.placeholder ?? (h.isSecret ? '•••' : '')}
+                type={f.isSecret ? 'password' : 'text'}
+                value={values[f.key] ?? ''}
+                oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
+                placeholder={f.placeholder ?? (f.isSecret ? '•••' : '')}
                 autocomplete="off"
               />
             {/if}
-            {#if h.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{h.description}</div>{/if}
+            {#if f.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{f.description}</div>{/if}
           </div>
         {/each}
         <div class="font-sans text-[11px] text-muted/80">Spoken only by Talaria's gateway; never rendered into an agent config.</div>
       </div>
-    {/if}
-    {#if authMode === 'per-user'}
+    {:else if authMode === 'per-user'}
       <p class="mt-3 font-sans text-xs text-muted">
         Nobody gets access until they connect their own account in Settings → Connections. Their assistant then acts as them on this server.
       </p>

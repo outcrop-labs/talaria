@@ -30,6 +30,7 @@ import { subjectModel, type AgentSubject } from './agent-auth'
 import { oauthTokenFor } from './mcp-oauth'
 import { safeFetch } from './safe-fetch'
 import { MCP_PROTOCOL_VERSION } from './mcp-protocol'
+import type { HeaderDecl } from '@/lib/mcp-headers'
 
 export interface McpServer {
   id: string
@@ -46,7 +47,7 @@ export interface McpServer {
   tools: Array<{ name: string; description?: string }>
   toolsRefreshedAt: string | null
   /** Header declarations captured at install (drive per-user connect forms). */
-  requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+  requiredHeaders: HeaderDecl[]
   /** The server negotiates OAuth (discovered from its 401 challenge). */
   oauthEnabled: boolean
   /** Talaria's own toolkit — governable here, but not removable/reconfigurable. */

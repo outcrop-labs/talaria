@@ -24,6 +24,39 @@ pub struct LibraryQuery {
 }
 
 fn server_wire(s: &LibraryServer) -> Value {
+    let declared = |list: &Vec<crate::mcp::library::LibraryHeader>| {
+        list.iter()
+            .map(|h| {
+                let variables = h.variables.as_ref().map(|m| {
+                    let mut out = serde_json::Map::new();
+                    for (k, v) in m {
+                        out.insert(
+                            k.clone(),
+                            json!({
+                                "description": v.description,
+                                "isSecret": v.is_secret,
+                                "placeholder": v.placeholder,
+                                "default": v.default,
+                                "choices": v.choices,
+                            }),
+                        );
+                    }
+                    Value::Object(out)
+                });
+                json!({
+                    "name": h.name,
+                    "description": h.description,
+                    "isRequired": h.is_required,
+                    "isSecret": h.is_secret,
+                    "placeholder": h.placeholder,
+                    "default": h.default,
+                    "choices": h.choices,
+                    "value": h.value,
+                    "variables": variables,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
     json!({
         "registryName": s.registry_name,
         "title": s.title,
@@ -32,15 +65,7 @@ fn server_wire(s: &LibraryServer) -> Value {
         "domain": s.domain,
         "icon": s.icon,
         "tier": s.tier,
-        "requiredHeaders": s.required_headers.iter().map(|h| json!({
-            "name": h.name,
-            "description": h.description,
-            "isRequired": h.is_required,
-            "isSecret": h.is_secret,
-            "placeholder": h.placeholder,
-            "default": h.default,
-            "choices": h.choices,
-        })).collect::<Vec<_>>(),
+        "requiredHeaders": declared(&s.required_headers),
     })
 }
 
