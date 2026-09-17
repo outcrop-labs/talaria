@@ -82,6 +82,17 @@ async fn main() {
         });
     }
 
+    // Package-run MCP servers (marketplace installs from the registry's
+    // npm/pypi/oci long tail) get the same boot guarantee: a reconcile pass
+    // removes strays a previous life left and containers disabled rows no
+    // longer want. Enabled oci-http containers self-heal on first use.
+    {
+        let pg = state.pg.clone();
+        tokio::spawn(async move {
+            talaria_api::mcp::pkg::reconcile(&pg).await;
+        });
+    }
+
     // The toolkit child gets the same boot guarantee. It spawns on demand —
     // renders and comms reads are the only callers that summon it — so a
     // deploy's first agent session can beat the spawn, and a session whose

@@ -202,6 +202,108 @@ fn declared_variables_member(
     Ok(Some(out))
 }
 
+/// The `package` member — the marketplace's normalized package document
+/// (declarations only; values travel in `env`/`argValues` and are sealed).
+/// The run-flag ALLOWLIST runs here so a hostile declaration fails the
+/// install, not the first call (pkg_argv re-checks — defense in depth).
+fn package_member(obj: &Map<String, Value>) -> Result<Option<Value>, String> {
+    let Some(v) = obj.get("package") else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let doc = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
+    let kind = doc.get("kind").and_then(Value::as_str).unwrap_or_default();
+    if !matches!(kind, "npm" | "pypi" | "oci") {
+        return Err("Invalid input: expected package kind npm, pypi or oci".into());
+    }
+    for key in ["identifier", "image", "transportPath"] {
+        if let Some(s) = doc.get(key).and_then(Value::as_str) {
+            if utf16_len(s) > 300 {
+                return Err(too_big_msg(300));
+            }
+        } else if doc.get(key).is_some_and(|x| !x.is_null()) {
+            return Err(string_msg(zod_type_name(
+                doc.get(key).unwrap_or(&Value::Null),
+            )));
+        }
+    }
+    let transport = doc
+        .get("transport")
+        .and_then(Value::as_str)
+        .unwrap_or("stdio");
+    if !matches!(transport, "stdio" | "http") {
+        return Err("Invalid input: expected transport stdio or http".into());
+    }
+    if doc.get("containerPort").is_some_and(|p| !p.is_null())
+        && doc.get("containerPort").and_then(Value::as_u64).is_none()
+    {
+        return Err("Invalid input: expected number, received a non-number port".into());
+    }
+    let run_args = match doc.get("runArgs") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(a)) => {
+            if a.len() > 32 {
+                return Err(array_too_big_msg(32));
+            }
+            for arg in a {
+                let m = arg
+                    .as_object()
+                    .ok_or_else(|| object_msg(zod_type_name(arg)))?;
+                if m.get("type").and_then(Value::as_str) == Some("named") {
+                    let flag = m.get("name").and_then(Value::as_str).unwrap_or_default();
+                    if !crate::mcp::pkg::ALLOWED_FLAGS.contains(&flag) {
+                        return Err(format!(
+                            "this package asks for the docker flag \"{flag}\", which is not allowed (volumes, env, mounts, hosts and ports only)"
+                        ));
+                    }
+                }
+            }
+            a.clone()
+        }
+        Some(other) => return Err(array_msg(zod_type_name(other))),
+    };
+    // declaredEnv reuses the header-declaration parser, pointed at its key.
+    let mut normalized = doc.clone();
+    if let Some(env) = doc.get("declaredEnv") {
+        let mut holder = serde_json::Map::new();
+        holder.insert("requiredHeaders".into(), env.clone());
+        required_headers_member(&holder)?;
+    } else {
+        normalized.insert("declaredEnv".into(), Value::Array(Vec::new()));
+    }
+    normalized.insert("runArgs".into(), Value::Array(run_args));
+    Ok(Some(Value::Object(normalized)))
+}
+
+/// `argValues` — the admin's fills for declared run-arg placeholders, keyed
+/// by declaration index. `z.record(z.string(), z.string().max(2000)).optional()`.
+fn arg_values_member(obj: &Map<String, Value>) -> Result<Option<HashMap<usize, String>>, String> {
+    let Some(v) = obj.get("argValues") else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let m = v.as_object().ok_or_else(|| record_msg(zod_type_name(v)))?;
+    if m.len() > 32 {
+        return Err("Too big: expected record to have <=32 entries".into());
+    }
+    let mut out = HashMap::with_capacity(m.len());
+    for (k, val) in m {
+        let idx: usize = k
+            .parse()
+            .map_err(|_| "Invalid input: expected a numeric run-arg index".to_string())?;
+        let s = val.as_str().ok_or_else(|| string_msg(zod_type_name(val)))?;
+        if utf16_len(s) > 2000 {
+            return Err(too_big_msg(2000));
+        }
+        out.insert(idx, s.to_string());
+    }
+    Ok(Some(out))
+}
+
 fn required_headers_member(
     obj: &Map<String, Value>,
 ) -> Result<Option<Vec<DeclaredHeader>>, String> {
@@ -330,6 +432,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             o.insert("teamAccess".into(), Value::Array(team_access));
             o.insert("orgConnected".into(), org_connected);
             o.insert("oauthMeta".into(), oauth_meta_v);
+            // Package rows carry the runtime state the card shows (pulling /
+            // error / ready / idle / stopped).
+            let pkg_status =
+                if let Some(spec) = s.package.as_ref().and_then(crate::mcp::pkg::PkgSpec::of) {
+                    json!(crate::mcp::pkg::pkg_status(&spec, &s.name).await)
+                } else {
+                    Value::Null
+                };
+            o.insert("pkgStatus".into(), pkg_status);
         }
         detail.push(wire);
     }
@@ -363,11 +474,30 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
-    let url = match url_member(obj, "url", 500) {
+    let package = match package_member(obj) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
+    // A package install has no endpoint to name — the routing token derives
+    // from the server name; a custom endpoint still requires its URL.
+    let url = match (&package, obj.get("url")) {
+        (Some(_), None) => format!("talaria-pkg://{name}"),
+        _ => match url_member(obj, "url", 500) {
+            Ok(v) => v,
+            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        },
+    };
     let headers_in = match optional_headers_member(obj, "headers") {
+        Ok(v) => v,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    // The package credential capture: env values + filled run-args, sealed
+    // into one blob (`pkg::SealedDoc`).
+    let env_in = match optional_headers_member(obj, "env") {
+        Ok(v) => v,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let arg_values = match arg_values_member(obj) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
@@ -379,6 +509,12 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
+    if package.is_some() && auth_mode.as_deref() == Some("per-user") {
+        return house_error(
+            StatusCode::BAD_REQUEST,
+            "package servers run one org-shared container; per-user auth is not available for them",
+        );
+    }
     let declared = match required_headers_member(obj) {
         Ok(v) => v,
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
@@ -408,6 +544,21 @@ pub async fn post(
             auth_mode: auth_mode.as_deref().unwrap_or("org"),
             required_headers: &declared_json(&declared),
             created_by: &created_by,
+            package: package.as_ref(),
+            env_enc: match &package {
+                Some(_) => {
+                    let sealed = crate::mcp::pkg::SealedDoc::seal(
+                        &sb,
+                        env_in.clone().unwrap_or_default(),
+                        arg_values.clone().unwrap_or_default(),
+                    );
+                    match sealed {
+                        Ok(s) => Some(s),
+                        Err(e) => return bad_request(&e),
+                    }
+                }
+                None => None,
+            },
         },
     )
     .await;
@@ -415,6 +566,26 @@ pub async fn post(
         Ok(s) => s,
         Err(e) => return bad_request(&e),
     };
+    // A package install's image pull runs behind the response — the row's
+    // pull.state is the progress the card reads.
+    if let Some(doc) = &server.package {
+        let pg = state.pg.clone();
+        let id = server.id.clone();
+        let image = match doc.get("kind").and_then(Value::as_str) {
+            Some("oci") => doc
+                .get("image")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            Some("pypi") => "ghcr.io/astral-sh/uv:python3.12-bookworm-slim".into(),
+            _ => "node:22-slim".into(),
+        };
+        if !image.is_empty() {
+            tokio::spawn(async move {
+                crate::mcp::pkg::pull_and_pin(&pg, &id, &image).await;
+            });
+        }
+    }
     spawn_audit_and_render(&state.pg, &sb, &user, &server);
     let meta = match oauth_meta(&state.pg, &server.id).await {
         Ok(m) => m,

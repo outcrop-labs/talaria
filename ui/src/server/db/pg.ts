@@ -3029,6 +3029,8 @@ alter table tasks drop column if exists conversation_id`,
   `update agent_defs
      set workbench_harness = null
      where workbench_harness in ('claude-code', 'codex')`,
+  `alter table mcp_servers add column if not exists package jsonb`,
+  `alter table mcp_servers add column if not exists env_enc text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

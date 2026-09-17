@@ -57,6 +57,20 @@ fn server_wire(s: &LibraryServer) -> Value {
             })
             .collect::<Vec<_>>()
     };
+    let package = s.package.as_ref().map(|p| {
+        json!({
+            "kind": p.kind,
+            "identifier": p.identifier,
+            "version": p.version,
+            "runtimeHint": p.runtime_hint,
+            "transport": p.transport,
+            "containerPort": p.container_port,
+            "transportPath": p.transport_path,
+            "image": p.image,
+            "runArgs": p.run_args,
+            "declaredEnv": declared(&p.declared_env),
+        })
+    });
     json!({
         "registryName": s.registry_name,
         "title": s.title,
@@ -66,6 +80,7 @@ fn server_wire(s: &LibraryServer) -> Value {
         "icon": s.icon,
         "tier": s.tier,
         "requiredHeaders": declared(&s.required_headers),
+        "package": package,
     })
 }
 
