@@ -4,12 +4,13 @@
 // re-renders the fleet so configs pick the change up (Hermes re-reads on
 // mtime — no restarts).
 
+use std::collections::HashMap;
+
 use crate::audit::{AuditEntry, log_audit};
 use crate::body::{
     NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
-    nullish_max_string_member, object_msg, optional_boolean_member, optional_enum_member,
-    optional_max_string_member, parse, record_msg, string_msg, too_big_msg, url_member, utf16_len,
-    zod_type_name,
+    nullish_max_string_member, object_msg, optional_enum_member, optional_max_string_member, parse,
+    record_msg, string_msg, too_big_msg, url_member, utf16_len, zod_type_name,
 };
 use crate::error::{house_error, thrown_internal_error};
 use crate::mcp::oauth::{ensure_oauth_config, has_oauth_tokens, oauth_meta};
@@ -101,12 +102,104 @@ fn nullish_positive_int_member(
 }
 
 /// One element of the `requiredHeaders` array — header declarations captured
-/// at install to drive per-user connect forms.
+/// at install to drive per-user connect forms. Carries the registry's
+/// `InputWithVariables` shape: a fixed `value` (optionally `{templated}`)
+/// with a `variables` map describing each fill-in.
 struct DeclaredHeader {
     name: Value,
     description: Option<String>,
+    is_required: Value,
     is_secret: Value,
     placeholder: Option<String>,
+    default: Option<String>,
+    choices: Option<Vec<String>>,
+    value: Option<String>,
+    variables: Option<HashMap<String, DeclaredVariable>>,
+}
+
+/// One `variables` entry — an Input, sharing the prompt metadata minus the
+/// header-only fields.
+#[derive(Debug, PartialEq)]
+struct DeclaredVariable {
+    description: Option<String>,
+    is_secret: Value,
+    placeholder: Option<String>,
+    default: Option<String>,
+    choices: Option<Vec<String>>,
+}
+
+/// `z.array(z.string().max(200)).max(20).nullish()`.
+fn choices_member(m: &Map<String, Value>) -> Result<Option<Vec<String>>, String> {
+    let Some(v) = m.get("choices") else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let arr = v.as_array().ok_or_else(|| array_msg(zod_type_name(v)))?;
+    let mut out = Vec::new();
+    for el in arr {
+        let Value::String(s) = el else {
+            return Err(string_msg(zod_type_name(el)));
+        };
+        if utf16_len(s) > 200 {
+            return Err(too_big_msg(200));
+        }
+        out.push(s.clone());
+    }
+    if arr.len() > 20 {
+        return Err(array_too_big_msg(20));
+    }
+    Ok(Some(out))
+}
+
+/// A boolean that may also be null — declared_json writes null for an absent
+/// flag, so a round-tripped row must parse. Wrong types still error.
+fn nullish_boolean_member(m: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
+    match m.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_bool().map(Some).ok_or_else(|| {
+            format!(
+                "Invalid input: expected boolean, received {}",
+                zod_type_name(v)
+            )
+        }),
+    }
+}
+
+fn declared_variable(m: &Map<String, Value>) -> Result<DeclaredVariable, String> {
+    Ok(DeclaredVariable {
+        description: nullish_max_string_member(m, "description", 500)?,
+        is_secret: nullish_boolean_member(m, "isSecret")?
+            .map(Value::Bool)
+            .unwrap_or(Value::Null),
+        placeholder: nullish_max_string_member(m, "placeholder", 200)?,
+        default: nullish_max_string_member(m, "default", 200)?,
+        choices: choices_member(m)?,
+    })
+}
+
+fn declared_variables_member(
+    m: &Map<String, Value>,
+) -> Result<Option<HashMap<String, DeclaredVariable>>, String> {
+    let Some(v) = m.get("variables") else {
+        return Ok(None);
+    };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let obj = v.as_object().ok_or_else(|| record_msg(zod_type_name(v)))?;
+    if obj.len() > 10 {
+        return Err("Too big: expected record to have <=10 entries".into());
+    }
+    let mut out = HashMap::with_capacity(obj.len());
+    for (k, el) in obj {
+        let m = el
+            .as_object()
+            .ok_or_else(|| object_msg(zod_type_name(el)))?;
+        out.insert(k.clone(), declared_variable(m)?);
+    }
+    Ok(Some(out))
 }
 
 fn required_headers_member(
@@ -128,13 +221,23 @@ fn required_headers_member(
             None => return Err(string_msg("undefined")),
         };
         let description = nullish_max_string_member(m, "description", 500)?;
-        let is_secret = optional_boolean_member(m, "isSecret")?;
+        let is_required = nullish_boolean_member(m, "isRequired")?;
+        let is_secret = nullish_boolean_member(m, "isSecret")?;
         let placeholder = nullish_max_string_member(m, "placeholder", 200)?;
+        let default = nullish_max_string_member(m, "default", 200)?;
+        let choices = choices_member(m)?;
+        let value = nullish_max_string_member(m, "value", 2000)?;
+        let variables = declared_variables_member(m)?;
         out.push(DeclaredHeader {
             name,
             description,
+            is_required: is_required.map(Value::Bool).unwrap_or(Value::Null),
             is_secret: is_secret.map(Value::Bool).unwrap_or(Value::Null),
             placeholder,
+            default,
+            choices,
+            value,
+            variables,
         });
     }
     if arr.len() > 10 {
@@ -345,6 +448,15 @@ async fn create_and_sniff(
 }
 
 fn declared_json(declared: &Option<Vec<DeclaredHeader>>) -> Value {
+    fn variable_json(v: &DeclaredVariable) -> Value {
+        json!({
+            "description": v.description,
+            "isSecret": v.is_secret,
+            "placeholder": v.placeholder,
+            "default": v.default,
+            "choices": v.choices,
+        })
+    }
     Value::Array(
         declared
             .as_ref()
@@ -354,8 +466,19 @@ fn declared_json(declared: &Option<Vec<DeclaredHeader>>) -> Value {
                         json!({
                             "name": h.name,
                             "description": h.description,
+                            "isRequired": h.is_required,
                             "isSecret": h.is_secret,
                             "placeholder": h.placeholder,
+                            "default": h.default,
+                            "choices": h.choices,
+                            "value": h.value,
+                            "variables": h.variables.as_ref().map(|m| {
+                                Value::Object(
+                                    m.iter()
+                                        .map(|(k, v)| (k.clone(), variable_json(v)))
+                                        .collect(),
+                                )
+                            }),
                         })
                     })
                     .collect()
@@ -404,4 +527,83 @@ fn spawn_audit_and_render(
         .await;
         let _ = crate::fleet::render::render_fleet(&pg, &sb, None).await;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn member(body: Value) -> Result<Option<Vec<DeclaredHeader>>, String> {
+        required_headers_member(body.as_object().expect("test bodies are objects"))
+    }
+
+    #[test]
+    fn parses_the_full_input_with_variables_shape() {
+        let parsed = member(json!({ "requiredHeaders": [{
+            "name": "Authorization",
+            "description": "Bearer token",
+            "isRequired": true,
+            "isSecret": true,
+            "value": "Bearer {api_key}",
+            "variables": {
+                "api_key": { "placeholder": "sk-…", "isSecret": true, "default": "x" }
+            },
+        }]}))
+        .expect("the registry shape parses");
+        let rows = parsed.expect("present");
+        assert_eq!(rows.len(), 1);
+        let h = &rows[0];
+        assert_eq!(h.value.as_deref(), Some("Bearer {api_key}"));
+        assert_eq!(h.is_required, Value::Bool(true));
+        let vars = h.variables.as_ref().expect("variables kept");
+        let v = vars.get("api_key").expect("the entry parses");
+        assert_eq!(v.placeholder.as_deref(), Some("sk-…"));
+        assert_eq!(v.is_secret, Value::Bool(true));
+        assert_eq!(v.default.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn an_absent_value_keeps_yesterdays_stored_shape() {
+        // Old clients and old rows: name/description/isSecret/placeholder only.
+        let parsed = member(json!({ "requiredHeaders": [{
+            "name": "X-Key",
+            "description": "the key",
+            "isSecret": null,
+            "placeholder": "abc",
+        }]}))
+        .expect("the old shape still parses");
+        let rows = parsed.expect("present");
+        let h = &rows[0];
+        assert_eq!(h.value, None);
+        assert_eq!(h.variables, None);
+        assert_eq!(h.is_required, Value::Null);
+        // And it round-trips through declared_json with nulls, never gaps.
+        let wire = declared_json(&Some(rows));
+        assert_eq!(
+            wire[0]["value"],
+            Value::Null,
+            "absent fields serialize null so the wire shape never shifts"
+        );
+    }
+
+    #[test]
+    fn caps_reject_oversized_values_choices_and_variables() {
+        let long_value = "v".repeat(2001);
+        assert!(
+            member(json!({ "requiredHeaders": [{ "name": "X", "value": long_value }]})).is_err()
+        );
+        let many_choices: Vec<String> = (0..21).map(|i| i.to_string()).collect();
+        assert!(
+            member(json!({ "requiredHeaders": [{ "name": "X", "choices": many_choices }]}))
+                .is_err()
+        );
+        let mut vars = serde_json::Map::new();
+        for i in 0..11 {
+            vars.insert(format!("v{i}"), json!({}));
+        }
+        assert!(member(json!({ "requiredHeaders": [{ "name": "X", "variables": vars }]})).is_err());
+        // A non-string value is a type error, not a silent drop.
+        assert!(member(json!({ "requiredHeaders": [{ "name": "X", "value": 7 }]})).is_err());
+    }
 }

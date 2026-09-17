@@ -26,6 +26,65 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **Marketplace servers that declare credentials lost their API keys on the
+  way in.** The official registry declares remote headers as a `value`
+  template ("Bearer {smithery_api_key}") with an optional `variables` map —
+  and `classify()` parsed neither, so the install and per-user connect forms
+  showed a bare header box, stored whatever was typed verbatim, and a pasted
+  key left out the `Bearer ` prefix (upstream 401s); fixed publisher-set
+  headers were dropped entirely, and the install POST's parser also stripped
+  `isRequired`/`default`/`choices` from the stored declarations that drive
+  the Settings → Connections form. The full `InputWithVariables` shape now
+  flows registry → library wire → stored row → forms: a templated header
+  renders one field per variable (secret-ness inherited, metadata from
+  `variables`), the typed values are composed back into the final header, a
+  literal `value` auto-applies with no prompt, and nothing is ever stored
+  half-composed (`Bearer {key}` stays braces-intact until filled). Verified
+  live: installing Smithery Notion from the marketplace prompts for
+  `smithery_api_key → Authorization` and lands
+  `Authorization: Bearer sk-…` on the server row; the per-user form renders
+  the same field from the stored declaration; `bun run api:check` + `verify`.
+
+- **OAuth connect failed on providers whose dynamic registration refuses
+  hosted callback URLs (Vercel).** Vercel's DCR endpoint allowlists
+  redirect URIs to localhost and a few known clients, so any deployed
+  Talaria's callback gets `400 invalid_redirect_uri` — which `ensure_client`
+  collapsed to the unhelpful "client registration failed (400)" while the
+  server card's manual-app escape hatch stayed hidden behind its
+  `dcr: true` flag. A refused registration now persists a `dcrRejected`
+  marker on the OAuth config, the connect error carries the upstream's own
+  reason plus the exact callback URL to register, and the card shows the
+  manual-app setup (its dashboard app accepts custom callbacks; saving
+  credentials clears the refusal and restores Connect). Discovery also
+  falls back to the protected-resource document's `resource_documentation`,
+  so Vercel's setup banner links its real MCP docs. Verified live against
+  mcp.vercel.com: connect under a hosted origin answers the actionable
+  sentence and sets the marker; saving a manual client clears it and
+  re-arms Connect; `oauth_meta` matrix + sentence pinned in tests.
+
+- **Stripe's MCP server was un-connectable: OAuth discovery never found its
+  authorization-server metadata.** Stripe's issuer URL carries a path
+  (`https://access.stripe.com/mcp`) and serves metadata at the RFC 8414
+  location — the well-known segment before the path — which was the one
+  shape `discover_oauth` didn't try, so Stripe installed as a plain
+  header-auth server with no Connect flow at all. The candidate set (now
+  extracted and test-pinned) tries every well-known shape; probed the other
+  marketplace majors while in there — Notion, Linear, Airtable, and PayPal
+  register hosted callbacks out of the box, Figma and Asana refuse DCR and
+  land in the manual-app flow above, and GitHub keeps its documented
+  cross-domain pin. Verified live: registering `mcp.stripe.com` now
+  discovers OAuth (`dcr: true`) and a connect start 302s into Stripe's
+  authorize endpoint.
+
+- **Hobby apps on `*.vercel.app` wore the gold "official" badge in
+  marketplace search.** An `app.vercel.<project>` namespace reverses to
+  `<project>.vercel.app`, and a remote on that same host promoted the entry
+  to first-party — the platform's badge on a tenant. Shared-hosting
+  suffixes (vercel.app, netlify.app, pages.dev, workers.dev, github.io,
+  gitlab.io, fly.dev, deno.dev) now demote to community. Verified live:
+  `agent-svg-registry` search answers `community`; registry-shaped fixtures
+  pinned in the library tests.
+
 - **The api package image failed to compile on `main`.** `hermes_skills.rs`
   `include_str!`s `scripts/hermes-skill-authority.json` from repo root;
   `package.Dockerfile` had flattened `api/` onto `/repo`, so the path was

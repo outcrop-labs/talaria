@@ -49,6 +49,30 @@ const PUBLISHER_TTL_MS: i64 = 60 * 60 * 1000;
 const WELL_KNOWN_TTL_MS: i64 = 60 * 60 * 1000;
 const FEATURED_FRESH_MS: i64 = 60 * 60 * 1000;
 
+/// Hosting-platform suffixes: a namespace whose reversed domain lands on one
+/// of these is a tenant of a shared host (`app.vercel.hobby` →
+/// `hobby.vercel.app`), not a domain-verified publisher. Matching its own
+/// host does NOT make such a server first-party — that badge belongs to the
+/// platform, so the tier demotes to community.
+const SHARED_HOSTING_SUFFIXES: &[&str] = &[
+    "vercel.app",
+    "netlify.app",
+    "pages.dev",
+    "workers.dev",
+    "github.io",
+    "gitlab.io",
+    "fly.dev",
+    "deno.dev",
+];
+
+fn on_shared_host(domain: Option<&str>) -> bool {
+    domain.is_some_and(|d| {
+        SHARED_HOSTING_SUFFIXES
+            .iter()
+            .any(|s| d == *s || d.ends_with(&format!(".{s}")))
+    })
+}
+
 /// The featured shelf is EDITORIAL — services businesses actually run on — but
 /// the DATA stays live: each name resolves against the registry at request
 /// time, and companies that haven't published a server simply don't appear.
@@ -116,6 +140,18 @@ fn known_endpoints() -> &'static HashMap<&'static str, KnownEndpoint> {
     &KNOWN
 }
 
+/// One entry of a header's `variables` map — an `Input` in the registry
+/// schema, carrying the same prompt metadata as a header but for a single
+/// `{template}` variable inside its `value`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LibraryVariable {
+    pub description: Option<String>,
+    pub is_secret: bool,
+    pub placeholder: Option<String>,
+    pub default: Option<String>,
+    pub choices: Option<Vec<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibraryHeader {
     pub name: String,
@@ -125,6 +161,10 @@ pub struct LibraryHeader {
     pub placeholder: Option<String>,
     pub default: Option<String>,
     pub choices: Option<Vec<String>>,
+    /// The registry's `value`: a fixed header, optionally with `{variables}`
+    /// the user fills in. None = the header itself is user-supplied.
+    pub value: Option<String>,
+    pub variables: Option<HashMap<String, LibraryVariable>>,
 }
 
 /// Declared order is the ranking: first-party < verified < community.
@@ -202,6 +242,29 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// One `variables` entry — an `Input`, sharing the prompt metadata of a
+/// header minus the header-only fields (name, isRequired).
+fn parse_variable(v: &Value) -> LibraryVariable {
+    LibraryVariable {
+        description: v
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        is_secret: v.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+        placeholder: v
+            .get("placeholder")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        default: v.get("default").and_then(Value::as_str).map(str::to_string),
+        choices: v.get("choices").and_then(Value::as_array).map(|c| {
+            c.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        }),
+    }
+}
+
 fn is_generic_title(title: &str) -> bool {
     // Generic noise, case-insensitive.
     let t = title.to_lowercase();
@@ -217,6 +280,48 @@ fn is_lone_lowercase_word(title: &str) -> bool {
     let mut chars = title.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// The remote's declared header list → the prompt metadata the install form
+/// renders (the registry's InputWithVariables shape).
+fn parse_declared(list: Option<&Value>) -> Vec<LibraryHeader> {
+    list.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|h| {
+                    Some(LibraryHeader {
+                        name: h.get("name")?.as_str()?.to_string(),
+                        description: h
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        is_required: h
+                            .get("isRequired")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        is_secret: h.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                        placeholder: h
+                            .get("placeholder")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        default: h.get("default").and_then(Value::as_str).map(str::to_string),
+                        choices: h.get("choices").and_then(Value::as_array).map(|c| {
+                            c.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        }),
+                        value: h.get("value").and_then(Value::as_str).map(str::to_string),
+                        variables: h.get("variables").and_then(Value::as_object).map(|m| {
+                            m.iter()
+                                .map(|(k, v)| (k.clone(), parse_variable(v)))
+                                .collect()
+                        }),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One registry entry → one shelf entry, or None to drop it (not official-
@@ -261,6 +366,12 @@ fn classify(e: &Value) -> Option<LibraryServer> {
         .is_some_and(|d| on_domain(host_of(website.unwrap_or("")).as_deref(), d));
     if ns_domain.is_some() && (remote_on_ns || site_on_ns) {
         tier = Tier::FirstParty;
+    }
+    // A shared-host tenant matching its own *.vercel.app host is not the
+    // platform's official server — the demote runs after the promotion
+    // because it wins.
+    if on_shared_host(ns_domain.as_deref()) {
+        tier = Tier::Community;
     }
     // Themed icons: prefer an untinted/light entry with an https src.
     let icons: Vec<&Value> = server
@@ -310,39 +421,7 @@ fn classify(e: &Value) -> Option<LibraryServer> {
         .get("description")
         .and_then(Value::as_str)
         .map(|d| d.chars().take(220).collect::<String>());
-    let required_headers = remote
-        .get("headers")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|h| {
-                    Some(LibraryHeader {
-                        name: h.get("name")?.as_str()?.to_string(),
-                        description: h
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        is_required: h
-                            .get("isRequired")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        is_secret: h.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
-                        placeholder: h
-                            .get("placeholder")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        default: h.get("default").and_then(Value::as_str).map(str::to_string),
-                        choices: h.get("choices").and_then(Value::as_array).map(|c| {
-                            c.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        }),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let required_headers = parse_declared(remote.get("headers"));
     Some(LibraryServer {
         registry_name: name.to_string(),
         title,
@@ -1045,6 +1124,92 @@ mod tests {
             h.choices.as_deref(),
             Some(&["a".to_string(), "b".to_string()][..])
         );
+    }
+
+    #[test]
+    fn classify_maps_value_templates_and_variable_metadata() {
+        // The registry's DOMINANT declaration style: a fixed `value` with an
+        // inline {var}, plus (optionally) a variables map describing it.
+        let e = json!({
+            "server": {
+                "name": "ai.smithery/smithery-notion",
+                "title": "Smithery Notion",
+                "remotes": [{
+                    "type": "streamable-http", "url": "https://server.smithery.ai/@smithery/notion/mcp",
+                    "headers": [{
+                        "name": "Authorization",
+                        "value": "Bearer {smithery_api_key}",
+                        "isRequired": true,
+                        "isSecret": true,
+                        "description": "Bearer token for Smithery authentication",
+                        "variables": {
+                            "smithery_api_key": { "placeholder": "sk-…", "isSecret": true },
+                            "unused_var": { "description": "not referenced by the value" },
+                        },
+                    }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        let h = &s.required_headers[0];
+        assert_eq!(h.value.as_deref(), Some("Bearer {smithery_api_key}"));
+        let vars = h.variables.as_ref().unwrap();
+        assert_eq!(
+            vars.get("smithery_api_key").unwrap().placeholder.as_deref(),
+            Some("sk-…")
+        );
+        assert!(vars.get("unused_var").is_some()); // kept; the UI shows what the template uses
+        // A literal value (no braces) is a fixed header, not a prompt.
+        let e = json!({
+            "server": {
+                "name": "com.acme/acme", "title": "Acme",
+                "remotes": [{
+                    "type": "streamable-http", "url": "https://mcp.acme.com/mcp",
+                    "headers": [{ "name": "X-Api-Version", "value": "2" }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.required_headers[0].value.as_deref(), Some("2"));
+        assert!(s.required_headers[0].variables.is_none());
+        // No value at all = the header itself is user-supplied (today's shape).
+        let e = json!({
+            "server": {
+                "name": "com.acme/acme2", "title": "Acme",
+                "remotes": [{
+                    "type": "streamable-http", "url": "https://mcp.acme.com/mcp",
+                    "headers": [{ "name": "X-Key", "isRequired": true }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.required_headers[0].value, None);
+    }
+
+    #[test]
+    fn classify_demotes_shared_host_tenants_to_community() {
+        // app.vercel.<project> reverses to <project>.vercel.app; the remote
+        // lives on that same host, which would read as first-party. It is a
+        // tenant of a shared host, not the platform's official server.
+        let e = json!({
+            "server": {
+                "name": "app.vercel.hobby-project/wrapper",
+                "title": "Wrapper",
+                "remotes": [{ "type": "streamable-http", "url": "https://hobby-project.vercel.app/api/mcp" }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.tier, Tier::Community);
+        // A real domain-verified publisher keeps its tier.
+        let e = json!({
+            "server": {
+                "name": "com.vercel/vercel-mcp",
+                "title": "Vercel",
+                "remotes": [{ "type": "streamable-http", "url": "https://mcp.vercel.com" }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.tier, Tier::FirstParty);
     }
 
     // ── the module-boundary tests ───────────────────────────────────────────
