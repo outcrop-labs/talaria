@@ -158,10 +158,10 @@ async fn ensure_seed(pg: &PgPool) -> Result<(), sqlx::Error> {
     .bind("dev")
     .bind("Coding workbench")
     .bind(
-        "A sandboxed development environment: coding harnesses (opencode, claude code, codex) working repo checkouts under the platform-owned git flow.",
+        "A sandboxed development environment: coding harnesses (opencode, Pi, Oh My Pi) working repo checkouts under the platform-owned git flow.",
     )
     .bind(serde_json::json!({ "TALARIA_WORKBENCH": "dev" }))
-    .bind(serde_json::json!(["opencode", "claude-code", "codex", "oh-my-pi"]))
+    .bind(serde_json::json!(["opencode", "pi", "oh-my-pi"]))
     .bind(serde_json::json!({ "departments": ["engineering"], "roles": ["engineer", "developer"] }))
     .execute(pg)
     .await?;

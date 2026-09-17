@@ -13,7 +13,7 @@ It's a **reproducible methodology**, not a dev-only feature. Every workbench is 
 
 ## Profiles and THE setting
 
-`workbench_profiles` is a role-agnostic registry (the `dev` profile ships seeded: opencode, Claude Code, Codex CLI, Oh My Pi). Per agent there is exactly one control, on the agent's Summary tab:
+`workbench_profiles` is a role-agnostic registry (the `dev` profile ships seeded: opencode, Pi, Oh My Pi). Per agent there is exactly one control, on the agent's Summary tab:
 
 > **Workbench: Off / Auto / On** (+ optional explicit profile)
 
@@ -41,7 +41,7 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 
 **Attribution:** commits are authored as the agent (`Analyst (Talaria agent) <analyst-engineering@agents.talaria.local>` — provisioned git identity per sandbox), so history and blame show who did the work. API-level actions (branch/PR/merge) show the App's identity; PR footers name the acting agent.
 
-**Persistence:** harness session state (Claude Code sessions, opencode storage, Codex home, the npm cache, Playwright browsers) lives on the department's state volume — surviving restarts and **shared across the department's agents**, so sessions can be resumed later or picked up by a teammate as a hand-off.
+**Persistence:** harness session state (opencode storage, Pi / Oh My Pi agent dirs, the npm cache, Playwright browsers) lives on the department's state volume — surviving restarts and **shared across the department's agents**, so sessions can be resumed later or picked up by a teammate as a hand-off.
 
 ## Work sessions
 
@@ -54,7 +54,7 @@ Behind the session sit the quality gates: plans (and the heavy-effort approval),
 A harness is a **declarative definition** (`defineWorkbenchHarness` in `@talaria/sdk/server` — the
 old spelling `defineHarness` still builds, deprecated, because renaming an extension point out from
 under third-party apps is a break rather than a rename; `defineHarness` now means the **activity**
-contract in [`HARNESSES.md`](./HARNESSES.md)): auth (`'gateway'` → pointed at Talaria's gateway, metered and attributed; or `{provider, envVar}` → that provider's key from the org's endpoint registry), invocation templates (structured `jsonInvoke` strongly preferred — agents are taught to read structured results, never scrape logs), `mcpServe` for harnesses that can run *as* MCP servers (Claude Code, Codex — registered as stdio tools on the agent's own Hermes config), `mcpConfig` naming the pass-through format it reads (or `format: 'custom'` with a `renderMcpConfig` function, app-shipped only), a driving `guide`, a `probe`, and reserved `install` hints.
+contract in [`HARNESSES.md`](./HARNESSES.md)): auth (`'gateway'` → pointed at Talaria's gateway, metered and attributed; or `{provider, envVar}` → that provider's key from the org's endpoint registry), invocation templates (structured `jsonInvoke` strongly preferred — agents are taught to read structured results, never scrape logs), `mcpServe` for harnesses that can run *as* MCP servers (registered as stdio tools on the agent's own Hermes config), `mcpConfig` naming the pass-through format it reads (or `format: 'custom'` with a `renderMcpConfig` function, app-shipped only), a driving `guide`, a `probe`, and `install` hints (npm packages the workbench image preinstalls and `talaria-harness-update` refreshes). Builtins are **opencode**, **Pi**, and **Oh My Pi** — all gateway-auth, all invoked unattended (`npx @latest`, print/json mode, no TUI). Claude Code and Codex are not offered.
 
 Three layers merge by slug (later wins): **builtins** ← **app-shipped** (`apps/<slug>/harness.ts`, enabled apps only) ← **admin-custom** JSON (`PUT /api/workbench/harnesses`). No host code ever runs from a definition; harness commands execute only inside the agent's sandbox. Builtins run via `npx` on the stock image — no custom image required; first use installs into the persistent cache. The agents' built-in browser is that pattern taken literally: its engine is fetched from npm on first use, which makes the chassis's pinned external resolvers (`AGENT_DNS_1`/`_2` in `fleet/.env`) a hard dependency — no DNS, no browser, and nothing in a health check to say so. For instant first-runs, build the **workbench image** (`scripts/build-workbench-image.sh` — Hermes chassis + preinstalled harnesses + Playwright/chromium) and set it on the profile. See "Shipping a harness" in [`APPS.md`](./APPS.md).
 
