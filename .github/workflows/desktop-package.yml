@@ -5,9 +5,10 @@
 # an empty `targets` list, so `tauri build` produced a bare binary, and
 # docs/DESKTOP.md listed "bundle/installer targets" as deferred on purpose.
 # This file is that deferral closed. Every platform's installers are built on
-# GitHub's runners, attached to the GitHub Release a version tag opens
-# (release.yml calls this file for exactly that), and left as workflow
-# artifacts on a push to main.
+# GitHub's runners and attached to the GitHub Release a version tag opens —
+# either a vX.Y.Z cut (release.yml calls this file for exactly that) or the
+# auto-minor `desktop-vX.Y.0` this file mints itself for a desktop push to
+# main (see THE AUTO-MINOR CHANNEL below).
 #
 # WHAT EACH PLATFORM GETS
 #   linux    deb, rpm and AppImage from Tauri's own bundlers, plus pacman and
@@ -43,9 +44,20 @@
 # (RELEASING.md) and every version field in the repo still says 0.1.0
 # decoratively — so the tag arrives as `tauri build --config`, which merges the
 # version into the config for this build only. A release therefore stamps the
-# real version into every installer without a version-bump commit. A main-push
-# build gets `0.0.0-sha<sha12>`: honest about being a trunk build, and still
-# the semver every bundler demands.
+# real version into every installer without a version-bump commit.
+#
+# THE AUTO-MINOR CHANNEL. A push to main that touches desktop/ is a RELEASE:
+# `resolve` computes the next minor — the highest suffix-free X.Y.Z across BOTH
+# the `v*` (app) and `desktop-v*` tags, minor+1, patch 0 — and after every
+# platform job is green, `attach` mints the `desktop-vX.Y.0` tag and a regular
+# (non-prerelease) Release carrying latest.json: the LIVE updater feed, because
+# /releases/latest resolves to it and installed apps update themselves. The
+# `desktop-v*` namespace keeps desktop automation from ever firing release.yml
+# (its tag trigger is `v[0-9]*`). Auto never crosses a major: a manual major —
+# or any stable vX.Y.Z cut — raises the baseline and the +1 resumes from there.
+# MAJORS ARE MANUAL: dispatch this workflow with `version=1.0.0,
+# publish=true`. A dispatch without publish keeps the artifacts-only rerun
+# behavior (`0.0.0-sha<sha12>`, nothing minted).
 #
 # NOT SIGNED, DELIBERATELY. There is no Apple Developer certificate and no
 # Windows signing key in this repo, so macOS builds are not notarized
@@ -67,9 +79,12 @@
 # decides the names of.
 #
 # WHY CANCEL-IN-PROGRESS IS SAFE HERE, unlike in release.yml's publish: nothing
-# below moves a channel tag. Assets land on an existing release one at a time
-# and --clobber makes a re-run idempotent, so cancelling costs a re-run, never
-# a release that lies about itself.
+# below moves a channel tag, and the updater feed flips LAST — latest.json is
+# moved out of the asset set and uploaded only after every installer, checksum
+# and signature is already on the release, so a cancelled run can mint a tag
+# but can never ship a feed that points at half a release. --clobber makes a
+# re-run idempotent; a cancelled mid-attach mint is finished by dispatching
+# with `version` + `release_tag` filled in.
 name: desktop-package
 
 on:
@@ -84,13 +99,18 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'version to stamp (empty: 0.0.0-sha<sha12> for a branch, the tag minus v for a tag)'
+        description: 'version to stamp (empty: 0.0.0-sha<sha12>; with publish=true an explicit X.Y.Z is required)'
         type: string
         required: false
       release_tag:
         description: 'release to attach the installers to (empty leaves them as workflow artifacts)'
         type: string
         required: false
+      publish:
+        description: 'mint desktop-v<version> and publish it (the manual-major door; also finishes a cancelled mint)'
+        type: boolean
+        required: false
+        default: false
   workflow_call:
     inputs:
       ref:
@@ -106,6 +126,11 @@ on:
         type: string
         required: false
         default: ''
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read # escalated in `attach` only
@@ -125,19 +150,24 @@ jobs:
     outputs:
       version: ${{ steps.r.outputs.version }}
       release_tag: ${{ steps.r.outputs.release_tag }}
+      mint: ${{ steps.r.outputs.mint }}
     steps:
       - name: Work out what this run builds
         id: r
         env:
           IN_VERSION: ${{ inputs.version }}
           IN_RELEASE_TAG: ${{ inputs.release_tag }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           version="$IN_VERSION"
           tag="$IN_RELEASE_TAG"
+          mint=false
           if [ -z "$version" ]; then
             if [ "$REF_TYPE" = tag ]; then
               case "$REF_NAME" in
@@ -148,15 +178,46 @@ jobs:
                   echo "::error::$REF_NAME is neither vX.Y.Z nor vX.Y.Z-rc.N — refusing to stamp a version nobody can reconstruct."
                   exit 1 ;;
               esac
+            elif [ "$EVENT_NAME" = push ]; then
+              # THE AUTO-MINOR: one monotonic line shared with app releases.
+              # Highest suffix-free X.Y.Z across BOTH tag namespaces (RCs and
+              # every other shape never move the baseline), minor+1, patch 0.
+              # gh api over a checkout: resolve stays checkout-free.
+              tags=$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags" \
+                --jq '.[].name' \
+                | grep -E '^(v|desktop-v)[0-9]+\.[0-9]+\.[0-9]+$' || true)
+              best=$(printf '%s\n' $tags | sed -E 's/^desktop-v//; s/^v//' \
+                | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+              best=${best:-0.0.0}
+              maj=${best%%.*}
+              rest=${best#*.}
+              min=${rest%%.*}
+              version="$maj.$((min+1)).0"
+              tag="desktop-v$version"
+              mint=true
+            elif [ "$IN_PUBLISH" = true ]; then
+              echo "::error::publish=true needs an explicit X.Y.Z version — fill the version input."
+              exit 1
             else
+              # A plain dispatch rerun: artifacts only, nothing minted.
               version="0.0.0-sha$(echo "$SHA" | cut -c1-12)"
             fi
+          elif [ "$IN_PUBLISH" = true ]; then
+            # THE MANUAL MAJOR (or any hand-picked number): validated loudly so
+            # a typo can never mint a forever-tag.
+            if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::publish=true needs an explicit X.Y.Z version, got '$version'."
+              exit 1
+            fi
+            [ -n "$tag" ] || tag="desktop-v$version"
+            mint=true
           fi
           {
             echo "version=$version"
             echo "release_tag=$tag"
+            echo "mint=$mint"
           } >> "$GITHUB_OUTPUT"
-          echo "building version $version (release: ${tag:-<none, artifacts only>})"
+          echo "building version $version (release: ${tag:-<none, artifacts only>}, mint: $mint)"
 
   linux:
     name: linux (deb + rpm + appimage)
@@ -237,6 +298,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/assets"
           cp deb/*.deb rpm/*.rpm appimage/*.AppImage "$RUNNER_TEMP/assets/"
           ls -l "$RUNNER_TEMP/assets"
+
+      - name: Sign the AppImage for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          img=$(ls "$RUNNER_TEMP/assets"/*.AppImage)
+          desktop/packaging/sign-update.sh "$img"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -385,8 +455,17 @@ jobs:
           # and a zip is the one scripted installs can fetch and unpack.
           ditto -c -k --keepParent macos/Talaria.app \
             "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.zip"
+          # The updater wants a .tar.gz of the same .app (not the dmg, not the zip).
+          tar -C macos -czf "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.tar.gz" Talaria.app
           ls -l "$RUNNER_TEMP/assets"
 
+      - name: Sign the app archive for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          desktop/packaging/sign-update.sh "$RUNNER_TEMP/assets/Talaria-$VERSION-universal.app.tar.gz"
       # The dmg's payload is LAUNCHED here, not just built: an unsigned,
       # universal WKWebView app that cannot come up on a Mac is not something a
       # release should carry, and this runner is the only Mac in the pipeline.
@@ -503,6 +582,14 @@ jobs:
           if [ -d msi ]; then cp msi/*.msi "$RUNNER_TEMP/assets/"; fi
           ls -l "$RUNNER_TEMP/assets"
 
+      - name: Sign the NSIS installer for the updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eu
+          exe=$(ls "$RUNNER_TEMP/assets"/*-setup.exe)
+          desktop/packaging/sign-update.sh "$exe"
       # Install the artifact a release would carry and RUN it — an installer
       # that will not install, or an app that will not start, fails here instead
       # of on a user's machine. Whichever installer this run produced is the one
@@ -542,10 +629,12 @@ jobs:
           path: ${{ runner.temp }}/assets/*
           if-no-files-found: error
 
-  # The only job that writes to anything outside the run: every installer, plus
-  # a checksum list, onto the release release.yml opened for this tag. It runs
-  # last so a half-built release never looks complete, and it is skipped
-  # entirely when there is no release to attach to (main pushes, dispatch).
+  # The only job that writes to anything outside the run: every installer, a
+  # checksum list, and latest.json for the in-app updater, onto the release.
+  # It runs last so a half-built release never looks complete. The release is
+  # either release.yml's (a vX.Y.Z cut, via workflow_call) or one this job
+  # opens itself for a minted desktop-v tag — the gate is simply "a
+  # release_tag exists".
   attach:
     name: attach installers to the release
     needs: [resolve, linux, linux-pacman, linux-flatpak, macos, windows]
@@ -555,6 +644,35 @@ jobs:
     permissions:
       contents: write # the release asset upload
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # THE MINT. For desktop-v runs (auto-minor on a desktop push, or a manual
+      # publish dispatch) the tag and its release do not exist until this
+      # moment — every platform job is green, so the tag can never point at a
+      # broken build. --target mints the lightweight tag in the same call; no
+      # git push, and nothing re-triggers (this workflow has no tags trigger
+      # and desktop-v* cannot match release.yml's v[0-9]*). NOT --prerelease:
+      # /releases/latest must resolve to this release for the updater feed.
+      # Create-not-clobber: a losing racer fails loudly instead of stacking a
+      # second build's assets onto the winner's release.
+      - name: Open the desktop release
+        if: needs.resolve.outputs.mint == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already exists — attaching into it (a re-run or a finished mint)"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$SHA" --title "$TAG" \
+              --notes "Desktop auto-minor build at ${SHA:0:12}. What changed: CHANGELOG.md."
+          fi
+
       # packages-* only: binary-linux is an input to the two extra packagers,
       # not a download anyone should be handed.
       - uses: actions/download-artifact@v4
@@ -562,6 +680,38 @@ jobs:
           pattern: packages-*
           merge-multiple: true
           path: assets
+
+      # Suffix-free versions only: /releases/latest is GitHub's moving stable
+      # pointer, so an RC must not publish latest.json. Missing signatures
+      # fail the job — shipping a release the installed app cannot update to
+      # is worse than a red attach. On a minted desktop-v release the manifest
+      # is the point of the channel, so its absence is an error, not a skip.
+      - name: Updater manifest
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+          MINT: ${{ needs.resolve.outputs.mint }}
+        run: |
+          set -eu
+          case "$VERSION" in
+            *-*)
+              echo "prerelease $VERSION — no latest.json (the updater reads /releases/latest)"
+              ;;
+            *)
+              python3 desktop/packaging/write-latest-json.py \
+                "$VERSION" "$TAG" "$GITHUB_REPOSITORY" assets
+              ;;
+          esac
+          if [ "$MINT" = true ] && [ ! -f assets/latest.json ]; then
+            echo "::error::a minted desktop-v release must flip the updater feed, and latest.json is missing (signing secret absent?)"
+            exit 1
+          fi
+          # The manifest is the updater FEED: it moves out of the asset set so
+          # the checksums and the bulk upload land first and the feed flips
+          # only after every installer it points at is already on the release.
+          if [ -f assets/latest.json ]; then
+            mv assets/latest.json ./latest.json
+          fi
 
       # Written to a file outside `assets` first: a redirect creates its target
       # before the glob expands, so the obvious one-liner hashes an empty
@@ -581,9 +731,12 @@ jobs:
         run: |
           set -eu
           ls -l assets
-          # --repo, explicitly: this job never checks the repository out (it only
-          # needs the artifacts), so `gh` has no .git to resolve the repository
-          # from and dies with "failed to run git: not a git repository". The
-          # first tag run stopped exactly there, after the checksums were written.
+          # --repo, explicitly: `gh` can resolve the repository from the
+          # checkout, but naming it keeps this step honest if the checkout
+          # ever goes away again.
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" assets/* --clobber
+          # THE FEED FLIPS LAST — see the manifest step.
+          if [ -f ./latest.json ]; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" latest.json --clobber
+          fi
           echo "attached $(ls assets | wc -l) files to $TAG"

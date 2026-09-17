@@ -341,6 +341,19 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      # The prod bundles are what ships — test + typecheck never execute
+      # them. Build for real and smoke the BUILT fetch handler: GET / must
+      # serve the SPA shell (2026-09-17: a vite output change moved the
+      # handler into dist/server/assets/*.js, one directory deeper than the
+      # shell lookup was anchored to, and every page on every instance
+      # 404'd while dev mode, unit tests, and typecheck were all green —
+      # nothing ran the built bundle).
+      - name: Build (prod bundles)
+        run: bun run build
+
+      - name: Prod smoke (SPA shell from the built bundle)
+        run: bun scripts/check-prod-shell.ts
+
   mcp:
     name: typecheck + build (mcp)
     needs: [changes]

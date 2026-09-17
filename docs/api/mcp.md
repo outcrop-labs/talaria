@@ -130,6 +130,7 @@ Source: [`api/src/routes/mcp/mcp_servers.rs`](../../api/src/routes/mcp/mcp_serve
 | `description` | `string? nullish(500)` |  |
 | `url` | `url` |  |
 | `headers` | `optional_headers` |  |
+| `env` | `optional_headers` | The package credential capture: env values + filled run-args, sealed into one blob (`pkg::SealedDoc`). |
 | `timeoutSecs` | `int? nullish (>0)` |  |
 | `authMode` | `enum(org|per-user)?` |  |
 

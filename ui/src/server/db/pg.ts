@@ -3009,6 +3009,28 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now(),
      primary key (run_id, team_id)
    )`,
+
+  // Workbench builtins are opencode, Pi, and Oh My Pi. Claude Code and Codex
+  // are retired: strip them from every profile, reset the shipped `dev`
+  // profile to the canonical list, and clear per-agent picks that named a
+  // retired harness (null = Auto = the profile's first = opencode).
+  `update workbench_profiles
+     set harnesses = coalesce((
+       select jsonb_agg(value)
+       from jsonb_array_elements(harnesses) as t(value)
+       where value #>> '{}' not in ('claude-code', 'codex')
+     ), '[]'::jsonb)
+     where harnesses @> '["claude-code"]'::jsonb
+        or harnesses @> '["codex"]'::jsonb`,
+  `update workbench_profiles
+     set harnesses = '["opencode", "pi", "oh-my-pi"]'::jsonb,
+         description = 'A sandboxed development environment: coding harnesses (opencode, Pi, Oh My Pi) working repo checkouts under the platform-owned git flow.'
+     where slug = 'dev'`,
+  `update agent_defs
+     set workbench_harness = null
+     where workbench_harness in ('claude-code', 'codex')`,
+  `alter table mcp_servers add column if not exists package jsonb`,
+  `alter table mcp_servers add column if not exists env_enc text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

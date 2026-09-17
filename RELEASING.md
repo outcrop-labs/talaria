@@ -70,6 +70,11 @@ git tag v0.2.0 && git push origin v0.2.0
 Publishes `0.2.0` and (moving) `latest`, and a regular GitHub Release.
 `latest` moves on nothing else — only a `vX.Y.Z` tag with no suffix.
 
+A stable desktop release also attaches `latest.json` and `.sig` files so
+installed copies can update in-app. That needs the
+`TAURI_SIGNING_PRIVATE_KEY` Actions secret (the matching pubkey is in
+`desktop/src-tauri/tauri.conf.json`). An RC does not publish `latest.json`.
+
 ## Nightlies
 
 Every day at 03:17 UTC the workflow builds `testing`'s tip and publishes
@@ -127,12 +132,23 @@ done — the assets land on a release that exists): linux
 (and the `.app` zipped), windows an NSIS `.exe` and an `.msi`, plus a
 `SHA256SUMS` over all of them.
 
-Nightlies open no Release (above), so they carry no installers, and a trunk
-build publishes none either — a push to main that touches `desktop/` leaves
-the same files as workflow artifacts, which expire. To re-attach installers to
-an existing release, re-run that release's `desktop-package` job, or dispatch
-`desktop-package` with `version` and `release_tag` filled in; `--clobber`
-makes either idempotent.
+Nightlies open no Release (above), so they carry no installers. A trunk build
+that touches `desktop/` IS a desktop release — the auto-minor channel: once
+every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
+(highest suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1,
+patch 0) and opens a regular Release for it carrying the installers and
+`latest.json` — the LIVE in-app updater feed, because `/releases/latest`
+resolves to it and installed desktop apps update themselves. The `desktop-v*`
+namespace keeps a desktop auto-minor from ever firing `release.yml` (its tag
+trigger is `v[0-9]*`). Auto never crosses a major: **majors (and any
+hand-picked number) are manual** — dispatch `desktop-package` with
+`version=1.0.0` and `publish=true`. A stable `vX.Y.Z` cut raises the baseline
+the same way; before cutting one, check it exceeds the highest `desktop-v*`
+tag (the auto math resumes from whichever is higher). To re-attach installers
+to an existing release, re-run that release's `desktop-package` job, or
+dispatch with `version` and `release_tag` filled in — also the way to finish a
+mint whose run was cancelled mid-attach; `--clobber` makes either idempotent.
+A plain dispatch without `publish` builds artifacts only, nothing minted.
 
 Nothing is signed or notarized yet. That is a provisioning decision, not an
 oversight: it takes an Apple Developer certificate and a Windows signing key.

@@ -161,6 +161,30 @@ async fn post_json(
     .await
 }
 
+/// The well-known URLs an issuer's metadata might live at, in try-order.
+/// RFC 8414 puts the well-known segment BETWEEN host and path
+/// (`host/.well-known/oauth-authorization-server/login/oauth`), and its
+/// OIDC twin appends the path after — but real ASes serve every permutation
+/// (Stripe answers ONLY the RFC shape for its `access.stripe.com/mcp`
+/// issuer, GitHub the path-before one), so all four shapes are tried. An
+/// empty issuer path makes adjacent shapes identical; the dedup drops
+/// those. Pure for the tests.
+fn as_metadata_candidates(as_url: &str) -> Option<Vec<String>> {
+    let parsed = reqwest::Url::parse(as_url).ok()?;
+    let scheme = parsed.scheme();
+    let host = parsed.host_str()?;
+    let path = parsed.path().trim_end_matches('/');
+    let mut candidates = vec![
+        format!("{scheme}://{host}{path}/.well-known/oauth-authorization-server"),
+        format!("{scheme}://{host}/.well-known/oauth-authorization-server{path}"),
+        format!("{scheme}://{host}/.well-known/oauth-authorization-server"),
+        format!("{scheme}://{host}/.well-known/openid-configuration{path}"),
+        format!("{as_url}/.well-known/openid-configuration"),
+    ];
+    candidates.dedup();
+    Some(candidates)
+}
+
 // ── Discovery ───────────────────────────────────────────────────────────────
 
 /// Probe a server unauthenticated; a 401 with resource metadata (or the
@@ -234,30 +258,8 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
         pin.check(&as_url, "the advertised authorization server")
             .ok()?;
 
-        // RFC 8414: for an issuer WITH a path (github.com/login/oauth), the
-        // well-known segment goes BETWEEN host and path.
-        let as_parsed = reqwest::Url::parse(&as_url).ok()?;
-        let as_path = as_parsed.path().trim_end_matches('/').to_string();
-        let bare = format!("{as_url}/.well-known/openid-configuration");
-        let mut candidates = vec![
-            format!(
-                "{}://{}{as_path}/.well-known/oauth-authorization-server",
-                as_parsed.scheme(),
-                as_parsed.host_str()?
-            ),
-            format!(
-                "{}://{}/.well-known/oauth-authorization-server",
-                as_parsed.scheme(),
-                as_parsed.host_str()?
-            ),
-            format!(
-                "{}://{}/.well-known/openid-configuration{as_path}",
-                as_parsed.scheme(),
-                as_parsed.host_str()?
-            ),
-            bare,
-        ];
-        candidates.dedup();
+        // RFC 8414 candidate set — see `as_metadata_candidates`.
+        let candidates = as_metadata_candidates(&as_url)?;
         let mut as_meta: Option<Value> = None;
         for c in &candidates {
             let Ok(r) = safe_fetch(
@@ -338,7 +340,9 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
         cfg.insert("scopes".into(), scopes);
         cfg.insert(
             "documentation".into(),
-            match str_field(&as_meta, "service_documentation") {
+            match str_field(&as_meta, "service_documentation")
+                .or_else(|| str_field(&meta, "resource_documentation"))
+            {
                 Some(d) => Value::String(d),
                 None => Value::Null,
             },
@@ -404,6 +408,23 @@ pub async fn ensure_oauth_config(
         return Ok(Some(config));
     }
     Ok(None)
+}
+
+/// The refusal sentence for a failed dynamic registration: the upstream's own
+/// code and description kept (they say why), then the way out — the exact
+/// callback to register on a dashboard app. Pure so the tests can pin it.
+fn dcr_refusal_sentence(j: &Value, status: u16, redirect_uri: &str) -> String {
+    let code = str_field(j, "error").unwrap_or_else(|| format!("status {status}"));
+    let mut sentence = format!(
+        "this provider refused Talaria's callback URL during automatic registration ({code})"
+    );
+    if let Some(d) = str_field(j, "error_description") {
+        sentence.push_str(&format!(": {d}"));
+    }
+    sentence.push_str(&format!(
+        ". Create an OAuth app in its developer settings with the callback {redirect_uri} and save the app's credentials on the server card"
+    ));
+    sentence
 }
 
 // ── Client registration + the authorize/callback dance ──────────────────────
@@ -472,7 +493,24 @@ async fn ensure_client(
     .await
     .map_err(|e| e.to_string())?;
     if !(200..300).contains(&r.status) {
-        return Err(format!("client registration failed ({})", r.status));
+        // Vercel-shaped refusal: DCR exists but rejects redirect URIs off its
+        // allowlist (localhost + known clients), so a hosted Talaria can
+        // never auto-register. The upstream sentence says why — keep it, add
+        // the way out, and MARK the config so the server card offers the
+        // manual-app setup instead of hiding behind `dcr: true`.
+        let j: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+        let code = str_field(&j, "error")
+            .or_else(|| str_field(&j, "error_description"))
+            .unwrap_or_else(|| format!("status {status}", status = r.status));
+        let mut marked = config.clone();
+        marked
+            .as_object_mut()
+            .expect("the config is an object")
+            .insert("dcrRejected".into(), Value::String(code));
+        store_oauth(pg, server_id, &marked)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Err(dcr_refusal_sentence(&j, r.status, redirect_uri));
     }
     let reg: Value = serde_json::from_slice(&r.body)
         .map_err(|_| "client registration failed (unparseable answer)".to_string())?;
@@ -484,16 +522,16 @@ async fn ensure_client(
         .map(|s| sb.seal(s).map_err(|e| e.to_string()))
         .transpose()?;
     let mut next = config.clone();
-    next.as_object_mut()
-        .expect("the config is an object")
-        .insert(
-            "client".into(),
-            serde_json::json!({
-                "id": client_id,
-                "secretEnc": secret_enc,
-                "redirectUri": redirect_uri,
-            }),
-        );
+    let next_obj = next.as_object_mut().expect("the config is an object");
+    next_obj.remove("dcrRejected"); // a registration that worked un-refuses
+    next_obj.insert(
+        "client".into(),
+        serde_json::json!({
+            "id": client_id,
+            "secretEnc": secret_enc,
+            "redirectUri": redirect_uri,
+        }),
+    );
     store_oauth(pg, server_id, &next)
         .await
         .map_err(|e| e.to_string())?;
@@ -919,16 +957,16 @@ pub async fn set_manual_oauth_client(
         .map(|s| sb.seal(s).map_err(|e| e.to_string()))
         .transpose()?;
     let mut next = config;
-    next.as_object_mut()
-        .expect("the config is an object")
-        .insert(
-            "client".into(),
-            serde_json::json!({
-                "id": client_id,
-                "secretEnc": secret_enc,
-                "redirectUri": redirect_uri,
-            }),
-        );
+    let next_obj = next.as_object_mut().expect("the config is an object");
+    next_obj.remove("dcrRejected"); // a manual client supersedes any refusal
+    next_obj.insert(
+        "client".into(),
+        serde_json::json!({
+            "id": client_id,
+            "secretEnc": secret_enc,
+            "redirectUri": redirect_uri,
+        }),
+    );
     store_oauth(pg, server_id, &next)
         .await
         .map_err(|e| e.to_string())?;
@@ -936,19 +974,24 @@ pub async fn set_manual_oauth_client(
 }
 
 /// Surface the flags the UI needs: is this OAuth, does it self-register, is a
-/// client configured.
-pub async fn oauth_meta(pg: &PgPool, server_id: &str) -> Result<Option<Value>, sqlx::Error> {
-    let oauth = stored_oauth(pg, server_id).await?;
-    let Some(oauth) = oauth else {
-        return Ok(None);
-    };
-    Ok(Some(serde_json::json!({
+/// client configured, has a registration been refused. Pure so the tests can
+/// drive it directly.
+fn meta_of(oauth: &Value) -> Value {
+    serde_json::json!({
         "dcr": !oauth.get("registrationEndpoint").map(Value::is_null).unwrap_or(true),
         "clientSet": oauth.get("client").is_some(),
         // null when discovery found none — the wire shape says null, never
         // undefined.
         "documentation": oauth.get("documentation").and_then(Value::as_str),
-    })))
+        // The upstream's error code when it refused our registration (Vercel:
+        // "invalid_redirect_uri"); null when never refused or since cleared.
+        "dcrRejected": oauth.get("dcrRejected").and_then(Value::as_str),
+    })
+}
+
+pub async fn oauth_meta(pg: &PgPool, server_id: &str) -> Result<Option<Value>, sqlx::Error> {
+    let oauth = stored_oauth(pg, server_id).await?;
+    Ok(oauth.as_ref().map(meta_of))
 }
 
 #[cfg(test)]
@@ -1017,5 +1060,84 @@ mod tests {
     fn form_encoding_matches_urlsearchparams() {
         assert_eq!(url_enc("a b~c-d"), "a+b~c-d");
         assert_eq!(url_enc("x&y=z"), "x%26y%3Dz");
+    }
+
+    #[test]
+    fn as_metadata_candidates_cover_every_well_known_shape() {
+        // Stripe's issuer carries a path and answers ONLY the RFC 8414 shape.
+        let c = as_metadata_candidates("https://access.stripe.com/mcp").unwrap();
+        assert_eq!(
+            c,
+            vec![
+                "https://access.stripe.com/mcp/.well-known/oauth-authorization-server",
+                "https://access.stripe.com/.well-known/oauth-authorization-server/mcp",
+                "https://access.stripe.com/.well-known/oauth-authorization-server",
+                "https://access.stripe.com/.well-known/openid-configuration/mcp",
+                "https://access.stripe.com/mcp/.well-known/openid-configuration",
+            ]
+        );
+        // A pathless issuer collapses the identical shapes.
+        let c = as_metadata_candidates("https://mcp.linear.app").unwrap();
+        assert_eq!(
+            c,
+            vec![
+                "https://mcp.linear.app/.well-known/oauth-authorization-server",
+                "https://mcp.linear.app/.well-known/openid-configuration",
+            ]
+        );
+        assert!(as_metadata_candidates("not a url").is_none());
+    }
+
+    #[test]
+    fn a_refused_registration_sentence_names_the_cause_and_the_way_out() {
+        // Vercel's actual refusal body (live, 2026-09-17).
+        let j: Value = serde_json::from_str(
+            r#"{"error":"invalid_redirect_uri","error_description":"The provided redirect URIs are not approved for use by this authorization server."}"#,
+        )
+        .unwrap();
+        let sentence = dcr_refusal_sentence(
+            &j,
+            400,
+            "https://talaria.example.com/api/mcp/oauth/callback",
+        );
+        assert!(sentence.contains("(invalid_redirect_uri)"));
+        assert!(sentence.contains("not approved for use"));
+        assert!(sentence.contains("https://talaria.example.com/api/mcp/oauth/callback"));
+        // An unparseable body falls back to the status, still with the action.
+        let sentence = dcr_refusal_sentence(&Value::Null, 502, "https://x.example/callback");
+        assert!(sentence.contains("(status 502)"));
+        assert!(sentence.contains("https://x.example/callback"));
+    }
+
+    #[test]
+    fn meta_of_flags_dcr_refusals_and_manual_clients() {
+        // Plain DCR provider: registrable, no client, never refused.
+        let m = meta_of(&serde_json::json!({
+            "registrationEndpoint": "https://api.vercel.com/login/oauth/register"
+        }));
+        assert_eq!(m["dcr"], Value::Bool(true));
+        assert_eq!(m["clientSet"], Value::Bool(false));
+        assert_eq!(m["dcrRejected"], Value::Null);
+        // Vercel after a refused connect: refused, no client.
+        let m = meta_of(&serde_json::json!({
+            "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+            "dcrRejected": "invalid_redirect_uri"
+        }));
+        assert_eq!(
+            m["dcrRejected"],
+            Value::String("invalid_redirect_uri".into())
+        );
+        // Manual client saved: the refusal is cleared, clientSet wins.
+        let m = meta_of(&serde_json::json!({
+            "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+            "client": { "id": "cl_x", "redirectUri": "https://talaria.example.com/api/mcp/oauth/callback" }
+        }));
+        assert_eq!(m["clientSet"], Value::Bool(true));
+        assert_eq!(m["dcrRejected"], Value::Null);
+        // GitHub shape: no registration endpoint at all.
+        let m = meta_of(
+            &serde_json::json!({ "authorizationEndpoint": "https://github.com/login/oauth/authorize" }),
+        );
+        assert_eq!(m["dcr"], Value::Bool(false));
     }
 }

@@ -43,13 +43,14 @@ deletes its data dir — the saved session dies with it; the instance itself is 
 
 ## Security posture
 
-- **Instance webviews get exactly three commands, nothing else.** The shell's commands are
-  gated behind capabilities (`AppManifest::commands` in `desktop/src-tauri/build.rs`); the
-  launcher holds all of them (`capabilities/launcher.json`), and each REGISTERED instance
+- **Instance webviews get the switcher plus window chrome, nothing else.** The shell's
+  commands are gated behind capabilities (`AppManifest::commands` in `desktop/src-tauri/build.rs`);
+  the launcher holds all of them (`capabilities/launcher.json`), and each REGISTERED instance
   origin gets a runtime grant (`grant_switcher` in `src-tauri/src/lib.rs`, via Tauri's
-  dynamic-ACL) scoped to `list_instances`, `activate_instance`, `show_welcome` on that one
-  webview. No fs, no window, no core permissions — remote content can switch instances and
-  nothing else. An origin the user never registered gets no IPC at all.
+  dynamic-ACL) scoped to `list_instances`, `activate_instance`, `show_welcome`,
+  `get_desktop_settings`, `set_titlebar_mode`, `desktop_window` on that one webview. No fs,
+  no generic window API — remote content can switch instances and move/close *this* window.
+  An origin the user never registered gets no IPC at all.
 - Login happens inside each instance webview via the instance's own flows (password or
   OAuth). **Known limitation:** Google blocks OAuth inside embedded webviews; password login
   works, and for dev instances a session can be minted into Redis directly (see the
@@ -198,10 +199,31 @@ What no runner here can test: Gatekeeper and SmartScreen as a user meets them �
 built on a runner was never quarantined, and nothing here is signed — and the session
 isolation that `data_directory` does not provide on macOS or Windows.
 
+## Window chrome
+
+The window ships `decorations: false`. Three titlebar modes live in
+`~/.local/share/app.talaria.desktop/settings.json` (themed / os / none). **Themed is the
+default on every OS**: custom min/max/close drawn in the webview (traffic-light side follows
+the OS — left on macOS, right elsewhere) and a bar you can drag. OS turns native decorations
+on. None hides both. Settings → Profile (inside the desktop app) and the launcher welcome
+screen both set it.
+
+## Updates
+
+A stable GitHub Release carries `latest.json` plus minisign signatures of the AppImage,
+the universal `.app.tar.gz`, and the NSIS installer. The running app checks
+`/releases/latest/download/latest.json` (Settings → Profile, or the launcher), verifies
+the payload against the pubkey in `tauri.conf.json`, replaces itself, and relaunches.
+RCs do not publish `latest.json` — `/releases/latest` is GitHub's stable pointer.
+
+Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
+means installed copies can no longer verify a new payload. OS code signing
+(Gatekeeper / SmartScreen) is still absent; this signature is the updater's own.
+
 ## Deferred on purpose
 
 Rename/reorder instances, health badges, native notifications, tray, deep links, OAuth via
-external browser, code signing and notarization, a desktop auto-updater.
+external browser, code signing and notarization.
 
 macOS and Windows build and ship, but the session-isolation invariant above does not hold
 there yet: `data_directory` is a no-op on those platforms (macOS wants

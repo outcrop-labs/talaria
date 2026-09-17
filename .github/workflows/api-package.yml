@@ -55,8 +55,10 @@ on:
       - 'api/package.Dockerfile'
       - '.github/workflows/api-package.yml'
       # The context's shape is a build input too: .dockerignore decides what
-      # `COPY api ./` picks up (it's what keeps api/target out).
+      # `COPY api ./api` picks up (it's what keeps api/target out).
       - '.dockerignore'
+      # include_str!'d into the binary — a catalog change must rebuild.
+      - 'scripts/hermes-skill-authority.json'
   workflow_dispatch: {}
   workflow_call:
     inputs:

@@ -11,6 +11,7 @@
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
+  import { downloadFile } from '@/lib/download-file'
   import { fade, listStagger } from '@/lib/motion'
   import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, updateFolder, type Artifact } from '@/lib/artifacts'
   import { errorMessage } from '@/lib/fetch-json'
@@ -536,7 +537,7 @@
       const slug = r.artifact?.publicSlug
       if (slug) items.push({ label: 'Copy public link', onSelect: () => copyAppLink(`/a/${slug}`) })
       const href = downloadHref(r.artifact)
-      if (href) items.push({ label: 'Download', onSelect: () => window.open(href, '_blank', 'noopener') })
+      if (href) items.push({ label: 'Download', onSelect: () => void downloadFile(href, r.artifact?.title ?? 'download').catch((e) => pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' })) })
     }
     if (canOrganize) {
       items.push('sep')
@@ -780,9 +781,17 @@
     <div transition:fade={{ duration: 120 }} class="flex shrink-0 items-center gap-3 border-t border-line-subtle bg-panel px-4 py-2">
       <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-fg">{selected.size} selected</span>
       {#if selectedRows.length === 1 && downloadHref(selectedRows[0]!.artifact)}
-        <a href={downloadHref(selectedRows[0]!.artifact)} target="_blank" rel="noreferrer" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 transition-colors hover:text-fg hover:underline">
+        <button
+          type="button"
+          class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+          onclick={() =>
+            void downloadFile(
+              downloadHref(selectedRows[0]!.artifact)!,
+              selectedRows[0]!.artifact?.title ?? 'download',
+            ).catch((e) => pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' }))}
+        >
           Download
-        </a>
+        </button>
       {/if}
       {#if driveMode}
         <Button variant="ghost" size="xs" onclick={() => void onImport(selectedRows.filter((r) => r.type === 'artifact').map((r) => r.id))}>

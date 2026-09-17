@@ -25,15 +25,16 @@ bypass them.
 | `report_gap` | Report a capability gap. `taskId` is optional and gated — without it the gap still lands |
 
 Beyond the PM tools above, the toolkit also carries **artifacts**
-(create/update/list/get + `export_to_google_doc`), **knowledge base**
+(`create_document` / `create_sheet` / `create_page` / update/list/get +
+`export_to_google_doc`), **knowledge base**
 (`list_kb_spaces` / `list_kb_docs` / `read_kb_doc` / `create_kb_space` /
 `edit_kb_space` — the landing page shown when someone opens the space itself —
 `create_kb_doc` / `edit_kb_doc` / `move_kb_doc` / `delete_kb_doc` — edit only
 where granted, delete only what the agent itself created), **channels**
 (`list_channels` / `read_channel` /
-`post_to_channel` — a personal assistant sees its owner's channels and DMs,
+`post_to_channel` / `react_to_message` — a personal assistant sees its owner's channels and DMs,
 any other agent sees its own memberships; posts stay agent-attributed and
-don't trigger other agents), **Google** (per-user calendar/mail read +
+don't trigger other agents; `threadId` keeps a reply in an existing thread), **Google** (per-user calendar/mail read +
 confirm-send drafts), and `search_knowledge` (RAG). Same auth model throughout.
 
 **Self-service board access** rounds out the `whoami` answer with its actions:

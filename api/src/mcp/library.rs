@@ -5,8 +5,9 @@
 //                website) lives on that domain — Vercel's own mcp.vercel.com
 //   verified     domain-verified namespace, hosted elsewhere
 //   community    io.github.* — surfaces only in explicit searches
-// Only servers with a hosted (streamable-http) endpoint appear at all: the
-// gateway speaks that transport; stdio packages would need a process runtime.
+// A hosted (streamable-http) remote wins; entries shipping only PACKAGES
+// (npm/pypi/oci) also appear — the runtime in pkg.rs runs them as hardened
+// docker children. The featured shelf and brand pins stay hosted-only.
 //
 // SERVING STRATEGY — why this module has three layers of caching:
 //   1. Bounded concurrency. The registry answers one search in ~100-400ms and
@@ -48,6 +49,30 @@ const REGISTRY_CONCURRENCY: usize = 6;
 const PUBLISHER_TTL_MS: i64 = 60 * 60 * 1000;
 const WELL_KNOWN_TTL_MS: i64 = 60 * 60 * 1000;
 const FEATURED_FRESH_MS: i64 = 60 * 60 * 1000;
+
+/// Hosting-platform suffixes: a namespace whose reversed domain lands on one
+/// of these is a tenant of a shared host (`app.vercel.hobby` →
+/// `hobby.vercel.app`), not a domain-verified publisher. Matching its own
+/// host does NOT make such a server first-party — that badge belongs to the
+/// platform, so the tier demotes to community.
+const SHARED_HOSTING_SUFFIXES: &[&str] = &[
+    "vercel.app",
+    "netlify.app",
+    "pages.dev",
+    "workers.dev",
+    "github.io",
+    "gitlab.io",
+    "fly.dev",
+    "deno.dev",
+];
+
+fn on_shared_host(domain: Option<&str>) -> bool {
+    domain.is_some_and(|d| {
+        SHARED_HOSTING_SUFFIXES
+            .iter()
+            .any(|s| d == *s || d.ends_with(&format!(".{s}")))
+    })
+}
 
 /// The featured shelf is EDITORIAL — services businesses actually run on — but
 /// the DATA stays live: each name resolves against the registry at request
@@ -116,6 +141,18 @@ fn known_endpoints() -> &'static HashMap<&'static str, KnownEndpoint> {
     &KNOWN
 }
 
+/// One entry of a header's `variables` map — an `Input` in the registry
+/// schema, carrying the same prompt metadata as a header but for a single
+/// `{template}` variable inside its `value`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LibraryVariable {
+    pub description: Option<String>,
+    pub is_secret: bool,
+    pub placeholder: Option<String>,
+    pub default: Option<String>,
+    pub choices: Option<Vec<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LibraryHeader {
     pub name: String,
@@ -125,6 +162,10 @@ pub struct LibraryHeader {
     pub placeholder: Option<String>,
     pub default: Option<String>,
     pub choices: Option<Vec<String>>,
+    /// The registry's `value`: a fixed header, optionally with `{variables}`
+    /// the user fills in. None = the header itself is user-supplied.
+    pub value: Option<String>,
+    pub variables: Option<HashMap<String, LibraryVariable>>,
 }
 
 /// Declared order is the ranking: first-party < verified < community.
@@ -134,6 +175,32 @@ pub enum Tier {
     FirstParty,
     Verified,
     Community,
+}
+
+/// A registry PACKAGE — how the long tail ships: npm/pypi packages or oci
+/// images speaking stdio (or an in-container http port). Normalized here so
+/// the install POST can store it verbatim; the runtime (pkg.rs) turns it
+/// into a hardened `docker run` child.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LibraryPackage {
+    /// npm | pypi | oci (the registry's registryType, lowercased).
+    pub kind: String,
+    pub identifier: String,
+    pub version: Option<String>,
+    pub runtime_hint: Option<String>,
+    /// stdio | http (the registry's streamable-http, normalized).
+    pub transport: String,
+    /// http packages: the port + path the transport URL names.
+    pub container_port: Option<u16>,
+    pub transport_path: Option<String>,
+    /// oci: the image ref without the tag (spawns pin the digest).
+    pub image: String,
+    /// Declared run arguments (Input-shaped; named docker flags are
+    /// allowlisted at install).
+    pub run_args: Vec<Value>,
+    /// Declared environment variables — the SAME Input schema as remote
+    /// headers, driving the same install form.
+    pub declared_env: Vec<LibraryHeader>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,6 +218,8 @@ pub struct LibraryServer {
     pub tier: Tier,
     /// Credential/header declarations from the remote — drive the install form.
     pub required_headers: Vec<LibraryHeader>,
+    /// Package-shipping entries (no hosted remote): how to run them.
+    pub package: Option<LibraryPackage>,
 }
 
 // ── The injectable edge ─────────────────────────────────────────────────────
@@ -202,6 +271,29 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
+/// One `variables` entry — an `Input`, sharing the prompt metadata of a
+/// header minus the header-only fields (name, isRequired).
+fn parse_variable(v: &Value) -> LibraryVariable {
+    LibraryVariable {
+        description: v
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        is_secret: v.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+        placeholder: v
+            .get("placeholder")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        default: v.get("default").and_then(Value::as_str).map(str::to_string),
+        choices: v.get("choices").and_then(Value::as_array).map(|c| {
+            c.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        }),
+    }
+}
+
 fn is_generic_title(title: &str) -> bool {
     // Generic noise, case-insensitive.
     let t = title.to_lowercase();
@@ -219,8 +311,122 @@ fn is_lone_lowercase_word(title: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
+/// One Input-shaped declaration list (remote headers, package env) → the
+/// prompt metadata the install form renders.
+fn parse_declared(list: Option<&Value>) -> Vec<LibraryHeader> {
+    list.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|h| {
+                    Some(LibraryHeader {
+                        name: h.get("name")?.as_str()?.to_string(),
+                        description: h
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        is_required: h
+                            .get("isRequired")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        is_secret: h.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
+                        placeholder: h
+                            .get("placeholder")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        default: h.get("default").and_then(Value::as_str).map(str::to_string),
+                        choices: h.get("choices").and_then(Value::as_array).map(|c| {
+                            c.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        }),
+                        value: h.get("value").and_then(Value::as_str).map(str::to_string),
+                        variables: h.get("variables").and_then(Value::as_object).map(|m| {
+                            m.iter()
+                                .map(|(k, v)| (k.clone(), parse_variable(v)))
+                                .collect()
+                        }),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The runnable package from an entry's `packages` array — preference order
+/// oci (self-contained) → pypi → npm; nuget and anything else has no runtime
+/// here, which is a drop. Pure.
+fn classify_package(server: &Value) -> Option<LibraryPackage> {
+    let packages = server.get("packages").and_then(Value::as_array)?;
+    let pick = |kinds: &[&str]| {
+        packages.iter().find(|p| {
+            p.get("registryType")
+                .and_then(Value::as_str)
+                .map(str::to_lowercase)
+                .is_some_and(|r| kinds.contains(&r.as_str()))
+        })
+    };
+    let pkg = pick(&["oci"])
+        .or_else(|| pick(&["pypi"]))
+        .or_else(|| pick(&["npm"]))?;
+    let kind = pkg.get("registryType")?.as_str()?.to_lowercase();
+    let identifier = pkg.get("identifier")?.as_str()?.to_string();
+    let version = pkg
+        .get("version")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let runtime_hint = pkg
+        .get("runtimeHint")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let transport_v = pkg.get("transport").unwrap_or(&Value::Null);
+    let ttype = transport_v
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("stdio");
+    let transport = if matches!(ttype, "streamable-http" | "sse") {
+        "http"
+    } else {
+        "stdio"
+    };
+    // An oci identifier may carry its tag — the image ref is what's left.
+    let (image, version) = if kind == "oci" {
+        match identifier.rsplit_once(':') {
+            Some((img, tag)) if !tag.contains('/') => (img.to_string(), Some(tag.to_string())),
+            _ => (identifier.clone(), version),
+        }
+    } else {
+        (String::new(), version)
+    };
+    let (container_port, transport_path) = transport_v
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .map(|u| (u.port(), Some(u.path().to_string())))
+        .unwrap_or((None, None));
+    let run_args = pkg
+        .get("runtimeArguments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let declared_env = parse_declared(pkg.get("environmentVariables"));
+    Some(LibraryPackage {
+        kind,
+        identifier,
+        version,
+        runtime_hint,
+        transport: transport.to_string(),
+        container_port,
+        transport_path,
+        image,
+        run_args,
+        declared_env,
+    })
+}
+
 /// One registry entry → one shelf entry, or None to drop it (not official-
-/// active, no hosted https remote). Pure — the tests drive it directly.
+/// active, nothing installable). A hosted https remote wins; otherwise a
+/// runnable package keeps the entry. Pure — the tests drive it directly.
 fn classify(e: &Value) -> Option<LibraryServer> {
     let server = e.get("server")?;
     let name = server.get("name")?.as_str()?;
@@ -240,8 +446,18 @@ fn classify(e: &Value) -> Option<LibraryServer> {
             && x.get("url")
                 .and_then(Value::as_str)
                 .is_some_and(|u| u.starts_with("https://"))
-    })?;
-    let remote_url = remote.get("url").and_then(Value::as_str)?.to_string();
+    });
+    let package = if remote.is_none() {
+        Some(classify_package(server)?)
+    } else {
+        None
+    };
+    let remote_headers = remote.as_ref().and_then(|r| r.get("headers"));
+    let remote_url = remote
+        .and_then(|r| r.get("url"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
     let ns = name.split('/').next().unwrap_or("");
     let community = ns.starts_with("io.github.");
     let ns_domain: Option<String> =
@@ -261,6 +477,12 @@ fn classify(e: &Value) -> Option<LibraryServer> {
         .is_some_and(|d| on_domain(host_of(website.unwrap_or("")).as_deref(), d));
     if ns_domain.is_some() && (remote_on_ns || site_on_ns) {
         tier = Tier::FirstParty;
+    }
+    // A shared-host tenant matching its own *.vercel.app host is not the
+    // platform's official server — the demote runs after the promotion
+    // because it wins.
+    if on_shared_host(ns_domain.as_deref()) {
+        tier = Tier::Community;
     }
     // Themed icons: prefer an untinted/light entry with an https src.
     let icons: Vec<&Value> = server
@@ -310,39 +532,7 @@ fn classify(e: &Value) -> Option<LibraryServer> {
         .get("description")
         .and_then(Value::as_str)
         .map(|d| d.chars().take(220).collect::<String>());
-    let required_headers = remote
-        .get("headers")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|h| {
-                    Some(LibraryHeader {
-                        name: h.get("name")?.as_str()?.to_string(),
-                        description: h
-                            .get("description")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        is_required: h
-                            .get("isRequired")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        is_secret: h.get("isSecret").and_then(Value::as_bool).unwrap_or(false),
-                        placeholder: h
-                            .get("placeholder")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        default: h.get("default").and_then(Value::as_str).map(str::to_string),
-                        choices: h.get("choices").and_then(Value::as_array).map(|c| {
-                            c.iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        }),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let required_headers = parse_declared(remote_headers);
     Some(LibraryServer {
         registry_name: name.to_string(),
         title,
@@ -352,6 +542,7 @@ fn classify(e: &Value) -> Option<LibraryServer> {
         icon,
         tier,
         required_headers,
+        package,
     })
 }
 
@@ -484,6 +675,7 @@ impl Library {
                         .map(str::to_string),
                     tier: Tier::FirstParty,
                     required_headers: Vec::new(),
+                    package: None,
                 }));
             }
         }
@@ -505,6 +697,7 @@ impl Library {
                 icon: None,
                 tier: Tier::FirstParty,
                 required_headers: Vec::new(),
+                package: None,
             })
         })
     }
@@ -540,7 +733,9 @@ impl Library {
                 .iter()
                 .filter_map(classify)
                 .filter(|s| {
-                    s.domain.as_deref() == Some(domain) || on_domain(s.domain.as_deref(), domain)
+                    s.package.is_none()
+                        && (s.domain.as_deref() == Some(domain)
+                            || on_domain(s.domain.as_deref(), domain))
                 })
                 .collect();
             hits.sort_by_key(|s| s.tier);
@@ -1045,6 +1240,189 @@ mod tests {
             h.choices.as_deref(),
             Some(&["a".to_string(), "b".to_string()][..])
         );
+    }
+
+    #[test]
+    fn classify_maps_value_templates_and_variable_metadata() {
+        // The registry's DOMINANT declaration style: a fixed `value` with an
+        // inline {var}, plus (optionally) a variables map describing it.
+        let e = json!({
+            "server": {
+                "name": "ai.smithery/smithery-notion",
+                "title": "Smithery Notion",
+                "remotes": [{
+                    "type": "streamable-http", "url": "https://server.smithery.ai/@smithery/notion/mcp",
+                    "headers": [{
+                        "name": "Authorization",
+                        "value": "Bearer {smithery_api_key}",
+                        "isRequired": true,
+                        "isSecret": true,
+                        "description": "Bearer token for Smithery authentication",
+                        "variables": {
+                            "smithery_api_key": { "placeholder": "sk-…", "isSecret": true },
+                            "unused_var": { "description": "not referenced by the value" },
+                        },
+                    }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        let h = &s.required_headers[0];
+        assert_eq!(h.value.as_deref(), Some("Bearer {smithery_api_key}"));
+        let vars = h.variables.as_ref().unwrap();
+        assert_eq!(
+            vars.get("smithery_api_key").unwrap().placeholder.as_deref(),
+            Some("sk-…")
+        );
+        assert!(vars.get("unused_var").is_some()); // kept; the UI shows what the template uses
+        // A literal value (no braces) is a fixed header, not a prompt.
+        let e = json!({
+            "server": {
+                "name": "com.acme/acme", "title": "Acme",
+                "remotes": [{
+                    "type": "streamable-http", "url": "https://mcp.acme.com/mcp",
+                    "headers": [{ "name": "X-Api-Version", "value": "2" }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.required_headers[0].value.as_deref(), Some("2"));
+        assert!(s.required_headers[0].variables.is_none());
+        // No value at all = the header itself is user-supplied (today's shape).
+        let e = json!({
+            "server": {
+                "name": "com.acme/acme2", "title": "Acme",
+                "remotes": [{
+                    "type": "streamable-http", "url": "https://mcp.acme.com/mcp",
+                    "headers": [{ "name": "X-Key", "isRequired": true }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.required_headers[0].value, None);
+    }
+
+    #[test]
+    fn classify_demotes_shared_host_tenants_to_community() {
+        // app.vercel.<project> reverses to <project>.vercel.app; the remote
+        // lives on that same host, which would read as first-party. It is a
+        // tenant of a shared host, not the platform's official server.
+        let e = json!({
+            "server": {
+                "name": "app.vercel.hobby-project/wrapper",
+                "title": "Wrapper",
+                "remotes": [{ "type": "streamable-http", "url": "https://hobby-project.vercel.app/api/mcp" }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.tier, Tier::Community);
+        // A real domain-verified publisher keeps its tier.
+        let e = json!({
+            "server": {
+                "name": "com.vercel/vercel-mcp",
+                "title": "Vercel",
+                "remotes": [{ "type": "streamable-http", "url": "https://mcp.vercel.com" }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.tier, Tier::FirstParty);
+    }
+
+    #[test]
+    fn classify_keeps_package_only_entries_with_normalized_packages() {
+        // The io.github long tail: an npm stdio package with declared env in
+        // the same Input schema as remote headers.
+        let e = json!({
+            "server": {
+                "name": "io.github.Eszetael/postgres-mcp-hardened",
+                "title": "postgres-mcp-hardened",
+                "packages": [{
+                    "registryType": "npm",
+                    "identifier": "postgres-mcp-hardened",
+                    "version": "0.1.10",
+                    "runtimeHint": "npx",
+                    "transport": { "type": "stdio" },
+                    "runtimeArguments": [{ "type": "positional", "value": "--stdio" }],
+                    "environmentVariables": [{
+                        "name": "DATABASE_URL",
+                        "description": "Connection string",
+                        "isRequired": true,
+                        "isSecret": true,
+                    }],
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert_eq!(s.tier, Tier::Community);
+        let p = s.package.as_ref().expect("the package rides the entry");
+        assert_eq!(p.kind, "npm");
+        assert_eq!(p.identifier, "postgres-mcp-hardened");
+        assert_eq!(p.transport, "stdio");
+        assert_eq!(p.declared_env.len(), 1);
+        assert!(p.declared_env[0].is_secret);
+        assert_eq!(p.run_args.len(), 1);
+        assert_eq!(s.url, ""); // no hosted remote — the package IS the install
+
+        // An oci image declaring an http transport: tag splits off the
+        // identifier, the port/path come from the transport URL.
+        let e = json!({
+            "server": {
+                "name": "io.github.containers/kubernetes-mcp-server",
+                "title": "Kubernetes MCP",
+                "packages": [{
+                    "registryType": "oci",
+                    "identifier": "ghcr.io/containers/kubernetes-mcp-server:v0.0.59",
+                    "runtimeHint": "docker",
+                    "transport": { "type": "streamable-http", "url": "http://localhost:8080/mcp" },
+                }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        let p = s.package.as_ref().unwrap();
+        assert_eq!(p.kind, "oci");
+        assert_eq!(p.image, "ghcr.io/containers/kubernetes-mcp-server");
+        assert_eq!(p.version.as_deref(), Some("v0.0.59"));
+        assert_eq!(p.transport, "http");
+        assert_eq!(p.container_port, Some(8080));
+        assert_eq!(p.transport_path.as_deref(), Some("/mcp"));
+    }
+
+    #[test]
+    fn classify_drops_unrunnable_packages_and_prefers_hosted() {
+        // nuget (and anything without a runtime here) is a drop.
+        let e = json!({
+            "server": {
+                "name": "com.example/nuget-only",
+                "title": "Nuget Only",
+                "packages": [{ "registryType": "nuget", "identifier": "Example.Server" }],
+            }
+        });
+        assert!(classify(&e).is_none());
+        // A hosted remote beats a package — no runtime cost.
+        let e = json!({
+            "server": {
+                "name": "com.example/both",
+                "title": "Both",
+                "remotes": [{ "type": "streamable-http", "url": "https://mcp.example.com/mcp" }],
+                "packages": [{ "registryType": "pypi", "identifier": "example", "version": "1.0" }],
+            }
+        });
+        let s = classify(&e).unwrap();
+        assert!(s.package.is_none());
+        assert_eq!(s.url, "https://mcp.example.com/mcp");
+        // Preference when several runtimes ship: oci → pypi → npm.
+        let e = json!({
+            "server": {
+                "name": "io.github.x/multi",
+                "title": "Multi",
+                "packages": [
+                    { "registryType": "npm", "identifier": "x" },
+                    { "registryType": "pypi", "identifier": "x" },
+                    { "registryType": "oci", "identifier": "ghcr.io/x/y:1" },
+                ],
+            }
+        });
+        assert_eq!(classify(&e).unwrap().package.unwrap().kind, "oci");
     }
 
     // ── the module-boundary tests ───────────────────────────────────────────

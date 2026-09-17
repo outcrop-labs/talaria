@@ -38,20 +38,31 @@
   }))
   const results = $derived(resultsQuery.data)
 
-  const installedUrls = $derived(new Set((existingQuery.data ?? []).map((s) => s.url)))
+  // Installed dedupe: hosted entries by endpoint; package entries by
+  // registry identity (their url is a routing token, not an endpoint).
+  const installedUrls = $derived(new Set((existingQuery.data ?? []).filter((s) => !s.package).map((s) => s.url)))
+  const installedRegistryNames = $derived(
+    new Set((existingQuery.data ?? []).map((s) => s.package?.identifier).filter(Boolean) as string[]),
+  )
 
-  const register = async (l: LibraryServerRow, opts: { headers?: Record<string, string>; authMode?: 'org' | 'per-user' }) => {
+  const register = async (
+    l: LibraryServerRow,
+    opts: { headers?: Record<string, string>; authMode?: 'org' | 'per-user'; env?: Record<string, string>; argValues?: Record<string, string> },
+  ) => {
     busyAdd = l.registryName
     error = null
     try {
       const { server } = await postJson<{ server: { id: string; oauthMeta: { dcr: boolean; clientSet: boolean } | null } }>('/api/mcp/servers', {
         name: slugify(l.title),
         label: l.title,
-        url: l.url,
+        url: l.package ? undefined : l.url,
         description: l.description,
         headers: opts.headers,
-        authMode: opts.authMode,
+        authMode: l.package ? 'org' : opts.authMode,
         requiredHeaders: l.requiredHeaders,
+        package: l.package ?? undefined,
+        env: l.package ? opts.env : undefined,
+        argValues: l.package ? opts.argValues : undefined,
       })
       const needsSetup = !!server.oauthMeta && !server.oauthMeta.dcr && !server.oauthMeta.clientSet
       added = new Map(added).set(l.registryName, needsSetup ? 'setup' : 'ok')
@@ -67,9 +78,11 @@
     }
   }
 
-  // Servers declaring credentials get the install dialog; the rest one-click.
+  // Package installs and servers declaring credentials get the install
+  // dialog (credentials to type, third-party-code to acknowledge); the rest
+  // one-click.
   const install = (l: LibraryServerRow) => {
-    if (l.requiredHeaders.length > 0) installing = l
+    if (l.package || l.requiredHeaders.length > 0) installing = l
     else void register(l, {})
   }
 </script>
@@ -117,13 +130,14 @@
       {:else if results.servers.length === 0}
         <EmptyState
           icon="⌁"
-          title="No hosted servers match"
-          hint="Only servers with a hosted endpoint appear; packages that need a local process can't be one-click added. Try the custom form for self-hosted servers."
+          title="No servers match"
+          hint="Hosted endpoints and runnable packages (npm/pypi/docker) both install from here. Try a broader search, or the custom form for self-hosted servers."
         />
       {:else}
         <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {#each results.servers as l (l.registryName)}
-            {@const addedState = added.get(l.registryName) ?? (installedUrls.has(l.url) ? 'ok' : null)}
+            {@const alreadyIn = l.package ? installedRegistryNames.has(l.package.identifier) : installedUrls.has(l.url)}
+            {@const addedState = added.get(l.registryName) ?? (alreadyIn ? 'ok' : null)}
             {@const installed = addedState !== null}
             {@const busy = busyAdd === l.registryName}
             {@const badge = TIER_BADGE[l.tier]}
@@ -139,6 +153,14 @@
                     <span title={badge.hint} class={cn('shrink-0 rounded border px-1.5 font-mono text-[10px] uppercase tracking-[0.05em]', badge.cls)}>
                       {badge.label}
                     </span>
+                    {#if l.package}
+                      <span
+                        title="Ships as a package (npm/pypi/docker) — Talaria runs it in a hardened container"
+                        class="shrink-0 rounded border border-line-subtle px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim"
+                      >
+                        pkg
+                      </span>
+                    {/if}
                   </div>
                 </div>
               </div>
@@ -164,7 +186,7 @@
                 {:else}
                   <button
                     type="button"
-                    title={l.requiredHeaders.length ? 'Add to your org (needs credentials)' : 'Add to your org'}
+                    title={l.package ? 'Add to your org (runs a container)' : l.requiredHeaders.length ? 'Add to your org (needs credentials)' : 'Add to your org'}
                     disabled={busy}
                     onclick={() => install(l)}
                     class={cn(
