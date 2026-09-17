@@ -33,7 +33,7 @@ failure behavior — it *declares* them, and `run_harness` honors the declaratio
 | `api/src/harness_model.rs` | The resolution chain, expressed once. |
 | `api/src/capability.rs` | What a model can actually do, and who says so. |
 | `api/src/harness/transport.rs` | The gateway and fleet-persona transports (blocking + streaming), the request that reaches them, and the refusals a transport raises rather than dropping a field it cannot honor. |
-| `api/src/harness/registry.rs` | The builtin layer: 35 shipped harnesses (`DEFS` → `BUILTINS`). |
+| `api/src/harness/registry.rs` | The builtin layer: 39 shipped harnesses (`DEFS` → `BUILTINS`). |
 | `api/src/harness/defs/*.rs` | The definitions themselves — one module per family, eval fixtures inline. |
 | `api/src/harness/recorded.rs` | Run any harness against written-down replies: no gateway, no fleet, no DB, no clock. |
 

@@ -6,7 +6,7 @@
 // reading the fitness matrix learns whether a model can run those features.
 //
 // It tells them almost nothing about the other half of the product. A Hermes
-// persona is handed FIFTY-FIVE workspace tools (the `TALARIA_TOOLS.len()` the
+// persona is handed SIXTY-ONE workspace tools (the `TALARIA_TOOLS.len()` the
 // sync test pins) and a human's request in plain English, and what it does
 // next is the whole job — nobody wrote a prompt for
 // "go find out whether we have a runbook for this". The knowledgebase was

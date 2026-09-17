@@ -19,6 +19,11 @@
 //      timeout instead of shutting it down. Exit 137 is the tell, and only
 //      stopping it on purpose reveals it.
 //
+//   3. DOES THE IMAGE ONLY SHIP CLASSIFIED BUNDLED SKILLS? After init, `find`
+//      SKILL.md under /opt/data/skills. Any pack not in
+//      scripts/hermes-skill-authority.json (replaced / keepExact / apple/) is
+//      a weekly Hermes add that would teach the fleet a parallel workspace.
+//
 // WHAT THIS DELIBERATELY DOES NOT ASSERT: that the agent is HEALTHY. Hermes
 // only starts its API server — the thing behind `/health` — once it has a
 // reachable model, so a health assertion would make this test require a live
@@ -46,6 +51,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { createRequire } from 'node:module'
+import { loadAuthority, unclassified, packFromSkillFile } from './hermes-skill-authority.mjs'
 
 const exec = promisify(execFile)
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -210,6 +216,38 @@ async function main() {
     }
     log('init clean, still running ✓')
 
+    // ── 3. bundled skills vs the authority catalog ────────────────────────
+    // The JSON snapshot is a docs dump; this is the image. A pack Hermes
+    // added since the snapshot was written is unclassified until someone
+    // decides replace-or-keep — the six-line prune array's failure mode.
+    const find = [
+      'for r in /opt/data/skills /root/.hermes/skills /home/hermes/.hermes/skills /opt/data/.hermes/skills; do',
+      '  if [ -d "$r" ]; then find "$r" -name SKILL.md | sed "s|^$r/||"; fi',
+      'done',
+    ].join('\n')
+    const { stdout: skillOut } = await docker(['exec', CONTAINER, 'sh', '-c', find]).catch(() => ({ stdout: '' }))
+    const packs = [...new Set(
+      skillOut.split('\n').map((l) => l.trim()).filter(Boolean).map(packFromSkillFile),
+    )]
+    if (packs.length === 0) {
+      fail(
+        'no bundled SKILL.md under /opt/data/skills (or ~/.hermes/skills) after init. ' +
+        'The prune path docker.rs uses may have moved; an empty find is not a pass.',
+      )
+    } else {
+      log(`image ships ${packs.length} bundled skill packs`)
+      const unknown = unclassified(packs, loadAuthority(REPO))
+      if (unknown.length) {
+        fail(
+          'the live Hermes image ships packs scripts/hermes-skill-authority.json has not classified:\n  ' +
+            unknown.join('\n  ') +
+            '\nAdd each to replaced (plus a scripts/skills/<signpost> SKILL.md) or keepExact.',
+        )
+      } else {
+        log('bundled skills classified ✓')
+      }
+    }
+
     // ── 2. does it stop cleanly ───────────────────────────────────────────
     log(`stopping (timeout ${STOP_TIMEOUT_S}s)…`)
     const started = Date.now()
@@ -233,7 +271,7 @@ async function main() {
       return
     }
     log(`stopped cleanly in ${took}s, exit 0 ✓`)
-    log('PASS — the chassis boots and stops cleanly')
+    if (!process.exitCode) log('PASS — the chassis boots, ships classified skills, and stops cleanly')
   } catch (e) {
     fail(e?.message ?? String(e))
   } finally {
