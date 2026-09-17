@@ -24,6 +24,7 @@ pub mod system;
 pub mod tasks;
 pub mod teams;
 pub mod workbench;
+pub mod workchains;
 
 // One dir per subsystem (the docs/api group of the same name is the map).
 // Handler paths below are group-qualified — the table names the system.
@@ -227,6 +228,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
+            "/api/boards/{id}/workchains",
+            get(boards::boards_id_workchains::get)
+                .post(boards::boards_id_workchains::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/boards/{id}/events",
             get(boards::boards_id_events::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -273,6 +280,22 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(tasks::tasks_id_watchers::post)
                 .delete(tasks::tasks_id_watchers::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/workchains/{id}",
+            patch(workchains::workchains_id::patch)
+                .delete(workchains::workchains_id::delete)
+                .fallback(|| async { method_not_allowed("PATCH, DELETE") }),
+        )
+        .route(
+            "/api/workchains/{id}/steps",
+            axum::routing::post(workchains::workchains_id::post_step)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workchains/{id}/steps/{taskId}",
+            axum::routing::delete(workchains::workchains_id::delete_step)
+                .fallback(|| async { method_not_allowed("DELETE") }),
         )
         .route(
             "/api/keys/{id}",

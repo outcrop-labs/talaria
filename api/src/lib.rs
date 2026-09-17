@@ -116,6 +116,7 @@ pub mod vision;
 pub mod web_search;
 pub mod work_dispatch;
 pub mod workbench;
+pub mod workchains;
 pub mod workflows;
 pub mod workspace_handles;
 pub mod workspace_secrets;

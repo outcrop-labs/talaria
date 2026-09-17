@@ -66,7 +66,7 @@ const GROUPS = {
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
   apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
-  boards: { segs: ['boards'], blurb: 'Kanban boards, members, statuses, labels, views.' },
+  boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
   files: { segs: ['artifacts', 'artifact-folders', 'uploads', 'agent-media'], blurb: 'Uploads, artifacts, shares, downloads.' },

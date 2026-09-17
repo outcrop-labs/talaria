@@ -1,4 +1,5 @@
-// Boards, their members/labels/statuses/views, and per-board agents and events.
+// Boards, their members/labels/statuses/views/workchains, per-board agents
+// and events.
 pub mod boards;
 pub mod boards_id;
 pub mod boards_id_agent_requests;
@@ -11,3 +12,4 @@ pub mod boards_id_tasks;
 pub mod boards_id_templates;
 pub mod boards_id_views;
 pub mod boards_id_work_sessions;
+pub mod boards_id_workchains;
