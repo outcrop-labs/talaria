@@ -1,15 +1,13 @@
 ---
 name: codex
-description: Coding harnesses run through the Talaria workbench, not as a raw Codex CLI. Drive jobs with the workbench-driving skill.
+description: Codex is not a Talaria workbench harness. Drive coding work with Pi, Oh My Pi, or opencode through workbench-driving.
 ---
 
-# Codex (Talaria)
+# Codex is not offered
 
-Do not `npx` Codex yourself. If this agent has a workbench grant, the
-**workbench-driving** skill is the path: `doctor`, `start_job`, work in the
-workdir it gives you, `finish_job` — Talaria cuts the branch and opens the
-ticket-linked PR. A human merges.
+This agent does not run Codex. Coding work goes through the workbench
+(**workbench-driving**): `doctor`, `start_job`, drive the **chosen**
+harness (Pi, Oh My Pi, or opencode), `finish_job`.
 
-A harness you cannot drive is `report_gap`, never a reason to silently
-hand-code around it. The GitHub half is the **github** skill (plain git over
-https; no gh).
+Do not `npx` Codex. Do not hand-code around a missing harness — that is
+`report_gap`.

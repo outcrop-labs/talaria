@@ -38,15 +38,16 @@ export default defineWorkbenchHarness({
 | `slug` / `label` / `description?` | Registry identity — `slug` is what profiles and per-agent picks reference |
 | `auth` | `'gateway'` (Talaria's metered gateway) or `{ provider, envVar }` from the org's endpoint registry |
 | `env?` | Extra container env, compose-interpolated, merged over auth env |
-| `invoke` | Invocation template — `<model>` and `<task>` placeholders |
+| `invoke` | Invocation template — `<model>`, `<task>`, `<sessionDir>` placeholders |
 | `jsonInvoke?` | Structured-output form — **required for good drivers**; agents read structured results, never scrape logs |
+| `continueInvoke?` / `continueJsonInvoke?` | Follow-up on the same session (`-c`). Omit when every run in the workdir continues the project session (opencode) |
 | `mcpServe?` | How to run the harness itself as an MCP server (stdio) — the preferred integration |
 | `mcpConfig?` | MCP pass-through the harness reads: `{ format: 'claude-json' \| 'opencode-json' \| 'custom', filename }` |
 | `renderMcpConfig?` | Custom renderer for `format: 'custom'` (app-shipped only) — you own env-substitution |
 | `modelPrefix?` | Prefix model ids need (e.g. `openai/`) |
 | `probe` | A cheap command that proves it runs — the workbench doctor surfaces it |
 | `guide` | What a driving agent should understand: sessions, resume, results |
-| `install?` | RESERVED — image-build layer hints, validated now, consumed later |
+| `install?` | Image-build / auto-update hints: `{ npm?: string[], commands?: string[], notes?: string }`. Builtins declare `npm` packages the workbench image preinstalls and `talaria-harness-update` refreshes. |
 
 The host merges your definition into the harness registry (builtin < app-shipped <
 admin-custom, by slug): it becomes selectable per agent, its auth/env provision into the
