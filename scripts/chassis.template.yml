@@ -43,6 +43,12 @@ service:
   # every other agent. Tune per deployment; these are headroom for a coding
   # harness, not a tight budget.
   pids_limit: ${AGENT_PIDS_LIMIT:-512}
+  # AGENT_MEM_LIMIT is the uniform default every agent renders with; agents
+  # whose workbench resolves get mem_limit replaced at render time with
+  # AGENT_WB_MEM_LIMIT (default 8g) — their sandbox also runs builds, dev
+  # servers, and headless browsers. Both stay live compose interpolation, so a
+  # deployment overrides either from fleet/.env. A changed limit lands on the
+  # next roll, not on reconcile.
   mem_limit: ${AGENT_MEM_LIMIT:-4g}
   cpus: ${AGENT_CPUS:-2}
   # NOT set, deliberately: `user:`. s6-overlay expects to start as root and drop

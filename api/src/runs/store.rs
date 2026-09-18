@@ -911,6 +911,27 @@ pub async fn active_run_of_kind(
     Ok(latest.filter(|r| !is_terminal(r.state)))
 }
 
+/// How many work sessions one agent is currently driving — the number the
+/// dispatch-side concurrency cap counts against. The live-state literal is the
+/// canonical set (`active_for` above); the agent is read from the run's input
+/// because a work session's subject is the TICKET, not the agent — `agentModel`
+/// is the only place the pairing lives. A plain function, not a `RunStore`
+/// method, by this file's own law: no driver performs this read.
+pub async fn live_work_sessions_for_agent(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "select count(*) from runs \
+         where kind = 'work-session' \
+           and state in ('queued', 'running', 'awaiting') \
+           and input->>'agentModel' = $1",
+    )
+    .bind(agent_model)
+    .fetch_one(pg)
+    .await
+}
+
 // ── Pure unit tests ──────────────────────────────────────────────────────────
 //
 // The Postgres surface is proven by the `#[ignore]`d live-DB tests in

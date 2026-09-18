@@ -101,6 +101,15 @@ const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, re
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
                         (trunc(extract(epoch from updated_at) * 1000))::bigint";
 
+/// How many `started` jobs one agent may have at once — the pull-side twin of
+/// work dispatch's `MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT`. A started job is
+/// a clone, a harness, usually a dev server and a browser in the agent's one
+/// container; past a few, the leftovers of context-switching starve the box
+/// (2026-09-17: eleven concurrent jobs, twenty-six OOM kills, every turn over
+/// its lease). The dispatch cap already keeps most agents under this — this
+/// gate is the backstop for jobs the agent starts off-session.
+pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = 3;
+
 type JobRow = (
     String,
     String,
@@ -684,6 +693,37 @@ async fn call_tool(
                             .into(),
                     );
                 }
+            }
+            // The pull side of task concurrency: a bounded number of live jobs
+            // per agent. Each started job means a clone, a harness, often a dev
+            // server and a browser inside your ONE container — the 2026-09-17
+            // pile-up was eleven concurrent jobs OOM-killing the sandbox until
+            // every turn died. `awaiting_approval` jobs are free (no clone URL,
+            // no processes) and never count. Drive the jobs you have.
+            let live: Vec<(String, String)> = match sqlx::query_as(
+                "select branch, repo from workbench_jobs \
+                 where agent_id = $1::uuid and status = 'started' order by created_at",
+            )
+            .bind(&agent.id)
+            .fetch_all(pg)
+            .await
+            {
+                Ok(rows) => rows,
+                Err(e) => return thrown(format!("job count: {e}")),
+            };
+            if live.len() >= MAX_CONCURRENT_JOBS_PER_AGENT {
+                let list = live
+                    .iter()
+                    .map(|(branch, repo)| format!("{repo}#{branch}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return CallOutcome::Fail(format!(
+                    "you already have {} live job(s) — the concurrent-job cap is {}. \
+                     Finish one (finish_job) or close a dead one (abandon) before starting \
+                     new work. Live jobs: {list}",
+                    live.len(),
+                    MAX_CONCURRENT_JOBS_PER_AGENT,
+                ));
             }
             let (ticket_ref, title) = match &task_id {
                 Some(task_id) => match ticket_ref_of(pg, task_id).await {

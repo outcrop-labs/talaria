@@ -1477,6 +1477,17 @@ pub async fn render_fleet(
             if !wb.image.is_empty() {
                 obj.insert("image".into(), json!(wb.image));
             }
+            // A workbench agent runs model-authored builds, dev servers, and
+            // headless browsers IN its own container — the 2026-09-17 outcrop
+            // incident was eleven concurrent jobs' leftovers (vite, two Chrome
+            // clusters, tsservers, a playwright install) OOM-killing a default
+            // 4g chassis twenty-six times. Workbench agents get their own,
+            // higher ceiling, overridable per deployment exactly like
+            // AGENT_MEM_LIMIT. The concurrent-job caps (workbench mcp +
+            // work dispatch) keep this headroom finite; this is not a license
+            // for unbounded pile-up. Lands only on roll — reconcile never
+            // recreates a running container for a config change.
+            obj.insert("mem_limit".into(), json!("${AGENT_WB_MEM_LIMIT:-8g}"));
             for (k, v) in &wb.env {
                 env.insert(k.clone(), v.clone());
             }
