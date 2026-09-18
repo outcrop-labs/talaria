@@ -165,3 +165,26 @@ MIT, free forever ([`LICENSE`](./LICENSE)). Open source and self-hostable is the
 self-hosting never loses features. Missing something you'd need to actually run your business
 here? That's the whole idea: [open an issue](https://github.com/outcrop-labs/talaria/issues)
 and help shape it.
+
+## Acknowledgements
+
+Talaria stands on a small mountain of open source. The surfaces you touch every minute:
+Svelte, Vite, TanStack Query, TipTap and ProseMirror, Tailwind CSS, sv-router, Lucide,
+emoji-mart, highlight.js and lowlight, the remark/rehype/unified family. The machinery you
+never see: the api is Rust on axum, tokio, sqlx, serde and tower, with cryptography from
+RustCrypto, mail from lettre and JS-evaluation from Boa; the agent toolkit speaks the Model
+Context Protocol; the desktop shell is Tauri. The data plane runs PostgreSQL, Redis, Qdrant,
+MinIO, SearXNG and Hugging Face's text-embeddings-inference. The fleet itself runs Hermes
+from Nous Research — the agent runtime every Talaria agent is. The workbench's coding
+harnesses drive opencode, Pi and Oh My Pi. And none of it builds or ships without Bun,
+TypeScript, Vitest, Docker, Alpine, Node, or GitHub's Actions runners and GHCR.
+
+To every maintainer behind those names: Talaria exists because you kept building. Thank you.
+
+### The commitment
+
+A sizeable portion of the proceeds from Talaria Cloud is committed to supporting the
+projects on this list — sponsorships, bounties, and upstream contributions — with the split
+published openly. They made this possible; they share in it. That is the deal too, in
+writing, before the first invoice.
+

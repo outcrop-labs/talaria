@@ -43,11 +43,13 @@ const ROW: &str = "id::text, name, label, description, url, headers, timeout_sec
                    (trunc(extract(epoch from tools_refreshed_at) * 1000))::bigint as tools_refreshed_ms, \
                    required_headers, (oauth is not null) as oauth_enabled, builtin, \
                    app_slug::text, created_by, \
-                   (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
+                   (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
+                   package, env_enc::text";
 
 /// A registry row, every column. The jsonb columns ride
 /// as the raw Value — pg owns their key order and the wire answer must carry
 /// it byte-for-byte.
+#[derive(Clone)]
 pub struct McpServer {
     pub id: String,
     pub name: String,
@@ -75,6 +77,12 @@ pub struct McpServer {
     pub app_slug: Option<String>,
     pub created_by: Option<String>,
     pub created_ms: i64,
+    /// Package servers (npm/pypi/oci): the declarations document — image,
+    /// runtime args, declared env, pull state. Declarations only; the VALUES
+    /// live sealed in `env_enc` and never answer a GET.
+    pub package: Option<Value>,
+    /// SecretBox-sealed env values + filled run-args (`pkg::SealedDoc`).
+    pub env_enc: Option<String>,
 }
 
 /// A registry row as it comes off the wire, in ROW order. A derived struct,
@@ -100,6 +108,8 @@ struct ServerRow {
     app_slug: Option<String>,
     created_by: Option<String>,
     created_ms: i64,
+    package: Option<Value>,
+    env_enc: Option<String>,
 }
 
 fn server_of_row(r: ServerRow) -> McpServer {
@@ -122,6 +132,8 @@ fn server_of_row(r: ServerRow) -> McpServer {
         app_slug: r.app_slug,
         created_by: r.created_by,
         created_ms: r.created_ms,
+        package: r.package,
+        env_enc: r.env_enc,
     }
 }
 
@@ -147,6 +159,8 @@ pub fn server_wire(s: &McpServer) -> Value {
         "appSlug": s.app_slug,
         "createdBy": s.created_by,
         "createdAt": epoch_ms_to_iso(s.created_ms),
+        // Declarations only — env_enc is never serialized to any wire.
+        "package": s.package,
     })
 }
 
@@ -565,11 +579,16 @@ pub struct NewServer<'a> {
     /// Declared header forms; defaults fill in per the schema's normalization.
     pub required_headers: &'a Value,
     pub created_by: &'a str,
+    /// Package installs: the declarations document + the sealed credential
+    /// blob (see pkg.rs).
+    pub package: Option<&'a Value>,
+    pub env_enc: Option<String>,
 }
 
 pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<McpServer, String> {
-    // name/description/isSecret/placeholder, with the nullish defaults
-    // baked in.
+    // The full InputWithVariables shape, with the nullish defaults baked in —
+    // `value`/`variables` carry the registry's credential templates that
+    // drive the connect forms.
     let declared: Vec<Value> = input
         .required_headers
         .as_array()
@@ -579,9 +598,14 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
                     serde_json::json!({
                         "name": h.get("name").cloned().unwrap_or(Value::Null),
                         "description": h.get("description").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "isRequired": h.get("isRequired").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Bool(false)),
                         // `h.isSecret ?? false` — absent AND null both land on false.
                         "isSecret": h.get("isSecret").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Bool(false)),
                         "placeholder": h.get("placeholder").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "default": h.get("default").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "choices": h.get("choices").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "value": h.get("value").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
+                        "variables": h.get("variables").filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null),
                     })
                 })
                 .collect()
@@ -589,8 +613,8 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
         .unwrap_or_default();
     // AssertSqlSafe: the interpolation is this crate's ROW column list.
     let sql = format!(
-        "insert into mcp_servers (name, label, description, url, headers, timeout_secs, auth_mode, required_headers, created_by) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning {ROW}"
+        "insert into mcp_servers (name, label, description, url, headers, timeout_secs, auth_mode, required_headers, created_by, package, env_enc) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning {ROW}"
     );
     let row: Option<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(input.name)
@@ -604,6 +628,8 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
         .bind(input.auth_mode)
         .bind(Value::Array(declared))
         .bind(input.created_by)
+        .bind(input.package.cloned().unwrap_or(Value::Null))
+        .bind(&input.env_enc)
         .fetch_optional(pg)
         .await
         .map_err(|e| e.to_string())?;
@@ -748,11 +774,22 @@ pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
             "this server is published by an app; disable or uninstall the app instead".into(),
         );
     }
+    // A package server's container goes with its row — the reconcile pass
+    // would sweep it anyway, but the sweep is lazy and the name is gone.
+    let pkg_row: Option<(String,)> =
+        sqlx::query_as("select name from mcp_servers where id::text = $1 and package is not null")
+            .bind(id)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| e.to_string())?;
     sqlx::query("delete from mcp_servers where id::text = $1") // assignments/access/credentials cascade
         .bind(id)
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
+    if let Some((name,)) = pkg_row {
+        crate::mcp::pkg::stop_pkg(&name).await;
+    }
     Ok(())
 }
 
@@ -1199,7 +1236,7 @@ pub async fn refresh_mcp_tools(
     sb: &SecretBox,
     id: &str,
 ) -> Result<Vec<Value>, String> {
-    let Some(server) = get_mcp_server(pg, id).await.map_err(|e| e.to_string())? else {
+    let Some(mut server) = get_mcp_server(pg, id).await.map_err(|e| e.to_string())? else {
         return Err("not found".into());
     };
     if server.app_slug.is_some() {
@@ -1210,6 +1247,69 @@ pub async fn refresh_mcp_tools(
             "app \"{}\" publishes its catalog from the app module, which stays TS by rule 10 (docs/RUST-MIGRATION.md)",
             server.app_slug.unwrap_or_default()
         ));
+    }
+    // Package servers split by transport: stdio packages converse through
+    // the pump (the cached handshake answers initialize); oci-http packages
+    // relay like remotes, against the container's resolved URL — shadow the
+    // row and fall through to the ordinary conversation below.
+    if let Some(spec) = server
+        .package
+        .as_ref()
+        .and_then(crate::mcp::pkg::PkgSpec::of)
+    {
+        if spec.transport == "http" {
+            let url = crate::mcp::pkg::ensure_http(sb, &server, &spec).await?;
+            server = McpServer { url, ..server };
+        } else {
+            let init = crate::mcp::pkg::pkg_call(
+                pg,
+                sb,
+                &server,
+                &spec,
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {},
+                        "clientInfo": { "name": "talaria", "version": "1.0" },
+                    },
+                }),
+            )
+            .await
+            .map_err(|e| format!("package server unavailable: {e}"))?;
+            if init.1.get("error").is_some() {
+                return Err(format!(
+                    "package server refused the handshake: {}",
+                    init.1
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?")
+                ));
+            }
+            let list = crate::mcp::pkg::pkg_call(
+                pg,
+                sb,
+                &server,
+                &spec,
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {},
+                }),
+            )
+            .await
+            .map_err(|e| format!("package server unavailable: {e}"))?;
+            let tools = list
+                .1
+                .pointer("/result/tools")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new()));
+            store_catalog(pg, id, &tools).await?;
+            return Ok(tools.as_array().cloned().unwrap_or_default());
+        }
     }
     // The Workbench is IN-PROCESS, and `talaria-workbench://core` is a routing
     // token rather than an endpoint — there is nothing to connect to. The

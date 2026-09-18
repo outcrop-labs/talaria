@@ -4,6 +4,7 @@
   import { portal } from '@/lib/portal'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
+  import { DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle } from '@/lib/dropdown-position'
   import type { ContextMenuEntry, MenuIcon } from './context-menu.svelte'
 
   // Anchored dropdown menu — the SAME shell and item grammar as the context
@@ -17,6 +18,7 @@
     class: className,
     footer,
     content,
+    onWillOpen,
   }: {
     /** Renders the trigger; the `open` param lets it style its active state. */
     trigger: Snippet<[boolean]>
@@ -31,6 +33,8 @@
     /** Replaces the item list entirely — custom panel bodies (swatch grids,
      *  small forms). Items/footer are ignored when set. Receives `close`. */
     content?: Snippet<[() => void]>
+    /** Runs before the panel opens (e.g. refresh a live list). */
+    onWillOpen?: () => void | Promise<void>
   } = $props()
 
   let open = $state(false)
@@ -46,12 +50,13 @@
     open = false
   }
 
-  function toggle() {
+  async function toggle() {
     if (open) return close()
+    await onWillOpen?.()
     const r = ref?.getBoundingClientRect()
     if (!r) return
     const vert = up ? `bottom: ${window.innerHeight - r.top + 4}px` : `top: ${r.bottom + 4}px`
-    const horiz = align === 'right' ? `right: ${Math.max(8, window.innerWidth - r.right)}px` : `left: ${Math.max(8, r.left)}px`
+    const horiz = dropdownHorizStyle(align, r, window.innerWidth, DROPDOWN_PANEL_MAX_WIDTH_PX)
     pos = `position: fixed; z-index: 80; ${vert}; ${horiz}`
     open = true
   }
@@ -108,7 +113,7 @@
       onclick={(e) => e.stopPropagation()}
       class={cn(
         popPanel,
-        'min-w-44 max-w-72',
+        'min-w-44 max-w-72 max-w-[min(18rem,calc(100vw-16px))]',
         up
           ? align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left'
           : align === 'right' ? 'origin-top-right' : 'origin-top-left',

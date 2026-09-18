@@ -2,9 +2,11 @@
 //! in beacon.rs / registry.rs, geometry in layout.rs — these wire them to the
 //! window and its webviews.
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl, Window};
+use tauri_plugin_updater::UpdaterExt;
 
-use crate::{ShellState, View, beacon, layout, registry, registry::Instance};
+use crate::{ShellState, View, beacon, layout, registry, registry::Instance, settings};
 
 fn main_window(app: &AppHandle) -> Result<Window, String> {
     app.get_window("main")
@@ -208,4 +210,101 @@ pub fn remove_instance(app: AppHandle, id: String) -> Result<Vec<Instance>, Stri
         set_view(&app, View::Welcome)?;
     }
     Ok(state.instances.lock().unwrap().clone())
+}
+
+#[tauri::command]
+pub fn get_desktop_settings(app: AppHandle) -> settings::DesktopSettings {
+    app.state::<ShellState>().settings.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn set_titlebar_mode(
+    app: AppHandle,
+    mode: settings::TitlebarMode,
+) -> Result<settings::DesktopSettings, String> {
+    let state = app.state::<ShellState>();
+    {
+        let mut current = state.settings.lock().unwrap();
+        current.titlebar = mode;
+        settings::save(&state.settings_path, &current)?;
+    }
+    let window = main_window(&app)?;
+    settings::apply(&window, mode)?;
+    Ok(state.settings.lock().unwrap().clone())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowAction {
+    Minimize,
+    ToggleMaximize,
+    Close,
+    StartDragging,
+}
+
+#[tauri::command]
+pub fn desktop_window(app: AppHandle, action: WindowAction) -> Result<(), String> {
+    let window = main_window(&app)?;
+    match action {
+        WindowAction::Minimize => window.minimize().map_err(|e| format!("minimizing: {e}"))?,
+        WindowAction::ToggleMaximize => {
+            if window
+                .is_maximized()
+                .map_err(|e| format!("reading maximize: {e}"))?
+            {
+                window
+                    .unmaximize()
+                    .map_err(|e| format!("unmaximizing: {e}"))?;
+            } else {
+                window.maximize().map_err(|e| format!("maximizing: {e}"))?;
+            }
+        }
+        WindowAction::Close => window.close().map_err(|e| format!("closing: {e}"))?,
+        WindowAction::StartDragging => window
+            .start_dragging()
+            .map_err(|e| format!("starting a drag: {e}"))?,
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub version: String,
+    pub notes: Option<String>,
+}
+
+/// Compare this build to GitHub's latest stable `latest.json`. None means
+/// this version is current (or the endpoint had nothing newer).
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| format!("updater: {e}"))?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(UpdateInfo {
+            version: update.version,
+            notes: update.body,
+        })),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("checking for an update: {e}")),
+    }
+}
+
+/// Download the latest signed payload, apply it, and relaunch. The updater
+/// verifies the minisign signature against the pubkey in tauri.conf.json
+/// before touching the install.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| format!("updater: {e}"))?;
+    let Some(update) = updater
+        .check()
+        .await
+        .map_err(|e| format!("checking for an update: {e}"))?
+    else {
+        return Err("already on the latest version".into());
+    };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("installing the update: {e}"))?;
+    app.restart();
 }

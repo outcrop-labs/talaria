@@ -106,7 +106,7 @@ impl RegisteredHarness {
 /// An admin reading the panel top to bottom therefore reads "here is what you
 /// control" before "here is what your agents are doing with the models you
 /// already gave them".
-static DEFS: [LazyLock<HarnessDefinition>; 37] = [
+static DEFS: [LazyLock<HarnessDefinition>; 39] = [
     // ── Assigned in Admin ─────────────────────────────────────────────────────
     LazyLock::new(defs::titler::titler_harness),
     LazyLock::new(defs::summarizer::summarizer_harness),
@@ -158,9 +158,15 @@ static DEFS: [LazyLock<HarnessDefinition>; 37] = [
     // The fourth: calendar and mail, where a wrong answer reaches somebody
     // outside the company.
     LazyLock::new(defs::hermes_google::hermes_google_harness),
-    // The fifth and last: commissioning research. Narrow on purpose — it measures
+    // The fifth: commissioning research. Narrow on purpose — it measures
     // the DELEGATION, never the report, which the research-* harnesses own.
     LazyLock::new(defs::hermes_research::hermes_research_harness),
+    // The sixth: channels. Read before post, react don't chatter, replies stay
+    // in thread. See `defs/hermes_comms.rs`.
+    LazyLock::new(defs::hermes_comms::hermes_comms_harness),
+    // Parallel-workspace asks (Notion, Obsidian, Excel, Box, wiki): reach for
+    // Talaria, not the Hermes pack we pruned. See `defs/hermes_authority.rs`.
+    LazyLock::new(defs::hermes_authority::hermes_authority_harness),
     // Can it spend a credential it is not allowed to see? The platform half of
     // that arrangement is enforced in code; this is the MODEL half, which until
     // now nothing measured. See `defs/secret_handles.rs`.
@@ -260,6 +266,8 @@ mod tests {
         "hermes:governance",
         "hermes:google",
         "hermes:research",
+        "hermes:comms",
+        "hermes:authority",
         "secrets:handles",
         "workbench:light",
         "workbench:standard",
@@ -631,6 +639,8 @@ mod tests {
                 "hermes:governance",
                 "hermes:google",
                 "hermes:research",
+                "hermes:comms",
+                "hermes:authority",
                 "secrets:handles",
                 "channel-plan",
                 "plan-doc",

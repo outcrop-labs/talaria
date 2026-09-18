@@ -48,7 +48,7 @@ use crate::tasks::{
     agent_ticket_refusal, get_task, log_activity, update_task,
 };
 use crate::workbench::harnesses::{
-    HarnessSource, effort_model, effort_models, harness_model_arg, list_harness_defs,
+    HarnessSource, effort_model, effort_models, fill_harness_cmd, list_harness_defs,
 };
 use crate::workbench::resolve_workbench;
 
@@ -100,6 +100,15 @@ const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, re
                         effort, plan, status, pr_url, summary, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
                         (trunc(extract(epoch from updated_at) * 1000))::bigint";
+
+/// How many `started` jobs one agent may have at once — the pull-side twin of
+/// work dispatch's `MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT`. A started job is
+/// a clone, a harness, usually a dev server and a browser in the agent's one
+/// container; past a few, the leftovers of context-switching starve the box
+/// (2026-09-17: eleven concurrent jobs, twenty-six OOM kills, every turn over
+/// its lease). The dispatch cap already keeps most agents under this — this
+/// gate is the backstop for jobs the agent starts off-session.
+pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = 3;
 
 type JobRow = (
     String,
@@ -685,6 +694,37 @@ async fn call_tool(
                     );
                 }
             }
+            // The pull side of task concurrency: a bounded number of live jobs
+            // per agent. Each started job means a clone, a harness, often a dev
+            // server and a browser inside your ONE container — the 2026-09-17
+            // pile-up was eleven concurrent jobs OOM-killing the sandbox until
+            // every turn died. `awaiting_approval` jobs are free (no clone URL,
+            // no processes) and never count. Drive the jobs you have.
+            let live: Vec<(String, String)> = match sqlx::query_as(
+                "select branch, repo from workbench_jobs \
+                 where agent_id = $1::uuid and status = 'started' order by created_at",
+            )
+            .bind(&agent.id)
+            .fetch_all(pg)
+            .await
+            {
+                Ok(rows) => rows,
+                Err(e) => return thrown(format!("job count: {e}")),
+            };
+            if live.len() >= MAX_CONCURRENT_JOBS_PER_AGENT {
+                let list = live
+                    .iter()
+                    .map(|(branch, repo)| format!("{repo}#{branch}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return CallOutcome::Fail(format!(
+                    "you already have {} live job(s) — the concurrent-job cap is {}. \
+                     Finish one (finish_job) or close a dead one (abandon) before starting \
+                     new work. Live jobs: {list}",
+                    live.len(),
+                    MAX_CONCURRENT_JOBS_PER_AGENT,
+                ));
+            }
             let (ticket_ref, title) = match &task_id {
                 Some(task_id) => match ticket_ref_of(pg, task_id).await {
                     Some((r, t)) => (r.unwrap_or_default(), t),
@@ -942,6 +982,7 @@ async fn call_tool(
                     std::cmp::Ordering::Equal
                 }
             });
+            let session_dir = format!("/opt/data/workbench/sessions/{}", job.id);
             let harnesses: Vec<Value> = found
                 .iter()
                 .map(|h| {
@@ -953,22 +994,34 @@ async fn call_tool(
                     );
                     entry.insert(
                         "run".into(),
-                        json!(match &model {
-                            Some(m) => h
-                                .def
-                                .invoke
-                                .replace("<model>", &harness_model_arg(&h.def, m)),
-                            None => h.def.invoke.clone(),
-                        }),
+                        json!(fill_harness_cmd(
+                            &h.def.invoke,
+                            &h.def,
+                            model.as_deref(),
+                            &session_dir
+                        )),
                     );
                     if let Some(json_invoke) = &h.def.json_invoke {
                         entry.insert(
                             "jsonRun".into(),
-                            json!(match &model {
-                                Some(m) =>
-                                    json_invoke.replace("<model>", &harness_model_arg(&h.def, m)),
-                                None => json_invoke.clone(),
-                            }),
+                            json!(fill_harness_cmd(
+                                json_invoke,
+                                &h.def,
+                                model.as_deref(),
+                                &session_dir
+                            )),
+                        );
+                    }
+                    if let Some(c) = &h.def.continue_invoke {
+                        entry.insert(
+                            "continueRun".into(),
+                            json!(fill_harness_cmd(c, &h.def, model.as_deref(), &session_dir)),
+                        );
+                    }
+                    if let Some(c) = &h.def.continue_json_invoke {
+                        entry.insert(
+                            "continueJsonRun".into(),
+                            json!(fill_harness_cmd(c, &h.def, model.as_deref(), &session_dir)),
                         );
                     }
                     if Some(h.def.slug.as_str()) == chosen_slug.as_deref() {
@@ -994,7 +1047,7 @@ async fn call_tool(
                     .to_string()
             } else {
                 format!(
-                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it, so concurrent jobs stay isolated. Your harness's session history persists under /opt/data/workbench/harness and is shared with your department — resume prior sessions or pick up a teammate's hand-off from there. Work ONLY on {branch}; commit and push to it as you go — your sandbox is preconfigured so commits are authored as YOU (do not override git identity). Never touch {base} directly. Use your CHOSEN harness (first in the list, marked chosen) with the {effort}-effort model shown — via its MCP tools if registered on your config, else its jsonRun form; read structured results, never scrape raw logs. Escalate effort only when the work truly needs it. When done, call finish_job — Talaria opens the PR.",
+                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; commit and push as you go — commits are authored as YOU. Never touch {base}. You are the orchestrator: the CHOSEN harness (first in the list) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Escalate effort only when the work truly needs it. When the change is right, finish_job — Talaria opens the PR.",
                     base = created_branch.base,
                 )
             };
@@ -1006,6 +1059,7 @@ async fn call_tool(
             value.insert("resumed".into(), json!(!created_branch.created));
             value.insert("status".into(), json!(job.status));
             value.insert("workdir".into(), json!(workdir));
+            value.insert("sessionDir".into(), json!(session_dir));
             if !gated {
                 value.insert("cloneUrl".into(), clone);
             }

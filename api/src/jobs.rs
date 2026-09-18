@@ -93,6 +93,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // adoption — the engine acts only on instances that handed over the
     // keys (the minute hand's reconcile is one settings-row read when idle).
     crate::mcp::library::register_mcp_library_refresh_job(crate::mcp::library::library());
+    crate::mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
     crate::update::job::register_update_check_job(Arc::new(crate::update::job::UpdateDeps {
         state: state.clone(),
     }));

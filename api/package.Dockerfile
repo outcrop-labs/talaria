@@ -30,7 +30,11 @@ FROM docker.io/library/rust:1.97.1-alpine3.21 AS build
 RUN apk add --no-cache build-base cmake
 
 WORKDIR /repo
-COPY api ./
+COPY api ./api
+# include_str! in fleet/hermes_skills.rs walks to repo-root scripts/. Flattening
+# api/ onto /repo made that path /scripts/... and the package build 404'd.
+COPY scripts/hermes-skill-authority.json ./scripts/hermes-skill-authority.json
+WORKDIR /repo/api
 # Cache mounts carry the registry and target dir across CI runs, so a source
 # change recompiles the crate, not the dependency tree. The binary is copied
 # OUT of the target mount before the layer closes — a cache mount's contents

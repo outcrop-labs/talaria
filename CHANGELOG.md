@@ -100,6 +100,225 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   reorder + step-delete order honesty, chain-delete leaves tickets
   standing) need a dev Postgres + Redis.
 
+- **The desktop app auto-versions itself off main.** Every green build of a
+  push that touches `desktop/` now mints the next minor version — highest
+  suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1 — and
+  publishes it as `desktop-vX.Y.0`: a regular GitHub Release carrying all
+  platform installers, `SHA256SUMS`, update signatures, and `latest.json`, so
+  `/releases/latest` resolves to it and installed desktop apps auto-update
+  (the feed flips only after every asset is uploaded). Until now trunk desktop
+  builds were `0.0.0-sha…` artifacts that expired. Majors stay manual
+  (dispatch `desktop-package` with `version=1.0.0, publish=true`); auto never
+  crosses a major, and stable `vX.Y.Z` cuts raise the baseline. Verified:
+  `bun run check`; the merge itself is the first live mint (resolve →
+  desktop-vX.Y.0 → release + latest.json flipped) per RELEASING.md's new
+  auto-minor section.
+
+- **Marketplace installs for package-shipped MCP servers (npm, pypi, and
+  docker/oci images) — the GitHub-and-friends long tail.** The official
+  registry's package-only entries — over a third of sampled search results —
+  were invisible to the marketplace ("packages that need a local process
+  can't be one-click added"); now they install like anything else. Each
+  install becomes one hardened `docker run` child of the api: stdio packages
+  (npm via `npx` in stock node, pypi via `uv tool run` in the bundled-python
+  uv image, oci images directly) pipe JSON-RPC through a pump this process
+  owns, and oci packages declaring an http transport run detached and relay
+  like any remote. The container carries the Hermes chassis posture minus
+  its cap_adds (no-new-privileges, cap-drop ALL, pids/memory/cpus ceilings,
+  pinned DNS, default bridge network — no fleet network, no postgres, no
+  docker socket), registry-declared `docker run` flags pass an allowlist
+  (volumes/env/mounts/hosts/publish only) enforced at install AND spawn,
+  images pull at install and pin by digest, and credentials use the same
+  Input schema as hosted headers — sealed at rest, materialized into the
+  child's environment only at spawn, never on any GET. Installs show a
+  third-party-code warning with an explicit confirm (strongest wording for
+  community tier); v1 runs one org-shared container per package (per-user
+  auth is refused). Lazy spawn with respawn debounce, tools refresh and
+  gateway dispatch through the pump, stop on disable/delete, and a boot +
+  5-minute reconcile that sweeps strays. Verified live: installing
+  `mcp-server-time` (pypi/uvx) pulls and digest-pins the runner image,
+  discovers `get_current_time`/`convert_time`, answers a gateway
+  `tools/call` with real data through the hardened container, re-answers
+  `initialize` from the cached handshake, stops on disable, and self-heals
+  after an api restart with no stray containers; browser-verified the pkg
+  badge, the community warning, env fields, and the acknowledgement gate.
+
+- **Workbench task concurrency is capped, with the sweep as the queue** — the
+  fix for the 2026-09-17 outcrop freeze, where the engineering agent was
+  offered 14 tickets at once, started 11 workbench jobs, and the accumulated
+  per-job processes (vite, two Chrome clusters, tsservers, a Playwright
+  install) OOM-killed its 4 GiB container 26 times until every work session
+  blew its turn lease. Dispatch now offers a WORKBENCH agent at most 3 live
+  work sessions (agents without a workbench are uncapped — their sessions are
+  just model turns); a ticket past the cap is simply re-offered by the 60s
+  sweep within a minute of a slot freeing — no queue table. `start_job`
+  refuses a 4th live job naming the ones it has; approving a heavy plan at the
+  cap 400s (reject always allowed). Workbench agents also render with
+  `mem_limit: ${AGENT_WB_MEM_LIMIT:-8g}` (their sandbox runs builds, dev
+  servers, and browsers; overridable per deployment like `AGENT_MEM_LIMIT`,
+  lands on roll). Verified: cargo tests; dev stack — rendered compose carries
+  the WB limit only on workbench agents; a workbench agent at 3 live sessions
+  gets no 4th, and the ticket dispatches ~1 min after a slot frees;
+  workbench-less agents dispatch past 3 unimpeded.
+
+### Changed
+
+- **Workbench coding harnesses are opencode, Pi, and Oh My Pi.** Claude Code
+  and Codex are gone from the builtin registry and the seeded `dev` profile
+  (a migration strips them from existing profiles and clears per-agent picks).
+  All three authenticate through Talaria's gateway (`OPENAI_BASE_URL` /
+  `OPENAI_API_KEY` / `LLM_WORKBENCH_API_KEY`) — Pi and Oh My Pi get a rendered
+  `models.json` `talaria` provider. Hermes is the orchestrator, not a script:
+  first turn is `jsonRun`, later turns are `continueJsonRun` (`-c`) against a
+  per-job `--session-dir` (opencode continues by running again in the workdir).
+  Print/json mode, no TUI; `--auto-approve` / `-a` so tool and trust prompts
+  cannot hang. Invoke templates use `npx @latest` so CLIs auto-update; the
+  workbench image preinstalls them and `talaria-harness-update` refreshes
+  globals. Git in the sandbox uses `/usr/local/bin/git-credential-talaria`
+  via `/etc/gitconfig` (`GIT_CONFIG_SYSTEM` set) — clone URLs carry no token.
+  Skills teach driving, not forbidding the CLI. Dispatch forbids hand-coding
+  and one-shotting. Verified: harness unit tests including `fill_harness_cmd`;
+  `talaria_provider_models_json`; gitconfig pin; `bun run check`; live
+  `--version` on opencode 1.18.31, pi 0.85.1, omp 18.2.4.
+
+### Fixed
+
+- **Marketplace servers that declare credentials lost their API keys on the
+  way in.** The official registry declares remote headers as a `value`
+  template ("Bearer {smithery_api_key}") with an optional `variables` map —
+  and `classify()` parsed neither, so the install and per-user connect forms
+  showed a bare header box, stored whatever was typed verbatim, and a pasted
+  key left out the `Bearer ` prefix (upstream 401s); fixed publisher-set
+  headers were dropped entirely, and the install POST's parser also stripped
+  `isRequired`/`default`/`choices` from the stored declarations that drive
+  the Settings → Connections form. The full `InputWithVariables` shape now
+  flows registry → library wire → stored row → forms: a templated header
+  renders one field per variable (secret-ness inherited, metadata from
+  `variables`), the typed values are composed back into the final header, a
+  literal `value` auto-applies with no prompt, and nothing is ever stored
+  half-composed (`Bearer {key}` stays braces-intact until filled). Verified
+  live: installing Smithery Notion from the marketplace prompts for
+  `smithery_api_key → Authorization` and lands
+  `Authorization: Bearer sk-…` on the server row; the per-user form renders
+  the same field from the stored declaration; `bun run api:check` + `verify`.
+
+- **OAuth connect failed on providers whose dynamic registration refuses
+  hosted callback URLs (Vercel).** Vercel's DCR endpoint allowlists
+  redirect URIs to localhost and a few known clients, so any deployed
+  Talaria's callback gets `400 invalid_redirect_uri` — which `ensure_client`
+  collapsed to the unhelpful "client registration failed (400)" while the
+  server card's manual-app escape hatch stayed hidden behind its
+  `dcr: true` flag. A refused registration now persists a `dcrRejected`
+  marker on the OAuth config, the connect error carries the upstream's own
+  reason plus the exact callback URL to register, and the card shows the
+  manual-app setup (its dashboard app accepts custom callbacks; saving
+  credentials clears the refusal and restores Connect). Discovery also
+  falls back to the protected-resource document's `resource_documentation`,
+  so Vercel's setup banner links its real MCP docs. Verified live against
+  mcp.vercel.com: connect under a hosted origin answers the actionable
+  sentence and sets the marker; saving a manual client clears it and
+  re-arms Connect; `oauth_meta` matrix + sentence pinned in tests.
+
+- **Stripe's MCP server was un-connectable: OAuth discovery never found its
+  authorization-server metadata.** Stripe's issuer URL carries a path
+  (`https://access.stripe.com/mcp`) and serves metadata at the RFC 8414
+  location — the well-known segment before the path — which was the one
+  shape `discover_oauth` didn't try, so Stripe installed as a plain
+  header-auth server with no Connect flow at all. The candidate set (now
+  extracted and test-pinned) tries every well-known shape; probed the other
+  marketplace majors while in there — Notion, Linear, Airtable, and PayPal
+  register hosted callbacks out of the box, Figma and Asana refuse DCR and
+  land in the manual-app flow above, and GitHub keeps its documented
+  cross-domain pin. Verified live: registering `mcp.stripe.com` now
+  discovers OAuth (`dcr: true`) and a connect start 302s into Stripe's
+  authorize endpoint.
+
+- **Hobby apps on `*.vercel.app` wore the gold "official" badge in
+  marketplace search.** An `app.vercel.<project>` namespace reverses to
+  `<project>.vercel.app`, and a remote on that same host promoted the entry
+  to first-party — the platform's badge on a tenant. Shared-hosting
+  suffixes (vercel.app, netlify.app, pages.dev, workers.dev, github.io,
+  gitlab.io, fly.dev, deno.dev) now demote to community. Verified live:
+  `agent-svg-registry` search answers `community`; registry-shaped fixtures
+  pinned in the library tests.
+
+- **The api package image failed to compile on `main`.** `hermes_skills.rs`
+  `include_str!`s `scripts/hermes-skill-authority.json` from repo root;
+  `package.Dockerfile` had flattened `api/` onto `/repo`, so the path was
+  `/scripts/...` and missing. The build now keeps the repo layout
+  (`/repo/api` + `/repo/scripts/...`). Verified: the previous `main` package
+  job failed on that exact error; this file is the fix.
+
+- **Every page 404'd in production while `/api` kept working.** The server
+  build now splits into `dist/server/assets/*.js` chunks — one directory
+  deeper than the `dist/server/server.js` the SPA-shell lookup was anchored
+  to — so `readFile('../client/index.html', import.meta.url)` threw, the
+  handler cached `shell = null`, and all four deployed instances (dogfood ×3
+  + bbills) served plain `404 Not Found` for `/`, `/home`, `/login`, … Dev
+  mode never runs the shell path (vite serves `index.html` itself) and no
+  gate executed the built bundle, so CI was green on it. The shell now
+  resolves from `process.cwd()` (`ui/` in dev and under server-entry alike —
+  the rule `app-build/paths.ts` states). Verified: `bun scripts/check-prod-shell.ts`
+  red on the pre-fix build, green after; `bun run check`; ui test + typecheck.
+
+### Added
+
+- **CI smokes the built bundle.** The `ui` CI job now runs
+  `bun run build` + `bun scripts/check-prod-shell.ts`: it imports the real
+  `dist/server/server.js` and asserts GET `/` (and a deep client route)
+  serve the SPA shell and that `/api` paths never leak it. This is the gate
+  that would have caught the 404 outage at PR time instead of on the fleet.
+
+- **Hermes bundled skills stay classified, and every pack we prune occupies
+  the name agents reach for.** Hermes ships Notion, Obsidian, Airtable, gh,
+  gws, Himalaya, Box, xlsx, llm-wiki, raw coding-harness CLIs, and more —
+  and adds packs on image updates. A six-path prune array in docker.rs
+  silently let new conflicts in, and only `github` had a Talaria signpost,
+  so a search for "notion" found a hole and the model improvised. Source of
+  truth is `scripts/hermes-skill-authority.json`: every snapshot path is
+  replaced, keepExact, or keepPrefix; unclassified fails `bun run check`.
+  Replaced packs are `rm -rf`'d on every container roll (`hermes_skills::
+  prune_paths`); a short SKILL.md at `scripts/skills/<signpost>/` occupies
+  the Hermes `name:` (email, obsidian, notion, airtable, google-workspace,
+  box, xlsx, llm-wiki, claude-code, codex, opencode, xurl,
+  teams-meeting-pipeline — github already existed). Fitness: `hermes:authority`
+  (six fixtures — Notion/Obsidian/Excel/Box/wiki/Airtable asks must hit
+  Talaria tools). keepPrefixes is apple/ only — every other family is
+  keepExact so a new creative/ or web/ pack cannot sneak in. The chassis boot
+  smoke `find`s SKILL.md in the live image and fails on unclassified packs.
+  `update_document` takes `rows`/`html` and refuses markdown on a sheet or
+  page (that would smash the grid). Soul-header bullets generate from
+  `TALARIA_TOOLS` so a new tool cannot miss the contract. `hermes:authority`
+  fails a reply that called the right tool then claimed "saved to Notion".
+  Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
+  `cargo test --lib` hermes_skills, hermes_authority, talaria_tools, sandbox,
+  org, registry.
+
+- **Agents can now author spreadsheets and web pages, reply in threads, and
+  react — and the fitness suite measures whether a model uses those tools.**
+  The built-in toolkit was missing three teammate-shaped verbs the HTTP API
+  already allowed: `create_sheet` (Files spreadsheet, JSON `string[][]` with
+  row 0 the header), `create_page` (HTML microsite), and `react_to_message`
+  (the dual-auth reaction route, under the agent's own identity).
+  `post_to_channel` takes `threadId` so a reply stays in the thread;
+  `read_channel` takes the same id to read one thread. The talaria-toolkit
+  skill teaches the reflexes (grid ≠ markdown table; a ✅ is not a new post).
+  Fitness: catalog 58 → 61 with sandbox backends; new `hermes:comms` harness
+  (six fixtures: read before post, react don't chatter, replies stay in
+  thread, the room not a DM, ids from listings, don't spam DMs) bound to the
+  workspace-agent fleet slot; `hermes:documents` gains a spreadsheet-vs-
+  markdown-table fixture. Guardrails unchanged (no assign, no complete).
+  Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
+  `cargo test --lib` on `hermes_comms`, `hermes_documents`, `talaria_tools`,
+  `toolbox::sandbox`, `registry::tests`, and `score::tests`.
+
+- **Desktop updates itself from a GitHub Release.** Settings → Profile (and
+  the launcher) Check for updates reads `/releases/latest/download/latest.json`,
+  verifies a minisign signature, replaces the install, and relaunches. Stable
+  tags attach `latest.json` plus `.sig` files for the AppImage, the universal
+  `.app.tar.gz`, and the NSIS installer; RCs do not (GitHub's `/releases/latest`
+  is the stable pointer). Verified: `write-latest-json.py --self-test`; cargo
+  test + clippy on the new `check_for_update` / `install_update` commands.
 - **Teams are first-class.** They are no longer a boards-only grouping:
   Manage → Teams (`/teams`) is a LibraryPane of org teams (people + agents),
   with admin view grants, permission overrides, and MCP tool rules on the
@@ -435,6 +654,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   an agent def carries. Verified: a unit test pins the override (authored
   keys preserved, both modes flipped), and a live render in an isolated
   worktree emits the approvals block into the agent's config.yaml.
+
+- **Desktop switcher, titlebar, unnamed instances, and in-app files.** Four
+  desktop-app bugs in one pass. The instance switcher in the left nav opened
+  `align="right"`, so the menu painted off the left edge of the window —
+  dropdowns now clamp to the viewport and the switcher always opens to the
+  right of its trigger. macOS and Windows had no working titlebar
+  (`decorations: false` and no custom chrome): Settings → Profile (and the
+  launcher) now pick Themed / OS / None, Themed by default on every OS, with
+  drag + min/max/close following traffic-light side. Switching dropped
+  instances that had no company name because the row matched on a blank
+  label — the switcher now matches beacon uuid then origin, and labels fall
+  back to the host. Chat (and board) file chips opened `target="_blank"` on
+  `/api/uploads/…`, which in the desktop webview left the app with no Save;
+  every such file now opens an in-app modal (preview when we can, "cannot
+  be previewed" when we cannot, Download either way, like Drive). Verified:
+  `dropdownHorizStyle` and `findCurrentInstance` / `instanceDisplayLabel`
+  unit tests; `sanitizeFilename`; cargo tests for settings default/roundtrip.
 
 ### Added
 

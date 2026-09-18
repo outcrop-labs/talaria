@@ -10,6 +10,7 @@
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { pushToast } from '@/lib/toast.svelte'
+  import { composeHeader, headerFields, type HeaderDecl, type HeaderField } from '@/routes/app/mcp'
 
   /** Per-user MCP connected accounts: servers the org registered in per-user
    *  auth mode. Connect yours (a token header, sealed at rest) and your
@@ -19,10 +20,19 @@
     name: string
     label: string
     description: string | null
-    requiredHeaders: Array<{ name: string; description: string | null; isSecret: boolean; placeholder: string | null }>
+    requiredHeaders: HeaderDecl[]
     authKind: 'oauth' | 'headers'
     connected: boolean
   }
+
+  /** A server registered before it carried declarations: one auth header is
+   *  what such servers have always wanted in practice. */
+  const GUESSED: HeaderDecl[] = [
+    { name: 'Authorization', description: null, isRequired: true, isSecret: true, placeholder: 'Bearer …', default: null, choices: null, value: null, variables: null },
+  ]
+
+  const fieldsOf = (s: McpConnection): HeaderField[] =>
+    (s.requiredHeaders.length ? s.requiredHeaders : GUESSED).flatMap((h) => headerFields(h))
 
   const qc = useQueryClient()
   // The section hides itself when the org runs no per-user servers. That is a
@@ -36,6 +46,12 @@
   const isPending = $derived(query.isPending)
   let connecting = $state<string | null>(null)
   let values = $state<Record<string, string>>({})
+
+  // Opening a form starts clean — a stale value must never leak across servers.
+  const toggle = (s: McpConnection) => {
+    values = {}
+    connecting = connecting === s.id ? null : s.id
+  }
 
   // The OAuth popup announces completion — flip to "connected" live.
   $effect(() => {
@@ -57,8 +73,19 @@
       return
     }
     connecting = null
-    values = {}
     await qc.invalidateQueries({ queryKey: ['me-mcp'] })
+  }
+
+  // The user's own credentials only: fixed publisher headers ride the org
+  // row, so a declared header contributes its typed variables and nothing else.
+  const submit = (s: McpConnection) => {
+    const headers: Record<string, string> = {}
+    for (const h of s.requiredHeaders.length ? s.requiredHeaders : GUESSED) {
+      const fs = headerFields(h)
+      if (!fs.length || !fs.some((f) => (values[f.key] ?? '').trim())) continue
+      headers[h.name] = composeHeader(h, values)
+    }
+    void put(s.id, headers)
   }
 </script>
 
@@ -98,39 +125,37 @@
                   Connect
                 </Button>
               {:else}
-                <Button size="sm" onclick={() => (connecting = connecting === s.id ? null : s.id)}>
+                <Button size="sm" onclick={() => toggle(s)}>
                   Connect
                 </Button>
               {/if}
             </div>
             {#if connecting === s.id}
               <div transition:slide={{ duration: 150 }} class="space-y-2 pl-1">
-                <!-- Publisher-declared credentials drive the form; a server
-                     without declarations falls back to one auth header. -->
-                {#each s.requiredHeaders.length ? s.requiredHeaders : [{ name: 'Authorization', description: null, isSecret: true, placeholder: 'Bearer …' }] as h (h.name)}
+                <!-- Publisher-declared credentials drive the form — one field
+                     per template variable, composed back into its header; a
+                     server without declarations falls back to one auth
+                     header. -->
+                {#each fieldsOf(s) as f (f.key)}
                   <div class="flex max-w-xl items-end gap-2">
-                    <span class="w-40 shrink-0 truncate pb-2 font-mono text-[11px] text-muted" title={h.name}>
-                      {h.name}
+                    <span class="w-40 shrink-0 truncate pb-2 font-mono text-[11px] text-muted" title={f.header === f.label ? f.label : `${f.label} → ${f.header}`}>
+                      {f.label}{#if f.header !== f.label}<span class="text-ink-dim"> → {f.header}</span>{/if}
                     </span>
                     <div class="min-w-0 flex-1">
                       <Input
                         size="sm"
-                        type={h.isSecret ? 'password' : 'text'}
-                        value={values[h.name] ?? ''}
-                        oninput={(e) => (values = { ...values, [h.name]: e.currentTarget.value })}
-                        placeholder={h.placeholder ?? ''}
+                        type={f.isSecret ? 'password' : 'text'}
+                        value={values[f.key] ?? ''}
+                        oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
+                        placeholder={f.placeholder ?? ''}
                         autocomplete="off"
                       />
-                      {#if h.description}<div class="mt-0.5 font-sans text-[11px] text-muted/80">{h.description}</div>{/if}
+                      {#if f.description}<div class="mt-0.5 font-sans text-[11px] text-muted/80">{f.description}</div>{/if}
                     </div>
                   </div>
                 {/each}
                 <div class="flex justify-end">
-                  <Button
-                    size="sm"
-                    disabled={!Object.values(values).some((v) => v.trim())}
-                    onclick={() => void put(s.id, Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim())))}
-                  >
+                  <Button size="sm" disabled={!fieldsOf(s).some((f) => (values[f.key] ?? '').trim())} onclick={() => submit(s)}>
                     Connect
                   </Button>
                 </div>

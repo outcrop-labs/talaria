@@ -1051,7 +1051,7 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
 /// what makes git send the repo along with the host — without it a GitHub
 /// answer could only be scoped to github.com, i.e. every repo the
 /// installation can reach.
-const GITCONFIG: &str = "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n";
+const GITCONFIG: &str = "[credential]\n\thelper = /usr/local/bin/git-credential-talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n";
 
 /// Best-effort executable bit for the credential helper. (The write's
 /// create-mode only stamps newly created files; this also repairs a helper
@@ -1477,18 +1477,21 @@ pub async fn render_fleet(
             if !wb.image.is_empty() {
                 obj.insert("image".into(), json!(wb.image));
             }
+            // A workbench agent runs model-authored builds, dev servers, and
+            // headless browsers IN its own container — the 2026-09-17 outcrop
+            // incident was eleven concurrent jobs' leftovers (vite, two Chrome
+            // clusters, tsservers, a playwright install) OOM-killing a default
+            // 4g chassis twenty-six times. Workbench agents get their own,
+            // higher ceiling, overridable per deployment exactly like
+            // AGENT_MEM_LIMIT. The concurrent-job caps (workbench mcp +
+            // work dispatch) keep this headroom finite; this is not a license
+            // for unbounded pile-up. Lands only on roll — reconcile never
+            // recreates a running container for a config change.
+            obj.insert("mem_limit".into(), json!("${AGENT_WB_MEM_LIMIT:-8g}"));
             for (k, v) in &wb.env {
                 env.insert(k.clone(), v.clone());
             }
             env.insert("TALARIA_WORKBENCH_PROFILE".into(), json!(wb.slug));
-            env.insert(
-                "CLAUDE_CONFIG_DIR".into(),
-                json!("/opt/data/workbench/harness/claude"),
-            );
-            env.insert(
-                "CODEX_HOME".into(),
-                json!("/opt/data/workbench/harness/codex"),
-            );
             env.insert(
                 "XDG_DATA_HOME".into(),
                 json!("/opt/data/workbench/harness/xdg"),
@@ -1501,6 +1504,7 @@ pub async fn render_fleet(
                 "npm_config_cache".into(),
                 json!("/opt/data/workbench/harness/npm"),
             );
+            env.insert("GIT_CONFIG_SYSTEM".into(), json!("/etc/gitconfig"));
             let agent_label = format!("{} (Talaria agent)", def.display_name);
             let agent_email = format!("{}@agents.talaria.local", def.model);
             env.insert("GIT_AUTHOR_NAME".into(), json!(agent_label.clone()));
@@ -1508,8 +1512,8 @@ pub async fn render_fleet(
             env.insert("GIT_COMMITTER_NAME".into(), json!(agent_label));
             env.insert("GIT_COMMITTER_EMAIL".into(), json!(agent_email));
             // Harness auth, gateway-first: OpenAI-compatible harnesses point
-            // at Talaria's gateway; native harnesses get their provider's key
-            // interpolated from the endpoint registry's env contract.
+            // at Talaria's gateway; a custom native-auth harness gets its
+            // provider's key interpolated from the endpoint registry.
             for slug in &wb.harnesses {
                 let Some(h) = harness_registry.iter().find(|r| r.def.slug == *slug) else {
                     continue;
@@ -1518,42 +1522,16 @@ pub async fn render_fleet(
                     env.insert(k.clone(), v.clone());
                 }
                 if let HarnessAuth::Provider { provider, env_var } = &h.def.auth {
-                    // CLAUDE CODE RIDES ANY ENDPOINT THAT SPEAKS ITS
-                    // PROTOCOL: ANTHROPIC_BASE_URL toward a discovered
-                    // Anthropic-compatible surface beats a native key nobody
-                    // has — the org's model access already reaches such a
-                    // gateway in that case, and the same key opens it.
-                    if h.def.slug == "claude-code"
-                        && let Some((base, key_env)) =
-                            crate::workbench::harnesses::anthropic_surface(pg).await
-                    {
-                        env.insert("ANTHROPIC_BASE_URL".into(), json!(base));
-                        // AUTH_TOKEN is the bearer form Claude Code sends to
-                        // a custom base URL; API_KEY stays unset so the two
-                        // auth shapes never fight.
-                        env.insert(
-                            "ANTHROPIC_AUTH_TOKEN".into(),
-                            json!(format!("${{{key_env}}}")),
-                        );
-                    } else {
-                        match endpoints.iter().find(|(p, _)| p == provider) {
-                            Some((_, key_env)) => {
-                                env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
-                            }
-                            // A native-auth harness with no provider endpoint is
-                            // the claude-code-without-anthropic case: the harness
-                            // arms, its first run fails on a missing key, and the
-                            // agent hand-codes instead — the exact silence that
-                            // hid harness-nonuse across the fleet. Say it at
-                            // render time, where the fix (add the endpoint) is
-                            // one admin panel away.
-                            None => tracing::warn!(
-                                "[fleet] harness \"{}\" wants a {} provider key ({}), and no endpoint speaks the Anthropic protocol — add the endpoint or the key, or the harness runs unauthenticated",
-                                h.def.slug,
-                                provider,
-                                env_var,
-                            ),
+                    match endpoints.iter().find(|(p, _)| p == provider) {
+                        Some((_, key_env)) => {
+                            env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
                         }
+                        None => tracing::warn!(
+                            "[fleet] harness \"{}\" wants a {} provider key ({}) and no matching endpoint is configured — add the endpoint, or the harness runs unauthenticated",
+                            h.def.slug,
+                            provider,
+                            env_var,
+                        ),
                     }
                 }
             }
@@ -1630,54 +1608,81 @@ pub async fn render_fleet(
                 written.push(mc.filename.clone());
             }
 
-            // ── Harness parity: unattended auth, and the same skills Hermes
-            // gets ─────────────────────────────────────────────────────────
-            // A harness running unattended in a container hits first-run
-            // walls nobody is there to click through — an onboarding/login
-            // prompt, a permission prompt on the first tool — and it never
-            // sees the fleet's skills. The walls are small POLICY files, not
-            // state: they mount read-only from this directory (the gitconfig
-            // mechanism) at the exact CLAUDE_CONFIG_DIR / CODEX_HOME paths
-            // under /opt/data. ANTHROPIC_API_KEY in the env (the Provider
-            // auth above) is Claude Code's documented API-key path — no
-            // OAuth login; these files clear what remains. The skills mount
-            // the FLEET SKILLS HOST DIRECTORY directly — the same source
-            // /opt/skills itself mounts from — NOT a symlink: a symlink to a
-            // container-only path is dangling on the host, and the docker
-            // daemon answers a dangling bind source with mkdir-then-"file
-            // exists", which 500s the whole agent up (the first roll after
-            // #369 landed proved it live).
+            // Gateway models.json for Pi / Oh My Pi: a `talaria` provider
+            // pointed at the same OpenAI-compatible gateway the personas use.
+            // `$OPENAI_API_KEY` interpolates from the container env at request
+            // time (gateway_env already set OPENAI_*).
+            let llm_base = format!("{}/api/llm/v1", gateway_origin());
+            let effort = crate::workbench::harnesses::effort_models(pg, None)
+                .await
+                .unwrap_or_default();
+            let mut model_ids: Vec<String> = Vec::new();
+            for key in ["light", "standard", "heavy"] {
+                if let Some(id) = effort.get(key).and_then(Value::as_str)
+                    && !model_ids.iter().any(|m| m == id)
+                {
+                    model_ids.push(id.to_string());
+                }
+            }
+            let models_body = talaria_provider_models_json(&llm_base, &model_ids);
+            tokio::fs::write(
+                wb_dir.join("models.json"),
+                serde_json::to_string_pretty(&models_body).unwrap_or_default(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            tokio::fs::write(
+                wb_dir.join("pi-settings.json"),
+                "{\n  \"defaultProjectTrust\": \"always\"\n}\n",
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+            // Unattended policy + skills: the fleet skills HOST DIRECTORY
+            // bind-mounted directly — a symlink to a container-only path is
+            // dangling on the host, and the docker daemon answers a dangling
+            // bind source with mkdir-then-"file exists", which 500s the agent.
             for slug in &wb.harnesses {
                 match slug.as_str() {
-                    "claude-code" => {
-                        tokio::fs::write(
-                            wb_dir.join("claude--.claude.json"),
-                            "{\n  \"hasCompletedOnboarding\": true\n}\n",
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-                        tokio::fs::write(
-                            wb_dir.join("claude--settings.json"),
-                            "{\n  \"permissions\": { \"defaultMode\": \"bypassPermissions\" }\n}\n",
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    "pi" => {
                         harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/claude/.claude.json:ro",
-                            wb_dir.join("claude--.claude.json").display()
+                            "{}:/opt/data/workbench/harness/pi/models.json:ro",
+                            wb_dir.join("models.json").display()
                         ));
                         harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/claude/settings.json:ro",
-                            wb_dir.join("claude--settings.json").display()
+                            "{}:/opt/data/workbench/harness/pi/settings.json:ro",
+                            wb_dir.join("pi-settings.json").display()
                         ));
+                        if written.iter().any(|f| f == "mcp.json") {
+                            harness_mounts.push(format!(
+                                "{}:/opt/data/workbench/harness/pi/mcp.json:ro",
+                                wb_dir.join("mcp.json").display()
+                            ));
+                        }
                         harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/claude/skills:ro",
+                            "{}:/opt/data/workbench/harness/pi/skills:ro",
                             fleet_skills.display()
                         ));
                     }
-                    "codex" => {
+                    "oh-my-pi" => {
+                        for home in ["/home/hermes/.omp/agent", "/root/.omp/agent"] {
+                            harness_mounts.push(format!(
+                                "{}:{home}/models.json:ro",
+                                wb_dir.join("models.json").display()
+                            ));
+                            if written.iter().any(|f| f == "mcp.json") {
+                                harness_mounts.push(format!(
+                                    "{}:{home}/mcp.json:ro",
+                                    wb_dir.join("mcp.json").display()
+                                ));
+                            }
+                            harness_mounts
+                                .push(format!("{}:{home}/skills:ro", fleet_skills.display()));
+                        }
+                    }
+                    "opencode" => {
                         harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/codex/skills:ro",
+                            "{}:/opt/data/workbench/harness/opencode/skills:ro",
                             fleet_skills.display()
                         ));
                     }
@@ -1688,12 +1693,12 @@ pub async fn render_fleet(
             // directory — where the skills live, whichever tool lands there.
             let _ = tokio::fs::write(
                 wb_dir.join("AGENTS.md"),
-                "# Workspace skills\n\nThe fleet's skills live at `/opt/skills` (read-only). Read the one that matches your task before you start — especially `talaria-toolkit` and `workbench-driving`.\n",
+                "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never `gh`, never a token in a remote URL.\n",
             )
             .await;
             let _ = tokio::fs::write(
                 wb_dir.join("CLAUDE.md"),
-                "# Workspace skills\n\nThe fleet's skills live at `/opt/skills` (read-only). Read the one that matches your task before you start — especially `talaria-toolkit` and `workbench-driving`.\n",
+                "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never `gh`, never a token in a remote URL.\n",
             )
             .await;
         }
@@ -1901,7 +1906,7 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
     routed.insert("approvals".into(), Value::Object(cfg));
 }
 
-/// Claude Code's .mcp.json shape — `${VAR}` expands from the container env.
+/// Pi / Oh My Pi `.mcp.json` shape — `${VAR}` expands from the container env.
 fn claude_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
     json!({
         "mcpServers": names.iter().map(|n| (n.clone(), json!({
@@ -1922,6 +1927,30 @@ fn opencode_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
             "headers": { "X-Agent-Name": model, "X-Api-Key": "{env:TALARIA_AGENT_KEY}" },
             "enabled": true,
         }))).collect::<Map<String, Value>>(),
+    })
+}
+
+/// Pi / Oh My Pi `models.json`: a single `talaria` provider against the org
+/// gateway. `apiKey` interpolates `$OPENAI_API_KEY` at request time.
+fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
+    let models: Vec<Value> = if model_ids.is_empty() {
+        vec![json!({ "id": "default" })]
+    } else {
+        model_ids.iter().map(|id| json!({ "id": id })).collect()
+    };
+    json!({
+        "providers": {
+            "talaria": {
+                "baseUrl": base_url,
+                "api": "openai-completions",
+                "apiKey": "$OPENAI_API_KEY",
+                "compat": {
+                    "supportsDeveloperRole": false,
+                    "supportsReasoningEffort": false
+                },
+                "models": models,
+            }
+        }
     })
 }
 
@@ -2344,6 +2373,34 @@ service:
     }
 
     #[test]
+    fn talaria_provider_models_json_points_at_the_gateway() {
+        let v = talaria_provider_models_json("http://gw/api/llm/v1", &["qwen3:14b".into()]);
+        assert_eq!(
+            v["providers"]["talaria"]["baseUrl"],
+            json!("http://gw/api/llm/v1")
+        );
+        assert_eq!(
+            v["providers"]["talaria"]["apiKey"],
+            json!("$OPENAI_API_KEY"),
+            "Pi interpolates $ENV at request time — the key must not be baked"
+        );
+        assert_eq!(
+            v["providers"]["talaria"]["api"],
+            json!("openai-completions")
+        );
+        assert_eq!(
+            v["providers"]["talaria"]["models"][0]["id"],
+            json!("qwen3:14b")
+        );
+        let empty = talaria_provider_models_json("http://gw/api/llm/v1", &[]);
+        assert_eq!(
+            empty["providers"]["talaria"]["models"][0]["id"],
+            json!("default"),
+            "an empty catalog still loads the provider so --model can be passed"
+        );
+    }
+
+    #[test]
     fn yaml11_emit_round_trips_through_a_real_yaml_parser() {
         let cfg = json!({
             "models": {
@@ -2440,7 +2497,7 @@ empty_list: []
         assert!(GIT_CREDENTIAL_HELPER.ends_with('\n'));
         assert_eq!(
             GITCONFIG,
-            "[credential]\n\thelper = talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n"
+            "[credential]\n\thelper = /usr/local/bin/git-credential-talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n"
         );
         // The helper lands executable — a non-executable helper is a silent
         // no-op, the exact failure the portability block exists to prevent.

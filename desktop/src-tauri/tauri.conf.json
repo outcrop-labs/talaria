@@ -40,5 +40,16 @@
     "category": "Utility",
     "shortDescription": "A multitenant shell around Talaria instances",
     "longDescription": "Talaria Desktop is a launcher around hosted Talaria instances: add an instance by URL, switch between them in a click, and each instance keeps its own saved session."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3RTRFMzE4MEVEMEY3MjcKUldRbjk5QU9HT1BrcCtLbUVDTC9EVUV5Snk5a3hhMk9hcXRvMHQyWWhEcDB0cTA4RFhhOEdNdy8K",
+      "endpoints": [
+        "https://github.com/outcrop-labs/talaria/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

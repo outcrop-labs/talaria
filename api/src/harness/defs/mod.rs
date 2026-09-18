@@ -11,6 +11,8 @@ pub mod briefer;
 pub mod channel_plan;
 pub mod concluder;
 pub mod distiller;
+pub mod hermes_authority;
+pub mod hermes_comms;
 pub mod hermes_documents;
 pub mod hermes_google;
 pub mod hermes_governance;

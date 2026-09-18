@@ -10,6 +10,7 @@
 // Importing every route eagerly keeps the table flat and total: what you see
 // in src/routes/api/ is the whole resident surface, loaded at boot.
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { compileRoute, matchRoute, type ApiMethod, type ApiRoute } from './api-route'
 import { json } from './http'
 import { maybeProxy } from './rust-proxy'
@@ -29,12 +30,18 @@ const routes = Object.entries(modules)
 
 // ── SPA shell ────────────────────────────────────────────────────────────────
 // Any GET that isn't an API route gets index.html; the client router takes it
-// from there. Read lazily (dist/client lives next to dist/server) and cached.
+// from there. Read lazily and cached.
 let shell: string | null = null
 async function loadShell(): Promise<string | null> {
   if (shell !== null) return shell
   try {
-    shell = await readFile(new URL('../client/index.html', import.meta.url), 'utf8')
+    // cwd, never import.meta.url: the bundled form of this file can land at
+    // dist/server/server.js OR — since the server build splits into chunks —
+    // at dist/server/assets/*.js, one directory deeper; a "../client" anchor
+    // is right for exactly one of those and 404'd every page fleet-wide on
+    // the other (2026-09-17). process.cwd() is ui/ in vite dev and under
+    // server-entry alike — the rule app-build/paths.ts states.
+    shell = await readFile(join(process.cwd(), 'dist', 'client', 'index.html'), 'utf8')
   } catch {
     shell = null // dev: vite serves index.html itself, this path never runs
   }

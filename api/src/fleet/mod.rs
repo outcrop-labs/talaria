@@ -4,6 +4,7 @@ pub mod cascade;
 pub mod create;
 pub mod docker;
 pub mod federate;
+pub mod hermes_skills;
 pub mod layout;
 pub mod preflight;
 pub mod reconcile;

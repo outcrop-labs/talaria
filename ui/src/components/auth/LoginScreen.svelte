@@ -48,7 +48,7 @@
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && (adminLogin = false)} />
 
-<div class="relative flex min-h-screen items-center justify-center px-4">
+<div class="relative flex h-full min-h-full items-center justify-center px-4">
   <!-- The desktop instance switcher renders only inside the Talaria desktop
        shell (feature-detected; a browser gets nothing). Pre-login there is no
        nav rail to host it, and without it the login screen would be a dead

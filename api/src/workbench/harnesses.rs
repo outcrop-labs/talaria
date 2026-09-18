@@ -121,12 +121,19 @@ pub struct WorkbenchHarnessDef {
     /// Prefix model ids need for this harness's CLI (e.g. "openai/").
     #[serde(default)]
     pub model_prefix: Option<String>,
-    /// Invocation template — <model> and <task> placeholders.
+    /// Invocation template — `<model>`, `<task>`, `<sessionDir>` placeholders.
     pub invoke: String,
     /// Structured-output form — REQUIRED for good drivers; agents are taught
     /// to read structured results, never scrape logs.
     #[serde(default)]
     pub json_invoke: Option<String>,
+    /// Follow-up on the same session as a prior invoke (same placeholders).
+    /// Hermes steers; the harness keeps context. Omit when every run in the
+    /// workdir continues the project session on its own (opencode).
+    #[serde(default)]
+    pub continue_invoke: Option<String>,
+    #[serde(default)]
+    pub continue_json_invoke: Option<String>,
     /// How to run the harness AS an MCP server (stdio) — the preferred
     /// integration: agents drive it with tools.
     #[serde(default)]
@@ -308,11 +315,24 @@ pub fn harness_model_arg(h: &WorkbenchHarnessDef, model: &str) -> String {
     format!("{}{}", h.model_prefix.as_deref().unwrap_or(""), model)
 }
 
-/// The four builtin definitions — one json! per harness because each wire
-/// carries its OWN key order, and they differ (opencode carries
-/// env+modelPrefix early; claude-code interleaves mcpServe before probe).
-/// The struct is derived from these, so there is exactly one place a builtin
-/// is spelled.
+/// Slot model and per-job session dir into an invoke template. `<task>` stays
+/// for the driving agent to fill — that is the steer, not a platform value.
+pub fn fill_harness_cmd(
+    tmpl: &str,
+    h: &WorkbenchHarnessDef,
+    model: Option<&str>,
+    session_dir: &str,
+) -> String {
+    let mut s = tmpl.replace("<sessionDir>", session_dir);
+    if let Some(m) = model {
+        s = s.replace("<model>", &harness_model_arg(h, m));
+    }
+    s
+}
+
+/// The three builtin definitions — one json! per harness because each wire
+/// carries its OWN key order. The struct is derived from these, so there is
+/// exactly one place a builtin is spelled.
 fn builtin_wires() -> Vec<Value> {
     vec![
         serde_json::json!({
@@ -321,122 +341,42 @@ fn builtin_wires() -> Vec<Value> {
             "auth": "gateway",
             "env": { "OPENCODE_CONFIG": "/opt/workbench-config/opencode.json" },
             "modelPrefix": "openai/",
-            "invoke": "npx -y opencode-ai run --model <model> \"<task>\"",
-            "jsonInvoke": "npx -y opencode-ai run --model <model> --format json \"<task>\"",
-            "probe": "npx -y opencode-ai --version",
+            "invoke": "npx -y opencode-ai@latest run --model <model> \"<task>\"",
+            "jsonInvoke": "npx -y opencode-ai@latest run --model <model> --format json \"<task>\"",
+            "probe": "npx -y opencode-ai@latest --version",
             "mcpConfig": { "format": "opencode-json", "filename": "opencode.json" },
-            "guide": "opencode is session-based: each run continues a project session. Use --format json and read the structured result (message, file edits) instead of scraping text. It reads OPENCODE_CONFIG for MCP servers — your Talaria tools are already wired in there.",
+            "install": { "npm": ["opencode-ai"] },
+            "guide": "You are the orchestrator; opencode is the pair programmer. Stay in the start_job workdir — each `run` continues that project's session, so follow-ups are just another run with the next steer, not a new clone. Give ONE scoped ask at a time (a function, a test, a review of the last diff), read the JSON result, then steer. Do not dump the whole ticket into one prompt. Git over https:// just works (Talaria injects the credential); never gh, never a token in a URL. After the change is right: git diff, verify, finish_job.",
         }),
         serde_json::json!({
-            "slug": "claude-code",
-            "label": "Claude Code",
-            "auth": { "provider": "anthropic", "envVar": "ANTHROPIC_API_KEY" },
-            "invoke": "npx -y @anthropic-ai/claude-code -p \"<task>\" --model <model> --mcp-config /opt/workbench-config/mcp.json",
-            "jsonInvoke": "npx -y @anthropic-ai/claude-code -p \"<task>\" --model <model> --output-format json --mcp-config /opt/workbench-config/mcp.json",
-            "mcpServe": { "command": "npx", "args": ["-y", "@anthropic-ai/claude-code", "mcp", "serve"] },
-            "probe": "npx -y @anthropic-ai/claude-code --version",
+            "slug": "pi",
+            "label": "Pi",
+            "auth": "gateway",
+            "env": { "PI_CODING_AGENT_DIR": "/opt/data/workbench/harness/pi" },
+            "invoke": "npx -y @earendil-works/pi-coding-agent@latest -p -a --session-dir <sessionDir> --provider talaria --model <model> \"<task>\"",
+            "jsonInvoke": "npx -y @earendil-works/pi-coding-agent@latest --mode json -a --session-dir <sessionDir> --provider talaria --model <model> \"<task>\"",
+            "continueInvoke": "npx -y @earendil-works/pi-coding-agent@latest -p -a --session-dir <sessionDir> -c --provider talaria --model <model> \"<task>\"",
+            "continueJsonInvoke": "npx -y @earendil-works/pi-coding-agent@latest --mode json -a --session-dir <sessionDir> -c --provider talaria --model <model> \"<task>\"",
+            "probe": "npx -y @earendil-works/pi-coding-agent@latest --version",
             "mcpConfig": { "format": "claude-json", "filename": "mcp.json" },
-            "guide": "Claude Code returns a structured result with --output-format json (result text, cost, session_id) — resume a session with --resume <session_id> to ask follow-ups instead of restarting. Prefer its MCP tools when registered on your config; otherwise use the JSON form and read the result object, never raw logs.",
+            "install": { "npm": ["@earendil-works/pi-coding-agent"] },
+            "guide": "You are the orchestrator; Pi is the pair programmer. First turn: jsonRun (or run) with a scoped ask. Every later turn: continueJsonRun / continueRun (`-c`) against the same --session-dir — that is the conversation, not a new agent. Give one slice at a time, read message_end / agent_end, then steer. Never --no-session, never the TUI, never the whole ticket in one prompt. -a trusts the project so it does not stall. Git over https:// just works. After the change is right: git diff, verify, finish_job.",
         }),
         serde_json::json!({
             "slug": "oh-my-pi",
             "label": "Oh My Pi",
             "auth": "gateway",
-            "invoke": "npx -y @oh-my-pi/pi-coding-agent \"<task>\" --model <model>",
-            "probe": "npx -y @oh-my-pi/pi-coding-agent --version",
-            "guide": "Oh My Pi (omp) is a full terminal coding agent — hash-anchored edits, LSP, subagents, a browser. It inherits MCP/rules config from .claude/.codex-style dirs in the workspace, so your pass-through config reaches it via the repo. No first-party MCP server mode yet: drive it one-shot per task and verify its work yourself with git diff and tests.",
-        }),
-        serde_json::json!({
-            "slug": "codex",
-            "label": "Codex CLI",
-            "auth": "gateway",
-            "invoke": "npx -y @openai/codex exec --model <model> \"<task>\"",
-            "jsonInvoke": "npx -y @openai/codex exec --model <model> --json \"<task>\"",
-            "mcpServe": { "command": "npx", "args": ["-y", "@openai/codex", "mcp"] },
-            "probe": "npx -y @openai/codex --version",
-            "guide": "Codex exec emits JSON events with --json — read the final result event. As an MCP server (codex mcp) it exposes tool-driven sessions; prefer that when registered on your config.",
+            "modelPrefix": "talaria/",
+            "invoke": "npx -y @oh-my-pi/pi-coding-agent@latest -p --auto-approve --session-dir <sessionDir> --model <model> \"<task>\"",
+            "jsonInvoke": "npx -y @oh-my-pi/pi-coding-agent@latest --mode json --auto-approve --session-dir <sessionDir> --model <model> \"<task>\"",
+            "continueInvoke": "npx -y @oh-my-pi/pi-coding-agent@latest -p --auto-approve --session-dir <sessionDir> -c --model <model> \"<task>\"",
+            "continueJsonInvoke": "npx -y @oh-my-pi/pi-coding-agent@latest --mode json --auto-approve --session-dir <sessionDir> -c --model <model> \"<task>\"",
+            "probe": "npx -y @oh-my-pi/pi-coding-agent@latest --version",
+            "mcpConfig": { "format": "claude-json", "filename": "mcp.json" },
+            "install": { "npm": ["@oh-my-pi/pi-coding-agent"] },
+            "guide": "You are the orchestrator; Oh My Pi (omp) is the pair programmer. First turn: jsonRun. Later turns: continueJsonRun (`-c`) on the same --session-dir. One scoped ask per turn — a function, a failing test, a review of the last diff — then read the JSON events and steer. Never --no-session, never the TUI, never one-shot the feature. --auto-approve skips tool prompts. Hash-anchored edits, LSP, subagents, and a browser live inside omp; do not reimplement them. Git over https:// just works. After the change is right: git diff, verify, finish_job.",
         }),
     ]
-}
-
-// ── Anthropic-surface discovery ──────────────────────────────────────────────
-//
-// Claude Code speaks the Anthropic protocol (/v1/messages). WHERE the org's
-// Anthropic-compatible access lives is answered in three steps, cheapest
-// first, network only as the last resort and only ONCE per endpoint:
-//
-//   1. THE REFERENCE TABLE (gateway/provider.rs `anthropic_base`): providers
-//      with a KNOWN, fixed surface — no network, answered by slug.
-//   2. THE CACHE (`llm_endpoints.anthropic_base`): a probe verdict from an
-//      earlier render, stored on the row — the lookup is then a column read.
-//   3. THE PROBE: derive {base}/v1/messages from the endpoint's own base
-//      URL and GET it — 404 means no such route, anything else (401/405/400)
-//      means the door exists and wants auth. Unauthenticated on purpose: it
-//      asks "does the door exist", never "will my key open it". A hit is
-//      written back to the cache, so the network half of this function runs
-//      at most once per endpoint for the life of the install.
-//
-// Returns (base_url_without_trailing_slash, the endpoint's key env var).
-pub async fn anthropic_surface(pg: &sqlx::PgPool) -> Option<(String, String)> {
-    let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "select provider, base_url, api_key_env, anthropic_base from llm_endpoints \
-         where api_key_env is not null order by name",
-    )
-    .fetch_all(pg)
-    .await
-    .ok()?;
-    for (provider, base_url, key_env, cached) in rows {
-        let Some(key_env) = key_env.filter(|k| !k.is_empty()) else {
-            continue;
-        };
-        // 1. The reference table — the known providers, no network.
-        if let Some(base) = crate::gateway::provider::anthropic_base(&provider) {
-            return Some((base.to_string(), key_env));
-        }
-        // 2. The cache — an earlier probe's verdict.
-        if let Some(base) = cached.filter(|b| !b.is_empty()) {
-            return Some((base, key_env));
-        }
-        // 3. The probe — the row's own base URL, or the ORIGIN of the
-        // provider's native base when the row rides native (endpoint rows
-        // are OpenAI-shaped by construction; native_base carries the /v1
-        // and the Anthropic surface, when the provider has one, lives
-        // beside it). Verified once, then cached on the row.
-        let candidate = base_url
-            .filter(|b| !b.is_empty())
-            .map(|b| b.trim_end_matches('/').to_string())
-            .or_else(|| {
-                crate::gateway::provider::native_base(&provider).map(|n| {
-                    let origin = n.trim_end_matches('/');
-                    origin.strip_suffix("/v1").unwrap_or(origin).to_string()
-                })
-            });
-        let Some(trimmed) = candidate.filter(|c| !c.is_empty()) else {
-            continue;
-        };
-        let url = format!("{trimmed}/v1/messages");
-        let probe = crate::gateway::provider::http()
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(4))
-            .send()
-            .await;
-        if let Ok(resp) = &probe
-            && resp.status().as_u16() != 404
-        {
-            let _ = sqlx::query(
-                "update llm_endpoints set anthropic_base = $2 where provider = $1 and anthropic_base is null",
-            )
-            .bind(&provider)
-            .bind(trimmed.clone())
-            .execute(pg)
-            .await;
-            tracing::info!(
-                "[harnesses] {trimmed} answers the Anthropic protocol — cached; claude-code rides it ({key_env})"
-            );
-            return Some((trimmed, key_env));
-        }
-    }
-    None
 }
 
 // ── Effort → model (the platform's call, never the agent's) ──────────────────
@@ -582,9 +522,34 @@ mod tests {
             "openai/qwen3:14b"
         );
         let plain: WorkbenchHarnessDef =
-            serde_json::from_value(def("codex", "Codex CLI", HarnessAuth::Gateway, "r", "g"))
-                .unwrap();
+            serde_json::from_value(def("pi", "Pi", HarnessAuth::Gateway, "r", "g")).unwrap();
         assert_eq!(harness_model_arg(&plain, "m"), "m");
+    }
+
+    #[test]
+    fn fill_harness_cmd_slots_session_dir_and_leaves_task() {
+        let d: WorkbenchHarnessDef = serde_json::from_value(def(
+            "pi",
+            "Pi",
+            HarnessAuth::Gateway,
+            "pi -p --session-dir <sessionDir> --model <model> \"<task>\"",
+            "g",
+        ))
+        .unwrap();
+        let out = fill_harness_cmd(
+            &d.invoke,
+            &d,
+            Some("qwen3:14b"),
+            "/opt/data/workbench/sessions/abc",
+        );
+        assert_eq!(
+            out,
+            "pi -p --session-dir /opt/data/workbench/sessions/abc --model qwen3:14b \"<task>\""
+        );
+        assert!(
+            out.contains("\"<task>\""),
+            "the steer stays for the driving agent to fill"
+        );
     }
 
     #[test]
@@ -624,6 +589,7 @@ mod tests {
                 "jsonInvoke",
                 "probe",
                 "mcpConfig",
+                "install",
                 "guide"
             ]
         );
@@ -633,28 +599,31 @@ mod tests {
                 "slug",
                 "label",
                 "auth",
+                "env",
                 "invoke",
                 "jsonInvoke",
-                "mcpServe",
+                "continueInvoke",
+                "continueJsonInvoke",
                 "probe",
                 "mcpConfig",
+                "install",
                 "guide"
             ]
         );
         assert_eq!(
             keys(&wires[2]),
-            vec!["slug", "label", "auth", "invoke", "probe", "guide"]
-        );
-        assert_eq!(
-            keys(&wires[3]),
             vec![
                 "slug",
                 "label",
                 "auth",
+                "modelPrefix",
                 "invoke",
                 "jsonInvoke",
-                "mcpServe",
+                "continueInvoke",
+                "continueJsonInvoke",
                 "probe",
+                "mcpConfig",
+                "install",
                 "guide"
             ]
         );
