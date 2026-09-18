@@ -1,0 +1,7 @@
+name: talaria-events
+version: "1.0.0"
+description: Reports tool-call lifecycle (name, arguments, results) to the Talaria platform so run observability can show what the agent actually did. Auth is the agent's own TALARIA_AGENT_KEY; the platform clamps and scrubs what it stores.
+author: Talaria
+hooks:
+  - pre_tool_call
+  - post_tool_call

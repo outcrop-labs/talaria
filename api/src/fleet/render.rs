@@ -605,6 +605,39 @@ pub async fn seed_shared_skills() -> Result<(), String> {
     Ok(())
 }
 
+/// Seed the talaria-events Hermes plugin into the fleet tree — the plugin
+/// that reports tool-call args and RESULTS to the platform (the one datum no
+/// other wire carries). Embedded in the binary, written only on change, and
+/// mounted read-only into every agent at /opt/data/plugins/talaria-events
+/// (Hermes' user-plugin root). The compose bind source must exist before
+/// any up — the #369 symlink lesson.
+async fn seed_events_plugin() -> Result<(), String> {
+    let dir = crate::fleet::layout::fleet_dir()
+        .join("plugins")
+        .join("talaria-events");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("plugin dir create failed: {e}"))?;
+    for (name, bytes) in [
+        (
+            "plugin.yaml",
+            include_str!("plugin/talaria-events/plugin.yaml"),
+        ),
+        (
+            "__init__.py",
+            include_str!("plugin/talaria-events/__init__.py"),
+        ),
+    ] {
+        let path = dir.join(name);
+        if tokio::fs::read_to_string(&path).await.ok().as_deref() != Some(bytes)
+            && let Err(e) = tokio::fs::write(&path, bytes).await
+        {
+            return Err(format!("plugin file write failed: {e}"));
+        }
+    }
+    Ok(())
+}
+
 // ── config.yaml emission — YAML 1.1 aware ─────────────────────────────────────
 //
 // Hermes re-reads config.yaml with PyYAML, which resolves PLAIN scalars under
@@ -1141,6 +1174,7 @@ pub async fn render_fleet(
     ensure_fleet_env_key(pg).await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
     seed_shared_skills().await?;
+    seed_events_plugin().await?;
 
     // Credential-migration visibility — a render is the operator's moment.
     if let Ok(legacy) = crate::agent_auth::legacy_migration_status(pg).await
@@ -1181,6 +1215,9 @@ pub async fn render_fleet(
 
     let gw_base = crate::fleet::layout::mcp_gw_base();
     let fleet_skills = crate::fleet::layout::fleet_dir().join("skills");
+    let fleet_plugins = crate::fleet::layout::fleet_dir()
+        .join("plugins")
+        .join("talaria-events");
 
     let mut services: Map<String, Value> = Map::new();
     let mut secrets: Map<String, Value> = Map::new();
@@ -1316,6 +1353,25 @@ pub async fn render_fleet(
         let mut skills_out = skills_cfg.clone();
         skills_out.insert("external_dirs".into(), json!(ext_dirs));
         routed.insert("skills".into(), Value::Object(skills_out));
+
+        // The talaria-events plugin (mounted into every agent above) is
+        // enabled in config so Hermes registers its hooks. A user's own
+        // enabled list is preserved — ours is added, never replaces.
+        let mut plugins = routed
+            .get("plugins")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        let mut enabled: Vec<Value> = plugins
+            .get("enabled")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !enabled.iter().any(|v| v.as_str() == Some("talaria-events")) {
+            enabled.push(json!("talaria-events"));
+        }
+        plugins.insert("enabled".into(), json!(enabled));
+        routed.insert("plugins".into(), Value::Object(plugins));
 
         fleet_approvals(&mut routed);
 
@@ -1742,6 +1798,13 @@ pub async fn render_fleet(
             agent_dir.join("skills").display()
         ));
         vols.push(format!("{}:/opt/skills:ro", fleet_skills.display()));
+        // The events plugin — Hermes' user-plugin root is $HERMES_HOME/plugins,
+        // and /opt/data is that home; mounting the SPECIFIC subdir never
+        // shadows plugins already living on the state volume.
+        vols.push(format!(
+            "{}:/opt/data/plugins/talaria-events:ro",
+            fleet_plugins.display()
+        ));
         let protected = [
             "/opt/data",
             "/opt/data/config.yaml",

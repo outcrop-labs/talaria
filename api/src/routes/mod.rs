@@ -1313,6 +1313,10 @@ pub fn router(state: AppState) -> Router {
             get(agents::runs_watch::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/agents/tool-events",
+            post(agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/me/events",
             get(account::me_events::get).fallback(|| async { method_not_allowed("GET") }),
         )

@@ -108,13 +108,15 @@
     const mark =
       ev.t === 'tool'
         ? `⚙ ${ev.v}${ev.s === 'running' ? ' …' : ev.s === 'completed' ? ' ✓' : ''}`
-        : ev.t === 'wtool'
-          ? `🛠 ${ev.v}${ev.ms ? ` (${(ev.ms / 1000).toFixed(1)}s)` : ''}`
-          : ev.t === 'r'
-            ? `· ${ev.v}`
-            : `⚠ ${ev.v}`
+        : ev.t === 'toolfull'
+          ? `⚙ ${ev.v}${ev.s === 'running' ? ' …' : ' ✓'}`
+          : ev.t === 'wtool'
+            ? `🛠 ${ev.v}${ev.ms ? ` (${(ev.ms / 1000).toFixed(1)}s)` : ''}`
+            : ev.t === 'r'
+              ? `· ${ev.v}`
+              : `⚠ ${ev.v}`
     lines = [...lines, mark]
-    if ((ev.t === 'tool' || ev.t === 'wtool') && (ev.p || ev.r)) {
+    if ((ev.t === 'tool' || ev.t === 'toolfull' || ev.t === 'wtool') && (ev.p || ev.r)) {
       const detail = [ev.p, ev.r ? `→ ${ev.r}` : ''].filter(Boolean).join('\n')
       lines = [...lines, `  ${detail.split('\n').join('\n  ')}`]
     }

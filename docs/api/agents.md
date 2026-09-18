@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-16 routes.
+17 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -21,6 +21,7 @@
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
+| [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
 | [`/api/gaps`](#apigaps) | GET | `session` |
 | [`/api/gaps/{id}`](#apigapsid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/muse`](#apimuse) | POST | `session` |
@@ -177,6 +178,20 @@ Source: [`api/src/routes/agents/agents_register.rs`](../../api/src/routes/agents
 | `name` | `string(1, 200)` |  |
 | `role` | `string?(80)` |  |
 | `framework` | `string?(80)` |  |
+
+## `/api/agents/tool-events`
+
+Source: [`api/src/routes/agents/tool_events.rs`](../../api/src/routes/agents/tool_events.rs)
+
+> POST /api/agents/tool-events. The inbound half of the talaria-events
+> Hermes plugin: the agent's plugin reports each tool call's lifecycle
+> (name, args, RESULT — the thing no other wire carries) and this route
+> lands it on the agent's live run's watch stream, where the run-detail
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `{ok, landed}` | 200, 400 | — |
 
 ## `/api/gaps`
 

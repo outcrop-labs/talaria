@@ -595,7 +595,7 @@ async fn real_turn(
 /// persona display-redacts tool ARGUMENTS and the prompt is Talaria's own,
 /// but a tool RESULT echoed into a preview line can still carry a raw key —
 /// and this body is stored for the retention window, not streamed past.
-fn scrub_secrets(text: &str) -> String {
+pub(crate) fn scrub_secrets(text: &str) -> String {
     static SHAPES: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         // One physical line on purpose: this is a RAW string, where a `\`
         // line continuation is a literal backslash-newline in the pattern —
