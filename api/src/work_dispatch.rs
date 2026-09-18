@@ -47,6 +47,26 @@ const LOG: &str = "[work-dispatch]";
 /// stop rather than to quietly start a twenty-sixth.
 pub const MAX_SESSIONS_PER_TICKET_AGENT: u32 = 25;
 
+/// How many work sessions one WORKBENCH agent may drive at once, fleet-wide.
+///
+/// The push side of workbench task concurrency — and workbench-only on
+/// purpose: a session for an agent without a workbench is just model turns
+/// through the gateway, cheap and stateless, and capping those would be
+/// throttling conversation. What costs is a workbench agent's session, because
+/// driving a ticket means harness processes, dev servers, browsers in the
+/// agent's one container. On 2026-09-17 outcrop's engineering agent was
+/// offered fourteen tickets at once, started eleven workbench jobs, and the
+/// leftovers (vite, two Chrome clusters, tsservers, a playwright install)
+/// OOM-killed the 4g chassis twenty-six times until every turn blew its
+/// lease. Three concurrent sessions is a desk with a few tickets pinned to
+/// it, not a pile.
+///
+/// THIS IS THE QUEUE. There is no queue table and none is wanted: a ticket
+/// past the cap simply is not offered, and the sweep's sixty-second re-ask
+/// admits it within a minute of a slot freeing — waiting work costs a minute
+/// of silence, never a dropped ticket.
+pub const MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT: i64 = 3;
+
 /// A primary-key collision, and the only error `enqueue` can raise that means
 /// something rather than being broken: somebody else claimed this exact
 /// session in the time between our read and our insert. SQLSTATE 23505 is
@@ -212,6 +232,75 @@ pub async fn maybe_dispatch_ticket(
         if let Some(only) = only_agents
             && !only.contains(&agent)
         {
+            continue;
+        }
+        // The concurrency cap, asked BEFORE the refusal walk — and scoped to
+        // WORKBENCH agents only: their sessions spawn real processes in one
+        // container, while a session for a workbench-less agent is just model
+        // turns and stays uncapped. An agent already driving MAX_CONCURRENT
+        // sessions gets no new one this pass; standing down quietly is the
+        // design, because the sweep re-offers every sixty seconds — the skip
+        // IS the queue. A def or count we cannot read is a dispatch we do not
+        // make (same law as the claim read below).
+        let wb_def: Option<(String, Option<String>, String, Option<String>)> = match sqlx::query_as(
+            "select department, role, workbench, workbench_profile from agent_defs where model = $1",
+        )
+        .bind(&agent)
+        .fetch_optional(pg)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not read {agent}'s def, not dispatching: {e}",
+                    task.id
+                );
+                continue;
+            }
+        };
+        let capped = match &wb_def {
+            // No def row (an unmanaged name) is nothing this gate knows how to
+            // classify — dispatch proceeds and the refusal walk below decides.
+            None => false,
+            Some((department, role, workbench, workbench_profile)) => {
+                let resolved = crate::workbench::resolve_workbench(
+                    pg,
+                    &crate::workbench::WorkbenchAgent {
+                        department,
+                        role: role.as_deref(),
+                        workbench,
+                        workbench_profile: workbench_profile.as_deref(),
+                    },
+                )
+                .await
+                .unwrap_or(None);
+                match resolved {
+                    None => false,
+                    Some(_) => {
+                        match crate::runs::store::live_work_sessions_for_agent(pg, &agent).await {
+                            Ok(n) if n >= MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT => {
+                                tracing::debug!(
+                                    "{LOG} {}: {agent} is driving {n} work sessions, leaving this \
+                                     ticket queued",
+                                    task.id
+                                );
+                                true
+                            }
+                            Ok(_) => false,
+                            Err(e) => {
+                                tracing::error!(
+                                    "{LOG} {}: could not count {agent}'s live sessions, not \
+                                     dispatching: {e}",
+                                    task.id
+                                );
+                                true
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        if capped {
             continue;
         }
         let subject = crate::agent_auth::AgentSubject::Model(agent.clone());

@@ -222,6 +222,35 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         return house_error(StatusCode::BAD_REQUEST, &format!("job is {}", job.7));
     }
     let (status, description) = if action == "approve" {
+        // The concurrency cap holds at the approval door too: approving a plan
+        // STARTS a job (clone, harness, likely a dev server and a browser in
+        // the agent's one container), and start_job would have refused the
+        // same agent at this count. Reject is always allowed.
+        let started = sqlx::query_scalar::<_, i64>(
+            "select count(*) from workbench_jobs \
+             where status = 'started' \
+               and agent_id = (select agent_id from workbench_jobs where id = $1::uuid)",
+        )
+        .bind(&job.0)
+        .fetch_one(&state.pg)
+        .await;
+        match started {
+            Ok(n) if n >= crate::workbench::mcp::MAX_CONCURRENT_JOBS_PER_AGENT as i64 => {
+                return house_error(
+                    StatusCode::BAD_REQUEST,
+                    &format!(
+                        "{} is already at its concurrent-job cap ({n} live) — finish or abandon \
+                         a job first, then approve this plan",
+                        job.1
+                    ),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("[workbench/jobs] job count failed: {e}");
+                return thrown_internal_error();
+            }
+        }
         (
             "started",
             format!(
