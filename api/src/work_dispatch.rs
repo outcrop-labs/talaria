@@ -47,25 +47,9 @@ const LOG: &str = "[work-dispatch]";
 /// stop rather than to quietly start a twenty-sixth.
 pub const MAX_SESSIONS_PER_TICKET_AGENT: u32 = 25;
 
-/// How many work sessions one WORKBENCH agent may drive at once, fleet-wide.
-///
-/// The push side of workbench task concurrency — and workbench-only on
-/// purpose: a session for an agent without a workbench is just model turns
-/// through the gateway, cheap and stateless, and capping those would be
-/// throttling conversation. What costs is a workbench agent's session, because
-/// driving a ticket means harness processes, dev servers, browsers in the
-/// agent's one container. On 2026-09-17 outcrop's engineering agent was
-/// offered fourteen tickets at once, started eleven workbench jobs, and the
-/// leftovers (vite, two Chrome clusters, tsservers, a playwright install)
-/// OOM-killed the 4g chassis twenty-six times until every turn blew its
-/// lease. Three concurrent sessions is a desk with a few tickets pinned to
-/// it, not a pile.
-///
-/// THIS IS THE QUEUE. There is no queue table and none is wanted: a ticket
-/// past the cap simply is not offered, and the sweep's sixty-second re-ask
-/// admits it within a minute of a slot freeing — waiting work costs a minute
-/// of silence, never a dropped ticket.
-pub const MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT: i64 = 3;
+// Workbench dispatch no longer uses a per-agent job cap. The host's
+// MemAvailable (minus a platform keep-back) is the queue — see
+// `fleet::budget`. Conversation-only agents stay uncapped.
 
 /// A primary-key collision, and the only error `enqueue` can raise that means
 /// something rather than being broken: somebody else claimed this exact
@@ -107,7 +91,7 @@ pub async fn dispatch_ticket_work(
     task: &DispatchTicket,
     agent_model: &str,
     board_name: Option<&str>,
-) {
+) -> bool {
     let def = work_session_run();
     for generation in 0..MAX_SESSIONS_PER_TICKET_AGENT {
         let id = session_run_id(&task.id, agent_model, generation);
@@ -122,12 +106,12 @@ pub async fn dispatch_ticket_work(
                     "{LOG} {}: could not check for a live session with {agent_model}, not dispatching: {e}",
                     task.id
                 );
-                return;
+                return false;
             }
         };
         match existing {
             // A live (or parked) run at this generation IS the session.
-            Some(row) if !is_terminal(row.state) => return,
+            Some(row) if !is_terminal(row.state) => return true,
             // Finished: that session is over, the next generation may start
             // a new one.
             Some(_) => continue,
@@ -160,17 +144,17 @@ pub async fn dispatch_ticket_work(
             start: Some(true),
         };
         match enqueue(def, input, opts, deps).await {
-            Ok(_) => return,
+            Ok(_) => return true,
             // Somebody else claimed this exact session between our read and
             // our insert — and what they inserted is a live session for this
             // ticket and agent, so standing down is correct.
-            Err(e) if is_duplicate_key(&e) => return,
+            Err(e) if is_duplicate_key(&e) => return true,
             Err(e) => {
                 tracing::error!(
                     "{LOG} {}: could not start a work session with {agent_model}: {e}",
                     task.id
                 );
-                return;
+                return false;
             }
         }
     }
@@ -180,6 +164,7 @@ pub async fn dispatch_ticket_work(
          agent that cannot close it; a person should look at it.",
         task.id
     );
+    false
 }
 
 /// Dispatch to every AGENT assignee when the ticket sits in an agent-start
@@ -277,22 +262,16 @@ pub async fn maybe_dispatch_ticket(
                 match resolved {
                     None => false,
                     Some(_) => {
-                        match crate::runs::store::live_work_sessions_for_agent(pg, &agent).await {
-                            Ok(n) if n >= MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT => {
+                        match crate::fleet::budget::admit_work(crate::fleet::budget::JOB_STANDARD)
+                            .await
+                        {
+                            Ok(()) => false,
+                            Err(reason) => {
                                 tracing::debug!(
-                                    "{LOG} {}: {agent} is driving {n} work sessions, leaving this \
-                                     ticket queued",
+                                    "{LOG} {}: {agent} waiting on host RAM ({reason})",
                                     task.id
                                 );
-                                true
-                            }
-                            Ok(_) => false,
-                            Err(e) => {
-                                tracing::error!(
-                                    "{LOG} {}: could not count {agent}'s live sessions, not \
-                                     dispatching: {e}",
-                                    task.id
-                                );
+                                crate::work_wait::mark_waiting(pg, &task.id, &agent, &reason).await;
                                 true
                             }
                         }
@@ -307,7 +286,9 @@ pub async fn maybe_dispatch_ticket(
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
             Ok(None) => {
-                dispatch_ticket_work(deps, task, &agent, None).await;
+                if dispatch_ticket_work(deps, task, &agent, None).await {
+                    crate::work_wait::clear_waiting(pg, &task.id).await;
+                }
             }
             Err(e) => {
                 tracing::error!("{LOG} {}: dispatch to {agent} threw: {e}", task.id);

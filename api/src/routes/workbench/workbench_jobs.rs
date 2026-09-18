@@ -222,10 +222,16 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         return house_error(StatusCode::BAD_REQUEST, &format!("job is {}", job.7));
     }
     let (status, description) = if action == "approve" {
-        // The concurrency cap holds at the approval door too: approving a plan
-        // STARTS a job (clone, harness, likely a dev server and a browser in
-        // the agent's one container), and start_job would have refused the
-        // same agent at this count. Reject is always allowed.
+        // Approving STARTS the job (clone + harness in the agent's container).
+        // Pack against host RAM; reject is always allowed.
+        if let Err(reason) =
+            crate::fleet::budget::admit_work(crate::fleet::budget::effort_reserve(&job.5)).await
+        {
+            if let Some(tid) = &job.2 {
+                crate::work_wait::mark_waiting(&state.pg, tid, &job.1, &reason).await;
+            }
+            return house_error(StatusCode::BAD_REQUEST, &reason);
+        }
         let started = sqlx::query_scalar::<_, i64>(
             "select count(*) from workbench_jobs \
              where status = 'started' \
@@ -239,8 +245,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 return house_error(
                     StatusCode::BAD_REQUEST,
                     &format!(
-                        "{} is already at its concurrent-job cap ({n} live) — finish or abandon \
-                         a job first, then approve this plan",
+                        "{} already has {n} live jobs (runaway cap) — finish or abandon one first",
                         job.1
                     ),
                 );
@@ -288,6 +293,24 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     {
         tracing::error!("[workbench/jobs] activity write failed: {e}");
         return thrown_internal_error();
+    }
+    if status == "started"
+        && let Ok(Some(department)) =
+            sqlx::query_scalar::<_, String>("select department from agent_defs where model = $1")
+                .bind(&job.1)
+                .fetch_optional(&state.pg)
+                .await
+    {
+        let efforts: Vec<String> = sqlx::query_scalar(
+            "select j.effort from workbench_jobs j \
+             join agent_defs d on d.id = j.agent_id \
+             where j.status = 'started' and d.model = $1",
+        )
+        .bind(&job.1)
+        .fetch_all(&state.pg)
+        .await
+        .unwrap_or_default();
+        crate::fleet::budget::sync_workbench_container(&state.pg, &department, &efforts).await;
     }
     Json(json!({ "ok": true })).into_response()
 }

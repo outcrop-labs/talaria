@@ -386,7 +386,7 @@ Source: [`api/src/routes/boards/boards_id_work_sessions.rs`](../../api/src/route
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{sessions}` | 200, 403 | — |
+| GET | `session` | — | `{sessions, waits}` | 200, 403 | — |
 
 ## `/api/boards/{id}/workchains`
 

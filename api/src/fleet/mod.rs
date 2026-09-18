@@ -1,5 +1,6 @@
 // The fleet engine family — the registry brain, rendering, reconciliation, docker, preflight, federation.
 pub mod brain;
+pub mod budget;
 pub mod cascade;
 pub mod create;
 pub mod docker;

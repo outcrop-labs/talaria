@@ -1,7 +1,8 @@
 // The LIVE WORK SESSION on a ticket: the "someone is on it right now"
 // surface. One query over /api/tasks/{id}/work-session, polled while a
 // session is live (the modal attaches the run's own SSE for instant phase —
-// this poll is the ticker's floor, not the stream).
+// this poll is the ticker's floor, not the stream). A packing refuse is a
+// separate `wait` object — never a fake session with a null runId.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
@@ -11,20 +12,26 @@ export interface LiveWorkSession {
   phase: string | null
   agentModel: string | null
   turn: number | null
-  /** The tail of the agent's last reply, from the session's checkpoint. */
-  lastTail: string | null
+  lastTail?: string | null
+}
+
+export interface WorkWait {
+  agentModel: string
+  reason: string
+  position: number
+  phase: string
+  queuedAt: number
 }
 
 export function useWorkSession(taskId: () => string | null) {
   return createQuery(() => ({
     queryKey: ['work-session', taskId()],
     enabled: !!taskId(),
-    // While live, the ticker should never be more than a few seconds stale;
-    // while idle the route answers null and this cadence costs one cheap row
-    // lookup.
     refetchInterval: 5_000,
-    queryFn: (): Promise<{ session: LiveWorkSession | null }> =>
-      getJson<{ session: LiveWorkSession | null }>(`/api/tasks/${taskId()}/work-session`),
+    queryFn: (): Promise<{ session: LiveWorkSession | null; wait: WorkWait | null }> =>
+      getJson<{ session: LiveWorkSession | null; wait: WorkWait | null }>(
+        `/api/tasks/${taskId()}/work-session`,
+      ),
   }))
 }
 
@@ -38,13 +45,15 @@ export function useInvalidateWorkSession() {
 
 /** The board's live work sessions, one map read for every card. The list
  *  view's question — which tickets are being worked right now — answered in
- *  one poll rather than one per row. */
+ *  one poll rather than one per row. `waits` is the packing queue. */
 export function useBoardWorkSessions(boardId: () => string | null) {
   return createQuery(() => ({
     queryKey: ['board-work-sessions', boardId()],
     enabled: !!boardId(),
     refetchInterval: 5_000,
-    queryFn: (): Promise<{ sessions: Record<string, LiveWorkSession> }> =>
-      getJson<{ sessions: Record<string, LiveWorkSession> }>(`/api/boards/${boardId()}/work-sessions`),
+    queryFn: (): Promise<{
+      sessions: Record<string, LiveWorkSession>
+      waits: Record<string, WorkWait>
+    }> => getJson(`/api/boards/${boardId()}/work-sessions`),
   }))
 }

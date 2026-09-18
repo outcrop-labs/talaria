@@ -48,6 +48,7 @@ pub async fn get(
         }
     };
     let mut series: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    let mut mem_series: HashMap<String, Vec<i64>> = HashMap::new();
     let mut latest: HashMap<String, serde_json::Value> = HashMap::new();
     for (model, cpu, mem, pids, at_ms) in rows {
         series.entry(model.clone()).or_default().push(json!({
@@ -56,6 +57,7 @@ pub async fn get(
             "mem": mem,
             "pids": pids,
         }));
+        mem_series.entry(model.clone()).or_default().push(mem);
         latest.insert(
             model.clone(),
             json!({ "cpu": cpu, "mem": mem, "pids": pids, "at": at_ms }),
@@ -66,13 +68,27 @@ pub async fn get(
         keys.sort();
         keys.into_iter()
             .map(|k| {
+                let leak = crate::fleet::resources::mem_is_leaking(
+                    mem_series.get(k).map(Vec::as_slice).unwrap_or(&[]),
+                );
                 json!({
                     "agent": k,
                     "points": series.get(k).cloned().unwrap_or_default(),
                     "latest": latest.get(k).cloned().unwrap_or(serde_json::Value::Null),
+                    "leak": leak,
                 })
             })
             .collect()
     };
-    Json(json!({ "agents": agents })).into_response()
+    let host = crate::fleet::budget::host_mem().await.map(|h| {
+        let reserve = crate::fleet::budget::host_reserve_for(h.total);
+        json!({
+            "total": h.total,
+            "available": h.available,
+            "reserve": reserve,
+            "agentCeiling": crate::fleet::budget::workbench_limit_for(Some(&h)),
+            "pressure": crate::fleet::budget::host_pressure(h.available, reserve).as_str(),
+        })
+    });
+    Json(json!({ "host": host, "agents": agents })).into_response()
 }

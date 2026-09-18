@@ -3076,6 +3076,14 @@ alter table tasks drop column if exists conversation_id`,
   // routes enforce it with a friendly 409 first; the index is what makes it
   // true under a race.
   `create unique index if not exists task_workchain_steps_one_chain on task_workchain_steps(task_id)`,
+  `create table if not exists work_wait (
+     task_id uuid primary key references tasks(id) on delete cascade,
+     agent_model text not null,
+     reason text not null,
+     queued_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create index if not exists work_wait_agent_time on work_wait (agent_model, queued_at)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

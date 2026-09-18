@@ -442,5 +442,5 @@ Source: [`api/src/routes/fleet/fleet_resources.rs`](../../api/src/routes/fleet/f
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{agents}` | 200 | — |
+| GET | `admin` | — | `{host, agents}` | 200 | — |
 

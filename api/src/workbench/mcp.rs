@@ -77,6 +77,18 @@ fn wall_ms() -> i64 {
         .unwrap_or(0)
 }
 
+async fn sync_agent_budget(pg: &PgPool, department: &str, agent_id: &str) {
+    let efforts: Vec<String> = sqlx::query_scalar(
+        "select effort from workbench_jobs \
+         where agent_id = $1::uuid and status = 'started'",
+    )
+    .bind(agent_id)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    crate::fleet::budget::sync_workbench_container(pg, department, &efforts).await;
+}
+
 pub struct WorkbenchJob {
     pub id: String,
     pub agent_id: String,
@@ -101,14 +113,8 @@ const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, re
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
                         (trunc(extract(epoch from updated_at) * 1000))::bigint";
 
-/// How many `started` jobs one agent may have at once — the pull-side twin of
-/// work dispatch's `MAX_CONCURRENT_WORK_SESSIONS_PER_AGENT`. A started job is
-/// a clone, a harness, usually a dev server and a browser in the agent's one
-/// container; past a few, the leftovers of context-switching starve the box
-/// (2026-09-17: eleven concurrent jobs, twenty-six OOM kills, every turn over
-/// its lease). The dispatch cap already keeps most agents under this — this
-/// gate is the backstop for jobs the agent starts off-session.
-pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = 3;
+/// Runaway guard only. Host packing (`fleet::budget`) is the real queue.
+pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = crate::fleet::budget::MAX_LIVE_JOBS_PER_AGENT;
 
 type JobRow = (
     String,
@@ -694,12 +700,9 @@ async fn call_tool(
                     );
                 }
             }
-            // The pull side of task concurrency: a bounded number of live jobs
-            // per agent. Each started job means a clone, a harness, often a dev
-            // server and a browser inside your ONE container — the 2026-09-17
-            // pile-up was eleven concurrent jobs OOM-killing the sandbox until
-            // every turn died. `awaiting_approval` jobs are free (no clone URL,
-            // no processes) and never count. Drive the jobs you have.
+            // Pack against host RAM. A started job is a clone + harness in
+            // this agent's one container; awaiting_approval never counts.
+            // The 16-job figure is a runaway guard, not a desk size.
             let live: Vec<(String, String)> = match sqlx::query_as(
                 "select branch, repo from workbench_jobs \
                  where agent_id = $1::uuid and status = 'started' order by created_at",
@@ -718,12 +721,21 @@ async fn call_tool(
                     .collect::<Vec<_>>()
                     .join(", ");
                 return CallOutcome::Fail(format!(
-                    "you already have {} live job(s) — the concurrent-job cap is {}. \
+                    "you already have {} live job(s) — the runaway cap is {}. \
                      Finish one (finish_job) or close a dead one (abandon) before starting \
                      new work. Live jobs: {list}",
                     live.len(),
                     MAX_CONCURRENT_JOBS_PER_AGENT,
                 ));
+            }
+            if let Err(reason) =
+                crate::fleet::budget::admit_work(crate::fleet::budget::effort_reserve(&effort))
+                    .await
+            {
+                if let Some(tid) = &task_id {
+                    crate::work_wait::mark_waiting(pg, tid, &agent.model, &reason).await;
+                }
+                return CallOutcome::Fail(reason);
             }
             let (ticket_ref, title) = match &task_id {
                 Some(task_id) => match ticket_ref_of(pg, task_id).await {
@@ -1070,6 +1082,9 @@ async fn call_tool(
             );
             value.insert("harnesses".into(), Value::Array(harnesses));
             value.insert("rules".into(), json!(rules));
+            if !gated {
+                sync_agent_budget(pg, &agent.department, &agent.id).await;
+            }
             CallOutcome::Ok(Value::Object(value))
         }
 
@@ -1280,6 +1295,7 @@ async fn call_tool(
                     &format!("workbench job abandoned: {} @ {}", job.repo, job.branch),
                 )
                 .await;
+                sync_agent_budget(pg, &agent.department, &agent.id).await;
                 return CallOutcome::Ok(json!({ "status": "abandoned" }));
             }
             if job.status == "awaiting_approval" {
@@ -1400,6 +1416,7 @@ async fn call_tool(
                 &format!("workbench PR opened: {}", pr.url),
             )
             .await;
+            sync_agent_budget(pg, &agent.department, &agent.id).await;
             CallOutcome::Ok(json!({
                 "prUrl": pr.url,
                 "prNumber": pr.number,
