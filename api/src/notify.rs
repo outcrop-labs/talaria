@@ -32,6 +32,8 @@ pub const NOTIFY_CLASSES: &[(&str, &str)] = &[
     ("agent_blocked", "both"),
     ("gap_reported", "in_app"),
     ("work_complete", "in_app"),
+    ("workchain_turn", "both"),
+    ("workchain_paused", "in_app"),
 ];
 
 const DIGEST_PREF_KEY: &str = "digest";
@@ -1919,7 +1921,8 @@ mod tests {
         let all_in_app = json!({
             "mention": "in_app", "dm": "in_app", "approval_pending": "in_app",
             "judge_escalation": "in_app", "agent_blocked": "in_app",
-            "gap_reported": "in_app", "work_complete": "in_app"
+            "gap_reported": "in_app", "work_complete": "in_app",
+            "workchain_turn": "in_app", "workchain_paused": "in_app"
         });
         assert!(!digest_enabled(&all_in_app));
         // A garbage digest value falls back to the derivation, not to off.

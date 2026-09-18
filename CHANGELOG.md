@@ -4,7 +4,117 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **Workchains: CI repair after the main merge.** The merged tree failed
+  the api and migrations CI jobs. Fixed: regenerated
+  `ui/src/server/db/schema.snapshot.sql` (the merge hand-carried a stale
+  snapshot — table ordering and `"position"` quoting drifted from what
+  pg_dump emits); dropped the dead `read_gate` helper and an unused
+  parameter that tripped clippy `-D warnings`; repaired
+  `tests/workchains_live.rs`, which never compiled (missing `pg`
+  bindings, `as_deref` on tuple options, moved `String`s); and updated
+  the two unit tests that pinned the pre-workchain worlds (the views
+  enum without `workchains`, the digest derivation without the
+  `workchain_turn`/`workchain_paused` classes). Verified: `bun run
+  api:check` green (fmt, clippy `-D warnings`, 2067 tests), two-pass
+  `migrations:check` against a scratch postgres 16 (`applied: 0` on the
+  second pass, snapshot matches), and full `bun run verify` green
+  (svelte-check 0 errors, 1200 tests).
+
+- **Workchains: the ticket's own chain section.** A ticket in a chain
+  shows a Workchain block in its detail view — chain name, `step N of
+  M`, and (for editors) move-earlier/move-later/leave verbs. The move
+  ships the full reorder payload (`moveStepOrder`, unit-tested: swaps,
+  end refusals, unknown ids, no caller-mutation); leaving unlinks the
+  ticket and the chain reads on. Joining stays in the Workchains view's
+  pickers; step-assignee edits are deliberately absent (a step's
+  assignee is the ticket's assignee — one edit surface, and the MCP
+  guardrails hold by construction: no agent tool reaches the
+  workchain routes). Verified: `bun run verify` green (1179 tests);
+  the section driven in headless Chrome — renders for a chained
+  ticket, correct position read (screenshot filed with the ticket).
+
+- **Workchains: the fourth Boards view.** The view toggle gains a
+  `workchains` lens (`?view=workchains`, URL-driven like the others,
+  saveable as a saved view, persisted per board in localStorage). Each
+  workchain renders as a horizontal rail of compact step cards — status
+  dot, ref, title, effort, due, assignee avatars — joined by chevrons:
+  done steps fade under a check, the head wears the accent ring and a
+  `HEAD` marker, waiting stays quiet, archived steps strike through and
+  always render (they are chain structure, not filter fodder). Below the
+  rails, UNCHAINED lists the tickets no chain holds, each row offering a
+  `+ chain…` picker; it collapses once chains exist. Rails read the
+  board's filtered task set (a step whose ticket is filtered out is
+  hidden, chevrons reconnect what remains) and stay live through the
+  board's SSE stream (`useBoardLive` invalidates `['board-workchains']`
+  alongside the cards). The add-ticket picker rides the §7 Popover shell
+  with search; the step-card summaries render off the chain read rather
+  than the pills (which want a full Task). The skeleton grows a matching
+  rail-shaped lens so the canvas shifts rail count, not widths. Wire
+  types are the strict ones (`Effort`/`TaskStatus`); the pure rules
+  (`buildPositions`, `chainProgress`, `chainedTaskIds`) live in
+  `workchain-rules.ts` with the 9 unit tests, split from the
+  svelte-query client (`workchain-client.ts`) so the node suite can run
+  them. Verified: `bun run verify` green end to end (check + svelte-check
+  0 errors + 1175 tests across 68 files), and the view driven in a real
+  headless Chrome against a stubbed API — rails render with derived
+  states (`1/4` progress, `HEAD` ring on the in-flight step), the lens
+  round-trips through the URL against board/list/gantt, and clicking a
+  card opens the ticket overlay (screenshots filed with the ticket).
+  Live-data pass and the interactive writes (add step, reorder,
+  pause/unpause) still need a dev stack.
+
+- **Workchains: the handoff engine and the workchain-aware agent
+  heartbeat.** A ticket landing in a done column now advances its chain:
+  the new head's human assignees get an in-app `workchain_turn`
+  notification ("It's your turn: <ref> - <title>", deep link
+  `/boards/{board}/{task}`); an agent head hears nothing — its visibility is
+  the heartbeat serving it. A ticket landing off-board (failed/cancelled)
+  pauses the chain and notifies the chain's creator
+  (`workchain_paused`, "Workchain paused: <chain> - <ref> <title>");
+  unpausing is a human PATCH that re-derives the head, advancing nothing.
+  The engine derives from the DB at write time — no in-memory chain state —
+  and fires only on the normal status-write paths (`update_task` and the
+  review sign-off in `complete_quality_review`), where human sign-off is
+  the only trigger by construction (agents cannot land terminal columns).
+  The agent heartbeat now enforces the chain's ordering: a step behind an
+  earlier live step is excluded from `work_items` whatever its own column
+  says, and a ready head carries `workchainReady: true` (absent on
+  chain-free tickets — byte-identical feed shape for them). Verified:
+  `bun run check` green; `cargo fmt --check` green; `cargo check --lib`
+  green (the full clippy and test-target builds are SIGKILLed by the box's
+  4 GiB cgroup — six attempts, every one an OOM kill with zero lint or
+  compile findings surfaced; they must run in CI). The
+  `derive_states`/`terminal_of` unit tests and the extended
+  `workchains_live` router suite (4 more `#[ignore]`d tests: human-head
+  turn notification, heartbeat ordering + ready flag + all-done,
+  failed → pause + creator notification + unpause semantics, archived
+  mid-chain head) need a dev Postgres + Redis to run.
+
 ### Added
+- **Workchains: ordered ticket pipelines with human/agent handoffs (API +
+  data model).** Two new tables — `task_workchains` (a named, position-
+  ordered chain on a board) and `task_workchain_steps` (the chain's tickets
+  in position order, unique per task across all chains) — land in the
+  migrations array, with the CRUD API: `GET/POST /api/boards/{id}/workchains`
+  (list with derived per-step state — done/head/waiting/archived, computed
+  from the board's real status categories; create), `PATCH/DELETE
+  /api/workchains/{id}` (rename, pause, reorder `positions: [{taskId,
+  position}]` — all-or-nothing, a miss refuses the whole write; deleting a
+  chain unlinks, it never deletes tickets), and `POST /api/workchains/{id}/
+  steps` + `DELETE /api/workchains/{id}/steps/{taskId}` (add after an
+  optional step, remove without touching the task). One chain per ticket is
+  a v1 invariant backed by a unique index; cross-board adds answer 400,
+  duplicates 409, unknown chains 403 like the boards family. Access mirrors
+  board configuration: any member reads, owner/editor writes; every write
+  bumps the board's SSE stream. Verified: `bun run check`; `cargo fmt`;
+  `cargo check --lib`. Clippy and the full test pass are still owed — the
+  box's 4 GiB cgroup, shared with sibling agent sessions, cannot fit the
+  compile — as are the live proofs: `derive_states` unit tests (4,
+  in-module) and the `workchains_live` router suite (6 `#[ignore]`d
+  tests: create/list-with-derived-states, one-chain-per-task incl. the
+  unique-index refusal, task-delete cascade, cross-board refusal,
+  reorder + step-delete order honesty, chain-delete leaves tickets
+  standing) need a dev Postgres + Redis.
 
 <<<<<<< Updated upstream
 - **The desktop app auto-versions itself off main.** Every green build of a

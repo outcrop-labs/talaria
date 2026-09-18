@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-12 routes.
+15 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -43,6 +43,12 @@
 | [`/api/boards/{id}/views`](#apiboardsidviews) | PUT | `session` |
 | [`/api/boards/{id}/views`](#apiboardsidviews) | DELETE | `session` |
 | [`/api/boards/{id}/work-sessions`](#apiboardsidwork-sessions) | GET | `session` |
+| [`/api/boards/{id}/workchains`](#apiboardsidworkchains) | GET | `session` |
+| [`/api/boards/{id}/workchains`](#apiboardsidworkchains) | POST | `session` |
+| [`/api/workchains/{id}`](#apiworkchainsid) | PATCH | `session` |
+| [`/api/workchains/{id}`](#apiworkchainsid) | DELETE | `session` |
+| [`/api/workchains/{id}/steps`](#apiworkchainsidsteps) | POST | `session` |
+| [`/api/workchains/{id}/steps`](#apiworkchainsidsteps) | DELETE | `session` |
 
 ## `/api/boards`
 
@@ -353,7 +359,7 @@ Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `name` | `string(1, 60)` |  |
-| `view` | `enum(board|list|gantt)?` |  |
+| `view` | `enum(board|list|gantt|workchains)?` |  |
 
 ### PUT `/api/boards/{id}/views` body
 
@@ -381,4 +387,69 @@ Source: [`api/src/routes/boards/boards_id_work_sessions.rs`](../../api/src/route
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{sessions}` | 200, 403 | — |
+
+## `/api/boards/{id}/workchains`
+
+Source: [`api/src/routes/boards/boards_id_workchains.rs`](../../api/src/routes/boards/boards_id_workchains.rs)
+
+> /api/boards/{id}/workchains. The board's workchains — ordered pipelines
+> of its tickets. GET → the chains with their steps joined to task
+> summaries and the derived done/head/waiting state (any member, exactly
+> the readers board configuration gets); POST { name } → create, positioned
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{workchains}` | 200, 403 | — |
+| POST | `session` | [body](#post-apiboardsidworkchains-body) | `{workchain}` | 200, 400, 403 | — |
+
+### POST `/api/boards/{id}/workchains` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 120)` |  |
+
+## `/api/workchains/{id}`
+
+Source: [`api/src/routes/workchains/workchains_id.rs`](../../api/src/routes/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PATCH | `session` | [body](#patch-apiworkchainsid-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403 | — |
+
+### PATCH `/api/workchains/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string?(120)` |  |
+| `paused` | `bool?` |  |
+
+## `/api/workchains/{id}/steps`
+
+Source: [`api/src/routes/workchains/workchains_id.rs`](../../api/src/routes/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiworkchainsidsteps-body) | `{ok}` | 200, 400, 403, 409 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403 | — |
+
+### POST `/api/workchains/{id}/steps` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `taskId` | `uuid` |  |
+| `after` | `uuid?` |  |
 

@@ -20,7 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
-const VIEW_KINDS: &[&str] = &["board", "list", "gantt"];
+const VIEW_KINDS: &[&str] = &["board", "list", "gantt", "workchains"];
 
 /// The saved view row on the wire: id, boardId, name, config, createdBy,
 /// position, createdAt, updatedAt.
@@ -353,11 +353,11 @@ mod tests {
     fn config_validates_the_enum_and_bounds() {
         assert_eq!(
             config(json!({ "view": "calendar" })).unwrap_err(),
-            format!("Invalid option: expected one of \"board\"|\"list\"|\"gantt\"")
+            format!("Invalid option: expected one of \"board\"|\"list\"|\"gantt\"|\"workchains\"")
         );
         assert_eq!(
             config(json!({ "view": 5 })).unwrap_err(),
-            "Invalid option: expected one of \"board\"|\"list\"|\"gantt\""
+            "Invalid option: expected one of \"board\"|\"list\"|\"gantt\"|\"workchains\""
         );
         assert_eq!(
             config(json!({ "q": "x".repeat(201) })).unwrap_err(),

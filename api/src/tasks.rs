@@ -1324,6 +1324,35 @@ pub async fn update_task(
                 .await;
             });
         }
+        // ── THE WORKCHAIN ENGINE ─────────────────────────────────────────
+        // A status write is the one trigger the workchain handoff engine
+        // has (TALA-30): a step's ticket landing in a terminal column
+        // advances or pauses its chain. Detached like every other fan-out
+        // — the chain re-derives from the DB inside the call, so a retried
+        // write re-derives the same answer and files nothing new, and a
+        // notification failure never costs the ticket write it rode in on.
+        // Human sign-off is the only trigger by construction: agents
+        // cannot land a terminal column (agent_safe_patch above), so the
+        // chain advances only when a person moves the column.
+        {
+            let deps = deps.clone();
+            let board_id = cur.board_id.clone();
+            let task_id = id.to_string();
+            let status = next_status.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::workchains::advance_workchains(
+                    &deps.pg,
+                    &deps.notify,
+                    &board_id,
+                    &task_id,
+                    &status,
+                )
+                .await
+                {
+                    tracing::error!("[workchains] advance on status write failed: {e}");
+                }
+            });
+        }
     }
     // ── ONE push-side call ─────────────────────────────────────────────────
     // Two things mean "this is now someone's work": the ticket ENTERED a
@@ -2242,6 +2271,31 @@ pub async fn complete_quality_review(
     {
         spawn_dispatch_id(deps, task_id.to_string(), None);
     }
+
+    // The engine fires on terminal sign-offs here too — a reviewer's
+    // APPROVE is the other human-approved done the workchain engine knows
+    // (inbox_focus approve moves the ticket into the board's first done
+    // column via this very call). Firing only on terminal keeps the
+    // trigger surface exactly the one the update_task hook documents.
+    if crate::workchains::terminal_of(&meta, next_status) != crate::workchains::Terminal::Live {
+        let deps = deps.clone();
+        let board_id = current.board_id.clone();
+        let task_id = task_id.to_string();
+        let status = next_status.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = crate::workchains::advance_workchains(
+                &deps.pg,
+                &deps.notify,
+                &board_id,
+                &task_id,
+                &status,
+            )
+            .await
+            {
+                tracing::error!("[workchains] advance on review sign-off failed: {e}");
+            }
+        });
+    }
     // Same audience question as the status move in update_task, same one
     // answer.
     let audience = ticket_audience(pg, task_id, &current.board_id, &current.assignees).await?;
@@ -2473,7 +2527,6 @@ pub async fn list_activity(pg: &PgPool, task_id: &str) -> Result<Vec<TaskActivit
 }
 
 // ── The pull side ────────────────────────────────────────────────────────────
-
 /// One servable ticket on the heartbeat's pull channel, with the workflows
 /// matched to it riding along (plugin-side dispatch).
 #[derive(serde::Serialize)]
@@ -2484,6 +2537,13 @@ pub struct AssignedWork {
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub board_id: String,
+    /// True when this ticket is the READY HEAD of a workchain — the chain's
+    /// first non-done, non-archived step, served to the agent because it is
+    /// genuinely next. Absent otherwise (a chain-free ticket keeps the feed
+    /// item shape it always had; a blocked chain ticket is not in the feed
+    /// at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workchain_ready: Option<bool>,
     pub workflows: Vec<crate::workflows::WorkflowDelivery>,
 }
 
@@ -2519,11 +2579,15 @@ pub async fn assigned_work(
     // before its tickets are ever fetched.
     let mut pair_boards: Vec<String> = Vec::new();
     let mut pair_keys: Vec<String> = Vec::new();
+    let mut metas: HashMap<String, StatusMeta> = HashMap::new();
     for (board_id,) in &boards {
         if !board_allows_agent(pg, board_id, &subject).await? {
             continue;
         }
         let meta = status_meta(pg, board_id).await?;
+        // Kept for the workchain readiness pass below — its terminal
+        // predicate comes from the same per-board meta, not a restatement.
+        metas.insert(board_id.clone(), meta.clone());
         for key in &meta.working_keys {
             pair_boards.push(board_id.clone());
             pair_keys.push(key.clone());
@@ -2561,6 +2625,16 @@ pub async fn assigned_work(
     // the TICKET half of the same authority question — its own archival,
     // and the board's, re-asked from the one predicate rather than restated
     // in SQL.
+    // ── THE WORKCHAIN ORDERING GUARANTEE ────────────────────────────────────
+    // A ticket that lives in a workchain behind an earlier live step is NOT
+    // servable, whatever its own column says — the agent assigned to step B
+    // must not see B while A is in flight (the chain's own contract), and
+    // a ready head IS servable and carries `workchainReady: true` so the
+    // harness can prioritize chain work. One batch query for the whole
+    // heartbeat, asked here so the answer keys on the candidates the
+    // column join already narrowed to.
+    let candidates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
+    let readiness = crate::workchains::chain_readiness(pg, &metas, &candidates).await?;
     let mut servable = Vec::new();
     for (id, title, description, tags, board_id, status, archived_ms) in rows {
         let target = AgentWriteTarget {
@@ -2574,7 +2648,20 @@ pub async fn assigned_work(
         {
             continue;
         }
-        servable.push((id, title, description, json_strings(&tags), board_id));
+        // Blocked chain position: the chain decides, not the column. A
+        // ready head rides with its flag; a chain-free ticket stays the
+        // shape it always was.
+        match readiness.get(&id) {
+            Some(crate::workchains::Readiness::Blocked) => continue,
+            ready => servable.push((
+                id,
+                title,
+                description,
+                json_strings(&tags),
+                board_id,
+                ready.and_then(|r| r.ready_flag()),
+            )),
+        }
     }
     // Matched workflows ride with the pull channel too (plugin-side
     // dispatch). ONE read of the workflow list for the whole heartbeat:
@@ -2591,23 +2678,26 @@ pub async fn assigned_work(
     };
     Ok(servable
         .into_iter()
-        .map(|(id, title, description, tags, board_id)| {
-            let target = crate::workflows::MatchTarget {
-                title: &title,
-                description: description.as_deref(),
-                tags: &tags,
-                board_id: &board_id,
-            };
-            let workflows = crate::workflows::workflows_from(&flows, &target);
-            AssignedWork {
-                id,
-                title,
-                description,
-                tags,
-                board_id,
-                workflows,
-            }
-        })
+        .map(
+            |(id, title, description, tags, board_id, workchain_ready)| {
+                let target = crate::workflows::MatchTarget {
+                    title: &title,
+                    description: description.as_deref(),
+                    tags: &tags,
+                    board_id: &board_id,
+                };
+                let workflows = crate::workflows::workflows_from(&flows, &target);
+                AssignedWork {
+                    id,
+                    title,
+                    description,
+                    tags,
+                    board_id,
+                    workchain_ready,
+                    workflows,
+                }
+            },
+        )
         .collect())
 }
 
