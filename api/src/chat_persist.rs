@@ -78,7 +78,9 @@ fn auto_sync_should_start(
     doc_updated_ms: Option<i64>,
     now_ms: i64,
 ) -> bool {
-    plan.is_some() && !in_flight && doc_updated_ms.is_none_or(|ms| now_ms - ms > AUTO_SYNC_RECENT_MS)
+    plan.is_some()
+        && !in_flight
+        && doc_updated_ms.is_none_or(|ms| now_ms - ms > AUTO_SYNC_RECENT_MS)
 }
 
 /// Wall-clock epoch millis, the house pattern (no chrono in this crate).
@@ -963,7 +965,12 @@ mod tests {
         /// creates it, and there is nothing fresh to protect.
         #[test]
         fn no_document_yet_syncs() {
-            assert!(auto_sync_should_start(Some(&plan_meta()), false, None, now()));
+            assert!(auto_sync_should_start(
+                Some(&plan_meta()),
+                false,
+                None,
+                now()
+            ));
         }
 
         /// The error paths (frame_error and death) return before the call
