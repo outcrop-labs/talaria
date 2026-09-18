@@ -152,10 +152,11 @@ manifest for the flatpak.
 
 A source build that does not go through `tauri build` (omapack, a packager
 that runs `cargo build --release` after `bun run build:vite`) still has to
-enable Tauri's `custom-protocol` feature. Without it the binary is `cfg(dev)`
-even in release and the webview loads `http://localhost:5290`. That feature is
-default-on in `desktop/src-tauri/Cargo.toml` for exactly this; `tauri dev`
-strips it. `stage.sh` also installs AppStream metainfo
+pass `--features custom-protocol`. Without it the binary is `cfg(dev)` even
+in release and the webview loads `http://localhost:5290`. The feature is
+defined in `desktop/src-tauri/Cargo.toml` and is not default: clippy/tests
+have no `desktop/dist`, and `generate_context!` panics if that path is
+missing. `stage.sh` also installs AppStream metainfo
 (`app.talaria.desktop.metainfo.xml`) next to the desktop entry.
 
 Nothing is signed or notarized: there is no Apple Developer certificate and no Windows

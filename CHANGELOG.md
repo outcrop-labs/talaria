@@ -104,11 +104,13 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   (`http://localhost:5290`). `tauri build` (GitHub Release installers) adds
   the feature; omapak's source build is a plain `cargo build --release` after
   `bun run build:vite`, so the published `app.talaria.desktop` was a Vite
-  client with nothing listening. `custom-protocol` is now a default feature
-  (`tauri dev` still strips it with `--no-default-features`). Verified:
-  `cargo metadata` on the crate — default features include
-  `custom-protocol` → `tauri/custom-protocol`; `tauri dev`'s feature filter
-  still drops it; `bun run check`.
+  client with nothing listening. The crate now defines `custom-protocol`
+  (`tauri/custom-protocol`); packagers that skip the CLI pass
+  `--features custom-protocol`. It is not default: `generate_context!`
+  panics when `frontendDist` is missing, and clippy/tests have no
+  `desktop/dist`. Verified: `cargo metadata` lists the feature;
+  `cargo tree -e features` without the flag does not enable
+  `tauri/custom-protocol`; `bun run check`.
 
 - **Marketplace servers that declare credentials lost their API keys on the
   way in.** The official registry declares remote headers as a `value`
