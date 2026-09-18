@@ -74,7 +74,7 @@ jobs:
             -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
             -p 127.0.0.1:55441:5432 postgres:16-alpine
           for i in $(seq 1 30); do
-            docker exec talaria-mig-pg pg_isready -U talaria -q && echo "postgres ready" && exit 0
+            docker exec talaria-mig-pg pg_isready -h 127.0.0.1 -U talaria -q && echo "postgres ready" && exit 0
             sleep 1
           done
           echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1
@@ -129,11 +129,18 @@ jobs:
           docker run -d --name talaria-mig-pg-up \
             -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
             -p 127.0.0.1:55442:5432 postgres:16-alpine
+          # Probe TCP (-h 127.0.0.1), never the unix socket: the image's
+          # initdb phase runs a TEMP server that answers socket probes but
+          # has listen_addresses='' — a socket-ready check passes seconds
+          # before the real server exists, and the next step's first
+          # connection dies with ECONNRESET (seen on the first run of this
+          # step; the first container above only dodged it because bun
+          # install sat between start and first query).
           for i in $(seq 1 30); do
-            docker exec talaria-mig-pg-up pg_isready -U talaria -q && break
+            docker exec talaria-mig-pg-up pg_isready -h 127.0.0.1 -U talaria -q && break
             sleep 1
           done
-          docker exec talaria-mig-pg-up pg_isready -U talaria -q \
+          docker exec talaria-mig-pg-up pg_isready -h 127.0.0.1 -U talaria -q \
             || { echo "postgres never became ready"; docker logs talaria-mig-pg-up; exit 1; }
 
       - name: Upgrade pass — this PR's array on top of main's ledger
