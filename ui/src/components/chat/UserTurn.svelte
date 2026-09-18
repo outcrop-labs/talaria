@@ -11,11 +11,15 @@
     content,
     attachments,
     author,
+    queued = false,
     onContextMenu,
   }: {
     content: string
     attachments?: Attachment[]
     author?: string | null
+    /** The turn ahead is still in flight — this message is queued, not lost.
+     *  Rendered the moment it is sent (no waiting on a poll). */
+    queued?: boolean
     onContextMenu?: (e: MouseEvent) => void
   } = $props()
 
@@ -27,6 +31,11 @@
   <div class="min-w-0 flex-1">
     <div class="flex items-baseline gap-2">
       <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
+      {#if queued}
+        <!-- Explicit queued state: the message visibly waits behind the turn
+            in flight instead of reading as delivered-and-ignored. -->
+        <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">queued</span>
+      {/if}
     </div>
     <div class="font-sans text-sm text-fg">
       <!-- Markdown, like every other message surface — a user turn was the

@@ -23,6 +23,7 @@
   import { loadConversation, markConversationRead } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import { toDisplay, type DisplayMessage } from './chat-view'
+  import { lastAssistantIndex, pendingCount } from './chat-queue'
 
   // A durable chat thread. Server owns history; this loads an existing conversation
   // (conversationId) or starts fresh (newChatSignal), and streams new turns.
@@ -115,6 +116,8 @@
   // and flushed the moment the id lands; if the first turn dies without ever
   // producing one, they are re-sent as a fresh turn instead of vanishing.
   let held: Array<{ text: string; atts: Attachment[] }> = []
+  /** Mints `localId`s for the rows this view streams (see startTurn). */
+  let turnSeq = 0
   // Set when the READER stopped a turn (the send tile's stop face / Esc). The
   // server still finishes and persists its copy — history is the server's, by
   // design — but the transcript freezes what was on screen and the
@@ -251,6 +254,13 @@
   // the poller's sync would hand back the server's still-streaming row and
   // the stopped reply would keep typing.
   const last = $derived(messages[messages.length - 1])
+  // The anchoring rule for everything LIVE: the last ASSISTANT row, wherever
+  // queued user rows parked it. `messages.length - 1` was the old anchor and
+  // it broke the moment a queued message landed: the still-streaming turn
+  // went dark (indicator unmounted, "saved (was in progress)") and every
+  // content event the stream produced was dropped on the floor.
+  const lastAssistant = $derived(lastAssistantIndex(messages))
+  const queuedCount = $derived(pendingCount(messages))
   const resuming = $derived(
     !streaming && !userStopped && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming')),
   )
@@ -262,7 +272,12 @@
   // onTurnCompleteRef is needed to see the fresh callback.)
   let turnInFlight = false
   $effect(() => {
-    const landed = last?.role === 'assistant' && last.status === 'complete'
+    // Landed = the turn IN FLIGHT (the last assistant row, not the last row —
+    // a queued message at the thread's end must not hide the landing) reached
+    // a complete state.
+    const la = lastAssistant
+    const landedRow = la >= 0 ? messages[la] : undefined
+    const landed = landedRow?.status === 'complete'
     if ((streaming || resuming) && !landed) turnInFlight = true
     else if (landed && turnInFlight) {
       turnInFlight = false
@@ -275,10 +290,29 @@
     if (!id) return
     let stop = false
     let ticks = 0
+    const sigOf = (ms: DisplayMessage[]) => {
+      const t = ms[ms.length - 1]
+      return `${t?.seq ?? ''}:${t?.status ?? ''}:${t?.content.length ?? 0}`
+    }
+    let lastSig = sigOf(messages)
     const iv = setInterval(async () => {
-      if (stop || ++ticks > 300) return clearInterval(iv) // ~4 min — long agent replies keep animating
+      if (stop) return clearInterval(iv)
       const res = await loadConversation(id)
-      if (!stop && res) messages = res.messages.map(toDisplay)
+      if (stop || !res) return
+      const fresh = res.messages.map(toDisplay)
+      // Progress, not patience: the cap is IDLE time. A chained queue resets
+      // it every time the server produces anything — a new row, a status
+      // flip, a growing reply — so a long chain outlives the poller; a
+      // motionless last row for ~4 minutes means nothing is coming, and the
+      // poller stands down instead of spinning forever.
+      const sig = sigOf(fresh)
+      if (sig !== lastSig) {
+        lastSig = sig
+        ticks = 0
+      } else if (++ticks > 300) {
+        return clearInterval(iv) // ~4 idle min — long agent replies keep animating
+      }
+      messages = fresh
     }, 800)
     return () => {
       stop = true
@@ -302,7 +336,8 @@
   let prevStatusConv: string | null = ''
   let prevLastStatus: string | undefined
   $effect(() => {
-    const s = last?.role === 'assistant' ? last.status : undefined
+    const la = lastAssistant
+    const s = la >= 0 ? messages[la]?.status : undefined
     if (convId === prevStatusConv && prevLastStatus === 'streaming' && s === 'error') {
       erroredAt = Date.now()
     }
@@ -313,7 +348,8 @@
     if (erroredAt === null || streaming || userStopped) return
     // Waiting on the same dead turn, and only its FIRST death — a row already
     // stamped `resumed` that errored again is down for a person to look at.
-    if (!(last?.role === 'assistant' && last.status === 'error' && last.resumed !== true)) return
+    const errRow = lastAssistant >= 0 ? messages[lastAssistant] : undefined
+    if (!(errRow && errRow.status === 'error' && errRow.resumed !== true)) return
     const id = convId
     if (!id) return
     let stop = false
@@ -419,13 +455,18 @@
    *  in the transcript (the flush path put it there when it was sent). */
   const startTurn = async (text: string, atts: Attachment[], shown: boolean) => {
     if (!shown) messages.push({ role: 'user', content: text, attachments: atts })
-    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming' })
+    // The turn carries its own handle: stream events patch BY ID, never "the
+    // last row" — a message queued behind a live turn must not steal the
+    // anchor (it used to: the indicator died and every event was dropped).
+    const myId = `t${++turnSeq}`
+    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming', localId: myId })
     streaming = true
     userStopped = false
 
-    const patchLast = (fn: (m: DisplayMessage) => DisplayMessage) => {
-      const l = messages[messages.length - 1]
-      if (l?.role === 'assistant') messages[messages.length - 1] = fn(l)
+    const patchTurn = (fn: (m: DisplayMessage) => DisplayMessage) => {
+      const i = messages.findIndex((m) => m.localId === myId)
+      const row = i >= 0 ? messages[i] : undefined
+      if (row) messages[i] = fn(row)
     }
 
     const ctrl = new AbortController()
@@ -444,20 +485,22 @@
         },
         ctrl.signal,
       )) {
-        if (ev.type === 'content') patchLast((m) => ({ ...m, content: m.content + ev.text }))
-        else if (ev.type === 'reasoning') patchLast((m) => ({ ...m, reasoning: (m.reasoning ?? '') + ev.text }))
-        else if (ev.type === 'tool') patchLast((m) => ({ ...m, tools: mergeTool(m.tools ?? [], ev) }))
+        if (ev.type === 'content') patchTurn((m) => ({ ...m, content: m.content + ev.text }))
+        else if (ev.type === 'reasoning') patchTurn((m) => ({ ...m, reasoning: (m.reasoning ?? '') + ev.text }))
+        else if (ev.type === 'tool') patchTurn((m) => ({ ...m, tools: mergeTool(m.tools ?? [], ev) }))
         else if (ev.type === 'queued') {
           // A reply was already streaming server-side (e.g. a chained turn we
-          // hadn't seen) — drop the placeholder; the sync below shows reality.
-          if (messages[messages.length - 1]?.role === 'assistant') messages.pop()
+          // hadn't seen) — drop OUR placeholder row; the sync below shows
+          // reality. By id: a queued user row may already sit after it.
+          const i = messages.findIndex((m) => m.localId === myId)
+          if (i >= 0) messages.splice(i, 1)
           break
         }
       }
       // A stream that ends having produced NOTHING is a failure, not a reply —
       // typically the agent's model isn't routable. Say so instead of leaving
       // a silent empty bubble (reads as a frozen chat).
-      patchLast((m) => ({
+      patchTurn((m) => ({
         ...m,
         status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
       }))
@@ -467,7 +510,7 @@
         // (see `userStopped`). An empty stop is an error bubble, same as an
         // empty stream — a silent frozen chat reads as broken.
         userStopped = true
-        patchLast((m) => ({
+        patchTurn((m) => ({
           ...m,
           status: m.content || m.reasoning?.trim() || m.tools?.length ? 'complete' : 'error',
         }))
@@ -578,14 +621,20 @@
         {#if m.role === 'user'}
           <!-- Flattened user turn (spec §10) — the author name keeps the
               multiplayer voices apart on shared plans. -->
-          <UserTurn content={m.content} attachments={m.attachments} author={m.authorLabel ?? null} onContextMenu={copyMenu(m)} />
+          <UserTurn
+            content={m.content}
+            attachments={m.attachments}
+            author={m.authorLabel ?? null}
+            queued={i > lastAssistant && (streaming || (resuming && lastAssistant >= 0))}
+            onContextMenu={copyMenu(m)}
+          />
         {:else}
           <AssistantTurn
             message={m}
             turn={i}
             {agentModel}
             {agentLabel}
-            live={(streaming || resuming) && i === messages.length - 1}
+            live={(streaming || resuming) && i === lastAssistant}
             onContextMenu={copyMenu(m)}
           />
         {/if}
@@ -667,6 +716,11 @@
           {/if}
         {/snippet}
         {#snippet rightControls()}
+          {#if queuedCount > 0}
+            <!-- The queue is VISIBLE: the sender can tell their inputs are in
+                flight, and the count moves the moment one resolves. -->
+            <span class="self-center rounded-full border border-line px-2 py-0.5 font-mono text-[10px] text-muted">{queuedCount} queued</span>
+          {/if}
           <!-- Spec §7 rail order: tier chip, then effort — and the rail's last
                tile is send, which becomes stop while a reply streams
                (ChatComposer's onStop). The AGENT CHIP IS DELIBERATELY ABSENT:

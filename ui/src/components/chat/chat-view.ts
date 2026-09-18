@@ -21,6 +21,11 @@ export interface DisplayMessage {
   /** The server auto-resumed this turn after its stream died mid-flight —
    *  shown as a marker on the row, never as a second turn. */
   resumed?: boolean
+  /** Client-local handle for a row THIS view is streaming: stream events
+   *  patch by it, so a message queued behind the live turn can never steal
+   *  the anchor (the old last-row anchoring dropped events and killed the
+   *  indicator the moment a queued row landed). Server rows have none. */
+  localId?: string
 }
 
 export const toDisplay = (m: StoredMessage): DisplayMessage => ({

@@ -4,6 +4,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+### Fixed
+
+- **Queued chat messages no longer make a live reply look stalled.** Sending
+  while the agent is replying anchored everything live to the thread's last
+  row, so the moment the queued message landed the still-streaming turn went
+  dark: the waiting mark unmounted, the row showed "saved (was in progress)",
+  and every content/tool event the stream produced afterwards was dropped.
+  Stream events now patch the turn by a client-local id and the live
+  indicator anchors to the last assistant row (regardless of queued rows
+  after it); the sender's queued rows carry an explicit "queued" chip the
+  moment they are sent, and the composer rail shows the queue count while
+  anything waits. The live-resume poller's 4-minute stop is now an idle cap
+  that server-side progress resets, so long multi-turn chains keep animating
+  instead of being cut off mid-reply. Anchoring rules extracted to
+  `ui/src/components/chat/chat-queue.ts` (unit-tested, 10 cases). Verified:
+  `svelte-check` (0 errors), `vitest` 1176/1176, `bun run check`.
+
 ### Added
 
 - **Teams are first-class.** They are no longer a boards-only grouping:
