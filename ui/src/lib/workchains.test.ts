@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildPositions, chainProgress, chainedTaskIds, type Workchain, type WorkchainStep } from '@/lib/workchain-rules'
+import { buildPositions, chainProgress, chainedTaskIds, moveStepOrder, type Workchain, type WorkchainStep } from '@/lib/workchain-rules'
 
 // Pure-helper tests: the shapes the lens derives its rendering from. The
 // api derives the states (derive_states in api/src/workchains.rs); these
@@ -57,6 +57,28 @@ describe('chainProgress', () => {
 
   it('a chain with no steps reads 0/0, not 0/1 or NaN', () => {
     expect(chainProgress(chain())).toBe('0/0')
+  })
+})
+
+describe('moveStepOrder', () => {
+  it('swaps the task with its neighbor', () => {
+    expect(moveStepOrder(['a', 'b', 'c'], 'a', 1)).toEqual(['b', 'a', 'c'])
+    expect(moveStepOrder(['a', 'b', 'c'], 'c', -1)).toEqual(['a', 'c', 'b'])
+  })
+
+  it('refuses a move off either end', () => {
+    expect(moveStepOrder(['a', 'b'], 'a', -1)).toBeNull()
+    expect(moveStepOrder(['a', 'b'], 'b', 1)).toBeNull()
+  })
+
+  it('refuses an unknown task', () => {
+    expect(moveStepOrder(['a', 'b'], 'zz', 1)).toBeNull()
+  })
+
+  it('does not mutate the input order', () => {
+    const order = ['a', 'b', 'c']
+    moveStepOrder(order, 'a', 1)
+    expect(order).toEqual(['a', 'b', 'c'])
   })
 })
 

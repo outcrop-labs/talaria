@@ -59,3 +59,16 @@ export function chainedTaskIds(workchains: Array<Pick<Workchain, 'steps'>>): Set
   for (const w of workchains) for (const s of w.steps) ids.add(s.taskId)
   return ids
 }
+
+/** The task's new position order after moving it `delta` slots (−1 earlier,
+ *  +1 later) — or null when the move would leave the chain. Pure: the caller
+ *  ships the result through `updateWorkchain`'s `positions`. */
+export function moveStepOrder(taskIds: string[], taskId: string, delta: -1 | 1): string[] | null {
+  const i = taskIds.indexOf(taskId)
+  const j = i + delta
+  if (i === -1 || j < 0 || j >= taskIds.length) return null
+  // Bounds-checked above; noUncheckedIndexedAccess just can't see it.
+  const a = taskIds[i] as string
+  const b = taskIds[j] as string
+  return taskIds.map((id, k) => (k === i ? b : k === j ? a : id))
+}
