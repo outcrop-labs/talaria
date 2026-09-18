@@ -1178,21 +1178,10 @@ pub async fn update_task(
     if let Some(tags) = patch.tags.as_ref().filter(|t| !t.is_empty()) {
         ensure_labels(pg, &cur.board_id, tags).await?;
     }
-    // Assignees on an intake ticket promote it into the pickup queue —
-    // approval by assignment, so an agent's own write never triggers it. The
-    // DESTINATION is never invented: with no usable agent-start column
-    // (`assigned_key` None) there is no pickup queue to promote into, and
-    // the ticket stays in intake rather than being moved somewhere that
-    // merely sorted first — which, before `assigned_key` got this treatment,
-    // could be a DONE column, so assigning someone closed the ticket.
-    let promoted_to = if who.kind != TaskActorKind::Agent
-        && !assignees.is_empty()
-        && meta.default_key.as_deref() == Some(cur.status.as_str())
-    {
-        meta.assigned_key.clone()
-    } else {
-        None
-    };
+    // A patch that sets no status keeps the ticket where it is: assignment
+    // alone must never move a ticket, not even out of intake and into the
+    // pickup queue. Where an assigned ticket lands is answered ONCE, at
+    // create; this path has no destination of its own.
     let next_title = patch.title.clone().unwrap_or_else(|| cur.title.clone());
     let next_description = pick(&patch.description, cur.description.clone());
     let next_effort = pick(&patch.effort, cur.effort.clone());
@@ -1209,11 +1198,7 @@ pub async fn update_task(
     let next_outcome = pick(&patch.outcome, cur.outcome.clone());
     let next_resolution = pick(&patch.resolution, cur.resolution.clone());
     let next_error_message = pick(&patch.error_message, cur.error_message.clone());
-    let next_status = patch
-        .status
-        .clone()
-        .or(promoted_to)
-        .unwrap_or_else(|| cur.status.clone());
+    let next_status = patch.status.clone().unwrap_or_else(|| cur.status.clone());
     let completed_at = completed_at_for(&meta, &next_status, cur.completed_at.as_deref());
     let archived_at = match patch.archived {
         None => cur.archived_at.clone(),
@@ -1273,24 +1258,14 @@ pub async fn update_task(
         .await?;
     }
 
-    // THE COLUMN MOVED — however it moved. Gating this on
-    // `patch.status.is_some()` meant PROMOTION BY ASSIGNMENT left nothing on
-    // the record: a person patching only `assignees` moved the ticket out of
-    // intake and into the agent pickup queue, and the ticket's own history
-    // said only "assigned to …". The watchers were not told either.
-    // `next_status` is what was actually written, so ask it.
+    // THE COLUMN MOVED — and since assignment alone can no longer move it
+    // (the patch above keeps the ticket where it is unless `patch.status`
+    // names a column), every move here was asked for by name. The status
+    // NOTE is the caller's optional why, not a reason this function infers.
     if next_status != cur.status {
-        let why = patch.status_note.clone().unwrap_or_else(|| {
-            if patch.status.is_none() {
-                "promoted by assignment".to_string()
-            } else {
-                String::new()
-            }
-        });
-        let moved = if why.is_empty() {
-            format!("moved to {next_status}")
-        } else {
-            format!("moved to {next_status} ({why})")
+        let moved = match &patch.status_note {
+            Some(why) if !why.is_empty() => format!("moved to {next_status} ({why})"),
+            _ => format!("moved to {next_status}"),
         };
         log_activity(pg, id, &who.id, "status", &moved).await?;
         // Watchers + assigned humans hear about status moves (never the
@@ -1327,10 +1302,12 @@ pub async fn update_task(
     }
     // ── ONE push-side call ─────────────────────────────────────────────────
     // Two things mean "this is now someone's work": the ticket ENTERED a
-    // pickup queue (a person moved the column, or promotion by assignment
-    // did), and/or it GAINED agent assignees. Whether the ticket may be
-    // dispatched to AT ALL is maybe_dispatch_ticket's call; this decides
-    // only whether anything changed enough to ask.
+    // pickup queue (a person moved the column), and/or it GAINED agent
+    // assignees. Whether the ticket may be dispatched to AT ALL is
+    // maybe_dispatch_ticket's call — a ticket that never left intake fails
+    // its pickup_keys gate, which is exactly what keeps an assignment from
+    // becoming a dispatch; this decides only whether anything changed enough
+    // to ask.
     let added_agents = match &patch.assignees {
         Some(_) => agent_assignees(&assignees)
             .into_iter()

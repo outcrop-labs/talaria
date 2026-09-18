@@ -294,6 +294,22 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **Assigning an agent to a ticket no longer moves it out of intake.** The
+  "approval by assignment" promotion silently rewrote a ticket's column the
+  moment a person picked an assignee — the card jumped to the dispatching
+  column and the agent was dispatched before any human said "start this",
+  and the activity record said nothing about the move. Assignment now only
+  files the name on the card: the ticket stays where it is, no dispatch is
+  pushed, and the activity shows only "assigned to …". Moving work into the
+  dispatching column is a human's explicit act again — dragging or patching
+  the status still dispatches to every agent assignee at once, and a new
+  assignee joining a ticket already in the queue still gets only their own
+  push. Born-assigned tickets (created already assigned) still land in the
+  pickup queue; that is a separate intent question left open for review.
+  Verified: `cargo test --test assign_not_dispatch_live -- --ignored` (3
+  live-DB regression tests over the patch pipeline with a recording
+  dispatch store), fmt + clippy `-D warnings` + the api test suite.
+
 - **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
   `BoardLayout.svelte` feature-detected the global with
   `requestIdleCallback ?? fallback` — but reading an absent global by name
