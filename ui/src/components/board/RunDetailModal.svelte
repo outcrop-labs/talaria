@@ -120,6 +120,7 @@
 
   function lineLabel(l: StreamLine): string {
     if (l.t === 'tool') return `⚙ ${l.v}${l.s === 'running' ? ' …' : l.s === 'completed' ? ' ✓' : ''}`
+    if (l.t === 'toolfull') return `⚙ ${l.v}${l.s === 'running' ? ' …' : ' ✓'}`
     if (l.t === 'wtool') return `🛠 ${l.v}${l.ms ? ` (${(l.ms / 1000).toFixed(1)}s)` : ''}`
     if (l.t === 'r') return `· ${l.v}`
     if (l.t === 'err') return `⚠ ${l.v}`
@@ -162,7 +163,7 @@
             {#each [...turns].reverse() as turn (turn.n)}
               <details class="rounded-lg border border-line-subtle" open={turn.n === turns[turns.length - 1]?.n}>
                 <summary class="cursor-pointer px-4 py-2 text-xs font-medium text-fg">
-                  Turn {turn.n} · {turn.lines.filter((l) => l.t === 'tool' || l.t === 'wtool').length} tool calls
+                  Turn {turn.n} · {turn.lines.filter((l) => ['tool', 'toolfull', 'wtool'].includes(l.t)).length} tool calls
                 </summary>
                 <div class="space-y-3 border-t border-line-subtle px-4 py-3">
                   {#if turn.prompt}
@@ -176,7 +177,7 @@
                     <div class="max-h-[420px] overflow-y-auto rounded-md border border-line-subtle bg-[color-mix(in_srgb,var(--color-ink-dim)_10%,transparent)] p-3 font-mono text-xs leading-relaxed text-fg">
                       {#each turn.lines as l, i (i)}
                         <div class="whitespace-pre-wrap">{lineLabel(l)}</div>
-                        {#if (l.t === 'tool' || l.t === 'wtool') && (l.p || l.r)}
+                        {#if (l.t === 'tool' || l.t === 'toolfull' || l.t === 'wtool') && (l.p || l.r)}
                           <div class="mb-1 whitespace-pre-wrap border-l-2 border-line-subtle pl-2 text-muted">
                             {#if l.p}<div>{l.p}</div>{/if}
                             {#if l.r}<div class="mt-0.5">→ {l.r}</div>{/if}
