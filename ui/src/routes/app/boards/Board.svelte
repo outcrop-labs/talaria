@@ -2,7 +2,7 @@
   import { untrack } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Settings2 } from '@lucide/svelte'
+  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Settings2, Workflow } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -11,6 +11,7 @@
   import BoardList from '@/components/board/BoardList.svelte'
   import type { GroupByKey } from '@/components/board/board-list'
   import Gantt from '@/components/board/Gantt.svelte'
+  import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
   import { filtersActive, type BoardFilters } from '@/components/board/filter-bar'
@@ -54,7 +55,7 @@
   // All view state lives in the URL (deep-link convention): view, group, q, and
   // the filter facets (comma-multi within a facet: OR inside, AND across).
   interface BoardSearch {
-    view?: 'list' | 'gantt'
+    view?: 'list' | 'gantt' | 'workchains'
     /** Active saved view id (styling only — the config params travel too). */
     v?: string
     group?: GroupByKey
@@ -89,7 +90,7 @@
       archived: searchParams.get('archived') === true,
     }
     return {
-      ...(s.view === 'list' || s.view === 'gantt' ? { view: s.view as 'list' | 'gantt' } : {}),
+      ...(s.view === 'list' || s.view === 'gantt' || s.view === 'workchains' ? { view: s.view } : {}),
       ...(str(s.v) ? { v: str(s.v) } : {}),
       ...(['status', 'priority', 'assignee', 'label', 'none'].includes(s.group as string) && s.group !== 'status'
         ? { group: s.group as GroupByKey }
@@ -319,7 +320,7 @@
   // a triage board wants the list. Saved views (`?v=`) stay what they are — a
   // named lens you apply deliberately — so one of those is never overridden.
   const viewPrefKey = (id: string) => `talaria:board-view:${id}`
-  const setView = (next: 'board' | 'list' | 'gantt') => {
+  const setView = (next: 'board' | 'list' | 'gantt' | 'workchains') => {
     try {
       localStorage.setItem(viewPrefKey(boardId), next)
     } catch {
@@ -344,7 +345,7 @@
     } catch {
       /* ignore */
     }
-    if (saved === 'list' || saved === 'gantt') setSearch({ view: saved }, true)
+    if (saved === 'list' || saved === 'gantt' || saved === 'workchains') setSearch({ view: saved }, true)
   })
 
   // Opening a ticket keeps the CURRENT view/filter state — the overlay sits
@@ -373,6 +374,7 @@
 {#snippet boardIcon()}<LayoutGrid size={14} />{/snippet}
 {#snippet listIcon()}<List size={14} />{/snippet}
 {#snippet ganttIcon()}<CalendarRange size={14} />{/snippet}
+{#snippet workchainsIcon()}<Workflow size={14} />{/snippet}
 
 <!-- One continuous skeleton across the serial load (boards → tasks): the board
      must not paint with empty columns while its tasks are still in flight.
@@ -422,6 +424,7 @@
           { id: 'board', label: boardIcon, title: 'Board view' },
           { id: 'list', label: listIcon, title: 'List view' },
           { id: 'gantt', label: ganttIcon, title: 'Gantt view' },
+          { id: 'workchains', label: workchainsIcon, title: 'Workchains view' },
         ]}
         value={view}
         onChange={setView}
@@ -429,8 +432,8 @@
       {#if viewsList.notice}<QueryError {...viewsList.notice} />{/if}
       {#if savedViews.length > 0}<div class="h-5 w-px bg-line-subtle"></div>{/if}
       {#each savedViews as sv (sv.id)}
-        <!-- The tab wears its view type: board grid, list, or gantt. -->
-        {@const TypeIcon = sv.config.view === 'gantt' ? CalendarRange : sv.config.view === 'list' ? List : LayoutGrid}
+        <!-- The tab wears its view type: board grid, list, gantt, or workchains. -->
+        {@const TypeIcon = sv.config.view === 'workchains' ? Workflow : sv.config.view === 'gantt' ? CalendarRange : sv.config.view === 'list' ? List : LayoutGrid}
         <button
           onclick={() => applyView(sv)}
           oncontextmenu={(e) => viewTabContextMenu(e, sv)}
@@ -550,6 +553,8 @@
         <Kanban {board} {tasks} onOpen={openTicket} {members} />
       {:else if view === 'gantt'}
         <Gantt {board} {tasks} onOpen={openTicket} />
+      {:else if view === 'workchains'}
+        <Workchains {board} {tasks} allTasks={allTasks} {members} onOpen={openTicket} />
       {:else}
         <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} />
       {/if}

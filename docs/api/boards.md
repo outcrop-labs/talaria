@@ -359,7 +359,7 @@ Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `name` | `string(1, 60)` |  |
-| `view` | `enum(board|list|gantt)?` |  |
+| `view` | `enum(board|list|gantt|workchains)?` |  |
 
 ### PUT `/api/boards/{id}/views` body
 

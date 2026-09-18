@@ -18,8 +18,11 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
     es.onmessage = () => {
       // Refresh the board (cards) live. We deliberately do NOT refetch an open
       // ticket here — that would thrash its editors mid-edit; the detail refetches
-      // on the viewer's own actions.
+      // on the viewer's own actions. Workchain writes ride the SAME generic
+      // board event (the api bumps it on every workchain mutation), so the
+      // chains invalidate here too — the workchains lens stays live.
       void qc.invalidateQueries({ queryKey: ['board-tasks', id] })
+      void qc.invalidateQueries({ queryKey: ['board-workchains', id] })
     }
     return () => es.close()
   })
@@ -146,7 +149,7 @@ export const decideBoardAgentRequest = (
 ) => putJson<{ ok: true }>(`/api/boards/${boardId}/agent-requests`, { agentModel, action })
 
 export interface BoardViewConfig {
-  view?: 'board' | 'list' | 'gantt'
+  view?: 'board' | 'list' | 'gantt' | 'workchains'
   group?: string
   q?: string
   status?: string

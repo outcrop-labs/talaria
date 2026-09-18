@@ -20,7 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
-const VIEW_KINDS: &[&str] = &["board", "list", "gantt"];
+const VIEW_KINDS: &[&str] = &["board", "list", "gantt", "workchains"];
 
 /// The saved view row on the wire: id, boardId, name, config, createdBy,
 /// position, createdAt, updatedAt.

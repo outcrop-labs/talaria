@@ -28,7 +28,7 @@
    * kanban skeleton and then reflow the entire canvas. That is the largest
    * shift available on this page and it costs one prop to avoid.
    */
-  let { view = 'board' }: { view?: 'board' | 'list' | 'gantt' } = $props()
+  let { view = 'board' }: { view?: 'board' | 'list' | 'gantt' | 'workchains' } = $props()
 
   const COLUMNS: Array<Array<{ title: string; body: boolean }>> = [
     [{ title: 'w-4/5', body: true }, { title: 'w-3/5', body: false }],
@@ -206,6 +206,44 @@
                 </div>
               </div>
             {/each}
+          </div>
+        </div>
+      </div>
+
+    {:else if view === 'workchains'}
+      <!-- Workchains: Workchains.svelte's root chain, verbatim — the flex
+           column with a scrollable p-4 body, then two rails in its space-y-6
+           rhythm: a header line (name + progress) and a row of compact
+           w-52 p-3 cards. The second rail is short one card, and the card
+           heights vary per rail, so the landing canvas shifts the rail
+           COUNT, not the widths. The Unchained header line rides under the
+           last rail the way the real one does. -->
+      <div class="flex h-full flex-col">
+        <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-4">
+          {#each [0, 1] as r (r)}
+            <div>
+              <div class="flex items-center gap-2">
+                {@render line('font-sans text-sm font-medium', 'w-32', 'h-3')}
+                {@render line('font-mono text-[10px] tracking-[0.05em]', 'w-8', 'h-2')}
+              </div>
+              <div class="mt-2 flex items-stretch gap-1.5">
+                {#each [0, 1, 2, 3, 4] as i (i)}
+                  <div class="relative w-52 shrink-0 rounded-lg border border-line bg-panel p-3">
+                    <div class="flex items-center gap-1.5">
+                      <span class="h-1.5 w-1.5 shrink-0 rounded-full bg-line"></span>
+                      {@render line('font-mono text-[10px] tracking-[0.05em]', 'w-14', 'h-2')}
+                    </div>
+                    {@render line('font-sans text-[13px] font-medium leading-snug', ['w-4/5', 'w-full', 'w-3/5'][i % 3] ?? 'w-full', 'h-3', true)}
+                    <div class="mt-2 flex items-center gap-2">
+                      {@render line('font-mono text-[9px] uppercase tracking-[0.05em]', 'w-6', 'h-2')}
+                    </div>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/each}
+          <div class="flex items-center gap-1.5">
+            {@render line('font-mono text-[10px] uppercase tracking-[0.08em]', 'w-20', 'h-2')}
           </div>
         </div>
       </div>
