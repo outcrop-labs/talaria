@@ -125,8 +125,8 @@ fn derive_states(meta: &StatusMeta, steps: &mut [WorkchainStep]) {
 }
 
 /// A step from its row: every field is carried, the state is a placeholder —
-/// derive_states assigns it in the chain read, from the same StatusMeta.
-fn step_of(meta: &StatusMeta, row: StepRow) -> WorkchainStep {
+/// derive_states assigns it in the chain read, from the StatusMeta.
+fn step_of(row: StepRow) -> WorkchainStep {
     let (_, task_id, position, ticket_ref, title, assignees, effort, due_ms, status, archived_ms) =
         row;
     let archived = archived_ms.is_some();
@@ -181,7 +181,7 @@ pub async fn list_workchains(pg: &PgPool, board_id: &str) -> Result<Vec<Workchai
     let mut by_chain: HashMap<String, Vec<WorkchainStep>> = HashMap::new();
     for row in steps {
         let chain = row.0.clone();
-        by_chain.entry(chain).or_default().push(step_of(&meta, row));
+        by_chain.entry(chain).or_default().push(step_of(row));
     }
     Ok(chains
         .into_iter()

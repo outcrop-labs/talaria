@@ -507,7 +507,10 @@ async fn reorder_and_step_delete_keep_the_order_honest() {
     )
     .await;
     assert_eq!(status, 200, "reorder failed: {body}");
-    assert_eq!(chain_order(pg, &chain).await, vec![c, b, a]);
+    assert_eq!(
+        chain_order(pg, &chain).await,
+        vec![c.clone(), b.clone(), a.clone()]
+    );
 
     // An order naming a task that is not in the chain refuses the WHOLE
     // write — the positions already sent must not land.
@@ -570,13 +573,13 @@ async fn reorder_and_step_delete_keep_the_order_honest() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(chain_order(pg, &chain).await, vec![c, a]);
+    assert_eq!(chain_order(pg, &chain).await, vec![c.clone(), a.clone()]);
     let b_alive: Option<(String,)> = sqlx::query_as("select title from tasks where id = $1::uuid")
         .bind(&b)
         .fetch_optional(pg)
         .await
         .unwrap();
-    assert_eq!(b_alive.as_deref().map(|(t,)| t.as_str()), Some("B"));
+    assert_eq!(b_alive.map(|(t,)| t), Some("B".to_string()));
 
     // Insert-after: a new ticket wedges after the FIRST step, not the tail.
     let wedged = ticket(pg, &f.board_id, "Wedged", "inbox").await;
@@ -653,8 +656,8 @@ async fn deleting_a_chain_leaves_its_tasks_standing() {
                 .await
                 .unwrap();
         assert_eq!(
-            alive.as_deref().map(|(t,)| t.as_str()),
-            Some(title),
+            alive.map(|(t,)| t),
+            Some(title.to_string()),
             "deleting a chain must not touch its tickets"
         );
     }
@@ -880,6 +883,7 @@ async fn the_heartbeat_hides_blocked_steps_and_serves_the_ready_head() {
     let state = app_state().await;
     let f = fixture(&state, "ordering").await;
     let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
     let (agent_id, _model, key) = fleet_agent(&state, &f.board_id, "ordering").await;
 
     // Both steps belong to the agent; only A is servable while it is live.
@@ -971,6 +975,7 @@ async fn failed_pauses_the_chain_and_tells_its_creator() {
     let state = app_state().await;
     let f = fixture(&state, "pause").await;
     let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
 
     let a = ticket(pg, &f.board_id, "Breaks", "in_progress").await;
     let b = ticket(pg, &f.board_id, "Waits behind", "in_progress").await;
@@ -1058,6 +1063,7 @@ async fn an_archived_step_reads_past_and_the_engine_leaves_it_alone() {
     let state = app_state().await;
     let f = fixture(&state, "archive").await;
     let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
 
     let a = ticket(pg, &f.board_id, "Retired mid-chain", "in_progress").await;
     let b = ticket(pg, &f.board_id, "Next up", "in_progress").await;

@@ -46,27 +46,6 @@ async fn chain_board(state: &AppState, id: &str, action: &str) -> Result<Option<
     Ok(board.and_then(|(b,)| b))
 }
 
-/// The read gate: any board member. Err is the answered response; Ok is the
-/// board id (the caller needs it for the bump).
-async fn read_gate(
-    state: &AppState,
-    user_id: &str,
-    chain_id: &str,
-    action: &str,
-) -> Result<String, Response> {
-    let Some(board_id) = chain_board(state, chain_id, action).await? else {
-        return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    };
-    match board_role(&state.pg, user_id, &board_id).await {
-        Ok(Some(_)) => Ok(board_id),
-        Ok(None) => Err(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[workchains] role read on {action} failed: {e}");
-            Err(thrown_internal_error())
-        }
-    }
-}
-
 /// The write gate: owner or editor — the same predicate the board's other
 /// configuration writes use.
 async fn write_gate(

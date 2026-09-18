@@ -892,11 +892,16 @@ CREATE TABLE public.task_dependencies (
     depends_on_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_watchers (
+    task_id uuid NOT NULL,
+    watcher text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_workchain_steps (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     workchain_id uuid NOT NULL,
     task_id uuid NOT NULL,
-    position integer DEFAULT 0 NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.task_workchains (
@@ -905,14 +910,9 @@ CREATE TABLE public.task_workchains (
     name text NOT NULL,
     created_by text,
     paused boolean DEFAULT false NOT NULL,
-    position integer DEFAULT 0 NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-CREATE TABLE public.task_watchers (
-    task_id uuid NOT NULL,
-    watcher text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.task_workflows (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1372,14 +1372,14 @@ ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
+ALTER TABLE ONLY public.task_watchers
+    ADD CONSTRAINT task_watchers_pkey PRIMARY KEY (task_id, watcher);
 ALTER TABLE ONLY public.task_workchain_steps
     ADD CONSTRAINT task_workchain_steps_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.task_workchain_steps
     ADD CONSTRAINT task_workchain_steps_workchain_id_task_id_key UNIQUE (workchain_id, task_id);
 ALTER TABLE ONLY public.task_workchains
     ADD CONSTRAINT task_workchains_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.task_watchers
-    ADD CONSTRAINT task_watchers_pkey PRIMARY KEY (task_id, watcher);
 ALTER TABLE ONLY public.task_workflows
     ADD CONSTRAINT task_workflows_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.tasks
