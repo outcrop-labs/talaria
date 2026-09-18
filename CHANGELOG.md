@@ -510,8 +510,16 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   connecting…" with Retry and Reload, in the hold's own register rather than
   error chrome — and it disappears whole the moment the session resolves.
   Verified: `bun run check` green; the session-hold suite (6 cases) green
-  under `bun run test` in ui/; the pre-grace hold renders identically (brand
-  mark only) and the error-shell branch is untouched.
+  under `bun run test` in ui/; the whole shell driven in a real headless
+  browser against a stubbed session API — pre-grace hold renders identically
+  (brand mark only), the exit appears at the boundary while the read is
+  still parked, Retry re-fires the read and the shell renders without any
+  reload (same JS heap), and a failed read renders the error shell the hold
+  exit never leaks into. The first Retry shipped as a refetch, which a
+  browser probe proved dead against a wedged read (query-core returns the
+  existing in-flight promise when there is no data to cancel) — Retry now
+  resets the session query, the one verb that tears the wedged attempt down
+  and starts the next one fresh.
 - **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
   `BoardLayout.svelte` feature-detected the global with
   `requestIdleCallback ?? fallback` — but reading an absent global by name

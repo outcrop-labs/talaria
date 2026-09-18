@@ -21,6 +21,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { fly } from '@/lib/motion'
+  import { useQueryClient } from '@tanstack/svelte-query'
   import { startHoldGrace } from '@/lib/session-hold'
   import { useDeniedViews, useLogout, useSession } from '@/lib/session'
   import { upgradeDitherSurfaces } from '@/lib/dither-surface'
@@ -36,6 +37,10 @@
   const session = useSession()
   const denied = useDeniedViews()
   const logout = useLogout()
+  // The hold's Retry needs the CLIENT, not the observer: resetQueries is the
+  // one verb that tears a wedged in-flight read down and starts the next one
+  // fresh (see the comment on the button below).
+  const queryClient = useQueryClient()
   // THE FIREHOSE'S ONE MOUNT. Everything live that is not a page's own stream
   // rides this: the bell, the rails' badges, a run finishing off-page. One
   // EventSource per tab (see user-events.svelte), opened once from the shell.
@@ -190,7 +195,17 @@
       <div class="flex flex-col items-center gap-3" in:fly={{ y: 6, duration: 200 }}>
         <p class="text-xs text-muted">Still connecting…</p>
         <div class="flex items-center gap-2">
-          <Button variant="outline" size="sm" onclick={() => void session.refetch()}>
+          <!-- Retry RESETS the session query, not a refetch: while a data-less
+               read is in flight, refetch() only continues the wedged promise
+               (query-core's Query.fetch returns the existing retryer promise
+               when there is no data to cancel), so the click would answer
+               nothing. resetQueries tears the wedged attempt down and starts
+               the read again as a fresh one. -->
+          <Button
+            variant="outline"
+            size="sm"
+            onclick={() => void queryClient.resetQueries({ queryKey: ['session'] })}
+          >
             Retry
           </Button>
           <Button variant="ghost" size="sm" onclick={() => window.location.reload()}>
