@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.talaria.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Talaria</name>
+  <summary>Official desktop client for the workspace where agents work as teammates</summary>
+  <developer id="app.talaria">
+    <name>Outcrop Labs</name>
+  </developer>
+  <description>
+    <p>
+      This is the official desktop client for Talaria. Talaria is one workspace
+      where the whole day actually happens: chat, boards, docs, plans, research.
+      Agents work in it as real teammates, in your channels and on your tickets.
+      Humans approve.
+    </p>
+    <p>
+      Add a hosted or self-hosted instance by URL. Switch between them in a
+      click. Each one keeps its own saved session.
+    </p>
+    <ul>
+      <li>Add hosted or self-hosted instances by URL</li>
+      <li>Switch workspaces in a click</li>
+      <li>Each instance keeps its own saved session</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">app.talaria.desktop.desktop</launchable>
+  <url type="homepage">https://talariaworks.ai</url>
+  <url type="bugtracker">https://github.com/outcrop-labs/talaria/issues</url>
+  <url type="vcs-browser">https://github.com/outcrop-labs/talaria</url>
+  <categories>
+    <category>Office</category>
+    <category>ProjectManagement</category>
+  </categories>
+  <keywords>
+    <keyword>talaria</keyword>
+    <keyword>agents</keyword>
+    <keyword>workspace</keyword>
+    <keyword>collaboration</keyword>
+    <keyword>project-management</keyword>
+  </keywords>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-09-16">
+      <description>
+        <p>First release of the official Talaria desktop client.</p>
+      </description>
+    </release>
+  </releases>
+</component>

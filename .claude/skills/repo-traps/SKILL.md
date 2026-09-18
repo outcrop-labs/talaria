@@ -82,6 +82,18 @@ thing. `REDIS_URL` comes from `ui/.env` — in a worktree, that stack's own Redi
 api/src/session.rs (`SESSION_COOKIE`, `key()`) is the source of truth; re-verify against
 it before relying on the field list.
 
+## 6. `make_interval(mins => $1)` 500s with "function does not exist"
+
+**Symptom:** a runtime-bound (non-macro) query using `make_interval(mins => $1)` /
+`make_interval(days => $1)` compiles and then 500s at runtime with
+`function make_interval(mins => bigint) does not exist`.
+
+**Check:** the bind's Rust type — sqlx sends an `i64` as `bigint`, and `make_interval`
+only has an `int4` signature. It's trap 1's cousin: the inferred param type, not the SQL.
+
+**Fix:** spell the interval arithmetic instead — `now() - ($1::int * interval '1 minute')`
+with an `i32` bind (or an explicit `::int` cast). Same for `days`.
+
 ---
 
 **Maintenance rule:** this list is earned experience, not theory. When you hit a NEW trap

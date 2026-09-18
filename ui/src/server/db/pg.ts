@@ -3058,6 +3058,22 @@ alter table tasks drop column if exists conversation_id`,
      where workbench_harness in ('claude-code', 'codex')`,
   `alter table mcp_servers add column if not exists package jsonb`,
   `alter table mcp_servers add column if not exists env_enc text`,
+
+  // ── Run observability (2026-09-18): per-agent container resource samples
+  // written by the Rust api's agent-resource-sample scheduler job; run
+  // transcripts live in artifacts (kind 'run-transcript'), pruned by the
+  // same job per app_settings.observability.transcriptRetentionDays.
+  `create table if not exists agent_resource_samples (
+     id bigint generated always as identity primary key,
+     agent_model text not null,
+     container text not null,
+     cpu_percent double precision not null default 0,
+     mem_bytes bigint not null default 0,
+     pids bigint not null default 0,
+     taken_at timestamptz not null default now()
+   )`,
+  `create index if not exists agent_resource_samples_agent_time
+     on agent_resource_samples (agent_model, taken_at)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

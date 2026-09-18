@@ -9,6 +9,7 @@ pub mod layout;
 pub mod preflight;
 pub mod reconcile;
 pub mod render;
+pub mod resources;
 
 // The fleet as AGENTS (not raw gateway models). The bridge's /v1/models
 // includes one entry per tier (`<base>-<alias>`), so consumers that mean

@@ -6,8 +6,7 @@
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import KanbanAddCard from './KanbanAddCard.svelte'
-  import Modal from '@/components/ui/Modal.svelte'
-  import WorkWatch from './WorkWatch.svelte'
+  import RunDetailModal from './RunDetailModal.svelte'
   import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import KanbanCard from './KanbanCard.svelte'
   import { COL_ACCENT, fmtHours } from './kanban'
@@ -228,9 +227,7 @@
         </div>
       {/each}
       {#if watchTask}
-    <Modal open={!!watchTask} onClose={() => (watchTask = null)} title="Work in progress" width="max-w-2xl">
-      <WorkWatch runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
-    </Modal>
+    <RunDetailModal open={!!watchTask} onClose={() => (watchTask = null)} runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
   {/if}
 
   <ContextMenu {menu} />

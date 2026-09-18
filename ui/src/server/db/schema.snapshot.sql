@@ -47,6 +47,23 @@ CREATE TABLE public.agent_keys (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     last_used_at timestamp with time zone
 );
+CREATE TABLE public.agent_resource_samples (
+    id bigint NOT NULL,
+    agent_model text NOT NULL,
+    container text NOT NULL,
+    cpu_percent double precision DEFAULT 0 NOT NULL,
+    mem_bytes bigint DEFAULT 0 NOT NULL,
+    pids bigint DEFAULT 0 NOT NULL,
+    taken_at timestamp with time zone DEFAULT now() NOT NULL
+);
+ALTER TABLE public.agent_resource_samples ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.agent_resource_samples_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
 CREATE TABLE public.agent_role_templates (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     slug text NOT NULL,
@@ -1166,6 +1183,8 @@ ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_key_hash_key UNIQUE (key_hash);
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_pkey PRIMARY KEY (agent_id);
+ALTER TABLE ONLY public.agent_resource_samples
+    ADD CONSTRAINT agent_resource_samples_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_role_templates
     ADD CONSTRAINT agent_role_templates_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_role_templates
@@ -1432,6 +1451,7 @@ ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_name_key UNIQUE (name);
 ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_pkey PRIMARY KEY (id);
+CREATE INDEX agent_resource_samples_agent_time ON public.agent_resource_samples USING btree (agent_model, taken_at);
 CREATE INDEX app_data_updated_idx ON public.app_data USING btree (app, collection, updated_at DESC);
 CREATE INDEX artifact_folders_owner_idx ON public.artifact_folders USING btree (owner_user_id);
 CREATE INDEX artifact_links_target_idx ON public.artifact_links USING btree (target_type, target_id);

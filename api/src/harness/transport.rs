@@ -1171,20 +1171,51 @@ pub async fn pump_persona_stream_alive(
 /// Reasoning is included (it is the agent thinking out loud); usage is not a
 /// terminal line and is skipped. One line of JSON each, newline-free by
 /// construction, appended to the tail and published to the channel verbatim.
+///
+/// TOOL frames carry `id` (lifecycle correlation) and `p` — the persona's
+/// DISPLAY-REDACTED preview of the call's primary argument (Hermes builds it
+/// from the args: the whole terminal command, the whole execute_code body —
+/// which is where the agent's harness steering is legible). The preview is
+/// clamped here so one call cannot flood the tail; the full turn is the
+/// transcript artifact's business, not the live stream's.
 fn watch_line(ev: &crate::gateway::fleet_chat::AgentStreamEvent) -> Option<String> {
     use crate::gateway::fleet_chat::AgentStreamEvent;
     let v = match ev {
         AgentStreamEvent::Content { text } => serde_json::json!({ "t": "d", "v": text }),
         AgentStreamEvent::Reasoning { text } => serde_json::json!({ "t": "r", "v": text }),
-        AgentStreamEvent::Tool { name, status, .. } => serde_json::json!({
-            "t": "tool", "v": name, "s": status
-        }),
+        AgentStreamEvent::Tool {
+            id,
+            name,
+            label,
+            status,
+        } => {
+            let mut frame = serde_json::Map::new();
+            frame.insert("t".into(), serde_json::json!("tool"));
+            frame.insert("v".into(), serde_json::json!(name));
+            if let Some(status) = status {
+                frame.insert("s".into(), serde_json::json!(status));
+            }
+            if let Some(id) = id {
+                frame.insert("id".into(), serde_json::json!(id));
+            }
+            if !label.is_empty() {
+                frame.insert("p".into(), serde_json::json!(clamp_label(label)));
+            }
+            serde_json::Value::Object(frame)
+        }
         AgentStreamEvent::Usage { .. } => return None,
         AgentStreamEvent::Error { message } => {
             serde_json::json!({ "t": "err", "v": message })
         }
     };
     Some(v.to_string())
+}
+
+/// The watch-line preview clamp: 2,000 UTF-16 units on a char boundary —
+/// enough for a long steering prompt, small enough that a pathological
+/// argument cannot dwarf the tail.
+fn clamp_label(label: &str) -> String {
+    crate::body::truncate_utf16(label, 2_000).to_string()
 }
 
 /// The ledger row for a persona turn. It meters because nothing else will:
