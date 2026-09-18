@@ -1072,6 +1072,13 @@ CREATE TABLE public.users (
     preferred_effort text,
     timezone text
 );
+CREATE TABLE public.work_wait (
+    task_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    reason text NOT NULL,
+    queued_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.workbench_harness_defs (
     slug text NOT NULL,
     definition jsonb NOT NULL,
@@ -1137,13 +1144,6 @@ CREATE TABLE public.workbench_repos (
     base_branch text,
     push_mode text DEFAULT 'branches_only'::text NOT NULL,
     branch_prefix text
-);
-CREATE TABLE public.work_wait (
-    task_id uuid NOT NULL,
-    agent_model text NOT NULL,
-    reason text NOT NULL,
-    queued_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.workspace_secret_entries (
     secret_id uuid NOT NULL,
@@ -1436,6 +1436,8 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_sub_key UNIQUE (sub);
+ALTER TABLE ONLY public.work_wait
+    ADD CONSTRAINT work_wait_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.workbench_harness_defs
     ADD CONSTRAINT workbench_harness_defs_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_jobs
@@ -1448,8 +1450,6 @@ ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.workbench_repos
     ADD CONSTRAINT workbench_repos_pkey PRIMARY KEY (agent_id, repo);
-ALTER TABLE ONLY public.work_wait
-    ADD CONSTRAINT work_wait_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.workspace_secret_entries
     ADD CONSTRAINT workspace_secret_entries_pkey PRIMARY KEY (secret_id, key);
 ALTER TABLE ONLY public.workspace_secret_grants
@@ -1779,6 +1779,8 @@ ALTER TABLE ONLY public.user_password_credentials
     ADD CONSTRAINT user_password_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.user_permissions
     ADD CONSTRAINT user_permissions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.work_wait
+    ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
@@ -1789,8 +1791,6 @@ ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repos
     ADD CONSTRAINT workbench_repos_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
-ALTER TABLE ONLY public.work_wait
-    ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workspace_secret_entries
     ADD CONSTRAINT workspace_secret_entries_secret_id_fkey FOREIGN KEY (secret_id) REFERENCES public.workspace_secrets(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workspace_secret_grants

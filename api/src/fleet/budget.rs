@@ -425,5 +425,4 @@ mod tests {
         assert_eq!(parse_size("768m"), Some(768 * MIB));
         assert_eq!(parse_size("1Gi"), Some(GIB));
     }
-
 }
