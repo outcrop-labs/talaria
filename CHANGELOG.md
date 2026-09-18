@@ -94,6 +94,14 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Changed
 
+- **Desktop packaging copy says what the app is.** The Flatpak/AppStream
+  listing, `.desktop` comment, pacman `pkgdesc`, and installer descriptions
+  call this the official Talaria desktop client, describe Talaria in the
+  same voice as talariaworks.ai (one workspace, agents as teammates), and
+  point homepage at https://talariaworks.ai. `stage.sh` now ships the
+  metainfo into the FHS tree both packagers consume. Verified:
+  `desktop-file-validate`; `appstreamcli validate --no-net`; `bun run check`.
+
 - **Workbench coding harnesses are opencode, Pi, and Oh My Pi.** Claude Code
   and Codex are gone from the builtin registry and the seeded `dev` profile
   (a migration strips them from existing profiles and clears per-agent picks).
@@ -113,6 +121,21 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   `--version` on opencode 1.18.31, pi 0.85.1, omp 18.2.4.
 
 ### Fixed
+
+- **The omapak Flatpak opened on "Could not connect to localhost: Connection
+  refused".** Tauri treats the *absence* of the `custom-protocol` Cargo
+  feature as `cfg(dev)` even for `--release`: `generate_context!` skips
+  `frontendDist` and the window loads `tauri.conf.json`'s `devUrl`
+  (`http://localhost:5290`). `tauri build` (GitHub Release installers) adds
+  the feature; omapak's source build is a plain `cargo build --release` after
+  `bun run build:vite`, so the published `app.talaria.desktop` was a Vite
+  client with nothing listening. The crate now defines `custom-protocol`
+  (`tauri/custom-protocol`); packagers that skip the CLI pass
+  `--features custom-protocol`. It is not default: `generate_context!`
+  panics when `frontendDist` is missing, and clippy/tests have no
+  `desktop/dist`. Verified: `cargo metadata` lists the feature;
+  `cargo tree -e features` without the flag does not enable
+  `tauri/custom-protocol`; `bun run check`.
 
 - **Marketplace servers that declare credentials lost their API keys on the
   way in.** The official registry declares remote headers as a `value`

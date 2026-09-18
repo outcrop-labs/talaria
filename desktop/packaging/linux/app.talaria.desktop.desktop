@@ -1,9 +1,10 @@
 [Desktop Entry]
 Type=Application
 Name=Talaria
-Comment=A multitenant shell around Talaria instances
+Comment=Official desktop client for Talaria
 Exec=talaria-desktop
 Icon=app.talaria.desktop
 Terminal=false
-Categories=Utility;Network;
+Categories=Office;ProjectManagement;
+Keywords=Talaria;agents;workspace;collaboration;
 StartupWMClass=talaria-desktop

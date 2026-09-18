@@ -150,6 +150,15 @@ builds the manifest next to it against the GNOME runtime. Building those two loc
 `zstd` and `tar` for pacman, and `flatpak` + `flatpak-builder` + the runtime named in the
 manifest for the flatpak.
 
+A source build that does not go through `tauri build` (omapack, a packager
+that runs `cargo build --release` after `bun run build:vite`) still has to
+pass `--features custom-protocol`. Without it the binary is `cfg(dev)` even
+in release and the webview loads `http://localhost:5290`. The feature is
+defined in `desktop/src-tauri/Cargo.toml` and is not default: clippy/tests
+have no `desktop/dist`, and `generate_context!` panics if that path is
+missing. `stage.sh` also installs AppStream metainfo
+(`app.talaria.desktop.metainfo.xml`) next to the desktop entry.
+
 Nothing is signed or notarized: there is no Apple Developer certificate and no Windows
 signing key in this repo, so macOS wants a right-click → Open the first time (Gatekeeper)
 and Windows shows a SmartScreen warning. The assets carry a `SHA256SUMS`, and the honest

@@ -5,8 +5,8 @@
 # stop — so both build from one FHS tree instead of two drifting copies of the
 # install layout.
 #
-# The names are the ones flatpak requires: the desktop entry and the hicolor
-# icon are looked up by APP ID, not by binary name.
+# The names are the ones flatpak requires: the desktop entry, AppStream
+# metainfo, and the hicolor icon are looked up by APP ID, not by binary name.
 #
 # usage: stage.sh <binary> <outdir>
 set -euo pipefail
@@ -20,6 +20,7 @@ app_id=app.talaria.desktop
 
 install -Dm755 "$binary" "$out/usr/bin/talaria-desktop"
 install -Dm644 "$here/$app_id.desktop" "$out/usr/share/applications/$app_id.desktop"
+install -Dm644 "$here/$app_id.metainfo.xml" "$out/usr/share/metainfo/$app_id.metainfo.xml"
 
 for size in 32 128; do
   install -Dm644 "$icons/${size}x${size}.png" \
