@@ -111,8 +111,69 @@ pub async fn sample_agent_resources(pg: &PgPool) {
         .bind(pids)
         .execute(pg)
         .await;
+        warn_if_leaking(pg, model, mem).await;
+    }
+    if let Some(host) = super::budget::host_mem().await {
+        let reserve = super::budget::host_reserve().await;
+        match super::budget::host_pressure(host.available, reserve) {
+            super::budget::Pressure::Critical => tracing::error!(
+                "{LOG} host RAM critical: {} free, {} reserved for the platform — refusing new work",
+                super::budget::fmt_bytes(host.available),
+                super::budget::fmt_bytes(reserve)
+            ),
+            super::budget::Pressure::Tight => tracing::warn!(
+                "{LOG} host RAM tight: {} free",
+                super::budget::fmt_bytes(host.available)
+            ),
+            super::budget::Pressure::Ok => {}
+        }
     }
     prune(pg).await;
+}
+
+/// Climbing RSS over ~8 minutes, never giving memory back, past 2 GiB.
+/// A leak dies at the agent's cgroup ceiling — not by killing the host.
+pub fn mem_is_leaking(oldest_first: &[i64]) -> bool {
+    if oldest_first.len() < 8 {
+        return false;
+    }
+    let first = oldest_first[0];
+    let last = *oldest_first.last().unwrap();
+    if last < 2 * (1 << 30) {
+        return false;
+    }
+    let mut drops = 0;
+    for w in oldest_first.windows(2) {
+        if w[1] + (64 << 20) < w[0] {
+            drops += 1;
+        }
+    }
+    if drops > 1 {
+        return false;
+    }
+    let slope = (last - first) / (oldest_first.len() as i64 - 1);
+    slope > 256 * (1 << 20)
+}
+
+async fn warn_if_leaking(pg: &PgPool, model: &str, _latest: i64) {
+    let rows: Vec<(i64,)> = match sqlx::query_as(
+        "select mem_bytes from agent_resource_samples \
+         where agent_model = $1 order by taken_at desc limit 15",
+    )
+    .bind(model)
+    .fetch_all(pg)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let mut oldest_first: Vec<i64> = rows.into_iter().map(|r| r.0).collect();
+    oldest_first.reverse();
+    if mem_is_leaking(&oldest_first) {
+        tracing::warn!(
+            "{LOG} {model}: memory climbing (likely leak) — cgroup will OOM this agent, not the host"
+        );
+    }
 }
 
 /// docker stats' human size spellings ("2.4GiB", "946MiB", "512B") to bytes.
@@ -194,7 +255,7 @@ pub fn resource_job_spec(pg: PgPool) -> JobSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_docker_size;
+    use super::{mem_is_leaking, parse_docker_size};
 
     #[test]
     fn docker_sizes_parse_to_bytes() {
@@ -206,5 +267,16 @@ mod tests {
         assert_eq!(parse_docker_size("512B"), Some(512));
         assert_eq!(parse_docker_size("16KiB"), Some(16 << 10));
         assert_eq!(parse_docker_size("nonsense"), None);
+    }
+
+    #[test]
+    fn leak_is_steady_climb_past_two_gig() {
+        let gig = 1 << 30;
+        let climb: Vec<i64> = (0..10).map(|i| (2 * gig) + i * (300 << 20)).collect();
+        assert!(mem_is_leaking(&climb));
+        let flat = vec![3 * gig; 10];
+        assert!(!mem_is_leaking(&flat));
+        let tiny: Vec<i64> = (0..10).map(|i| (50 << 20) + i * (20 << 20)).collect();
+        assert!(!mem_is_leaking(&tiny));
     }
 }

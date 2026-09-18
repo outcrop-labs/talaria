@@ -212,7 +212,7 @@ Source: [`api/src/routes/tasks/tasks_id_work_session.rs`](../../api/src/routes/t
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{session}` | 200, 403, 404 | — |
+| GET | `session` | — | `{session, wait}` | 200, 403, 404 | — |
 
 ## `/api/workflows`
 

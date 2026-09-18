@@ -73,20 +73,34 @@
   type Sample = { t: number; cpu: number; mem: number; pids: number }
   let samples = $state<Sample[]>([])
   let latest = $state<{ cpu: number; mem: number; pids: number } | null>(null)
+  let leak = $state(false)
+  let host = $state<{
+    available: number
+    reserve: number
+    agentCeiling: number
+    pressure: string
+  } | null>(null)
   let resourcesDenied = $state(false)
   $effect(() => {
     if (!open || tab !== 'resources') return
     void (async () => {
       try {
         const res = await getJson<{
-          agents: { agent: string; points: Sample[]; latest: { cpu: number; mem: number; pids: number } | null }[]
+          host: { available: number; reserve: number; agentCeiling: number; pressure: string } | null
+          agents: {
+            agent: string
+            points: Sample[]
+            latest: { cpu: number; mem: number; pids: number } | null
+            leak?: boolean
+          }[]
         }>(`/api/fleet/resources?minutes=120${agentModel ? `&agent=${encodeURIComponent(agentModel)}` : ''}`)
         const mine = res.agents.find((a) => a.agent === agentModel) ?? res.agents[0]
         samples = mine?.points ?? []
         latest = mine?.latest ?? null
+        leak = mine?.leak ?? false
+        host = res.host
         resourcesDenied = false
       } catch {
-        // 403 for non-admins is the designed gate, not an error state.
         resourcesDenied = true
       }
     })()
@@ -181,6 +195,20 @@
       {:else if !latest}
         <div class="py-10 text-center text-sm text-muted">No samples yet — the sampler runs once a minute.</div>
       {:else}
+        {#if host}
+          <p class="mb-3 text-xs text-muted">
+            VM {fmtMem(host.available)} free · {fmtMem(host.reserve)} kept for the platform · agent
+            ceiling {fmtMem(host.agentCeiling)}
+            {#if host.pressure !== 'ok'}
+              · <span class="text-fg">{host.pressure}</span>
+            {/if}
+          </p>
+        {/if}
+        {#if leak}
+          <p class="mb-3 text-xs text-fg">
+            Memory is climbing on this agent. The cgroup will OOM this container, not the VM.
+          </p>
+        {/if}
         <div class="grid gap-4 sm:grid-cols-3">
           <div class="rounded-lg border border-line-subtle p-4">
             <div class="text-xs text-muted">CPU</div>

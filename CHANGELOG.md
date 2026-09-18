@@ -4,6 +4,16 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **Workbench agents pack against the docker host, not a 3-job stall.**
+  Admit uses `docker info` MemTotal when the API is cgrouped smaller than
+  the VM (`/proc/meminfo` when they match). Keep-back is 25% of that total
+  (2–16 GiB). Ceiling is total − keep-back (never above 32 GiB);
+  `oom_score_adj: 500`. Reservation sums each live job's effort (1/2/4 GiB).
+  A refused start writes `work_wait` and the ticket API returns `{ session,
+  wait }` — board cards and the ticker show queued position + reason; wait
+  rows clear only when a session is actually live. Verified: `merge_host_mem`
+  + `jobs_bytes` + `work_wait::wire` tests; `bun run check`.
+
 - **Migrations: CI upgrade baseline back to `origin/main`.** The repair
   (#398) pinned the upgrade pass's baseline to e9f08476 — the last array
   any deployed instance ran — because main's tip then carried the broken
@@ -143,7 +153,6 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   reorder + step-delete order honesty, chain-delete leaves tickets
   standing) need a dev Postgres + Redis.
 
-<<<<<<< Updated upstream
 - **The desktop app auto-versions itself off main.** Every green build of a
   push that touches `desktop/` now mints the next minor version — highest
   suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1 — and
@@ -157,7 +166,6 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   `bun run check`; the merge itself is the first live mint (resolve →
   desktop-vX.Y.0 → release + latest.json flipped) per RELEASING.md's new
   auto-minor section.
-=======
 - **Full run observability — the run-detail modal replaces the small watch
   modal.** The old surface showed agent prose and tool names only; now every
   "watch the work" affordance opens a takeover modal with three panes. LIVE:
@@ -180,7 +188,6 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   modal's Turns pane parses prompt + tool-preview lines, wtool frames
   render live, the resources route answers (403 for non-admins), and the
   watch replay shows previews mid-stream.
->>>>>>> Stashed changes
 
 - **Marketplace installs for package-shipped MCP servers (npm, pypi, and
   docker/oci images) — the GitHub-and-friends long tail.** The official

@@ -76,8 +76,11 @@ pub async fn get(
             return thrown_internal_error();
         }
     };
+    let wait = crate::work_wait::for_task(&state.pg, &id)
+        .await
+        .map(|w| crate::work_wait::wire(&w));
     let Some(row) = row else {
-        return Json(json!({ "session": null })).into_response();
+        return Json(json!({ "session": null, "wait": wait })).into_response();
     };
     let run_id: String = row.get("id");
     let run_state: String = row.get("state");
@@ -90,11 +93,10 @@ pub async fn get(
             "state": run_state,
             "phase": phase,
             "agentModel": input.get("agentModel").and_then(|v| v.as_str()),
-            // The checkpoint is the session's own durable state; turn and
-            // lastTail are read out of it, never re-derived.
             "turn": checkpoint.get("turn").and_then(|v| v.as_i64()),
             "lastTail": checkpoint.get("lastTail").and_then(|v| v.as_str()),
-        }
+        },
+        "wait": wait,
     }))
     .into_response()
 }

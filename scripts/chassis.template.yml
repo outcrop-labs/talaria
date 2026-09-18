@@ -38,19 +38,16 @@ service:
     - SETUID # s6-setuidgid drops the supervision tree to hermes
     - SETGID # setgroups() — the syscall that fails first without this
     - KILL # s6 signals hermes-uid children; graceful stop
-  # Resource ceilings. Without pids_limit, one runaway build or fork bomb inside
-  # a single agent takes down the host — and with it the database, the app, and
-  # every other agent. Tune per deployment; these are headroom for a coding
-  # harness, not a tight budget.
-  pids_limit: ${AGENT_PIDS_LIMIT:-512}
-  # AGENT_MEM_LIMIT is the uniform default every agent renders with; agents
-  # whose workbench resolves get mem_limit replaced at render time with
-  # AGENT_WB_MEM_LIMIT (default 8g) — their sandbox also runs builds, dev
-  # servers, and headless browsers. Both stay live compose interpolation, so a
-  # deployment overrides either from fleet/.env. A changed limit lands on the
-  # next roll, not on reconcile.
-  mem_limit: ${AGENT_MEM_LIMIT:-4g}
-  cpus: ${AGENT_CPUS:-2}
+  # Resource ceilings. pids_limit is the fork-bomb wall. mem_limit is LAST-
+  # DITCH (a leak must not eat the VM). Conversation agents reserve 768Mi
+  # and may burst to 2g; workbench overlay + docker-update size to THIS VM
+  # (25% of MemTotal kept for kernel/docker/Postgres/Redis/the app).
+  # oom_score_adj > 0: the kernel kills the agent before the platform.
+  pids_limit: ${AGENT_PIDS_LIMIT:-1024}
+  mem_reservation: ${AGENT_MEM_RESERVATION:-768m}
+  mem_limit: ${AGENT_MEM_LIMIT:-2g}
+  cpus: ${AGENT_CPUS:-8}
+  oom_score_adj: 500
   # NOT set, deliberately: `user:`. s6-overlay expects to start as root and drop
   # privileges itself (fix-attrs chowns the state volume on boot), so pinning a
   # uid breaks init AND orphans the existing /opt/data volumes of every deployed

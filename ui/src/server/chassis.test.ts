@@ -30,8 +30,10 @@ interface Service {
   cap_add?: string[]
   security_opt?: string[]
   pids_limit?: unknown
+  mem_reservation?: unknown
   mem_limit?: unknown
   cpus?: unknown
+  oom_score_adj?: unknown
   user?: string
   healthcheck?: { test?: unknown }
   extra_hosts?: string[]
@@ -80,11 +82,10 @@ describe('the chassis template', () => {
   })
 
   it('bounds pids, memory and cpu — one fork bomb must not take the host', () => {
-    // Without pids_limit a single runaway agent takes down the database, the
-    // app, and every other agent with it.
-    for (const key of ['pids_limit', 'mem_limit', 'cpus'] as const) {
+    for (const key of ['pids_limit', 'mem_reservation', 'mem_limit', 'cpus'] as const) {
       expect(service[key], `${key} is unset — an agent is unbounded`).toBeDefined()
     }
+    expect(service.oom_score_adj, 'agents must die before Postgres').toBe(500)
   })
 
   it('does NOT pin a `user:`, which is the fix that looks right and is not', () => {

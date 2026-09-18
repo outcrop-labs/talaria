@@ -38,6 +38,7 @@
   const work = useBoardWorkSessions(() => board.id)
   let watchTask = $state<{ id: string; runId: string } | null>(null)
   const working = (id: string) => work.data?.sessions?.[id] ?? null
+  const queued = (id: string) => work.data?.waits?.[id] ?? null
   const fleetQuery = useAgents()
   const sessionQuery = useSession()
   const me = $derived(sessionQuery.data)
@@ -203,6 +204,7 @@
                 <KanbanCard
                   task={t}
                   session={working(t.id)}
+                  wait={queued(t.id)}
                   pillCtx={{ canEdit, onPatch: (p) => void patch(t.id, p), agents, members, meId: me?.id, labels: boardLabels, statuses: boardStatuses, boardId: board.id }}
                   subtasks={childrenOf.get(t.id) ?? []}
                   parentRef={parentRef(t)}
@@ -216,7 +218,10 @@
                   onDragEnd={() => (dragging = null)}
                   onOpen={() => onOpen(t.id)}
                   onContextMenu={(e) => cardMenu(e, t)}
-                  onWatch={() => working(t.id) && (watchTask = { id: t.id, runId: working(t.id)!.runId })}
+                  onWatch={() => {
+                    const s = working(t.id)
+                    if (s?.runId) watchTask = { id: t.id, runId: s.runId }
+                  }}
                 />
               </div>
             {/each}

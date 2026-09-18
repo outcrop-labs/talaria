@@ -115,6 +115,7 @@ pub mod users;
 pub mod vision;
 pub mod web_search;
 pub mod work_dispatch;
+pub mod work_wait;
 pub mod workbench;
 pub mod workchains;
 pub mod workflows;

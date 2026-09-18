@@ -79,5 +79,11 @@ pub async fn get(
             }),
         );
     }
-    Json(json!({ "sessions": map })).into_response()
+    let mut waits = serde_json::Map::new();
+    for (task_id, wait) in crate::work_wait::for_board(&state.pg, &board_id).await {
+        if !map.contains_key(&task_id) {
+            waits.insert(task_id, crate::work_wait::wire(&wait));
+        }
+    }
+    Json(json!({ "sessions": map, "waits": waits })).into_response()
 }

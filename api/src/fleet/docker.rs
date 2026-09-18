@@ -298,6 +298,33 @@ pub async fn managed_container(pg: &PgPool, department: &str) -> String {
     slot_container(department, slot)
 }
 
+/// Live-resize a running agent's memory. Compose's mem_limit is the boot
+/// default; this is how a workbench grows with its jobs without a roll.
+/// `--memory-swap` must be ≥ `--memory` or docker refuses the raise.
+pub async fn update_container_memory(
+    container: &str,
+    limit: u64,
+    reservation: u64,
+) -> Result<(), String> {
+    let limit_s = limit.to_string();
+    let res_s = reservation.to_string();
+    docker(
+        &[
+            "update",
+            "--memory",
+            &limit_s,
+            "--memory-swap",
+            &limit_s,
+            "--memory-reservation",
+            &res_s,
+            container,
+        ],
+        Duration::from_secs(10),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// One lifecycle verb against the department's ACTIVE slot's compose service
 /// (fleet_stop / fleet_restart / fleet_remove). All three answer with
 /// compose's stderr trimmed.

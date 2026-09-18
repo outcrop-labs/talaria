@@ -51,14 +51,19 @@ Behind the session sit the quality gates: plans (and the heavy-effort approval),
 
 ### Concurrency and queueing
 
-A workbench agent is a desk, not a queue server: a bounded amount of real execution work in flight, everything else waiting its turn. The caps are **workbench-only** — an agent with no workbench attached has sessions that are just model turns through the gateway, cheap and stateless, and those stay uncapped. Both sides of the workbench pipeline enforce the same bound (currently 3):
+A workbench agent shares **one** container on **this VM**. Conversation-only agents stay cheap and uncapped. Coding work packs against the VM's `MemAvailable`:
 
-- **Push (dispatch)** — a workbench agent already driving three live work sessions is offered no fourth. There is deliberately **no queue table**: a ticket past the cap simply isn't offered this pass, and the sixty-second self-heal sweep re-offers it within a minute of a slot freeing. Waiting work costs a minute of silence, never a dropped ticket.
-- **Pull (jobs)** — `start_job` refuses a fourth live job, naming the ones the agent has and asking it to `finish_job` or abandon first; approving a heavy plan at the cap is refused the same way (rejecting is always allowed). Plans `awaiting_approval` are free — no clone URL exists yet, nothing runs.
+- **VM keep-back** — 25% of `MemTotal`, clamped 2–16 GiB (`TALARIA_HOST_RESERVE` overrides). Kernel, docker, Postgres, Redis, and the app keep that RAM. Agents are `oom_score_adj: 500` so the kernel kills them first.
+- **Push / pull** — a session or `start_job` is offered when free RAM can take the next job after that keep-back. Otherwise the ticket is **queued** (`work_wait`): the board card and ticket ticker say "queued · N ahead" / "next up — waiting for RAM" with the packing reason; the 60s sweep still starts it when a slot frees. Approving a heavy plan against a full VM toasts the same reason. Runaway guard is 16 jobs, not a desk size.
+- **Ceiling** — each workbench container's hard `mem_limit` is `MemTotal − keep-back` (and never above 32 GiB). A leak OOMs **that agent**, not the VM. Reservation grows with live jobs; the ceiling does not shrink to the estimate.
+- **Observability** — once-a-minute `docker stats` plus host pressure (`ok` / `tight` / `critical`) and a leak flag (RSS climbing ≥256 MiB/min for 8+ minutes past 2 GiB) on `GET /api/fleet/resources` and the run-detail Resources pane.
 
-The caps exist because each workbench session and each started job means real processes in the agent's **one** container: a harness, a clone, often a dev server and a headless browser. On 2026-09-17 the dogfood engineering agent was offered fourteen tickets at once, started eleven jobs, and the accumulated leftovers (a vite server from a morning job, two Chrome clusters, tsservers, a mid-install Playwright) OOM-killed its 4 GiB chassis twenty-six times — every turn blew its lease and the tickets froze for hours. RAM sizing and the caps are one policy: workbench agents render with their own higher ceiling (`AGENT_WB_MEM_LIMIT`, default 8g — headroom for a *capped* few concurrent coding jobs, not a license for unbounded pile-up), and a changed limit lands on the next **roll**, never on reconcile.
+Packing floors: **conversation** 768 MiB / 2 GiB; **workbench idle** 2 GiB; **per job** 1 / 2 / 4 GiB (light / standard / heavy).
 
-Two known amplifiers are intentionally out of the caps' reach, tracked separately: ever-growing session contexts (a retried ticket's turns can carry millions of tokens), and leftover per-job processes inside long-lived agent containers.
+The 2026-09-17 dogfood freeze — fourteen tickets, eleven jobs, 4 GiB chassis, twenty-six OOM kills — was a hard `mem_limit` plus unbounded pile-up. Packing + a 32 GiB last-ditch ceiling replaces both the 3-job stall and the 8g one-size box.
+
+Two known amplifiers stay out of packing, tracked separately: ever-growing session contexts (retried tickets can carry millions of tokens), and leftover per-job processes inside long-lived agent containers.
+
 
 ### Observing a run
 
