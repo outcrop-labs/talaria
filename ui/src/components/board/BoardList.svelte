@@ -2,7 +2,6 @@
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
-  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
   import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'

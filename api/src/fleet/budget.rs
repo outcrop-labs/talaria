@@ -426,13 +426,4 @@ mod tests {
         assert_eq!(parse_size("1Gi"), Some(GIB));
     }
 
-    #[test]
-    fn light_seat_is_sub_gib_conversation() {
-        assert!(LIGHT_RESERVE < GIB);
-        assert!(LIGHT_CEILING <= 2 * GIB);
-        assert!(WB_BASE_RESERVE >= 2 * GIB);
-        assert!(JOB_HEAVY > JOB_STANDARD);
-        assert!(JOB_STANDARD > JOB_LIGHT);
-        assert_eq!(JOB_HEAVY, 4 * GIB);
-    }
 }

@@ -1138,6 +1138,13 @@ CREATE TABLE public.workbench_repos (
     push_mode text DEFAULT 'branches_only'::text NOT NULL,
     branch_prefix text
 );
+CREATE TABLE public.work_wait (
+    task_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    reason text NOT NULL,
+    queued_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.workspace_secret_entries (
     secret_id uuid NOT NULL,
     key text NOT NULL,
@@ -1441,6 +1448,8 @@ ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.workbench_repos
     ADD CONSTRAINT workbench_repos_pkey PRIMARY KEY (agent_id, repo);
+ALTER TABLE ONLY public.work_wait
+    ADD CONSTRAINT work_wait_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.workspace_secret_entries
     ADD CONSTRAINT workspace_secret_entries_pkey PRIMARY KEY (secret_id, key);
 ALTER TABLE ONLY public.workspace_secret_grants
@@ -1512,6 +1521,7 @@ CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);
+CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
@@ -1779,6 +1789,8 @@ ALTER TABLE ONLY public.workbench_repo_requests
     ADD CONSTRAINT workbench_repo_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repos
     ADD CONSTRAINT workbench_repos_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.work_wait
+    ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workspace_secret_entries
     ADD CONSTRAINT workspace_secret_entries_secret_id_fkey FOREIGN KEY (secret_id) REFERENCES public.workspace_secrets(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workspace_secret_grants

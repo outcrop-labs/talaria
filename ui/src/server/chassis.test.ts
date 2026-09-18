@@ -32,7 +32,7 @@ interface Service {
   pids_limit?: unknown
   mem_reservation?: unknown
   mem_limit?: unknown
-  cpus?: unknown
+  cpu_shares?: unknown
   oom_score_adj?: unknown
   user?: string
   healthcheck?: { test?: unknown }
@@ -82,7 +82,7 @@ describe('the chassis template', () => {
   })
 
   it('bounds pids, memory and cpu — one fork bomb must not take the host', () => {
-    for (const key of ['pids_limit', 'mem_reservation', 'mem_limit', 'cpus'] as const) {
+    for (const key of ['pids_limit', 'mem_reservation', 'mem_limit', 'cpu_shares'] as const) {
       expect(service[key], `${key} is unset — an agent is unbounded`).toBeDefined()
     }
     expect(service.oom_score_adj, 'agents must die before Postgres').toBe(500)

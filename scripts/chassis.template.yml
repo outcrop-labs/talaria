@@ -39,14 +39,13 @@ service:
     - SETGID # setgroups() — the syscall that fails first without this
     - KILL # s6 signals hermes-uid children; graceful stop
   # Resource ceilings. pids_limit is the fork-bomb wall. mem_limit is LAST-
-  # DITCH (a leak must not eat the VM). Conversation agents reserve 768Mi
-  # and may burst to 2g; workbench overlay + docker-update size to THIS VM
-  # (25% of MemTotal kept for kernel/docker/Postgres/Redis/the app).
-  # oom_score_adj > 0: the kernel kills the agent before the platform.
+  # DITCH (a leak must not eat the VM). No hard `cpus:` quota — that failed
+  # chassis smoke on 4-CPU runners (`range of CPUs is from 0.01 to 4.00`)
+  # and throttled idle cores on bigger boxes. cpu_shares is relative fairness.
   pids_limit: ${AGENT_PIDS_LIMIT:-1024}
   mem_reservation: ${AGENT_MEM_RESERVATION:-768m}
   mem_limit: ${AGENT_MEM_LIMIT:-2g}
-  cpus: ${AGENT_CPUS:-8}
+  cpu_shares: ${AGENT_CPU_SHARES:-1024}
   oom_score_adj: 500
   # NOT set, deliberately: `user:`. s6-overlay expects to start as root and drop
   # privileges itself (fix-attrs chowns the state volume on boot), so pinning a
