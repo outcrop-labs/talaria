@@ -8,6 +8,10 @@
 #       array has a syntax error or bad column reference
 #     - runs the pass a second time and requires `applied: 0` (exactly-once,
 #       the same property boot relies on after a crash mid-pass)
+#     - replays the UPGRADE path too: origin/main's array into a second
+#       scratch postgres, then this PR's array on top of it — a mid-array
+#       insert or in-place edit trips the append-only checksum guard there,
+#       exactly where a deployed instance would trip it at boot
 #     - pg_dump --schema-only inside that container and diffs it against the
 #       committed ui/src/server/db/schema.snapshot.sql — drift fails with the
 #       regen command, so every schema-touching PR carries the real schema
@@ -37,6 +41,7 @@ on:
     paths:
       - 'ui/src/server/db/**'
       - 'ui/scripts/check-migrations.ts'
+      - 'ui/scripts/migrate-file.ts'
       - 'ui/package.json'
       - '.github/workflows/migrations.yml'
   push:
@@ -44,6 +49,7 @@ on:
     paths:
       - 'ui/src/server/db/**'
       - 'ui/scripts/check-migrations.ts'
+      - 'ui/scripts/migrate-file.ts'
       - 'ui/package.json'
       - '.github/workflows/migrations.yml'
 
@@ -86,6 +92,62 @@ jobs:
           # with the job.
           TALARIA_SECRET_KEY: ci-scratch-key
         run: bun run migrations:check
+
+      # The fresh replay above proves the array runs on a virgin database —
+      # which is exactly why it cannot catch a mid-array insert: a fresh
+      # database has no ledger, so the append-only guard never fires. Deployed
+      # instances DO. (2026-09-18: #394's workchains statements landed
+      # mid-array; CI was green, and the first fleet roll refused to boot with
+      # "migration 338 changed after it was applied".) This pass is that
+      # upgrade, replayed: apply the baseline's array to a second scratch
+      # database, then this PR's array against the SAME database — the
+      # checksum guard, the appended statements, and the snapshot all have to
+      # hold on a database that already has the baseline's ledger, or the PR
+      # is red.
+      #
+      # The baseline is origin/main — EXCEPT for the repair that introduced
+      # this check itself: main's tip then carried the mid-array insert, and
+      # no deployed database ever applied it (the boot guard refused
+      # fleet-wide), so the repair's true baseline is e9f08476, the last
+      # array any instance actually ran. FLIP THIS BACK to origin/main in the
+      # first migrations PR after the repair lands — a stale baseline here
+      # weakens the guard to inserts above the pinned prefix.
+      - name: Upgrade pass — baseline migrations into a second scratch postgres
+        env:
+          MIGRATION_BASELINE: e9f0847628fb72d6cfded9fef9f27f633122cace
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          base="${MIGRATION_BASELINE:-origin/main}"
+          echo "upgrade baseline: $base"
+          # A pinned baseline sha is an ancestor the depth-1 fetch above does
+          # not carry — fetch it by sha (GitHub allows want-by-sha) and fail
+          # loud rather than silently comparing against the wrong array.
+          if ! git cat-file -e "$base" 2>/dev/null; then
+            git fetch --no-tags origin "$base"
+          fi
+          git show "$base":ui/src/server/db/pg.ts > ui/src/server/db/pg.main-upgrade.ts
+          docker run -d --name talaria-mig-pg-up \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55442:5432 postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg-up pg_isready -U talaria -q && break
+            sleep 1
+          done
+          docker exec talaria-mig-pg-up pg_isready -U talaria -q \
+            || { echo "postgres never became ready"; docker logs talaria-mig-pg-up; exit 1; }
+
+      - name: Upgrade pass — this PR's array on top of main's ledger
+        working-directory: ui
+        env:
+          DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55442/talaria
+          TALARIA_SECRET_KEY: ci-scratch-key
+          # The snapshot diff must come from THIS database — the upgraded
+          # schema has to land where the fresh replay lands.
+          PG_DUMP: docker exec talaria-mig-pg-up pg_dump -U talaria
+        run: |
+          bun run migrate-file src/server/db/pg.main-upgrade.ts
+          rm src/server/db/pg.main-upgrade.ts
+          bun run migrations:check
 
       - name: Replay again — nothing new may apply
         working-directory: ui
