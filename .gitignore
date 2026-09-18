@@ -22,6 +22,11 @@ compose.env
 compose.override.yml
 docker-compose.override.yml
 
+# Throwaway verification harness (TALA-1 browser check) — never ships
+ui/src/testing/
+ui/vite.harness.config.ts
+ui/.vite-harness/
+
 # Key material — an accidentally copied private key must not stage silently
 *.pem
 *.key
