@@ -14,6 +14,7 @@
   import { cn } from '@/lib/cn'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { pushToast } from '@/lib/toast.svelte'
+  import { onUserEvent } from '@/lib/user-events.svelte'
   import { p } from '@/router'
 
   let { id, planId, syncSignal = 0 }: { id: string; planId: string; syncSignal?: number } = $props()
@@ -28,6 +29,21 @@
   let syncNonce = $state(0)
   // Fullscreen (Esc exits) — same affordance as the artifact/KB editors.
   let fullscreen = $state(false)
+
+  // TALA-33: the SERVER auto-syncs this document after every landed plan
+  // turn and fans a conversation event — this pane no longer waits for its
+  // own sync() to refetch. A matching 'conversation' event invalidates the
+  // artifact query (the same key sync() invalidates), which re-renders the
+  // editor through the artifact data — including landings this tab never
+  // observed, and writes from other members' tabs.
+  $effect(() => {
+    const off = onUserEvent((event) => {
+      if (event.type === 'conversation' && event.conversationId === planId) {
+        void qc.invalidateQueries({ queryKey: ['artifact', id] })
+      }
+    })
+    return off
+  })
 
   const save = async () => {
     const body = editorRef?.getMarkdown() ?? artifact?.body ?? ''

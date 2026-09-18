@@ -29,7 +29,10 @@ use crate::gateway::guard::{
 use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
 use crate::model::efforts::efforts_for_model;
 use crate::notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
-use crate::plan_doc::{PLAN_MODE_PROMPT, notify_plan_mentions, plan_routing_block};
+use crate::plan_doc::{
+    PLAN_MODE_PROMPT, PlanOwner, notify_plan_mentions, plan_doc_for, plan_routing_block,
+    sync_plan_doc,
+};
 use crate::retrieval::index::IndexDoc;
 use crate::retrieval::sources::index_activity;
 use crate::state::AppState;
@@ -42,6 +45,140 @@ use crate::workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 pub struct PlanMeta {
     pub owner_user_id: String,
     pub title: Option<String>,
+}
+
+// TALA-33: the server-side auto-sync of a plan's living document. The
+// document rewrites when a turn LANDS, not only when a client that watched
+// the stream happens to still be open to fire the manual POST — a reload, a
+// poller cap, or a mid-queue landing left the document silently stale.
+// Everything below runs DETACHED from the persist: the hot path's only
+// extra work is passing along the plan facts it already holds.
+/// One auto-sync per plan at a time, in-process. Overlapping triggers SKIP
+/// rather than wait — the next landed turn re-fires the sync, so a dropped
+/// overlap costs one turn of staleness, not a queue of double-burns. The
+/// manual POST /plans/:id/doc route stays unchanged and races benignly with
+/// this guard: the document is versioned and the data-loss guard
+/// (harness/defs/plan_doc.rs) refuses a gutted rewrite, so the worst case of
+/// a manual+auto overlap is one refused save, not damage.
+static AUTO_SYNCING: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+
+/// The recency window: a document saved this recently is skipped, so the
+/// manual sync a client fires on turn-complete (the same moment this path
+/// fires) does not immediately double-burn the rewrite.
+const AUTO_SYNC_RECENT_MS: i64 = 5_000;
+
+/// Should an auto-sync start for this turn? Pure decision — kind check,
+/// in-flight guard, recency — so the tests cover exactly the policy without
+/// a live model behind `sync_plan_doc` (the harness runs through the persona
+/// gateway; no test seam reaches it end-to-end from here).
+fn auto_sync_should_start(
+    plan: Option<&PlanMeta>,
+    in_flight: bool,
+    doc_updated_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    plan.is_some()
+        && !in_flight
+        && doc_updated_ms.is_none_or(|ms| now_ms - ms > AUTO_SYNC_RECENT_MS)
+}
+
+/// Wall-clock epoch millis, the house pattern (no chrono in this crate).
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The detached auto-sync kick, for a turn that just completed. Called on
+/// the completed path only — NEVER on a frame_error (the agent refused;
+/// nothing landed worth folding in) and never on a death (the row is an
+/// error, not a turn). All database reads live here, inside the task, so the
+/// hot path stays as it was.
+fn spawn_plan_doc_auto_sync(
+    state: &AppState,
+    conversation_id: &str,
+    plan: PlanMeta,
+    agent_model: String,
+    tier: Option<String>,
+) {
+    let state = state.clone();
+    let conversation_id = conversation_id.to_string();
+    tokio::spawn(async move {
+        // The guard claim is split around the one await: a std MutexGuard
+        // is not Send, so the doc read runs BETWEEN a check and the claim,
+        // and the claim re-checks before inserting — the overlap window is
+        // one fetch, exactly the window the manual route already races.
+        let in_flight = AUTO_SYNCING
+            .lock()
+            .expect("auto-sync guard uncontended")
+            .contains(&conversation_id);
+        let doc = plan_doc_for(&state.pg, &conversation_id)
+            .await
+            .ok()
+            .flatten();
+        // `updated_at` is an ISO string; an unparseable one reads as "not
+        // freshly saved" and lets the sync through (None = no document yet).
+        let doc_updated_ms = doc
+            .as_ref()
+            .and_then(|d| crate::agent_auth::iso_to_epoch_ms(&d.updated_at));
+        if !auto_sync_should_start(Some(&plan), in_flight, doc_updated_ms, now_ms()) {
+            return;
+        }
+        if AUTO_SYNCING
+            .lock()
+            .expect("auto-sync guard uncontended")
+            .contains(&conversation_id)
+        {
+            return;
+        }
+        AUTO_SYNCING
+            .lock()
+            .expect("auto-sync guard uncontended")
+            .insert(conversation_id.clone());
+        // The label that lands in the artifact's version history is the AGENT
+        // persona's, not a human's: the rewrite is the plan's own agent doing
+        // the work (same attribution `sync_plan_doc` itself gives the saved
+        // revision), and the plan owner is only the identity the document
+        // belongs to. A human label here would read in the artifact history
+        // as the owner having written the agent's rewrite.
+        // TIERED PLANS METER LIKE THE MANUAL ROUTE: `routed_model_for` builds
+        // `<base>-<tier>` the same way /api/chat does, so an auto-sync on a
+        // tiered plan attributes and prices exactly as a manual sync would,
+        // instead of silently pinning the base model. A resolution failure
+        // falls back to the base agent rather than skipping the sync.
+        let routed_model = routed_model_for(&state.pg, &agent_model, tier.as_deref())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| agent_model.clone());
+        let agent_label = describe_agent(&agent_model).label;
+        let base_model = agent_model.clone();
+        let result = sync_plan_doc(
+            &state,
+            &conversation_id,
+            PlanOwner {
+                id: &plan.owner_user_id,
+                label: &agent_label,
+            },
+            plan.title.as_deref(),
+            &base_model,
+            &routed_model,
+            None,
+        )
+        .await;
+        AUTO_SYNCING
+            .lock()
+            .expect("auto-sync guard uncontended")
+            .remove(&conversation_id);
+        if let Err(e) = result {
+            // Auto-sync failure must never read as a failed turn — the
+            // reply is landed and the conversation is fine; the document is
+            // merely one turn behind until the next one lands.
+            tracing::warn!("[plan-doc] auto-sync after turn failed: {e}");
+        }
+    });
 }
 
 /// The turn's identity, threaded from /api/chat through the chain.
@@ -539,6 +676,16 @@ pub async fn persist_assistant_stream(
     flush!("complete");
     let _ = touch_conversation(&state.pg, &conversation_id, None).await;
     ledger!();
+    // TALA-33: a landed plan turn rewrites the plan's living document
+    // server-side (detached; see `spawn_plan_doc_auto_sync`). Only the
+    // completed path — the error and death paths above return early.
+    if let Some((plan, agent_model, tier)) = usage_meta.as_ref().and_then(|m| {
+        m.plan
+            .clone()
+            .map(|p| (p, m.agent_model.clone(), m.tier.clone()))
+    }) {
+        spawn_plan_doc_auto_sync(&state, &conversation_id, plan, agent_model, tier);
+    }
     // First-exchange naming: the Titler upgrades the mechanical truncated
     // title once there's a real exchange to name.
     {
@@ -752,5 +899,92 @@ mod tests {
         );
         assert!(TurnDeath::Idle.reason().contains("went silent for "));
         assert!(TurnDeath::Idle.reason().ends_with("s mid-turn"));
+    }
+
+    /// TALA-33: the auto-sync trigger policy, at the seam the tests can
+    /// reach. `sync_plan_doc` runs the rewrite through the persona gateway
+    /// (run_harness → real transport), which no unit test can fake from this
+    /// module — so the DECISION is pure and tested here, and the wiring is
+    /// the single call site on the `flush!("complete")` path.
+    mod plan_auto_sync {
+        use super::*;
+
+        fn plan_meta() -> PlanMeta {
+            PlanMeta {
+                owner_user_id: "owner-1".into(),
+                title: Some("The plan".into()),
+            }
+        }
+
+        fn now() -> i64 {
+            1_000_000
+        }
+
+        /// A completed plan turn with a document not freshly saved syncs.
+        #[test]
+        fn plan_completion_triggers_sync() {
+            assert!(auto_sync_should_start(
+                Some(&plan_meta()),
+                false,
+                Some(now() - AUTO_SYNC_RECENT_MS - 1),
+                now()
+            ));
+        }
+
+        /// No plan meta (every other conversation kind) never syncs.
+        #[test]
+        fn non_plan_does_not_sync() {
+            assert!(!auto_sync_should_start(None, false, None, now()));
+        }
+
+        /// An auto-sync already in flight for the plan skips — overlapping
+        /// triggers never queue up behind each other.
+        #[test]
+        fn overlapping_trigger_skips() {
+            assert!(!auto_sync_should_start(
+                Some(&plan_meta()),
+                true,
+                Some(now() - AUTO_SYNC_RECENT_MS - 1),
+                now()
+            ));
+        }
+
+        /// A document saved within the recency window skips — the client's
+        /// manual turn-complete sync just landed and must not double-burn.
+        #[test]
+        fn fresh_manual_save_skips() {
+            assert!(!auto_sync_should_start(
+                Some(&plan_meta()),
+                false,
+                Some(now() - 1_000),
+                now()
+            ));
+        }
+
+        /// A first-ever sync (no document yet) proceeds: `ensure_plan_doc`
+        /// creates it, and there is nothing fresh to protect.
+        #[test]
+        fn no_document_yet_syncs() {
+            assert!(auto_sync_should_start(
+                Some(&plan_meta()),
+                false,
+                None,
+                now()
+            ));
+        }
+
+        /// The error paths (frame_error and death) return before the call
+        /// site, so the policy is never consulted for them — this pins that
+        /// by construction: the only trigger lives after the complete flush.
+        #[test]
+        fn boundary_exactly_at_window_is_recent() {
+            // Exactly 5s old is still "fresh" — the window is a strict >.
+            assert!(!auto_sync_should_start(
+                Some(&plan_meta()),
+                false,
+                Some(now() - AUTO_SYNC_RECENT_MS),
+                now()
+            ));
+        }
     }
 }
