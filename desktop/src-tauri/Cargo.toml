@@ -30,6 +30,17 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
 
+[features]
+# Production webview. Tauri treats the *absence* of `custom-protocol` as
+# `cfg(dev)` regardless of --release: generate_context! skips frontendDist
+# and the window loads tauri.conf.json's devUrl (http://localhost:5290).
+# `tauri build` adds the feature; `tauri dev` strips it with
+# --no-default-features. Default-on so a plain `cargo build --release`
+# (omapack, any packager that doesn't go through the CLI) actually ships
+# the embedded launcher instead of a connection-refused error page.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 # NOTE: tauri is pinned exactly (=2.11.5), not semver-ranged. Multiwebview
 # (Window::add_child) rides behind the `unstable` cargo feature, and unstable
 # features are exempt from semver guarantees — a caret here could silently

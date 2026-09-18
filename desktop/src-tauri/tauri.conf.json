@@ -34,12 +34,12 @@
     ],
     "publisher": "Outcrop Labs",
     "copyright": "Copyright © 2026 Outcrop Labs LLC",
-    "homepage": "https://github.com/outcrop-labs/talaria",
+    "homepage": "https://talariaworks.ai",
     "license": "MIT",
     "licenseFile": "../../LICENSE",
     "category": "Utility",
-    "shortDescription": "A multitenant shell around Talaria instances",
-    "longDescription": "Talaria Desktop is a launcher around hosted Talaria instances: add an instance by URL, switch between them in a click, and each instance keeps its own saved session."
+    "shortDescription": "Official desktop client for Talaria",
+    "longDescription": "This is the official desktop client for Talaria. One workspace where the whole day actually happens: chat, boards, docs, plans, research. Agents work as real teammates, in your channels and on your tickets. Add a hosted or self-hosted instance by URL. Switch in a click. https://talariaworks.ai"
   },
   "plugins": {
     "updater": {
