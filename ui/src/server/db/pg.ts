@@ -3009,34 +3009,6 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now(),
      primary key (run_id, team_id)
    )`,
-  // Workchains (TALA-30): tasks linked into ordered pipelines (A -> B -> C)
-  // with human/agent handoffs. Steps reference tasks with on delete cascade,
-  // so a deleted ticket drops out of its chain on its own; deleting the
-  // workchain unlinks the tickets (the cascade fires the other way) and
-  // never touches them.
-  `create table if not exists task_workchains (
-     id uuid primary key default gen_random_uuid(),
-     board_id uuid not null references boards(id) on delete cascade,
-     name text not null,
-     created_by text,
-     paused boolean not null default false,
-     position integer not null default 0,
-     created_at timestamptz not null default now(),
-     updated_at timestamptz not null default now()
-   )`,
-  `create table if not exists task_workchain_steps (
-     id uuid primary key default gen_random_uuid(),
-     workchain_id uuid not null references task_workchains(id) on delete cascade,
-     task_id uuid not null references tasks(id) on delete cascade,
-     position integer not null default 0,
-     created_at timestamptz not null default now(),
-     unique(workchain_id, task_id)
-   )`,
-  // v1 invariant: a task lives in at most one workchain, board-wide. The
-  // routes enforce it with a friendly 409 first; the index is what makes it
-  // true under a race.
-  `create unique index if not exists task_workchain_steps_one_chain on task_workchain_steps(task_id)`,
-
   // Workbench builtins are opencode, Pi, and Oh My Pi. Claude Code and Codex
   // are retired: strip them from every profile, reset the shipped `dev`
   // profile to the canonical list, and clear per-agent picks that named a
@@ -3074,6 +3046,36 @@ alter table tasks drop column if exists conversation_id`,
    )`,
   `create index if not exists agent_resource_samples_agent_time
      on agent_resource_samples (agent_model, taken_at)`,
+
+  // Workchains (TALA-30): tasks linked into ordered pipelines (A -> B -> C)
+  // with human/agent handoffs. Steps reference tasks with on delete cascade,
+  // so a deleted ticket drops out of its chain on its own; deleting the
+  // workchain unlinks the tickets (the cascade fires the other way) and
+  // never touches them. (Appended at the END — the first cut of #394 sat
+  // mid-array, and every deployed instance's append-only checksum guard
+  // refused to boot on it: migrations only ever go at the bottom.)
+  `create table if not exists task_workchains (
+     id uuid primary key default gen_random_uuid(),
+     board_id uuid not null references boards(id) on delete cascade,
+     name text not null,
+     created_by text,
+     paused boolean not null default false,
+     position integer not null default 0,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create table if not exists task_workchain_steps (
+     id uuid primary key default gen_random_uuid(),
+     workchain_id uuid not null references task_workchains(id) on delete cascade,
+     task_id uuid not null references tasks(id) on delete cascade,
+     position integer not null default 0,
+     created_at timestamptz not null default now(),
+     unique(workchain_id, task_id)
+   )`,
+  // v1 invariant: a task lives in at most one workchain, board-wide. The
+  // routes enforce it with a friendly 409 first; the index is what makes it
+  // true under a race.
+  `create unique index if not exists task_workchain_steps_one_chain on task_workchain_steps(task_id)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

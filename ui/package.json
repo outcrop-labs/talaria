@@ -11,6 +11,7 @@
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "migrations:check": "bun scripts/check-migrations.ts",
     "migrations:snapshot": "bun scripts/check-migrations.ts --update-snapshot",
+    "migrate-file": "bun scripts/migrate-file.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
