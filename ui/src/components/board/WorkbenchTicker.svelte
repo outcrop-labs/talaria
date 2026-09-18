@@ -1,10 +1,9 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
-  import Modal from '@/components/ui/Modal.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { useWorkSession } from '@/lib/work-session.svelte'
-  import WorkWatch from './WorkWatch.svelte'
+  import RunDetailModal from './RunDetailModal.svelte'
 
   // The ticket's live-work treatment: while an agent's work session is on
   // this ticket, the strip carries the dither field (the same material the
@@ -47,7 +46,5 @@
     </div>
   </div>
 
-  <Modal open={watchOpen} onClose={() => (watchOpen = false)} title="Work in progress" width="max-w-2xl">
-    <WorkWatch runId={live.runId} {taskId} onEnded={() => (watchOpen = false)} />
-  </Modal>
+  <RunDetailModal open={watchOpen} onClose={() => (watchOpen = false)} runId={live.runId} {taskId} onEnded={() => (watchOpen = false)} />
 {/if}

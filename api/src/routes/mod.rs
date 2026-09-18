@@ -1115,6 +1115,10 @@ pub fn router(state: AppState) -> Router {
             get(fleet::fleet_defs::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/fleet/resources",
+            get(fleet::fleet_resources::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/fleet/endpoints",
             get(fleet::fleet_endpoints::get)
                 .post(fleet::fleet_endpoints::post)

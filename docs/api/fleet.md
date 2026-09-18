@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-20 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -40,6 +40,7 @@
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
+| [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
 
 ## `/api/fleet`
 
@@ -428,4 +429,18 @@ Source: [`api/src/routes/fleet/fleet_render.rs`](../../api/src/routes/fleet/flee
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | — | `{result}` | 200, 500 | audit |
+
+## `/api/fleet/resources`
+
+Source: [`api/src/routes/fleet/fleet_resources.rs`](../../api/src/routes/fleet/fleet_resources.rs)
+
+> GET /api/fleet/resources?agent=<model>&minutes=<n>. The per-agent
+> container resource series the run-detail modal and the Compute panel read:
+> cpu/mem/pids sampled once a minute by the agent-resource-sample job.
+> Admin. `agent` narrows to one; `minutes` bounds the window (default 60,
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{agents}` | 200 | — |
 

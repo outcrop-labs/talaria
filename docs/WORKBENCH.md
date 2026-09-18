@@ -60,6 +60,16 @@ The caps exist because each workbench session and each started job means real pr
 
 Two known amplifiers are intentionally out of the caps' reach, tracked separately: ever-growing session contexts (a retried ticket's turns can carry millions of tokens), and leftover per-job processes inside long-lived agent containers.
 
+### Observing a run
+
+The run-detail modal (every "watch the work" affordance opens it) is the full-insight view, one pane per question:
+
+- **Live** — the agent's stream as it happens: its words, its reasoning, and every tool call *with its argument preview* (the preview carries the persona's display-redacted primary argument — the whole terminal command, which is where the harness steering is legible). Workbench MCP calls (`start_job`, `finish_job`, …) appear with full arguments and outcomes — they are platform-side, so their fidelity is total.
+- **Turns** — the retained transcript: each turn's prompt and stream, captured to a `run-transcript` artifact on the ticket at turn end, scrubbed of known credential shapes, retained per `observability.transcriptRetentionDays` in admin settings (default 7 days; null = permanent).
+- **Resources** — the agent container's cpu/memory/process sparklines over the run's window, sampled once a minute by the platform (admin-only; the same series feeds Observability → Compute).
+
+What the live stream cannot show: tool RESULTS for tools that execute inside the agent container (the persona's completion frames don't carry them) — those land in the next turn's transcript only insofar as the agent's own reply reflects them. Richer container-side capture is a Hermes-side change, tracked as a follow-up.
+
 ## Harnesses: an open registry
 
 A harness is a **declarative definition** (`defineWorkbenchHarness` in `@talaria/sdk/server` — the
