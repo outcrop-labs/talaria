@@ -105,23 +105,23 @@ jobs:
       # hold on a database that already has the baseline's ledger, or the PR
       # is red.
       #
-      # The baseline is origin/main — EXCEPT for the repair that introduced
-      # this check itself: main's tip then carried the mid-array insert, and
-      # no deployed database ever applied it (the boot guard refused
-      # fleet-wide), so the repair's true baseline is e9f08476, the last
-      # array any instance actually ran. FLIP THIS BACK to origin/main in the
-      # first migrations PR after the repair lands — a stale baseline here
-      # weakens the guard to inserts above the pinned prefix.
+      # The baseline is origin/main by default: a PR's array must extend
+      # main's without touching existing entries. The repair that introduced
+      # this check (#398) pinned e9f08476 instead — main's tip then carried
+      # the mid-array insert no deployed database ever applied (the boot
+      # guard refused fleet-wide), so the last array any instance actually
+      # ran was the honest baseline. Pin a sha here ONLY for that kind of
+      # transition, and flip back in the very next migrations PR: a stale
+      # baseline weakens the guard to inserts above the pinned prefix.
       - name: Upgrade pass — baseline migrations into a second scratch postgres
-        env:
-          MIGRATION_BASELINE: e9f0847628fb72d6cfded9fef9f27f633122cace
         run: |
           git fetch --no-tags --depth=1 origin main
           base="${MIGRATION_BASELINE:-origin/main}"
           echo "upgrade baseline: $base"
-          # A pinned baseline sha is an ancestor the depth-1 fetch above does
-          # not carry — fetch it by sha (GitHub allows want-by-sha) and fail
-          # loud rather than silently comparing against the wrong array.
+          # A pinned baseline sha (set via env above) is an ancestor the
+          # depth-1 fetch does not carry — fetch it by sha (GitHub allows
+          # want-by-sha) and fail loud rather than silently comparing
+          # against the wrong array.
           if ! git cat-file -e "$base" 2>/dev/null; then
             git fetch --no-tags origin "$base"
           fi
