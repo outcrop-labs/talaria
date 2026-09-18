@@ -568,11 +568,16 @@ async fn real_turn(
             }),
             deps: None,
             liveness,
-            watch: Some(watch),
+            watch: Some(watch.clone()),
         },
     )
-    .await
-    .map_err(|e| e.0)?;
+    .await;
+    // THE TRANSCRIPT ARTIFACT — this turn's prompt plus the widened watch
+    // lines (tool previews carry the harness steering verbatim), persisted
+    // for after-the-fact review. Fire-and-forget: a capture failure never
+    // fails the turn it is only recording.
+    capture_turn_transcript(&state, &run_id, &task_id, &agent_model, &prompt, &watch).await;
+    let run = run.map_err(|e| e.0)?;
     let Some(text) = run.value.and_then(|v| v.as_str().map(str::to_string)) else {
         return Err(run
             .error
@@ -582,6 +587,112 @@ async fn real_turn(
         text,
         findings: run.findings,
     })
+}
+
+// ── The transcript artifact ──────────────────────────────────────────────────
+
+/// Credential shapes that must never persist in a transcript body. The
+/// persona display-redacts tool ARGUMENTS and the prompt is Talaria's own,
+/// but a tool RESULT echoed into a preview line can still carry a raw key —
+/// and this body is stored for the retention window, not streamed past.
+fn scrub_secrets(text: &str) -> String {
+    static SHAPES: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // One physical line on purpose: this is a RAW string, where a `\`
+        // line continuation is a literal backslash-newline in the pattern —
+        // the bug that once silently disabled the AKIA and github_pat arms.
+        regex::Regex::new(
+            r"(?P<k>sk-(?:proj-)?[A-Za-z0-9_-]{16,}|tak_[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gsk_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16})",
+        )
+        .expect("transcript scrub regex compiles")
+    });
+    SHAPES.replace_all(text, "[redacted:key]").into_owned()
+}
+
+/// Append this turn's prompt + stream tail to the run's transcript artifact.
+/// The artifact is created once per run (title carries the run id — a unique
+/// key, so the per-turn lookup is the idempotency) and attached to the task;
+/// turn numbers derive from the headers already in the body, so the dep
+/// closure's signature never had to learn them. Bounded: 16K of prompt,
+/// 256K of stream, both UTF-16-clamped on char boundaries.
+async fn capture_turn_transcript(
+    state: &AppState,
+    run_id: &str,
+    task_id: &str,
+    agent_model: &str,
+    prompt: &str,
+    watch: &str,
+) {
+    let tail = match state.redis().await {
+        Ok(mut conn) => redis::cmd("GET")
+            .arg(format!("{watch}:tail"))
+            .query_async::<Option<String>>(&mut conn)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    let prompt_bounded = crate::body::truncate_utf16(prompt, 16_000).to_string();
+    let tail_bounded = crate::body::truncate_utf16(&tail, 262_000).to_string();
+    let existing: Option<(String, String)> = sqlx::query_as(
+        "select id::text, body from artifacts where kind = 'run-transcript' and title = $1 limit 1",
+    )
+    .bind(format!("Run {run_id} transcript"))
+    .fetch_optional(&state.pg)
+    .await
+    .ok()
+    .flatten();
+    let (artifact_id, mut body) = match existing {
+        Some((id, body)) => (id, body),
+        None => match crate::artifacts::create_artifact(
+            &state.pg,
+            Some("run-transcript"),
+            Some(&format!("Run {run_id} transcript")),
+            agent_model,
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(a) => {
+                let _ = crate::artifacts::attach_artifact(
+                    &state.pg,
+                    &a.id,
+                    "task",
+                    task_id,
+                    agent_model,
+                )
+                .await;
+                (a.id.clone(), String::new())
+            }
+            Err(e) => {
+                tracing::warn!("[work-session] transcript artifact create failed: {e}");
+                return;
+            }
+        },
+    };
+    let turn_no = 1 + body.matches("\n## Turn ").count() as u64;
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    body.push_str(&format!(
+        "\n## Turn {turn_no}\n\n### Prompt\n\n```\n{}\n```\n\n### Stream\n\n```json\n{}\n```",
+        scrub_secrets(&prompt_bounded),
+        scrub_secrets(&tail_bounded)
+    ));
+    if let Err(e) = crate::artifacts::save_artifact(
+        &state.pg,
+        &artifact_id,
+        crate::artifacts::SaveArtifactPatch {
+            body: Some(&body),
+            ..Default::default()
+        },
+        agent_model,
+    )
+    .await
+    {
+        tracing::warn!("[work-session] transcript artifact write failed: {e}");
+    }
 }
 
 // ── The activity trail ───────────────────────────────────────────────────────
@@ -1515,6 +1626,21 @@ pub fn work_session_run() -> &'static Arc<RunDefinition> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn transcript_scrub_kills_known_key_shapes_and_keeps_prose() {
+        let body = "ran git push with tak_abc12345xyz and ghp_abcdefghijklmnopqrstuvwxyz plus \
+                    sk-proj-abcdefghijklmnopqrst and AKIAIOSFODNN7EXAMPLE and xoxb-1234567890abcdef";
+        let scrubbed = scrub_secrets(body);
+        assert!(scrubbed.contains("[redacted:key]"));
+        assert!(!scrubbed.contains("tak_abc12345xyz"));
+        assert!(!scrubbed.contains("ghp_abcdefghij"));
+        assert!(!scrubbed.contains("sk-proj-"));
+        assert!(!scrubbed.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(scrubbed.contains("ran git push with"));
+        // Ordinary prose with underscores must survive.
+        assert_eq!(scrub_secrets("a plain sentence"), "a plain sentence");
+    }
 
     // Fixed vectors from the original derivation — not re-derived here,
     // which would test the derivation against itself.

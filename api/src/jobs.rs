@@ -87,6 +87,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     crate::model::info::register_blurb_rewrite_job(Arc::new(BlurbDeps {
         state: state.clone(),
     }));
+    crate::scheduler::register_job(crate::fleet::resources::resource_job_spec(state.pg.clone()));
     // The optional trio. mcp-library-refresh is per-instance cache warming
     // and arms on every Rust instance; update-check and update-reconcile
     // self-gate by install mode (a quiet no-op on checkout/dev/off) and by

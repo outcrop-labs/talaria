@@ -2,9 +2,8 @@
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
-  import Modal from '@/components/ui/Modal.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import WorkWatch from './WorkWatch.svelte'
+  import RunDetailModal from './RunDetailModal.svelte'
   import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
@@ -576,9 +575,7 @@
     </div>
 
     {#if watchTask}
-      <Modal open={!!watchTask} onClose={() => (watchTask = null)} title="Work in progress" width="max-w-2xl">
-        <WorkWatch runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
-      </Modal>
+      <RunDetailModal open={!!watchTask} onClose={() => (watchTask = null)} runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
     {/if}
 
     <!-- Bulk action bar — appears with a selection, acts on every selected

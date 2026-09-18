@@ -5,19 +5,26 @@
 // queries, API, and types keep the original noun. Only what a person READS
 // changed, because "artifact" is a word this app taught its users and a word
 // nobody arriving from Drive or Dropbox has ever needed.
-import { FileText, Globe2, Paperclip, Table, type LucideIcon as IconType } from '@lucide/svelte'
+import { FileTerminal, FileText, Globe2, Paperclip, Table, type LucideIcon as IconType } from '@lucide/svelte'
 import type { Artifact, ArtifactFolder, ArtifactKind } from '@/lib/artifacts'
 import type { DirectoryUser } from '@/lib/users'
 
-export const KIND_ICON: Record<ArtifactKind, IconType> = { doc: FileText, sheet: Table, microsite: Globe2, file: Paperclip }
+export const KIND_ICON: Record<ArtifactKind, IconType> = {
+  doc: FileText,
+  sheet: Table,
+  microsite: Globe2,
+  file: Paperclip,
+  'run-transcript': FileTerminal,
+}
 
-/** Plain words for the four kinds. "Microsite" is jargon to everyone who hasn't
+/** Plain words for the kinds. "Microsite" is jargon to everyone who hasn't
  *  read the schema; the wire values never change, only the reading does. */
 export const KIND_LABEL: Record<ArtifactKind, string> = {
   doc: 'Document',
   sheet: 'Spreadsheet',
   microsite: 'Web page',
   file: 'File',
+  'run-transcript': 'Session transcript',
 }
 
 /** Kinds "+ New" can create. Uploading is a file picker, not a kind, so it sits

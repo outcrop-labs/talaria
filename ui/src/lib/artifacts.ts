@@ -7,7 +7,7 @@ import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
 type MaybeGetter<T> = T | (() => T)
 const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
-export type ArtifactKind = 'doc' | 'sheet' | 'microsite' | 'file'
+export type ArtifactKind = 'doc' | 'sheet' | 'microsite' | 'file' | 'run-transcript'
 
 export interface Artifact {
   id: string

@@ -1553,14 +1553,90 @@ pub async fn dispatch_workbench_mcp(
         let agent = agent.clone();
         let name = name.to_string();
         Box::pin(async move {
-            match call_tool(&deps, &agent, &name, &args).await {
+            let started = std::time::Instant::now();
+            let outcome = match call_tool(&deps, &agent, &name, &args).await {
                 CallOutcome::Ok(value) => ToolOutcome::Ok(value),
                 CallOutcome::Fail(error) => ToolOutcome::Fail(error),
                 CallOutcome::Throw(message) => ToolOutcome::Throw(message),
-            }
+            };
+            log_wtool_line(&deps, &agent, &name, &args, &outcome, started.elapsed()).await;
+            outcome
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send>>
     });
     dispatch_jsonrpc(rpc, tools, "talaria-workbench", call).await
+}
+
+/// The workbench's OWN tool calls, onto the agent's live run's watch stream —
+/// a `wtool` frame with the args and the outcome. These are the moments the
+/// run-detail modal most wants verbatim (start_job carries the plan;
+/// finish_job the summary), they are platform-side by construction so their
+/// fidelity is total, and nothing else was recording them beyond an activity
+/// line. Fire-and-forget: a logging failure never fails the call it logs.
+async fn log_wtool_line(
+    deps: &WorkbenchDeps,
+    agent: &AgentSubject,
+    name: &str,
+    args: &Map<String, Value>,
+    outcome: &ToolOutcome,
+    elapsed: std::time::Duration,
+) {
+    let Some(redis) = deps.redis.clone() else {
+        return;
+    };
+    let AgentSubject::Model(model) = agent else {
+        return;
+    };
+    let Ok(Some(run_id)) = sqlx::query_scalar::<_, String>(
+        "select id::text from runs \
+         where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
+           and input->>'agentModel' = $1 \
+         order by created_at desc limit 1",
+    )
+    .bind(model)
+    .fetch_optional(&deps.pg)
+    .await
+    else {
+        return;
+    };
+    let args_preview =
+        crate::body::truncate_utf16(&serde_json::Value::Object(args.clone()).to_string(), 2_000)
+            .to_string();
+    let frame = serde_json::json!({
+        "t": "wtool",
+        "v": name,
+        "ms": elapsed.as_millis() as u64,
+        "p": args_preview,
+        "r": match outcome {
+            ToolOutcome::Ok(v) => serde_json::Value::String(
+                crate::body::truncate_utf16(&v.to_string(), 2_000).to_string(),
+            ),
+            ToolOutcome::Fail(e) | ToolOutcome::Throw(e) => serde_json::Value::String(
+                crate::body::truncate_utf16(e, 2_000).to_string(),
+            ),
+        },
+    })
+    .to_string();
+    let line = format!("{frame}\n");
+    let key = format!("run-watch:{run_id}:tail");
+    let chan = format!("run-watch:{run_id}");
+    {
+        let mut conn = redis.clone();
+        let _ = redis::cmd("APPEND")
+            .arg(&key)
+            .arg(&line)
+            .query_async::<()>(&mut conn)
+            .await;
+        let _ = redis::cmd("EXPIRE")
+            .arg(&key)
+            .arg(7_200)
+            .query_async::<()>(&mut conn)
+            .await;
+        let _ = redis::cmd("PUBLISH")
+            .arg(&chan)
+            .arg(frame)
+            .query_async::<()>(&mut conn)
+            .await;
+    }
 }
 
 #[cfg(test)]
