@@ -82,7 +82,21 @@ thing. `REDIS_URL` comes from `ui/.env` — in a worktree, that stack's own Redi
 api/src/session.rs (`SESSION_COOKIE`, `key()`) is the source of truth; re-verify against
 it before relying on the field list.
 
-## 6. `make_interval(mins => $1)` 500s with "function does not exist"
+## 6. A stash pop across a branch switch can leave conflict markers a blind add then COMMITS
+
+**Symptom:** CHANGELOG (or any file both branches touched) carries `<<<<<<< Updated
+upstream / ======= / >>>>>>> Stashed changes` markers that are IN A PUSHED COMMIT — CI
+green, nothing local looks dirty.
+
+**Check:** after any `git stash pop` that crossed a branch switch, `grep -rn "<<<<<<<"`
+the tree before staging — especially files you staged by explicit path without re-reading.
+Rerere's "Recorded preimage" lines at commit time are the tell that a conflicted state
+touched git's merge machinery.
+
+**Fix:** resolve keeping both entries (the changelog convention), commit the fix. Prevent:
+never stage a file by path that a pop/stash just touched without reading it first.
+
+## 7. `make_interval(mins => $1)` 500s with "function does not exist"
 
 **Symptom:** a runtime-bound (non-macro) query using `make_interval(mins => $1)` /
 `make_interval(days => $1)` compiles and then 500s at runtime with
