@@ -8,15 +8,15 @@
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::body::truncate_utf16;
-use crate::google::pending_actions::list_pending;
-use crate::harness::defs::inbox_focus::FocusEvidence;
-use crate::inbox_focus::policy::{
+use crate::policy::{
     as_iso, finalize_item, focus_action, key_of, nullable_iso, priority_for_bucket, task_bucket,
     task_question, task_recommendation, task_status_label,
 };
-use crate::inbox_focus::types::RawFocusItem;
-use crate::session::SessionUser;
+use talaria_body::truncate_utf16;
+use talaria_google_pending::list_pending;
+use talaria_harness_defs::defs::inbox_focus::FocusEvidence;
+use talaria_inbox_focus_types::RawFocusItem;
+use talaria_session::SessionUser;
 
 fn evidence(label: &str, text: &str) -> FocusEvidence {
     FocusEvidence {
@@ -51,7 +51,7 @@ pub async fn task_items(
     user_id: &str,
     source_id: Option<&str>,
 ) -> Result<Vec<RawFocusItem>, sqlx::Error> {
-    let review = crate::statuses::status_category_sql("review", &["quality_review"]);
+    let review = talaria_statuses::status_category_sql("review", &["quality_review"]);
     let sql = format!(
         "select t.id::text, t.board_id::text, b.name as board, \
                 case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as ticket_ref, \
@@ -74,7 +74,7 @@ pub async fn task_items(
                  or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status in ('inbox', 'quality_review')) ) \
          order by t.created_at asc limit 200",
         review = review,
-        vis = crate::boards::board_visibility_sql("$1", "$1", false),
+        vis = talaria_boards::board_visibility_sql("$1", "$1", false),
     );
     // AssertSqlSafe: the interpolations are the statuses module's category SQL
     // and the crate's board-visibility fragment.
@@ -386,7 +386,7 @@ pub async fn notification_items(
     user_id: &str,
     source_id: Option<&str>,
 ) -> Result<Vec<RawFocusItem>, sqlx::Error> {
-    let kinds: Vec<String> = crate::inbox_focus::policy::ACTIONABLE_NOTIFICATION_KINDS
+    let kinds: Vec<String> = crate::policy::ACTIONABLE_NOTIFICATION_KINDS
         .iter()
         .map(|k| k.to_string())
         .collect();
@@ -409,7 +409,7 @@ pub async fn notification_items(
     // cannot act from is where it must not appear.
     let hrefs: Vec<String> = rows.iter().map(|r| r.4.clone()).collect();
     let accessible =
-        crate::daily_brief::focus::accessible_notification_hrefs(pg, user_id, &hrefs).await?;
+        talaria_daily_brief::focus::accessible_notification_hrefs(pg, user_id, &hrefs).await?;
     Ok(rows
         .into_iter()
         .filter(|row| accessible.contains(&row.4))

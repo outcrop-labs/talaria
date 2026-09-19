@@ -7,14 +7,14 @@
 
 use serde_json::{Value, json};
 
-use crate::body::truncate_utf16;
-use crate::daily_brief::focus::fingerprint;
-use crate::harness::defs::inbox_focus::FocusAction;
-use crate::inbox_focus::types::{AssistantBrief, RawFocusItem};
+use talaria_body::truncate_utf16;
+use talaria_daily_brief::focus::fingerprint;
+use talaria_harness_defs::defs::inbox_focus::FocusAction;
+use talaria_inbox_focus_types::{AssistantBrief, RawFocusItem};
 
 // These spellings are the brief's helpers, re-exported so the sources module
 // names one path.
-pub use crate::daily_brief::focus::{
+pub use talaria_daily_brief::focus::{
     ACTIONABLE_NOTIFICATION_KINDS, as_iso, key_of, nullable_iso, priority_for_bucket, task_bucket,
     task_question, task_recommendation, task_status_label,
 };
@@ -138,7 +138,7 @@ pub fn confirmation_miss_invalidates(
     }
     let expired = match expires_at.filter(|e| !e.is_empty()) {
         None => true,
-        Some(raw) => match crate::agent_auth::iso_to_epoch_ms(raw) {
+        Some(raw) => match talaria_agent_auth::iso_to_epoch_ms(raw) {
             Some(ms) => ms <= now_ms,
             None => true,
         },
@@ -238,7 +238,7 @@ pub fn sort_items(mut items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem
         };
         // An unparseable due date is NaN — every comparison on it is false,
         // landing it in "due, but not soon".
-        let Some(due) = crate::agent_auth::iso_to_epoch_ms(raw) else {
+        let Some(due) = talaria_agent_auth::iso_to_epoch_ms(raw) else {
             return 1;
         };
         if due <= now_ms + 7 * 86_400_000 { 0 } else { 1 }
@@ -272,7 +272,7 @@ pub fn sort_items(mut items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem
 }
 
 fn created_ms(item: &RawFocusItem) -> i64 {
-    crate::agent_auth::iso_to_epoch_ms(&item.created_at).unwrap_or(0)
+    talaria_agent_auth::iso_to_epoch_ms(&item.created_at).unwrap_or(0)
 }
 
 // ── The deterministic instruction match ──────────────────────────────────────

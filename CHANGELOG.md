@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 190 crates.** Google pending actions (approval announce
-  via OnceLock). Verified: `cargo check -p talaria-api`.
+- **API workspace: 191 crates.** Inbox focus engine (task reads/review via
+  OnceLock). Verified: `cargo check -p talaria-api`.
+
 
 
 

@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::inbox_focus::types::{
+use talaria_inbox_focus_types::{
     ActivityEntry, ContextEntry, FocusContext, InboxTimelineEntry, MessageEntry,
 };
 

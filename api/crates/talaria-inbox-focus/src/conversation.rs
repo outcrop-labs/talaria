@@ -21,30 +21,32 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::conversations::{
-    insert_streaming_assistant, insert_user_message, next_seq, touch_conversation, update_assistant,
-};
-use crate::gateway::upstream::js_truthy;
-use crate::harness::defs::inbox_focus::{FocusReplyInput, OwnedTurn, limit_inbox_model_history};
-use crate::inbox_focus::timeline::{
+use crate::timeline::{
     TimelineDecisionRecord, TimelineRecord, build_inbox_timeline, decode_inbox_timeline_cursor,
     encode_inbox_timeline_cursor, focus_from_metadata,
 };
-use crate::inbox_focus::types::{
-    FocusAssistant, InboxCommandEvent, InboxConversationPage, InboxTimelineEntry, MessageEntry,
-    RawFocusItem,
-};
-use crate::inbox_focus::{
+use crate::{
     FocusCommandCall, FocusError, find_focus_item_for_user, focus_assistant_for, now_iso,
     reissue_focus_confirmation, run_focus_command, stream_reply, valid_response_model,
 };
-use crate::model::efforts::efforts_for_model;
-use crate::persona::persona_configured_effort;
-use crate::refs::{MessageRef, RefUser, ref_blocks, resolve_refs};
-use crate::session::{SessionUser, actor_of};
-use crate::state::AppState;
-use crate::uploads::{
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_conversations::{
+    insert_streaming_assistant, insert_user_message, next_seq, touch_conversation, update_assistant,
+};
+use talaria_gateway::upstream::js_truthy;
+use talaria_harness_defs::defs::inbox_focus::{
+    FocusReplyInput, OwnedTurn, limit_inbox_model_history,
+};
+use talaria_inbox_focus_types::{
+    FocusAssistant, InboxCommandEvent, InboxConversationPage, InboxTimelineEntry, MessageEntry,
+    RawFocusItem,
+};
+use talaria_model_efforts::efforts_for_model;
+use talaria_persona::persona_configured_effort;
+use talaria_refs::{MessageRef, RefUser, ref_blocks, resolve_refs};
+use talaria_session::{SessionUser, actor_of};
+use talaria_state::AppState;
+use talaria_uploads::{
     UploadViewer, attachment_text_blocks, can_access_upload, resolve_attachments,
 };
 
@@ -248,7 +250,7 @@ async fn resolve_inbox_conversation_for_write(
 ///     loader reading `messages` only, and it is deliberate.
 async fn recent_inbox_history(
     pg: &PgPool,
-    sb: &crate::secretbox::SecretBox,
+    sb: &talaria_secretbox::SecretBox,
     conversation_id: &str,
 ) -> Result<Vec<OwnedTurn>, sqlx::Error> {
     // The fetch itself caps the window; `limit_inbox_model_history` re-applies
