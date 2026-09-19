@@ -444,7 +444,13 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30, not the tripwire 15: the workspace split multiplied test binaries
+    # (one per crate where the monolith built a handful), and a COLD run —
+    # first push of a lockfile change — links ~200 of them after clippy's
+    # check-only artifacts prove unusable for cargo test. rust-cache makes
+    # every rerun after the first minutes; the timeout has to fit the cold
+    # one or the cache never gets written.
+    timeout-minutes: 30
 
     defaults:
       run:

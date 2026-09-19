@@ -4,8 +4,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **Layout contract.** RUST-MIGRATION's "Layout of the crate" is now a
- workspace crate map with the where-new-code-goes rules; AGENTS.md points at
+- **CI: api job timeout 15 → 30 minutes.** The workspace split multiplied
+ test binaries (~200, one per crate); the cold `cargo test` was cancelled
+ mid-build at 15. Verified: the rerun on this change is the first to fit
+ the budget cold.
+
  it. Verified: `bun run check` (doc links).
 
  build is cargo-chef-layered (deps build once per manifest change) and
