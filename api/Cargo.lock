@@ -3564,6 +3564,7 @@ dependencies = [
  "talaria-body",
  "talaria-brain-health",
  "talaria-capability",
+ "talaria-channels",
  "talaria-claim",
  "talaria-collate",
  "talaria-config",
@@ -3590,6 +3591,7 @@ dependencies = [
  "talaria-permissions",
  "talaria-persona",
  "talaria-platform-agents",
+ "talaria-price-oracle",
  "talaria-push",
  "talaria-ratelimit",
  "talaria-realtime",
@@ -3723,6 +3725,26 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-channels"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-users",
  "tokio",
  "tracing",
  "uuid",
@@ -4132,6 +4154,20 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-price-oracle"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-scheduler",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

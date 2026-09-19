@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde_json::{Map as JsonMap, Value};
 use sqlx::PgPool;
 
-use crate::scheduler::{JobName, JobSpec};
+use talaria_scheduler::{JobName, JobSpec};
 
 /// 6h between successful refreshes, owned by the scheduler so an instance
 /// nobody administers still re-prices — an on-load-only cadence never advances
@@ -228,7 +228,7 @@ fn price_for(catalog: &Catalog, provider: &str, model: &str) -> Option<TokPrice>
 /// scheduler's contract carries text (the job's error line).
 async fn fetch_catalog() -> Result<Catalog, String> {
     let fetch = async {
-        let resp = crate::gateway::provider::http()
+        let resp = talaria_gateway::provider::http()
             .get(OPENROUTER_MODELS_URL)
             .send()
             .await
@@ -320,7 +320,7 @@ async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
     }
     // auto_prices is a cached column of the endpoints serve window — the
     // next completion must be able to see the fill.
-    crate::gateway::registry::invalidate_endpoints_cache();
+    talaria_gateway::registry::invalidate_endpoints_cache();
     Ok(counts)
 }
 
@@ -442,7 +442,7 @@ pub fn price_refresh_job_spec(deps: Arc<PriceRefreshDeps>) -> JobSpec {
 }
 
 pub fn register_price_refresh_job(deps: Arc<PriceRefreshDeps>) {
-    crate::scheduler::register_job(price_refresh_job_spec(deps));
+    talaria_scheduler::register_job(price_refresh_job_spec(deps));
 }
 
 #[cfg(test)]

@@ -4,13 +4,13 @@
 // page with its reaction/thread decoration, and the toggle/edit/delete/react
 // row gates.
 
-use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
-use crate::agent_writes::{WriteAuthor, guard_agent_write};
-use crate::notify::{NotifyDeps, briefs_follow_message, fan_channel_event};
-use crate::realtime::{ChannelEvent, publish_channel};
-use crate::users::{assistant_owner_for, is_elevated_assistant};
 use serde_json::Value;
 use sqlx::PgPool;
+use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
+use talaria_agent_writes::{WriteAuthor, guard_agent_write};
+use talaria_notify::{NotifyDeps, briefs_follow_message, fan_channel_event};
+use talaria_realtime::{ChannelEvent, publish_channel};
+use talaria_users::{assistant_owner_for, is_elevated_assistant};
 
 /// Exactly the hyphenated uuid shape, hex in either
 /// case. Hand-rolled rather than `Uuid::parse_str` because the crate's parser
@@ -457,14 +457,14 @@ pub async fn ensure_dm(
     .bind(&dm_key)
     .fetch_optional(pg)
     .await
-    .map_err(|e| crate::error::pg_message(&e))?;
+    .map_err(|e| talaria_error::pg_message(&e))?;
     if let Some((id, name, topic, kind, created_ms, updated_ms)) = existing {
         // Un-archive on revisit — a DM never really ends.
         sqlx::query("update channels set archived_at = null where id = $1::uuid and archived_at is not null")
             .bind(&id)
             .execute(pg)
             .await
-            .map_err(|e| crate::error::pg_message(&e))?;
+            .map_err(|e| talaria_error::pg_message(&e))?;
         return Ok(CreatedChannel {
             id,
             name,
@@ -475,7 +475,10 @@ pub async fn ensure_dm(
             role: "owner".into(),
         });
     }
-    let mut tx = pg.begin().await.map_err(|e| crate::error::pg_message(&e))?;
+    let mut tx = pg
+        .begin()
+        .await
+        .map_err(|e| talaria_error::pg_message(&e))?;
     let (id, name, topic, kind, created_ms, updated_ms): (
         String,
         String,
@@ -495,7 +498,7 @@ pub async fn ensure_dm(
     .bind(user_id)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| crate::error::pg_message(&e))?;
+    .map_err(|e| talaria_error::pg_message(&e))?;
     for member in [user_id, other_user_id] {
         sqlx::query(
             "insert into channel_members (channel_id, user_id, role) \
@@ -505,11 +508,11 @@ pub async fn ensure_dm(
         .bind(member)
         .execute(&mut *tx)
         .await
-        .map_err(|e| crate::error::pg_message(&e))?;
+        .map_err(|e| talaria_error::pg_message(&e))?;
     }
     tx.commit()
         .await
-        .map_err(|e| crate::error::pg_message(&e))?;
+        .map_err(|e| talaria_error::pg_message(&e))?;
     Ok(CreatedChannel {
         id,
         name,
@@ -1474,7 +1477,7 @@ pub async fn set_channel_message_guard(
     deps: &NotifyDeps,
     channel_id: &str,
     message_id: &str,
-    findings: &[crate::gateway::guard::Finding],
+    findings: &[talaria_gateway::guard::Finding],
     redacted_content: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let guard = serde_json::to_value(findings).unwrap_or(Value::Array(Vec::new()));

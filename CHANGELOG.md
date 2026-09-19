@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 69 crates.** notify + mentions. Verified:
+- **API workspace: 71 crates.** channels + price_oracle. Verified:
   `cargo check -p talaria-api`.
+
 
 
 
