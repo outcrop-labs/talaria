@@ -4,10 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 65 crates.** `runs/define` is `talaria-runs-define`;
-  Redis/SSE fan-out is `talaria-realtime` (run ACL wiring stays in
-  `api/src/realtime.rs`); `labels` follows. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 67 crates.** `runs/lease` and the background
+  scheduler are crates. Verified: `cargo check -p talaria-api`.
+
 
 
 

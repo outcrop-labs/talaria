@@ -91,7 +91,7 @@ pub mod retrieval;
 pub mod routes;
 pub mod runs;
 pub use talaria_safe_fetch as safe_fetch;
-pub mod scheduler;
+pub use talaria_scheduler as scheduler;
 pub use talaria_search as search;
 pub use talaria_secret_health as secret_health;
 pub use talaria_secret_rotation as secret_rotation;

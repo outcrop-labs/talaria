@@ -68,9 +68,10 @@ use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, join_all};
 use tokio::task::JoinHandle;
 
-use crate::agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
-use crate::runs::lease::{
-    self, AcquireResult, HeartbeatOptions, LeaseBackend, LeaseHeartbeat, LeaseHolder, LeaseToken,
+use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
+use talaria_runs_lease as lease;
+use talaria_runs_lease::{
+    AcquireResult, HeartbeatOptions, LeaseBackend, LeaseHeartbeat, LeaseHolder, LeaseToken,
     RedisLeases, instance_id, keep_lease_alive, lease_key,
 };
 
