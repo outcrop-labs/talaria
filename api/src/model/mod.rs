@@ -2,5 +2,5 @@
 pub use talaria_model_access as access;
 pub use talaria_model_catalog as catalog;
 pub use talaria_model_efforts as efforts;
-pub mod info;
+pub use talaria_model_info as info;
 pub use talaria_model_roles as roles;

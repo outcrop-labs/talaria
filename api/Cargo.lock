@@ -3680,6 +3680,7 @@ dependencies = [
  "talaria-conversations",
  "talaria-daily-brief-comms",
  "talaria-daily-brief-config",
+ "talaria-daily-brief-delegation",
  "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-db",
@@ -3724,6 +3725,7 @@ dependencies = [
  "talaria-harness-text",
  "talaria-hermes-skills",
  "talaria-home",
+ "talaria-inbox-focus-types",
  "talaria-instance",
  "talaria-internal-history",
  "talaria-invites",
@@ -3743,6 +3745,7 @@ dependencies = [
  "talaria-model-access",
  "talaria-model-catalog",
  "talaria-model-efforts",
+ "talaria-model-info",
  "talaria-model-roles",
  "talaria-native-search",
  "talaria-notify",
@@ -4094,6 +4097,22 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-gateway",
  "talaria-tz",
+]
+
+[[package]]
+name = "talaria-daily-brief-delegation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-channels",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-notify",
+ "talaria-state",
+ "tokio",
 ]
 
 [[package]]
@@ -4801,6 +4820,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-inbox-focus-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-harness-defs",
+]
+
+[[package]]
 name = "talaria-instance"
 version = "0.1.0"
 dependencies = [
@@ -5083,6 +5112,25 @@ dependencies = [
  "talaria-gateway",
  "talaria-model-catalog",
  "talaria-persona",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-model-info"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-model-access",
+ "talaria-scheduler",
  "talaria-state",
  "tokio",
  "tracing",

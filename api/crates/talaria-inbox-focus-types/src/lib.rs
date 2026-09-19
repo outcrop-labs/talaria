@@ -14,7 +14,7 @@ pub const FOCUS_SOURCE_TYPES: [&str; 4] = ["approval", "task", "channel", "notif
 
 /// One evidence line on a queue card. Reused from the harness def, which owns
 /// the camelCase shape the model's prompt and the card both speak.
-pub use crate::harness::defs::inbox_focus::{FocusAction, FocusEvidence};
+pub use talaria_harness_defs::defs::inbox_focus::{FocusAction, FocusEvidence};
 
 /// The queue card exactly as the client renders it (FocusItem). `metadata` is
 /// an open record per source — kept as a Value so each source writes its own

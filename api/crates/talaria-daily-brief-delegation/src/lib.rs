@@ -38,11 +38,11 @@
 use serde_json::json;
 use sqlx::PgPool;
 
-use crate::channels::insert_channel_message;
-use crate::harness::defs::briefer::assistant_reply_harness;
-use crate::harness::run::{RunContext, run_harness};
-use crate::notify::NotifyDeps;
-use crate::state::AppState;
+use talaria_channels::insert_channel_message;
+use talaria_harness::run::{RunContext, run_harness};
+use talaria_harness_defs::defs::briefer::assistant_reply_harness;
+use talaria_notify::NotifyDeps;
+use talaria_state::AppState;
 
 /// May the assistant send in this conversation without asking?
 pub async fn may_reply(pg: &PgPool, user_id: &str, channel_id: &str) -> Result<bool, sqlx::Error> {
@@ -299,7 +299,7 @@ pub async fn list_grants(pg: &PgPool, user_id: &str) -> Result<Vec<ReplyGrant>, 
         .map(|(id, channel_id, granted_ms)| ReplyGrant {
             id,
             channel_id,
-            granted_at: crate::agent_auth::epoch_ms_to_iso(granted_ms as i64),
+            granted_at: talaria_agent_auth::epoch_ms_to_iso(granted_ms as i64),
         })
         .collect())
 }
@@ -340,7 +340,7 @@ pub async fn grant_reply(
         return Ok(Some(ReplyGrant {
             id,
             channel_id,
-            granted_at: crate::agent_auth::epoch_ms_to_iso(granted_ms as i64),
+            granted_at: talaria_agent_auth::epoch_ms_to_iso(granted_ms as i64),
         }));
     }
     // The partial unique indexes make a re-grant a no-op; return the live one
@@ -358,7 +358,7 @@ pub async fn grant_reply(
     Ok(existing.map(|(id, channel_id, granted_ms)| ReplyGrant {
         id,
         channel_id,
-        granted_at: crate::agent_auth::epoch_ms_to_iso(granted_ms as i64),
+        granted_at: talaria_agent_auth::epoch_ms_to_iso(granted_ms as i64),
     }))
 }
 

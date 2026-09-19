@@ -175,7 +175,7 @@ async fn catalog() -> Option<Catalog> {
         return Some(clone_of(c).catalog);
     }
     let fetched = async {
-        let r = crate::gateway::provider::http()
+        let r = talaria_gateway::provider::http()
             .get("https://openrouter.ai/api/v1/models")
             .timeout(Duration::from_secs(10))
             .send()
@@ -287,7 +287,7 @@ fn clamp_200(s: &str) -> String {
 /// line must not cost the other nine.
 fn written_rows(
     reply: &serde_json::Map<String, serde_json::Value>,
-    pending: &[crate::harness::defs::blurb_writer::BlurbCandidate],
+    pending: &[talaria_harness_defs::defs::blurb_writer::BlurbCandidate],
 ) -> Vec<(String, String)> {
     pending
         .iter()
@@ -309,12 +309,14 @@ fn written_rows(
 /// pass (warned, not propagated) — the worst outcome is "nothing written
 /// this pass".
 pub async fn rewrite_pending_blurbs(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     batch: usize,
 ) -> Result<usize, String> {
-    use crate::harness::defs::blurb_writer::{BlurbBatch, BlurbCandidate, blurb_writer_harness};
-    use crate::harness::run::{RunContext, run_harness};
-    use crate::model::access::gateway_models;
+    use talaria_harness::run::{RunContext, run_harness};
+    use talaria_harness_defs::defs::blurb_writer::{
+        BlurbBatch, BlurbCandidate, blurb_writer_harness,
+    };
+    use talaria_model_access::gateway_models;
 
     let all = gateway_models(&state.pg)
         .await
@@ -361,7 +363,7 @@ pub async fn rewrite_pending_blurbs(
     }
 
     let org_name =
-        crate::gateway::settings::get_setting(&state.pg, "org_name", serde_json::json!(""))
+        talaria_gateway::settings::get_setting(&state.pg, "org_name", serde_json::json!(""))
             .await
             .as_str()
             .unwrap_or("")
@@ -427,8 +429,8 @@ pub async fn rewrite_pending_blurbs(
 /// The job the scheduler runs. NOT `per_instance`: it writes `model_blurbs`
 /// rows every instance can read, and two instances passing at once would
 /// spend two model calls on one batch of pending ids.
-pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> crate::scheduler::JobSpec {
-    use crate::scheduler::{JobName, JobSpec};
+pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> talaria_scheduler::JobSpec {
+    use talaria_scheduler::{JobName, JobSpec};
     JobSpec {
         name: JobName::BlurbRewrite,
         every_ms: REWRITE_THROTTLE_MS,
@@ -457,13 +459,13 @@ pub fn blurb_rewrite_job_spec(deps: std::sync::Arc<BlurbDeps>) -> crate::schedul
 /// Declare the sweep to the scheduler — the function boot calls. The job is
 /// the pass's only trigger.
 pub fn register_blurb_rewrite_job(deps: std::sync::Arc<BlurbDeps>) {
-    crate::scheduler::register_job(blurb_rewrite_job_spec(deps));
+    talaria_scheduler::register_job(blurb_rewrite_job_spec(deps));
 }
 
 /// The job's runtime values: the state the pass reads the catalog and writes
 /// the rows through.
 pub struct BlurbDeps {
-    pub state: crate::state::AppState,
+    pub state: talaria_state::AppState,
 }
 
 #[cfg(test)]
@@ -527,7 +529,7 @@ mod tests {
 
     // ── the rewrite pass's write policy ─────────────────────────────────────
 
-    use crate::harness::defs::blurb_writer::BlurbCandidate;
+    use talaria_harness_defs::defs::blurb_writer::BlurbCandidate;
 
     fn cand(id: &str) -> BlurbCandidate {
         BlurbCandidate {
@@ -600,12 +602,12 @@ mod tests {
     async fn the_job_spec_carries_the_declared_timings() {
         // Real but lazy state — the pool dials nothing, and the spec test
         // never runs the job (same posture as the work-session tests).
-        use crate::state::AppState;
+        use talaria_state::AppState;
         let url = "postgres://blurb-spec-test@localhost:5432/blurb-spec-test";
         let pg = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy(url)
             .expect("a lazy pool connects to nothing");
-        let cfg = crate::config::Config::from_parts(
+        let cfg = talaria_config::Config::from_parts(
             url.into(),
             "redis://blurb-spec-test@localhost:6379".into(),
             "test-root".into(),

@@ -3,7 +3,7 @@ pub mod conversation;
 pub mod policy;
 pub mod sources;
 pub mod timeline;
-pub mod types;
+pub use talaria_inbox_focus_types as types;
 
 // The Inbox Focus Queue engine.
 //

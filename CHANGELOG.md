@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 168 crates.** Harness defs + registry (MCP tool dispatch
-  via OnceLock). Verified: `cargo check -p talaria-api`.
+- **API workspace: 171 crates.** Brief delegation, inbox-focus types, model
+  info. Verified: `cargo check -p talaria-api`.
+
 
 
 
