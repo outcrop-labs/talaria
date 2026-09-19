@@ -3772,6 +3772,7 @@ dependencies = [
  "talaria-secretbox",
  "talaria-session",
  "talaria-settings",
+ "talaria-skill-access",
  "talaria-source-registry",
  "talaria-state",
  "talaria-storage",
@@ -5442,6 +5443,17 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+]
+
+[[package]]
+name = "talaria-skill-access"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "sqlx",
+ "talaria-agent-skills",
+ "talaria-fleet-agents",
+ "talaria-permissions",
 ]
 
 [[package]]

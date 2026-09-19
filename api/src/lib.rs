@@ -97,7 +97,7 @@ pub use talaria_secret_health as secret_health;
 pub use talaria_secret_rotation as secret_rotation;
 pub use talaria_secretbox as secretbox;
 pub use talaria_session as session;
-pub mod skill_access;
+pub use talaria_skill_access as skill_access;
 pub use talaria_source_registry as source_registry;
 pub use talaria_state as state;
 pub mod statuses;

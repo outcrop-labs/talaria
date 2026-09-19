@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 150 crates.** Agent skill files (summarizer via
+- **API workspace: 151 crates.** Skill edit ACL (personal-agent via
   OnceLock). Verified: `cargo check -p talaria-api`.
+
 
 
 

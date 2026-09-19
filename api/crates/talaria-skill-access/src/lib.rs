@@ -5,10 +5,17 @@
 
 use sqlx::PgPool;
 
-use crate::agent_skills::{SHARED, owner_model, platform_skill_names};
-use crate::fleet::allowed_agents;
-use crate::permissions::has_perm;
-use crate::personal_agent::owns_agent;
+use talaria_agent_skills::{SHARED, owner_model, platform_skill_names};
+use talaria_fleet_agents::allowed_agents;
+use talaria_permissions::has_perm;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+/// Wired from the api binary so this crate does not depend on personal_agent.rs.
+pub static OWNS_AGENT: OnceLock<
+    Arc<dyn Fn(sqlx::PgPool, String, String) -> BoxFuture<'static, bool> + Send + Sync>,
+> = OnceLock::new();
 
 pub async fn can_edit_skills(
     pg: &PgPool,
@@ -25,7 +32,9 @@ pub async fn can_edit_skills(
     if owner == SHARED {
         return Ok(false); // fleet-wide flow changes need agents.manage
     }
-    if owns_agent(pg, user_id, Some(owner), None).await {
+    if let Some(f) = OWNS_AGENT.get()
+        && f(pg.clone(), user_id.to_string(), owner.to_string()).await
+    {
         return Ok(true); // your personal assistant
     }
     let Some(model) = owner_model(pg, owner).await else {
@@ -35,8 +44,8 @@ pub async fn can_edit_skills(
     // Only an EXPLICIT grant confers tailoring — 'all' is the unrestricted-use
     // default, not a statement of trust over every agent's behavior.
     Ok(match access {
-        crate::fleet::AgentAccess::All => false,
-        crate::fleet::AgentAccess::List(list) => list.contains(&model),
+        talaria_fleet_agents::AgentAccess::All => false,
+        talaria_fleet_agents::AgentAccess::List(list) => list.contains(&model),
     })
 }
 
