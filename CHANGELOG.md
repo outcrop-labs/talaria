@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 205 crates.** Tasks engine, work-session kind, work
-  dispatch, workbench MCP, jobs composition root. First full-gate run on
+- **UI test seam.** `task-const.test.ts` reads the statuses engine from its
+ crate after the workspace split. Verified: `bun run verify` (1206 tests).
+
   the split: clippy `-D warnings` and 868 tests green. Verified:
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`.
