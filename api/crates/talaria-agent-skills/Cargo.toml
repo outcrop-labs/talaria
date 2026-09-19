@@ -1,0 +1,23 @@
+[package]
+name = "talaria-agent-skills"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-internal-history = { path = "../talaria-internal-history" }
+talaria-state = { path = "../talaria-state" }
+tokio = { version = "1", features = ["fs", "macros"] }
+tracing = "0.1"
+regex = "1"
+sha1 = "0.10"

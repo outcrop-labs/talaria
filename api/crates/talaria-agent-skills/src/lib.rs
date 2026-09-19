@@ -9,15 +9,23 @@
 // read/mutation surface (list, read, delete/rename/copy, the Summarizer
 // queue) is what the skills routes serve.
 
-use std::path::PathBuf;
-use std::sync::OnceLock;
-
 use serde::Serialize;
 use sha1::{Digest, Sha1};
 use sqlx::PgPool;
+use std::path::PathBuf;
 
-use crate::internal_history::snapshot;
-use crate::state::AppState;
+use talaria_internal_history::snapshot;
+use talaria_state::AppState;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+/// Wired from the api binary so skill summaries do not pull in the harness runner.
+pub static SUMMARIZE_SKILL: OnceLock<
+    Arc<
+        dyn Fn(talaria_state::AppState, String) -> BoxFuture<'static, Option<String>> + Send + Sync,
+    >,
+> = OnceLock::new();
 
 /// Owner key: 'shared' or an agent slug.
 pub const SHARED: &str = "shared";
@@ -33,12 +41,12 @@ fn name_ok(name: &str) -> bool {
 
 /// The shared root every agent in the fleet mounts at /opt/skills.
 pub fn shared_skill_root() -> PathBuf {
-    crate::fleet::layout::fleet_dir().join("skills")
+    talaria_fleet_layout::fleet_dir().join("skills")
 }
 
 /// An agent's own root, mounted at /opt/dept-skills.
 pub fn agent_skill_root(slug: &str) -> PathBuf {
-    crate::fleet::layout::fleet_dir()
+    talaria_fleet_layout::fleet_dir()
         .join("agents")
         .join(slug)
         .join("skills")
@@ -505,21 +513,11 @@ pub fn queue_summary(state: AppState, owner: String, name: String, md: String) {
         // the previously stored summary survives. The runner has already
         // recorded the attempt on a harness_runs row, which is where a
         // failure belongs.
-        let ctx = crate::harness::run::RunContext {
-            caller: "platform:summarizer".into(),
-            ..Default::default()
+        let line = match SUMMARIZE_SKILL.get() {
+            Some(f) => f(state.clone(), md.clone()).await,
+            None => None,
         };
-        let input = serde_json::json!({ "md": md });
-        let run = crate::harness::run::run_harness(
-            &state,
-            &crate::harness::defs::summarizer::summarizer_harness(),
-            &input,
-            ctx,
-        )
-        .await;
-        if let Ok(result) = run
-            && let Some(line) = result.value.as_ref().and_then(|v| v.as_str())
-        {
+        if let Some(line) = line {
             let hash = skill_hash(&md);
             let _ = sqlx::query(
                 "insert into skill_summaries (owner, name, hash, summary) \
@@ -610,7 +608,7 @@ mod tests {
 
     #[test]
     fn the_two_roots_match_the_container_mounts() {
-        let fleet = crate::fleet::layout::fleet_dir();
+        let fleet = talaria_fleet_layout::fleet_dir();
         assert_eq!(shared_skill_root(), fleet.join("skills"));
         assert_eq!(
             agent_skill_root("analyst"),

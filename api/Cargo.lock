@@ -3562,6 +3562,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-skills"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-fleet-layout",
+ "talaria-internal-history",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-agent-writes"
 version = "0.1.0"
 dependencies = [
@@ -3640,6 +3658,7 @@ dependencies = [
  "talaria-agent-memory",
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
+ "talaria-agent-skills",
  "talaria-agent-writes",
  "talaria-agents-registry",
  "talaria-apps",

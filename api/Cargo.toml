@@ -156,6 +156,7 @@ members = [
     "crates/talaria-fleet-cascade",
     "crates/talaria-web-search",
     "crates/talaria-home",
+    "crates/talaria-agent-skills",
 ]
 resolver = "3"
 
@@ -336,6 +337,7 @@ talaria-fleet-federate = { path = "crates/talaria-fleet-federate" }
 talaria-fleet-cascade = { path = "crates/talaria-fleet-cascade" }
 talaria-web-search = { path = "crates/talaria-web-search" }
 talaria-home = { path = "crates/talaria-home" }
+talaria-agent-skills = { path = "crates/talaria-agent-skills" }
 
 
 

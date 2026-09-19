@@ -11,7 +11,7 @@ pub use talaria_agent_media as agent_media;
 pub use talaria_agent_memory as agent_memory;
 pub use talaria_agent_role_templates as agent_role_templates;
 pub use talaria_agent_secrets as agent_secrets;
-pub mod agent_skills;
+pub use talaria_agent_skills as agent_skills;
 pub use talaria_agent_writes as agent_writes;
 pub use talaria_agents_registry as agents_registry;
 pub mod alerts;
