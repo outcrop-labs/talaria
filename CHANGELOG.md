@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 173 crates.** Fleet reconcile (render via OnceLock).
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 174 crates.** Knowledgebase engine. Verified:
+  `cargo check -p talaria-api`.
+
 
 
 

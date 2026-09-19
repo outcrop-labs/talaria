@@ -178,6 +178,7 @@ members = [
     "crates/talaria-model-info",
     "crates/talaria-fitness",
     "crates/talaria-fleet-reconcile",
+    "crates/talaria-kb",
     "crates/talaria-inbox-focus-types",
     "crates/talaria-daily-brief-delegation",
 ]
@@ -382,6 +383,7 @@ talaria-harness-defs = { path = "crates/talaria-harness-defs" }
 talaria-model-info = { path = "crates/talaria-model-info" }
 talaria-fitness = { path = "crates/talaria-fitness" }
 talaria-fleet-reconcile = { path = "crates/talaria-fleet-reconcile" }
+talaria-kb = { path = "crates/talaria-kb" }
 talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }
 talaria-daily-brief-delegation = { path = "crates/talaria-daily-brief-delegation" }
 

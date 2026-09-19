@@ -9,9 +9,9 @@
 
 use sqlx::PgPool;
 
-use crate::kb::perms::can_read;
-use crate::kb::{effective_doc_perms, get_doc};
-use crate::notify::{NotificationInput, NotifyDeps, add_notification};
+use crate::{effective_doc_perms, get_doc};
+use talaria_kb_perms::can_read;
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 
 /// One comment — field order is the wire order: the struct follows ROW_COLS,
 /// which fixes the JSON key order.
@@ -57,7 +57,7 @@ impl From<CommentRow> for KbComment {
             quote: r.quote,
             content: r.content,
             resolved: r.resolved,
-            created_at: crate::agent_auth::epoch_ms_to_iso(r.created_ms),
+            created_at: talaria_agent_auth::epoch_ms_to_iso(r.created_ms),
         }
     }
 }
@@ -70,7 +70,7 @@ pub async fn can_discuss_doc(pg: &PgPool, doc_id: &str, user_id: &str, who: Opti
     };
     match effective_doc_perms(pg, &doc).await {
         Ok(eff) => {
-            let team_ids = crate::teams::team_ids_for_user(pg, user_id)
+            let team_ids = talaria_teams::team_ids_for_user(pg, user_id)
                 .await
                 .unwrap_or_default();
             can_read(&eff.perms, Some(user_id), who, &eff.grants, &team_ids)

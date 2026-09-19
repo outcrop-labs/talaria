@@ -3732,6 +3732,7 @@ dependencies = [
  "talaria-internal-history",
  "talaria-invites",
  "talaria-judge",
+ "talaria-kb",
  "talaria-kb-perms",
  "talaria-labels",
  "talaria-llm-keys",
@@ -4936,6 +4937,31 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-settings",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-kb"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-email",
+ "talaria-error",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-internal-history",
+ "talaria-kb-perms",
+ "talaria-notify",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-state",
+ "talaria-teams",
+ "tokio",
  "tracing",
 ]
 
