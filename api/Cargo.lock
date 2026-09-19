@@ -3679,6 +3679,7 @@ dependencies = [
  "talaria-conversations",
  "talaria-daily-brief-comms",
  "talaria-daily-brief-config",
+ "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-db",
  "talaria-effort-prefs",
@@ -4061,6 +4062,20 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-gateway",
  "talaria-tz",
+]
+
+[[package]]
+name = "talaria-daily-brief-focus"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-daily-brief-types",
 ]
 
 [[package]]

@@ -12,11 +12,21 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::boards::board_visibility_sql;
-use crate::statuses::status_category_sql;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_boards::board_visibility_sql;
 
 pub use talaria_daily_brief_types::{as_iso, fingerprint, key_of, nullable_iso};
+
+fn status_category_sql(category: &str, legacy_keys: &[&str]) -> String {
+    let keys = legacy_keys
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "( t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and          bs.category = '{category}') or ( not exists (select 1 from board_statuses bs where          bs.board_id = t.board_id) and t.status in ({keys}) ) )"
+    )
+}
 
 /// The notification kinds the brief lists — the actionable set, not the bell.
 pub const ACTIONABLE_NOTIFICATION_KINDS: [&str; 11] = [
@@ -468,7 +478,7 @@ static CHANNEL_HREF: LazyLock<Regex> = LazyLock::new(|| {
 /// removed from cannot re-enter their list as a line that 403s when opened.
 /// Every other href — app surfaces like /research — passes: it is linkable,
 /// and its accessibility is the surface's own route rule, not a membership.
-pub(crate) async fn accessible_notification_hrefs(
+pub async fn accessible_notification_hrefs(
     pg: &PgPool,
     user_id: &str,
     hrefs: &[String],
@@ -674,7 +684,7 @@ pub fn sort_items(items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem> {
         };
         // An unparseable due date lands in the "due, but not soon" rank —
         // not the none-at-all one.
-        let Some(due) = crate::agent_auth::iso_to_epoch_ms(raw) else {
+        let Some(due) = talaria_agent_auth::iso_to_epoch_ms(raw) else {
             return 1;
         };
         if due <= now_ms + 7 * 86_400_000 { 0 } else { 1 }
@@ -705,7 +715,7 @@ pub fn sort_items(items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem> {
 }
 
 /// The evidence list as the jsonb the entries table stores.
-pub(crate) fn evidence_value(evidence: &[BriefEvidence]) -> Value {
+pub fn evidence_value(evidence: &[BriefEvidence]) -> Value {
     Value::Array(evidence.iter().map(Into::into).collect())
 }
 
