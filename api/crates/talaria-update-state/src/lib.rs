@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-use crate::gateway::settings::{get_setting, set_setting};
+use talaria_gateway::settings::{get_setting, set_setting};
 
 /// The settings row's key.
 pub const KEY: &str = "updates";

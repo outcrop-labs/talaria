@@ -98,6 +98,9 @@ members = [
     "crates/talaria-google-client",
     "crates/talaria-runs-store",
     "crates/talaria-model-catalog",
+    "crates/talaria-update-mode",
+    "crates/talaria-update-state",
+    "crates/talaria-model-efforts",
 ]
 resolver = "3"
 
@@ -220,6 +223,9 @@ talaria-model-roles = { path = "crates/talaria-model-roles" }
 talaria-google-client = { path = "crates/talaria-google-client" }
 talaria-runs-store = { path = "crates/talaria-runs-store" }
 talaria-model-catalog = { path = "crates/talaria-model-catalog" }
+talaria-update-mode = { path = "crates/talaria-update-mode" }
+talaria-update-state = { path = "crates/talaria-update-state" }
+talaria-model-efforts = { path = "crates/talaria-model-efforts" }
 
 
 

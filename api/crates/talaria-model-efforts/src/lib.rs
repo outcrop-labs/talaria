@@ -20,16 +20,16 @@
 // config names. Resolved here, once, so no caller re-derives it and the two
 // spellings cannot drift apart.
 
-use crate::gateway::provider::CatalogModel;
-use crate::gateway::registry::{LlmEndpoint, list_endpoints};
-use crate::model::catalog::{
-    KEY, catalog_entries_for, catalog_entries_for_targets, effort_levels_of, entries_in_store,
-};
-use crate::persona::{ModelTarget, persona_targets_for};
-use crate::state::AppState;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_gateway::provider::CatalogModel;
+use talaria_gateway::registry::{LlmEndpoint, list_endpoints};
+use talaria_model_catalog::{
+    KEY, catalog_entries_for, catalog_entries_for_targets, effort_levels_of, entries_in_store,
+};
+use talaria_persona::{ModelTarget, persona_targets_for};
+use talaria_state::AppState;
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -199,7 +199,7 @@ async fn refresh_throttled(state: &AppState, ep: &LlmEndpoint) {
         .insert(ep.name.clone(), now_ms());
     // Best-effort by construction: a failed fetch keeps the old entry, and the
     // throttle decides when to try again.
-    let _ = crate::model::catalog::refresh_endpoint_catalog(state, ep).await;
+    let _ = talaria_model_catalog::refresh_endpoint_catalog(state, ep).await;
 }
 
 /// Refresh the pre-efforts catalogs behind this model and answer with the
@@ -210,7 +210,7 @@ async fn refresh_throttled(state: &AppState, ep: &LlmEndpoint) {
 pub async fn ensure_efforts_catalog(state: &AppState, model: &str) -> Vec<String> {
     let pg = &state.pg;
     let targets: Vec<ModelTarget> = persona_targets_for(pg, model).await;
-    let store = crate::gateway::settings::get_setting(pg, KEY, serde_json::json!({})).await;
+    let store = talaria_gateway::settings::get_setting(pg, KEY, serde_json::json!({})).await;
     // The endpoints that could serve this id: a persona's own targets, or the
     // pool a catalog id lands on. Same resolution rule as the read above,
     // first-seen order preserved.

@@ -4,9 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 91 crates.** Harness first-line extractor, daily-brief
-  fold types, model roles/catalog, Google HTTP client, runs store.
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 94 crates.** Update install-mode + pin state, model
+  effort catalog. Verified: `cargo check -p talaria-api`.
+
 
 
 

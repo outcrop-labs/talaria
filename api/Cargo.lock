@@ -3618,6 +3618,7 @@ dependencies = [
  "talaria-mentions",
  "talaria-model-access",
  "talaria-model-catalog",
+ "talaria-model-efforts",
  "talaria-model-roles",
  "talaria-native-search",
  "talaria-notify",
@@ -3655,6 +3656,8 @@ dependencies = [
  "talaria-templates",
  "talaria-tz",
  "talaria-undici",
+ "talaria-update-mode",
+ "talaria-update-state",
  "talaria-users",
  "talaria-work-wait",
  "talaria-workflows",
@@ -4244,6 +4247,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-model-efforts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-catalog",
+ "talaria-persona",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-model-roles"
 version = "0.1.0"
 dependencies = [
@@ -4751,6 +4769,20 @@ name = "talaria-undici"
 version = "0.1.0"
 dependencies = [
  "reqwest",
+]
+
+[[package]]
+name = "talaria-update-mode"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-update-state"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
 ]
 
 [[package]]
