@@ -4,8 +4,14 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **UI test seam.** `task-const.test.ts` reads the statuses engine from its
- crate after the workspace split. Verified: `bun run verify` (1206 tests).
+- **CI: cargo determinism + package image caching.** The api check job sets
+ `CARGO_INCREMENTAL=0` so rust-cache carries reusable artifacts; the package
+ build is cargo-chef-layered (deps build once per manifest change) and
+ exports its layers through a buildx registry cache (`:buildcache`, mode=max)
+ — the gha backend can't be used because release.yml calls the build via
+ workflow_call. Verified: `bun run check`; the image build itself exercises
+ on the next push to `main` (no docker on this box).
+
 
   the split: clippy `-D warnings` and 868 tests green. Verified:
   `cargo clippy --workspace --all-targets -- -D warnings`,

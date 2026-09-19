@@ -450,6 +450,11 @@ jobs:
       run:
         working-directory: api
 
+    env:
+      # Deterministic artifacts for rust-cache: incremental state is keyed on
+      # local edit history, so a cached incremental dir is junk to the next
+      # run. Full non-incremental units are what the cache can actually reuse.
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@v5
         with:

@@ -106,6 +106,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # Registry cache, not the gha backend: this file is also called by
+      # release.yml (workflow_call), and the gha cache backend does not work
+      # from a called workflow's token. The cache rides the same GHCR repo as
+      # the package itself (:buildcache), is exported with mode=max so the
+      # cargo-chef DEPENDENCY layers inside package.Dockerfile survive, and
+      # turns every cold hosted runner into "rebuild our crates only".
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build + push
         id: build
         env:
@@ -124,12 +133,11 @@ jobs:
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
                 --build-arg "REVISION=$(git rev-parse HEAD)"
-                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                --cache-from "type=registry,ref=$IMAGE:buildcache"
+                --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max"
+                --push)
           for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
-          docker build "${args[@]}" .
-          for t in "${tags[@]}"; do
-            echo "pushing $IMAGE:$t"
-            docker push "$IMAGE:$t"
-          done
+          docker buildx build "${args[@]}" .
           echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
-          echo "pushed $IMAGE for: ${tags[*]}"
+          echo "pushed $IMAGE for: ${tags[*]} (cache: $IMAGE:buildcache)"
