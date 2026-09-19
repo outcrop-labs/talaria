@@ -12,17 +12,23 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::agent_defs::{
+use talaria_agent_defs::{
     AgentDefRow, ConfigEdits, ModelTarget, add_version_if_changed, apply_config_edits,
     list_versions,
 };
-use crate::fleet::create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
-use crate::fleet::docker::{container_status, fleet_restart, fleet_up, wait_healthy};
-use crate::fleet::render::render_fleet;
-use crate::kb::sync_user_private_docs;
-use crate::retrieval::collections::ensure_personal_collection;
-use crate::retrieval::{embed, qdrant};
-use crate::state::AppState;
+use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
+use talaria_fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
+use talaria_retrieval_collections::ensure_personal_collection;
+use talaria_retrieval_embed as embed;
+use talaria_retrieval_qdrant as qdrant;
+use talaria_state::AppState;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+pub static SYNC_PRIVATE_DOCS: OnceLock<
+    Arc<dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, ()> + Send + Sync>,
+> = OnceLock::new();
 
 // The owner edits one marked section of the soul; the rest of the soul (role
 // scaffold, guardrails) stays out of their way. Markers are HTML comments so
@@ -244,9 +250,9 @@ fn private_doc_sync(state: &AppState, user_id: &str) {
     let pg = state.pg.clone();
     let user_id = user_id.to_string();
     tokio::spawn(async move {
-        let qd = qdrant::real_deps();
-        let ed = embed::real_deps();
-        let _ = sync_user_private_docs(&pg, &qd, &ed, &user_id).await;
+        if let Some(f) = SYNC_PRIVATE_DOCS.get() {
+            f(pg, user_id).await;
+        }
     });
 }
 
@@ -280,7 +286,7 @@ pub async fn create_personal_agent(
             &qd,
             &ed,
             user.id,
-            &crate::retrieval::collections::PersonalOpts {
+            &talaria_retrieval_collections::PersonalOpts {
                 name: None,
                 agent_model: Some(&existing.model),
             },
@@ -388,7 +394,7 @@ pub async fn create_personal_agent(
         &qd,
         &ed,
         user.id,
-        &crate::retrieval::collections::PersonalOpts {
+        &talaria_retrieval_collections::PersonalOpts {
             name: Some(&format!("{display_name} · knowledge")),
             agent_model: Some(&def.model),
         },
@@ -397,7 +403,9 @@ pub async fn create_personal_agent(
     private_doc_sync(state, user.id);
 
     if let Ok(sb) = state.secretbox().await {
-        let _ = render_fleet(pg, &sb, None).await;
+        if let Some(rf) = talaria_fleet_create::RENDER_FLEET.get() {
+            let _ = rf(pg.clone(), sb.clone()).await;
+        }
     }
     let _ = fleet_up(pg, &department).await;
     wait_healthy_spawn(state, &department);
@@ -439,10 +447,10 @@ async fn rename_agent_slug(
     let new_model = format!("{new_slug}-{}", def.department);
     ensure_agent_key(new_slug).await?;
     // Created agents keep their skills under fleet/agents/<slug>/ — carry them.
-    let from = crate::fleet::layout::fleet_dir()
+    let from = talaria_fleet_layout::fleet_dir()
         .join("agents")
         .join(&def.slug);
-    let to = crate::fleet::layout::fleet_dir()
+    let to = talaria_fleet_layout::fleet_dir()
         .join("agents")
         .join(new_slug);
     let _ = tokio::fs::rename(&from, &to).await;
@@ -583,7 +591,7 @@ pub async fn update_personal_agent(
                 .iter()
                 .find(|a| a.get("name").and_then(Value::as_str) == Some(want))
                 .ok_or_else(|| format!("unknown model tier \"{want}\""))?;
-            let alias_list: Vec<crate::agent_defs::AliasTarget> = aliases
+            let alias_list: Vec<talaria_agent_defs::AliasTarget> = aliases
                 .iter()
                 .filter_map(|a| serde_json::from_value(a.clone()).ok())
                 .collect();
@@ -626,7 +634,7 @@ pub async fn update_personal_agent(
         let created = add_version_if_changed(
             pg,
             &id,
-            &crate::agent_defs::NewVersion {
+            &talaria_agent_defs::NewVersion {
                 soul: &soul,
                 config: &config,
                 note: Some("personalized by owner"),
@@ -641,7 +649,10 @@ pub async fn update_personal_agent(
             // the version row was written; that write stands. Only the docker
             // restart/up half is best-effort.
             let sb = state.secretbox().await.map_err(|e| e.to_string())?;
-            render_fleet(pg, &sb, None).await?;
+            let rf = talaria_fleet_create::RENDER_FLEET
+                .get()
+                .ok_or_else(|| "fleet renderer is not wired".to_string())?;
+            rf(pg.clone(), sb.clone()).await?;
             // A handle rename changes the service definition (key env, model
             // name, config-mount path), so the container must be RECREATED
             // (up -d), not restarted — restart keeps the old mounts and

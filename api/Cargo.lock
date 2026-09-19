@@ -3743,6 +3743,7 @@ dependencies = [
  "talaria-password-accounts",
  "talaria-permissions",
  "talaria-persona",
+ "talaria-personal-agent",
  "talaria-platform-agents",
  "talaria-price-oracle",
  "talaria-push",
@@ -5019,6 +5020,26 @@ dependencies = [
  "sqlx",
  "talaria-capability",
  "tokio",
+]
+
+[[package]]
+name = "talaria-personal-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-defs",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-retrieval-collections",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "talaria-state",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

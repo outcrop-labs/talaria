@@ -75,7 +75,7 @@ pub use talaria_password as password;
 pub use talaria_password_accounts as password_accounts;
 pub use talaria_permissions as permissions;
 pub use talaria_persona as persona;
-pub mod personal_agent;
+pub use talaria_personal_agent as personal_agent;
 pub mod plan_doc;
 pub mod plan_drafts;
 pub use talaria_platform_agents as platform_agents;

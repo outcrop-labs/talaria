@@ -158,6 +158,7 @@ members = [
     "crates/talaria-home",
     "crates/talaria-agent-skills",
     "crates/talaria-skill-access",
+    "crates/talaria-personal-agent",
 ]
 resolver = "3"
 
@@ -340,6 +341,7 @@ talaria-web-search = { path = "crates/talaria-web-search" }
 talaria-home = { path = "crates/talaria-home" }
 talaria-agent-skills = { path = "crates/talaria-agent-skills" }
 talaria-skill-access = { path = "crates/talaria-skill-access" }
+talaria-personal-agent = { path = "crates/talaria-personal-agent" }
 
 
 
