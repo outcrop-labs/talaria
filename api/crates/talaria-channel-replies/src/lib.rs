@@ -22,25 +22,45 @@ use std::sync::LazyLock;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::channels::{
+use talaria_channels::{
     ChannelMessageWire, insert_channel_message, list_channel_agents, list_channel_members,
     list_channel_messages, list_task_room_agents, list_task_room_members, list_thread_messages,
     set_channel_message_guard, update_channel_message,
 };
-use crate::fleet::{describe_agent, routed_model_for};
-use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payload, proxy_chat};
-use crate::gateway::guard::{
+use talaria_fleet_agents::routed_model_for;
+use talaria_fleet_layout::describe_agent;
+use talaria_gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, chat_payload, proxy_chat};
+use talaria_gateway::guard::{
     GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
-use crate::mentions::{Mentionee, notify_mentions};
-use crate::notify::NotifyDeps;
-use crate::refs::ref_blocks;
-use crate::secretbox::SecretBox;
-use crate::state::AppState;
-use crate::ticket_chat::TicketMeta;
-use crate::uploads::{attachment_as_data_url, attachment_text_blocks, is_image};
-use crate::users::{list_users, personal_assistant_owners};
+use talaria_gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use talaria_mentions::{Mentionee, notify_mentions};
+use talaria_notify::NotifyDeps;
+use talaria_refs::ref_blocks;
+use talaria_secretbox::SecretBox;
+use talaria_state::AppState;
+use talaria_ticket_chat::TicketMeta;
+use talaria_uploads::{attachment_as_data_url, attachment_text_blocks, is_image};
+use talaria_users::{list_users, personal_assistant_owners};
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+use talaria_realtime::RealtimeDeps;
+
+pub static ROOM_COMMENT_FANOUT: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                RealtimeDeps,
+                TicketMeta,
+                String,
+                String,
+                String,
+            ) -> BoxFuture<'static, ()>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 fn wall_ms() -> i64 {
     std::time::SystemTime::now()
@@ -84,15 +104,15 @@ pub async fn notify_dm_message(
             continue;
         }
         // 200 UTF-16 units, '…' added only past the bound.
-        let body = if crate::body::utf16_len(content) > 200 {
-            format!("{}…", crate::body::truncate_utf16(content, 200))
+        let body = if talaria_body::utf16_len(content) > 200 {
+            format!("{}…", talaria_body::truncate_utf16(content, 200))
         } else {
             content.to_string()
         };
-        let _ = crate::notify::add_notification(
+        let _ = talaria_notify::add_notification(
             deps,
             &m.user_id,
-            &crate::notify::NotificationInput {
+            &talaria_notify::NotificationInput {
                 kind: "dm",
                 title: &format!("{sender_label} sent you a message"),
                 body: Some(&body),
@@ -168,7 +188,7 @@ async fn room_notify_shape(
     channel_id: &str,
     channel_name: &str,
 ) -> Option<RoomNotify> {
-    let meta = crate::ticket_chat::ticket_for_room(pg, channel_id).await?;
+    let meta = talaria_ticket_chat::ticket_for_room(pg, channel_id).await?;
     let members = list_task_room_members(pg, channel_id)
         .await
         .unwrap_or_default()
@@ -198,7 +218,7 @@ async fn room_notify_shape(
 /// ("@engineer-engineering") or label ("@Dex"), case-insensitive. "@Dex:opus"
 /// requests a model tier; the first mention of an agent wins (one reply per
 /// agent per message).
-pub(crate) struct AgentMention {
+pub struct AgentMention {
     pub model: String,
     pub tier: Option<String>,
 }
@@ -210,7 +230,7 @@ static MENTION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("mention regex")
 });
 
-pub(crate) fn mentioned_agents(content: &str, channel_agents: &[String]) -> Vec<AgentMention> {
+pub fn mentioned_agents(content: &str, channel_agents: &[String]) -> Vec<AgentMention> {
     let mentions: Vec<(String, Option<String>)> = MENTION_RE
         .captures_iter(content)
         .map(|c| {
@@ -347,7 +367,7 @@ fn turn_value(text: &str, urls: &[String]) -> Value {
 }
 
 /// The system prompt, assembled by concatenation, in that order.
-pub(crate) fn system_prompt(
+pub fn system_prompt(
     model: &str,
     channel_name: &str,
     channel_agents: &[String],
@@ -423,13 +443,13 @@ Several people may write here. Answer whoever you are addressing by name, keep r
 /// @mentioned one gets the room note.
 fn room_context(meta: &TicketMeta, assigned: bool) -> String {
     let mode = if assigned {
-        crate::ticket_chat::TICKET_MODE_PROMPT
+        talaria_ticket_chat::TICKET_MODE_PROMPT
     } else {
         ROOM_NOTE
     };
     format!(
         "{mode}{}",
-        crate::ticket_chat::ticket_context_block(&meta.head)
+        talaria_ticket_chat::ticket_context_block(&meta.head)
     )
 }
 
@@ -465,7 +485,7 @@ async fn recent_room_turns(pg: &PgPool, channel_id: &str, before_seq: i32) -> Ve
             };
             Some(format!(
                 "{name}: {}",
-                crate::body::truncate_utf16(text, CLIP)
+                talaria_body::truncate_utf16(text, CLIP)
             ))
         })
         .collect();
@@ -499,7 +519,7 @@ pub async fn trigger_agent_replies(
     message_seq: i32,
     thread_root_id: Option<&str>,
 ) {
-    let room = crate::ticket_chat::ticket_for_room(&deps.pg, channel_id).await;
+    let room = talaria_ticket_chat::ticket_for_room(&deps.pg, channel_id).await;
     let agents = if room.is_some() {
         list_task_room_agents(&deps.pg, channel_id)
             .await
@@ -522,7 +542,7 @@ pub async fn trigger_agent_replies(
             return;
         };
         let recent = recent_room_turns(&deps.pg, channel_id, message_seq).await;
-        let relevant = crate::ticket_chat::ticket_message_relevant(
+        let relevant = talaria_ticket_chat::ticket_message_relevant(
             state,
             &meta.head,
             content,
@@ -658,13 +678,13 @@ fn prompt_chars(messages: &Value) -> usize {
     };
     for m in list {
         match m.get("content") {
-            Some(Value::String(s)) => n += crate::body::utf16_len(s),
+            Some(Value::String(s)) => n += talaria_body::utf16_len(s),
             Some(Value::Array(parts)) => {
                 for p in parts {
                     if p.get("type").and_then(|t| t.as_str()) == Some("text")
                         && let Some(t) = p.get("text").and_then(|t| t.as_str())
                     {
-                        n += crate::body::utf16_len(t);
+                        n += talaria_body::utf16_len(t);
                     }
                 }
             }
@@ -710,7 +730,7 @@ async fn stream_reply(
                 .unwrap_or_else(|| estimate_tokens(prompt_chars)),
             completion_tokens: usage
                 .map(|u| u.1)
-                .unwrap_or_else(|| estimate_tokens(crate::body::utf16_len(content))),
+                .unwrap_or_else(|| estimate_tokens(talaria_body::utf16_len(content))),
             ..TokenCounts::default()
         };
         let tier = if routed_model != model {
@@ -879,7 +899,7 @@ async fn stream_reply(
             // this ran after the POST returned in the conversation world
             // too.
             if !content.is_empty()
-                && let Some(meta) = crate::ticket_chat::ticket_for_room(&deps.pg, channel_id).await
+                && let Some(meta) = talaria_ticket_chat::ticket_for_room(&deps.pg, channel_id).await
             {
                 let pg = deps.pg.clone();
                 let realtime = deps.realtime.clone();
@@ -887,8 +907,9 @@ async fn stream_reply(
                 let author = describe_agent(model).label;
                 let body = content.clone();
                 tokio::spawn(async move {
-                    crate::tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &body)
-                        .await;
+                    if let Some(f) = ROOM_COMMENT_FANOUT.get() {
+                        f(pg, realtime, meta, mid, author, body).await;
+                    }
                 });
             }
         }

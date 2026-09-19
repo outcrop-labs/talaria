@@ -29,7 +29,7 @@ pub use talaria_capability as capability;
 pub use talaria_capability_platform as capability_platform;
 pub use talaria_capability_reach as capability_reach;
 pub mod channel_plan;
-pub mod channel_replies;
+pub use talaria_channel_replies as channel_replies;
 pub use talaria_channels as channels;
 pub mod chat_persist;
 pub use talaria_claim as claim;

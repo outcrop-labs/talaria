@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 163 crates.** Daily-brief focus sources. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 164 crates.** Channel replies (room comment fanout via
+  OnceLock). Verified: `cargo check -p talaria-api`.
+
 
 
 
