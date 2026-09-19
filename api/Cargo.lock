@@ -3669,6 +3669,7 @@ dependencies = [
  "talaria-fleet-agents",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
+ "talaria-fleet-cascade",
  "talaria-fleet-create",
  "talaria-fleet-docker",
  "talaria-fleet-federate",
@@ -4146,6 +4147,19 @@ dependencies = [
  "talaria-fleet-docker",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-cascade"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-defs",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-secretbox",
 ]
 
 [[package]]

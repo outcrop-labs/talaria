@@ -7,10 +7,9 @@
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::agent_defs::{NewVersion, add_version_if_changed, list_versions};
-use crate::fleet::docker::fleet_restart;
-use crate::fleet::render::render_fleet;
-use crate::secretbox::SecretBox;
+use talaria_agent_defs::{NewVersion, add_version_if_changed, list_versions};
+use talaria_fleet_docker::fleet_restart;
+use talaria_secretbox::SecretBox;
 
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,7 +200,11 @@ pub async fn cascade_removal(
             render_error: None,
         });
     }
-    match render_fleet(pg, sb, None).await {
+    let rendered = match talaria_fleet_create::RENDER_FLEET.get() {
+        Some(rf) => rf(pg.clone(), sb.clone()).await,
+        None => Err("fleet renderer is not wired".into()),
+    };
+    match rendered {
         Ok(_) => {
             for u in &affected {
                 if u.managed && u.enabled && changed.contains(&u.slug) {
