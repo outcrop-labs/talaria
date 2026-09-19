@@ -3770,6 +3770,7 @@ dependencies = [
  "talaria-update-roll",
  "talaria-update-state",
  "talaria-users",
+ "talaria-web-search",
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
@@ -5673,6 +5674,24 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-web-search"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-capability-platform",
+ "talaria-capability-reach",
+ "talaria-gateway",
+ "talaria-search",
+ "talaria-secretbox",
+ "talaria-state",
+ "tokio",
 ]
 
 [[package]]

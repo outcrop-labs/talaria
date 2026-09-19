@@ -113,7 +113,7 @@ pub mod update;
 pub mod uploads;
 pub use talaria_users as users;
 pub mod vision;
-pub mod web_search;
+pub use talaria_web_search as web_search;
 pub mod work_dispatch;
 pub use talaria_work_wait as work_wait;
 pub mod workbench;

@@ -154,6 +154,7 @@ members = [
     "crates/talaria-fleet-create",
     "crates/talaria-fleet-federate",
     "crates/talaria-fleet-cascade",
+    "crates/talaria-web-search",
 ]
 resolver = "3"
 
@@ -332,6 +333,7 @@ talaria-apps = { path = "crates/talaria-apps" }
 talaria-fleet-create = { path = "crates/talaria-fleet-create" }
 talaria-fleet-federate = { path = "crates/talaria-fleet-federate" }
 talaria-fleet-cascade = { path = "crates/talaria-fleet-cascade" }
+talaria-web-search = { path = "crates/talaria-web-search" }
 
 
 

@@ -25,8 +25,27 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::body::truncate_utf16;
-use crate::search::SearchResult;
+use talaria_body::truncate_utf16;
+use talaria_search::SearchResult;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+use talaria_secretbox::SecretBox;
+
+/// Wired from the api binary so this crate does not depend on mcp/registry.
+pub static CALL_MCP_TOOL: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                SecretBox,
+                String,
+                String,
+                serde_json::Map<String, Value>,
+            ) -> BoxFuture<'static, Result<(Option<Value>, String), String>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 /// A REGISTERED TOOL'S PAYLOAD, NORMALISED — and it has to be shape-agnostic,
 /// because every provider spells a result differently and none of them owes us
@@ -132,7 +151,7 @@ pub struct WebSearch {
     /// searched" and "we searched with Exa" are different claims, and an
     /// admin debugging a thin result set needs to know which engine to go and
     /// look at. Null means Talaria's own instance.
-    pub via: Option<crate::capability_reach::Supplier>,
+    pub via: Option<talaria_capability_reach::Supplier>,
 }
 
 /// Search the web with whatever this deployment has, best first.
@@ -142,16 +161,16 @@ pub struct WebSearch {
 /// A model handed an empty result set answers from memory in a confident
 /// voice; a model handed a sentence saying search is unavailable says so.
 pub async fn search_the_web(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     query: &str,
     limit: Option<f64>,
 ) -> Result<WebSearch, String> {
-    use crate::capability_platform::is_platform_server;
-    use crate::capability_reach::{
+    use talaria_capability_platform::is_platform_server;
+    use talaria_capability_reach::{
         DbReach, PROVIDERS_KEY, Providers, ReachDeps, platform_supply, supplier_for,
     };
-    use crate::gateway::settings::get_setting;
-    use crate::search::{DEFAULT_LIMIT, real_deps, search_web};
+    use talaria_gateway::settings::get_setting;
+    use talaria_search::{DEFAULT_LIMIT, real_deps, search_web};
 
     let pg = &state.pg;
     let reach = DbReach { pg };
@@ -200,12 +219,18 @@ pub async fn search_the_web(
         .secretbox()
         .await
         .map_err(|e| format!("secretbox unavailable: {e}"))?;
-    let out = crate::mcp::registry::call_mcp_tool(pg, &sb, &supplier.server, &supplier.tool, &args)
-        .await?;
-    let payload = out
-        .structured
-        .clone()
-        .unwrap_or(Value::String(out.text.clone()));
+    let call = CALL_MCP_TOOL
+        .get()
+        .ok_or_else(|| "MCP tool dispatch is not wired".to_string())?;
+    let (structured, text) = call(
+        pg.clone(),
+        sb,
+        supplier.server.clone(),
+        supplier.tool.clone(),
+        args,
+    )
+    .await?;
+    let payload = structured.unwrap_or(Value::String(text));
     let mut results = results_from_payload(&payload, &supplier.server, 25);
     let cap = limit.unwrap_or(DEFAULT_LIMIT as f64).max(0.0) as usize;
     results.truncate(cap);
