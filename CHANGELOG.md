@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 61 crates.** boards/claim/session follow `users`.
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 62 crates.** `activity` follows boards. Verified:
+  `cargo check -p talaria-api`.
+
 
 
 

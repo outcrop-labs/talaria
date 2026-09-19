@@ -2,7 +2,7 @@
 // integration tests (tests/) can drive the router and the secretbox against
 // committed cross-language fixtures without going through a socket.
 
-pub mod activity;
+pub use talaria_activity as activity;
 pub use talaria_agent_auth as agent_auth;
 pub mod agent_crons;
 pub use talaria_agent_defs as agent_defs;

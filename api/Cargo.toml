@@ -68,6 +68,7 @@ members = [
     "crates/talaria-boards",
     "crates/talaria-claim",
     "crates/talaria-session",
+    "crates/talaria-activity",
 ]
 resolver = "3"
 
@@ -160,6 +161,7 @@ talaria-workflows = { path = "crates/talaria-workflows" }
 talaria-boards = { path = "crates/talaria-boards" }
 talaria-claim = { path = "crates/talaria-claim" }
 talaria-session = { path = "crates/talaria-session" }
+talaria-activity = { path = "crates/talaria-activity" }
 
 
 

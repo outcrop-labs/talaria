@@ -8,9 +8,9 @@
 //   • audit events                    — governance data, admins only
 // No new tables — this is a read model over what the app already records.
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::boards::board_visibility_sql;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_boards::board_visibility_sql;
 
 /// The event kinds the route's `kinds` filter admits; anything else in the
 /// query string is dropped.
