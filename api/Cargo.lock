@@ -3710,6 +3710,7 @@ dependencies = [
  "talaria-templates",
  "talaria-tz",
  "talaria-undici",
+ "talaria-update-docker",
  "talaria-update-layout",
  "talaria-update-mode",
  "talaria-update-registry",
@@ -5137,6 +5138,19 @@ name = "talaria-undici"
 version = "0.1.0"
 dependencies = [
  "reqwest",
+]
+
+[[package]]
+name = "talaria-update-docker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-fleet-docker",
+ "talaria-update-layout",
+ "talaria-update-registry",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -14,10 +14,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::layout::{
+use talaria_fleet_docker::docker;
+use talaria_update_layout::{
     Slot, compose_file, edge_container, slot_container, slot_service, update_project,
 };
-use crate::fleet::docker::docker;
 
 /// The shared DNS alias agents dial the app by on the fleet network. One
 /// constant: the attach that moves it is the agent-plane cutover, and the
@@ -161,7 +161,7 @@ pub async fn image_repo_digest(reference: &str) -> Option<String> {
     .ok()?;
     out.lines()
         .find_map(|l| l.split_once('@').map(|(_, d)| d.trim().to_string()))
-        .filter(|d| super::registry::is_digest(d))
+        .filter(|d| talaria_update_registry::is_digest(d))
 }
 
 /// Stop a container with an explicit grace (`docker stop -t <secs>`): the

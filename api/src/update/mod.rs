@@ -27,7 +27,7 @@
 // every verb: an install that isn't `image` mode gets a sentence, never a
 // container.
 pub mod adopt;
-pub mod docker;
+pub use talaria_update_docker as docker;
 pub mod job;
 pub use talaria_update_layout as layout;
 pub use talaria_update_mode as mode;
