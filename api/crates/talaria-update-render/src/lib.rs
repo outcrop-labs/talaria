@@ -44,8 +44,8 @@
 
 use serde_json::{Value, json};
 
-use super::docker::FLEET_ALIAS;
-use super::layout::{Slot, edge_image, slot_env_file, slot_service};
+use talaria_update_docker::FLEET_ALIAS;
+use talaria_update_layout::{Slot, edge_image, slot_env_file, slot_service};
 
 /// Env names the render drops from the live container's environment — see
 /// the header for each one's reason.
@@ -328,8 +328,8 @@ pub async fn write_slot_env(slot: Slot, lines: &[String]) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet::render::yaml11_emit;
     use serde_yaml_ng::Value as Yaml;
+    use talaria_yaml11::yaml11_emit;
 
     /// A live fleet container's inspect shape, trimmed to what the spec
     /// reads (the real document is hundreds of keys; the fixture carries

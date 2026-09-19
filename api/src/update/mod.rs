@@ -26,12 +26,12 @@
 // way it always has, forever. The mode gate (mode.rs) is the first check in
 // every verb: an install that isn't `image` mode gets a sentence, never a
 // container.
-pub mod adopt;
+pub use talaria_update_adopt as adopt;
 pub use talaria_update_docker as docker;
-pub mod job;
+pub use talaria_update_job as job;
 pub use talaria_update_layout as layout;
 pub use talaria_update_mode as mode;
 pub use talaria_update_registry as registry;
-pub mod render;
-pub mod roll;
+pub use talaria_update_render as render;
+pub use talaria_update_roll as roll;
 pub use talaria_update_state as state;

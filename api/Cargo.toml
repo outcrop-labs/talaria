@@ -124,6 +124,11 @@ members = [
     "crates/talaria-google-provisioning",
     "crates/talaria-update-docker",
     "crates/talaria-google-oauth",
+    "crates/talaria-yaml11",
+    "crates/talaria-update-render",
+    "crates/talaria-update-roll",
+    "crates/talaria-update-job",
+    "crates/talaria-update-adopt",
 ]
 resolver = "3"
 
@@ -272,6 +277,11 @@ talaria-google-gmail = { path = "crates/talaria-google-gmail" }
 talaria-google-provisioning = { path = "crates/talaria-google-provisioning" }
 talaria-update-docker = { path = "crates/talaria-update-docker" }
 talaria-google-oauth = { path = "crates/talaria-google-oauth" }
+talaria-yaml11 = { path = "crates/talaria-yaml11" }
+talaria-update-render = { path = "crates/talaria-update-render" }
+talaria-update-roll = { path = "crates/talaria-update-roll" }
+talaria-update-job = { path = "crates/talaria-update-job" }
+talaria-update-adopt = { path = "crates/talaria-update-adopt" }
 
 
 

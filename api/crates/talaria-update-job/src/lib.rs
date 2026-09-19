@@ -26,13 +26,13 @@
 
 use std::sync::Arc;
 
-use crate::scheduler::{JobName, JobSpec};
-use crate::state::AppState;
+use talaria_scheduler::{JobName, JobSpec};
+use talaria_state::AppState;
 
-use super::mode::{InstallMode, install_mode};
-use super::registry::resolve_latest;
-use super::roll::{reconcile_boot, roll, run_in_flight, tidy};
-use super::state::{Pin, RunBy, load, patch};
+use talaria_update_mode::{InstallMode, install_mode};
+use talaria_update_registry::resolve_latest;
+use talaria_update_roll::{reconcile_boot, roll, run_in_flight, tidy};
+use talaria_update_state::{Pin, RunBy, load, patch};
 
 pub const UPDATE_CHECK_EVERY_MS: u64 = 6 * 60 * 60_000;
 pub const UPDATE_CHECK_FIRST_RUN_DELAY_MS: u64 = 5 * 60_000;
@@ -109,10 +109,10 @@ pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
                 // "last checked" is this row.
                 let pin = match resolve_latest().await {
                     Ok(pin) => {
-                        let at = crate::agent_auth::epoch_ms_to_iso(now_ms());
+                        let at = talaria_agent_auth::epoch_ms_to_iso(now_ms());
                         let available = pin.clone();
                         patch(&pg, |mut s| {
-                            s.last_check = Some(super::state::CheckRecord {
+                            s.last_check = Some(talaria_update_state::CheckRecord {
                                 at,
                                 available: Some(available),
                                 error: None,
@@ -127,9 +127,9 @@ pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
                         // Failed checks are said out loud (the scheduler's
                         // Err contract: never swallowed) AND recorded — the
                         // panel shows the sentence beside its button.
-                        let at = crate::agent_auth::epoch_ms_to_iso(now_ms());
+                        let at = talaria_agent_auth::epoch_ms_to_iso(now_ms());
                         patch(&pg, |mut s| {
-                            s.last_check = Some(super::state::CheckRecord {
+                            s.last_check = Some(talaria_update_state::CheckRecord {
                                 at,
                                 available: None,
                                 error: Some(e.clone()),
@@ -208,11 +208,11 @@ pub fn update_reconcile_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
 }
 
 pub fn register_update_check_job(deps: Arc<UpdateDeps>) {
-    crate::scheduler::register_job(update_check_job_spec(deps));
+    talaria_scheduler::register_job(update_check_job_spec(deps));
 }
 
 pub fn register_update_reconcile_job(deps: Arc<UpdateDeps>) {
-    crate::scheduler::register_job(update_reconcile_job_spec(deps));
+    talaria_scheduler::register_job(update_reconcile_job_spec(deps));
 }
 
 #[cfg(test)]

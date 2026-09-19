@@ -3711,10 +3711,14 @@ dependencies = [
  "talaria-templates",
  "talaria-tz",
  "talaria-undici",
+ "talaria-update-adopt",
  "talaria-update-docker",
+ "talaria-update-job",
  "talaria-update-layout",
  "talaria-update-mode",
  "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-roll",
  "talaria-update-state",
  "talaria-users",
  "talaria-work-wait",
@@ -3722,6 +3726,7 @@ dependencies = [
  "talaria-workspace-handles",
  "talaria-workspace-secrets",
  "talaria-yaml",
+ "talaria-yaml11",
  "thiserror",
  "tokio",
  "tower",
@@ -5165,6 +5170,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-update-adopt"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-runs-lease",
+ "talaria-scheduler",
+ "talaria-state",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-roll",
+ "talaria-update-state",
+ "talaria-yaml11",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-update-docker"
 version = "0.1.0"
 dependencies = [
@@ -5173,6 +5204,31 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-update-layout",
  "talaria-update-registry",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-job"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-runs-lease",
+ "talaria-scheduler",
+ "talaria-state",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-roll",
+ "talaria-update-state",
+ "talaria-yaml11",
  "tokio",
  "tracing",
 ]
@@ -5200,6 +5256,45 @@ dependencies = [
  "talaria-update-state",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "talaria-update-render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-yaml11",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-roll"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-runs-lease",
+ "talaria-scheduler",
+ "talaria-state",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-state",
+ "talaria-yaml11",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5313,6 +5408,13 @@ dependencies = [
 
 [[package]]
 name = "talaria-yaml"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-yaml11"
 version = "0.1.0"
 dependencies = [
  "serde_json",

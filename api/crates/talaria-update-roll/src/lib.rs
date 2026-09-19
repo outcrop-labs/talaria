@@ -32,22 +32,22 @@
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 
-use super::docker::{
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_fleet_docker::docker;
+use talaria_runs_lease::{AcquireResult, RedisLeases, keep_lease_alive, lease_key};
+use talaria_update_docker::{
     attach_fleet_alias, container_running, edge_healthy, inspect_self, pull_image,
     remove_container, service_up, slot_up, start_container, stop_container, wait_healthy_slot,
 };
-use super::layout::{
+use talaria_update_layout::{
     EDGE_SERVICE, Slot, default_image_ref, roll_drain_ms, slot_container, update_project,
 };
-use super::mode::{InstallMode, install_mode};
-use super::registry::is_digest;
-use super::render::{
+use talaria_update_mode::{InstallMode, install_mode};
+use talaria_update_registry::is_digest;
+use talaria_update_render::{
     SlotSpec, digest_ref, render_update_compose, repo_of, slot_spec_from_inspect, write_slot_env,
 };
-use super::state::{Pin, RunBy, RunRecord, RunState, UpdateState, load, patch, record_run};
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::fleet::docker::docker;
-use crate::runs::lease::{AcquireResult, RedisLeases, keep_lease_alive, lease_key};
+use talaria_update_state::{Pin, RunBy, RunRecord, RunState, UpdateState, load, patch, record_run};
 
 const LOG: &str = "[update]";
 
@@ -66,12 +66,12 @@ pub fn roll_lease_key() -> String {
 /// the legitimate worst case (a 900s pull plus a 180s gate plus a drain)
 /// because a heartbeat covers the slow-but-alive case and this TTL only
 /// matters when nobody is renewing it.
-pub(crate) const ROLL_LOCK_TTL_MS: u64 = 20 * 60_000;
+pub const ROLL_LOCK_TTL_MS: u64 = 20 * 60_000;
 
 /// How long the incoming slot has to reach `healthy`. The compose
 /// healthcheck's own start_period is 90s of boot migrations; this is the
 /// engine's patience on top, matching the fleet's roll gate.
-pub(crate) const HEALTH_GATE_MS: u64 = 180_000;
+pub const HEALTH_GATE_MS: u64 = 180_000;
 
 /// How long a stopped old slot stays as rollback material before tidy
 /// removes it. A day is long enough to notice a bad roll and short enough
@@ -104,7 +104,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn now_iso() -> String {
+pub fn now_iso() -> String {
     epoch_ms_to_iso(now_ms())
 }
 
@@ -133,7 +133,7 @@ pub fn acting_gate(state: &UpdateState, mode: InstallMode) -> Result<(), String>
 
 /// This container's docker name (docker prefixes inspect's Name with a
 /// slash; the verbs take it without).
-pub(crate) async fn self_name() -> Result<String, String> {
+pub async fn self_name() -> Result<String, String> {
     let doc = inspect_self().await?;
     doc.get("Name")
         .and_then(|n| n.as_str())
@@ -190,7 +190,7 @@ pub fn digest_suffix(reference: &str) -> Option<&str> {
 /// Write the compose file (both slots, flip-rendered) and both slot env
 /// files from a spec read off the LIVE container. Called by every roll —
 /// drift between rolls cannot survive it.
-pub(crate) async fn write_project(
+pub async fn write_project(
     spec: &SlotSpec,
     active: Slot,
     active_digest: &str,
@@ -199,8 +199,8 @@ pub(crate) async fn write_project(
 ) -> Result<(), String> {
     let repo = repo_of(&default_image_ref());
     let tree = render_update_compose(spec, &repo, active, active_digest, incoming_digest);
-    let yaml = crate::fleet::render::yaml11_emit(&tree);
-    let path = super::layout::compose_file();
+    let yaml = talaria_yaml11::yaml11_emit(&tree);
+    let path = talaria_update_layout::compose_file();
     if let Some(dir) = path.parent() {
         tokio::fs::create_dir_all(dir)
             .await
@@ -228,7 +228,7 @@ pub(crate) async fn write_project(
 /// Record a state transition on the current run (or a fresh one, when
 /// `run` is None). Errors are returned, not swallowed — a state row that
 /// silently failed to write is a run the panel cannot see.
-pub(crate) async fn transition<F>(pg: &PgPool, run: Option<RunRecord>, f: F) -> Result<(), String>
+pub async fn transition<F>(pg: &PgPool, run: Option<RunRecord>, f: F) -> Result<(), String>
 where
     F: FnOnce(&mut RunRecord),
 {
@@ -279,7 +279,7 @@ pub async fn roll(pg: &PgPool, conn: ConnectionManager, to: &Pin, by: RunBy) -> 
     // manual apply can also start).
     let mut backend = RedisLeases::new(conn.clone());
     let token =
-        match crate::runs::lease::acquire_lease(&mut backend, &roll_lease_key(), ROLL_LOCK_TTL_MS)
+        match talaria_runs_lease::acquire_lease(&mut backend, &roll_lease_key(), ROLL_LOCK_TTL_MS)
             .await
         {
             AcquireResult::Acquired(t) => t,
@@ -517,7 +517,7 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
         .and_then(|n| n.as_str())
         .map(|n| n.trim_start_matches('/'));
     let retired_is_self = me.is_some_and(|m| Some(m) == state.retired_container.as_deref());
-    let started = crate::agent_auth::iso_to_epoch_ms(&run.started_at).unwrap_or(0);
+    let started = talaria_agent_auth::iso_to_epoch_ms(&run.started_at).unwrap_or(0);
     if stale_close_due(now_ms() - started, retired_is_self) {
         let at = now_iso();
         patch(pg, |mut s| {
@@ -606,7 +606,10 @@ async fn heal_wrongly_closed_run(
 /// green proving itself along the exact path the world will dial, not just
 /// its own loopback.
 async fn verify_through_edge() -> bool {
-    let host = format!("http://{}/api/healthz", super::layout::edge_container());
+    let host = format!(
+        "http://{}/api/healthz",
+        talaria_update_layout::edge_container()
+    );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build();
@@ -724,7 +727,7 @@ pub async fn tidy(pg: &PgPool) -> Result<Option<String>, String> {
     let Some(finished) = run.finished_at.as_deref() else {
         return Ok(None);
     };
-    let finished_ms = crate::agent_auth::iso_to_epoch_ms(finished).unwrap_or(i64::MAX);
+    let finished_ms = talaria_agent_auth::iso_to_epoch_ms(finished).unwrap_or(i64::MAX);
     if now_ms() - finished_ms < KEEP_WINDOW_MS as i64 {
         return Ok(None);
     }

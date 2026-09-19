@@ -35,24 +35,24 @@ use redis::aio::ConnectionManager;
 use serde_json::Value;
 use sqlx::PgPool;
 
-use super::docker::{
+use talaria_fleet_docker::docker;
+use talaria_runs_lease::{AcquireResult, RedisLeases, acquire_lease, keep_lease_alive};
+use talaria_update_docker::{
     attach_fleet_alias, container_running, edge_healthy, image_repo_digest, inspect_self,
     pull_image, remove_container, service_up, slot_up, stop_container, wait_healthy_slot,
 };
-use super::layout::{
+use talaria_update_layout::{
     EDGE_SERVICE, Slot, compose_file, default_image_ref, roll_drain_ms, slot_container, update_dir,
     update_project,
 };
-use super::mode::install_mode;
-use super::registry::{fetch_version_label, is_digest, parse_image_ref, resolve_latest};
-use super::render::{digest_ref, repo_of, slot_spec_from_inspect};
-use super::roll::{
+use talaria_update_mode::install_mode;
+use talaria_update_registry::{fetch_version_label, is_digest, parse_image_ref, resolve_latest};
+use talaria_update_render::{digest_ref, repo_of, slot_spec_from_inspect};
+use talaria_update_roll::{
     HEALTH_GATE_MS, ROLL_LOCK_TTL_MS, now_iso, reconcile_boot, roll_lease_key, run_in_flight,
     self_name, transition, write_project,
 };
-use super::state::{Pin, RunBy, RunRecord, RunState, UpdateState, load, patch, record_run};
-use crate::fleet::docker::docker;
-use crate::runs::lease::{AcquireResult, RedisLeases, acquire_lease, keep_lease_alive};
+use talaria_update_state::{Pin, RunBy, RunRecord, RunState, UpdateState, load, patch, record_run};
 
 const LOG: &str = "[update]";
 
