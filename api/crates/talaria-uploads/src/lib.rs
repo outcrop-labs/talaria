@@ -17,9 +17,20 @@ use sqlx::PgPool;
 use std::sync::LazyLock;
 use uuid::Uuid;
 
-use crate::boards::{agent_board_policy_sql, board_visibility_sql};
-use crate::secretbox::SecretBox;
-use crate::storage::{self, read_blob};
+use talaria_boards::{agent_board_policy_sql, board_visibility_sql};
+use talaria_secretbox::SecretBox;
+use talaria_storage::{self as storage, read_blob};
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+pub static KB_DOC_ALLOWS_READ: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, String, String, Option<String>) -> BoxFuture<'static, bool>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 pub const MAX_BYTES: usize = 25 * 1024 * 1024;
 
@@ -172,10 +183,10 @@ pub async fn attachment_text_blocks(
         // Bytes become text lossily — invalid sequences turn into U+FFFD
         // rather than failing the block.
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let clipped = if crate::body::utf16_len(&text) > FILE_CLIP {
+        let clipped = if talaria_body::utf16_len(&text) > FILE_CLIP {
             format!(
                 "{}\n[clipped]",
-                crate::body::truncate_utf16(&text, FILE_CLIP)
+                talaria_body::truncate_utf16(&text, FILE_CLIP)
             )
         } else {
             text
@@ -425,8 +436,8 @@ pub async fn save_upload(
          values ($1::uuid, $2, $3, $4, $5, $6::uuid)",
     )
     .bind(&id)
-    .bind(crate::body::truncate_utf16(filename, 300))
-    .bind(crate::body::truncate_utf16(mime, 120))
+    .bind(talaria_body::truncate_utf16(filename, 300))
+    .bind(talaria_body::truncate_utf16(mime, 120))
     .bind(bytes.len() as i64)
     .bind(&path)
     .bind(user_id)
@@ -549,22 +560,16 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
             .await
             .unwrap_or_default();
     for (doc_id,) in docs {
-        let Ok(Some(doc)) = crate::kb::get_doc(pg, &doc_id).await else {
-            continue;
-        };
-        if let Ok(effective) = crate::kb::effective_doc_perms(pg, &doc).await {
-            let team_ids = crate::teams::team_ids_for_user(pg, user_id)
-                .await
-                .unwrap_or_default();
-            if crate::kb::perms::can_read(
-                &effective.perms,
-                Some(user_id),
-                who,
-                &effective.grants,
-                &team_ids,
-            ) {
-                return true;
-            }
+        if let Some(f) = KB_DOC_ALLOWS_READ.get()
+            && f(
+                pg.clone(),
+                doc_id,
+                user_id.to_string(),
+                who.map(str::to_string),
+            )
+            .await
+        {
+            return true;
         }
     }
 
@@ -644,7 +649,7 @@ pub async fn can_access_upload(pg: &PgPool, upload_id: &str, viewer: UploadViewe
 
 /// The `not found` both upload routes answer — house envelope, 404.
 pub fn upload_not_found() -> Response {
-    crate::error::house_error(StatusCode::NOT_FOUND, "not found")
+    talaria_error::house_error(StatusCode::NOT_FOUND, "not found")
 }
 
 // ── The admin storage console: stats + detached migrate/sync ───────────────
@@ -698,14 +703,14 @@ impl JobStatus {
         if let Some(ms) = self.finished_ms {
             f.insert(
                 "finishedAt".into(),
-                crate::agent_auth::epoch_ms_to_iso(ms).into(),
+                talaria_agent_auth::epoch_ms_to_iso(ms).into(),
             );
         }
         serde_json::Value::Object(f)
     }
 
     async fn save(&self, pg: &PgPool, key: &str) {
-        let _ = crate::gateway::settings::set_setting(pg, key, &self.to_json()).await;
+        let _ = talaria_gateway::settings::set_setting(pg, key, &self.to_json()).await;
     }
 
     fn now_ms() -> i64 {
@@ -721,12 +726,12 @@ const SYNC_KEY: &str = "storage_sync_status";
 
 /// The last recorded migrate status, or null when it never ran.
 pub async fn migrate_status(pg: &PgPool) -> serde_json::Value {
-    crate::gateway::settings::get_setting(pg, MIGRATE_KEY, serde_json::Value::Null).await
+    talaria_gateway::settings::get_setting(pg, MIGRATE_KEY, serde_json::Value::Null).await
 }
 
 /// The last recorded sync status, or null when it never ran.
 pub async fn sync_status(pg: &PgPool) -> serde_json::Value {
-    crate::gateway::settings::get_setting(pg, SYNC_KEY, serde_json::Value::Null).await
+    talaria_gateway::settings::get_setting(pg, SYNC_KEY, serde_json::Value::Null).await
 }
 
 /// Move every local-disk blob into the active bucket (internal or external).

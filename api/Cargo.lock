@@ -3792,6 +3792,7 @@ dependencies = [
  "talaria-update-render",
  "talaria-update-roll",
  "talaria-update-state",
+ "talaria-uploads",
  "talaria-users",
  "talaria-web-search",
  "talaria-work-wait",
@@ -5724,6 +5725,29 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-uploads"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "talaria-storage",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

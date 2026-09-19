@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 153 crates.** Agent-output attribution. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 154 crates.** Uploads/blob ACL (KB reach via OnceLock).
+  Verified: `cargo check -p talaria-api`.
+
 
 
 

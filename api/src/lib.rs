@@ -110,7 +110,7 @@ pub mod ticket_chat;
 pub mod titler;
 pub use talaria_tz as tz;
 pub mod update;
-pub mod uploads;
+pub use talaria_uploads as uploads;
 pub use talaria_users as users;
 pub mod vision;
 pub use talaria_web_search as web_search;
