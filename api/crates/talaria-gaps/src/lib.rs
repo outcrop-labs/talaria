@@ -20,11 +20,21 @@
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::agent_writes::{WriteAuthor, guard_agent_fields};
-use crate::approvals::audience_for;
-use crate::notify::{NotificationInput, NotifyDeps, add_notification};
-use crate::runs::define::Authority;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_writes::{WriteAuthor, guard_agent_fields};
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+use talaria_runs_define::Authority;
+
+pub static AUDIENCE: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, Authority) -> BoxFuture<'static, (Vec<String>, Vec<String>)>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -318,10 +328,13 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
         needs,
         authority,
     } = input;
-    let who = audience_for(&deps.pg, authority).await;
+    let (content, fact) = match AUDIENCE.get() {
+        Some(f) => f(deps.pg.clone(), authority.clone()).await,
+        None => (Vec::new(), Vec::new()),
+    };
     let placed = matches!(authority, Authority::Admin { on_board: Some(_) });
     let ratify = "\n\nRatify it in the Studio's Suggested queue, or dismiss it there.";
-    for user_id in &who.content {
+    for user_id in &content {
         let body = format!(
             "Reported while doing {kind} work.{}{ratify}",
             match needs.map(str::trim) {
@@ -347,7 +360,7 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
             tracing::error!("[gaps] could not notify {user_id} of a new gap: {e}");
         }
     }
-    for user_id in &who.fact {
+    for user_id in &fact {
         let body = format!(
             "{}{ratify}",
             if placed {
@@ -374,7 +387,7 @@ async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
 }
 
 pub mod announce_gap {
-    use crate::runs::define::Authority;
+    use talaria_runs_define::Authority;
     pub struct GapAnnounce<'a> {
         pub agent_model: &'a str,
         pub kind: &'a str,

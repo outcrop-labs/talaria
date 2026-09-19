@@ -3697,6 +3697,7 @@ dependencies = [
  "talaria-fleet-layout",
  "talaria-fleet-preflight",
  "talaria-fleet-resources",
+ "talaria-gaps",
  "talaria-gateway",
  "talaria-github",
  "talaria-google-agent",
@@ -4301,6 +4302,22 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-scheduler",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-gaps"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-notify",
+ "talaria-runs-define",
  "tracing",
 ]
 

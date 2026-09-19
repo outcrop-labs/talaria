@@ -44,7 +44,7 @@ pub use talaria_email as email;
 pub use talaria_error as error;
 pub mod fitness;
 pub mod fleet;
-pub mod gaps;
+pub use talaria_gaps as gaps;
 pub mod gateway;
 pub use talaria_github as github;
 pub mod google;

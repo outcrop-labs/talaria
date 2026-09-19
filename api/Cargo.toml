@@ -163,6 +163,7 @@ members = [
     "crates/talaria-uploads",
     "crates/talaria-conversations",
     "crates/talaria-titler",
+    "crates/talaria-gaps",
 ]
 resolver = "3"
 
@@ -350,6 +351,7 @@ talaria-attribution = { path = "crates/talaria-attribution" }
 talaria-uploads = { path = "crates/talaria-uploads" }
 talaria-conversations = { path = "crates/talaria-conversations" }
 talaria-titler = { path = "crates/talaria-titler" }
+talaria-gaps = { path = "crates/talaria-gaps" }
 
 
 
