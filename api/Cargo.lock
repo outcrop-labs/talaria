@@ -3694,6 +3694,7 @@ dependencies = [
  "talaria-harness-schema",
  "talaria-harness-text",
  "talaria-hermes-skills",
+ "talaria-home",
  "talaria-instance",
  "talaria-internal-history",
  "talaria-invites",
@@ -4568,6 +4569,23 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "talaria-home"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-activity",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-gateway",
+ "talaria-org",
+ "talaria-state",
+ "tokio",
 ]
 
 [[package]]

@@ -14,8 +14,16 @@
 
 use sqlx::PgPool;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::boards::board_visibility_sql;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_boards::board_visibility_sql;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+/// Wired from the api binary so this crate does not depend on alerts.rs.
+pub static COMPUTE_ALERT_COUNT: OnceLock<
+    Arc<dyn Fn(talaria_state::AppState, String) -> BoxFuture<'static, i32> + Send + Sync>,
+> = OnceLock::new();
 
 /// One ticket as Home lists it. `updated_ms` is carried
 /// because the queue's sort is `updated_at desc` — the column arrives as
@@ -159,7 +167,7 @@ pub struct OrgGlance {
     /// The business name (Admin → Organization), for the rail's title.
     pub name: String,
     /// A compact recent-activity pulse across the workspace.
-    pub activity: Vec<crate::activity::ActivityEvent>,
+    pub activity: Vec<talaria_activity::ActivityEvent>,
     /// Admin-only: live alert count (null for members).
     pub alerts: Option<i32>,
     /// Admin-only: today's metered spend (null for members).
@@ -183,7 +191,7 @@ pub struct HomeSummary {
 /// The Home/Today landing in one round-shape. Only admins pay for the
 /// alerts count and the cost overview.
 pub async fn home_summary(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     user_id: &str,
     is_admin: bool,
 ) -> Result<HomeSummary, sqlx::Error> {
@@ -207,22 +215,25 @@ pub async fn home_summary(
 
     // The glance's four reads all fold their own failures: orgProfile to
     // quiet strings, the feed to empty, alerts and cost to null.
-    let profile_fut = crate::org::org_profile(pg);
+    let profile_fut = talaria_org::org_profile(pg);
     let activity_fut = async {
-        crate::activity::activity_feed(pg, user_id, &[], 8, is_admin)
+        talaria_activity::activity_feed(pg, user_id, &[], 8, is_admin)
             .await
             .unwrap_or_default()
     };
     let alert_count_fut = async {
         if is_admin {
-            Some(crate::alerts::compute_alerts(state, user_id).await.len() as i32)
+            Some(match COMPUTE_ALERT_COUNT.get() {
+                Some(f) => f(state.clone(), user_id.to_string()).await,
+                None => 0,
+            })
         } else {
             None
         }
     };
     let cost_fut = async {
         if is_admin {
-            crate::gateway::usage::cost_overview(pg).await.ok()
+            talaria_gateway::usage::cost_overview(pg).await.ok()
         } else {
             None
         }

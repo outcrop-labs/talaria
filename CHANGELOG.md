@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 148 crates.** Web-search resolver (MCP dispatch via
-  OnceLock). Verified: `cargo check -p talaria-api`.
+- **API workspace: 149 crates.** Home glance (alert count via OnceLock).
+  Verified: `cargo check -p talaria-api`.
+
 
 
 

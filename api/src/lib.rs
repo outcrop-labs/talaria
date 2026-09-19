@@ -51,7 +51,7 @@ pub mod google;
 pub use talaria_guard_coaching as guard_coaching;
 pub mod harness;
 pub use talaria_harness_model as harness_model;
-pub mod home;
+pub use talaria_home as home;
 pub mod inbox_focus;
 pub use talaria_instance as instance;
 pub use talaria_internal_history as internal_history;
