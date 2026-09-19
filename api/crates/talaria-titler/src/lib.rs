@@ -13,10 +13,24 @@
 // and callers KEEP THE CURRENT TITLE on None. Nothing here may ever start
 // returning a placeholder on failure.
 
-use crate::harness::defs::titler::{TitleKind, TitlerInput, titler_harness};
-use crate::harness::run::{RunContext, run_harness};
-use crate::state::AppState;
+use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::{Arc, OnceLock};
+use talaria_conversations::mechanical_from;
+use talaria_state::AppState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleKind {
+    Chat,
+    Plan,
+    Research,
+}
+
+pub static GENERATE_TITLE: OnceLock<
+    Arc<dyn Fn(AppState, TitleKind, String) -> BoxFuture<'static, Option<String>> + Send + Sync>,
+> = OnceLock::new();
 
 /// One short completion → a clean title, or None when nothing routes / the
 /// model rambles. Callers keep their existing title on None. The model
@@ -30,30 +44,13 @@ pub async fn generate_title(state: &AppState, kind: TitleKind, text: &str) -> Op
     if text.trim().is_empty() {
         return None;
     }
-    let input = json!(TitlerInput {
-        kind,
-        text: text.to_string(),
-    });
-    let run = run_harness(
-        state,
-        &titler_harness(),
-        &input,
-        RunContext {
-            caller: "platform:titler".into(),
-            ..RunContext::default()
-        },
-    )
-    .await
-    // A harness that cannot run is one of the cases "None" was kept for —
-    // the caller keeps the title it has.
-    .ok()?;
-    run.value.and_then(|v| v.as_str().map(str::to_string))
+    let f = GENERATE_TITLE.get()?;
+    f(state.clone(), kind, text.to_string()).await
 }
 
 /// The mechanical default stamped at creation — a title still equal to it
 /// means nobody has named the conversation on purpose. (The shape lives in
 /// conversations.rs beside the stamp that writes it.)
-use crate::conversations::mechanical_from;
 
 /// Retitle a chat/plan once its first exchange completes. Cheap early-outs:
 /// only within the first few messages, and only while the title is still the

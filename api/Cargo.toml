@@ -162,6 +162,7 @@ members = [
     "crates/talaria-attribution",
     "crates/talaria-uploads",
     "crates/talaria-conversations",
+    "crates/talaria-titler",
 ]
 resolver = "3"
 
@@ -348,6 +349,7 @@ talaria-personal-agent = { path = "crates/talaria-personal-agent" }
 talaria-attribution = { path = "crates/talaria-attribution" }
 talaria-uploads = { path = "crates/talaria-uploads" }
 talaria-conversations = { path = "crates/talaria-conversations" }
+talaria-titler = { path = "crates/talaria-titler" }
 
 
 

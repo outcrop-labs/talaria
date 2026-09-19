@@ -107,7 +107,7 @@ pub mod tasks;
 pub use talaria_teams as teams;
 pub use talaria_templates as templates;
 pub mod ticket_chat;
-pub mod titler;
+pub use talaria_titler as titler;
 pub use talaria_tz as tz;
 pub mod update;
 pub use talaria_uploads as uploads;

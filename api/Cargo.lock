@@ -3782,6 +3782,7 @@ dependencies = [
  "talaria-task-const",
  "talaria-teams",
  "talaria-templates",
+ "talaria-titler",
  "talaria-tz",
  "talaria-undici",
  "talaria-update-adopt",
@@ -5584,6 +5585,20 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-internal-history",
  "uuid",
+]
+
+[[package]]
+name = "talaria-titler"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-conversations",
+ "talaria-state",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -807,12 +807,8 @@ pub async fn start_research(
     let run_id = id.clone();
     let st = state.clone();
     tokio::spawn(async move {
-        if let Some(t) = crate::titler::generate_title(
-            &st,
-            crate::harness::defs::titler::TitleKind::Research,
-            &question,
-        )
-        .await
+        if let Some(t) =
+            crate::titler::generate_title(&st, crate::titler::TitleKind::Research, &question).await
             && let Err(e) = sqlx::query("update research_runs set title = $1 where id = $2::uuid")
                 .bind(&t)
                 .bind(&run_id)
