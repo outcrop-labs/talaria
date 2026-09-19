@@ -11,9 +11,24 @@ use serde_json::json;
 use sqlx::PgPool;
 use std::sync::{LazyLock, Mutex};
 
-use crate::audit::{AuditEntry, log_audit};
-use crate::fleet::reconcile::roll_agent;
-use crate::secretbox::SecretBox;
+use talaria_audit::{AuditEntry, log_audit};
+use talaria_secretbox::SecretBox;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+/// Wired from the api binary so this crate does not depend on fleet reconcile.
+pub static ROLL_AGENT: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                SecretBox,
+                String,
+            ) -> BoxFuture<'static, Result<Option<String>, String>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 /// The process-local roll queue: a deduped department list plus a running
 /// flag the pump clears when it drains.
@@ -47,7 +62,10 @@ fn enqueue(departments: &[String], pg: &PgPool, sb: &SecretBox) {
                 }
                 q.0.remove(0)
             };
-            let rolled = roll_agent(&pg, &sb, &next).await;
+            let rolled = match ROLL_AGENT.get() {
+                Some(f) => f(pg.clone(), sb.clone(), next.clone()).await,
+                None => Ok(None),
+            };
             // `{ok:false}` AND a thrown step both land here: the roll verdict
             // is a sentence for the operator's audit trail, never a caller's
             // problem — the mutation that triggered it is already committed.

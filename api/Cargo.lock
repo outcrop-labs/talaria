@@ -3697,6 +3697,7 @@ dependencies = [
  "talaria-kb-perms",
  "talaria-labels",
  "talaria-llm-keys",
+ "talaria-mcp-apply",
  "talaria-mcp-icons",
  "talaria-mcp-jsonrpc",
  "talaria-mcp-library",
@@ -4586,6 +4587,19 @@ dependencies = [
  "talaria-body",
  "talaria-permissions",
  "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-apply"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde_json",
+ "sqlx",
+ "talaria-audit",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
