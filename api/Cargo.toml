@@ -118,6 +118,10 @@ members = [
     "crates/talaria-update-registry",
     "crates/talaria-google-errors",
     "crates/talaria-google-calendar",
+    "crates/talaria-google-agent",
+    "crates/talaria-google-api-health",
+    "crates/talaria-google-gmail",
+    "crates/talaria-google-provisioning",
 ]
 resolver = "3"
 
@@ -260,6 +264,10 @@ talaria-google-org = { path = "crates/talaria-google-org" }
 talaria-update-registry = { path = "crates/talaria-update-registry" }
 talaria-google-errors = { path = "crates/talaria-google-errors" }
 talaria-google-calendar = { path = "crates/talaria-google-calendar" }
+talaria-google-agent = { path = "crates/talaria-google-agent" }
+talaria-google-api-health = { path = "crates/talaria-google-api-health" }
+talaria-google-gmail = { path = "crates/talaria-google-gmail" }
+talaria-google-provisioning = { path = "crates/talaria-google-provisioning" }
 
 
 

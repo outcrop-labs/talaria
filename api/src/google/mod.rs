@@ -1,13 +1,13 @@
 // The Google engine family — OAuth, org provisioning, calendar/drive/gmail surfaces, health.
-pub mod agent;
-pub mod api_health;
+pub use talaria_google_agent as agent;
+pub use talaria_google_api_health as api_health;
 pub use talaria_google_calendar as calendar;
 pub use talaria_google_client as client;
 pub use talaria_google_connections as connections;
 pub mod drive;
 pub use talaria_google_errors as errors;
-pub mod gmail;
+pub use talaria_google_gmail as gmail;
 pub mod oauth;
 pub use talaria_google_org as org;
 pub mod pending_actions;
-pub mod provisioning;
+pub use talaria_google_provisioning as provisioning;

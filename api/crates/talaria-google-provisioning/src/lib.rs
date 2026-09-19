@@ -19,14 +19,14 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::gateway::provider::http;
-use crate::google::connections::TokenError;
-use crate::google::oauth::{email_domain_of, encode_uri_component};
-use crate::google::org::{
+use talaria_gateway::provider::http;
+use talaria_google_client::{email_domain_of, encode_uri_component};
+use talaria_google_connections::TokenError;
+use talaria_google_org::{
     OrgTargets, OrgTargetsPatch, get_org_access_token, get_org_connection_status,
     set_org_shared_drive, set_org_targets,
 };
-use crate::secretbox::SecretBox;
+use talaria_secretbox::SecretBox;
 
 const CAL_BASE: &str = "https://www.googleapis.com/calendar/v3";
 const DRIVE_BASE: &str = "https://www.googleapis.com/drive/v3";

@@ -274,17 +274,7 @@ pub async fn exchange_google_code(
     })
 }
 
-/// The domain of an email address, lowercased — None when there is no usable
-/// one (no @, nothing before it, nothing after it, null input). The LAST @
-/// wins: a plus-addressed org account gates on its REAL domain.
-pub fn email_domain_of(email: Option<&str>) -> Option<String> {
-    let email = email?;
-    let at = email.rfind('@')?;
-    if at < 1 || at == email.len() - 1 {
-        return None;
-    }
-    Some(email[at + 1..].trim().to_lowercase())
-}
+pub use talaria_google_client::email_domain_of;
 
 /// May this Google identity sign in, given the connected org account's email?
 /// A Talaria wired to a Google Workspace is FOR that workspace's people: once

@@ -3635,11 +3635,15 @@ dependencies = [
  "talaria-fleet-layout",
  "talaria-gateway",
  "talaria-github",
+ "talaria-google-agent",
+ "talaria-google-api-health",
  "talaria-google-calendar",
  "talaria-google-client",
  "talaria-google-connections",
  "talaria-google-errors",
+ "talaria-google-gmail",
  "talaria-google-org",
+ "talaria-google-provisioning",
  "talaria-guard-coaching",
  "talaria-harness-json-schema",
  "talaria-harness-schema",
@@ -4043,6 +4047,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-google-agent"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-api-health"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "talaria-google-calendar"
 version = "0.1.0"
 dependencies = [
@@ -4102,6 +4156,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-google-gmail"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "talaria-google-org"
 version = "0.1.0"
 dependencies = [
@@ -4117,6 +4196,32 @@ dependencies = [
  "talaria-secretbox",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "talaria-google-provisioning"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

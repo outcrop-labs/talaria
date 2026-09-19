@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 111 crates.** Google errors + calendar. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 115 crates.** Google agent token, API health, gmail,
+  org provisioning. Verified: `cargo check -p talaria-api`.
+
 
 
 

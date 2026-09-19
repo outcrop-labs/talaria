@@ -11,11 +11,11 @@ use base64::Engine as _;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::gateway::provider::http;
-use crate::google::connections::require_token;
-use crate::google::errors::GoogleError;
-use crate::secretbox::SecretBox;
 use sqlx::PgPool;
+use talaria_gateway::provider::http;
+use talaria_google_connections::require_token;
+use talaria_google_errors::GoogleError;
+use talaria_secretbox::SecretBox;
 
 const GMAIL_BASE: &str = "https://www.googleapis.com/gmail/v1/users/me";
 const LABELS_ENDPOINT: &str = "https://www.googleapis.com/gmail/v1/users/me/labels";
@@ -308,7 +308,7 @@ fn message_date(m: &Value) -> Option<String> {
     if let Some(internal) = m.get("internalDate").and_then(Value::as_str)
         && let Ok(ms) = internal.parse::<i64>()
     {
-        return Some(crate::agent_auth::epoch_ms_to_iso(ms));
+        return Some(talaria_agent_auth::epoch_ms_to_iso(ms));
     }
     let h = header_of(m, "Date");
     (!h.is_empty()).then(|| h.to_string())
@@ -647,7 +647,7 @@ pub async fn get_message_with_token(token: &str, id: &str) -> Result<MailMessage
     let res = http()
         .get(format!(
             "{GMAIL_BASE}/messages/{}?format=full",
-            crate::google::oauth::encode_uri_component(id)
+            talaria_google_client::encode_uri_component(id)
         ))
         .bearer_auth(token)
         .send()
@@ -718,7 +718,7 @@ pub async fn get_message_with_token(token: &str, id: &str) -> Result<MailMessage
             .collect(),
         // the 20_000 cut is in UTF-16 code units (JS string length), not
         // bytes or chars.
-        body: crate::body::utf16_substr(&body_text_of(&payload), 0, 20_000).to_string(),
+        body: talaria_body::utf16_substr(&body_text_of(&payload), 0, 20_000).to_string(),
     })
 }
 

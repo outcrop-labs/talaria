@@ -12,10 +12,10 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::gateway::provider::http;
-use crate::google::connections::TokenError;
-use crate::google::org::get_org_access_token;
-use crate::secretbox::SecretBox;
+use talaria_gateway::provider::http;
+use talaria_google_connections::TokenError;
+use talaria_google_org::get_org_access_token;
+use talaria_secretbox::SecretBox;
 
 /// One of the three services the library table names — drive, calendar, gmail.
 struct LibraryEntry {
@@ -160,12 +160,12 @@ pub async fn probe_org_google_apis(
     pg: &PgPool,
     sb: &SecretBox,
     now_ms: i64,
-) -> Result<Vec<GoogleApiHealth>, crate::google::errors::GoogleError> {
+) -> Result<Vec<GoogleApiHealth>, talaria_google_errors::GoogleError> {
     let token = get_org_access_token(pg, sb, now_ms)
         .await
-        .map_err(|e: TokenError| crate::google::errors::GoogleError::Failed(e.to_string()))?;
+        .map_err(|e: TokenError| talaria_google_errors::GoogleError::Failed(e.to_string()))?;
     let Some(token) = token else {
-        return Err(crate::google::errors::GoogleError::NotConnected);
+        return Err(talaria_google_errors::GoogleError::NotConnected);
     };
     // Probes run concurrently — three sequential Google round-trips cost
     // +300ms for nothing; join_all keeps the library's order and surfaces the
@@ -175,7 +175,7 @@ pub async fn probe_org_google_apis(
             .await
             .into_iter()
             .collect::<Result<Vec<_>, String>>()
-            .map_err(crate::google::errors::GoogleError::Failed)?;
+            .map_err(talaria_google_errors::GoogleError::Failed)?;
     Ok(out)
 }
 

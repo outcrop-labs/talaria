@@ -230,3 +230,15 @@ pub fn encode_uri_component(s: &str) -> String {
     }
     out
 }
+
+/// The domain of an email address, lowercased — None when there is no usable
+/// one (no @, nothing before it, nothing after it, null input). The LAST @
+/// wins: a plus-addressed org account gates on its REAL domain.
+pub fn email_domain_of(email: Option<&str>) -> Option<String> {
+    let email = email?;
+    let at = email.rfind('@')?;
+    if at < 1 || at == email.len() - 1 {
+        return None;
+    }
+    Some(email[at + 1..].trim().to_lowercase())
+}

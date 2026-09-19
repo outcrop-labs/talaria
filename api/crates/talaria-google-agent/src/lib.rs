@@ -6,11 +6,11 @@
 // agent_defs.model is unique and is exactly what an agent presents over MCP as
 // x-agent-name, so a single lookup binds the caller to a Google connection.
 
-use crate::agent_auth::{AgentSubject, subject_model, subject_proven};
-use crate::google::connections::get_access_token;
-use crate::google::org::get_org_access_token;
-use crate::secretbox::SecretBox;
 use sqlx::PgPool;
+use talaria_agent_auth::{AgentSubject, subject_model, subject_proven};
+use talaria_google_connections::get_access_token;
+use talaria_google_org::get_org_access_token;
+use talaria_secretbox::SecretBox;
 
 /// A resolved Google identity: token + whose account it is.
 pub struct AgentGoogle {
