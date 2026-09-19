@@ -4,8 +4,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **CI: cargo determinism + package image caching.** The api check job sets
- `CARGO_INCREMENTAL=0` so rust-cache carries reusable artifacts; the package
+- **Layout contract.** RUST-MIGRATION's "Layout of the crate" is now a
+ workspace crate map with the where-new-code-goes rules; AGENTS.md points at
+ it. Verified: `bun run check` (doc links).
+
  build is cargo-chef-layered (deps build once per manifest change) and
  exports its layers through a buildx registry cache (`:buildcache`, mode=max)
  — the gha backend can't be used because release.yml calls the build via

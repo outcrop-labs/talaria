@@ -131,6 +131,12 @@ tracked anywhere — personal allowlists live in `.claude/settings.local.json`, 
 - `scripts/skills/` — **product surface**: those skills ship to Hermes agent containers.
   Repo tooling skills go in `.claude/skills/`, never here.
 - `docs/api/**` and `docs/CLI-REFERENCE.md` — generated; drift fails `bun run check`.
+
+- `api/` is a Cargo workspace — a thin `talaria-api` binary plus one crate
+  per engine under `api/crates/`. New domains get their own crate; the crate
+  map and the dependency rules live in
+  [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md)'s "Layout of the
+  workspace".
 - `mcp/dist/`, `ui/src/routeTree.gen.ts` — build output.
 - `CHANGELOG.md` is append-only; its links are frozen history.
 
