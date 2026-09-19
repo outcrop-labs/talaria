@@ -304,7 +304,7 @@ pub async fn persona_capability_keys(pg: &PgPool, model: &str) -> Vec<String> {
     let snap = index(pg).await;
     let mut seen: Vec<String> = Vec::new();
     for t in snap.by_id.get(model).into_iter().flatten() {
-        let key = crate::capability::capability_key(&t.endpoint, &t.model);
+        let key = talaria_capability::capability_key(&t.endpoint, &t.model);
         if !seen.contains(&key) {
             seen.push(key);
         }

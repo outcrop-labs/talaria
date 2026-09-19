@@ -4,10 +4,10 @@
 // users need the models.mint-keys grant (the fine-grained permission the old
 // can_mint_keys column backfilled into).
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::auth::sha256_hex;
-use crate::permissions::has_perm;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_auth::sha256_hex;
+use talaria_permissions::has_perm;
 
 /// One key as /api/keys serves it, in wire order. The cap columns
 /// are ::float8 on every select (bigint/numeric would arrive as strings) and
@@ -55,9 +55,9 @@ fn wire(row: KeyRow) -> LlmApiKey {
         created_at: epoch_ms_to_iso(row.3),
         last_used_at: row.4.map(epoch_ms_to_iso),
         revoked_at: row.5.map(epoch_ms_to_iso),
-        spend_cap_tokens: row.6.map(crate::body::js_num),
-        spend_cap_usd: row.7.map(crate::body::js_num),
-        rate_limit_per_minute: row.8.map(crate::body::js_num),
+        spend_cap_tokens: row.6.map(talaria_body::js_num),
+        spend_cap_usd: row.7.map(talaria_body::js_num),
+        rate_limit_per_minute: row.8.map(talaria_body::js_num),
     }
 }
 
@@ -117,7 +117,7 @@ pub async fn revoke_key(pg: &PgPool, user_id: &str, key_id: &str) -> Result<(), 
     .await?;
     // A revoked key must stop authenticating on the next call, not the next
     // TTL expiry.
-    crate::auth::reset_identity_cache();
+    talaria_auth::reset_identity_cache();
     Ok(())
 }
 
@@ -161,7 +161,7 @@ pub async fn set_key_policy(
     .fetch_optional(pg)
     .await?;
     // Caps ride the identity — a policy edit lands now, not at TTL expiry.
-    crate::auth::reset_identity_cache();
+    talaria_auth::reset_identity_cache();
     Ok(row.is_some())
 }
 

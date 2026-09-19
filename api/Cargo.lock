@@ -3490,12 +3490,14 @@ dependencies = [
  "talaria-instance",
  "talaria-internal-history",
  "talaria-judge",
+ "talaria-llm-keys",
  "talaria-native-search",
  "talaria-org-domains",
  "talaria-params",
  "talaria-password",
  "talaria-password-accounts",
  "talaria-permissions",
+ "talaria-persona",
  "talaria-push",
  "talaria-ratelimit",
  "talaria-repo-env",
@@ -3659,6 +3661,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-llm-keys"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-auth",
+ "talaria-body",
+ "talaria-permissions",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-native-search"
 version = "0.1.0"
 dependencies = [
@@ -3722,6 +3739,17 @@ dependencies = [
  "talaria-settings",
  "talaria-teams",
  "tracing",
+]
+
+[[package]]
+name = "talaria-persona"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability",
+ "tokio",
 ]
 
 [[package]]

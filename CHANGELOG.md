@@ -4,9 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 43 leaf crates.** `app_settings` is `talaria-settings`;
-  `capability`, `guard_coaching`, `instance`, `judge`, `permissions`
-  peeled off it. Verified: `cargo check -p talaria-api`.
+- **API workspace: 45 leaf crates.** `llm_keys` and `persona` follow
+  permissions/capability. Verified: `cargo check -p talaria-api`.
+
 
 
 

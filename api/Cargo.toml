@@ -50,6 +50,8 @@ members = [
     "crates/talaria-instance",
     "crates/talaria-judge",
     "crates/talaria-permissions",
+    "crates/talaria-llm-keys",
+    "crates/talaria-persona",
 ]
 resolver = "3"
 
@@ -124,6 +126,8 @@ talaria-guard-coaching = { path = "crates/talaria-guard-coaching" }
 talaria-instance = { path = "crates/talaria-instance" }
 talaria-judge = { path = "crates/talaria-judge" }
 talaria-permissions = { path = "crates/talaria-permissions" }
+talaria-llm-keys = { path = "crates/talaria-llm-keys" }
+talaria-persona = { path = "crates/talaria-persona" }
 
 
 
