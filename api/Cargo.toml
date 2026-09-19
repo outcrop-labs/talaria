@@ -52,6 +52,19 @@ members = [
     "crates/talaria-permissions",
     "crates/talaria-llm-keys",
     "crates/talaria-persona",
+    "crates/talaria-gateway",
+    "crates/talaria-agent-defs",
+    "crates/talaria-agent-writes",
+    "crates/talaria-brain-health",
+    "crates/talaria-email",
+    "crates/talaria-github",
+    "crates/talaria-me",
+    "crates/talaria-platform-agents",
+    "crates/talaria-search",
+    "crates/talaria-secret-health",
+    "crates/talaria-storage",
+    "crates/talaria-users",
+    "crates/talaria-workflows",
 ]
 resolver = "3"
 
@@ -128,6 +141,19 @@ talaria-judge = { path = "crates/talaria-judge" }
 talaria-permissions = { path = "crates/talaria-permissions" }
 talaria-llm-keys = { path = "crates/talaria-llm-keys" }
 talaria-persona = { path = "crates/talaria-persona" }
+talaria-gateway = { path = "crates/talaria-gateway" }
+talaria-agent-defs = { path = "crates/talaria-agent-defs" }
+talaria-agent-writes = { path = "crates/talaria-agent-writes" }
+talaria-brain-health = { path = "crates/talaria-brain-health" }
+talaria-email = { path = "crates/talaria-email" }
+talaria-github = { path = "crates/talaria-github" }
+talaria-me = { path = "crates/talaria-me" }
+talaria-platform-agents = { path = "crates/talaria-platform-agents" }
+talaria-search = { path = "crates/talaria-search" }
+talaria-secret-health = { path = "crates/talaria-secret-health" }
+talaria-storage = { path = "crates/talaria-storage" }
+talaria-users = { path = "crates/talaria-users" }
+talaria-workflows = { path = "crates/talaria-workflows" }
 
 
 

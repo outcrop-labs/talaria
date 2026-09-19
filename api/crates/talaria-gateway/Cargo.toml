@@ -1,0 +1,33 @@
+[package]
+name = "talaria-gateway"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["json"] }
+base64 = "0.23"
+futures-util = "0.3"
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-body = { path = "../talaria-body" }
+talaria-error = { path = "../talaria-error" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-settings = { path = "../talaria-settings" }
+talaria-state = { path = "../talaria-state" }
+talaria-undici = { path = "../talaria-undici" }
+tokio = { version = "1", features = ["sync", "time", "fs", "macros", "rt"] }
+url = "2"
+getrandom = "0.3"
+
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

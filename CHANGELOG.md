@@ -4,8 +4,11 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 45 leaf crates.** `llm_keys` and `persona` follow
-  permissions/capability. Verified: `cargo check -p talaria-api`.
+- **API workspace: 58 crates.** `talaria-gateway` holds the LLM hop
+  (usage nudges the oracle through a OnceLock so the crate does not
+  depend on scheduler). Twelve modules that only talked to gateway
+  followed, including `users`. Verified: `cargo check -p talaria-api`.
+
 
 
 

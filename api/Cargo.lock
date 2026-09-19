@@ -3411,6 +3411,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-defs"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-agent-role-templates"
 version = "0.1.0"
 dependencies = [
@@ -3431,6 +3464,39 @@ dependencies = [
  "talaria-fleet-layout",
  "talaria-secretbox",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agent-writes"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
 ]
 
@@ -3473,24 +3539,31 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
+ "talaria-agent-writes",
  "talaria-agents-registry",
  "talaria-audit",
  "talaria-auth",
  "talaria-auth-config",
  "talaria-body",
+ "talaria-brain-health",
  "talaria-capability",
  "talaria-collate",
  "talaria-config",
  "talaria-db",
+ "talaria-email",
  "talaria-error",
  "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-github",
  "talaria-guard-coaching",
  "talaria-instance",
  "talaria-internal-history",
  "talaria-judge",
  "talaria-llm-keys",
+ "talaria-me",
  "talaria-native-search",
  "talaria-org-domains",
  "talaria-params",
@@ -3498,22 +3571,28 @@ dependencies = [
  "talaria-password-accounts",
  "talaria-permissions",
  "talaria-persona",
+ "talaria-platform-agents",
  "talaria-push",
  "talaria-ratelimit",
  "talaria-repo-env",
  "talaria-research-origin",
  "talaria-safe-fetch",
+ "talaria-search",
+ "talaria-secret-health",
  "talaria-secret-rotation",
  "talaria-secretbox",
  "talaria-settings",
  "talaria-source-registry",
  "talaria-state",
+ "talaria-storage",
  "talaria-task-const",
  "talaria-teams",
  "talaria-templates",
  "talaria-tz",
  "talaria-undici",
+ "talaria-users",
  "talaria-work-wait",
+ "talaria-workflows",
  "talaria-workspace-handles",
  "talaria-workspace-secrets",
  "talaria-yaml",
@@ -3559,6 +3638,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-brain-health"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-capability"
 version = "0.1.0"
 dependencies = [
@@ -3591,6 +3703,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-email"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "lettre",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-error"
 version = "0.1.0"
 dependencies = [
@@ -3609,6 +3755,67 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tokio",
+]
+
+[[package]]
+name = "talaria-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.3.4",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-error",
+ "talaria-fleet-layout",
+ "talaria-secretbox",
+ "talaria-settings",
+ "talaria-state",
+ "talaria-undici",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-github"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3672,6 +3879,39 @@ dependencies = [
  "talaria-auth",
  "talaria-body",
  "talaria-permissions",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-me"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
 ]
 
@@ -3753,6 +3993,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-platform-agents"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-push"
 version = "0.1.0"
 dependencies = [
@@ -3804,6 +4077,72 @@ version = "0.1.0"
 dependencies = [
  "reqwest",
  "tokio",
+]
+
+[[package]]
+name = "talaria-search"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-secret-health"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3860,6 +4199,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-storage"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-task-const"
 version = "0.1.0"
 
@@ -3904,11 +4276,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-users"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-work-wait"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-workflows"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-secretbox",
+ "talaria-teams",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
  "uuid",
 ]
 
