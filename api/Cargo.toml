@@ -207,6 +207,7 @@ members = [
     "crates/talaria-work-dispatch",
     "crates/talaria-workbench-mcp",
     "crates/talaria-jobs",
+    "crates/talaria-api-routes",
     "crates/talaria-runs-agent-hire",
     "crates/talaria-comms-decay",
     "crates/talaria-chat-persist",
@@ -243,6 +244,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-api-routes = { path = "crates/talaria-api-routes" }
 talaria-yaml = { path = "crates/talaria-yaml" }
 talaria-fleet-layout = { path = "crates/talaria-fleet-layout" }
 talaria-undici = { path = "crates/talaria-undici" }

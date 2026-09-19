@@ -21,7 +21,7 @@
 
 ## `/api/inference`
 
-Source: [`api/src/routes/models/inference.rs`](../../api/src/routes/models/inference.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/models/inference.rs`](../../api/crates/talaria-api-routes/src/routes/models/inference.rs)
 
 > /api/inference.
 > Local inference: your own hardware's backends (class=local), probed live,
@@ -33,7 +33,7 @@ Source: [`api/src/routes/models/inference.rs`](../../api/src/routes/models/infer
 
 ## `/api/keys`
 
-Source: [`api/src/routes/models/keys.rs`](../../api/src/routes/models/keys.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/models/keys.rs`](../../api/crates/talaria-api-routes/src/routes/models/keys.rs)
 
 > /api/keys. Personal API keys for the Talaria LLM gateway. GET → my keys +
 > whether I may mint. POST → mint one; the secret is in THIS response only
@@ -52,7 +52,7 @@ Source: [`api/src/routes/models/keys.rs`](../../api/src/routes/models/keys.rs)
 
 ## `/api/keys/{id}`
 
-Source: [`api/src/routes/models/keys_id.rs`](../../api/src/routes/models/keys_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/models/keys_id.rs`](../../api/crates/talaria-api-routes/src/routes/models/keys_id.rs)
 
 > /api/keys/{id}. DELETE revokes one of MY keys (the hash stays for audit);
 > PUT sets my key's self-imposed policy (#265). A non-uuid {id} logs and
@@ -73,7 +73,7 @@ Source: [`api/src/routes/models/keys_id.rs`](../../api/src/routes/models/keys_id
 
 ## `/api/models`
 
-Source: [`api/src/routes/models/models.rs`](../../api/src/routes/models/models.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/models/models.rs`](../../api/crates/talaria-api-routes/src/routes/models/models.rs)
 
 > /api/models.
 > The gateway model catalog for signed-in users (the /api/llm/v1/models
@@ -87,7 +87,7 @@ Source: [`api/src/routes/models/models.rs`](../../api/src/routes/models/models.r
 
 ## `/api/models/efforts`
 
-Source: [`api/src/routes/models/models_efforts.rs`](../../api/src/routes/models/models_efforts.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/models/models_efforts.rs`](../../api/crates/talaria-api-routes/src/routes/models/models_efforts.rs)
 
 > /api/models/efforts.
 > The composer's effort-picker feed: which reasoning-effort levels THIS

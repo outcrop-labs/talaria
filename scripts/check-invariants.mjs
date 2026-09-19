@@ -1207,8 +1207,8 @@ for (const rule of CENSUS) {
   // the bytes across the language line, because a guard that stops at the edge
   // of the tree its subject moved out of guards nothing.
   const RUST_BYTES_ROUTES = [
-    'api/src/routes/files/uploads_id.rs',
-    'api/src/routes/files/artifacts_public_slug_download.rs',
+    'api/crates/talaria-api-routes/src/routes/files/uploads_id.rs',
+    'api/crates/talaria-api-routes/src/routes/files/artifacts_public_slug_download.rs',
   ]
   const RUST_SERVE = 'api/crates/talaria-uploads/src/lib.rs'
 

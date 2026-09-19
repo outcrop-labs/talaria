@@ -5,7 +5,7 @@
 // routes::router, so integration tests drive the exact stack this serves.
 
 use std::sync::Arc;
-use talaria_api::{config, config::Config, db, jobs, routes, runs, scheduler, state::AppState};
+use talaria_api::{config, config::Config, db, jobs, scheduler, state::AppState};
 
 #[tokio::main]
 async fn main() {
@@ -62,7 +62,7 @@ async fn main() {
     {
         let pg = state.pg.clone();
         tokio::spawn(async move {
-            if let Err(e) = talaria_api::mcp::registry::ensure_builtin_mcp(&pg).await {
+            if let Err(e) = talaria_mcp::registry::ensure_builtin_mcp(&pg).await {
                 tracing::warn!(
                     "[mcp] builtin rows not seeded — the first registry list retries: {e}"
                 );
@@ -89,7 +89,7 @@ async fn main() {
     {
         let pg = state.pg.clone();
         tokio::spawn(async move {
-            talaria_api::mcp::pkg::reconcile(&pg).await;
+            talaria_mcp::pkg::reconcile(&pg).await;
         });
     }
 
@@ -100,9 +100,9 @@ async fn main() {
     // whole lifetime. Boot closes the window before any session opens it.
     // Fire-and-forget like everything here; the gateway relay double-checks
     // before every builtin hop.
-    talaria_api::mcp::service::ensure_mcp_service();
+    talaria_mcp_service::ensure_mcp_service();
 
-    let app = routes::router(state.clone());
+    let app = talaria_api_routes::routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -124,7 +124,7 @@ async fn main() {
     // each drive's cleanup release its lease, so the instance that replaces
     // this one resumes the work in seconds (its 30s sweep) rather than after
     // each lease TTL — a roll must never stall work it can hand over.
-    runs::drivers::drain(5_000).await;
+    talaria_runs_drivers::drain(5_000).await;
     // Draining means the scheduler's drain too: no new runs armed, in-flight
     // job work given its grace, then the pool. A job that ARCHIVES
     // conversations or MESSAGES people must not be killed half a second from

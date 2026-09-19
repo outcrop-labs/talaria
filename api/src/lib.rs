@@ -1,6 +1,5 @@
-// talaria-api library — everything the binary mounts, importable so
-// integration tests (tests/) can drive the router and the secretbox against
-// committed cross-language fixtures without going through a socket.
+// talaria-api library — the crate aliases the binary and the integration
+// tests reach the workspace through. The router lives in talaria-api-routes.
 
 pub use talaria_activity as activity;
 pub use talaria_agent_auth as agent_auth;
@@ -15,6 +14,11 @@ pub use talaria_agent_skills as agent_skills;
 pub use talaria_agent_writes as agent_writes;
 pub use talaria_agents_registry as agents_registry;
 pub use talaria_alerts as alerts;
+pub use talaria_api_routes::routes;
+pub use talaria_api_routes::{
+    daily_brief, fitness, fleet, gateway, google, harness, inbox_focus, kb, mcp, model, retrieval,
+    runs, update, workbench,
+};
 pub use talaria_approvals as approvals;
 pub use talaria_apps as apps;
 pub use talaria_artifacts as artifacts;
@@ -36,35 +40,25 @@ pub use talaria_claim as claim;
 pub use talaria_comms_decay as comms_decay;
 pub use talaria_config as config;
 pub use talaria_conversations as conversations;
-pub mod daily_brief;
 pub use talaria_db as db;
 pub use talaria_digest as digest;
 pub use talaria_effort_prefs as effort_prefs;
 pub use talaria_email as email;
 pub use talaria_error as error;
-pub mod fitness;
-pub mod fleet;
 pub use talaria_gaps as gaps;
-pub mod gateway;
 pub use talaria_github as github;
-pub mod google;
 pub use talaria_guard_coaching as guard_coaching;
-pub mod harness;
 pub use talaria_harness_model as harness_model;
 pub use talaria_home as home;
-pub mod inbox_focus;
 pub use talaria_instance as instance;
 pub use talaria_internal_history as internal_history;
 pub use talaria_invites as invites;
 pub use talaria_jobs as jobs;
 pub use talaria_judge as judge;
-pub mod kb;
 pub use talaria_labels as labels;
 pub use talaria_llm_keys as llm_keys;
-pub mod mcp;
 pub use talaria_me as me;
 pub use talaria_mentions as mentions;
-pub mod model;
 pub use talaria_native_search as native_search;
 pub use talaria_notify as notify;
 pub use talaria_org as org;
@@ -87,9 +81,6 @@ pub use talaria_refs as refs;
 pub use talaria_repo_env as repo_env;
 pub use talaria_research as research;
 pub use talaria_research_origin as research_origin;
-pub mod retrieval;
-pub mod routes;
-pub mod runs;
 pub use talaria_safe_fetch as safe_fetch;
 pub use talaria_scheduler as scheduler;
 pub use talaria_search as search;
@@ -109,14 +100,12 @@ pub use talaria_templates as templates;
 pub use talaria_ticket_chat as ticket_chat;
 pub use talaria_titler as titler;
 pub use talaria_tz as tz;
-pub mod update;
 pub use talaria_uploads as uploads;
 pub use talaria_users as users;
 pub use talaria_vision as vision;
 pub use talaria_web_search as web_search;
 pub use talaria_work_dispatch as work_dispatch;
 pub use talaria_work_wait as work_wait;
-pub mod workbench;
 pub use talaria_workchains as workchains;
 pub use talaria_workflows as workflows;
 pub use talaria_workspace_handles as workspace_handles;

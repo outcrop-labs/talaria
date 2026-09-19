@@ -44,8 +44,8 @@ import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-const ROUTES_MOD = join(ROOT, 'api/src/routes/mod.rs')
-const ROUTES_DIR = join(ROOT, 'api/src/routes')
+const ROUTES_MOD = join(ROOT, 'api/crates/talaria-api-routes/src/routes/mod.rs')
+const ROUTES_DIR = join(ROOT, 'api/crates/talaria-api-routes/src/routes')
 // The SPA host's permanent TS residents (rust-proxy.ts STAY_TS), minus the
 // app-MCP branch that never had its own row. Extracted with the TS extractor.
 const TS_RESIDENT_FILES = [
@@ -366,7 +366,7 @@ function parseRouterTable(modText) {
 function moduleFile(fnPath) {
   const segs = fnPath.split('::')
   segs.pop() // the fn itself
-  return `api/src/routes/${segs.join('/')}.rs`
+  return `api/crates/talaria-api-routes/src/routes/${segs.join('/')}.rs`
 }
 
 /** Find `fn name(…) {body}` in comment-stripped Rust text. Returns the body's

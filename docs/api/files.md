@@ -36,7 +36,7 @@
 
 ## `/api/agent-media/{model}`
 
-Source: [`api/src/routes/files/agent_media_model.rs`](../../api/src/routes/files/agent_media_model.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/agent_media_model.rs`](../../api/crates/talaria-api-routes/src/routes/files/agent_media_model.rs)
 
 > /api/agent-media/{model}.
 > GET ?path=/opt/data/ → stream an image out of the agent's container, so
@@ -49,7 +49,7 @@ Source: [`api/src/routes/files/agent_media_model.rs`](../../api/src/routes/files
 
 ## `/api/agent-media/{model}/save`
 
-Source: [`api/src/routes/files/agent_media_model_save.rs`](../../api/src/routes/files/agent_media_model_save.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/agent_media_model_save.rs`](../../api/crates/talaria-api-routes/src/routes/files/agent_media_model_save.rs)
 
 > /api/agent-media/{model}/save.
 > POST { path, title?, folderId? | folder? } → copy an image out of the
@@ -72,7 +72,7 @@ Source: [`api/src/routes/files/agent_media_model_save.rs`](../../api/src/routes/
 
 ## `/api/artifact-folders`
 
-Source: [`api/src/routes/files/artifact_folders.rs`](../../api/src/routes/files/artifact_folders.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifact_folders.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifact_folders.rs)
 
 > /api/artifact-folders.
 > Artifact folders. GET → the ones you can read. POST → create one you own.
@@ -92,7 +92,7 @@ Source: [`api/src/routes/files/artifact_folders.rs`](../../api/src/routes/files/
 
 ## `/api/artifact-folders/{id}`
 
-Source: [`api/src/routes/files/artifact_folders_id.rs`](../../api/src/routes/files/artifact_folders_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifact_folders_id.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifact_folders_id.rs)
 
 > /api/artifact-folders/{id}. One artifact folder. GET → the
 > folder + its grants (what the Share dialog reads). PUT → rename / icon /
@@ -118,7 +118,7 @@ Source: [`api/src/routes/files/artifact_folders_id.rs`](../../api/src/routes/fil
 
 ## `/api/artifact-folders/{id}/duplicate`
 
-Source: [`api/src/routes/files/artifact_folders_id_duplicate.rs`](../../api/src/routes/files/artifact_folders_id_duplicate.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifact_folders_id_duplicate.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifact_folders_id_duplicate.rs)
 
 > /api/artifact-folders/{id}/duplicate. Copy a whole folder tree in one
 > transaction — copy/paste's engine on the folder side. Read-level like the
@@ -132,7 +132,7 @@ Source: [`api/src/routes/files/artifact_folders_id_duplicate.rs`](../../api/src/
 
 ## `/api/artifacts`
 
-Source: [`api/src/routes/files/artifacts.rs`](../../api/src/routes/files/artifacts.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts.rs)
 
 > /api/artifacts. The artifact LIST
 > (what the Files browser opens on) and CREATE. Read is gated exactly like
@@ -156,7 +156,7 @@ Source: [`api/src/routes/files/artifacts.rs`](../../api/src/routes/files/artifac
 
 ## `/api/artifacts/{id}`
 
-Source: [`api/src/routes/files/artifacts_id.rs`](../../api/src/routes/files/artifacts_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_id.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_id.rs)
 
 > /api/artifacts/{id}. One artifact: read/edit gated by its audience,
 > sharing owner-only, agents (by key) only edit content when granted the
@@ -187,7 +187,7 @@ Source: [`api/src/routes/files/artifacts_id.rs`](../../api/src/routes/files/arti
 
 ## `/api/artifacts/{id}/duplicate`
 
-Source: [`api/src/routes/files/artifacts_id_duplicate.rs`](../../api/src/routes/files/artifacts_id_duplicate.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_id_duplicate.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_id_duplicate.rs)
 
 > /api/artifacts/{id}/duplicate. Copy one artifact — copy/paste's engine on
 > the file side. A READ-level act (anyone who can see it can copy it; the
@@ -201,7 +201,7 @@ Source: [`api/src/routes/files/artifacts_id_duplicate.rs`](../../api/src/routes/
 
 ## `/api/artifacts/{id}/export/google`
 
-Source: [`api/src/routes/files/artifacts_id_export_google.rs`](../../api/src/routes/files/artifacts_id_export_google.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_id_export_google.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_id_export_google.rs)
 
 > /api/artifacts/{id}/export/google. Mirror an artifact into Google Drive.
 >
@@ -215,7 +215,7 @@ Source: [`api/src/routes/files/artifacts_id_export_google.rs`](../../api/src/rou
 
 ## `/api/artifacts/{id}/links`
 
-Source: [`api/src/routes/files/artifacts_id_links.rs`](../../api/src/routes/files/artifacts_id_links.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_id_links.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_id_links.rs)
 
 > /api/artifacts/{id}/links.
 > Attach / detach an artifact to/from a target (KB doc, ticket, channel).
@@ -244,7 +244,7 @@ Source: [`api/src/routes/files/artifacts_id_links.rs`](../../api/src/routes/file
 
 ## `/api/artifacts/for`
 
-Source: [`api/src/routes/files/artifacts_for.rs`](../../api/src/routes/files/artifacts_for.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_for.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_for.rs)
 
 > /api/artifacts/for.
 > Artifacts attached to a given target (e.g. a KB doc), filtered to the ones
@@ -257,7 +257,7 @@ Source: [`api/src/routes/files/artifacts_for.rs`](../../api/src/routes/files/art
 
 ## `/api/artifacts/public/{slug}`
 
-Source: [`api/src/routes/files/artifacts_public_slug.rs`](../../api/src/routes/files/artifacts_public_slug.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_public_slug.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_public_slug.rs)
 
 > /api/artifacts/public/{slug}.
 > Public artifact read — NO AUTH. Only artifacts set to 'public' resolve, and
@@ -270,7 +270,7 @@ Source: [`api/src/routes/files/artifacts_public_slug.rs`](../../api/src/routes/f
 
 ## `/api/artifacts/public/{slug}/download`
 
-Source: [`api/src/routes/files/artifacts_public_slug_download.rs`](../../api/src/routes/files/artifacts_public_slug_download.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/artifacts_public_slug_download.rs`](../../api/crates/talaria-api-routes/src/routes/files/artifacts_public_slug_download.rs)
 
 > /api/artifacts/public/{slug}/download.
 > Public download for a public *file* artifact — NO AUTH. Serves the stored
@@ -284,7 +284,7 @@ Source: [`api/src/routes/files/artifacts_public_slug_download.rs`](../../api/src
 
 ## `/api/uploads`
 
-Source: [`api/src/routes/files/uploads.rs`](../../api/src/routes/files/uploads.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/uploads.rs`](../../api/crates/talaria-api-routes/src/routes/files/uploads.rs)
 
 > /api/uploads.
 > POST (multipart/form-data, field "file") → store an attachment, return its
@@ -298,7 +298,7 @@ Source: [`api/src/routes/files/uploads.rs`](../../api/src/routes/files/uploads.r
 
 ## `/api/uploads/{id}`
 
-Source: [`api/src/routes/files/uploads_id.rs`](../../api/src/routes/files/uploads_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/files/uploads_id.rs`](../../api/crates/talaria-api-routes/src/routes/files/uploads_id.rs)
 
 > /api/uploads/{id}.
 > GET → serve an attachment's bytes: signed-in users, or fleet agents (agent

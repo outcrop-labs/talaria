@@ -32,7 +32,7 @@
 
 ## `/api/workbench`
 
-Source: [`api/src/routes/workbench/workbench.rs`](../../api/src/routes/workbench/workbench.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench.rs)
 
 > /api/workbench. Workbench profiles: the role-agnostic sandbox registry
 > ('dev' seeded; designer/data ride the same table). GET → any member (env
@@ -61,7 +61,7 @@ Source: [`api/src/routes/workbench/workbench.rs`](../../api/src/routes/workbench
 
 ## `/api/workbench/env/{*repo}`
 
-Source: [`api/src/routes/workbench/workbench_env_repo.rs`](../../api/src/routes/workbench/workbench_env_repo.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_env_repo.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_env_repo.rs)
 
 > /api/workbench/env/{repo}. The per-project env store's admin wire: PATCH
 > to set/delete entries (values sealed server-side, never echoed), GET for
@@ -82,7 +82,7 @@ source.
 
 ## `/api/workbench/flow`
 
-Source: [`api/src/routes/workbench/workbench_flow.rs`](../../api/src/routes/workbench/workbench_flow.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_flow.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_flow.rs)
 
 > /api/workbench/flow. Per-repo git flow (PR base + optional testing
 > branch). GET → configured flows + the reachable pool; PUT → set one
@@ -101,7 +101,7 @@ Source: [`api/src/routes/workbench/workbench_flow.rs`](../../api/src/routes/work
 
 ## `/api/workbench/github`
 
-Source: [`api/src/routes/workbench/workbench_github.rs`](../../api/src/routes/workbench/workbench_github.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_github.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_github.rs)
 
 > /api/workbench/github. The Workbench's GitHub connection. Deliberately
 > requireAdmin (not agents.manage): this holds ORG CREDENTIALS (PAT / App
@@ -124,7 +124,7 @@ Source: [`api/src/routes/workbench/workbench_github.rs`](../../api/src/routes/wo
 
 ## `/api/workbench/harnesses`
 
-Source: [`api/src/routes/workbench/workbench_harnesses.rs`](../../api/src/routes/workbench/workbench_harnesses.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_harnesses.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_harnesses.rs)
 
 > /api/workbench/harnesses. The harness registry. GET → merged definitions
 > with sources (any member — grounds the per-agent dropdowns); PUT →
@@ -154,7 +154,7 @@ Source: [`api/src/routes/workbench/workbench_harnesses.rs`](../../api/src/routes
 
 ## `/api/workbench/jobs`
 
-Source: [`api/src/routes/workbench/workbench_jobs.rs`](../../api/src/routes/workbench/workbench_jobs.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_jobs.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_jobs.rs)
 
 > /api/workbench/jobs. Workbench jobs from the human side. GET ?taskId= →
 > the ticket's jobs (board members — this is how the plan-approval gate and
@@ -177,7 +177,7 @@ Source: [`api/src/routes/workbench/workbench_jobs.rs`](../../api/src/routes/work
 
 ## `/api/workbench/repo-requests`
 
-Source: [`api/src/routes/workbench/workbench_repo_requests.rs`](../../api/src/routes/workbench/workbench_repo_requests.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_repo_requests.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_repo_requests.rs)
 
 > /api/workbench/repo-requests. Agent repo-creation requests. GET → pending
 > queue; PUT → approve (creates the repo via the App, auto-grants it to the
@@ -197,7 +197,7 @@ Source: [`api/src/routes/workbench/workbench_repo_requests.rs`](../../api/src/ro
 
 ## `/api/workbench/repos/{agentId}`
 
-Source: [`api/src/routes/workbench/workbench_repos_agent_id.rs`](../../api/src/routes/workbench/workbench_repos_agent_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/workbench/workbench_repos_agent_id.rs`](../../api/crates/talaria-api-routes/src/routes/workbench/workbench_repos_agent_id.rs)
 
 > /api/workbench/repos/{agentId}. Per-agent workbench repo grants —
 > explicit, like MCP assignment. GET → the connection's reachable pool +

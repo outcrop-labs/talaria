@@ -26,7 +26,7 @@
 
 ## `/api/plans/{id}/doc`
 
-Source: [`api/src/routes/plans/plans_id_doc.rs`](../../api/src/routes/plans/plans_id_doc.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/plans/plans_id_doc.rs`](../../api/crates/talaria-api-routes/src/routes/plans/plans_id_doc.rs)
 
 > /api/plans/{id}/doc.
 > The plan's living document (a linked doc artifact). GET → find-or-create
@@ -47,7 +47,7 @@ Source: [`api/src/routes/plans/plans_id_doc.rs`](../../api/src/routes/plans/plan
 
 ## `/api/plans/{id}/draft`
 
-Source: [`api/src/routes/plans/plans_id_draft.rs`](../../api/src/routes/plans/plans_id_draft.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/plans/plans_id_draft.rs`](../../api/crates/talaria-api-routes/src/routes/plans/plans_id_draft.rs)
 
 > /api/plans/{id}/draft.
 > The plan surface's ticket drafts as a DURABLE JOB: POST enqueues a
@@ -76,7 +76,7 @@ source.
 
 ## `/api/plans/{id}/members`
 
-Source: [`api/src/routes/plans/plans_id_members.rs`](../../api/src/routes/plans/plans_id_members.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/plans/plans_id_members.rs`](../../api/crates/talaria-api-routes/src/routes/plans/plans_id_members.rs)
 
 > /api/plans/{id}/members.
 > Multiplayer plan membership + presence.
@@ -105,7 +105,7 @@ Source: [`api/src/routes/plans/plans_id_members.rs`](../../api/src/routes/plans/
 
 ## `/api/plans/{id}/teams`
 
-Source: [`api/src/routes/plans/plans_id_teams.rs`](../../api/src/routes/plans/plans_id_teams.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/plans/plans_id_teams.rs`](../../api/crates/talaria-api-routes/src/routes/plans/plans_id_teams.rs)
 
 > /api/plans/{id}/teams.
 > POST { teamId } → grant a team (owner). DELETE { teamId } → revoke (owner).
