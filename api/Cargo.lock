@@ -3664,6 +3664,7 @@ dependencies = [
  "talaria-fitness-code-runner",
  "talaria-fitness-talaria-tools",
  "talaria-fitness-world",
+ "talaria-fleet-agents",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
@@ -3692,6 +3693,7 @@ dependencies = [
  "talaria-internal-history",
  "talaria-invites",
  "talaria-judge",
+ "talaria-kb-perms",
  "talaria-labels",
  "talaria-llm-keys",
  "talaria-mcp-icons",
@@ -4066,6 +4068,20 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "talaria-fleet-agents"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agents-registry",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-users",
 ]
 
 [[package]]
@@ -4522,6 +4538,15 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-settings",
  "tracing",
+]
+
+[[package]]
+name = "talaria-kb-perms"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sqlx",
+ "talaria-fleet-agents",
 ]
 
 [[package]]

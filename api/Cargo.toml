@@ -146,6 +146,8 @@ members = [
     "crates/talaria-org",
     "crates/talaria-invites",
     "crates/talaria-agent-mcp",
+    "crates/talaria-fleet-agents",
+    "crates/talaria-kb-perms",
 ]
 resolver = "3"
 
@@ -316,6 +318,8 @@ talaria-fitness-talaria-tools = { path = "crates/talaria-fitness-talaria-tools" 
 talaria-org = { path = "crates/talaria-org" }
 talaria-invites = { path = "crates/talaria-invites" }
 talaria-agent-mcp = { path = "crates/talaria-agent-mcp" }
+talaria-fleet-agents = { path = "crates/talaria-fleet-agents" }
+talaria-kb-perms = { path = "crates/talaria-kb-perms" }
 
 
 

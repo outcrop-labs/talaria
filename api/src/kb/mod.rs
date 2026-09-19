@@ -1,7 +1,7 @@
 // The KB engine — spaces/docs, comments, okf import, permissions.
 pub mod comments;
 pub mod okf;
-pub mod perms;
+pub use talaria_kb_perms as perms;
 
 // The knowledgebase — an Outline-style markdown drive. Spaces group docs; docs
 // nest. Every save snapshots a version (reusing internal_versions). Marking a

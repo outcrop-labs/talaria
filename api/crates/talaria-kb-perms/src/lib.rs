@@ -186,7 +186,7 @@ pub async fn can_govern(
     let Some((model,)) = agent else {
         return Ok(false);
     };
-    let gate = crate::fleet::usable_agent_gate(pg, user_id, user_role).await?;
+    let gate = talaria_fleet_agents::usable_agent_gate(pg, user_id, user_role).await?;
     Ok(gate(&model))
 }
 
