@@ -559,6 +559,7 @@ function constIndex() {
     }
   }
   walk(join(ROOT, 'api/src'))
+  if (existsSync(join(ROOT, 'api/crates'))) walk(join(ROOT, 'api/crates'))
   return _constIndex
 }
 
