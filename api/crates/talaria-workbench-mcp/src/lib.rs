@@ -34,26 +34,26 @@ use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 
-use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
-use crate::approvals::{ApprovalDeps, announce_approval};
-use crate::artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
-use crate::boards::board_allows_agent;
-use crate::body::truncate_utf16;
-use crate::fleet::describe_agent;
-use crate::github as gh;
-use crate::github::github_status;
-use crate::mcp::jsonrpc::{ListedTool, ToolOutcome, dispatch_jsonrpc};
-use crate::realtime::RealtimeDeps;
-use crate::runs::define::run_definition;
-use crate::secretbox::SecretBox;
-use crate::tasks::{
+use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
+use talaria_approvals::{ApprovalDeps, announce_approval};
+use talaria_artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
+use talaria_boards::board_allows_agent;
+use talaria_body::truncate_utf16;
+use talaria_fleet_layout::describe_agent;
+use talaria_github as gh;
+use talaria_github::github_status;
+use talaria_mcp_jsonrpc::{ListedTool, ToolOutcome, dispatch_jsonrpc};
+use talaria_realtime::RealtimeDeps;
+use talaria_runs_define::run_definition;
+use talaria_secretbox::SecretBox;
+use talaria_tasks::{
     AgentIntent, AgentWriteTarget, TaskActor, TaskDeps, TaskPatch, add_comment,
     agent_ticket_refusal, get_task, log_activity, update_task,
 };
-use crate::workbench::harnesses::{
+use talaria_workbench::resolve_workbench;
+use talaria_workbench_harnesses::{
     HarnessSource, effort_model, effort_models, fill_harness_cmd, list_harness_defs,
 };
-use crate::workbench::resolve_workbench;
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
 /// (GitHub credentials unseal through it), and the optional Redis the task
@@ -89,7 +89,7 @@ async fn sync_agent_budget(pg: &PgPool, department: &str, agent_id: &str) {
     .fetch_all(pg)
     .await
     .unwrap_or_default();
-    crate::fleet::budget::sync_workbench_container(pg, department, &efforts).await;
+    talaria_fleet_budget::sync_workbench_container(pg, department, &efforts).await;
 }
 
 pub struct WorkbenchJob {
@@ -117,7 +117,7 @@ const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, re
                         (trunc(extract(epoch from updated_at) * 1000))::bigint";
 
 /// Runaway guard only. Host packing (`fleet::budget`) is the real queue.
-pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = crate::fleet::budget::MAX_LIVE_JOBS_PER_AGENT;
+pub const MAX_CONCURRENT_JOBS_PER_AGENT: usize = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT;
 
 type JobRow = (
     String,
@@ -536,7 +536,7 @@ async fn call_tool(
     };
     let profile = match resolve_workbench(
         pg,
-        &crate::workbench::WorkbenchAgent {
+        &talaria_workbench::WorkbenchAgent {
             department: &agent.department,
             role: agent.role.as_deref(),
             workbench: &agent.workbench,
@@ -594,10 +594,10 @@ async fn call_tool(
             });
             if let Some(h) = h {
                 checks.push(match &h.def.auth {
-                    crate::workbench::harnesses::HarnessAuth::Gateway => {
+                    talaria_workbench_harnesses::HarnessAuth::Gateway => {
                         "auth: Talaria gateway (no key needed on your side)".into()
                     }
-                    crate::workbench::harnesses::HarnessAuth::Provider { provider, env_var } => {
+                    talaria_workbench_harnesses::HarnessAuth::Provider { provider, env_var } => {
                         format!("auth: native {provider} key expected in {env_var}")
                     }
                 });
@@ -732,11 +732,11 @@ async fn call_tool(
                 ));
             }
             if let Err(reason) =
-                crate::fleet::budget::admit_work(crate::fleet::budget::effort_reserve(&effort))
+                talaria_fleet_budget::admit_work(talaria_fleet_budget::effort_reserve(&effort))
                     .await
             {
                 if let Some(tid) = &task_id {
-                    crate::work_wait::mark_waiting(pg, tid, &agent.model, &reason).await;
+                    talaria_work_wait::mark_waiting(pg, tid, &agent.model, &reason).await;
                 }
                 return CallOutcome::Fail(reason);
             }
@@ -859,7 +859,7 @@ async fn call_tool(
                     // names the chatting human mid-chat, the hirer otherwise.
                     // A failed resolve is a None owner (the ownerless
                     // fallback), never a dropped plan.
-                    let responsible = crate::attribution::responsible_user_for(
+                    let responsible = talaria_attribution::responsible_user_for(
                         &spawn_deps.pg,
                         spawn_deps.redis.clone(),
                         &AgentSubject::Model(spawn_agent.model.clone()),
@@ -977,7 +977,7 @@ async fn call_tool(
                 Ok(r) => r,
                 Err(e) => return thrown(format!("harness registry read: {e}")),
             };
-            let mut found: Vec<&crate::workbench::harnesses::ResolvedHarness> = profile
+            let mut found: Vec<&talaria_workbench_harnesses::ResolvedHarness> = profile
                 .harnesses
                 .iter()
                 .filter_map(|slug| registry.iter().find(|h| h.def.slug == *slug))
@@ -1669,7 +1669,7 @@ async fn log_wtool_line(
         return;
     };
     let args_preview =
-        crate::body::truncate_utf16(&serde_json::Value::Object(args.clone()).to_string(), 2_000)
+        talaria_body::truncate_utf16(&serde_json::Value::Object(args.clone()).to_string(), 2_000)
             .to_string();
     let frame = serde_json::json!({
         "t": "wtool",
@@ -1678,10 +1678,10 @@ async fn log_wtool_line(
         "p": args_preview,
         "r": match outcome {
             ToolOutcome::Ok(v) => serde_json::Value::String(
-                crate::body::truncate_utf16(&v.to_string(), 2_000).to_string(),
+                talaria_body::truncate_utf16(&v.to_string(), 2_000).to_string(),
             ),
             ToolOutcome::Fail(e) | ToolOutcome::Throw(e) => serde_json::Value::String(
-                crate::body::truncate_utf16(e, 2_000).to_string(),
+                talaria_body::truncate_utf16(e, 2_000).to_string(),
             ),
         },
     })

@@ -3868,6 +3868,7 @@ dependencies = [
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
+ "talaria-workbench-mcp",
  "talaria-workchains",
  "talaria-workflows",
  "talaria-workspace-handles",
@@ -6927,6 +6928,42 @@ dependencies = [
  "sqlx",
  "talaria-gateway",
  "talaria-model-roles",
+]
+
+[[package]]
+name = "talaria-workbench-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "getrandom 0.3.4",
+ "redis",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-approvals",
+ "talaria-artifacts",
+ "talaria-attribution",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-fleet-budget",
+ "talaria-fleet-layout",
+ "talaria-github",
+ "talaria-mcp",
+ "talaria-mcp-jsonrpc",
+ "talaria-realtime",
+ "talaria-runs-define",
+ "talaria-secretbox",
+ "talaria-tasks",
+ "talaria-tasks-types",
+ "talaria-work-wait",
+ "talaria-workbench",
+ "talaria-workbench-harnesses",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
