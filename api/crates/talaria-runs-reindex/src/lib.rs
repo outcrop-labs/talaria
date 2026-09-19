@@ -64,23 +64,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 
-use crate::retrieval::artifact_routing::apply_artifact_routing;
-use crate::retrieval::backfill::{RagHealth, rag_health};
-use crate::retrieval::collections::ensure_qdrant_for;
-use crate::retrieval::embed::{EmbedDeps, embed_info, embed_one};
-use crate::retrieval::index::IndexDoc;
-use crate::retrieval::qdrant::{QdrantDeps, delete_collection, ensure_hybrid_collection};
-use crate::retrieval::sources::{
+use talaria_retrieval::artifact_routing::apply_artifact_routing;
+use talaria_retrieval::backfill::{RagHealth, rag_health};
+use talaria_retrieval::collections::ensure_qdrant_for;
+use talaria_retrieval::embed::{EmbedDeps, embed_info, embed_one};
+use talaria_retrieval::index::IndexDoc;
+use talaria_retrieval::qdrant::{QdrantDeps, delete_collection, ensure_hybrid_collection};
+use talaria_retrieval::sources::{
     CommentSrc, EFFECTIVE_DOC_SELECT, KbDocSync, TicketSrc, index_activity, index_personal,
     index_ticket, index_ticket_comment, sync_kb_doc,
 };
-use crate::runs::define::{
+use talaria_runs_define::{
     Authority, DEFAULT_MAX_ATTEMPTS, RunDefinition, RunStepContext, StepError, StepResult,
     StepSignal, register_run,
 };
-use crate::runs::run::{EnqueueOptions, enqueue};
-use crate::runs::store::active_run_of_kind;
-use crate::state::AppState;
+use talaria_runs_run::{EnqueueOptions, enqueue};
+use talaria_runs_store::active_run_of_kind;
+use talaria_state::AppState;
 
 const LOG: &str = "[retrieval/runs]";
 
@@ -335,7 +335,7 @@ async fn index_page(
                 let author_type = r.try_get::<String, _>("authorType").unwrap_or_default();
                 let author_id = r.try_get::<String, _>("author").unwrap_or_default();
                 let author = if author_type == "agent" {
-                    crate::fleet::describe_agent(&author_id).label
+                    talaria_fleet_layout::describe_agent(&author_id).label
                 } else {
                     author_id
                 };
@@ -580,7 +580,7 @@ async fn index_page(
                 // Routed artifacts (explicit brain / none) are placed by their
                 // routing, not by the activity flows.
                 if !rag_routing.is_empty() && rag_routing != "auto" {
-                    if let Ok(Some(full)) = crate::artifacts::get_artifact(pg, &id).await {
+                    if let Ok(Some(full)) = talaria_artifacts::get_artifact(pg, &id).await {
                         let _ = apply_artifact_routing(pg, qd, ed, &full).await;
                     }
                     bump(&mut counts, "routedArtifacts");
@@ -1031,8 +1031,8 @@ pub fn real_backfill_deps(state: AppState) -> BackfillDeps {
             Arc::new(move || {
                 let _ = &st;
                 Box::pin(async move {
-                    let qd = crate::retrieval::qdrant::real_deps();
-                    let ed = crate::retrieval::embed::real_deps();
+                    let qd = talaria_retrieval::qdrant::real_deps();
+                    let ed = talaria_retrieval::embed::real_deps();
                     rag_health(&qd, &ed).await
                 })
             })
@@ -1046,8 +1046,8 @@ pub fn real_backfill_deps(state: AppState) -> BackfillDeps {
                       signal: StepSignal| {
                     let pg = pg.clone();
                     Box::pin(async move {
-                        let qd = crate::retrieval::qdrant::real_deps();
-                        let ed = crate::retrieval::embed::real_deps();
+                        let qd = talaria_retrieval::qdrant::real_deps();
+                        let ed = talaria_retrieval::embed::real_deps();
                         index_page(&pg, &qd, &ed, source, cursor, counts, &signal).await
                     })
                 },
@@ -1062,7 +1062,7 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
             Box::pin(async move {
                 // What the embedding service serves RIGHT NOW — never a
                 // cache, since migration decisions hang on it.
-                let ed = crate::retrieval::embed::real_deps();
+                let ed = talaria_retrieval::embed::real_deps();
                 embed_info(&ed).await.map(|i| i.dim as i64)
             })
         }),
@@ -1092,7 +1092,7 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
             Arc::new(move |col: RegisteredCollection, dim: i64| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let qd = crate::retrieval::qdrant::real_deps();
+                    let qd = talaria_retrieval::qdrant::real_deps();
                     // delete_collection swallows its own failure (a
                     // collection that never existed is fine to rebuild over);
                     // the ensure that follows is the one that can fail the
@@ -1124,7 +1124,7 @@ pub fn real_reindex_deps(state: AppState) -> ReindexDeps {
         // process's cache after every collection it rebuilds: a cached
         // "needs reindex" surviving the rebuild that fixed it is an alarm
         // that trains people to ignore alarms.
-        invalidate: Arc::new(crate::retrieval::migrate::invalidate_upgrade_status),
+        invalidate: Arc::new(talaria_retrieval::migrate::invalidate_upgrade_status),
         backfill: real_backfill_deps(state.clone()),
     }
 }
@@ -1222,8 +1222,11 @@ async fn start_once(
             let redis = state.redis().await.map_err(|e| {
                 format!("the run could not be enqueued: redis is unavailable ({e})")
             })?;
-            let realtime = crate::realtime::RealtimeDeps::publish_only(Some(redis.clone()));
-            let deps = crate::runs::real_run_deps(state.pg.clone(), redis, realtime);
+            let realtime = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
+            let Some(build) = talaria_tasks_types::BUILD_DISPATCH.get() else {
+                return Err("dispatch not wired".into());
+            };
+            let deps = build(state.pg.clone(), redis, realtime);
             enqueue(
                 def,
                 json!({}),
@@ -1266,8 +1269,8 @@ mod tests {
     // never call the getters — the getters register kinds in the process-wide
     // registry, and jobs.rs's kind-census test owns that state.
     use super::*;
-    use crate::runs::define::{RunRow, RunState};
     use std::sync::Mutex;
+    use talaria_runs_define::{RunRow, RunState};
 
     // ── the harness ───────────────────────────────────────────────────────
 
@@ -1307,7 +1310,7 @@ mod tests {
     /// `attempt` is the one field the reclaim tests vary.
     fn ctx(checkpoint: Value, attempt: i32) -> RunStepContext {
         RunStepContext {
-            activity: crate::runs::define::StepActivity::new(),
+            activity: talaria_runs_define::StepActivity::new(),
             run: minimal_row(),
             input: json!({}),
             checkpoint,

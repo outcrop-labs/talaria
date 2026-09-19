@@ -26,7 +26,7 @@
 // idempotent by nature (they rewrite/re-up the same files).
 //
 // THE REAL DEPS ARE THE FLEET WRITE PLANE: createAgent
-// (crate::fleet::create::create_or_resume), writeSkill, renderFleet,
+// (talaria_fleet_create::create_or_resume), writeSkill, renderFleet,
 // fleetUp/waitHealthy. `real_agent_hire_deps` wires them below, and
 // `jobs.rs`'s `try_arm` arms the step and touches the getter together — an
 // armed-in-name-only def would let the boot census pass while a hire cannot
@@ -37,7 +37,7 @@ use std::sync::{Arc, OnceLock};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
-use crate::runs::define::{
+use talaria_runs_define::{
     Authority, DEFAULT_MAX_ATTEMPTS, RunDefinition, RunRow, RunStepContext, StepError, StepResult,
     register_run,
 };
@@ -304,16 +304,16 @@ pub fn arm_agent_hire_step(deps: AgentHireDeps) {
 /// The real deps over the fleet write plane. Each closure owns its own clone
 /// of the state: arming captures, never invokes, and a run may drive minutes
 /// after the arm.
-pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
+pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
     AgentHireDeps {
         create: {
             let pg = state.pg.clone();
             Arc::new(move |input: AgentHireInput| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let created = crate::fleet::create::create_or_resume(
+                    let created = talaria_fleet_create::create_or_resume(
                         &pg,
-                        &crate::fleet::create::CreateAgentInput {
+                        &talaria_fleet_create::CreateAgentInput {
                             slug: input.slug,
                             department: input.department,
                             display_name: input.display_name,
@@ -341,7 +341,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                     // A starter skill that fails to land is lost quietly,
                     // never a failed hire.
                     for s in skills {
-                        let _ = crate::agent_skills::write_skill(
+                        let _ = talaria_agent_skills::write_skill(
                             &pg,
                             &slug,
                             &s.name,
@@ -367,9 +367,9 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                     actor.to_string(),
                 );
                 tokio::spawn(async move {
-                    crate::audit::log_audit(
+                    talaria_audit::log_audit(
                         &pg,
-                        crate::audit::AuditEntry {
+                        talaria_audit::AuditEntry {
                             actor: &actor,
                             action: "agent.create",
                             target_type: "agent",
@@ -396,7 +396,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                     // post-arm failure surfaces through the render's own error
                     // path rather than a poisoned closure.
                     let sb = st.secretbox().await.unwrap_or_default();
-                    let out = crate::fleet::render::render_fleet(&st.pg, &sb, None).await?;
+                    let out = talaria_fleet_render::render_fleet(&st.pg, &sb, None).await?;
                     Ok(RenderOutcome {
                         warnings: out.warnings,
                     })
@@ -410,7 +410,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                 Box::pin(async move {
                     // fleetUp answers with the compose service it brought up;
                     // the run doesn't read it — the promise IS the effect.
-                    crate::fleet::docker::fleet_up(&pg, &department)
+                    talaria_fleet_docker::fleet_up(&pg, &department)
                         .await
                         .map(|_| ())
                 })
@@ -423,7 +423,7 @@ pub fn real_agent_hire_deps(state: crate::state::AppState) -> AgentHireDeps {
                 Box::pin(async move {
                     // Two minutes — enough for a cold pull's healthcheck to
                     // settle.
-                    crate::fleet::docker::wait_healthy(&pg, &department, 120_000).await
+                    talaria_fleet_docker::wait_healthy(&pg, &department, 120_000).await
                 })
             })
         },
@@ -484,8 +484,8 @@ mod tests {
     // the registry's state at the mercy of test scheduling for nothing: the
     // machine under test is right here.
     use super::*;
-    use crate::runs::define::{RunState, StepSignal};
     use std::sync::Mutex;
+    use talaria_runs_define::{RunState, StepSignal};
 
     fn minimal_row() -> RunRow {
         RunRow {
@@ -518,7 +518,7 @@ mod tests {
         // `false`, never aborted — which is the shape an uncontended run has.
         drop(tx);
         RunStepContext {
-            activity: crate::runs::define::StepActivity::new(),
+            activity: talaria_runs_define::StepActivity::new(),
             run: minimal_row(),
             input: serde_json::to_value(input).expect("the test input serializes"),
             checkpoint: checkpoint

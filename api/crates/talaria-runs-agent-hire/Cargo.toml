@@ -1,0 +1,27 @@
+[package]
+name = "talaria-runs-agent-hire"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+tokio = { version = "1", features = ["macros"] }
+talaria-agent-skills = { path = "../talaria-agent-skills" }
+talaria-audit = { path = "../talaria-audit" }
+talaria-fleet-create = { path = "../talaria-fleet-create" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-state = { path = "../talaria-state" }
+tracing = "0.1"
+talaria-fleet-render = { path = "../talaria-fleet-render" }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }

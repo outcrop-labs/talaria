@@ -196,6 +196,8 @@ members = [
     "crates/talaria-inbox-focus",
     "crates/talaria-runs-plan-draft",
     "crates/talaria-plan-drafts",
+    "crates/talaria-runs-reindex",
+    "crates/talaria-runs-agent-hire",
     "crates/talaria-comms-decay",
     "crates/talaria-chat-persist",
     "crates/talaria-inbox-focus-types",
@@ -420,6 +422,8 @@ talaria-google-pending = { path = "crates/talaria-google-pending" }
 talaria-inbox-focus = { path = "crates/talaria-inbox-focus" }
 talaria-runs-plan-draft = { path = "crates/talaria-runs-plan-draft" }
 talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
+talaria-runs-reindex = { path = "crates/talaria-runs-reindex" }
+talaria-runs-agent-hire = { path = "crates/talaria-runs-agent-hire" }
 talaria-comms-decay = { path = "crates/talaria-comms-decay" }
 talaria-chat-persist = { path = "crates/talaria-chat-persist" }
 talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }
