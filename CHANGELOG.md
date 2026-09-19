@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 127 crates.** Fleet host-RAM budget + docker stats.
+- **API workspace: 129 crates.** Fleet gateway-brain mint + preflight.
   Verified: `cargo check -p talaria-api`.
+
 
 
 

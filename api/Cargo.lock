@@ -3631,9 +3631,11 @@ dependencies = [
  "talaria-email",
  "talaria-error",
  "talaria-fitness-code-runner",
+ "talaria-fleet-brain",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
+ "talaria-fleet-preflight",
  "talaria-fleet-resources",
  "talaria-gateway",
  "talaria-github",
@@ -3975,6 +3977,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-fleet-brain"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-auth",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-llm-keys",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-fleet-budget"
 version = "0.1.0"
 dependencies = [
@@ -4005,6 +4025,24 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tokio",
+]
+
+[[package]]
+name = "talaria-fleet-preflight"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-auth",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-llm-keys",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

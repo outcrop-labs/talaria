@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::time::Duration;
 
-use crate::gateway::settings::{get_setting, set_setting};
+use talaria_gateway::settings::{get_setting, set_setting};
 
 const KEY: &str = "fleet_preflight";
 /// Small, always present locally (the fleet pulls far larger images), and it has
@@ -75,7 +75,7 @@ async fn exec_ok(bin: &str, args: &[&str], timeout: Duration) -> bool {
 /// pure core (target_of) keeps the derivation testable without owning the
 /// process env.
 fn agent_reach_target() -> Result<String, String> {
-    target_of(&crate::fleet::layout::mcp_gw_base())
+    target_of(&talaria_fleet_layout::mcp_gw_base())
 }
 
 fn target_of(base: &str) -> Result<String, String> {
@@ -98,7 +98,7 @@ fn target_of(base: &str) -> Result<String, String> {
 /// container→container traffic, which Docker DOES manage, and no host firewall
 /// is in the path at all. `TALARIA_GATEWAY_SELF_URL` exists for exactly that.
 async fn firewall_remedy() -> String {
-    let port = crate::fleet::layout::app_port();
+    let port = talaria_fleet_layout::app_port();
     let bridges = "172.16.0.0/12";
     let cmd = if exec_ok("ufw", &["status"], Duration::from_secs(3)).await {
         format!("sudo ufw allow from {bridges} to any port {port} proto tcp")
@@ -154,7 +154,7 @@ async fn reaches(network: &str, target: &str, timeout_sec: u64) -> bool {
 /// a path no agent takes. AGENT_DNS_1/_2 live in fleet/.env; the defaults are
 /// the chassis template's.
 async fn agent_dns() -> Vec<String> {
-    let text = tokio::fs::read_to_string(crate::fleet::layout::fleet_env())
+    let text = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
         .unwrap_or_default();
     dns_from_env_text(&text)
@@ -219,7 +219,7 @@ pub async fn last_fleet_preflight(pg: &PgPool) -> Option<PreflightResult> {
 pub async fn run_fleet_preflight(pg: &PgPool) -> PreflightResult {
     // via the house epoch helper (this crate keeps no clock; time is read
     // here, at the edge, exactly once).
-    let at = crate::agent_auth::epoch_ms_to_iso(
+    let at = talaria_agent_auth::epoch_ms_to_iso(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -231,7 +231,7 @@ pub async fn run_fleet_preflight(pg: &PgPool) -> PreflightResult {
         // unreachable preflight is itself an answer somebody reads later.
         Err(e) => PreflightResult {
             ok: false,
-            target: agent_reach_target().unwrap_or_else(|_| crate::fleet::layout::mcp_gw_base()),
+            target: agent_reach_target().unwrap_or_else(|_| talaria_fleet_layout::mcp_gw_base()),
             detail: format!("preflight could not run: {e}"),
             at,
         },
@@ -242,7 +242,7 @@ pub async fn run_fleet_preflight(pg: &PgPool) -> PreflightResult {
 }
 
 async fn probe(at: &str) -> Result<PreflightResult, String> {
-    let network = crate::fleet::layout::fleet_network_name().await;
+    let network = talaria_fleet_layout::fleet_network_name().await;
     let app = agent_reach_target()?;
     let mcp = agent_reach_target()?;
     let dns = agent_dns().await;

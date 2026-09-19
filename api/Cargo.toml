@@ -134,6 +134,8 @@ members = [
     "crates/talaria-workbench-harnesses",
     "crates/talaria-fleet-budget",
     "crates/talaria-fleet-resources",
+    "crates/talaria-fleet-brain",
+    "crates/talaria-fleet-preflight",
 ]
 resolver = "3"
 
@@ -292,6 +294,8 @@ talaria-workbench = { path = "crates/talaria-workbench" }
 talaria-workbench-harnesses = { path = "crates/talaria-workbench-harnesses" }
 talaria-fleet-budget = { path = "crates/talaria-fleet-budget" }
 talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
+talaria-fleet-brain = { path = "crates/talaria-fleet-brain" }
+talaria-fleet-preflight = { path = "crates/talaria-fleet-preflight" }
 
 
 

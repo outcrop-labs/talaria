@@ -12,10 +12,10 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::HashSet;
 
-use crate::auth::sha256_hex;
-use crate::gateway::registry::list_endpoints;
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::llm_keys::mint_key;
+use talaria_auth::sha256_hex;
+use talaria_gateway::registry::list_endpoints;
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_llm_keys::mint_key;
 
 // What a rendered agent config points its model specs at: the gateway, on the
 // PERSONA key — the one the gateway leaves unmetered, because the flow that
@@ -144,7 +144,7 @@ const WORKBENCH_KEY_ENV: &str = "LLM_WORKBENCH_API_KEY";
 // the app's service DNS (e.g. http://talaria-ui:3000/api/llm/v1).
 const DEFAULT_SELF_URL: &str = "http://host.docker.internal:5273/api/llm/v1";
 
-pub(crate) fn self_url() -> String {
+pub fn self_url() -> String {
     match std::env::var("TALARIA_GATEWAY_SELF_URL") {
         Ok(v) if !v.is_empty() => v,
         _ => DEFAULT_SELF_URL.into(),
@@ -154,14 +154,14 @@ pub(crate) fn self_url() -> String {
 /// A gateway URL is one that ends in the gateway path — safe for Talaria to own
 /// and migrate. Any other value means the operator deliberately pointed the
 /// fleet at a raw upstream, so we leave it alone.
-pub(crate) fn is_gateway_url(u: &str) -> bool {
+pub fn is_gateway_url(u: &str) -> bool {
     regex::Regex::new(r"/api/llm/v1/?$")
         .expect("gateway url pattern")
         .is_match(u.trim())
 }
 
 /// Read a KEY=value line from env-file text. The captured value is trimmed.
-pub(crate) fn read_env_line(content: &str, key: &str) -> Option<String> {
+pub fn read_env_line(content: &str, key: &str) -> Option<String> {
     let re = regex::Regex::new(&format!(r"(?m)^{}=(.*)$", regex::escape(key)))
         .expect("env line pattern");
     re.captures(content).map(|c| c[1].trim().to_string())
@@ -180,7 +180,7 @@ fn raw_upstream_override(content: &str) -> Option<String> {
 
 /// Set or replace a KEY=value line; append if absent. The append shape is
 /// fixed, including the leading newline when the file is empty.
-pub(crate) fn upsert_env_line(content: &str, key: &str, value: &str) -> String {
+pub fn upsert_env_line(content: &str, key: &str, value: &str) -> String {
     let re =
         regex::Regex::new(&format!(r"(?m)^{}=.*$", regex::escape(key))).expect("env line pattern");
     let line = format!("{key}={value}");
@@ -238,7 +238,7 @@ async fn ensure_gateway_key(
     .map_err(|e| format!("stale gateway key revoke failed: {e}"))?;
     // Rotation revokes the key the containers hold — it must stop
     // authenticating before the replacement is even minted.
-    crate::auth::reset_identity_cache();
+    talaria_auth::reset_identity_cache();
     let (_, secret) = mint_key(pg, &owner_id, name)
         .await
         .map_err(|e| format!("gateway key mint failed: {e}"))?;
@@ -269,7 +269,7 @@ pub struct GatewayBrain {
 /// Idempotent; a failure is best-effort — never blocks a fleet render (the
 /// render loop records a warning and moves on).
 pub async fn ensure_gateway_brain(pg: &PgPool) -> Result<GatewayBrain, String> {
-    let env_path = crate::fleet::layout::fleet_env();
+    let env_path = talaria_fleet_layout::fleet_env();
     if let Some(parent) = env_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
