@@ -30,14 +30,14 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::truncate_utf16;
-use crate::harness::define::{
+use talaria_body::truncate_utf16;
+use talaria_harness::define::{
     CheckCtx, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
     RenderContext, RoleFloor, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::schema::{Field, Schema};
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_schema::{Field, Schema};
 
 // ── The input ────────────────────────────────────────────────────────────────
 
@@ -336,10 +336,10 @@ pub fn ticket_relevance_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     // ── The declaration ──────────────────────────────────────────────────────
 
@@ -468,7 +468,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:ticket-relevance".into(),
             deps: Some(r.deps()),

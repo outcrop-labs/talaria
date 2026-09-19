@@ -66,15 +66,15 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::body::{truncate_utf16, utf16_len};
-use crate::harness::define::{
+use talaria_body::{truncate_utf16, utf16_len};
+use talaria_harness::define::{
     CheckCtx, CheckResult, CountLimit, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RenderFn, RoleFloor, Widen, count_problem, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::schema::{Field, Schema};
-use crate::harness_model::{MUSE_CHAIN, ModelSpec};
-use crate::task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
+use talaria_harness_model::{MUSE_CHAIN, ModelSpec};
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_schema::{Field, Schema};
+use talaria_task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
 
 // ── the prompts ─────────────────────────────────────────────────────────────
 
@@ -3547,15 +3547,15 @@ pub fn template_form_fixtures() -> Vec<MuseFixture> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::guard;
-    use crate::harness::define::Output;
-    use crate::harness::recorded::{
-        RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
-    };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
-    use crate::harness::schema::{Issue, Seg, validate};
     use serde_json::json;
     use std::time::Instant;
+    use talaria_gateway::guard;
+    use talaria_harness::define::Output;
+    use talaria_harness::recorded::{
+        RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
+    };
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness_schema::{Issue, Seg, validate};
 
     // Nothing here touches a database, a gateway or a fleet: every edge the
     // runner has is injected. The `agent` kind is exercised through its
@@ -3568,7 +3568,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:muse".into(),
             deps: Some(r.deps()),
@@ -3579,7 +3579,7 @@ mod tests {
 
     // The def's verify hook, for the checks that live after the schema —
     // they run as repair sentences.
-    fn verify_of(def: &HarnessDefinition) -> crate::harness::define::VerifyFn {
+    fn verify_of(def: &HarnessDefinition) -> talaria_harness::define::VerifyFn {
         let Output::Json {
             verify: Some(verify),
             ..

@@ -63,14 +63,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::harness::define::{
+use talaria_harness::define::{
     CheckCtx, CheckResult, CredentialSpec, DryRunDecl, EvalBand, EvalCase, GrantedCredential,
     GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
     define_harness,
 };
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
-use crate::workspace_handles::{HANDLE_TURN_NOTE, HandleRow, handle_briefing, handle_for};
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
+use talaria_workspace_handles::{HANDLE_TURN_NOTE, HandleRow, handle_briefing, handle_for};
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ fn spent_against(ctx: &CheckCtx, handle: &str, host: &Regex) -> bool {
 // credential surface (fitness/toolbox/credential_tools.rs) — kept broad on
 // purpose, every one of these is a real thing models emit, and each produces
 // a command that looks right and fails.
-use crate::fitness::toolbox::credential_tools::looks_like_placeholder;
+use talaria_fitness_toolbox::credential_tools::looks_like_placeholder;
 
 fn credential_noun() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -824,8 +824,8 @@ pub fn secret_handles_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::define::CheckCall;
     use serde_json::json;
+    use talaria_harness::define::CheckCall;
 
     fn call(tool: &str, errored: bool, args: Value) -> CheckCall {
         CheckCall {

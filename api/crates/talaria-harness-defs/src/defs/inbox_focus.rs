@@ -40,15 +40,15 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::{truncate_utf16, utf16_len};
-use crate::harness::define::{
+use talaria_body::{truncate_utf16, utf16_len};
+use talaria_harness::define::{
     CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
     Output, RenderContext, RoleFloor, Widen, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::schema::{Field, Schema};
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_schema::{Field, Schema};
 
 // ── The shared input shapes ──────────────────────────────────────────────────
 
@@ -1817,8 +1817,8 @@ pub fn reply_fixtures() -> Vec<InboxFixture> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{RecordedWorld as World, facts, probe, recorded_run, replies};
-    use crate::harness::run::{RunContext, execute};
+    use talaria_harness::recorded::{RecordedWorld as World, facts, probe, recorded_run, replies};
+    use talaria_harness::run::{RunContext, execute};
 
     // Everything below runs against RECORDED REPLIES through injected deps:
     // no database, no gateway, no fleet. And AUDIT 1.8 is a DECISION, and
@@ -1860,7 +1860,7 @@ mod tests {
     /// action list.
     fn wide() -> std::collections::HashMap<
         String,
-        std::collections::HashMap<String, crate::harness::recorded::RecordedFact>,
+        std::collections::HashMap<String, talaria_harness::recorded::RecordedFact>,
     > {
         facts(&[
             ("spark", "tool-select", probe(true)),
@@ -1872,8 +1872,8 @@ mod tests {
         input: &FocusCommandInput,
         w: World,
     ) -> (
-        crate::harness::run::HarnessResult,
-        crate::harness::recorded::RecordedRun,
+        talaria_harness::run::HarnessResult,
+        talaria_harness::recorded::RecordedRun,
     ) {
         let r = recorded_run(w);
         let ctx = RunContext {
@@ -1895,9 +1895,9 @@ mod tests {
         input: &FocusCommandInput,
         w: World,
     ) -> (
-        crate::harness::run::HarnessResult,
+        talaria_harness::run::HarnessResult,
         Option<CommandTurn>,
-        crate::harness::recorded::RecordedRun,
+        talaria_harness::recorded::RecordedRun,
     ) {
         let (result, r) = run_command(input, w).await;
         let turn = result.value.as_ref().and_then(|v| {
@@ -1909,7 +1909,7 @@ mod tests {
         (result, turn, r)
     }
 
-    fn last_message(req: &crate::harness::transport::TransportRequest) -> &str {
+    fn last_message(req: &talaria_harness::transport::TransportRequest) -> &str {
         req.messages
             .last()
             .map(|m| m.content.as_str())
@@ -2295,8 +2295,8 @@ mod tests {
         input: &Value,
         w: World,
     ) -> (
-        crate::harness::run::HarnessResult,
-        crate::harness::recorded::RecordedRun,
+        talaria_harness::run::HarnessResult,
+        talaria_harness::recorded::RecordedRun,
     ) {
         let r = recorded_run(w);
         let ctx = RunContext {
@@ -2617,7 +2617,7 @@ mod tests {
         // The clamp: a 300-char question overruns the 240 the card shows.
         let long = find("a long piece of evidence still fits the card");
         let mut q = String::new();
-        while crate::body::utf16_len(&q) < 300 {
+        while talaria_body::utf16_len(&q) < 300 {
             q.push_str("reconciliation ");
         }
         let over = serde_json::json!({ "question": q, "recommendation": "Decide which rounding step is authoritative.", "recommendedActionId": null });

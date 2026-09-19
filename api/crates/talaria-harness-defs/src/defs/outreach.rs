@@ -47,14 +47,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::{truncate_utf16, utf16_len};
-use crate::harness::define::{
+use talaria_body::{truncate_utf16, utf16_len};
+use talaria_harness::define::{
     AnswerFloor, CheckCall, CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, Fallback,
     GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor, Widen,
     below_answer_floor, define_harness,
 };
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
 
 /// The exact token the agent must return when nothing warrants outreach.
 ///
@@ -782,12 +782,12 @@ pub fn outreach_check_in_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fitness::toolbox::world::SandboxWorld;
-    use crate::harness::recorded::{
+    use serde_json::json;
+    use talaria_fitness_world::SandboxWorld;
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
-    use serde_json::json;
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     fn call(tool: &str, errored: bool) -> CheckCall {
         CheckCall {
@@ -1117,7 +1117,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:outreach".into(),
             deps: Some(r.deps()),

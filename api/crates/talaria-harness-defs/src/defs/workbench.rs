@@ -70,13 +70,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::js_string;
-use crate::harness::define::{
+use talaria_body::js_string;
+use talaria_harness::define::{
     CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RoleFloor, WorkspaceFile, WorkspaceSpec, define_harness,
 };
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -559,7 +559,7 @@ fn check_read_before_replace(value: &str, ctx: &CheckCtx) -> CheckResult {
     if gate != CheckResult::Pass {
         return gate;
     }
-    let wrote: Vec<(usize, &crate::harness::define::CheckCall)> = ctx
+    let wrote: Vec<(usize, &talaria_harness::define::CheckCall)> = ctx
         .calls
         .iter()
         .enumerate()
@@ -910,12 +910,12 @@ pub fn workbench_heavy_harness() -> HarnessDefinition {
 mod tests {
     use super::*;
 
-    use crate::harness::define::{CheckCall, is_gap};
-    use crate::harness::recorded::{
+    use serde_json::json;
+    use talaria_harness::define::{CheckCall, is_gap};
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
-    use serde_json::json;
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     fn call(tool: &str, args: Value) -> CheckCall {
         CheckCall {
@@ -987,7 +987,7 @@ mod tests {
             .as_ref()
             .and_then(|dr| dr.workspace.as_ref())
             .expect("the workbench def declares a workspace")(&input);
-        let mut sandbox = crate::fitness::toolbox::hermes_tools::WorkbenchSandbox::new(spec);
+        let mut sandbox = talaria_fitness_toolbox::hermes_tools::WorkbenchSandbox::new(spec);
 
         // The pristine tree fails — the oracle really is wired to this task
         // and this tree, before anything is written.
@@ -1400,7 +1400,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:workbench".into(),
             deps: Some(r.deps()),

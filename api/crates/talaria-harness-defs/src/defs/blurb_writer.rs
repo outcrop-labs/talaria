@@ -29,14 +29,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::body::utf16_len;
-use crate::harness::define::{
+use talaria_body::utf16_len;
+use talaria_harness::define::{
     CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
     Output, RenderContext, RoleFloor, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::schema::Schema;
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_schema::Schema;
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -664,10 +664,10 @@ Reply with ONLY a JSON object mapping each model id to its one-line description.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     fn map(pairs: &[(&str, &str)]) -> Map<String, Value> {
         pairs
@@ -959,7 +959,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:blurb-writer".into(),
             deps: Some(r.deps()),

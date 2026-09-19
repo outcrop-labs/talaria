@@ -25,14 +25,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::utf16_len;
-use crate::harness::define::{
+use talaria_body::utf16_len;
+use talaria_harness::define::{
     AnswerFloor, CheckCtx, CheckResult, CountLimit, EvalBand, EvalCase, GuardDecl,
     HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor, below_answer_floor,
     count_problem, define_harness,
 };
-use crate::harness::text::first_meaningful_line;
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_text::first_meaningful_line;
 
 // ── The input ────────────────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ pub fn prompt_for(kind: TitleKind) -> String {
 /// product the most expensive one on a long chat.
 fn clip(s: &str, max: usize) -> &str {
     if utf16_len(s) > max {
-        crate::body::truncate_utf16(s, max)
+        talaria_body::truncate_utf16(s, max)
     } else {
         s
     }
@@ -125,7 +125,7 @@ pub fn clean_title(raw: &str) -> Option<String> {
     if utf16_len(t) > 90 {
         Some(format!(
             "{}…",
-            crate::body::truncate_utf16(t, 90).trim_end()
+            talaria_body::truncate_utf16(t, 90).trim_end()
         ))
     } else {
         Some(t.to_string())
@@ -543,11 +543,11 @@ pub fn titler_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedModel as ModelAnswer, RecordedRun as Recorder, RecordedWorld as World, facts,
         probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     // ── clean_title ──────────────────────────────────────────────────────────
 
@@ -880,7 +880,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:titler".into(),
             deps: Some(r.deps()),

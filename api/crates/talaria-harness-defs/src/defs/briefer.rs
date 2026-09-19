@@ -40,13 +40,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::utf16_len;
-use crate::harness::define::{
+use talaria_body::utf16_len;
+use talaria_harness::define::{
     AnswerFloor, CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RenderFn, RoleFloor, below_answer_floor, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
 
 // ── Shared prose checks ──────────────────────────────────────────────────────
 
@@ -1392,10 +1392,10 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, recorded_run, replies,
     };
-    use crate::harness::run::{RunContext, execute};
+    use talaria_harness::run::{RunContext, execute};
 
     // BY NAME, NEVER BY INDEX. `evals[0]` silently re-points the moment a
     // suite grows, and the failure then reads as "the check is wrong" rather
@@ -1949,7 +1949,7 @@ mod tests {
         );
     }
 
-    async fn run_lede(input: &Value, r: &Recorder) -> crate::harness::run::HarnessResult {
+    async fn run_lede(input: &Value, r: &Recorder) -> talaria_harness::run::HarnessResult {
         let ctx = RunContext {
             caller: "test:briefer".into(),
             deps: Some(r.deps()),

@@ -13,12 +13,12 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::utf16_len;
-use crate::harness::define::{
+use talaria_body::utf16_len;
+use talaria_harness::define::{
     CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
     Output, RenderContext, RoleFloor, Widen, define_harness,
 };
-use crate::harness_model::{MUSE_CHAIN, ModelSpec};
+use talaria_harness_model::{MUSE_CHAIN, ModelSpec};
 
 // camelCase on the wire (`channelName`) — `conclude_relay` sends this shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -520,10 +520,10 @@ pub fn concluder_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     // ── The folds ────────────────────────────────────────────────────────────
 
@@ -724,7 +724,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:concluder".into(),
             deps: Some(r.deps()),

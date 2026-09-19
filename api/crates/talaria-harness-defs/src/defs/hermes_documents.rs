@@ -44,16 +44,16 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fitness::toolbox::world::SandboxWorld;
-use crate::harness::define::{
+use talaria_fitness_world::SandboxWorld;
+use talaria_harness::define::{
     CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RoleFloor, define_harness,
 };
 // Tests only — the lib target never builds a CheckCall itself.
 #[cfg(test)]
-use crate::harness::define::CheckCall;
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
+use talaria_harness::define::CheckCall;
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -551,8 +551,8 @@ pub fn hermes_documents_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fitness::toolbox::world::{SandboxDocument, base_world};
     use serde_json::json;
+    use talaria_fitness_world::{SandboxDocument, base_world};
 
     fn call(tool: &str, errored: bool, args: Value) -> CheckCall {
         CheckCall {

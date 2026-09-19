@@ -31,11 +31,11 @@
 // family.
 
 pub use talaria_harness::{define, recorded, run, transport};
-pub mod defs;
+pub use talaria_harness_defs::defs;
+pub use talaria_harness_defs::registry;
 pub use talaria_harness_json as json;
 pub use talaria_harness_json_schema as json_schema;
 pub use talaria_harness_prompt_rules as prompt_rules;
-pub mod registry;
 pub use talaria_harness_schema as schema;
 pub use talaria_harness_text as text;
 

@@ -36,13 +36,13 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fitness::toolbox::world::SandboxWorld;
-use crate::harness::define::{
+use talaria_fitness_world::SandboxWorld;
+use talaria_harness::define::{
     CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RoleFloor, define_harness,
 };
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -312,9 +312,9 @@ pub fn hermes_comms_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fitness::toolbox::world::base_world;
-    use crate::harness::define::CheckCall;
     use serde_json::json;
+    use talaria_fitness_world::base_world;
+    use talaria_harness::define::CheckCall;
 
     fn call(tool: &str, errored: bool, args: Value) -> CheckCall {
         CheckCall {
@@ -489,11 +489,11 @@ mod tests {
         );
         let mut spammed = base_world();
         spammed.dms_sent = vec![
-            crate::fitness::toolbox::world::SandboxDm {
+            talaria_fitness_world::SandboxDm {
                 user: "Priya".into(),
                 body: "standup".into(),
             },
-            crate::fitness::toolbox::world::SandboxDm {
+            talaria_fitness_world::SandboxDm {
                 user: "Dana".into(),
                 body: "standup".into(),
             },

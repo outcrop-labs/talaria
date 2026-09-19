@@ -24,14 +24,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::body::{js_number, js_string, truncate_utf16};
-use crate::harness::define::{
+use talaria_body::{js_number, js_string, truncate_utf16};
+use talaria_harness::define::{
     CheckCtx, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure, Output,
     RenderContext, RoleFloor, Widen, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::schema::Schema;
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_schema::Schema;
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -421,22 +421,22 @@ fn shape_problem(value: &[TicketProposal], min: usize) -> Option<String> {
     // a paragraph is the model writing the description in the wrong field.
     if let Some(long) = value
         .iter()
-        .find(|p| crate::body::utf16_len(&p.title) > 100)
+        .find(|p| talaria_body::utf16_len(&p.title) > 100)
     {
         return Some(format!(
             "a title ran to {} characters - the prompt asks for an imperative under 80",
-            crate::body::utf16_len(&long.title)
+            talaria_body::utf16_len(&long.title)
         ));
     }
     // A description nobody who missed the chat could act on is the failure this
     // harness exists to avoid; length is the only deterministic proxy.
     if let Some(thin) = value
         .iter()
-        .find(|p| crate::body::utf16_len(p.description.trim()) < 40)
+        .find(|p| talaria_body::utf16_len(p.description.trim()) < 40)
     {
         return Some(format!(
             "a ticket came back with a {}-character description - too thin to act on",
-            crate::body::utf16_len(thin.description.trim())
+            talaria_body::utf16_len(thin.description.trim())
         ));
     }
     None
@@ -853,12 +853,12 @@ pub fn channel_plan_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::body::utf16_len;
-    use crate::harness::recorded::{
+    use serde_json::json;
+    use talaria_body::utf16_len;
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
-    use serde_json::json;
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     fn ticket(title: &str, description: &str) -> TicketProposal {
         TicketProposal {
@@ -1185,7 +1185,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:channel-plan".into(),
             deps: Some(r.deps()),

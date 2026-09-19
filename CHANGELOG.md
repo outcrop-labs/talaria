@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 167 crates.** Vision describe harness; fitness toolbox.
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 168 crates.** Harness defs + registry (MCP tool dispatch
+  via OnceLock). Verified: `cargo check -p talaria-api`.
+
 
 
 

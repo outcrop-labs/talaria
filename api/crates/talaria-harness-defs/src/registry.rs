@@ -57,8 +57,8 @@
 
 use std::sync::LazyLock;
 
-use super::define::{EvalBand, HarnessDefinition};
-use super::defs;
+use crate::defs;
+use talaria_harness::define::{EvalBand, HarnessDefinition};
 
 /// Where a registered harness came from — the admin panel's wire vocabulary,
 /// so a source serializes the same way on both sides. Only `Builtin` is
@@ -236,8 +236,8 @@ pub fn platform_agent_of(harness: &RegisteredHarness) -> Option<&'static str> {
 mod tests {
     use super::super::define::Output;
     use super::*;
-    use crate::gateway::guard::rule_ids;
-    use crate::platform_agents::PLATFORM_AGENTS;
+    use talaria_gateway::guard::rule_ids;
+    use talaria_platform_agents::PLATFORM_AGENTS;
 
     const EXPECTED_IDS: &[&str] = &[
         "titler",

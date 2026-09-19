@@ -53,13 +53,13 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fitness::toolbox::world::{SandboxKbDoc, SandboxWorld};
-use crate::harness::define::{
+use talaria_fitness_world::{SandboxKbDoc, SandboxWorld};
+use talaria_harness::define::{
     CheckCall, CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition,
     Message, OnFailure, Output, RenderContext, RoleFloor, define_harness,
 };
-use crate::harness::transport::ToolPolicy;
-use crate::harness_model::ModelSpec;
+use talaria_harness::transport::ToolPolicy;
+use talaria_harness_model::ModelSpec;
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -602,8 +602,8 @@ pub fn hermes_knowledge_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fitness::toolbox::world::{SandboxKbDoc, base_world};
     use serde_json::json;
+    use talaria_fitness_world::{SandboxKbDoc, base_world};
 
     fn call(tool: &str, errored: bool, args: Value) -> CheckCall {
         CheckCall {

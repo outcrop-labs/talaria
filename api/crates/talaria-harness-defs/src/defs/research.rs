@@ -54,14 +54,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::{truncate_utf16, utf16_len};
-use crate::harness::define::{
+use talaria_body::{truncate_utf16, utf16_len};
+use talaria_harness::define::{
     CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
     Output, RenderContext, RoleFloor, Widen, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::schema::{Field, Schema};
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_schema::{Field, Schema};
 
 // ── 1. The query planner ─────────────────────────────────────────────────────
 
@@ -1086,7 +1086,7 @@ pub fn synthesis_harness() -> HarnessDefinition {
     d.ground = Some(Arc::new(|input: &Value| {
         let si: SynthesisInput =
             serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
-        Ok(Some(crate::harness::define::Grounding {
+        Ok(Some(talaria_harness::define::Grounding {
             tools: vec!["research_search".to_string()],
             results: format!("{}\n\n{}", source_list(&si), si.findings.join("\n\n")),
             errored: Some(si.search_failed),
@@ -2224,22 +2224,21 @@ pub fn synth_fixtures() -> Vec<TextFixture> {
 
 use serde_json::Map;
 
-use crate::capability_platform::{call_platform_tool, is_platform_server};
-use crate::capability_reach::Supplier;
-use crate::gateway::registry::resolve_route;
-use crate::gateway::upstream::{build_upstream, fetch_upstream};
-use crate::gateway::usage::{TokenCounts, record_gateway_usage};
-use crate::harness::define::Role;
-use crate::harness::run::{BoxFut, TransportFn};
-use crate::harness::transport::{
+use talaria_capability_platform::{call_platform_tool, is_platform_server};
+use talaria_capability_reach::Supplier;
+use talaria_gateway::registry::resolve_route;
+use talaria_gateway::upstream::{build_upstream, fetch_upstream};
+use talaria_gateway::usage::{TokenCounts, record_gateway_usage};
+use talaria_harness::define::Role;
+use talaria_harness::run::{BoxFut, TransportFn};
+use talaria_harness::transport::{
     ToolCall, ToolDefinition, ToolPolicy, TransportKind, TransportReply, TransportRequest,
     gateway_tools_refusal, gateway_transport, tool_call_id_of, tool_policy_of,
 };
-use crate::mcp::registry::call_mcp_tool;
-use crate::native_search::{harvest_sources, native_search_body};
-use crate::search::real_deps;
-use crate::state::AppState;
-use crate::web_search::results_from_payload;
+use talaria_native_search::{harvest_sources, native_search_body};
+use talaria_search::real_deps;
+use talaria_state::AppState;
+use talaria_web_search::results_from_payload;
 
 /// A source as the search stages hand it to the sink, before the registry
 /// numbers it. `title`/`snippet` are optional because an empty string from
@@ -2485,11 +2484,20 @@ pub fn tool_search_transport(
                         .secretbox()
                         .await
                         .map_err(|e| format!("secretbox unavailable: {e}"))?;
-                    let out = call_mcp_tool(&state.pg, &sb, &server, &tool, &args).await?;
-                    Ok(ToolOutput {
-                        text: out.text,
-                        structured: out.structured,
-                    })
+                    let (text, structured) = match crate::CALL_MCP_TOOL.get() {
+                        Some(f) => {
+                            f(
+                                state.pg.clone(),
+                                sb,
+                                server.clone(),
+                                tool.clone(),
+                                args.clone(),
+                            )
+                            .await?
+                        }
+                        None => return Err("MCP tool dispatch is not wired".into()),
+                    };
+                    Ok(ToolOutput { text, structured })
                 }
             })
         })
@@ -2706,12 +2714,12 @@ pub fn tool_search_transport(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability_reach::Supplier;
-    use crate::harness::recorded::{
+    use std::collections::HashMap;
+    use talaria_capability_reach::Supplier;
+    use talaria_harness::recorded::{
         RecordedRun, RecordedWorld, checks, facts, probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessError, HarnessResult, execute};
-    use std::collections::HashMap;
+    use talaria_harness::run::{HarnessError, HarnessResult, execute};
 
     async fn run(
         def: HarnessDefinition,
@@ -3480,7 +3488,7 @@ mod tests {
     // Scripted base and tool edges drive the whole transport — no model, no
     // server, every wire shape asserted on the requests the loop sent.
 
-    use crate::harness::transport::tool_wire_message;
+    use talaria_harness::transport::tool_wire_message;
 
     fn msg(role: Role, content: &str) -> Message {
         Message {
@@ -3593,7 +3601,7 @@ mod tests {
         let pg = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy(url)
             .expect("a lazy pool connects to nothing");
-        let cfg = crate::config::Config::from_parts(
+        let cfg = talaria_config::Config::from_parts(
             url.into(),
             "redis://research-transport-test@localhost:6379".into(),
             "test-root".into(),

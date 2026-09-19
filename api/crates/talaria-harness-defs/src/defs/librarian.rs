@@ -33,13 +33,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::{truncate_utf16, utf16_len};
-use crate::harness::define::{
+use talaria_body::{truncate_utf16, utf16_len};
+use talaria_harness::define::{
     CheckCtx, CheckResult, CountLimit, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RoleFloor, Widen, count_problem, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
 
 /// The parsed librarian reply — the value a text harness's clean may return.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -613,10 +613,10 @@ pub fn librarian_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     fn okf(body: &str, tags: &[&str]) -> LibrarianOkf {
         LibrarianOkf {
@@ -881,7 +881,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:librarian".into(),
             deps: Some(r.deps()),

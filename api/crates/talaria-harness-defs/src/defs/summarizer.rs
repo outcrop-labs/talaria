@@ -14,14 +14,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::utf16_len;
-use crate::harness::define::{
+use talaria_body::utf16_len;
+use talaria_harness::define::{
     AnswerFloor, CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RoleFloor, below_answer_floor, define_harness,
 };
-use crate::harness::prompt_rules::UNTRUSTED_INPUT;
-use crate::harness::text::first_meaningful_line;
-use crate::harness_model::ModelSpec;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_prompt_rules::UNTRUSTED_INPUT;
+use talaria_harness_text::first_meaningful_line;
 
 /// The ask. The wording is pinned — a prompt change is the one edit a model
 /// can notice, and changing the prompt and the plumbing in the same commit
@@ -56,7 +56,7 @@ pub struct SummarizerInput {
 
 fn clip(s: &str, max: usize) -> &str {
     if utf16_len(s) > max {
-        crate::body::truncate_utf16(s, max)
+        talaria_body::truncate_utf16(s, max)
     } else {
         s
     }
@@ -70,7 +70,7 @@ fn clip(s: &str, max: usize) -> &str {
 /// screen instead of overwriting it with an empty string.
 pub fn first_line(raw: &str) -> Option<String> {
     let line = first_meaningful_line(raw)?;
-    let clipped = crate::body::truncate_utf16(&line, MAX_SUMMARY);
+    let clipped = talaria_body::truncate_utf16(&line, MAX_SUMMARY);
     if clipped.is_empty() {
         None
     } else {
@@ -477,10 +477,10 @@ pub fn summarizer_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     // ── first_line ───────────────────────────────────────────────────────────
 
@@ -681,7 +681,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:summarizer".into(),
             deps: Some(r.deps()),

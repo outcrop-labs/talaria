@@ -47,13 +47,13 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::body::{js_string, truncate_utf16};
-use crate::harness::define::{
+use talaria_body::{js_string, truncate_utf16};
+use talaria_harness::define::{
     CheckCtx, CheckResult, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message, OnFailure,
     Output, RenderContext, RoleFloor, Widen, define_harness,
 };
-use crate::harness::schema::{Field, Schema};
-use crate::harness_model::{ModelChainStep, ModelSpec};
+use talaria_harness_model::{ModelChainStep, ModelSpec};
+use talaria_harness_schema::{Field, Schema};
 
 // ── The shapes ───────────────────────────────────────────────────────────────
 
@@ -680,10 +680,10 @@ pub fn judge_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::recorded::{
+    use talaria_harness::recorded::{
         RecordedRun as Recorder, RecordedWorld as World, facts, probe, recorded_run, replies,
     };
-    use crate::harness::run::{HarnessResult, RunContext, execute};
+    use talaria_harness::run::{HarnessResult, RunContext, execute};
 
     // ── The clamps ───────────────────────────────────────────────────────────
 
@@ -957,7 +957,7 @@ mod tests {
         def: &HarnessDefinition,
         input: &Value,
         r: &Recorder,
-    ) -> Result<HarnessResult, crate::harness::run::HarnessError> {
+    ) -> Result<HarnessResult, talaria_harness::run::HarnessError> {
         let ctx = RunContext {
             caller: "test:judge".into(),
             deps: Some(r.deps()),
