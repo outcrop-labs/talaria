@@ -26,12 +26,12 @@
 
 pub mod artifact_routing;
 pub mod backfill;
-pub mod collections;
+pub use talaria_retrieval_collections as collections;
 pub use talaria_retrieval_embed as embed;
 pub mod index;
 pub mod migrate;
 pub use talaria_retrieval_qdrant as qdrant;
-pub mod rerank;
+pub use talaria_retrieval_rerank as rerank;
 pub mod sources;
 pub use talaria_retrieval_sparse as sparse;
 

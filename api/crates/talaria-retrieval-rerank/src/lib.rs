@@ -13,11 +13,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::gateway::registry::list_endpoints;
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::state::AppState;
+use talaria_gateway::registry::list_endpoints;
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_state::AppState;
 
-use super::HttpFetch;
+use talaria_retrieval_http::HttpFetch;
 
 /// OpenRouter's key can come from the LLM endpoint the org already registered
 /// — the rerank config only needs its own key when none exists there.
@@ -26,7 +26,7 @@ async fn openrouter_fallback_key(state: &AppState) -> Option<String> {
     let ep = eps
         .iter()
         .find(|e| e.provider == "openrouter" || e.name == "openrouter")?;
-    crate::gateway::provider::resolve_endpoint_key(state, ep).await
+    talaria_gateway::provider::resolve_endpoint_key(state, ep).await
 }
 
 pub struct RerankProviderMeta {
@@ -333,7 +333,7 @@ async fn json_fetch(
     if !(200..300).contains(&status) {
         return Err(format!(
             "{status}: {}",
-            crate::body::truncate_utf16(&text, 200)
+            talaria_body::truncate_utf16(&text, 200)
         ));
     }
     serde_json::from_str(&text).map_err(|e| e.to_string())
@@ -802,7 +802,7 @@ mod tests {
         let pg = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://rerank-test@localhost:5432/rerank-test")
             .expect("a lazy pool connects to nothing");
-        let cfg = crate::config::Config::from_parts(
+        let cfg = talaria_config::Config::from_parts(
             "postgres://rerank-test@localhost:5432/rerank-test".to_string(),
             "redis://rerank-test@localhost:6379".to_string(),
             "test-root".to_string(),

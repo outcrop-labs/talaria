@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sqlx::{PgPool, Row};
 
-use crate::retrieval::embed::{EmbedDeps, embed_dim};
-use crate::retrieval::qdrant::{
+use talaria_retrieval_embed::{EmbedDeps, embed_dim};
+use talaria_retrieval_qdrant::{
     QdrantDeps, delete_collection, ensure_collection, ensure_hybrid_collection,
 };
 
@@ -239,7 +239,7 @@ fn slugify(s: &str) -> String {
         }
     }
     let trimmed = folded.trim_matches('_');
-    format!("talaria_{}", crate::body::truncate_utf16(trimmed, 40))
+    format!("talaria_{}", talaria_body::truncate_utf16(trimmed, 40))
 }
 
 pub struct CreateCollection<'a> {
@@ -351,7 +351,7 @@ pub async fn ensure_personal_collection(
     let bare: String = user_id.chars().filter(|c| *c != '-').collect();
     let qdrant_name = format!(
         "talaria_personal_{}",
-        crate::body::truncate_utf16(&bare, 24)
+        talaria_body::truncate_utf16(&bare, 24)
     );
     ensure_hybrid_collection(qd, &qdrant_name, dim as i64).await?;
     let row = sqlx::query(

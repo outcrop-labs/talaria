@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 97 crates.** Retrieval HTTP edge, TEI embed client,
-  Qdrant REST client. Verified: `cargo check -p talaria-api`.
+- **API workspace: 99 crates.** Retrieval rerank + collection registry.
+  Verified: `cargo check -p talaria-api`.
+
 
 
 
