@@ -39,7 +39,7 @@ pub async fn sample_agent_resources(pg: &PgPool) {
             for (model, department) in rows {
                 v.push((
                     model,
-                    super::docker::managed_container(pg, &department).await,
+                    talaria_fleet_docker::managed_container(pg, &department).await,
                 ));
             }
             v
@@ -56,13 +56,14 @@ pub async fn sample_agent_resources(pg: &PgPool) {
     for (_, container) in &agents {
         args.push(container.as_str());
     }
-    let (out, _) = match super::docker::docker(&args, std::time::Duration::from_secs(20)).await {
-        Ok(pair) => pair,
-        Err(e) => {
-            tracing::warn!("{LOG} docker stats errored: {e}");
-            return;
-        }
-    };
+    let (out, _) =
+        match talaria_fleet_docker::docker(&args, std::time::Duration::from_secs(20)).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!("{LOG} docker stats errored: {e}");
+                return;
+            }
+        };
     let by_container: std::collections::HashMap<String, String> = agents
         .into_iter()
         .map(|(model, container)| (container, model))
@@ -113,19 +114,19 @@ pub async fn sample_agent_resources(pg: &PgPool) {
         .await;
         warn_if_leaking(pg, model, mem).await;
     }
-    if let Some(host) = super::budget::host_mem().await {
-        let reserve = super::budget::host_reserve().await;
-        match super::budget::host_pressure(host.available, reserve) {
-            super::budget::Pressure::Critical => tracing::error!(
+    if let Some(host) = talaria_fleet_budget::host_mem().await {
+        let reserve = talaria_fleet_budget::host_reserve().await;
+        match talaria_fleet_budget::host_pressure(host.available, reserve) {
+            talaria_fleet_budget::Pressure::Critical => tracing::error!(
                 "{LOG} host RAM critical: {} free, {} reserved for the platform — refusing new work",
-                super::budget::fmt_bytes(host.available),
-                super::budget::fmt_bytes(reserve)
+                talaria_fleet_budget::fmt_bytes(host.available),
+                talaria_fleet_budget::fmt_bytes(reserve)
             ),
-            super::budget::Pressure::Tight => tracing::warn!(
+            talaria_fleet_budget::Pressure::Tight => tracing::warn!(
                 "{LOG} host RAM tight: {} free",
-                super::budget::fmt_bytes(host.available)
+                talaria_fleet_budget::fmt_bytes(host.available)
             ),
-            super::budget::Pressure::Ok => {}
+            talaria_fleet_budget::Pressure::Ok => {}
         }
     }
     prune(pg).await;

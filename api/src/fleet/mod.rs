@@ -1,6 +1,6 @@
 // The fleet engine family — the registry brain, rendering, reconciliation, docker, preflight, federation.
 pub mod brain;
-pub mod budget;
+pub use talaria_fleet_budget as budget;
 pub mod cascade;
 pub mod create;
 pub use talaria_fleet_docker as docker;
@@ -10,7 +10,7 @@ pub use talaria_hermes_skills as hermes_skills;
 pub mod preflight;
 pub mod reconcile;
 pub mod render;
-pub mod resources;
+pub use talaria_fleet_resources as resources;
 
 // The fleet as AGENTS (not raw gateway models). The bridge's /v1/models
 // includes one entry per tier (`<base>-<alias>`), so consumers that mean

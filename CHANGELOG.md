@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 125 crates.** Workbench profiles + harness registry.
+- **API workspace: 127 crates.** Fleet host-RAM budget + docker stats.
   Verified: `cargo check -p talaria-api`.
+
 
 
 

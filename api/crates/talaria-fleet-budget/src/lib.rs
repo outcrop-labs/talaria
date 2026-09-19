@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use sqlx::PgPool;
 
-use super::docker::{self, managed_container};
+use talaria_fleet_docker::{self as docker, managed_container};
 
 const LOG: &str = "[budget]";
 const HOST_MEM_TTL: Duration = Duration::from_secs(5);

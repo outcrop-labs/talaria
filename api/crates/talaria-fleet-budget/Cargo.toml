@@ -1,0 +1,15 @@
+[package]
+name = "talaria-fleet-budget"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+tokio = { version = "1", features = ["fs", "time", "sync", "macros"] }
+tracing = "0.1"
