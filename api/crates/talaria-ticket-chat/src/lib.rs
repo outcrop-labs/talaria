@@ -21,10 +21,32 @@ use serde_json::Value;
 use serde_json::json;
 use sqlx::PgPool;
 
-use crate::body::truncate_utf16;
-use crate::harness::defs::ticket_relevance::{TicketRelevanceInput, ticket_relevance_harness};
-use crate::harness::run::{RunContext, run_harness};
-use crate::state::AppState;
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+use talaria_body::truncate_utf16;
+use talaria_state::AppState;
+
+pub static TICKET_RELEVANT: OnceLock<
+    Arc<
+        dyn Fn(AppState, String, Option<String>, String, Vec<String>) -> BoxFuture<'static, bool>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
+
+fn json_strings(v: &serde_json::Value) -> Vec<String> {
+    serde_json::from_value(v.clone()).unwrap_or_default()
+}
+fn is_human_assignee(a: &str) -> bool {
+    a.starts_with("user:")
+}
+fn agent_assignees(assignees: &[String]) -> Vec<String> {
+    assignees
+        .iter()
+        .filter(|a| !is_human_assignee(a))
+        .cloned()
+        .collect()
+}
 
 // ── The head ─────────────────────────────────────────────────────────────────
 
@@ -127,7 +149,7 @@ pub async fn ticket_for_room(pg: &PgPool, channel_id: &str) -> Option<TicketMeta
     .flatten()
     .map(
         |(task_id, board_id, assignees, ticket_ref, title, status, description)| {
-            let agent = crate::tasks::agent_assignees(&crate::tasks::json_strings(&assignees))
+            let agent = agent_assignees(&json_strings(&assignees))
                 .into_iter()
                 .next();
             TicketMeta {
@@ -256,30 +278,19 @@ pub async fn ticket_message_relevant(
     if let Some(relevant) = structural_relevance(head, message, attachments) {
         return relevant;
     }
-    let input = json!(TicketRelevanceInput {
-        ticket: head.line(),
-        work: head.description.clone(),
-        message: message.to_string(),
-        recent: recent.to_vec(),
-    });
-    run_harness(
-        state,
-        &ticket_relevance_harness(),
-        &input,
-        RunContext {
-            caller: "platform:ticket-relevance".into(),
-            ..RunContext::default()
-        },
-    )
-    .await
-    // THE FAIL-OPEN FOLD. Every way this can come back empty — harness
-    // error, null verdict, a value shaped like anything but
-    // {"relevant": bool} — is true. The gate may cost an unneeded reply;
-    // it may never cost an unanswered one.
-    .ok()
-    .and_then(|r| r.value)
-    .and_then(|v| v.get("relevant").and_then(Value::as_bool))
-    .unwrap_or(true)
+    match TICKET_RELEVANT.get() {
+        Some(f) => {
+            f(
+                state.clone(),
+                head.line(),
+                head.description.clone(),
+                message.to_string(),
+                recent.to_vec(),
+            )
+            .await
+        }
+        None => true,
+    }
 }
 
 #[cfg(test)]

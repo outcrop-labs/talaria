@@ -3787,6 +3787,7 @@ dependencies = [
  "talaria-task-const",
  "talaria-teams",
  "talaria-templates",
+ "talaria-ticket-chat",
  "talaria-titler",
  "talaria-tz",
  "talaria-undici",
@@ -5646,6 +5647,18 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-internal-history",
  "uuid",
+]
+
+[[package]]
+name = "talaria-ticket-chat"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-state",
 ]
 
 [[package]]
