@@ -3636,6 +3636,8 @@ dependencies = [
  "talaria-gateway",
  "talaria-github",
  "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-org",
  "talaria-guard-coaching",
  "talaria-harness-json-schema",
  "talaria-harness-schema",
@@ -3702,7 +3704,9 @@ dependencies = [
  "talaria-templates",
  "talaria-tz",
  "talaria-undici",
+ "talaria-update-layout",
  "talaria-update-mode",
+ "talaria-update-registry",
  "talaria-update-state",
  "talaria-users",
  "talaria-work-wait",
@@ -4047,6 +4051,41 @@ dependencies = [
  "talaria-gateway",
  "talaria-secretbox",
  "tracing",
+]
+
+[[package]]
+name = "talaria-google-connections"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-org"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-google-connections",
+ "talaria-secretbox",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -4965,8 +5004,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-update-layout"
+version = "0.1.0"
+dependencies = [
+ "talaria-fleet-docker",
+]
+
+[[package]]
 name = "talaria-update-mode"
 version = "0.1.0"
+
+[[package]]
+name = "talaria-update-registry"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-update-layout",
+ "talaria-update-state",
+ "tracing",
+ "url",
+]
 
 [[package]]
 name = "talaria-update-state"

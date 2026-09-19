@@ -6,10 +6,10 @@
 // assistants instead act as their own owner (google/agent.rs). Tokens are
 // encrypted at rest, same as per-user connections.
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::google::connections::{EXPIRY_SKEW_MS, TokenError, request_refresh};
-use crate::secretbox::SecretBox;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_google_connections::{EXPIRY_SKEW_MS, TokenError, request_refresh};
+use talaria_secretbox::SecretBox;
 
 /// Where the org account's agents build. Empty strings are never stored —
 /// the writers normalize blanks to null.
@@ -356,7 +356,7 @@ pub async fn disconnect_org(pg: &PgPool, sb: &SecretBox) {
             form.append_pair("token", &token);
             form.finish()
         };
-        let _ = crate::gateway::provider::http()
+        let _ = talaria_gateway::provider::http()
             .post("https://oauth2.googleapis.com/revoke")
             .header(
                 axum::http::header::CONTENT_TYPE,

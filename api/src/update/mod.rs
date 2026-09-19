@@ -29,9 +29,9 @@
 pub mod adopt;
 pub mod docker;
 pub mod job;
-pub mod layout;
+pub use talaria_update_layout as layout;
 pub use talaria_update_mode as mode;
-pub mod registry;
+pub use talaria_update_registry as registry;
 pub mod render;
 pub mod roll;
 pub use talaria_update_state as state;

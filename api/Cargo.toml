@@ -112,6 +112,10 @@ members = [
     "crates/talaria-daily-brief-config",
     "crates/talaria-runs-run",
     "crates/talaria-runs-reclaim",
+    "crates/talaria-update-layout",
+    "crates/talaria-google-connections",
+    "crates/talaria-google-org",
+    "crates/talaria-update-registry",
 ]
 resolver = "3"
 
@@ -248,6 +252,10 @@ talaria-harness-json-schema = { path = "crates/talaria-harness-json-schema" }
 talaria-daily-brief-config = { path = "crates/talaria-daily-brief-config" }
 talaria-runs-run = { path = "crates/talaria-runs-run" }
 talaria-runs-reclaim = { path = "crates/talaria-runs-reclaim" }
+talaria-update-layout = { path = "crates/talaria-update-layout" }
+talaria-google-connections = { path = "crates/talaria-google-connections" }
+talaria-google-org = { path = "crates/talaria-google-org" }
+talaria-update-registry = { path = "crates/talaria-update-registry" }
 
 
 

@@ -19,8 +19,8 @@
 
 use serde::Deserialize;
 
-use super::layout::default_image_ref;
-use super::state::Pin;
+use talaria_update_layout::default_image_ref;
+use talaria_update_state::Pin;
 
 /// Every manifest media type in play, index shapes first: an
 /// Accept-listing only manifests would make a multi-arch registry silently

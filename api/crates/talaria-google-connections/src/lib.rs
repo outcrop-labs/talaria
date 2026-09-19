@@ -2,12 +2,12 @@
 // needs, plus the token vending every Google surface reads through. The OAuth
 // exchange itself lives in oauth.rs.
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::gateway::provider::http;
-use crate::google::client::resolve_google_client;
-use crate::secretbox::SecretBox;
 use axum::http::header;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_gateway::provider::http;
+use talaria_google_client::resolve_google_client;
+use talaria_secretbox::SecretBox;
 
 /// Refresh a little early so a token doesn't expire mid-request.
 pub const EXPIRY_SKEW_MS: i64 = 60_000;
@@ -265,7 +265,7 @@ pub async fn save_connection(
         // Truthiness: an empty-string token or a zero/null expiry writes
         // no expiry at all.
         (Some(t), Some(secs)) if !t.is_empty() && secs != 0 => Some(
-            crate::agent_auth::epoch_ms_to_iso(input.now_ms + secs * 1000),
+            talaria_agent_auth::epoch_ms_to_iso(input.now_ms + secs * 1000),
         ),
         _ => None,
     };

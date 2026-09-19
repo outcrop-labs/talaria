@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 105 crates.** Daily-brief config, run driver, reclaim
-  sweep. Verified: `cargo check -p talaria-api`.
+- **API workspace: 109 crates.** Update layout + registry, Google
+  connections + org token. Verified: `cargo check -p talaria-api`.
+
 
 
 

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 /// The flip-render slots, same shape as the fleet's — one active, one
 /// incoming, and the roll renders the incoming beside the active one
 /// (fleet/docker.rs owns the enum; the app slots are its second user).
-pub use crate::fleet::docker::Slot;
+pub use talaria_fleet_docker::Slot;
 
 /// The update tree (rendered compose, slot env files, project state) —
 /// Talaria-owned, host-real because the rendered compose's binds must be
@@ -130,7 +130,12 @@ pub fn default_image_ref() -> String {
 /// host; two policies would let the app and its agents disagree about what
 /// a graceful stop means).
 pub fn roll_drain_ms() -> u64 {
-    crate::fleet::reconcile::roll_drain_ms()
+    std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(45.0)
+        .max(0.0) as u64
+        * 1000
 }
 
 #[cfg(test)]
