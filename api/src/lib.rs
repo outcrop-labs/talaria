@@ -35,7 +35,7 @@ pub mod chat_persist;
 pub use talaria_claim as claim;
 pub mod comms_decay;
 pub use talaria_config as config;
-pub mod conversations;
+pub use talaria_conversations as conversations;
 pub mod daily_brief;
 pub use talaria_db as db;
 pub mod digest;

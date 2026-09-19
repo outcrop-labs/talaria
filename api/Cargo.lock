@@ -3676,6 +3676,7 @@ dependencies = [
  "talaria-claim",
  "talaria-collate",
  "talaria-config",
+ "talaria-conversations",
  "talaria-daily-brief-comms",
  "talaria-daily-brief-config",
  "talaria-daily-brief-types",
@@ -4017,6 +4018,19 @@ version = "0.1.0"
 [[package]]
 name = "talaria-config"
 version = "0.1.0"
+
+[[package]]
+name = "talaria-conversations"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "talaria-uploads",
+]
 
 [[package]]
 name = "talaria-daily-brief-comms"

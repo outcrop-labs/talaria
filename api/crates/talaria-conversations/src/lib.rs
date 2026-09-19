@@ -7,11 +7,14 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::gateway::fleet_chat::ToolCall;
-use crate::refs::ref_blocks;
-use crate::secretbox::SecretBox;
-use crate::uploads::attachment_text_blocks;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_gateway::fleet_chat::ToolCall;
+use talaria_secretbox::SecretBox;
+
+use std::sync::OnceLock;
+
+pub static REF_BLOCKS: OnceLock<fn(&Value) -> String> = OnceLock::new();
+use talaria_uploads::attachment_text_blocks;
 
 /// The access gate, reduced to the question its callers that only gate ask:
 /// does this row exist for this person? The WHERE clause is the whole rule —
@@ -175,7 +178,10 @@ pub async fn prior_messages(
             String::new()
         };
         let refs = if user {
-            ref_blocks(&r.attachments)
+            REF_BLOCKS
+                .get()
+                .map(|f| f(&r.attachments))
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -965,7 +971,7 @@ pub async fn message_still_errored(pg: &PgPool, message_id: &str) -> Result<bool
 pub async fn set_message_guard(
     pg: &PgPool,
     message_id: &str,
-    findings: &[crate::gateway::guard::Finding],
+    findings: &[talaria_gateway::guard::Finding],
 ) -> Result<(), sqlx::Error> {
     sqlx::query("update messages set guard = $2 where id = $1::uuid")
         .bind(message_id)
