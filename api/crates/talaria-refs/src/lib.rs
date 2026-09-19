@@ -9,9 +9,33 @@
 
 use serde_json::Value;
 
-use crate::artifacts::{artifact_to_markdown, get_artifact};
-use crate::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
-use crate::kb::{effective_doc_perms, get_doc};
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+pub static RESOLVE_KB_REF: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                String,
+                Option<String>,
+                String,
+            ) -> BoxFuture<'static, Option<(String, String, String)>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
+pub static RESOLVE_ARTIFACT_REF: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                String,
+                Option<String>,
+                String,
+            ) -> BoxFuture<'static, Option<(String, String, String)>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 /// A ref as the request names it.
 #[derive(Debug, Clone)]
@@ -68,61 +92,41 @@ pub async fn resolve_refs(
     refs: &[MessageRef],
 ) -> Result<Vec<RefChip>, sqlx::Error> {
     let mut chips: Vec<RefChip> = Vec::new();
-    let team_ids = crate::teams::team_ids_for_user(pg, user.id).await?;
     for r in refs.iter().take(3) {
+        let author = user.author().map(str::to_string);
         if r.ref_type == "kb-doc" {
-            let Some(doc) = get_doc(pg, &r.id).await? else {
+            let Some(f) = RESOLVE_KB_REF.get() else {
                 continue;
             };
-            let effective = effective_doc_perms(pg, &doc).await?;
-            if !can_read(
-                &effective.perms,
-                Some(user.id),
-                user.author(),
-                &effective.grants,
-                &team_ids,
-            ) {
+            let Some((id, filename, content)) =
+                f(pg.clone(), user.id.to_string(), author, r.id.clone()).await
+            else {
                 continue;
-            }
-            let filename = if doc.title.is_empty() {
-                "Untitled".to_string()
-            } else {
-                doc.title.clone()
             };
             chips.push(RefChip {
-                id: doc.id.clone(),
+                id,
                 filename,
                 mime: "ref/kb-doc".into(),
                 size: 0,
                 ref_type: "kb-doc".into(),
-                content: clip(&doc.body),
+                content: clip(&content),
             });
         } else {
-            let Some(artifact) = get_artifact(pg, &r.id).await? else {
+            let Some(f) = RESOLVE_ARTIFACT_REF.get() else {
                 continue;
             };
-            let grants = list_editors(pg, ITEM_ARTIFACT, &artifact.id).await?;
-            if !can_read(
-                &crate::artifacts::guarded(&artifact),
-                Some(user.id),
-                user.author(),
-                &grants,
-                &team_ids,
-            ) {
+            let Some((id, filename, content)) =
+                f(pg.clone(), user.id.to_string(), author, r.id.clone()).await
+            else {
                 continue;
-            }
-            let filename = if artifact.title.is_empty() {
-                "Untitled".to_string()
-            } else {
-                artifact.title.clone()
             };
             chips.push(RefChip {
-                id: artifact.id.clone(),
+                id,
                 filename,
                 mime: "ref/artifact".into(),
                 size: 0,
                 ref_type: "artifact".into(),
-                content: clip(&artifact_to_markdown(&artifact)),
+                content: clip(&content),
             });
         }
     }

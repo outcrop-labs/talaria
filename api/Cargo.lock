@@ -3753,6 +3753,7 @@ dependencies = [
  "talaria-ratelimit",
  "talaria-realtime",
  "talaria-realtime-watch",
+ "talaria-refs",
  "talaria-repo-env",
  "talaria-research-origin",
  "talaria-retrieval-collections",
@@ -5195,6 +5196,17 @@ dependencies = [
  "talaria-runs-run",
  "talaria-runs-store",
  "talaria-users",
+]
+
+[[package]]
+name = "talaria-refs"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
 ]
 
 [[package]]
