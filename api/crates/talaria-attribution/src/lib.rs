@@ -36,10 +36,20 @@
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 
-use crate::agent_auth::{AgentSubject, subject_model, subject_proven};
-use crate::conversations::conversation_owner;
-use crate::research_origin::current_agent_turn_on;
-use crate::users::assistant_owner_for;
+use talaria_agent_auth::{AgentSubject, subject_model, subject_proven};
+use talaria_research_origin::current_agent_turn_on;
+use talaria_users::assistant_owner_for;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+pub static CONVERSATION_OWNER: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, Result<Option<String>, sqlx::Error>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 /// The responsible user for anything this subject is about to create, or
 /// None when nobody stands behind it. See the module header for the ladder
@@ -60,7 +70,8 @@ pub async fn responsible_user_for(
     // Best-effort turn read: Redis down or the key expired is an ordinary
     // None here, not a failure — the next rung answers.
     if let Some(conversation) = current_agent_turn_on(redis, model).await
-        && let Some(user) = conversation_owner(pg, &conversation).await?
+        && let Some(f) = CONVERSATION_OWNER.get()
+        && let Some(user) = f(pg.clone(), conversation).await?
     {
         return Ok(Some(user));
     }

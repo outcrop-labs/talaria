@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 152 crates.** Personal assistant lifecycle. Verified:
+- **API workspace: 153 crates.** Agent-output attribution. Verified:
   `cargo check -p talaria-api`.
+
 
 
 

@@ -18,7 +18,7 @@ pub mod alerts;
 pub mod approvals;
 pub use talaria_apps as apps;
 pub mod artifacts;
-pub mod attribution;
+pub use talaria_attribution as attribution;
 pub use talaria_audit as audit;
 pub use talaria_auth as auth;
 pub use talaria_auth_config as auth_config;

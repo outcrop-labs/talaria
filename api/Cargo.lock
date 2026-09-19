@@ -3662,6 +3662,7 @@ dependencies = [
  "talaria-agent-writes",
  "talaria-agents-registry",
  "talaria-apps",
+ "talaria-attribution",
  "talaria-audit",
  "talaria-auth",
  "talaria-auth-config",
@@ -3827,6 +3828,18 @@ dependencies = [
  "talaria-users",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-attribution"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-research-origin",
+ "talaria-users",
 ]
 
 [[package]]
