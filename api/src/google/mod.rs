@@ -9,5 +9,5 @@ pub use talaria_google_errors as errors;
 pub use talaria_google_gmail as gmail;
 pub use talaria_google_oauth as oauth;
 pub use talaria_google_org as org;
-pub mod pending_actions;
+pub use talaria_google_pending as pending_actions;
 pub use talaria_google_provisioning as provisioning;

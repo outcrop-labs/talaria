@@ -10,14 +10,18 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::sync::Arc;
 
-use crate::approvals::{ApprovalDeps, announce_approval};
-use crate::google::calendar::{CreateEventInput, create_event_with_token};
-use crate::google::connections::get_access_token;
-use crate::google::gmail::{SendInput, send_message_with_token};
-use crate::google::org::{get_org_access_token, get_org_email, get_org_targets};
-use crate::realtime::RealtimeDeps;
-use crate::runs::define::run_definition;
-use crate::secretbox::SecretBox;
+use futures_util::future::BoxFuture;
+use std::sync::OnceLock;
+use talaria_google_calendar::{CreateEventInput, create_event_with_token};
+use talaria_google_connections::get_access_token;
+use talaria_google_gmail::{SendInput, send_message_with_token};
+use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
+use talaria_realtime::RealtimeDeps;
+use talaria_secretbox::SecretBox;
+
+pub static ANNOUNCE_APPROVAL: OnceLock<
+    Arc<dyn Fn(sqlx::PgPool, RealtimeDeps, String) -> BoxFuture<'static, ()> + Send + Sync>,
+> = OnceLock::new();
 
 fn wall_ms() -> i64 {
     std::time::SystemTime::now()
@@ -139,13 +143,9 @@ pub async fn queue_action(
     // inside the announce log themselves; the sweep is the floor either way.
     let announce_pg = pg.clone();
     tokio::spawn(async move {
-        let deps = ApprovalDeps::new(
-            announce_pg,
-            realtime,
-            Arc::new(run_definition),
-            Arc::new(wall_ms),
-        );
-        announce_approval(&deps, &format!("google_action:{id}")).await;
+        if let Some(f) = ANNOUNCE_APPROVAL.get() {
+            f(announce_pg, realtime, format!("google_action:{id}")).await;
+        }
     });
     Ok(QueuedAction {
         action,
@@ -299,7 +299,7 @@ pub fn pending_wire(a: &PendingAction) -> Value {
         "ownerUserId": a.owner_user_id,
         "isOrg": a.is_org,
         "status": a.status,
-        "createdAt": crate::agent_auth::epoch_ms_to_iso(a.created_ms),
+        "createdAt": talaria_agent_auth::epoch_ms_to_iso(a.created_ms),
     })
 }
 
@@ -425,8 +425,8 @@ pub async fn decide_action(
     let nudge_brief = |ids: Vec<String>| {
         let pg = pg.clone();
         tokio::spawn(async move {
-            let deps = crate::notify::NotifyDeps::publishing(pg, None);
-            let _ = crate::notify::mark_brief_stale(&deps, &ids).await;
+            let deps = talaria_notify::NotifyDeps::publishing(pg, None);
+            let _ = talaria_notify::mark_brief_stale(&deps, &ids).await;
         });
     };
     let stale_ids: Vec<String> = [owner_user_id.clone(), Some(actor_id.to_string())]
