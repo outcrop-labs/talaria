@@ -3642,6 +3642,7 @@ dependencies = [
  "talaria-google-connections",
  "talaria-google-errors",
  "talaria-google-gmail",
+ "talaria-google-oauth",
  "talaria-google-org",
  "talaria-google-provisioning",
  "talaria-guard-coaching",
@@ -4177,6 +4178,29 @@ dependencies = [
  "talaria-google-errors",
  "talaria-google-org",
  "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-oauth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-auth-config",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-state",
+ "talaria-users",
  "tracing",
  "url",
 ]

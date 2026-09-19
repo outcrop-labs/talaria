@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 116 crates.** Update docker verbs. Verified:
+- **API workspace: 117 crates.** Google OAuth connect flow. Verified:
   `cargo check -p talaria-api`.
+
 
 
 

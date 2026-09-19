@@ -9,16 +9,16 @@ pub const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinfo";
 
-use crate::gateway::provider::http;
-use crate::google::client::{GoogleClient, resolve_google_client};
-use crate::google::connections::{SaveConnection, save_connection};
-use crate::google::org::{SaveOrgConnection, save_org_connection};
-use crate::secretbox::SecretBox;
-use crate::users::Identity;
 use axum::http::{HeaderMap, Uri, header};
 use axum::response::Response;
 use sqlx::PgPool;
 use std::collections::HashMap;
+use talaria_gateway::provider::http;
+use talaria_google_client::{GoogleClient, resolve_google_client};
+use talaria_google_connections::{SaveConnection, save_connection};
+use talaria_google_org::{SaveOrgConnection, save_org_connection};
+use talaria_secretbox::SecretBox;
+use talaria_users::Identity;
 
 /// The login identity's provider tag.
 pub const PROVIDER: &str = "google";
@@ -627,7 +627,7 @@ pub enum ConnectFlavor {
 /// landing page's flash reads. Every bounce clears the one-shot state cookie —
 /// except the /login bounce, which never had one to clear.
 pub async fn handle_connect_callback(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     headers: &HeaderMap,
     uri: &Uri,
     flavor: ConnectFlavor,
@@ -644,7 +644,7 @@ pub async fn handle_connect_callback(
             )
                 .into_response();
             if let Ok(v) =
-                axum::http::HeaderValue::from_str(&crate::session::clear_state_cookie_for(headers))
+                axum::http::HeaderValue::from_str(&talaria_session::clear_state_cookie_for(headers))
             {
                 res.headers_mut().append(header::SET_COOKIE, v);
             }
@@ -662,7 +662,7 @@ pub async fn handle_connect_callback(
             uri.query().map(|q| format!("?{q}")).unwrap_or_default()
         );
         if let Some(to) = oauth_relocation(
-            crate::auth_config::get_auth_config().public_url.as_deref(),
+            talaria_auth_config::get_auth_config().public_url.as_deref(),
             headers,
             uri,
             &path_and_query,
@@ -675,11 +675,11 @@ pub async fn handle_connect_callback(
     if !google_integration_enabled(&state.pg, &sb).await {
         return back("disabled");
     }
-    let user = match crate::session::get_session_user(state, headers).await {
+    let user = match talaria_session::get_session_user(state, headers).await {
         Ok(u) => u,
         Err(e) => {
             tracing::error!("[{log_tag}] session read failed: {e}");
-            return crate::error::thrown_internal_error();
+            return talaria_error::thrown_internal_error();
         }
     };
     let Some(user) = user else {
@@ -698,8 +698,8 @@ pub async fn handle_connect_callback(
     let qp = query_pairs(uri.query());
     let code = qp.get("code").cloned();
     let state_param = qp.get("state").cloned();
-    let cookie_state = crate::session::parse_cookies(headers)
-        .and_then(|c| c.get(crate::session::STATE_COOKIE).cloned());
+    let cookie_state = talaria_session::parse_cookies(headers)
+        .and_then(|c| c.get(talaria_session::STATE_COOKIE).cloned());
 
     // Truthiness throughout: an empty error param is no error, an empty
     // code/state/cookie is no code/state/cookie.
@@ -712,11 +712,11 @@ pub async fn handle_connect_callback(
     }
     let (code, state_param, cookie_state) =
         (code.unwrap(), state_param.unwrap(), cookie_state.unwrap());
-    if !crate::session::state_matches(&state_param, &cookie_state) {
+    if !talaria_session::state_matches(&state_param, &cookie_state) {
         return back("bad_state");
     }
 
-    let public_url = crate::auth_config::get_auth_config().public_url;
+    let public_url = talaria_auth_config::get_auth_config().public_url;
     let redirect_uri = match flavor {
         ConnectFlavor::Personal => google_connect_redirect_uri(public_url.as_deref(), headers, uri),
         ConnectFlavor::Org => google_org_connect_redirect_uri(public_url.as_deref(), headers, uri),

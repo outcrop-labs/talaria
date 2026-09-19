@@ -123,6 +123,7 @@ members = [
     "crates/talaria-google-gmail",
     "crates/talaria-google-provisioning",
     "crates/talaria-update-docker",
+    "crates/talaria-google-oauth",
 ]
 resolver = "3"
 
@@ -270,6 +271,7 @@ talaria-google-api-health = { path = "crates/talaria-google-api-health" }
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }
 talaria-google-provisioning = { path = "crates/talaria-google-provisioning" }
 talaria-update-docker = { path = "crates/talaria-update-docker" }
+talaria-google-oauth = { path = "crates/talaria-google-oauth" }
 
 
 
