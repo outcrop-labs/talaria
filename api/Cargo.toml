@@ -130,6 +130,8 @@ members = [
     "crates/talaria-update-job",
     "crates/talaria-update-adopt",
     "crates/talaria-mcp-service",
+    "crates/talaria-workbench",
+    "crates/talaria-workbench-harnesses",
 ]
 resolver = "3"
 
@@ -284,6 +286,8 @@ talaria-update-roll = { path = "crates/talaria-update-roll" }
 talaria-update-job = { path = "crates/talaria-update-job" }
 talaria-update-adopt = { path = "crates/talaria-update-adopt" }
 talaria-mcp-service = { path = "crates/talaria-mcp-service" }
+talaria-workbench = { path = "crates/talaria-workbench" }
+talaria-workbench-harnesses = { path = "crates/talaria-workbench-harnesses" }
 
 
 

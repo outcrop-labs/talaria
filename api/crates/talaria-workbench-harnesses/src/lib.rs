@@ -192,7 +192,7 @@ impl ResolvedHarness {
 // so harness runs were either invisible or doubled every persona turn. The
 // `:-` fallback keeps an operator-overridden fleet (LLM_BASE_URL pointed at a
 // raw upstream, so no gateway brain is provisioned) on the key it configured.
-pub(crate) fn gateway_env() -> Map<String, Value> {
+pub fn gateway_env() -> Map<String, Value> {
     [
         ("OPENAI_BASE_URL", "${LLM_BASE_URL}"),
         ("OPENAI_API_KEY", "${LLM_WORKBENCH_API_KEY:-${LLM_API_KEY}}"),
@@ -391,7 +391,7 @@ pub async fn effort_model(
     overrides: Option<&Map<String, Value>>,
 ) -> Result<Option<String>, String> {
     async fn resolves(pg: &PgPool, model: &str) -> Result<bool, String> {
-        Ok(crate::gateway::registry::resolve_route(pg, model)
+        Ok(talaria_gateway::registry::resolve_route(pg, model)
             .await
             .map_err(|e| format!("route resolve: {e}"))?
             .is_some())
@@ -417,14 +417,14 @@ pub async fn effort_model(
         {
             return Ok(Some(model.to_string()));
         }
-        if let Some(m) = crate::model::roles::resolve_role_model(pg, &format!("code-{e}"))
+        if let Some(m) = talaria_model_roles::resolve_role_model(pg, &format!("code-{e}"))
             .await
             .map_err(|err| format!("role resolve: {err}"))?
         {
             return Ok(Some(m));
         }
     }
-    if let Some(utility) = crate::model::roles::resolve_role_model(pg, "utility")
+    if let Some(utility) = talaria_model_roles::resolve_role_model(pg, "utility")
         .await
         .map_err(|err| format!("role resolve: {err}"))?
     {
