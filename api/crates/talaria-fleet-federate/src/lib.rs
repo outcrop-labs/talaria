@@ -9,11 +9,11 @@
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::agent_defs::{
+use talaria_agent_defs::{
     NewVersion, UpsertDef, add_version_if_changed, dept_ok, slug_ok, upsert_agent_def,
 };
-use crate::fleet::create::ensure_agent_key;
-use crate::gateway::registry::{add_endpoint_models, ensure_endpoint};
+use talaria_fleet_create::ensure_agent_key;
+use talaria_gateway::registry::{add_endpoint_models, ensure_endpoint};
 
 #[derive(Debug, serde::Serialize)]
 pub struct FederatedAgent {
@@ -347,7 +347,7 @@ async fn federate_one(
     // Skills come WITH the agent, into Talaria's own roots — best-effort,
     // never overwriting (cp force:false).
     let src = agent_dir.join("skills");
-    let dst = crate::fleet::layout::fleet_dir()
+    let dst = talaria_fleet_layout::fleet_dir()
         .join("agents")
         .join(slug)
         .join("skills");

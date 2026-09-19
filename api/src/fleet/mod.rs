@@ -2,9 +2,9 @@
 pub use talaria_fleet_brain as brain;
 pub use talaria_fleet_budget as budget;
 pub mod cascade;
-pub mod create;
+pub use talaria_fleet_create as create;
 pub use talaria_fleet_docker as docker;
-pub mod federate;
+pub use talaria_fleet_federate as federate;
 pub use talaria_fleet_layout as layout;
 pub use talaria_fleet_preflight as preflight;
 pub use talaria_hermes_skills as hermes_skills;

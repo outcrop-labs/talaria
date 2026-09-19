@@ -70,6 +70,13 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     crate::outreach::register_outreach_job(Arc::new(OutreachDeps {
         state: state.clone(),
     }));
+    let _ = talaria_fleet_create::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
+        Box::pin(async move {
+            crate::fleet::render::render_fleet(&pg, &sb, None)
+                .await
+                .map(|_| ())
+        })
+    }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
         Box::pin(async move { crate::fleet::reconcile::roll_agent(&pg, &sb, &dept).await })
     }));

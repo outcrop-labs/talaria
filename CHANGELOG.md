@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 144 crates.** Installed-apps catalog. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 146 crates.** Fleet create/delete + federation.
+  Verified: `cargo check -p talaria-api`.
+
 
 
 

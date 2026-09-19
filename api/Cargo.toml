@@ -151,6 +151,8 @@ members = [
     "crates/talaria-daily-brief-comms",
     "crates/talaria-mcp-apply",
     "crates/talaria-apps",
+    "crates/talaria-fleet-create",
+    "crates/talaria-fleet-federate",
 ]
 resolver = "3"
 
@@ -326,6 +328,8 @@ talaria-kb-perms = { path = "crates/talaria-kb-perms" }
 talaria-daily-brief-comms = { path = "crates/talaria-daily-brief-comms" }
 talaria-mcp-apply = { path = "crates/talaria-mcp-apply" }
 talaria-apps = { path = "crates/talaria-apps" }
+talaria-fleet-create = { path = "crates/talaria-fleet-create" }
+talaria-fleet-federate = { path = "crates/talaria-fleet-federate" }
 
 
 

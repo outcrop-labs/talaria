@@ -8,12 +8,25 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::agent_defs::{
+use talaria_agent_defs::{
     AgentDefRow, ConfigEdits, ModelTarget, NewVersion, UpsertDef, add_version_if_changed,
     agent_def_by_id, agent_def_by_slug, apply_config_edits_over, dept_ok, list_versions, slug_ok,
     upsert_agent_def,
 };
-use crate::gateway::registry::list_endpoints;
+use talaria_gateway::registry::list_endpoints;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+/// Wired from the api binary so delete can re-render without this crate
+/// depending on fleet/render.rs.
+pub static RENDER_FLEET: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, talaria_secretbox::SecretBox) -> BoxFuture<'static, Result<(), String>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 /// Re-stamp identity: replace a slug in every string value of the raw config
 /// (X-Agent-Name headers, hook args like "outline_org_gate.py sam"). Used for
@@ -59,7 +72,7 @@ replace this section with a real personality and operating principles.)
 /// created. The read is NOT best-effort — a hire against an unreadable fleet
 /// env fails honestly.
 pub async fn ensure_agent_key(slug: &str) -> Result<bool, String> {
-    let env_path = crate::fleet::layout::fleet_env();
+    let env_path = talaria_fleet_layout::fleet_env();
     let name = format!("HERMES_KEY_{}", slug.to_uppercase());
     let content = tokio::fs::read_to_string(&env_path)
         .await
@@ -264,7 +277,7 @@ pub async fn create_or_resume(
 /// Answers whether the state volume went.
 pub async fn delete_agent_forever(
     pg: &sqlx::PgPool,
-    sb: &crate::secretbox::SecretBox,
+    sb: &talaria_secretbox::SecretBox,
     def_id: &str,
 ) -> Result<bool, String> {
     let def: Option<(String, String, String, bool)> = sqlx::query_as(
@@ -283,9 +296,9 @@ pub async fn delete_agent_forever(
 
     // Containers first (should already be gone after retire; both slots,
     // best-effort).
-    for slot in [crate::fleet::docker::Slot::A, crate::fleet::docker::Slot::B] {
-        let _ = crate::fleet::docker::remove_container_by_name(
-            &crate::fleet::docker::slot_container(&department, slot),
+    for slot in [talaria_fleet_docker::Slot::A, talaria_fleet_docker::Slot::B] {
+        let _ = talaria_fleet_docker::remove_container_by_name(
+            &talaria_fleet_docker::slot_container(&department, slot),
         )
         .await;
     }
@@ -315,7 +328,7 @@ pub async fn delete_agent_forever(
     }
 
     // Rendered dir (best-effort cleanup).
-    let _ = tokio::fs::remove_dir_all(crate::fleet::layout::fleet_dir().join("agents").join(&slug))
+    let _ = tokio::fs::remove_dir_all(talaria_fleet_layout::fleet_dir().join("agents").join(&slug))
         .await;
 
     // Every per-slug secret line: BOTH credentials — the Hermes key AND the
@@ -326,9 +339,9 @@ pub async fn delete_agent_forever(
     // diagnostic). The renderer now rewrites rather than skips, so this is
     // belt and braces; the lingering plaintext is the reason it matters.
     // Best-effort: the DB is authoritative; the next render re-materializes.
-    if let Ok(content) = tokio::fs::read_to_string(crate::fleet::layout::fleet_env()).await {
+    if let Ok(content) = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env()).await {
         let hermes = format!("HERMES_KEY_{}=", slug.to_uppercase());
-        let agent_key = format!("{}=", crate::fleet::layout::agent_key_var(&slug));
+        let agent_key = format!("{}=", talaria_fleet_layout::agent_key_var(&slug));
         // The seeded comment rides out with the HERMES key line it announced
         // — only that line's pattern owns it, never the agent-key line.
         let comment = "# added by Talaria (agent create)";
@@ -347,11 +360,11 @@ pub async fn delete_agent_forever(
         }
         if next != content {
             use std::os::unix::fs::PermissionsExt;
-            let _ = tokio::fs::write(crate::fleet::layout::fleet_env(), &next).await;
-            if let Ok(meta) = tokio::fs::metadata(crate::fleet::layout::fleet_env()).await {
+            let _ = tokio::fs::write(talaria_fleet_layout::fleet_env(), &next).await;
+            if let Ok(meta) = tokio::fs::metadata(talaria_fleet_layout::fleet_env()).await {
                 let mut perms = meta.permissions();
                 perms.set_mode(0o600);
-                let _ = tokio::fs::set_permissions(crate::fleet::layout::fleet_env(), perms).await;
+                let _ = tokio::fs::set_permissions(talaria_fleet_layout::fleet_env(), perms).await;
             }
         }
     }
@@ -359,13 +372,16 @@ pub async fn delete_agent_forever(
     // State volume: only for created agents (imported volumes are external
     // legacy).
     let removed_volume = source == "created"
-        && crate::fleet::docker::remove_volume(&format!(
+        && talaria_fleet_docker::remove_volume(&format!(
             "{}_hermes-{department}",
-            crate::fleet::layout::fleet_project()
+            talaria_fleet_layout::fleet_project()
         ))
         .await;
 
-    crate::fleet::render::render_fleet(pg, sb, None).await?; // compose + manifest drop the agent
+    match RENDER_FLEET.get() {
+        Some(rf) => rf(pg.clone(), sb.clone()).await?,
+        None => return Err("fleet renderer is not wired".into()),
+    }
     Ok(removed_volume)
 }
 
