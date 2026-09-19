@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 159 crates.** Message refs (KB/artifact ACL via
-  OnceLock). Verified: `cargo check -p talaria-api`.
+- **API workspace: 160 crates.** Harness JSON parser (`PreFn` on
+  json-schema). Verified: `cargo check -p talaria-api`.
+
 
 
 

@@ -289,7 +289,7 @@ pub type CleanFn = Arc<dyn Fn(&str) -> Result<Option<Value>, String> + Send + Sy
 ///
 /// Runs per candidate span, after parse and before validation. Pure and
 /// cheap — it is on the same hot path as the parser.
-pub type PreFn = Arc<dyn Fn(&Value) -> Value + Send + Sync>;
+pub use talaria_harness_json_schema::PreFn;
 
 /// THE RELATION BETWEEN THE INPUT AND THE OUTPUT — the half of a harness
 /// contract a schema is structurally incapable of stating.

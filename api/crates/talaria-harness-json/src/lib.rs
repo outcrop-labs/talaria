@@ -37,12 +37,12 @@
 // prose inside the parens is not stable enough to be one, and the test corpus
 // does not pin it.
 
-use super::define::PreFn;
-use super::schema::{self, Schema};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::OnceLock;
+use talaria_harness_json_schema::PreFn;
+use talaria_harness_schema::{self as schema, Schema};
 
 // ── Scanning ─────────────────────────────────────────────────────────────────
 

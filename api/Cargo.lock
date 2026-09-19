@@ -3711,6 +3711,7 @@ dependencies = [
  "talaria-google-org",
  "talaria-google-provisioning",
  "talaria-guard-coaching",
+ "talaria-harness-json",
  "talaria-harness-json-schema",
  "talaria-harness-model",
  "talaria-harness-schema",
@@ -4594,6 +4595,16 @@ dependencies = [
  "sqlx",
  "talaria-settings",
  "tracing",
+]
+
+[[package]]
+name = "talaria-harness-json"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "talaria-harness-json-schema",
+ "talaria-harness-schema",
 ]
 
 [[package]]

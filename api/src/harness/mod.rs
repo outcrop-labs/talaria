@@ -32,7 +32,7 @@
 
 pub mod define;
 pub mod defs;
-pub mod json;
+pub use talaria_harness_json as json;
 pub use talaria_harness_json_schema as json_schema;
 pub mod prompt_rules;
 pub mod recorded;

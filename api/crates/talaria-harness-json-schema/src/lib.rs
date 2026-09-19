@@ -904,3 +904,8 @@ mod tests {
         );
     }
 }
+
+use std::sync::Arc;
+
+/// Def's own restructure of a parsed reply before schema validation.
+pub type PreFn = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
