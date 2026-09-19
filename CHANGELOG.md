@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 160 crates.** Harness JSON parser (`PreFn` on
-  json-schema). Verified: `cargo check -p talaria-api`.
+- **API workspace: 161 crates.** Harness untrusted-input prompt clause.
+  Verified: `cargo check -p talaria-api`.
+
 
 
 

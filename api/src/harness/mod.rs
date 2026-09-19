@@ -34,10 +34,41 @@ pub mod define;
 pub mod defs;
 pub use talaria_harness_json as json;
 pub use talaria_harness_json_schema as json_schema;
-pub mod prompt_rules;
+pub use talaria_harness_prompt_rules as prompt_rules;
 pub mod recorded;
 pub mod registry;
 pub mod run;
 pub use talaria_harness_schema as schema;
 pub use talaria_harness_text as text;
 pub mod transport;
+
+#[cfg(test)]
+mod prompt_rules_coverage {
+    use super::define::RenderContext;
+    use super::prompt_rules::{STATES_THE_BOUNDARY, UNTRUSTED_INPUT};
+
+    #[test]
+    fn every_named_harness_renders_the_clause() {
+        for name in STATES_THE_BOUNDARY {
+            let Some(h) = super::registry::builtin_by_id(name) else {
+                panic!("STATES_THE_BOUNDARY names \"{name}\", which is not a registered harness");
+            };
+            let case = h
+                .def
+                .evals
+                .first()
+                .unwrap_or_else(|| panic!("\"{name}\" has no eval fixture to render"));
+            let ctx = RenderContext {
+                widened: false,
+                model: "test".into(),
+            };
+            let msgs = (h.def.render)(&case.input, &ctx)
+                .unwrap_or_else(|e| panic!("\"{name}\" failed to render its own fixture: {e}"));
+            let carries = msgs.iter().any(|m| m.content.contains(UNTRUSTED_INPUT));
+            assert!(
+                carries,
+                "\"{name}\" is named in STATES_THE_BOUNDARY but its rendered prompt does not carry UNTRUSTED_INPUT"
+            );
+        }
+    }
+}

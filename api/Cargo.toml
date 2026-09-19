@@ -167,6 +167,7 @@ members = [
     "crates/talaria-realtime-watch",
     "crates/talaria-refs",
     "crates/talaria-harness-json",
+    "crates/talaria-harness-prompt-rules",
 ]
 resolver = "3"
 
@@ -358,6 +359,7 @@ talaria-gaps = { path = "crates/talaria-gaps" }
 talaria-realtime-watch = { path = "crates/talaria-realtime-watch" }
 talaria-refs = { path = "crates/talaria-refs" }
 talaria-harness-json = { path = "crates/talaria-harness-json" }
+talaria-harness-prompt-rules = { path = "crates/talaria-harness-prompt-rules" }
 
 
 

@@ -3714,6 +3714,7 @@ dependencies = [
  "talaria-harness-json",
  "talaria-harness-json-schema",
  "talaria-harness-model",
+ "talaria-harness-prompt-rules",
  "talaria-harness-schema",
  "talaria-harness-text",
  "talaria-hermes-skills",
@@ -4628,6 +4629,10 @@ dependencies = [
  "talaria-users",
  "tokio",
 ]
+
+[[package]]
+name = "talaria-harness-prompt-rules"
+version = "0.1.0"
 
 [[package]]
 name = "talaria-harness-schema"
