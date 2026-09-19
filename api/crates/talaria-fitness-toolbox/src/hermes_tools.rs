@@ -34,8 +34,8 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
-use crate::harness::define::{WorkspaceFile, WorkspaceSpec};
-use crate::harness::transport::ToolDefinition;
+use talaria_harness::define::{WorkspaceFile, WorkspaceSpec};
+use talaria_harness::transport::ToolDefinition;
 
 use super::sandbox::{DispatchResult, SandboxCall, ToolRefusal};
 

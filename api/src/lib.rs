@@ -112,7 +112,7 @@ pub use talaria_tz as tz;
 pub mod update;
 pub use talaria_uploads as uploads;
 pub use talaria_users as users;
-pub mod vision;
+pub use talaria_vision as vision;
 pub use talaria_web_search as web_search;
 pub mod work_dispatch;
 pub use talaria_work_wait as work_wait;

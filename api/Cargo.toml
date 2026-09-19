@@ -172,6 +172,8 @@ members = [
     "crates/talaria-daily-brief-focus",
     "crates/talaria-channel-replies",
     "crates/talaria-harness",
+    "crates/talaria-vision",
+    "crates/talaria-fitness-toolbox",
 ]
 resolver = "3"
 
@@ -368,6 +370,8 @@ talaria-ticket-chat = { path = "crates/talaria-ticket-chat" }
 talaria-daily-brief-focus = { path = "crates/talaria-daily-brief-focus" }
 talaria-channel-replies = { path = "crates/talaria-channel-replies" }
 talaria-harness = { path = "crates/talaria-harness" }
+talaria-vision = { path = "crates/talaria-vision" }
+talaria-fitness-toolbox = { path = "crates/talaria-fitness-toolbox" }
 
 
 

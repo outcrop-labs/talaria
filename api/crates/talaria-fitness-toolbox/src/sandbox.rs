@@ -50,10 +50,10 @@
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::harness::transport::ToolDefinition;
+use talaria_harness::transport::ToolDefinition;
 
-use super::talaria_tools::{SandboxTool, TALARIA_TOOLS, tools_named};
-use super::world::{
+use talaria_fitness_talaria_tools::{SandboxTool, TALARIA_TOOLS, tools_named};
+use talaria_fitness_world::{
     AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxBoard, SandboxComment,
     SandboxDm, SandboxDocument, SandboxEmailDraft, SandboxEventDraft, SandboxKbDoc, SandboxKbSpace,
     SandboxLabel, SandboxMember, SandboxOutcome, SandboxTicket, SandboxWorld, base_world,
@@ -1030,11 +1030,10 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             {
                 msg.reactions.remove(pos);
             } else {
-                msg.reactions
-                    .push(crate::fitness::toolbox::world::SandboxReaction {
-                        emoji: emoji.to_string(),
-                        author: w.agent.clone(),
-                    });
+                msg.reactions.push(talaria_fitness_world::SandboxReaction {
+                    emoji: emoji.to_string(),
+                    author: w.agent.clone(),
+                });
             }
             Ok(json!({ "ok": true }))
         }
@@ -2784,12 +2783,7 @@ mod tests {
             .split("mod tests")
             .nth(1)
             .expect("this file's test module is what the scan reads");
-        let mut surfaces: Vec<&'static str> = Vec::new();
-        for h in crate::harness::registry::builtin_activity_harnesses() {
-            if let Some(d) = &h.def.dry_run {
-                surfaces.extend(d.tools.iter().copied());
-            }
-        }
+        let surfaces: Vec<&'static str> = Vec::new();
         for name in BACKED_TOOLS {
             let by_test = tests.contains(&format!("\"{name}\""));
             let by_surface = surfaces.contains(name);

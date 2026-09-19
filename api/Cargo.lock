@@ -3688,6 +3688,7 @@ dependencies = [
  "talaria-error",
  "talaria-fitness-code-runner",
  "talaria-fitness-talaria-tools",
+ "talaria-fitness-toolbox",
  "talaria-fitness-world",
  "talaria-fleet-agents",
  "talaria-fleet-brain",
@@ -3805,6 +3806,7 @@ dependencies = [
  "talaria-update-state",
  "talaria-uploads",
  "talaria-users",
+ "talaria-vision",
  "talaria-web-search",
  "talaria-work-wait",
  "talaria-workbench",
@@ -4199,6 +4201,18 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "talaria-fitness-toolbox"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "talaria-fitness-talaria-tools",
+ "talaria-fitness-world",
+ "talaria-harness",
 ]
 
 [[package]]
@@ -5959,6 +5973,18 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-vision"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-harness",
+ "talaria-harness-model",
+ "talaria-state",
+ "tokio",
 ]
 
 [[package]]

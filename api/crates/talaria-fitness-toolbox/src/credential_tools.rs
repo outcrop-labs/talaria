@@ -40,8 +40,8 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::harness::define::CredentialSpec;
-use crate::harness::transport::ToolDefinition;
+use talaria_harness::define::CredentialSpec;
+use talaria_harness::transport::ToolDefinition;
 
 use super::sandbox::DispatchResult;
 
@@ -379,7 +379,7 @@ impl CredentialSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::define::GrantedCredential;
+    use talaria_harness::define::GrantedCredential;
 
     fn sb() -> CredentialSandbox {
         CredentialSandbox::new(CredentialSpec {

@@ -27,16 +27,16 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::harness::define::{
+use talaria_harness::define::{
     GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor,
     define_harness,
 };
-use crate::harness::run::{RunContext, real_deps, run_harness};
-use crate::harness::transport::{
+use talaria_harness::run::{RunContext, real_deps, run_harness};
+use talaria_harness::transport::{
     TransportKind, TransportReply, TransportRequest, gateway_image_turn,
 };
-use crate::harness_model::ModelSpec;
-use crate::state::AppState;
+use talaria_harness_model::ModelSpec;
+use talaria_state::AppState;
 
 /// How long a description may take. Well under a harness turn budget: a caller
 /// is usually inside its own turn when it asks, and a describe that outlives the

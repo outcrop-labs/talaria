@@ -36,9 +36,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::harness::define::Message;
-use crate::harness::run::TransportFn;
-use crate::harness::transport::{
+use talaria_harness::define::Message;
+use talaria_harness::run::TransportFn;
+use talaria_harness::transport::{
     TokenPair, ToolDefinition, ToolPolicy, TransportKind, TransportReply, TransportRequest,
     tool_call_id_of,
 };
@@ -231,7 +231,7 @@ pub fn sandbox_transport<S: DispatchSandbox + 'static>(
                 // failed before this one), and the shape providers speak is the
                 // only one they are trained on.
                 convo.push(Message {
-                    role: crate::harness::define::Role::Assistant,
+                    role: talaria_harness::define::Role::Assistant,
                     content: reply.text.clone(),
                     tool_calls: calls.clone(),
                     tool_call_id: None,
@@ -253,7 +253,7 @@ pub fn sandbox_transport<S: DispatchSandbox + 'static>(
                     // Rust string can be cut without manufacturing a broken
                     // code point.
                     convo.push(Message {
-                        role: crate::harness::define::Role::Tool,
+                        role: talaria_harness::define::Role::Tool,
                         content: res.text.chars().take(8_000).collect(),
                         tool_calls: Vec::new(),
                         tool_call_id: Some(tool_call_id_of(call, i)),
@@ -327,8 +327,8 @@ pub fn sandbox_transport<S: DispatchSandbox + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::transport::{ToolCall, ToolPolicy};
     use serde_json::json;
+    use talaria_harness::transport::{ToolCall, ToolPolicy};
 
     /// A base transport scripted per turn: each entry is (text, tool calls).
     /// Everything the loop does is observable through what it sends DOWN and
@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn workbench() -> std::sync::Arc<std::sync::Mutex<WorkbenchSandbox>> {
-        use crate::harness::define::{WorkspaceFile, WorkspaceSpec};
+        use talaria_harness::define::{WorkspaceFile, WorkspaceSpec};
         std::sync::Arc::new(std::sync::Mutex::new(WorkbenchSandbox::new(
             WorkspaceSpec {
                 files: vec![WorkspaceFile {
@@ -511,7 +511,7 @@ mod tests {
         assert!(
             last.messages
                 .iter()
-                .any(|m| m.role == crate::harness::define::Role::Tool)
+                .any(|m| m.role == talaria_harness::define::Role::Tool)
         );
     }
 
