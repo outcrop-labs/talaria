@@ -13,7 +13,8 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.11"
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
 talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-boards = { path = "../talaria-boards" }
 talaria-daily-brief-types = { path = "../talaria-daily-brief-types" }
+talaria-statuses = { path = "../talaria-statuses" }

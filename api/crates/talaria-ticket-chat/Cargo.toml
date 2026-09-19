@@ -15,3 +15,4 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 talaria-body = { path = "../talaria-body" }
 talaria-state = { path = "../talaria-state" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }

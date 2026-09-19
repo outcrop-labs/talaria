@@ -9,7 +9,9 @@ publish = false
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", default-features = false }
+# default-features off, "tokio" on: Sse::keep_alive lives behind the tokio
+# feature and this crate is the one that uses it.
+axum = { version = "0.8", default-features = false, features = ["tokio"] }
 futures-util = "0.3"
 redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1", features = ["derive"] }

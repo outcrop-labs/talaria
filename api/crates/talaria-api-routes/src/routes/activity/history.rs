@@ -196,12 +196,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         return Json(RevisionsBody { revisions }).into_response();
     }
 
-    if !kind.is_some_and(|k| SNAPSHOT_KINDS.contains(&k)) {
+    let Some(kind) = kind.filter(|k| SNAPSHOT_KINDS.contains(k)) else {
         return house_error(StatusCode::BAD_REQUEST, "bad kind");
-    }
+    };
     // skill keys on "<owner>/<name>"; the rest key on an id. An empty
     // owner/name/id counts as absent.
-    let owner_key = if kind == Some("skill") {
+    let owner_key = if kind == "skill" {
         match (
             q.get("owner").filter(|o| !o.is_empty()),
             q.get("name").filter(|n| !n.is_empty()),
@@ -218,12 +218,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
 
     // History serves FULL content — it must honor the same read model as
     // the live item, or it's a bypass of the entire permission system.
-    if !can_read_snapshot_history(&state, kind.unwrap(), &owner_key, &user).await {
+    if !can_read_snapshot_history(&state, kind, &owner_key, &user).await {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
 
     if let Some(rev) = rev {
-        return match get_revision(&state.pg, kind.unwrap(), &owner_key, rev).await {
+        return match get_revision(&state.pg, kind, &owner_key, rev).await {
             Ok(Some(content)) => Json(ContentBody { content }).into_response(),
             Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
             Err(e) => {
@@ -232,7 +232,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             }
         };
     }
-    match list_history(&state.pg, kind.unwrap(), &owner_key).await {
+    match list_history(&state.pg, kind, &owner_key).await {
         Ok(revisions) => Json(RevisionsBody { revisions }).into_response(),
         Err(e) => {
             tracing::error!("[history] snapshot list failed: {e}");

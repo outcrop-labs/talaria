@@ -23,6 +23,7 @@ use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
 use talaria_body::truncate_utf16;
 use talaria_state::AppState;
+use talaria_tasks_types::{agent_assignees, json_strings};
 
 pub static TICKET_RELEVANT: OnceLock<
     Arc<
@@ -31,20 +32,6 @@ pub static TICKET_RELEVANT: OnceLock<
             + Sync,
     >,
 > = OnceLock::new();
-
-fn json_strings(v: &serde_json::Value) -> Vec<String> {
-    serde_json::from_value(v.clone()).unwrap_or_default()
-}
-fn is_human_assignee(a: &str) -> bool {
-    a.starts_with("user:")
-}
-fn agent_assignees(assignees: &[String]) -> Vec<String> {
-    assignees
-        .iter()
-        .filter(|a| !is_human_assignee(a))
-        .cloned()
-        .collect()
-}
 
 // ── The head ─────────────────────────────────────────────────────────────────
 

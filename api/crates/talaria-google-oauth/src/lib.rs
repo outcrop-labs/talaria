@@ -710,8 +710,10 @@ pub async fn handle_connect_callback(
     if !present(&code) || !present(&state_param) || !present(&cookie_state) {
         return back("bad_state");
     }
-    let (code, state_param, cookie_state) =
-        (code.unwrap(), state_param.unwrap(), cookie_state.unwrap());
+    let (Some(code), Some(state_param), Some(cookie_state)) = (code, state_param, cookie_state)
+    else {
+        return back("bad_state");
+    };
     if !talaria_session::state_matches(&state_param, &cookie_state) {
         return back("bad_state");
     }

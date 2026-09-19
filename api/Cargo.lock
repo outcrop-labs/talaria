@@ -4558,6 +4558,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-boards",
  "talaria-daily-brief-types",
+ "talaria-statuses",
 ]
 
 [[package]]
@@ -6910,6 +6911,7 @@ dependencies = [
  "sqlx",
  "talaria-body",
  "talaria-state",
+ "talaria-tasks-types",
 ]
 
 [[package]]

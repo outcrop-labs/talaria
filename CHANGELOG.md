@@ -4,8 +4,16 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **CI: api job timeout 15 → 30 minutes.** The workspace split multiplied
- test binaries (~200, one per crate); the cold `cargo test` was cancelled
+- **P4 first slice: unwrap triage, unsafe audit, dedupe.** The live
+ unwrap inventory (205 outside tests after classifying 1,228 in-test and
+ 117 static-init) is safe-by-construction — constant regexes, guarded
+ doubles; the two fragile guarded-unwrap shapes (history `kind`, oauth
+ callback tuple) are destructured instead. The workspace's one remaining
+ `unsafe` (SSE metered stream `get_unchecked_mut`) is audited sound.
+ Split-era helper copies deduped onto their owners. Verified:
+ `cargo clippy --workspace --all-targets -- -D warnings`,
+ `cargo test --workspace` (868 passed).
+
  mid-build at 15. Verified: the rerun on this change is the first to fit
  the budget cold.
 

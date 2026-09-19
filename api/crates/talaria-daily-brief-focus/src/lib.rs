@@ -12,19 +12,9 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_boards::board_visibility_sql;
+use talaria_statuses::status_category_sql;
 
 pub use talaria_daily_brief_types::{as_iso, fingerprint, key_of, nullable_iso};
-
-fn status_category_sql(category: &str, legacy_keys: &[&str]) -> String {
-    let keys = legacy_keys
-        .iter()
-        .map(|k| format!("'{k}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "( t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and          bs.category = '{category}') or ( not exists (select 1 from board_statuses bs where          bs.board_id = t.board_id) and t.status in ({keys}) ) )"
-    )
-}
 
 /// The notification kinds the brief lists — the actionable set, not the bell.
 pub const ACTIONABLE_NOTIFICATION_KINDS: [&str; 11] = [
