@@ -6,8 +6,8 @@
 use serde_json::json;
 use sqlx::PgPool;
 
-use crate::fitness::toolbox::talaria_tools::toolkit_group_lines;
-use crate::gateway::settings::get_setting;
+use talaria_fitness_talaria_tools::toolkit_group_lines;
+use talaria_gateway::settings::get_setting;
 
 #[derive(Debug, Clone, Default)]
 pub struct OrgProfile {
@@ -37,10 +37,10 @@ pub async fn org_profile(pg: &PgPool) -> OrgProfile {
 /// calls this also rolls the running fleet.
 pub async fn set_org_profile(pg: &PgPool, name: Option<&str>, about: Option<&str>) {
     if let Some(name) = name {
-        let _ = crate::gateway::settings::set_setting(pg, "org_name", &json!(name.trim())).await;
+        let _ = talaria_gateway::settings::set_setting(pg, "org_name", &json!(name.trim())).await;
     }
     if let Some(about) = about {
-        let _ = crate::gateway::settings::set_setting(pg, "org_about", &json!(about.trim())).await;
+        let _ = talaria_gateway::settings::set_setting(pg, "org_about", &json!(about.trim())).await;
     }
 }
 

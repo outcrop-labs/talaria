@@ -14,8 +14,8 @@
 
 use sqlx::PgPool;
 
-use crate::fleet::docker::{docker_exec, managed_container};
-use crate::gateway::settings::get_setting;
+use talaria_fleet_docker::{docker_exec, managed_container};
+use talaria_gateway::settings::get_setting;
 
 const JOBS_PATH: &str = "/opt/data/cron/jobs.json";
 

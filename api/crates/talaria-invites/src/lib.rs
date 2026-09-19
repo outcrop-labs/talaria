@@ -8,10 +8,10 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sqlx::PgPool;
 
-use crate::email::{EmailInput, SendOutcome, email_escape, email_shell, send_email};
-use crate::instance::instance_base_url;
-use crate::org::org_profile;
-use crate::secretbox::SecretBox;
+use talaria_email::{EmailInput, SendOutcome, email_escape, email_shell, send_email};
+use talaria_instance::instance_base_url;
+use talaria_org::org_profile;
+use talaria_secretbox::SecretBox;
 
 const TTL_DAYS: i32 = 14;
 
@@ -25,7 +25,7 @@ fn invite_json(
     accepted_ms: Option<i64>,
     revoked_ms: Option<i64>,
 ) -> serde_json::Value {
-    let iso = crate::agent_auth::epoch_ms_to_iso;
+    let iso = talaria_agent_auth::epoch_ms_to_iso;
     serde_json::json!({
         "id": id,
         "email": email,

@@ -10,8 +10,8 @@ pub mod credential_tools;
 pub mod dry_run;
 pub mod hermes_tools;
 pub mod sandbox;
-pub mod talaria_tools;
-pub mod world;
+pub use talaria_fitness_talaria_tools as talaria_tools;
+pub use talaria_fitness_world as world;
 
 // Reading order: `world` (the in-memory Talaria), `talaria_tools` (the
 // catalog, locked to mcp/src/index.ts by a sync test), `sandbox` (the dispatch

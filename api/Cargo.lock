@@ -3458,6 +3458,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-crons"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-docker",
+ "talaria-gateway",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-agent-defs"
 version = "0.1.0"
 dependencies = [
@@ -3607,6 +3622,7 @@ dependencies = [
  "sqlx",
  "talaria-activity",
  "talaria-agent-auth",
+ "talaria-agent-crons",
  "talaria-agent-defs",
  "talaria-agent-media",
  "talaria-agent-memory",
@@ -3634,6 +3650,8 @@ dependencies = [
  "talaria-email",
  "talaria-error",
  "talaria-fitness-code-runner",
+ "talaria-fitness-talaria-tools",
+ "talaria-fitness-world",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
@@ -3660,6 +3678,7 @@ dependencies = [
  "talaria-hermes-skills",
  "talaria-instance",
  "talaria-internal-history",
+ "talaria-invites",
  "talaria-judge",
  "talaria-labels",
  "talaria-llm-keys",
@@ -3677,6 +3696,7 @@ dependencies = [
  "talaria-model-roles",
  "talaria-native-search",
  "talaria-notify",
+ "talaria-org",
  "talaria-org-domains",
  "talaria-params",
  "talaria-password",
@@ -4015,6 +4035,23 @@ version = "0.1.0"
 dependencies = [
  "boa_engine",
  "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-fitness-talaria-tools"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-fitness-world"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]
@@ -4446,6 +4483,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-invites"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-email",
+ "talaria-instance",
+ "talaria-org",
+ "talaria-secretbox",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-judge"
 version = "0.1.0"
 dependencies = [
@@ -4709,6 +4764,17 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "talaria-org"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fitness-talaria-tools",
+ "talaria-gateway",
 ]
 
 [[package]]

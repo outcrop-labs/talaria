@@ -4,7 +4,7 @@
 
 pub use talaria_activity as activity;
 pub use talaria_agent_auth as agent_auth;
-pub mod agent_crons;
+pub use talaria_agent_crons as agent_crons;
 pub use talaria_agent_defs as agent_defs;
 pub mod agent_mcp;
 pub use talaria_agent_media as agent_media;
@@ -55,7 +55,7 @@ pub mod home;
 pub mod inbox_focus;
 pub use talaria_instance as instance;
 pub use talaria_internal_history as internal_history;
-pub mod invites;
+pub use talaria_invites as invites;
 pub mod jobs;
 pub use talaria_judge as judge;
 pub mod kb;
@@ -67,7 +67,7 @@ pub use talaria_mentions as mentions;
 pub mod model;
 pub use talaria_native_search as native_search;
 pub use talaria_notify as notify;
-pub mod org;
+pub use talaria_org as org;
 pub use talaria_org_domains as org_domains;
 pub mod outreach;
 pub use talaria_params as params;

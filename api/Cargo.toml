@@ -140,6 +140,11 @@ members = [
     "crates/talaria-capability-reach",
     "crates/talaria-capability-platform",
     "crates/talaria-harness-model",
+    "crates/talaria-agent-crons",
+    "crates/talaria-fitness-world",
+    "crates/talaria-fitness-talaria-tools",
+    "crates/talaria-org",
+    "crates/talaria-invites",
 ]
 resolver = "3"
 
@@ -304,6 +309,11 @@ talaria-effort-prefs = { path = "crates/talaria-effort-prefs" }
 talaria-capability-reach = { path = "crates/talaria-capability-reach" }
 talaria-capability-platform = { path = "crates/talaria-capability-platform" }
 talaria-harness-model = { path = "crates/talaria-harness-model" }
+talaria-agent-crons = { path = "crates/talaria-agent-crons" }
+talaria-fitness-world = { path = "crates/talaria-fitness-world" }
+talaria-fitness-talaria-tools = { path = "crates/talaria-fitness-talaria-tools" }
+talaria-org = { path = "crates/talaria-org" }
+talaria-invites = { path = "crates/talaria-invites" }
 
 
 
