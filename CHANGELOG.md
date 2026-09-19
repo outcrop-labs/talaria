@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 195 crates.** Run kinds: agent-hire, rag-reindex.
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 196 crates.** Approvals plane. Verified:
+  `cargo check -p talaria-api`.
+
 
 
 

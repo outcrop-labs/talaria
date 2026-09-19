@@ -3684,6 +3684,7 @@ dependencies = [
  "talaria-agent-writes",
  "talaria-agents-registry",
  "talaria-alerts",
+ "talaria-approvals",
  "talaria-apps",
  "talaria-artifacts",
  "talaria-attribution",
@@ -3874,6 +3875,28 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-approvals"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

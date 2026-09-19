@@ -71,16 +71,16 @@
 
 use std::collections::HashMap;
 
-use crate::agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
-use crate::notify::{NotificationInput, NotifyDeps, add_notification};
-use crate::realtime::RealtimeDeps;
-use crate::runs::define::{Authority, RunRow, RunState};
-use crate::runs::run::{DefinitionForFn, NowFn, clamp_text};
-use crate::runs::store;
-use crate::statuses::status_category_sql;
-use crate::tasks::human_assignee_ids;
 use serde_json::Value;
 use sqlx::PgPool;
+use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_realtime::RealtimeDeps;
+use talaria_runs_define::{Authority, RunRow, RunState};
+use talaria_runs_run::{DefinitionForFn, NowFn, clamp_text};
+use talaria_runs_store as store;
+use talaria_statuses::status_category_sql;
+use talaria_tasks_types::human_assignee_ids;
 
 const LOG: &str = "[approvals]";
 
@@ -670,7 +670,7 @@ async fn run_decision_approvals(
     definition_for: &DefinitionForFn,
 ) -> Result<Vec<PendingApproval>, sqlx::Error> {
     // AssertSqlSafe: the only interpolated fragment is the store's own
-    // pub(crate) column list — same contract the store's queries carry.
+    // pub column list — same contract the store's queries carry.
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select {} from runs where state = 'awaiting' and approval_key is not null",
         store::COLS
@@ -1020,7 +1020,7 @@ const ANNOUNCE_STATE_KEY: &str = "approval_announce_state";
 /// forgiving settings read (a missing or malformed row is "nothing announced"),
 /// which is the only read here — the WRITES merge, see `mark_announced`.
 async fn announce_state(pg: &PgPool) -> HashMap<String, String> {
-    let stored = crate::gateway::settings::get_setting(pg, ANNOUNCE_STATE_KEY, Value::Null).await;
+    let stored = talaria_gateway::settings::get_setting(pg, ANNOUNCE_STATE_KEY, Value::Null).await;
     stored
         .get("announced")
         .and_then(|v| v.as_object())
@@ -1526,8 +1526,8 @@ pub async fn sweep_unannounced(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runs::define::RunDecision;
     use std::sync::Arc;
+    use talaria_runs_define::RunDecision;
 
     fn approval(kind: ApprovalKind, authority: Authority) -> PendingApproval {
         PendingApproval {
@@ -1861,12 +1861,12 @@ mod tests {
             if *k != kind {
                 return None;
             }
-            Some(Arc::new(crate::runs::define::RunDefinition {
+            Some(Arc::new(talaria_runs_define::RunDefinition {
                 kind: kind.clone(),
                 label: "Ticket handover".into(),
                 step: Arc::new(|_| {
                     Box::pin(async {
-                        Ok(crate::runs::define::StepResult::Done {
+                        Ok(talaria_runs_define::StepResult::Done {
                             result: serde_json::Value::Null,
                         })
                     })
@@ -1881,18 +1881,18 @@ mod tests {
         })
     }
 
-    fn ask() -> crate::runs::define::DecisionRequest {
-        crate::runs::define::DecisionRequest {
+    fn ask() -> talaria_runs_define::DecisionRequest {
+        talaria_runs_define::DecisionRequest {
             key: "assignee".into(),
             question: "Who should take this ticket?".into(),
             detail: Some("Both are editors.".into()),
             options: vec![
-                crate::runs::define::DecisionOption {
+                talaria_runs_define::DecisionOption {
                     id: "ana".into(),
                     label: "Ana".into(),
                     detail: None,
                 },
-                crate::runs::define::DecisionOption {
+                talaria_runs_define::DecisionOption {
                     id: "ben".into(),
                     label: "Ben".into(),
                     detail: None,
