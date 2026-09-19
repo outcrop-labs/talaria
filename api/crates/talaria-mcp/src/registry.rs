@@ -24,17 +24,17 @@ use std::time::Duration;
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model, subject_proven};
-use crate::gateway::provider::http;
-use crate::safe_fetch::{SafeFetch, safe_fetch};
-use crate::secretbox::SecretBox;
+use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model, subject_proven};
+use talaria_gateway::provider::http;
+use talaria_safe_fetch::{SafeFetch, safe_fetch};
+use talaria_secretbox::SecretBox;
 
 /// The protocol revision Talaria speaks at the MCP handshake — one revision
 /// for both directions of the conversation (what our dispatchers answer and
 /// what every client asks). The literal lives in mcp::jsonrpc (the leaf
 /// every dispatcher shares); re-exported here for the importers that reach
 /// it via the registry.
-pub use crate::mcp::jsonrpc::MCP_PROTOCOL_VERSION;
+pub use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 
 /// The column list every full-row read spells — the wire's field order IS
 /// this order.
@@ -238,7 +238,7 @@ pub async fn call_mcp_tool(
     }
 
     let bearer = if server.oauth_enabled {
-        crate::mcp::oauth::oauth_token_for(pg, sb, &server.id, "org").await?
+        talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
     } else {
         None
     };
@@ -302,16 +302,16 @@ struct OrgReply {
 /// the surface callers see: transport failures read bare "fetch failed"
 /// (the cause chain carries the detail, the message does not) and a timeout
 /// expiry reads "The operation was aborted due to timeout".
-pub(crate) use talaria_undici::undici_message;
+pub use talaria_undici::undici_message;
 
 /// The same shapes for the safe-fetch leg — except a blocked URL, whose
 /// refusal sentence is itself the message that surfaces, so it passes
 /// through verbatim.
-fn undici_safe_message(e: crate::safe_fetch::SafeError) -> String {
+fn undici_safe_message(e: talaria_safe_fetch::SafeError) -> String {
     match e {
-        crate::safe_fetch::SafeError::Timeout => "The operation was aborted due to timeout".into(),
-        crate::safe_fetch::SafeError::Blocked(b) => b.to_string(),
-        crate::safe_fetch::SafeError::Fetch(_) => "fetch failed".into(),
+        talaria_safe_fetch::SafeError::Timeout => "The operation was aborted due to timeout".into(),
+        talaria_safe_fetch::SafeError::Blocked(b) => b.to_string(),
+        talaria_safe_fetch::SafeError::Fetch(_) => "fetch failed".into(),
     }
 }
 
@@ -471,7 +471,7 @@ pub async fn ensure_builtin_mcp(pg: &PgPool) -> Result<(), sqlx::Error> {
                  $1, true, true, 'talaria') \
          on conflict (name) do update set builtin = true, all_agents = true, enabled = true",
     )
-    .bind(format!("http://127.0.0.1:{}/mcp", crate::mcp::service::mcp_port()))
+    .bind(format!("http://127.0.0.1:{}/mcp", talaria_mcp_service::mcp_port()))
     .execute(pg)
     .await?;
     // The Workbench surface — in-process like app servers, but NOT all_agents:
@@ -494,7 +494,7 @@ pub async fn ensure_builtin_mcp(pg: &PgPool) -> Result<(), sqlx::Error> {
 /// capped at 300.
 fn workbench_catalog() -> Value {
     Value::Array(
-        crate::workbench::mcp::workbench_tools()
+        crate::workbench_tools()
             .into_iter()
             .map(|t| {
                 let mut e = Map::new();
@@ -761,7 +761,7 @@ pub async fn delete_mcp_server(pg: &PgPool, id: &str) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     if let Some((name,)) = pkg_row {
-        crate::mcp::pkg::stop_pkg(&name).await;
+        crate::pkg::stop_pkg(&name).await;
     }
     Ok(())
 }
@@ -1145,7 +1145,7 @@ pub async fn effective_mcp_for(
         if server.auth_mode == "per-user" {
             if server.oauth_enabled {
                 let Some(bearer) =
-                    crate::mcp::oauth::oauth_token_for(pg, sb, &server.id, owner).await?
+                    talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, owner).await?
                 else {
                     return Ok(None); // not connected — the server doesn't exist for this assistant yet
                 };
@@ -1172,7 +1172,7 @@ pub async fn effective_mcp_for(
     }
     // Org-auth OAuth servers speak with the shared org connection.
     if server.auth_mode == "org" && server.oauth_enabled {
-        let Some(bearer) = crate::mcp::oauth::oauth_token_for(pg, sb, &server.id, "org").await?
+        let Some(bearer) = talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
         else {
             return Ok(None); // nobody connected the org account yet
         };
@@ -1225,16 +1225,12 @@ pub async fn refresh_mcp_tools(
     // the pump (the cached handshake answers initialize); oci-http packages
     // relay like remotes, against the container's resolved URL — shadow the
     // row and fall through to the ordinary conversation below.
-    if let Some(spec) = server
-        .package
-        .as_ref()
-        .and_then(crate::mcp::pkg::PkgSpec::of)
-    {
+    if let Some(spec) = server.package.as_ref().and_then(crate::pkg::PkgSpec::of) {
         if spec.transport == "http" {
-            let url = crate::mcp::pkg::ensure_http(sb, &server, &spec).await?;
+            let url = crate::pkg::ensure_http(sb, &server, &spec).await?;
             server = McpServer { url, ..server };
         } else {
-            let init = crate::mcp::pkg::pkg_call(
+            let init = crate::pkg::pkg_call(
                 pg,
                 sb,
                 &server,
@@ -1261,7 +1257,7 @@ pub async fn refresh_mcp_tools(
                         .unwrap_or("?")
                 ));
             }
-            let list = crate::mcp::pkg::pkg_call(
+            let list = crate::pkg::pkg_call(
                 pg,
                 sb,
                 &server,
@@ -1298,11 +1294,11 @@ pub async fn refresh_mcp_tools(
     // opportunistically (renders, comms reads). On a freshly booted instance
     // none of those has happened, so start it and wait rather than probing a
     // port nothing is listening on.
-    if server.builtin && !crate::mcp::service::await_mcp_service(8_000).await {
+    if server.builtin && !talaria_mcp_service::await_mcp_service(8_000).await {
         return Err("the Talaria toolkit service did not start; check the app logs".into());
     }
     let bearer = if server.oauth_enabled {
-        crate::mcp::oauth::oauth_token_for(pg, sb, &server.id, "org").await?
+        talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
     } else {
         None
     };

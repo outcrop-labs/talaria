@@ -28,9 +28,9 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 
-use crate::mcp::jsonrpc::MCP_PROTOCOL_VERSION;
-use crate::mcp::registry::McpServer;
-use crate::secretbox::SecretBox;
+use crate::registry::McpServer;
+use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
+use talaria_secretbox::SecretBox;
 
 /// Named `docker run` flags a registry package may ask for. Anything else —
 /// `--privileged`, `--pid=host`, `--network=host` are all expressible in a
@@ -89,7 +89,7 @@ async fn api_network() -> Option<String> {
         return Some(named);
     }
     let self_id = std::env::var("HOSTNAME").ok()?;
-    let (out, _) = crate::fleet::docker::docker(
+    let (out, _) = talaria_fleet_docker::docker(
         &[
             "inspect",
             "-f",
@@ -233,7 +233,7 @@ impl SealedDoc {
 /// The chassis-matched DNS pins — same resolvers preflight probes with, read
 /// from the same place the renderer writes them.
 async fn pinned_dns() -> Vec<String> {
-    let text = tokio::fs::read_to_string(crate::fleet::layout::fleet_env())
+    let text = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
         .unwrap_or_default();
     let pick = |key: &str, fallback: &str| {
@@ -447,7 +447,7 @@ async fn spawn_stdio_child(
 ) -> Result<Arc<PkgChild>, String> {
     let container = container_name(server_name);
     // A stray from a previous api life would steal the name.
-    let _ = crate::fleet::docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
+    let _ = talaria_fleet_docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
     let dns = pinned_dns().await;
     let argv = pkg_argv(spec, sealed, &container, &dns, false)?;
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
@@ -743,7 +743,7 @@ pub async fn ensure_http(
     let container = container_name(&server.name);
     let port = spec.container_port.ok_or("this package declares no port")?;
     let path = spec.transport_path.clone().unwrap_or_else(|| "/mcp".into());
-    let running = crate::fleet::docker::docker(
+    let running = talaria_fleet_docker::docker(
         &["inspect", "-f", "{{.State.Running}}", &container],
         Duration::from_secs(10),
     )
@@ -752,7 +752,7 @@ pub async fn ensure_http(
     .unwrap_or(false);
     if !running {
         let _ =
-            crate::fleet::docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
+            talaria_fleet_docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
         let sealed = match &server.env_enc {
             Some(enc) => SealedDoc::open(sb, enc).unwrap_or_default(),
             None => SealedDoc::default(),
@@ -764,12 +764,12 @@ pub async fn ensure_http(
             argv.push(net);
         }
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-        crate::fleet::docker::docker(&argv_refs, Duration::from_secs(120)).await?;
+        talaria_fleet_docker::docker(&argv_refs, Duration::from_secs(120)).await?;
     }
     if in_image() {
         Ok(format!("http://{container}:{port}{path}"))
     } else {
-        let (out, _) = crate::fleet::docker::docker(
+        let (out, _) = talaria_fleet_docker::docker(
             &["port", &container, &format!("{port}/tcp")],
             Duration::from_secs(10),
         )
@@ -792,7 +792,7 @@ pub async fn stop_pkg(server_name: &str) {
         .unwrap_or_else(|p| p.into_inner())
         .remove(server_name);
     let container = container_name(server_name);
-    let _ = crate::fleet::docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
+    let _ = talaria_fleet_docker::docker(&["rm", "-f", &container], Duration::from_secs(30)).await;
 }
 
 /// Pull the image (install time) and pin the RepoDigest into the row. Runs
@@ -800,9 +800,9 @@ pub async fn stop_pkg(server_name: &str) {
 /// the UI reads.
 pub async fn pull_and_pin(pg: &PgPool, server_id: &str, image: &str) {
     let (state, digest, error) =
-        match crate::fleet::docker::docker(&["pull", image], Duration::from_secs(600)).await {
+        match talaria_fleet_docker::docker(&["pull", image], Duration::from_secs(600)).await {
             Ok(_) => {
-                let digest = crate::fleet::docker::docker(
+                let digest = talaria_fleet_docker::docker(
                     &["image", "inspect", "-f", "{{json .RepoDigests}}", image],
                     Duration::from_secs(30),
                 )
@@ -882,7 +882,7 @@ pub async fn reconcile(pg: &PgPool) {
         }
     }
     let prefix = format!("talaria-mcp-{}-", instance());
-    let listed = crate::fleet::docker::docker(
+    let listed = talaria_fleet_docker::docker(
         &[
             "ps",
             "-a",
@@ -905,7 +905,7 @@ pub async fn reconcile(pg: &PgPool) {
     for name in listed {
         if !wanted.contains(&name) {
             let _ =
-                crate::fleet::docker::docker(&["rm", "-f", &name], Duration::from_secs(30)).await;
+                talaria_fleet_docker::docker(&["rm", "-f", &name], Duration::from_secs(30)).await;
             tracing::info!("[mcp/pkg] reconcile removed {name}");
         }
     }
@@ -931,7 +931,7 @@ pub async fn pkg_status(spec: &PkgSpec, server_name: &str) -> String {
         };
     }
     let container = container_name(server_name);
-    let running = crate::fleet::docker::docker(
+    let running = talaria_fleet_docker::docker(
         &["inspect", "-f", "{{.State.Running}}", &container],
         Duration::from_secs(10),
     )
@@ -948,8 +948,8 @@ pub async fn pkg_status(spec: &PkgSpec, server_name: &str) -> String {
 /// The scheduled desired-state pass (5 min; per-instance — the containers
 /// being reconciled belong to this deployment's own daemon).
 pub fn register_pkg_reconcile_job(pg: PgPool) {
-    crate::scheduler::register_job(crate::scheduler::JobSpec {
-        name: crate::scheduler::JobName::McpPkgReconcile,
+    talaria_scheduler::register_job(talaria_scheduler::JobSpec {
+        name: talaria_scheduler::JobName::McpPkgReconcile,
         every_ms: 5 * 60_000,
         first_run_delay_ms: Some(30_000),
         max_run_ms: Some(60_000),
@@ -1117,8 +1117,8 @@ mod tests {
     }
 
     fn test_box() -> SecretBox {
-        let kek = crate::secretbox::derive_kek("pkg-test");
-        let dek = crate::secretbox::new_dek().expect("entropy");
+        let kek = talaria_secretbox::derive_kek("pkg-test");
+        let dek = talaria_secretbox::new_dek().expect("entropy");
         SecretBox::from_parts(kek, HashMap::from([(1u32, dek)]), Some(1))
     }
 }
