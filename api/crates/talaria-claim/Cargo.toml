@@ -1,0 +1,26 @@
+[package]
+name = "talaria-claim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-error = { path = "../talaria-error" }
+talaria-state = { path = "../talaria-state" }
+talaria-users = { path = "../talaria-users" }
+axum = { version = "0.8", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+getrandom = "0.3"
+base64 = "0.23"
+

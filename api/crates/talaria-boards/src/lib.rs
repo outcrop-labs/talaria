@@ -1,9 +1,9 @@
 // Boards — visibility, role resolution, CRUD, membership, and the agent
 // policy every board-scoped gate obeys.
 
-use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
-use crate::users::is_elevated_assistant;
 use sqlx::PgPool;
+use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
+use talaria_users::is_elevated_assistant;
 
 /// SQL fragment: the board `b` is one this USER can see — a direct member, or
 /// a member of the team that owns it — and not archived. `includeArchived`

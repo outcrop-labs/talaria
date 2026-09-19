@@ -6,12 +6,12 @@
 // stored order and a session written before reads of it change shape never
 // surprises a reader.
 
-use crate::state::AppState;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
+use talaria_state::AppState;
 
 pub const SESSION_COOKIE: &str = "talaria_session";
 pub const STATE_COOKIE: &str = "talaria_oauth_state";
@@ -355,7 +355,7 @@ pub fn random_token() -> String {
 
 /// The house 401 — the exact body `require_user` returns.
 pub fn unauthorized() -> Response {
-    crate::error::house_error(StatusCode::UNAUTHORIZED, "unauthorized")
+    talaria_error::house_error(StatusCode::UNAUTHORIZED, "unauthorized")
 }
 
 /// Canonical audit-log actor for a session user: email, else name, else
@@ -399,7 +399,7 @@ pub async fn acting_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Option<ActingUser>, Response> {
-    match crate::agent_auth::agent_caller(&state.pg, headers).await {
+    match talaria_agent_auth::agent_caller(&state.pg, headers).await {
         // Rejected credential → None (see above); the fall-through to session
         // auth is only for requests that presented nothing.
         Err(_refusal) => Ok(None),
@@ -419,7 +419,7 @@ pub async fn acting_user(
             .await
             .map_err(|e| {
                 tracing::error!("[session] acting-user lookup failed: {e}");
-                crate::error::thrown_internal_error()
+                talaria_error::thrown_internal_error()
             })?;
             Ok(owner.map(|(id, role, email, name, elevated)| {
                 let for_label = email.clone().or(name).unwrap_or_else(|| id.clone());
@@ -445,7 +445,7 @@ pub async fn acting_user(
             Ok(None) => Ok(None),
             Err(e) => {
                 tracing::error!("[session] redis read failed: {e}");
-                Err(crate::error::thrown_internal_error())
+                Err(talaria_error::thrown_internal_error())
             }
         },
     }
@@ -459,7 +459,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
         Ok(None) => Err(unauthorized()),
         Err(e) => {
             tracing::error!("[session] redis read failed: {e}");
-            Err(crate::error::thrown_internal_error())
+            Err(talaria_error::thrown_internal_error())
         }
     }
 }
@@ -468,7 +468,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
 pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<SessionUser, Response> {
     let user = require_user(state, headers).await?;
     if user.role != "admin" {
-        return Err(crate::error::house_error(
+        return Err(talaria_error::house_error(
             StatusCode::FORBIDDEN,
             "forbidden",
         ));
@@ -487,17 +487,17 @@ pub async fn require_view(
 ) -> Result<SessionUser, Response> {
     let user = require_user(state, headers).await?;
     if user.role != "admin" {
-        let denied = crate::users::denied_views(&state.pg, &user.id, &user.role)
+        let denied = talaria_users::denied_views(&state.pg, &user.id, &user.role)
             .await
             .map_err(|e| {
                 tracing::error!("[session] view-denial read failed: {e}");
-                crate::error::thrown_internal_error()
+                talaria_error::thrown_internal_error()
             })?;
         if denied
             .iter()
             .any(|v| v == view || view.starts_with(&format!("{v}/")))
         {
-            return Err(crate::error::house_error(
+            return Err(talaria_error::house_error(
                 StatusCode::FORBIDDEN,
                 "forbidden",
             ));
@@ -514,14 +514,14 @@ pub async fn require_perm(
     perm: &str,
 ) -> Result<SessionUser, Response> {
     let user = require_user(state, headers).await?;
-    if !crate::users::has_perm(&state.pg, &user.id, &user.role, perm)
+    if !talaria_users::has_perm(&state.pg, &user.id, &user.role, perm)
         .await
         .map_err(|e| {
             tracing::error!("[session] permission read failed: {e}");
-            crate::error::thrown_internal_error()
+            talaria_error::thrown_internal_error()
         })?
     {
-        return Err(crate::error::house_error(
+        return Err(talaria_error::house_error(
             StatusCode::FORBIDDEN,
             &format!("you don't have permission to do that ({perm})"),
         ));

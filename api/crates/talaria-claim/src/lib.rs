@@ -2,8 +2,8 @@
 // the first person through /claim (password) or the first Google identity
 // becomes the admin. Whoever deploys, owns.
 
-use crate::users::Identity;
 use sqlx::PgPool;
+use talaria_users::Identity;
 
 /// Distinct from the schema migration lock (8_314_207). Transaction-scoped,
 /// so it holds exactly as long as the claim's user-upsert + credential insert
@@ -66,7 +66,7 @@ pub async fn claim_admin(
     // beside it. (The link's admin-first ordering is moot under the lock —
     // no admin exists yet — and is kept only so every same-email resolution
     // picks the same survivor.)
-    let claimed: ClaimedAdmin = match crate::users::link_by_email(&mut *tx, identity, true).await? {
+    let claimed: ClaimedAdmin = match talaria_users::link_by_email(&mut *tx, identity, true).await? {
         Some(claimed) => claimed,
         None => {
             sqlx::query_as(
@@ -109,7 +109,7 @@ pub async fn claim_admin(
     tx.commit().await?;
     // Org-wide boards are everyone's; a claim is a sign-in. Never fatal —
     // the admin still signs in; the next login retries.
-    if let Err(e) = crate::users::join_org_wide_boards(pg, &claimed.0).await {
+    if let Err(e) = talaria_users::join_org_wide_boards(pg, &claimed.0).await {
         tracing::error!(
             "[claim] could not join {} to org-wide boards: {e}",
             claimed.0

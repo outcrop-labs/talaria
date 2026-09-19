@@ -65,6 +65,9 @@ members = [
     "crates/talaria-storage",
     "crates/talaria-users",
     "crates/talaria-workflows",
+    "crates/talaria-boards",
+    "crates/talaria-claim",
+    "crates/talaria-session",
 ]
 resolver = "3"
 
@@ -154,6 +157,9 @@ talaria-secret-health = { path = "crates/talaria-secret-health" }
 talaria-storage = { path = "crates/talaria-storage" }
 talaria-users = { path = "crates/talaria-users" }
 talaria-workflows = { path = "crates/talaria-workflows" }
+talaria-boards = { path = "crates/talaria-boards" }
+talaria-claim = { path = "crates/talaria-claim" }
+talaria-session = { path = "crates/talaria-session" }
 
 
 

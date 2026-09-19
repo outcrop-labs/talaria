@@ -3547,9 +3547,11 @@ dependencies = [
  "talaria-audit",
  "talaria-auth",
  "talaria-auth-config",
+ "talaria-boards",
  "talaria-body",
  "talaria-brain-health",
  "talaria-capability",
+ "talaria-claim",
  "talaria-collate",
  "talaria-config",
  "talaria-db",
@@ -3581,6 +3583,7 @@ dependencies = [
  "talaria-secret-health",
  "talaria-secret-rotation",
  "talaria-secretbox",
+ "talaria-session",
  "talaria-settings",
  "talaria-source-registry",
  "talaria-state",
@@ -3627,6 +3630,26 @@ dependencies = [
 [[package]]
 name = "talaria-auth-config"
 version = "0.1.0"
+
+[[package]]
+name = "talaria-boards"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-error",
+ "talaria-state",
+ "talaria-users",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "talaria-body"
@@ -3680,6 +3703,26 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-claim"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-error",
+ "talaria-state",
+ "talaria-users",
  "tokio",
  "tracing",
  "uuid",
@@ -4167,6 +4210,27 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "talaria-session"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-error",
+ "talaria-password",
+ "talaria-state",
+ "talaria-users",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
