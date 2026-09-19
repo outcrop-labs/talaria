@@ -116,6 +116,8 @@ members = [
     "crates/talaria-google-connections",
     "crates/talaria-google-org",
     "crates/talaria-update-registry",
+    "crates/talaria-google-errors",
+    "crates/talaria-google-calendar",
 ]
 resolver = "3"
 
@@ -256,6 +258,8 @@ talaria-update-layout = { path = "crates/talaria-update-layout" }
 talaria-google-connections = { path = "crates/talaria-google-connections" }
 talaria-google-org = { path = "crates/talaria-google-org" }
 talaria-update-registry = { path = "crates/talaria-update-registry" }
+talaria-google-errors = { path = "crates/talaria-google-errors" }
+talaria-google-calendar = { path = "crates/talaria-google-calendar" }
 
 
 

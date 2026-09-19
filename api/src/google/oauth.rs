@@ -546,25 +546,7 @@ pub async fn exchange_google_tokens(
     })
 }
 
-/// A path-segment escaper for the ids that ride Google's URLs (a Gmail
-/// message id, an email-shaped calendar id): the unreserved set stays
-/// literal, everything else percent-encodes.
-pub fn encode_uri_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        let unreserved = b.is_ascii_alphanumeric()
-            || matches!(
-                b,
-                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-            );
-        if unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
+pub use talaria_google_client::encode_uri_component;
 
 // ── The connect flow's savers + shared callback body ──────────────────────────
 

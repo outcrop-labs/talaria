@@ -6,7 +6,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use crate::error::house_error_msg;
+use talaria_error::house_error_msg;
 
 /// A Google service call's failure. `NotConnected` is a state, not an outage.
 /// `Failed` carries the sentence Google sent (the log's only consumer).
@@ -25,23 +25,11 @@ impl std::fmt::Display for GoogleError {
     }
 }
 
-impl From<crate::google::connections::RequireError> for GoogleError {
-    fn from(e: crate::google::connections::RequireError) -> Self {
+impl From<talaria_google_connections::RequireError> for GoogleError {
+    fn from(e: talaria_google_connections::RequireError) -> Self {
         match e {
-            crate::google::connections::RequireError::NotConnected => GoogleError::NotConnected,
-            crate::google::connections::RequireError::Failed(m) => GoogleError::Failed(m),
-        }
-    }
-}
-
-/// Calendar's error type at the google_fail boundary: its NotConnected is the
-/// same state google_fail answers, and its Failed sentence is the message the
-/// reconnect test reads.
-impl From<crate::google::calendar::CalendarError> for GoogleError {
-    fn from(e: crate::google::calendar::CalendarError) -> Self {
-        match e {
-            crate::google::calendar::CalendarError::NotConnected => GoogleError::NotConnected,
-            crate::google::calendar::CalendarError::Failed(m) => GoogleError::Failed(m),
+            talaria_google_connections::RequireError::NotConnected => GoogleError::NotConnected,
+            talaria_google_connections::RequireError::Failed(m) => GoogleError::Failed(m),
         }
     }
 }

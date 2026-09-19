@@ -2,18 +2,18 @@
 // events, acting strictly as that identity (per-user OAuth, or the org
 // account through an already-resolved token).
 //
-// The connection door is the shared one (crate::google::connections::get_access_token):
+// The connection door is the shared one (talaria_google_connections::get_access_token):
 // `NotConnected` is a normal answer the brief renders as "no calendar section",
 // never an error row.
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::gateway::provider::http;
-use crate::google::connections::get_access_token;
-use crate::google::errors::GoogleError;
-use crate::google::oauth::encode_uri_component;
-use crate::secretbox::SecretBox;
 use serde_json::Value;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_gateway::provider::http;
+use talaria_google_client::encode_uri_component;
+use talaria_google_connections::get_access_token;
+use talaria_google_errors::GoogleError;
+use talaria_secretbox::SecretBox;
 
 /// One agenda entry — wire order pinned (id, summary, start, end, allDay,
 /// location, htmlLink, attendees).
@@ -38,6 +38,15 @@ pub struct CalendarEvent {
 pub enum CalendarError {
     NotConnected,
     Failed(String),
+}
+
+impl From<CalendarError> for GoogleError {
+    fn from(e: CalendarError) -> Self {
+        match e {
+            CalendarError::NotConnected => GoogleError::NotConnected,
+            CalendarError::Failed(m) => GoogleError::Failed(m),
+        }
+    }
 }
 
 impl std::fmt::Display for CalendarError {
@@ -198,7 +207,7 @@ pub async fn create_event(
     now_ms: i64,
     input: &CreateEventInput<'_>,
 ) -> Result<CalendarEvent, GoogleError> {
-    let token = crate::google::connections::require_token(pg, sb, user_id, now_ms)
+    let token = talaria_google_connections::require_token(pg, sb, user_id, now_ms)
         .await
         .map_err(GoogleError::from)?;
     create_event_with_token(&token, input, None).await
