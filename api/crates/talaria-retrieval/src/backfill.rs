@@ -13,16 +13,16 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::retrieval::embed::{EmbedDeps, embed_one};
-use crate::retrieval::index::IndexDoc;
-use crate::retrieval::qdrant::QdrantDeps;
-use crate::retrieval::sources::{
+use crate::BACKFILL_KIND;
+use crate::embed::{EmbedDeps, embed_one};
+use crate::index::IndexDoc;
+use crate::qdrant::QdrantDeps;
+use crate::sources::{
     EFFECTIVE_DOC_SELECT, KbDocSync, TicketSrc, index_activity, index_personal, index_ticket,
     kb_doc_of, sync_kb_doc,
 };
-use crate::runs::define::RunState;
-use crate::runs::defs::reindex::BACKFILL_KIND;
-use crate::runs::store::{KindRunView, latest_run_of_kind};
+use talaria_runs_define::RunState;
+use talaria_runs_store::{KindRunView, latest_run_of_kind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct RagHealth {
@@ -184,7 +184,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
     if !health.qdrant || !health.embeddings {
         return 0;
     }
-    let watermark = crate::gateway::settings::get_setting(
+    let watermark = talaria_gateway::settings::get_setting(
         pg,
         SWEEP_KEY,
         serde_json::json!("1970-01-01T00:00:00.000Z"), // the epoch, ISO
@@ -193,7 +193,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
     .as_str()
     .unwrap_or("1970-01-01T00:00:00.000Z")
     .to_string();
-    let now = crate::agent_auth::epoch_ms_to_iso(wall_ms());
+    let now = talaria_agent_auth::epoch_ms_to_iso(wall_ms());
     let mut indexed: u32 = 0;
 
     // Effective visibility, exactly as the live save path resolves it — a doc
@@ -226,7 +226,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
     .unwrap_or_default();
     for (id, channel_id, author_type, author, content, name) in &msgs {
         let who = if author_type == "agent" {
-            crate::fleet::describe_agent(author).label
+            talaria_fleet_layout::describe_agent(author).label
         } else {
             author.clone()
         };
@@ -303,8 +303,8 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
             .is_some_and(|r| !r.is_empty() && r != "auto")
         {
             // Routed artifact: re-place it by its routing rule, not the default.
-            if let Ok(Some(full)) = crate::artifacts::get_artifact(pg, id).await {
-                crate::retrieval::artifact_routing::apply_artifact_routing(pg, qd, ed, &full).await;
+            if let Ok(Some(full)) = talaria_artifacts::get_artifact(pg, id).await {
+                crate::artifact_routing::apply_artifact_routing(pg, qd, ed, &full).await;
             }
             indexed += 1;
             continue;
@@ -345,7 +345,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
         indexed += 1;
     }
 
-    let _ = crate::gateway::settings::set_setting(pg, SWEEP_KEY, &Value::String(now)).await;
+    let _ = talaria_gateway::settings::set_setting(pg, SWEEP_KEY, &Value::String(now)).await;
     indexed
 }
 
@@ -353,7 +353,7 @@ pub async fn sweep_new_activity(pg: &PgPool, qd: &QdrantDeps, ed: &EmbedDeps) ->
 /// every 15 minutes, never blocking. Process-local.
 static LAST_SWEEP_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-pub fn maybe_rag_sweep(state: crate::state::AppState) {
+pub fn maybe_rag_sweep(state: talaria_state::AppState) {
     let now = wall_ms();
     let last = LAST_SWEEP_MS.load(std::sync::atomic::Ordering::Relaxed);
     if now - last < SWEEP_INTERVAL_MS {
@@ -361,8 +361,8 @@ pub fn maybe_rag_sweep(state: crate::state::AppState) {
     }
     LAST_SWEEP_MS.store(now, std::sync::atomic::Ordering::Relaxed);
     tokio::spawn(async move {
-        let qd = crate::retrieval::qdrant::real_deps();
-        let ed = crate::retrieval::embed::real_deps();
+        let qd = crate::qdrant::real_deps();
+        let ed = crate::embed::real_deps();
         let _ = sweep_new_activity(&state.pg, &qd, &ed).await;
     });
 }
@@ -370,8 +370,8 @@ pub fn maybe_rag_sweep(state: crate::state::AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runs::define::RunState;
     use serde_json::json;
+    use talaria_runs_define::RunState;
 
     fn view(state: RunState) -> KindRunView {
         KindRunView {

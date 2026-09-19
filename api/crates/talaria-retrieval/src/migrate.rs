@@ -20,11 +20,11 @@ use serde_json::Value;
 use sqlx::PgPool;
 use sqlx::Row;
 
-use crate::retrieval::embed::{EmbedDeps, EmbedInfo, embed_info};
-use crate::retrieval::qdrant::{QdrantDeps, collection_info};
-use crate::runs::define::RunState;
-use crate::runs::defs::reindex::REINDEX_KIND;
-use crate::runs::store::{KindRunView, latest_run_of_kind};
+use crate::REINDEX_KIND;
+use crate::embed::{EmbedDeps, EmbedInfo, embed_info};
+use crate::qdrant::{QdrantDeps, collection_info};
+use talaria_runs_define::RunState;
+use talaria_runs_store::{KindRunView, latest_run_of_kind};
 
 const CACHE_MS: u64 = 60_000;
 

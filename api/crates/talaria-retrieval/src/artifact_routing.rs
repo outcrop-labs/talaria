@@ -13,13 +13,11 @@
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::artifacts::{Artifact, artifact_to_markdown};
-use crate::retrieval::embed::EmbedDeps;
-use crate::retrieval::index::{DocAcl, IndexDoc, index_document, unindex_document};
-use crate::retrieval::qdrant::QdrantDeps;
-use crate::retrieval::sources::{
-    index_activity, index_personal, unindex_activity, unindex_personal,
-};
+use crate::embed::EmbedDeps;
+use crate::index::{DocAcl, IndexDoc, index_document, unindex_document};
+use crate::qdrant::QdrantDeps;
+use crate::sources::{index_activity, index_personal, unindex_activity, unindex_personal};
+use talaria_artifacts::{Artifact, artifact_to_markdown};
 
 /// An artifact's links, in the direction routing cares about.
 struct ArtifactTarget {

@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 187 crates.** Workchains (`get_task` via OnceLock).
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 188 crates.** Retrieval leftover (backfill/migrate/
+  artifact routing). Verified: `cargo check -p talaria-api`.
+
 
 
 
