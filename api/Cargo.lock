@@ -3795,6 +3795,7 @@ dependencies = [
  "talaria-persona",
  "talaria-personal-agent",
  "talaria-plan-doc",
+ "talaria-plan-drafts",
  "talaria-platform-agents",
  "talaria-price-oracle",
  "talaria-push",
@@ -3816,6 +3817,7 @@ dependencies = [
  "talaria-runs-define",
  "talaria-runs-drivers",
  "talaria-runs-lease",
+ "talaria-runs-plan-draft",
  "talaria-runs-reclaim",
  "talaria-runs-run",
  "talaria-runs-store",
@@ -5719,6 +5721,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-plan-drafts"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-realtime",
+ "talaria-runs-plan-draft",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-tasks-types",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-platform-agents"
 version = "0.1.0"
 dependencies = [
@@ -6009,6 +6028,22 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "talaria-runs-plan-draft"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-channel-plan",
+ "talaria-harness-defs",
+ "talaria-runs-define",
+ "talaria-state",
+ "tokio",
 ]
 
 [[package]]

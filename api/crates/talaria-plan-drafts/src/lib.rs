@@ -19,14 +19,12 @@ use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::realtime::RealtimeDeps;
-use crate::runs::defs::plan_draft::{
-    PLAN_DRAFT_KIND, PlanDraftInput, StoredProposal, plan_draft_run,
-};
-use crate::runs::run::{EnqueueOptions, cancel_run, enqueue};
-use crate::state::AppState;
-use crate::work_dispatch::dispatch_deps;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_realtime::RealtimeDeps;
+use talaria_runs_plan_draft::{PLAN_DRAFT_KIND, PlanDraftInput, StoredProposal, plan_draft_run};
+use talaria_runs_run::{EnqueueOptions, cancel_run, enqueue};
+use talaria_state::AppState;
+use talaria_tasks_types::BUILD_DISPATCH;
 
 /// The draft as the review reads it — field order pinned,
 /// camelCase on the wire.
@@ -219,7 +217,13 @@ pub async fn start_plan_draft(
         ));
     };
     let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
-    let deps = dispatch_deps(state.pg.clone(), redis, realtime);
+    let deps = BUILD_DISPATCH
+        .get()
+        .ok_or_else(|| PlanDraftError::Start("dispatch not wired".into()))?(
+        state.pg.clone(),
+        redis,
+        realtime,
+    );
     enqueue(
         plan_draft_run(),
         input,
@@ -294,8 +298,10 @@ pub async fn drop_draft(state: &AppState, conversation_id: &str) -> Result<(), s
     };
     if let Ok(redis) = state.redis().await {
         let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
-        let deps = dispatch_deps(state.pg.clone(), redis, realtime);
-        let _ = cancel_run(&id, Some("draft discarded".into()), &deps).await;
+        if let Some(f) = BUILD_DISPATCH.get() {
+            let deps = f(state.pg.clone(), redis, realtime);
+            let _ = cancel_run(&id, Some("draft discarded".into()), &deps).await;
+        }
     }
     sqlx::query("delete from plan_drafts where id = $1::uuid")
         .bind(&id)

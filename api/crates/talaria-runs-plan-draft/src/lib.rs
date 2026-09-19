@@ -20,14 +20,14 @@ use std::sync::{Arc, OnceLock};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
-use crate::channel_plan::{
+use talaria_channel_plan::{
     DraftTemplateCtx, PlanOutcome, plan_from_channel, plan_from_conversation,
 };
-use crate::harness::defs::channel_plan::{Effort, Priority, TicketProposal};
-use crate::runs::define::{
+use talaria_harness_defs::defs::channel_plan::{Effort, Priority, TicketProposal};
+use talaria_runs_define::{
     Authority, RunDefinition, RunRow, RunStepContext, StepResult, register_run,
 };
-use crate::state::AppState;
+use talaria_state::AppState;
 
 pub const PLAN_DRAFT_KIND: &str = "plan-draft";
 
@@ -240,7 +240,7 @@ pub fn plan_draft_run() -> &'static Arc<RunDefinition> {
             idle_step_ms: None,
             // No override — the default three. A draft that killed three
             // drivers is a bug report, not a fourth try.
-            max_attempts: crate::runs::define::DEFAULT_MAX_ATTEMPTS,
+            max_attempts: talaria_runs_define::DEFAULT_MAX_ATTEMPTS,
         })
     })
 }
@@ -251,7 +251,7 @@ mod tests {
     use std::sync::Mutex;
 
     fn minimal_row() -> RunRow {
-        use crate::runs::define::RunState;
+        use talaria_runs_define::RunState;
         RunRow {
             id: "r-1".into(),
             kind: PLAN_DRAFT_KIND.into(),
@@ -277,12 +277,12 @@ mod tests {
     }
 
     fn ctx(input: serde_json::Value) -> RunStepContext {
-        let (tx, signal) = crate::runs::define::StepSignal::channel();
+        let (tx, signal) = talaria_runs_define::StepSignal::channel();
         // A dropped watch sender leaves the channel at its last value —
         // `false`, never aborted — which is the shape an uncontended run has.
         drop(tx);
         RunStepContext {
-            activity: crate::runs::define::StepActivity::new(),
+            activity: talaria_runs_define::StepActivity::new(),
             run: minimal_row(),
             input,
             checkpoint: serde_json::Value::Null,

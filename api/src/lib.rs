@@ -77,7 +77,7 @@ pub use talaria_permissions as permissions;
 pub use talaria_persona as persona;
 pub use talaria_personal_agent as personal_agent;
 pub use talaria_plan_doc as plan_doc;
-pub mod plan_drafts;
+pub use talaria_plan_drafts as plan_drafts;
 pub use talaria_platform_agents as platform_agents;
 pub use talaria_price_oracle as price_oracle;
 pub use talaria_push as push;

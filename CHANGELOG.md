@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 191 crates.** Inbox focus engine (task reads/review via
-  OnceLock). Verified: `cargo check -p talaria-api`.
+- **API workspace: 193 crates.** Plan-draft run kind + domain (dispatch via
+  existing BUILD_DISPATCH). Verified: `cargo check -p talaria-api`.
+
 
 
 
