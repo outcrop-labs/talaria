@@ -44,23 +44,23 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
-use crate::approvals::{
+use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
+use talaria_approvals::{
     ApprovalCensus, ApprovalDeps, ApprovalKind, Disclosure, PendingApproval, approval_census,
     kind_label, may_decide, sweep_unannounced,
 };
-use crate::daily_brief::config::zone_for;
-use crate::email::{email_button, email_escape, email_shell};
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::home::{WorkItem, home_queues};
-use crate::notify::{
+use talaria_daily_brief::config::zone_for;
+use talaria_email::{email_button, email_escape, email_shell};
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_home::{WorkItem, home_queues};
+use talaria_notify::{
     GatedMail, NOTIFY_SETTINGS_PATH, NotificationInput, NotifyDeps, add_notification,
     digest_enabled, instance_base_url, send_gated_mail,
 };
-use crate::runs::define::run_definition;
-use crate::runs::run::DefinitionForFn;
-use crate::state::AppState;
-use crate::tz::local_moment;
+use talaria_runs_define::run_definition;
+use talaria_runs_run::DefinitionForFn;
+use talaria_state::AppState;
+use talaria_tz::local_moment;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -530,7 +530,7 @@ pub struct DigestDeps {
     pub definition_for: DefinitionForFn,
 }
 
-pub fn real_digest_deps(state: &AppState, realtime: crate::realtime::RealtimeDeps) -> DigestDeps {
+pub fn real_digest_deps(state: &AppState, realtime: talaria_realtime::RealtimeDeps) -> DigestDeps {
     DigestDeps {
         state: state.clone(),
         notify: NotifyDeps {
@@ -683,7 +683,7 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
                 )
                 .await
             }
-            Err(e) => crate::notify::GatedSendResult {
+            Err(e) => talaria_notify::GatedSendResult {
                 ok: false,
                 blocked: false,
                 error: Some(e),
@@ -741,8 +741,8 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
     Ok(result)
 }
 
-pub fn digest_job_spec(deps: DigestDeps) -> crate::scheduler::JobSpec {
-    use crate::scheduler::{JobName, JobSpec};
+pub fn digest_job_spec(deps: DigestDeps) -> talaria_scheduler::JobSpec {
+    use talaria_scheduler::{JobName, JobSpec};
     JobSpec {
         name: JobName::DailyDigest,
         // Not hourly: the send window is anchored to a local hour and a
@@ -755,7 +755,7 @@ pub fn digest_job_spec(deps: DigestDeps) -> crate::scheduler::JobSpec {
         max_run_ms: Some(10 * 60_000),
         per_instance: false,
         run: {
-            let run: crate::scheduler::JobFn = Arc::new(move || {
+            let run: talaria_scheduler::JobFn = Arc::new(move || {
                 let deps = deps.clone();
                 Box::pin(async move {
                     let now = wall_ms();
@@ -796,7 +796,7 @@ pub fn digest_job_spec(deps: DigestDeps) -> crate::scheduler::JobSpec {
 }
 
 pub fn register_digest_job(deps: DigestDeps) {
-    crate::scheduler::register_job(digest_job_spec(deps));
+    talaria_scheduler::register_job(digest_job_spec(deps));
 }
 
 /// The wall clock, stamped once per tick by each job closure.
@@ -1000,7 +1000,7 @@ async fn tell(
 /// empty and this function said "It needs an admin, and this workspace has
 /// none" to the very admin who could have granted it that morning.
 fn why_unreachable(approval: &PendingApproval) -> &'static str {
-    use crate::runs::define::Authority;
+    use talaria_runs_define::Authority;
     match &approval.authority {
         Authority::Board { .. } => {
             "The board it belongs to has no members who can edit it, so nobody can approve or reject it. Add an editor to that board."
@@ -1034,7 +1034,7 @@ fn why_unreachable(approval: &PendingApproval) -> &'static str {
 /// nobody may be shown it, and a title that says otherwise is the false
 /// sentence again in bigger type.
 fn stall_title(approval: &PendingApproval, waited: &str) -> String {
-    use crate::runs::define::Authority;
+    use talaria_runs_define::Authority;
     match &approval.authority {
         Authority::Admin { on_board: Some(_) } => {
             format!("An approval has been waiting {waited} and nobody here may be shown it")
@@ -1352,8 +1352,8 @@ static EMPTY_DISCLOSURE: Disclosure = Disclosure {
     fact: Vec::new(),
 };
 
-pub fn approval_escalation_job_spec(deps: DigestDeps) -> crate::scheduler::JobSpec {
-    use crate::scheduler::{JobName, JobSpec};
+pub fn approval_escalation_job_spec(deps: DigestDeps) -> talaria_scheduler::JobSpec {
+    use talaria_scheduler::{JobName, JobSpec};
     JobSpec {
         name: JobName::ApprovalEscalation,
         // Five minutes, and the interval now means something it did not
@@ -1367,7 +1367,7 @@ pub fn approval_escalation_job_spec(deps: DigestDeps) -> crate::scheduler::JobSp
         max_run_ms: Some(10 * 60_000),
         per_instance: false,
         run: {
-            let run: crate::scheduler::JobFn = Arc::new(move || {
+            let run: talaria_scheduler::JobFn = Arc::new(move || {
                 let deps = deps.clone();
                 Box::pin(async move {
                     let r = run_approval_escalation(&deps, wall_ms()).await?;
@@ -1440,7 +1440,7 @@ pub fn approval_escalation_job_spec(deps: DigestDeps) -> crate::scheduler::JobSp
 }
 
 pub fn register_approval_escalation_job(deps: DigestDeps) {
-    crate::scheduler::register_job(approval_escalation_job_spec(deps));
+    talaria_scheduler::register_job(approval_escalation_job_spec(deps));
 }
 
 #[cfg(test)]

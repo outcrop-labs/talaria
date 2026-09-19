@@ -38,7 +38,7 @@ pub use talaria_config as config;
 pub use talaria_conversations as conversations;
 pub mod daily_brief;
 pub use talaria_db as db;
-pub mod digest;
+pub use talaria_digest as digest;
 pub use talaria_effort_prefs as effort_prefs;
 pub use talaria_email as email;
 pub use talaria_error as error;
