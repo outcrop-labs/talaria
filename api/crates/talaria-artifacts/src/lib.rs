@@ -9,8 +9,8 @@
 
 use sqlx::PgPool;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::kb::perms::Guarded;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_kb::perms::Guarded;
 
 /// An artifact — the full row shape.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -772,7 +772,7 @@ pub async fn set_artifact_routing(
                 .bind(routing)
                 .fetch_optional(pg)
                 .await
-                .map_err(|e| crate::error::pg_message(&e))?;
+                .map_err(|e| talaria_error::pg_message(&e))?;
         if ok.is_none() {
             return Err("unknown brain".into());
         }
@@ -786,10 +786,10 @@ pub async fn set_artifact_routing(
     .bind(actor)
     .execute(pg)
     .await
-    .map_err(|e| crate::error::pg_message(&e))?;
+    .map_err(|e| talaria_error::pg_message(&e))?;
     get_artifact(pg, id)
         .await
-        .map_err(|e| crate::error::pg_message(&e))
+        .map_err(|e| talaria_error::pg_message(&e))
 }
 
 /// The things an artifact is attached to (its "Attached to" list) —
@@ -815,16 +815,16 @@ pub async fn targets_for_artifact(
 const ARTIFACTS_SPACE: &str = "Artifacts";
 
 async fn ensure_artifacts_space(pg: &PgPool, actor: &str) -> Result<String, sqlx::Error> {
-    if let Some(existing) = crate::kb::list_spaces(pg)
+    if let Some(existing) = talaria_kb::list_spaces(pg)
         .await?
         .into_iter()
         .find(|s| s.name == ARTIFACTS_SPACE)
     {
         return Ok(existing.id);
     }
-    let space = crate::kb::create_space(
+    let space = talaria_kb::create_space(
         pg,
-        &crate::kb::NewSpace {
+        &talaria_kb::NewSpace {
             name: ARTIFACTS_SPACE.into(),
             icon: Some("◆".into()),
             description: Some("Official artifacts, mirrored into the knowledgebase.".into()),
@@ -840,8 +840,8 @@ async fn ensure_artifacts_space(pg: &PgPool, actor: &str) -> Result<String, sqlx
 /// into the Artifacts space as an official KB doc; false removes the mirror.
 pub async fn set_artifact_official(
     pg: &PgPool,
-    qd: &crate::retrieval::qdrant::QdrantDeps,
-    ed: &crate::retrieval::embed::EmbedDeps,
+    qd: &talaria_retrieval_qdrant::QdrantDeps,
+    ed: &talaria_retrieval_embed::EmbedDeps,
     id: &str,
     official: bool,
     actor: &str,
@@ -854,11 +854,11 @@ pub async fn set_artifact_official(
         let md = artifact_to_markdown(&a);
         // Reuse the recorded mirror while it still exists.
         let kb_doc_id = match &a.kb_doc_id {
-            Some(kb) if matches!(crate::kb::get_doc(pg, kb).await, Ok(Some(_))) => kb.clone(),
+            Some(kb) if matches!(talaria_kb::get_doc(pg, kb).await, Ok(Some(_))) => kb.clone(),
             _ => {
-                crate::kb::create_doc(
+                talaria_kb::create_doc(
                     pg,
-                    &crate::kb::NewDoc {
+                    &talaria_kb::NewDoc {
                         space_id,
                         parent_id: None,
                         title: Some(a.title.clone()),
@@ -871,12 +871,12 @@ pub async fn set_artifact_official(
                 .id
             }
         };
-        crate::kb::save_doc(
+        talaria_kb::save_doc(
             pg,
             qd,
             ed,
             &kb_doc_id,
-            &crate::kb::DocPatch {
+            &talaria_kb::DocPatch {
                 title: Some(a.title.clone()),
                 body: Some(md),
                 ..Default::default()
@@ -884,7 +884,7 @@ pub async fn set_artifact_official(
             actor,
         )
         .await?;
-        crate::kb::set_official(pg, qd, ed, &kb_doc_id, true, actor).await?; // → org brain
+        talaria_kb::set_official(pg, qd, ed, &kb_doc_id, true, actor).await?; // → org brain
         sqlx::query(
             "update artifacts set official = true, kb_doc_id = $2::uuid, updated_at = now() \
              where id = $1::uuid",
@@ -895,7 +895,7 @@ pub async fn set_artifact_official(
         .await?;
     } else {
         if let Some(kb) = &a.kb_doc_id {
-            let _ = crate::kb::delete_doc(pg, qd, ed, kb).await;
+            let _ = talaria_kb::delete_doc(pg, qd, ed, kb).await;
         }
         sqlx::query(
             "update artifacts set official = false, kb_doc_id = null, updated_at = now() \
@@ -933,12 +933,12 @@ async fn remirror_if_official(pg: &PgPool, a: &Artifact, actor: &str) -> Result<
     if a.official
         && let Some(kb_doc_id) = &a.kb_doc_id
     {
-        let _ = crate::kb::save_doc(
+        let _ = talaria_kb::save_doc(
             pg,
-            &crate::retrieval::qdrant::real_deps(),
-            &crate::retrieval::embed::real_deps(),
+            &talaria_retrieval_qdrant::real_deps(),
+            &talaria_retrieval_embed::real_deps(),
             kb_doc_id,
-            &crate::kb::DocPatch {
+            &talaria_kb::DocPatch {
                 title: Some(a.title.clone()),
                 body: Some(artifact_to_markdown(a)),
                 ..Default::default()
@@ -955,8 +955,8 @@ async fn remirror_if_official(pg: &PgPool, a: &Artifact, actor: &str) -> Result<
 /// the activity index's ACL can resolve reach.
 pub async fn index_plan_doc(
     pg: &PgPool,
-    qd: &crate::retrieval::qdrant::QdrantDeps,
-    ed: &crate::retrieval::embed::EmbedDeps,
+    qd: &talaria_retrieval_qdrant::QdrantDeps,
+    ed: &talaria_retrieval_embed::EmbedDeps,
     doc: &Artifact,
     conversation_id: &str,
 ) -> Result<(), String> {
@@ -975,11 +975,11 @@ pub async fn index_plan_doc(
             .map(serde_json::Value::String)
             .unwrap_or(serde_json::Value::Null),
     );
-    let _ = crate::retrieval::sources::index_activity(
+    let _ = talaria_retrieval_sources::index_activity(
         pg,
         qd,
         ed,
-        &crate::retrieval::index::IndexDoc {
+        &talaria_retrieval_index::IndexDoc {
             source_type: "plan-doc".into(),
             source_id: doc.id.clone(),
             title: Some(doc.title.clone()),
@@ -1095,7 +1095,7 @@ pub async fn save_artifact(
                  where id = $1::uuid and public_slug is null",
             )
             .bind(id)
-            .bind(crate::kb::random_slug())
+            .bind(talaria_kb::random_slug())
             .execute(pg)
             .await?;
         }
@@ -1106,7 +1106,7 @@ pub async fn save_artifact(
     {
         // Versions come free: every body change snapshots, so the
         // artifact's history is a rough record of how the day accumulated.
-        let _ = crate::internal_history::snapshot(
+        let _ = talaria_internal_history::snapshot(
             pg,
             "artifact",
             &a.id,
@@ -1124,14 +1124,14 @@ pub async fn save_artifact(
 /// via delete_doc's unindex), then the row.
 pub async fn delete_artifact(
     pg: &PgPool,
-    qd: &crate::retrieval::qdrant::QdrantDeps,
-    ed: &crate::retrieval::embed::EmbedDeps,
+    qd: &talaria_retrieval_qdrant::QdrantDeps,
+    ed: &talaria_retrieval_embed::EmbedDeps,
     id: &str,
 ) -> Result<(), sqlx::Error> {
     if let Ok(Some(a)) = get_artifact(pg, id).await
         && let Some(kb_doc_id) = &a.kb_doc_id
     {
-        let _ = crate::kb::delete_doc(pg, qd, ed, kb_doc_id).await;
+        let _ = talaria_kb::delete_doc(pg, qd, ed, kb_doc_id).await;
     }
     sqlx::query("delete from artifacts where id = $1::uuid")
         .bind(id)

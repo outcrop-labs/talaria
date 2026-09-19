@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 174 crates.** Knowledgebase engine. Verified:
+- **API workspace: 175 crates.** Artifacts. Verified:
   `cargo check -p talaria-api`.
+
 
 
 

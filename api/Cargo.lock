@@ -3662,6 +3662,7 @@ dependencies = [
  "talaria-agent-writes",
  "talaria-agents-registry",
  "talaria-apps",
+ "talaria-artifacts",
  "talaria-attribution",
  "talaria-audit",
  "talaria-auth",
@@ -3849,6 +3850,24 @@ dependencies = [
  "talaria-users",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-artifacts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-error",
+ "talaria-internal-history",
+ "talaria-kb",
+ "talaria-kb-perms",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
 ]
 
 [[package]]
