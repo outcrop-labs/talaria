@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 199 crates.** Research: run definition + domain (dispatch
-  via BUILD_DISPATCH). Verified: `cargo check -p talaria-api`.
+- **API workspace: 200 crates.** Runs decide + real assembly (decide path,
+  `real_run_deps`/`real_decide_deps`). Verified: `cargo check -p talaria-api`.
+
 
 
 

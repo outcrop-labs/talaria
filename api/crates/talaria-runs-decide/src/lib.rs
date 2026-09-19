@@ -63,17 +63,21 @@
 // reached (ZERO IS A REAL ANSWER); `mark_brief_stale` clears the deciders'
 // brief lines.
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::approvals::{Disclosure, PendingApproval, may_decide_content};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_approvals::{Disclosure, PendingApproval, may_decide_content};
 
-use super::define::{Authority, DecisionAnswer, DecisionRequest, RunDecision, RunRow, RunState};
-use super::run::{
+use talaria_runs_define::{
+    Authority, DecisionAnswer, DecisionRequest, RunDecision, RunRow, RunState,
+};
+use talaria_runs_run::{
     DefinitionForFn, PauseArgs, PauseFn, PauseOutcome, PublishFn, RunDeps, RunEvent, clamp_text,
     drive,
 };
-use super::store::{AnswerOutcome, RunStore, WriteFailure};
+use talaria_runs_store::{AnswerOutcome, RunStore, WriteFailure};
+
+pub mod assembly;
 
 const LOG: &str = "[runs]";
 
@@ -607,8 +611,8 @@ pub struct DecideArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runs::define::DecisionOption;
     use serde_json::Value;
+    use talaria_runs_define::DecisionOption;
 
     fn row(state: RunState, decision: Option<RunDecision>, approval_key: Option<String>) -> RunRow {
         RunRow {

@@ -22,8 +22,7 @@ use crate::retrieval::sources::{
 use crate::retrieval::{embed, qdrant};
 use crate::runs::run::RunDeps;
 use crate::statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
-use crate::work_dispatch::{DispatchTicket, dispatch_deps, maybe_dispatch_ticket};
-use axum::http::StatusCode;
+use crate::work_dispatch::{DispatchTicket, maybe_dispatch_ticket};
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
