@@ -33,9 +33,21 @@
 // notification rides the TRANSITION, and a transition that didn't happen
 // derives the same answer twice, quietly.
 
-use crate::notify::{NotificationInput, NotifyDeps};
-use crate::statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use sqlx::PgPool;
+use talaria_notify::{NotificationInput, NotifyDeps};
+use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+use talaria_tasks_types::Task;
+
+pub static GET_TASK: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, Result<Option<Task>, sqlx::Error>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 use std::collections::HashMap;
 
 /// A workchain on the wire: id, boardId, name, createdBy, paused, position,
@@ -99,7 +111,7 @@ type StepRow = (
 );
 
 fn iso(ms: i64) -> String {
-    crate::agent_auth::epoch_ms_to_iso(ms)
+    talaria_agent_auth::epoch_ms_to_iso(ms)
 }
 
 /// The one derive, split out so the state rules are testable against a
@@ -138,7 +150,7 @@ fn step_of(row: StepRow) -> WorkchainStep {
         state: "waiting",
         ticket_ref,
         title,
-        assignees: crate::tasks::json_strings(&assignees),
+        assignees: talaria_tasks_types::json_strings(&assignees),
         effort,
         due_date: due_ms.map(iso),
         status,
@@ -332,12 +344,18 @@ pub async fn advance_workchains(
             let Some((head_id, _, head_assignees)) = head_of(pg, &meta, &chain_id).await? else {
                 return Ok(());
             };
-            let humans =
-                crate::tasks::human_assignee_ids(&crate::tasks::json_strings(&head_assignees));
+            let humans = talaria_tasks_types::human_assignee_ids(
+                &talaria_tasks_types::json_strings(&head_assignees),
+            );
             if humans.is_empty() {
                 return Ok(());
             }
-            let Some(t) = crate::tasks::get_task(pg, &head_id).await? else {
+            let Some(t) = {
+                let f = GET_TASK.get().expect("GET_TASK");
+                f(pg.clone(), head_id.clone())
+            }
+            .await?
+            else {
                 return Ok(());
             };
             let subject = match t.ticket_ref.as_deref() {
@@ -352,7 +370,7 @@ pub async fn advance_workchains(
                     body: None,
                     href: Some(&href),
                 };
-                if let Err(e) = crate::notify::add_notification(notify, user_id, &input).await {
+                if let Err(e) = talaria_notify::add_notification(notify, user_id, &input).await {
                     tracing::error!("[workchains] turn notification for {user_id} failed: {e}");
                 }
             }
@@ -374,7 +392,12 @@ pub async fn advance_workchains(
             let Some(creator) = chain_creator else {
                 return Ok(());
             };
-            let Some(t) = crate::tasks::get_task(pg, task_id).await? else {
+            let Some(t) = {
+                let f = GET_TASK.get().expect("GET_TASK");
+                f(pg.clone(), task_id.to_string())
+            }
+            .await?
+            else {
                 return Ok(());
             };
             let subject = match t.ticket_ref.as_deref() {
@@ -399,7 +422,7 @@ pub async fn advance_workchains(
                 body: None,
                 href: Some(&format!("/boards/{}/{}", t.board_id, t.id)),
             };
-            if let Err(e) = crate::notify::add_notification(notify, &creator_id, &input).await {
+            if let Err(e) = talaria_notify::add_notification(notify, &creator_id, &input).await {
                 tracing::error!("[workchains] paused notification for {creator} failed: {e}");
             }
         }

@@ -117,7 +117,7 @@ pub use talaria_web_search as web_search;
 pub mod work_dispatch;
 pub use talaria_work_wait as work_wait;
 pub mod workbench;
-pub mod workchains;
+pub use talaria_workchains as workchains;
 pub use talaria_workflows as workflows;
 pub use talaria_workspace_handles as workspace_handles;
 pub use talaria_workspace_secrets as workspace_secrets;

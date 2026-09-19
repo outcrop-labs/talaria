@@ -3830,6 +3830,7 @@ dependencies = [
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
+ "talaria-workchains",
  "talaria-workflows",
  "talaria-workspace-handles",
  "talaria-workspace-secrets",
@@ -6492,6 +6493,21 @@ dependencies = [
  "sqlx",
  "talaria-gateway",
  "talaria-model-roles",
+]
+
+[[package]]
+name = "talaria-workchains"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-notify",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "tracing",
 ]
 
 [[package]]
