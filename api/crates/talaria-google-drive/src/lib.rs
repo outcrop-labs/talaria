@@ -7,13 +7,13 @@
 use base64::Engine as _;
 use sqlx::PgPool;
 
-use crate::artifacts::Artifact;
-use crate::gateway::provider::http;
-use crate::google::connections::{RequireError, TokenError, get_access_token, require_token};
-use crate::google::errors::GoogleError;
-use crate::google::oauth::encode_uri_component;
-use crate::secretbox::SecretBox;
-use crate::uploads::{get_upload, save_upload};
+use talaria_artifacts::Artifact;
+use talaria_gateway::provider::http;
+use talaria_google_connections::{RequireError, TokenError, get_access_token, require_token};
+use talaria_google_errors::GoogleError;
+use talaria_google_oauth::encode_uri_component;
+use talaria_secretbox::SecretBox;
+use talaria_uploads::{get_upload, save_upload};
 
 // supportsAllDrives lets us create into a Shared Drive (team-owned files).
 const UPLOAD_ENDPOINT: &str = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink,name,mimeType";
@@ -661,9 +661,9 @@ pub async fn drive_roster(
 
     // Org: the provisioned Shared Drive above all (that's the workspace's
     // Drive), then the org account's own My Drive.
-    if let Ok(Some(_org_token)) = crate::google::org::get_org_access_token(pg, sb, now_ms).await {
+    if let Ok(Some(_org_token)) = talaria_google_org::get_org_access_token(pg, sb, now_ms).await {
         let writable = true; // ORG_CONNECT_SCOPES carries the full drive grant.
-        if let Ok(targets) = crate::google::org::get_org_targets(pg).await
+        if let Ok(targets) = talaria_google_org::get_org_targets(pg).await
             && let Some(shared_drive_id) = targets.shared_drive_id.filter(|s| !s.is_empty())
         {
             out.push(DriveRosterEntry {
