@@ -16,16 +16,16 @@
 
 use std::sync::Arc;
 
-use crate::gateway::settings::get_setting;
-use crate::harness::defs::outreach::{
+use serde_json::{Value, json};
+use sqlx::PgPool;
+use talaria_gateway::settings::get_setting;
+use talaria_harness::run::{RunContext, run_harness};
+use talaria_harness_defs::defs::outreach::{
     NOTHING_TO_SURFACE, OutreachCheckInInput, OutreachNote, OutreachTicket,
     outreach_check_in_harness,
 };
-use crate::harness::run::{RunContext, run_harness};
-use crate::scheduler::{JobName, JobSpec};
-use crate::state::AppState;
-use serde_json::{Value, json};
-use sqlx::PgPool;
+use talaria_scheduler::{JobName, JobSpec};
+use talaria_state::AppState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutreachConfig {
@@ -68,7 +68,7 @@ fn parse_config(stored: &Value) -> OutreachConfig {
 
 /// A full-object write of the three knobs.
 pub async fn set_outreach_config(pg: &PgPool, c: &OutreachConfig) {
-    let _ = crate::gateway::settings::set_setting(
+    let _ = talaria_gateway::settings::set_setting(
         pg,
         "outreach_config",
         &json!({
@@ -99,7 +99,7 @@ pub async fn recent_outreach_events(pg: &PgPool, limit: i64) -> Vec<serde_json::
                     "agentModel": agent_model,
                     "kind": kind,
                     "note": note,
-                    "createdAt": crate::agent_auth::epoch_ms_to_iso(created_ms),
+                    "createdAt": talaria_agent_auth::epoch_ms_to_iso(created_ms),
                 })
             })
             .collect(),
@@ -142,7 +142,7 @@ impl MessageUserResult {
 /// `message_user` arrives here as a tool ARGUMENT; nothing else on this path
 /// ever looks at it.
 pub async fn agent_message_user(
-    deps: &crate::notify::NotifyDeps,
+    deps: &talaria_notify::NotifyDeps,
     agent_model: &str,
     to: &str,
     message: &str,
@@ -220,13 +220,13 @@ pub async fn agent_message_user(
     .ok()
     .flatten();
     let label = if display_name.is_empty() {
-        crate::fleet::describe_agent(agent_model).label
+        talaria_fleet_layout::describe_agent(agent_model).label
     } else {
         display_name
     };
     let conv_id = match existing {
         Some((id,)) => id,
-        None => match crate::conversations::create_conversation(
+        None => match talaria_conversations::create_conversation(
             pg,
             target_id,
             agent_model,
@@ -241,28 +241,33 @@ pub async fn agent_message_user(
         },
     };
 
-    let guarded = crate::agent_writes::guard_agent_write(
+    let guarded = talaria_agent_writes::guard_agent_write(
         pg,
         "direct-message",
-        crate::agent_writes::WriteAuthor::Agent(agent_model),
+        talaria_agent_writes::WriteAuthor::Agent(agent_model),
         message,
         None,
     )
     .await;
     let body = guarded.text;
 
-    let seq = match crate::conversations::next_seq(pg, &conv_id).await {
+    let seq = match talaria_conversations::next_seq(pg, &conv_id).await {
         Ok(seq) => seq,
         Err(e) => return MessageUserResult::err(&e.to_string()),
     };
-    let msg_id =
-        match crate::conversations::insert_streaming_assistant(pg, &conv_id, seq, &json!({})).await
-        {
-            Ok(id) => id,
-            Err(e) => return MessageUserResult::err(&e.to_string()),
-        };
+    let msg_id = match talaria_conversations::insert_streaming_assistant(
+        pg,
+        &conv_id,
+        seq,
+        &json!({}),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => return MessageUserResult::err(&e.to_string()),
+    };
     if let Err(e) =
-        crate::conversations::update_assistant(pg, &msg_id, &body, "", &[], "complete").await
+        talaria_conversations::update_assistant(pg, &msg_id, &body, "", &[], "complete").await
     {
         return MessageUserResult::err(&e.to_string());
     }
@@ -274,12 +279,12 @@ pub async fn agent_message_user(
     if !guarded.findings.is_empty()
         && matches!(
             guarded.mode,
-            crate::gateway::guard::GuardMode::Annotate | crate::gateway::guard::GuardMode::Strict
+            talaria_gateway::guard::GuardMode::Annotate | talaria_gateway::guard::GuardMode::Strict
         )
     {
-        let _ = crate::conversations::set_message_guard(pg, &msg_id, &guarded.findings).await;
+        let _ = talaria_conversations::set_message_guard(pg, &msg_id, &guarded.findings).await;
     }
-    let _ = crate::conversations::touch_conversation(pg, &conv_id, None).await;
+    let _ = talaria_conversations::touch_conversation(pg, &conv_id, None).await;
 
     let title = format!("{label} reached out");
     let notified_body = if body.chars().count() > 140 {
@@ -289,13 +294,13 @@ pub async fn agent_message_user(
     };
     let href = format!(
         "/comms/agent/{}/{}",
-        crate::google::oauth::encode_uri_component(agent_model),
+        talaria_google_oauth::encode_uri_component(agent_model),
         conv_id
     );
-    let _ = crate::notify::add_notification(
+    let _ = talaria_notify::add_notification(
         deps,
         target_id,
-        &crate::notify::NotificationInput {
+        &talaria_notify::NotificationInput {
             kind: "agent-outreach",
             title: &title,
             body: Some(&notified_body),
@@ -311,8 +316,8 @@ pub async fn agent_message_user(
     // redacted `body`, observe/annotate deliberately did not — but what goes
     // into the note has to be clean either way. `redact_secrets` on
     // already-redacted text is a no-op.
-    let note = if crate::gateway::guard::needs_redaction(&guarded.findings) {
-        crate::gateway::guard::redact_secrets(&body, None).0
+    let note = if talaria_gateway::guard::needs_redaction(&guarded.findings) {
+        talaria_gateway::guard::redact_secrets(&body, None).0
     } else {
         body
     };
@@ -581,7 +586,7 @@ pub fn outreach_job_spec(deps: Arc<OutreachDeps>) -> JobSpec {
 /// without reaching it prints a MISSING JOBS error instead of quietly never
 /// checking in.
 pub fn register_outreach_job(deps: Arc<OutreachDeps>) {
-    crate::scheduler::register_job(outreach_job_spec(deps));
+    talaria_scheduler::register_job(outreach_job_spec(deps));
 }
 
 #[cfg(test)]

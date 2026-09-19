@@ -12,32 +12,33 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::body::utf16_len;
-use crate::conversations::{
+use talaria_body::utf16_len;
+use talaria_conversations::{
     active_streaming_assistant, content_js_length, insert_streaming_assistant,
     last_user_message_effort, mark_message_resumed, message_still_errored, next_seq,
     prior_messages, resurrect_streaming_assistant, set_message_guard, touch_conversation,
     update_assistant,
 };
-use crate::fleet::{describe_agent, routed_model_for};
-use crate::gateway::fleet_chat::{
+use talaria_fleet_agents::routed_model_for;
+use talaria_fleet_layout::describe_agent;
+use talaria_gateway::fleet_chat::{
     AgentStreamEvent, AgentStreamParser, ToolCall, chat_payload, merge_tool, proxy_chat,
 };
-use crate::gateway::guard::{
+use talaria_gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
 };
-use crate::gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
-use crate::model::efforts::efforts_for_model;
-use crate::notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
-use crate::plan_doc::{
+use talaria_gateway::usage::{TokenCounts, UsageInput, estimate_tokens, record_usage};
+use talaria_model_efforts::efforts_for_model;
+use talaria_notify::{NotifyDeps, fan_conversation_event, notify_agent_reply};
+use talaria_plan_doc::{
     PLAN_MODE_PROMPT, PlanOwner, notify_plan_mentions, plan_doc_for, plan_routing_block,
     sync_plan_doc,
 };
-use crate::retrieval::index::IndexDoc;
-use crate::retrieval::sources::index_activity;
-use crate::state::AppState;
-use crate::titler::maybe_retitle_conversation;
-use crate::workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
+use talaria_retrieval_index::IndexDoc;
+use talaria_retrieval_sources::index_activity;
+use talaria_state::AppState;
+use talaria_titler::maybe_retitle_conversation;
+use talaria_workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 
 /// Set for plan conversations: replies feed
 /// the activity brain, owner-scoped.
@@ -122,7 +123,7 @@ fn spawn_plan_doc_auto_sync(
         // freshly saved" and lets the sync through (None = no document yet).
         let doc_updated_ms = doc
             .as_ref()
-            .and_then(|d| crate::agent_auth::iso_to_epoch_ms(&d.updated_at));
+            .and_then(|d| talaria_agent_auth::iso_to_epoch_ms(&d.updated_at));
         if !auto_sync_should_start(Some(&plan), in_flight, doc_updated_ms, now_ms()) {
             return;
         }
@@ -445,7 +446,7 @@ async fn continue_inner(
 /// The detached persist kick, as its own function (see the call site for why).
 fn spawn_persist(
     state: AppState,
-    body: crate::gateway::fleet_chat::ByteStream,
+    body: talaria_gateway::fleet_chat::ByteStream,
     message_id: String,
     conversation_id: String,
     usage_meta: PersistMeta,
@@ -486,7 +487,7 @@ pub struct PersistMeta {
 #[allow(clippy::too_many_arguments)] // the persist's inputs name the turn's own facts
 pub async fn persist_assistant_stream(
     state: AppState,
-    body: crate::gateway::fleet_chat::ByteStream,
+    body: talaria_gateway::fleet_chat::ByteStream,
     message_id: String,
     conversation_id: String,
     usage_meta: Option<PersistMeta>,
@@ -791,8 +792,8 @@ pub async fn persist_assistant_stream(
                 href: Some("/plan".into()),
             };
             tokio::spawn(async move {
-                let qd = crate::retrieval::qdrant::real_deps();
-                let ed = crate::retrieval::embed::real_deps();
+                let qd = talaria_retrieval_qdrant::real_deps();
+                let ed = talaria_retrieval_embed::real_deps();
                 let _ = index_activity(&pg, &qd, &ed, &doc).await;
             });
         }

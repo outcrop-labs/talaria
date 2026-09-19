@@ -3676,8 +3676,10 @@ dependencies = [
  "talaria-channel-plan",
  "talaria-channel-replies",
  "talaria-channels",
+ "talaria-chat-persist",
  "talaria-claim",
  "talaria-collate",
+ "talaria-comms-decay",
  "talaria-config",
  "talaria-conversations",
  "talaria-daily-brief",
@@ -3758,6 +3760,7 @@ dependencies = [
  "talaria-notify",
  "talaria-org",
  "talaria-org-domains",
+ "talaria-outreach",
  "talaria-params",
  "talaria-password",
  "talaria-password-accounts",
@@ -4079,6 +4082,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-chat-persist"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-conversations",
+ "talaria-fleet-agents",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-model-access",
+ "talaria-model-efforts",
+ "talaria-notify",
+ "talaria-plan-doc",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-state",
+ "talaria-titler",
+ "talaria-workspace-handles",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-claim"
 version = "0.1.0"
 dependencies = [
@@ -4101,6 +4134,30 @@ dependencies = [
 [[package]]
 name = "talaria-collate"
 version = "0.1.0"
+
+[[package]]
+name = "talaria-comms-decay"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-channels",
+ "talaria-fleet-layout",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-notify",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "talaria-config"
@@ -5376,6 +5433,28 @@ dependencies = [
  "talaria-agent-auth",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "talaria-outreach"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-conversations",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-google-oauth",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-notify",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

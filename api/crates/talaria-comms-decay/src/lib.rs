@@ -15,16 +15,17 @@
 
 use std::sync::Arc;
 
-use crate::fleet::describe_agent;
-use crate::harness::defs::distiller::distiller_harness;
-use crate::harness::run::{RunContext, run_harness};
-use crate::retrieval::index::IndexDoc;
-use crate::retrieval::sources::{index_activity, index_personal};
-use crate::retrieval::{embed, qdrant};
-use crate::scheduler::{JobName, JobSpec};
-use crate::state::AppState;
 use serde_json::json;
 use sqlx::PgPool;
+use talaria_fleet_layout::describe_agent;
+use talaria_harness::run::{RunContext, run_harness};
+use talaria_harness_defs::defs::distiller::distiller_harness;
+use talaria_retrieval_embed as embed;
+use talaria_retrieval_index::IndexDoc;
+use talaria_retrieval_qdrant as qdrant;
+use talaria_retrieval_sources::{index_activity, index_personal};
+use talaria_scheduler::{JobName, JobSpec};
+use talaria_state::AppState;
 
 /// `TALARIA_CHAT_TTL_DAYS`, floored at one day. Read per pass, so a config
 /// change needs no restart.
@@ -86,7 +87,9 @@ pub enum DistillOutcome {
 /// Collapsing them loses the escalation. Treating either as success archives
 /// a conversation whose substance was never captured — the exact failure this
 /// whole module is written around.
-pub fn distill_outcome(run: &crate::harness::run::HarnessResult) -> Result<String, DistillOutcome> {
+pub fn distill_outcome(
+    run: &talaria_harness::run::HarnessResult,
+) -> Result<String, DistillOutcome> {
     // The model fact wins the ambiguous case: "there is nothing to summarize
     // with" is what makes the whole batch fail and the only one of the two an
     // operator can act on.
@@ -240,8 +243,8 @@ async fn file_distill_artifact(
     text: &str,
 ) -> Result<(), sqlx::Error> {
     let folder =
-        crate::artifacts::agent_category_folder(&state.pg, label, "Chat summaries", label).await;
-    let artifact = crate::artifacts::create_artifact(
+        talaria_artifacts::agent_category_folder(&state.pg, label, "Chat summaries", label).await;
+    let artifact = talaria_artifacts::create_artifact(
         &state.pg,
         Some("doc"),
         Some(title),
@@ -250,10 +253,10 @@ async fn file_distill_artifact(
         folder.as_deref(),
     )
     .await?;
-    crate::artifacts::save_artifact(
+    talaria_artifacts::save_artifact(
         &state.pg,
         &artifact.id,
-        crate::artifacts::SaveArtifactPatch {
+        talaria_artifacts::SaveArtifactPatch {
             body: Some(text),
             ..Default::default()
         },
@@ -366,8 +369,8 @@ pub async fn conclude_relay(
     by_user_id: &str,
     channel_name: &str,
 ) -> Result<String, String> {
-    let deps = crate::notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-    let history = crate::channels::list_channel_messages(&deps.pg, channel_id, -1, 500, true)
+    let deps = talaria_notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+    let history = talaria_channels::list_channel_messages(&deps.pg, channel_id, -1, 500, true)
         .await
         .map_err(|e| format!("message read failed: {e}"))?;
     let transcript = clip(
@@ -399,7 +402,7 @@ pub async fn conclude_relay(
     // error message.
     let run = run_harness(
         state,
-        &crate::harness::defs::concluder::concluder_harness(),
+        &talaria_harness_defs::defs::concluder::concluder_harness(),
         &json!({ "channelName": channel_name, "transcript": transcript }),
         RunContext {
             caller: format!("platform:concluder:{by_user_id}"),
@@ -429,10 +432,10 @@ pub async fn conclude_relay(
     // The summary is the relay's last word: posted into history (visible if
     // the relay is ever revisited) and indexed for retrieval
     // (channel-membership ACL).
-    let agents = crate::channels::list_channel_agents(&deps.pg, channel_id)
+    let agents = talaria_channels::list_channel_agents(&deps.pg, channel_id)
         .await
         .map_err(|e| format!("agent list read failed: {e}"))?;
-    crate::channels::insert_channel_message(
+    talaria_channels::insert_channel_message(
         &deps,
         channel_id,
         "agent",
@@ -459,7 +462,7 @@ pub async fn conclude_relay(
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     index_activity(&deps.pg, &qd, &ed, &doc).await?;
-    crate::channels::archive_channel(&deps, channel_id)
+    talaria_channels::archive_channel(&deps, channel_id)
         .await
         .map_err(|e| format!("archive failed: {e}"))?;
     Ok(text)
@@ -500,15 +503,15 @@ pub fn comms_decay_job_spec(deps: Arc<DecayDeps>) -> JobSpec {
 /// REQUIRED_JOBS, so an instance that boots without reaching it prints a
 /// MISSING JOBS error instead of quietly never decaying a chat.
 pub fn register_comms_decay_job(deps: Arc<DecayDeps>) {
-    crate::scheduler::register_job(comms_decay_job_spec(deps));
+    talaria_scheduler::register_job(comms_decay_job_spec(deps));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::run::HarnessResult;
     use serde_json::Value;
     use std::sync::Mutex;
+    use talaria_harness::run::HarnessResult;
 
     // THE INVARIANT UNDER TEST: `distill` has three outcomes and two of
     // them mean "archived NOTHING". Counting either as an archive is how

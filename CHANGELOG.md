@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 179 crates.** Plan-doc engine. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 182 crates.** Chat persist, comms decay, outreach.
+  Verified: `cargo check -p talaria-api`.
+
 
 
 
