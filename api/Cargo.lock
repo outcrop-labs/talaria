@@ -3575,6 +3575,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-github",
  "talaria-guard-coaching",
+ "talaria-hermes-skills",
  "talaria-instance",
  "talaria-internal-history",
  "talaria-judge",
@@ -3912,6 +3913,14 @@ dependencies = [
  "sqlx",
  "talaria-settings",
  "tracing",
+]
+
+[[package]]
+name = "talaria-hermes-skills"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

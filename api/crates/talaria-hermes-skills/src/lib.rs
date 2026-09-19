@@ -22,7 +22,10 @@
 use serde::Deserialize;
 use std::sync::LazyLock;
 
-const AUTHORITY_JSON: &str = include_str!("../../../scripts/hermes-skill-authority.json");
+const AUTHORITY_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../scripts/hermes-skill-authority.json"
+));
 
 #[derive(Debug, Deserialize)]
 struct Authority {

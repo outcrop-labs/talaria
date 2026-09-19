@@ -78,6 +78,7 @@ members = [
     "crates/talaria-mentions",
     "crates/talaria-price-oracle",
     "crates/talaria-channels",
+    "crates/talaria-hermes-skills",
 ]
 resolver = "3"
 
@@ -180,6 +181,7 @@ talaria-notify = { path = "crates/talaria-notify" }
 talaria-mentions = { path = "crates/talaria-mentions" }
 talaria-price-oracle = { path = "crates/talaria-price-oracle" }
 talaria-channels = { path = "crates/talaria-channels" }
+talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
 
 
 
