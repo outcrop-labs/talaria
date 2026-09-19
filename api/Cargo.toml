@@ -79,6 +79,9 @@ members = [
     "crates/talaria-price-oracle",
     "crates/talaria-channels",
     "crates/talaria-hermes-skills",
+    "crates/talaria-fleet-docker",
+    "crates/talaria-agent-media",
+    "crates/talaria-agent-memory",
 ]
 resolver = "3"
 
@@ -182,6 +185,9 @@ talaria-mentions = { path = "crates/talaria-mentions" }
 talaria-price-oracle = { path = "crates/talaria-price-oracle" }
 talaria-channels = { path = "crates/talaria-channels" }
 talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
+talaria-fleet-docker = { path = "crates/talaria-fleet-docker" }
+talaria-agent-media = { path = "crates/talaria-agent-media" }
+talaria-agent-memory = { path = "crates/talaria-agent-memory" }
 
 
 

@@ -3,7 +3,7 @@ pub mod brain;
 pub mod budget;
 pub mod cascade;
 pub mod create;
-pub mod docker;
+pub use talaria_fleet_docker as docker;
 pub mod federate;
 pub use talaria_fleet_layout as layout;
 pub use talaria_hermes_skills as hermes_skills;

@@ -6,8 +6,8 @@
 
 use sqlx::PgPool;
 
-use crate::fleet::docker::{docker_exec_opt, managed_container};
-use crate::internal_history::snapshot;
+use talaria_fleet_docker::{docker_exec_opt, managed_container};
+use talaria_internal_history::snapshot;
 
 const MEMORY_PATH: &str = "/opt/data/memories/MEMORY.md";
 

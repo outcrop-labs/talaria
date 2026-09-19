@@ -70,6 +70,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     crate::outreach::register_outreach_job(Arc::new(OutreachDeps {
         state: state.clone(),
     }));
+    let _ = talaria_fleet_docker::PREFLIGHT.set(|pool| {
+        tokio::spawn(async move {
+            let _ = crate::fleet::preflight::run_fleet_preflight(&pool).await;
+        });
+    });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(crate::price_oracle::nudge_auto_prices);
     crate::price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),

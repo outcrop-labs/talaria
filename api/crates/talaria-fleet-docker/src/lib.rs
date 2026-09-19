@@ -17,6 +17,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// Set from the api binary so `fleet_up` can run preflight without this crate
+/// depending on the rest of the fleet engine.
+pub static PREFLIGHT: std::sync::OnceLock<fn(sqlx::PgPool)> = std::sync::OnceLock::new();
+
 use sqlx::PgPool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +43,7 @@ pub fn slot_service(department: &str, slot: Slot) -> String {
 pub fn slot_container(department: &str, slot: Slot) -> String {
     format!(
         "{}-{}-1",
-        crate::fleet::layout::fleet_project(),
+        talaria_fleet_layout::fleet_project(),
         slot_service(department, slot)
     )
 }
@@ -65,7 +69,7 @@ pub async fn active_slot(pg: &PgPool, department: &str) -> Slot {
 /// success returns (stdout, stderr) trimmed as written. Crate-visible —
 /// the app's own update engine (api/src/update/) speaks docker through
 /// the same shape rather than a second copy of it.
-pub(crate) async fn docker(args: &[&str], timeout: Duration) -> Result<(String, String), String> {
+pub async fn docker(args: &[&str], timeout: Duration) -> Result<(String, String), String> {
     let out = tokio::time::timeout(timeout, async {
         tokio::process::Command::new("docker")
             .args(args)
@@ -100,14 +104,14 @@ fn compose_args(extra: &[&str]) -> Vec<String> {
     let mut args = vec![
         "compose".to_string(),
         "-p".to_string(),
-        crate::fleet::layout::fleet_project(),
+        talaria_fleet_layout::fleet_project(),
         "-f".to_string(),
-        crate::fleet::layout::fleet_dir()
+        talaria_fleet_layout::fleet_dir()
             .join("docker-compose.yml")
             .to_string_lossy()
             .into_owned(),
         "--env-file".to_string(),
-        crate::fleet::layout::fleet_env()
+        talaria_fleet_layout::fleet_env()
             .to_string_lossy()
             .into_owned(),
     ];
@@ -120,7 +124,7 @@ fn compose_args(extra: &[&str]) -> Vec<String> {
 /// missing so a fresh install works without any setup script. Idempotent,
 /// race-safe.
 async fn ensure_fleet_network() -> Result<(), String> {
-    let name = crate::fleet::layout::fleet_network_name().await;
+    let name = talaria_fleet_layout::fleet_network_name().await;
     let name = name.as_str();
     if docker(&["network", "inspect", name], Duration::from_secs(10))
         .await
@@ -161,9 +165,9 @@ pub async fn fleet_up_slot(pg: &PgPool, department: &str, slot: Slot) -> Result<
     // able to fail a start, and its whole value is that it writes a verdict
     // somebody reads later (alerts) rather than that this caller waits for it.
     let pool = pg.clone();
-    tokio::spawn(async move {
-        let _ = crate::fleet::preflight::run_fleet_preflight(&pool).await;
-    });
+    if let Some(pf) = PREFLIGHT.get() {
+        pf(pool);
+    }
     Ok(stderr.trim().to_string())
 }
 
@@ -495,7 +499,7 @@ async fn container_status_fresh(departments: &[String]) -> Result<Vec<AgentConta
 /// Best-effort by contract: the caller treats false as "skip", never as failure.
 pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
     let name = slot_container(department, slot);
-    let paths = crate::fleet::hermes_skills::prune_paths()
+    let paths = talaria_hermes_skills::prune_paths()
         .into_iter()
         .map(|p| format!("/opt/data/skills/{p}"))
         .collect::<Vec<_>>()
@@ -516,7 +520,7 @@ mod tests {
     fn slot_names_carry_the_project_and_only_slot_b_gets_a_suffix() {
         // fleet_project() reads the env at call time; pin the NAME SHAPE by
         // asserting against whatever project this test environment resolves.
-        let project = crate::fleet::layout::fleet_project();
+        let project = talaria_fleet_layout::fleet_project();
         assert_eq!(slot_service("research", Slot::A), "agent-research");
         assert_eq!(slot_service("research", Slot::B), "agent-research-b");
         assert_eq!(
@@ -534,7 +538,7 @@ mod tests {
         let args = compose_args(&["up", "-d", "agent-research"]);
         assert_eq!(args[0], "compose");
         assert_eq!(args[1], "-p");
-        assert_eq!(args[2], crate::fleet::layout::fleet_project());
+        assert_eq!(args[2], talaria_fleet_layout::fleet_project());
         assert!(args[4].ends_with("docker-compose.yml"), "{}", args[4]);
         assert!(args[6].ends_with("/.env"), "{}", args[6]);
         assert_eq!(&args[7..], ["up", "-d", "agent-research"]);

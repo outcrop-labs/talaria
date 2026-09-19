@@ -4,9 +4,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 72 crates.** Hermes skill authority catalog is its
-  own crate (`include_str!` via `CARGO_MANIFEST_DIR`). Verified:
+- **API workspace: 75 crates.** `talaria-fleet-docker` (preflight via
+  OnceLock), `agent_media`, `agent_memory`. Verified:
   `cargo check -p talaria-api`.
+
 
 
 
