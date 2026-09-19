@@ -3577,6 +3577,7 @@ dependencies = [
  "talaria-instance",
  "talaria-internal-history",
  "talaria-judge",
+ "talaria-labels",
  "talaria-llm-keys",
  "talaria-me",
  "talaria-native-search",
@@ -3589,8 +3590,10 @@ dependencies = [
  "talaria-platform-agents",
  "talaria-push",
  "talaria-ratelimit",
+ "talaria-realtime",
  "talaria-repo-env",
  "talaria-research-origin",
+ "talaria-runs-define",
  "talaria-safe-fetch",
  "talaria-search",
  "talaria-secret-health",
@@ -3924,6 +3927,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-labels"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-realtime",
+]
+
+[[package]]
 name = "talaria-llm-keys"
 version = "0.1.0"
 dependencies = [
@@ -4111,6 +4124,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-realtime"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-boards",
+ "talaria-runs-define",
+ "talaria-users",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-repo-env"
 version = "0.1.0"
 dependencies = [
@@ -4125,6 +4155,17 @@ version = "0.1.0"
 dependencies = [
  "redis",
  "talaria-state",
+]
+
+[[package]]
+name = "talaria-runs-define"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -5,8 +5,8 @@
 // place to manage from. Renames cascade into every ticket's tags; deletes
 // strip the label off tickets.
 
-use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
 use sqlx::PgPool;
+use talaria_realtime::{BoardEvent, RealtimeDeps, publish_board};
 
 /// The color palette — the whole declared set a
 /// label's color may be; anything else coerces to 'slate' on create and is

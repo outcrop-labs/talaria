@@ -239,7 +239,7 @@ impl StepSignal {
     /// A fresh receiver of an EXISTING abort sender — the driver owns one
     /// sender for the whole drive and subscribes each step to it, so a lease
     /// lost mid-drive reaches whichever step is in flight.
-    pub(crate) fn from_sender(tx: &tokio::sync::watch::Sender<bool>) -> Self {
+    pub fn from_sender(tx: &tokio::sync::watch::Sender<bool>) -> Self {
         Self { rx: tx.subscribe() }
     }
 
@@ -326,7 +326,7 @@ impl StepActivity {
     }
     /// Driver-side: resolves when the tap pings. Private to the engine —
     /// steps only ever PING.
-    pub(crate) async fn waited(&self) {
+    pub async fn waited(&self) {
         self.0.notified().await;
     }
 }

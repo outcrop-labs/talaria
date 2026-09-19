@@ -59,7 +59,7 @@ pub mod invites;
 pub mod jobs;
 pub use talaria_judge as judge;
 pub mod kb;
-pub mod labels;
+pub use talaria_labels as labels;
 pub use talaria_llm_keys as llm_keys;
 pub mod mcp;
 pub use talaria_me as me;

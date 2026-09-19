@@ -69,6 +69,9 @@ members = [
     "crates/talaria-claim",
     "crates/talaria-session",
     "crates/talaria-activity",
+    "crates/talaria-runs-define",
+    "crates/talaria-realtime",
+    "crates/talaria-labels",
 ]
 resolver = "3"
 
@@ -162,6 +165,9 @@ talaria-boards = { path = "crates/talaria-boards" }
 talaria-claim = { path = "crates/talaria-claim" }
 talaria-session = { path = "crates/talaria-session" }
 talaria-activity = { path = "crates/talaria-activity" }
+talaria-runs-define = { path = "crates/talaria-runs-define" }
+talaria-realtime = { path = "crates/talaria-realtime" }
+talaria-labels = { path = "crates/talaria-labels" }
 
 
 

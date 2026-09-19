@@ -4,7 +4,7 @@
 // sweep the scheduler drives.
 
 pub mod decide;
-pub mod define;
+pub use talaria_runs_define as define;
 pub mod defs;
 pub mod drivers;
 pub mod lease;
