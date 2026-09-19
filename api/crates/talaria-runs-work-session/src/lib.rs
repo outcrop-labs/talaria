@@ -52,14 +52,18 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
-use crate::harness::defs::work_session::{dispatch_prompt as dispatch_brief, work_session_harness};
-use crate::harness::run::{RunContext, RunLedger, run_harness};
-use crate::harness::transport::LedgerSource;
-use crate::runs::define::{
+use talaria_harness::run::{RunContext, RunLedger, run_harness};
+use talaria_harness::transport::LedgerSource;
+use talaria_harness_defs::defs::work_session::{
+    dispatch_prompt as dispatch_brief, work_session_harness,
+};
+use talaria_runs_define::{
     Authority, RunDefinition, RunRow, RunStepContext, StepResult, register_run,
 };
-use crate::state::AppState;
-use crate::{statuses, tasks, workflows};
+use talaria_state::AppState;
+use talaria_statuses as statuses;
+use talaria_tasks as tasks;
+use talaria_workflows as workflows;
 
 /// The registry key, and the `kind` column on every row this definition has
 /// ever produced. Stable forever — a rename orphans every session mid-flight.
@@ -274,7 +278,7 @@ pub struct SessionState {
 #[derive(Debug, Clone)]
 pub struct TurnOutput {
     pub text: String,
-    pub findings: Vec<crate::gateway::guard::Finding>,
+    pub findings: Vec<talaria_gateway::guard::Finding>,
 }
 
 pub type SessionStateFn = Arc<
@@ -426,7 +430,7 @@ async fn real_session_state(
         status: task.status.clone(),
         archived_at: task.archived_at.clone(),
     };
-    let subject = crate::agent_auth::AgentSubject::Model(agent_model.clone());
+    let subject = talaria_agent_auth::AgentSubject::Model(agent_model.clone());
     if let Some(stop) =
         tasks::agent_ticket_refusal(&pg, &target, &subject, tasks::AgentIntent::Write)
             .await
@@ -481,7 +485,7 @@ async fn real_skill_names(pg: PgPool, agent_model: String) -> Result<HashSet<Str
             .fetch_optional(&pg)
             .await
             .map_err(|e| e.to_string())?;
-    let fleet = crate::gateway::provider::fleet_dir();
+    let fleet = talaria_gateway::provider::fleet_dir();
     let mut names = HashSet::new();
     add_skill_dir_names(&fleet.join("skills"), &mut names).await;
     if let Some(slug) = slug {
@@ -595,7 +599,7 @@ async fn real_turn(
 /// persona display-redacts tool ARGUMENTS and the prompt is Talaria's own,
 /// but a tool RESULT echoed into a preview line can still carry a raw key —
 /// and this body is stored for the retention window, not streamed past.
-pub(crate) fn scrub_secrets(text: &str) -> String {
+pub fn scrub_secrets(text: &str) -> String {
     static SHAPES: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         // One physical line on purpose: this is a RAW string, where a `\`
         // line continuation is a literal backslash-newline in the pattern —
@@ -632,8 +636,8 @@ async fn capture_turn_transcript(
             .unwrap_or_default(),
         Err(_) => return,
     };
-    let prompt_bounded = crate::body::truncate_utf16(prompt, 16_000).to_string();
-    let tail_bounded = crate::body::truncate_utf16(&tail, 262_000).to_string();
+    let prompt_bounded = talaria_body::truncate_utf16(prompt, 16_000).to_string();
+    let tail_bounded = talaria_body::truncate_utf16(&tail, 262_000).to_string();
     let existing: Option<(String, String)> = sqlx::query_as(
         "select id::text, body from artifacts where kind = 'run-transcript' and title = $1 limit 1",
     )
@@ -644,7 +648,7 @@ async fn capture_turn_transcript(
     .flatten();
     let (artifact_id, mut body) = match existing {
         Some((id, body)) => (id, body),
-        None => match crate::artifacts::create_artifact(
+        None => match talaria_artifacts::create_artifact(
             &state.pg,
             Some("run-transcript"),
             Some(&format!("Run {run_id} transcript")),
@@ -655,7 +659,7 @@ async fn capture_turn_transcript(
         .await
         {
             Ok(a) => {
-                let _ = crate::artifacts::attach_artifact(
+                let _ = talaria_artifacts::attach_artifact(
                     &state.pg,
                     &a.id,
                     "task",
@@ -680,10 +684,10 @@ async fn capture_turn_transcript(
         scrub_secrets(&prompt_bounded),
         scrub_secrets(&tail_bounded)
     ));
-    if let Err(e) = crate::artifacts::save_artifact(
+    if let Err(e) = talaria_artifacts::save_artifact(
         &state.pg,
         &artifact_id,
-        crate::artifacts::SaveArtifactPatch {
+        talaria_artifacts::SaveArtifactPatch {
             body: Some(&body),
             ..Default::default()
         },
@@ -976,7 +980,7 @@ async fn dispatch_prompt(
                 .to_string();
     }
     Ok(dispatch_brief(
-        &crate::harness::defs::work_session::DispatchPromptInput {
+        &talaria_harness_defs::defs::work_session::DispatchPromptInput {
             task_id: &task.id,
             ticket_ref: task.ticket_ref.as_deref().unwrap_or(&task.id),
             title: &task.title,
@@ -994,7 +998,7 @@ async fn dispatch_prompt(
 /// prefix law, closing with the merge rule that never varies. Collapses to
 /// None when there are no grants, so the caller uses the standing default.
 async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
-    let rules = crate::github::repo_rules(pg, agent_id).await;
+    let rules = talaria_github::repo_rules(pg, agent_id).await;
     if rules.is_empty() {
         return None;
     }
@@ -1805,7 +1809,7 @@ mod tests {
     // and no fake dep ever runs one.
 
     fn test_state() -> AppState {
-        use crate::config::Config;
+        use talaria_config::Config;
         let url = "postgres://work-session-test@localhost:5432/work-session-test";
         let pg = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy(url)
@@ -1923,12 +1927,12 @@ mod tests {
     }
 
     fn row_ctx(input: Value, checkpoint: Value, attempt: i32) -> RunStepContext {
-        let (tx, signal) = crate::runs::define::StepSignal::channel();
+        let (tx, signal) = talaria_runs_define::StepSignal::channel();
         // A dropped watch sender leaves the channel at its last value —
         // `false`, never aborted — which is the shape an uncontended run has.
         drop(tx);
         RunStepContext {
-            activity: crate::runs::define::StepActivity::new(),
+            activity: talaria_runs_define::StepActivity::new(),
             run: minimal_row(),
             input,
             checkpoint,
@@ -1940,7 +1944,7 @@ mod tests {
     }
 
     fn minimal_row() -> RunRow {
-        use crate::runs::define::RunState;
+        use talaria_runs_define::RunState;
         RunRow {
             id: "r-1".into(),
             kind: WORK_SESSION_KIND.into(),
@@ -2279,12 +2283,12 @@ mod tests {
         let (mut deps, rec) = recording_deps("unused");
         deps.session_state =
             Arc::new(|_pg, _t, _a| Box::pin(async { Err("the boards read died".to_string()) }));
-        let (tx, signal) = crate::runs::define::StepSignal::channel();
+        let (tx, signal) = talaria_runs_define::StepSignal::channel();
         let _ = tx.send(true);
         drop(tx);
         let err = work_session_step(
             RunStepContext {
-                activity: crate::runs::define::StepActivity::new(),
+                activity: talaria_runs_define::StepActivity::new(),
                 run: minimal_row(),
                 input: input(),
                 checkpoint: json!({"stage":"send","turn":3,"stageAttempt":0,"lastTail":""}),

@@ -3828,6 +3828,7 @@ dependencies = [
  "talaria-runs-reindex",
  "talaria-runs-run",
  "talaria-runs-store",
+ "talaria-runs-work-session",
  "talaria-safe-fetch",
  "talaria-scheduler",
  "talaria-search",
@@ -6272,6 +6273,38 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-runs-define",
+]
+
+[[package]]
+name = "talaria-runs-work-session"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-artifacts",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-github",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-statuses",
+ "talaria-tasks",
+ "talaria-tasks-types",
+ "talaria-workflows",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
