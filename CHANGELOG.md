@@ -4,8 +4,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 80 crates.** MCP library, probe, oauth. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 85 crates.** Fitness boa runner, harness schema,
+  retrieval sparse vectors, run-driver drain, model access. `boa_engine`
+  is pinned to the code-runner crate. Verified: `cargo check -p talaria-api`.
+
 
 
 

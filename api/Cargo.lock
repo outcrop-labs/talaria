@@ -3550,7 +3550,6 @@ dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.23.1",
- "boa_engine",
  "chrono",
  "chrono-tz",
  "futures-util",
@@ -3594,11 +3593,13 @@ dependencies = [
  "talaria-db",
  "talaria-email",
  "talaria-error",
+ "talaria-fitness-code-runner",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
  "talaria-github",
  "talaria-guard-coaching",
+ "talaria-harness-schema",
  "talaria-hermes-skills",
  "talaria-instance",
  "talaria-internal-history",
@@ -3612,6 +3613,7 @@ dependencies = [
  "talaria-mcp-probe",
  "talaria-me",
  "talaria-mentions",
+ "talaria-model-access",
  "talaria-native-search",
  "talaria-notify",
  "talaria-org-domains",
@@ -3627,7 +3629,9 @@ dependencies = [
  "talaria-realtime",
  "talaria-repo-env",
  "talaria-research-origin",
+ "talaria-retrieval-sparse",
  "talaria-runs-define",
+ "talaria-runs-drivers",
  "talaria-runs-lease",
  "talaria-safe-fetch",
  "talaria-scheduler",
@@ -3863,6 +3867,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-fitness-code-runner"
+version = "0.1.0"
+dependencies = [
+ "boa_engine",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "talaria-fleet-docker"
 version = "0.1.0"
 dependencies = [
@@ -3955,6 +3969,13 @@ dependencies = [
  "sqlx",
  "talaria-settings",
  "tracing",
+]
+
+[[package]]
+name = "talaria-harness-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -4160,6 +4181,17 @@ dependencies = [
  "sqlx",
  "talaria-notify",
  "tracing",
+]
+
+[[package]]
+name = "talaria-model-access"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-collate",
+ "talaria-gateway",
 ]
 
 [[package]]
@@ -4375,12 +4407,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-retrieval-sparse"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "talaria-runs-define"
 version = "0.1.0"
 dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-drivers"
+version = "0.1.0"
+dependencies = [
  "tokio",
  "tracing",
 ]

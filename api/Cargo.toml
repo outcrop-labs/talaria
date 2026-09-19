@@ -87,6 +87,11 @@ members = [
     "crates/talaria-mcp-library",
     "crates/talaria-mcp-probe",
     "crates/talaria-mcp-oauth",
+    "crates/talaria-fitness-code-runner",
+    "crates/talaria-harness-schema",
+    "crates/talaria-retrieval-sparse",
+    "crates/talaria-runs-drivers",
+    "crates/talaria-model-access",
 ]
 resolver = "3"
 
@@ -198,6 +203,11 @@ talaria-mcp-icons = { path = "crates/talaria-mcp-icons" }
 talaria-mcp-library = { path = "crates/talaria-mcp-library" }
 talaria-mcp-probe = { path = "crates/talaria-mcp-probe" }
 talaria-mcp-oauth = { path = "crates/talaria-mcp-oauth" }
+talaria-fitness-code-runner = { path = "crates/talaria-fitness-code-runner" }
+talaria-harness-schema = { path = "crates/talaria-harness-schema" }
+talaria-retrieval-sparse = { path = "crates/talaria-retrieval-sparse" }
+talaria-runs-drivers = { path = "crates/talaria-runs-drivers" }
+talaria-model-access = { path = "crates/talaria-model-access" }
 
 
 
@@ -286,7 +296,6 @@ serde_yaml_ng = "0.10.0"
 # profile; a verifier that cannot reach DNS reports unverifiable, which is
 # the honest answer for that operator anyway.
 hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }
-boa_engine = { version = "0.22.0", default-features = false }
 
 # Dev-loop compile: optimize our crate a little, deps a lot, keep unwind
 # (tests + tower-http catch-panic). debug=line-tables-only cuts link size

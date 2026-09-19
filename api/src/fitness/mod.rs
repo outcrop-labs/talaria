@@ -3,7 +3,7 @@
 // of /api/admin/model-fitness.
 
 pub mod adversarial;
-pub mod code_runner;
+pub use talaria_fitness_code_runner as code_runner;
 pub mod evals;
 pub mod health;
 pub mod live_feed;

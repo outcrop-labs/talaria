@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
-use crate::scheduler::{JobName, JobSpec};
+use talaria_scheduler::{JobName, JobSpec};
 
 const LOG: &str = "[resources]";
 

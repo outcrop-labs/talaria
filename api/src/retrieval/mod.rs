@@ -33,7 +33,7 @@ pub mod migrate;
 pub mod qdrant;
 pub mod rerank;
 pub mod sources;
-pub mod sparse;
+pub use talaria_retrieval_sparse as sparse;
 
 use std::sync::Arc;
 

@@ -1,5 +1,5 @@
 // The model engine family — catalog, info, efforts, roles, access.
-pub mod access;
+pub use talaria_model_access as access;
 pub mod catalog;
 pub mod efforts;
 pub mod info;

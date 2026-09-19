@@ -6,7 +6,7 @@
 pub mod decide;
 pub use talaria_runs_define as define;
 pub mod defs;
-pub mod drivers;
+pub use talaria_runs_drivers as drivers;
 pub use talaria_runs_lease as lease;
 pub mod reclaim;
 pub mod run;

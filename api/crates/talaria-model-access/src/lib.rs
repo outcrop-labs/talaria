@@ -5,10 +5,10 @@
 // those. Admins are never restricted — they control when the expensive
 // brains run.
 
-use crate::gateway::registry::list_endpoints;
-use crate::gateway::settings::get_setting;
 use sqlx::PgPool;
 use std::collections::HashMap;
+use talaria_gateway::registry::list_endpoints;
+use talaria_gateway::settings::get_setting;
 
 const KEY: &str = "member_model_allowlist";
 
@@ -21,7 +21,7 @@ pub async fn set_member_model_allowlist(pg: &PgPool, ids: &[String]) {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && seen.insert(s.clone()))
         .collect();
-    let _ = crate::gateway::settings::set_setting(pg, KEY, &serde_json::json!(cleaned)).await;
+    let _ = talaria_gateway::settings::set_setting(pg, KEY, &serde_json::json!(cleaned)).await;
 }
 
 /// The picker's one-row-per-target catalog — GatewayModel. Serialization

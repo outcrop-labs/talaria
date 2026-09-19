@@ -38,6 +38,6 @@ pub mod prompt_rules;
 pub mod recorded;
 pub mod registry;
 pub mod run;
-pub mod schema;
+pub use talaria_harness_schema as schema;
 pub mod text;
 pub mod transport;
