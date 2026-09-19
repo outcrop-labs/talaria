@@ -19,9 +19,9 @@ use std::time::Duration;
 use serde_json::Value;
 use sqlx::PgPool;
 
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::secretbox::SecretBox;
-use crate::users::{
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_secretbox::SecretBox;
+use talaria_users::{
     app_build_status, app_builds_dir, app_data_dir, apps_dir, discovered_apps, enable_block_reason,
     slug_ok,
 };
@@ -56,7 +56,7 @@ pub async fn enabled_app_slugs(pg: &PgPool) -> Vec<String> {
 /// which serves tools/list from the module on every call — so an update
 /// keeps the row's cache and an insert seeds `[]`.
 pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
-    let want: Vec<_> = crate::users::enabled_apps(pg)
+    let want: Vec<_> = talaria_users::enabled_apps(pg)
         .await
         .into_iter()
         .filter(|a| a.mcp)
@@ -70,7 +70,7 @@ pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
     .unwrap_or_default();
     for (id, app_slug) in have {
         if !want.iter().any(|(slug, _, _)| *slug == app_slug) {
-            crate::mcp::apply::roll_agents_for_server(pg, sb, &id).await;
+            talaria_mcp_apply::roll_agents_for_server(pg, sb, &id).await;
             let _ = sqlx::query("delete from mcp_servers where id::text = $1")
                 .bind(&id)
                 .execute(pg)
@@ -239,7 +239,7 @@ pub async fn install_app_from_git(
         derived.to_string(),
         serde_json::json!({
             "source": u,
-            "installedAt": crate::agent_auth::epoch_ms_to_iso(now_ms()),
+            "installedAt": talaria_agent_auth::epoch_ms_to_iso(now_ms()),
         }),
     );
     set_setting(pg, INSTALLED_KEY, &installed)
@@ -332,9 +332,9 @@ pub async fn set_catalog_url(pg: &PgPool, url: Option<&str>) -> Result<(), Strin
 /// pretending it's empty.
 pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
     let url = catalog_url(pg).await;
-    let fetch = crate::safe_fetch::safe_fetch(
+    let fetch = talaria_safe_fetch::safe_fetch(
         &url,
-        crate::safe_fetch::SafeFetch {
+        talaria_safe_fetch::SafeFetch {
             headers: vec![("accept", "application/json")],
             timeout_ms: Some(10_000),
             max_bytes: Some(2 * 1024 * 1024),

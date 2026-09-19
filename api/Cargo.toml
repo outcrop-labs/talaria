@@ -150,6 +150,7 @@ members = [
     "crates/talaria-kb-perms",
     "crates/talaria-daily-brief-comms",
     "crates/talaria-mcp-apply",
+    "crates/talaria-apps",
 ]
 resolver = "3"
 
@@ -324,6 +325,7 @@ talaria-fleet-agents = { path = "crates/talaria-fleet-agents" }
 talaria-kb-perms = { path = "crates/talaria-kb-perms" }
 talaria-daily-brief-comms = { path = "crates/talaria-daily-brief-comms" }
 talaria-mcp-apply = { path = "crates/talaria-mcp-apply" }
+talaria-apps = { path = "crates/talaria-apps" }
 
 
 

@@ -16,7 +16,7 @@ pub use talaria_agent_writes as agent_writes;
 pub use talaria_agents_registry as agents_registry;
 pub mod alerts;
 pub mod approvals;
-pub mod apps;
+pub use talaria_apps as apps;
 pub mod artifacts;
 pub mod attribution;
 pub use talaria_audit as audit;

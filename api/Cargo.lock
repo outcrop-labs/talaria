@@ -3642,6 +3642,7 @@ dependencies = [
  "talaria-agent-secrets",
  "talaria-agent-writes",
  "talaria-agents-registry",
+ "talaria-apps",
  "talaria-audit",
  "talaria-auth",
  "talaria-auth-config",
@@ -3782,6 +3783,24 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-apps"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-mcp-apply",
+ "talaria-safe-fetch",
+ "talaria-secretbox",
+ "talaria-users",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
