@@ -1,0 +1,58 @@
+[package]
+name = "talaria-jobs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+uuid = { version = "1", features = ["v4"] }
+talaria-comms-decay = { path = "../talaria-comms-decay" }
+talaria-config = { path = "../talaria-config" }
+talaria-daily-brief = { path = "../talaria-daily-brief" }
+talaria-digest = { path = "../talaria-digest" }
+talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
+talaria-fleet-reconcile = { path = "../talaria-fleet-reconcile" }
+talaria-fleet-render = { path = "../talaria-fleet-render" }
+talaria-fleet-resources = { path = "../talaria-fleet-resources" }
+talaria-mcp = { path = "../talaria-mcp" }
+talaria-mcp-apply = { path = "../talaria-mcp-apply" }
+talaria-mcp-library = { path = "../talaria-mcp-library" }
+talaria-model-info = { path = "../talaria-model-info" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-outreach = { path = "../talaria-outreach" }
+talaria-price-oracle = { path = "../talaria-price-oracle" }
+talaria-push = { path = "../talaria-push" }
+talaria-realtime = { path = "../talaria-realtime" }
+talaria-research-def = { path = "../talaria-research-def" }
+talaria-runs-agent-hire = { path = "../talaria-runs-agent-hire" }
+talaria-runs-decide = { path = "../talaria-runs-decide" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-runs-plan-draft = { path = "../talaria-runs-plan-draft" }
+talaria-runs-reclaim = { path = "../talaria-runs-reclaim" }
+talaria-runs-reindex = { path = "../talaria-runs-reindex" }
+talaria-runs-run = { path = "../talaria-runs-run" }
+talaria-runs-store = { path = "../talaria-runs-store" }
+talaria-runs-work-session = { path = "../talaria-runs-work-session" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-state = { path = "../talaria-state" }
+talaria-tasks = { path = "../talaria-tasks" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }
+talaria-update-job = { path = "../talaria-update-job" }
+talaria-work-dispatch = { path = "../talaria-work-dispatch" }
+talaria-workbench-mcp = { path = "../talaria-workbench-mcp" }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+talaria-fleet-create = { path = "../talaria-fleet-create" }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-web-search = { path = "../talaria-web-search" }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }

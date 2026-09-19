@@ -30,21 +30,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::comms_decay::real_decay_deps;
-use crate::daily_brief::real_brief_deps;
-use crate::digest::real_digest_deps;
-use crate::model::info::BlurbDeps;
-use crate::notify::real_drain_deps;
-use crate::outreach::OutreachDeps;
-use crate::price_oracle::PriceRefreshDeps;
-use crate::realtime::RealtimeDeps;
-use crate::runs::define::run_definition;
-use crate::runs::real_run_deps;
-use crate::runs::reclaim::{ReclaimDeps, drive_fn, due_fn};
-use crate::runs::run::RunDeps;
-use crate::scheduler::{self, REQUIRED_JOBS};
-use crate::secretbox::SecretBox;
-use crate::state::AppState;
+use talaria_comms_decay::real_decay_deps;
+use talaria_daily_brief::real_brief_deps;
+use talaria_digest::real_digest_deps;
+use talaria_model_info::BlurbDeps;
+use talaria_notify::real_drain_deps;
+use talaria_outreach::OutreachDeps;
+use talaria_price_oracle::PriceRefreshDeps;
+use talaria_realtime::RealtimeDeps;
+use talaria_runs_decide::assembly::real_run_deps;
+use talaria_runs_define::run_definition;
+use talaria_runs_reclaim::{ReclaimDeps, drive_fn, due_fn};
+use talaria_runs_run::RunDeps;
+use talaria_scheduler as scheduler;
+use talaria_scheduler::REQUIRED_JOBS;
+use talaria_secretbox::SecretBox;
+use talaria_state::AppState;
 
 const LOG: &str = "[jobs]";
 
@@ -66,63 +67,63 @@ const BOOT_RUN_KINDS: &[&str] = &[
 /// never invokes them, and `try_arm` builds the real ones. Every other deps
 /// constructor in this list is pure closure-building over the lazy pool.
 pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps, sb: &SecretBox) {
-    crate::comms_decay::register_comms_decay_job(Arc::new(real_decay_deps(state)));
-    crate::outreach::register_outreach_job(Arc::new(OutreachDeps {
+    talaria_comms_decay::register_comms_decay_job(Arc::new(real_decay_deps(state)));
+    talaria_outreach::register_outreach_job(Arc::new(OutreachDeps {
         state: state.clone(),
     }));
     let _ =
         talaria_web_search::CALL_MCP_TOOL.set(std::sync::Arc::new(|pg, sb, server, tool, args| {
             Box::pin(async move {
-                crate::mcp::registry::call_mcp_tool(&pg, &sb, &server, &tool, &args)
+                talaria_mcp::registry::call_mcp_tool(&pg, &sb, &server, &tool, &args)
                     .await
                     .map(|out| (out.structured, out.text))
             })
         }));
     let _ = talaria_fleet_create::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move {
-            crate::fleet::render::render_fleet(&pg, &sb, None)
+            talaria_fleet_render::render_fleet(&pg, &sb, None)
                 .await
                 .map(|_| ())
         })
     }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
-        Box::pin(async move { crate::fleet::reconcile::roll_agent(&pg, &sb, &dept).await })
+        Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
     }));
     let _ = talaria_fleet_docker::PREFLIGHT.set(|pool| {
         tokio::spawn(async move {
-            let _ = crate::fleet::preflight::run_fleet_preflight(&pool).await;
+            let _ = talaria_fleet_preflight::run_fleet_preflight(&pool).await;
         });
     });
-    let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(crate::price_oracle::nudge_auto_prices);
-    crate::price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
+    let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));
-    crate::digest::register_digest_job(real_digest_deps(state, rt.clone()));
-    crate::digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
-    crate::notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
-    crate::work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
-    crate::runs::reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
+    talaria_digest::register_digest_job(real_digest_deps(state, rt.clone()));
+    talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
+    talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
+    talaria_work_dispatch::register_redispatch_job(state.pg.clone(), run.clone());
+    talaria_runs_reclaim::register_reclaim_job(Arc::new(ReclaimDeps {
         due: due_fn(run.store.clone()),
         definition_for: run.definition_for.clone(),
         drive: drive_fn(run.clone()),
         now: run.now.clone(),
     }));
-    crate::daily_brief::register_daily_brief_job(real_brief_deps(state).await);
-    crate::model::info::register_blurb_rewrite_job(Arc::new(BlurbDeps {
+    talaria_daily_brief::register_daily_brief_job(real_brief_deps(state).await);
+    talaria_model_info::register_blurb_rewrite_job(Arc::new(BlurbDeps {
         state: state.clone(),
     }));
-    crate::scheduler::register_job(crate::fleet::resources::resource_job_spec(state.pg.clone()));
+    talaria_scheduler::register_job(talaria_fleet_resources::resource_job_spec(state.pg.clone()));
     // The optional trio. mcp-library-refresh is per-instance cache warming
     // and arms on every Rust instance; update-check and update-reconcile
     // self-gate by install mode (a quiet no-op on checkout/dev/off) and by
     // adoption — the engine acts only on instances that handed over the
     // keys (the minute hand's reconcile is one settings-row read when idle).
-    crate::mcp::library::register_mcp_library_refresh_job(crate::mcp::library::library());
-    crate::mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
-    crate::update::job::register_update_check_job(Arc::new(crate::update::job::UpdateDeps {
+    talaria_mcp_library::register_mcp_library_refresh_job(talaria_mcp_library::library());
+    talaria_mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
+    talaria_update_job::register_update_check_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),
     }));
-    crate::update::job::register_update_reconcile_job(Arc::new(crate::update::job::UpdateDeps {
+    talaria_update_job::register_update_reconcile_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),
     }));
 }
@@ -180,32 +181,30 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     // The six armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
-    crate::runs::defs::research::arm_research_step(
-        crate::runs::defs::research::real_research_deps(state.clone()),
-    );
-    crate::runs::defs::plan_draft::arm_plan_draft_step(
-        crate::runs::defs::plan_draft::real_plan_draft_deps(state.clone()),
-    );
-    crate::runs::defs::work_session::arm_work_session_step(
-        crate::runs::defs::work_session::real_work_session_deps(state.clone()),
-    );
-    crate::runs::defs::agent_hire::arm_agent_hire_step(
-        crate::runs::defs::agent_hire::real_agent_hire_deps(state.clone()),
-    );
-    crate::runs::defs::reindex::arm_backfill_step(crate::runs::defs::reindex::real_backfill_deps(
+    talaria_research_def::arm_research_step(talaria_research_def::real_research_deps(
         state.clone(),
     ));
-    crate::runs::defs::reindex::arm_reindex_step(crate::runs::defs::reindex::real_reindex_deps(
+    talaria_runs_plan_draft::arm_plan_draft_step(talaria_runs_plan_draft::real_plan_draft_deps(
         state.clone(),
     ));
+    talaria_runs_work_session::arm_work_session_step(
+        talaria_runs_work_session::real_work_session_deps(state.clone()),
+    );
+    talaria_runs_agent_hire::arm_agent_hire_step(talaria_runs_agent_hire::real_agent_hire_deps(
+        state.clone(),
+    ));
+    talaria_runs_reindex::arm_backfill_step(talaria_runs_reindex::real_backfill_deps(
+        state.clone(),
+    ));
+    talaria_runs_reindex::arm_reindex_step(talaria_runs_reindex::real_reindex_deps(state.clone()));
     // The boot kind list: touch each getter so its kind registers NOW, then
     // hold arming to the census's table.
-    let _ = crate::runs::defs::research::research_run();
-    let _ = crate::runs::defs::plan_draft::plan_draft_run();
-    let _ = crate::runs::defs::work_session::work_session_run();
-    let _ = crate::runs::defs::agent_hire::agent_hire_run();
-    let _ = crate::runs::defs::reindex::backfill_run();
-    let _ = crate::runs::defs::reindex::reindex_run();
+    let _ = talaria_research_def::research_run();
+    let _ = talaria_runs_plan_draft::plan_draft_run();
+    let _ = talaria_runs_work_session::work_session_run();
+    let _ = talaria_runs_agent_hire::agent_hire_run();
+    let _ = talaria_runs_reindex::backfill_run();
+    let _ = talaria_runs_reindex::reindex_run();
     let missing = missing_run_kinds();
     if !missing.is_empty() {
         return Err(format!(
@@ -223,7 +222,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     // reach closed tabs. Here in try_arm rather than register_all on
     // purpose — the completeness test drives register_all with a dead lazy
     // pool, and the plane's OnceLock must hold the real one or nothing.
-    crate::push::install_push_plane(state.pg.clone(), sb.clone());
+    talaria_push::install_push_plane(state.pg.clone(), sb.clone());
     // start_scheduler runs the missing-jobs boot check and logs the armed
     // summary itself; its return is that list again.
     let armed = scheduler::start_scheduler(conn);
@@ -238,7 +237,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::JobName;
+    use talaria_scheduler::JobName;
 
     // The completeness test injects fake edges because registration only
     // captures them. The real constructors are each tested in their own
@@ -251,7 +250,7 @@ mod tests {
         let pg = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy(url)
             .expect("a lazy pool connects to nothing");
-        let cfg = crate::config::Config::from_parts(
+        let cfg = talaria_config::Config::from_parts(
             url.into(),
             "redis://jobs-flip-test@localhost:6379".into(),
             "test-root".into(),
@@ -313,12 +312,12 @@ mod tests {
     fn arming_refuses_without_the_whole_kind_table() {
         // Touch the getters exactly as try_arm does, so the registry reflects
         // a real boot and not whatever earlier tests loaded.
-        let _ = crate::runs::defs::research::research_run();
-        let _ = crate::runs::defs::plan_draft::plan_draft_run();
-        let _ = crate::runs::defs::work_session::work_session_run();
-        let _ = crate::runs::defs::agent_hire::agent_hire_run();
-        let _ = crate::runs::defs::reindex::backfill_run();
-        let _ = crate::runs::defs::reindex::reindex_run();
+        let _ = talaria_research_def::research_run();
+        let _ = talaria_runs_plan_draft::plan_draft_run();
+        let _ = talaria_runs_work_session::work_session_run();
+        let _ = talaria_runs_agent_hire::agent_hire_run();
+        let _ = talaria_runs_reindex::backfill_run();
+        let _ = talaria_runs_reindex::reindex_run();
         // The census's kind table is WHOLE. An empty list is the assertion
         // now, not the goal: a kind showing up here means a def module fell
         // out of try_arm's boot list, and the sweep would strand that kind's
@@ -335,9 +334,9 @@ mod tests {
     /// construction) and no registration ever invokes. Same shape as
     /// work_dispatch's test deps.
     fn test_run_deps() -> RunDeps {
-        use crate::runs::run::{LeaseClaim, LeaseRenewal, PauseArgs, PauseOutcome, RunLease};
-        use crate::runs::store::WriteFailure;
         use futures_util::future::BoxFuture;
+        use talaria_runs_run::{LeaseClaim, LeaseRenewal, PauseArgs, PauseOutcome, RunLease};
+        use talaria_runs_store::WriteFailure;
 
         struct NeverLease;
         impl RunLease for NeverLease {
@@ -352,7 +351,7 @@ mod tests {
             }
         }
         RunDeps {
-            store: Arc::new(crate::runs::store::PgRunStore::new(
+            store: Arc::new(talaria_runs_store::PgRunStore::new(
                 sqlx::postgres::PgPoolOptions::new()
                     .connect_lazy("postgres://jobs-flip-test@localhost:5432/jobs-flip-test")
                     .expect("a lazy pool connects to nothing"),

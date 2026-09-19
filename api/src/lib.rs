@@ -56,7 +56,7 @@ pub mod inbox_focus;
 pub use talaria_instance as instance;
 pub use talaria_internal_history as internal_history;
 pub use talaria_invites as invites;
-pub mod jobs;
+pub use talaria_jobs as jobs;
 pub use talaria_judge as judge;
 pub mod kb;
 pub use talaria_labels as labels;
