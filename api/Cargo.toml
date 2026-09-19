@@ -101,6 +101,9 @@ members = [
     "crates/talaria-update-mode",
     "crates/talaria-update-state",
     "crates/talaria-model-efforts",
+    "crates/talaria-retrieval-http",
+    "crates/talaria-retrieval-embed",
+    "crates/talaria-retrieval-qdrant",
 ]
 resolver = "3"
 
@@ -226,6 +229,9 @@ talaria-model-catalog = { path = "crates/talaria-model-catalog" }
 talaria-update-mode = { path = "crates/talaria-update-mode" }
 talaria-update-state = { path = "crates/talaria-update-state" }
 talaria-model-efforts = { path = "crates/talaria-model-efforts" }
+talaria-retrieval-http = { path = "crates/talaria-retrieval-http" }
+talaria-retrieval-embed = { path = "crates/talaria-retrieval-embed" }
+talaria-retrieval-qdrant = { path = "crates/talaria-retrieval-qdrant" }
 
 
 

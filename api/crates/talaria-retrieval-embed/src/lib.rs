@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
-use super::HttpFetch;
+use talaria_retrieval_http::{HttpFetch, real_http};
 
 const EMBED_FALLBACK: &str = "http://127.0.0.1:8055";
 
@@ -42,7 +42,7 @@ pub struct EmbedDeps {
 
 pub fn real_deps() -> EmbedDeps {
     EmbedDeps {
-        fetch: super::real_http(),
+        fetch: real_http(),
         base: Arc::new(embed_url),
         sticky: REAL_STICKY.clone(),
         dim_cache: REAL_DIM.clone(),

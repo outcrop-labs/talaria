@@ -3635,6 +3635,9 @@ dependencies = [
  "talaria-realtime",
  "talaria-repo-env",
  "talaria-research-origin",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-http",
+ "talaria-retrieval-qdrant",
  "talaria-retrieval-sparse",
  "talaria-runs-define",
  "talaria-runs-drivers",
@@ -4483,6 +4486,35 @@ version = "0.1.0"
 dependencies = [
  "redis",
  "talaria-state",
+]
+
+[[package]]
+name = "talaria-retrieval-embed"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-retrieval-http",
+]
+
+[[package]]
+name = "talaria-retrieval-http"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-retrieval-qdrant"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-retrieval-http",
+ "talaria-retrieval-sparse",
 ]
 
 [[package]]

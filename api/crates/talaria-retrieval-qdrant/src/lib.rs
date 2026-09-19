@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::HttpFetch;
-use crate::retrieval::sparse::SparseVector;
+use talaria_retrieval_http::{HttpFetch, real_http};
+use talaria_retrieval_sparse::SparseVector;
 
 /// The configured base, read per call. One trailing slash stripped, so
 /// `TALARIA_QDRANT_URL` may be typed with or without it.
@@ -28,7 +28,7 @@ pub struct QdrantDeps {
 
 pub fn real_deps() -> QdrantDeps {
     QdrantDeps {
-        fetch: super::real_http(),
+        fetch: real_http(),
         base: Arc::new(qdrant_url),
     }
 }
