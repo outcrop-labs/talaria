@@ -2,9 +2,9 @@
 pub mod apply;
 pub use talaria_mcp_icons as icons;
 pub use talaria_mcp_jsonrpc as jsonrpc;
-pub mod library;
-pub mod oauth;
+pub use talaria_mcp_library as library;
+pub use talaria_mcp_oauth as oauth;
 pub mod pkg;
-pub mod probe;
+pub use talaria_mcp_probe as probe;
 pub mod registry;
 pub mod service;

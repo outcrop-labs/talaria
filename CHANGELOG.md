@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 77 crates.** MCP jsonrpc + icon fetch. Verified:
+- **API workspace: 80 crates.** MCP library, probe, oauth. Verified:
   `cargo check -p talaria-api`.
+
 
 
 

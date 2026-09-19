@@ -456,28 +456,7 @@ fn read_tool_result(
 }
 
 /// JSON body, or the LAST parseable data frame of an SSE-encoded response.
-pub fn parse_mcp_response(text: &str) -> Option<Value> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    if t.starts_with('{') || t.starts_with('[') {
-        return serde_json::from_str(t).ok();
-    }
-    // `slice(5)` is safe on a `data:`-prefixed line even mid-codepoint, and
-    // `data:` alone parses to nothing, so the frame is simply skipped.
-    let frames: Vec<&str> = t
-        .lines()
-        .filter(|l| l.starts_with("data:"))
-        .map(|l| l[5..].trim())
-        .collect();
-    for f in frames.into_iter().rev() {
-        if let Ok(v) = serde_json::from_str::<Value>(f) {
-            return Some(v);
-        }
-    }
-    None
-}
+pub use talaria_mcp_jsonrpc::parse_mcp_response;
 
 // ── The registry write half ─────────────────────────────────────────────────
 

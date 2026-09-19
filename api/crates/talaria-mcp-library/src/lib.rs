@@ -37,9 +37,9 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::{self, StreamExt};
 use serde_json::Value;
 
-use crate::mcp::icons::IconKey;
-use crate::safe_fetch::{SafeFetch, safe_fetch};
-use crate::scheduler::{JobName, JobSpec};
+use talaria_mcp_icons::IconKey;
+use talaria_safe_fetch::{SafeFetch, safe_fetch};
+use talaria_scheduler::{JobName, JobSpec};
 
 const REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io/v0/servers";
 const CACHE_MS: i64 = 15 * 60 * 1000;
@@ -938,7 +938,7 @@ fn real_warm() -> WarmIcons {
             })
             .collect();
         if !keys.is_empty() {
-            crate::mcp::icons::icons().warm(keys);
+            talaria_mcp_icons::icons().warm(keys);
         }
     })
 }
@@ -987,7 +987,7 @@ pub fn mcp_library_refresh_job_spec(lib: Arc<Library>) -> JobSpec {
 }
 
 pub fn register_mcp_library_refresh_job(lib: Arc<Library>) {
-    crate::scheduler::register_job(mcp_library_refresh_job_spec(lib));
+    talaria_scheduler::register_job(mcp_library_refresh_job_spec(lib));
 }
 
 #[cfg(test)]

@@ -31,9 +31,9 @@ use base64::Engine as _;
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::mcp::registry::MCP_PROTOCOL_VERSION;
-use crate::safe_fetch::{SafeFetch, safe_fetch};
-use crate::secretbox::SecretBox;
+use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
+use talaria_safe_fetch::{SafeFetch, safe_fetch};
+use talaria_secretbox::SecretBox;
 
 // ── Domain pinning ──────────────────────────────────────────────────────────
 
@@ -143,7 +143,7 @@ async fn post_json(
     url: &str,
     body: &Value,
     timeout_ms: u64,
-) -> Result<crate::safe_fetch::SafeResponse, crate::safe_fetch::SafeError> {
+) -> Result<talaria_safe_fetch::SafeResponse, talaria_safe_fetch::SafeError> {
     let payload = serde_json::to_string(body).expect("the handshake body is plain data");
     safe_fetch(
         url,
@@ -722,7 +722,7 @@ fn url_enc(s: &str) -> String {
     out
 }
 
-async fn token_post(url: &str, body: String) -> Option<crate::safe_fetch::SafeResponse> {
+async fn token_post(url: &str, body: String) -> Option<talaria_safe_fetch::SafeResponse> {
     safe_fetch(
         url,
         SafeFetch {

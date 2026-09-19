@@ -84,6 +84,9 @@ members = [
     "crates/talaria-agent-memory",
     "crates/talaria-mcp-jsonrpc",
     "crates/talaria-mcp-icons",
+    "crates/talaria-mcp-library",
+    "crates/talaria-mcp-probe",
+    "crates/talaria-mcp-oauth",
 ]
 resolver = "3"
 
@@ -192,6 +195,9 @@ talaria-agent-media = { path = "crates/talaria-agent-media" }
 talaria-agent-memory = { path = "crates/talaria-agent-memory" }
 talaria-mcp-jsonrpc = { path = "crates/talaria-mcp-jsonrpc" }
 talaria-mcp-icons = { path = "crates/talaria-mcp-icons" }
+talaria-mcp-library = { path = "crates/talaria-mcp-library" }
+talaria-mcp-probe = { path = "crates/talaria-mcp-probe" }
+talaria-mcp-oauth = { path = "crates/talaria-mcp-oauth" }
 
 
 

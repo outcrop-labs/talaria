@@ -3607,6 +3607,9 @@ dependencies = [
  "talaria-llm-keys",
  "talaria-mcp-icons",
  "talaria-mcp-jsonrpc",
+ "talaria-mcp-library",
+ "talaria-mcp-oauth",
+ "talaria-mcp-probe",
  "talaria-me",
  "talaria-mentions",
  "talaria-native-search",
@@ -4047,6 +4050,72 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "talaria-mcp-library"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-mcp-icons",
+ "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-oauth"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.3.4",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-mcp-icons",
+ "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-probe"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-mcp-icons",
+ "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

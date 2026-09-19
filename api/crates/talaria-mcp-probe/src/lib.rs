@@ -9,8 +9,8 @@
 
 use serde_json::{Value, json};
 
-use crate::mcp::registry::{MCP_PROTOCOL_VERSION, parse_mcp_response};
-use crate::safe_fetch::{SafeError, SafeFetch, safe_fetch};
+use talaria_mcp_jsonrpc::{MCP_PROTOCOL_VERSION, parse_mcp_response};
+use talaria_safe_fetch::{SafeError, SafeFetch, safe_fetch};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpProbeState {
