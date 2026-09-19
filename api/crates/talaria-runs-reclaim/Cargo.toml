@@ -1,0 +1,21 @@
+[package]
+name = "talaria-runs-reclaim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-runs-run = { path = "../talaria-runs-run" }
+talaria-runs-store = { path = "../talaria-runs-store" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing = "0.1"
+futures-util = "0.3"

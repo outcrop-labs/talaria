@@ -11,9 +11,9 @@
 // THE ZONE IS PER-PERSON: `users.timezone` when the account set one, this
 // config's zone (TZ env → UTC) otherwise.
 
-use crate::gateway::settings::get_setting;
-use crate::tz::local_moment;
 use sqlx::PgPool;
+use talaria_gateway::settings::get_setting;
+use talaria_tz::local_moment;
 
 pub const BRIEF_CONFIG_KEY: &str = "brief_config";
 
@@ -229,7 +229,7 @@ mod tests {
     }
 
     fn ms(iso: &str) -> i64 {
-        crate::agent_auth::iso_to_epoch_ms(iso).expect("test iso parses")
+        talaria_agent_auth::iso_to_epoch_ms(iso).expect("test iso parses")
     }
 
     #[test]

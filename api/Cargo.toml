@@ -109,6 +109,9 @@ members = [
     "crates/talaria-retrieval-index",
     "crates/talaria-retrieval-sources",
     "crates/talaria-harness-json-schema",
+    "crates/talaria-daily-brief-config",
+    "crates/talaria-runs-run",
+    "crates/talaria-runs-reclaim",
 ]
 resolver = "3"
 
@@ -242,6 +245,9 @@ talaria-retrieval-collections = { path = "crates/talaria-retrieval-collections" 
 talaria-retrieval-index = { path = "crates/talaria-retrieval-index" }
 talaria-retrieval-sources = { path = "crates/talaria-retrieval-sources" }
 talaria-harness-json-schema = { path = "crates/talaria-harness-json-schema" }
+talaria-daily-brief-config = { path = "crates/talaria-daily-brief-config" }
+talaria-runs-run = { path = "crates/talaria-runs-run" }
+talaria-runs-reclaim = { path = "crates/talaria-runs-reclaim" }
 
 
 

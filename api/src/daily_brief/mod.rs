@@ -33,7 +33,7 @@
 
 pub mod artifact;
 pub mod comms;
-pub mod config;
+pub use talaria_daily_brief_config as config;
 pub mod delegation;
 pub mod focus;
 pub use talaria_daily_brief_types as types;

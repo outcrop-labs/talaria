@@ -35,15 +35,6 @@
 // drive the whole runner with no database, no Redis and no clock. The real
 // assembly is `real_run_deps` in runs/mod.rs.
 
-use super::define::{
-    DecisionAnswer, DecisionRequest, RunDefinition, RunRow, RunState, RunStepContext, StepResult,
-    is_drivable, run_definition as registry_definition,
-};
-use super::lease::{
-    LeaseResult, LeaseToken, RedisLeases, RunClaim, acquire_run_lease, release_run_lease,
-    renew_lease, run_lease_key,
-};
-use super::store::{CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteFailure};
 use futures_util::FutureExt;
 use futures_util::future::BoxFuture;
 use serde::Serialize;
@@ -51,6 +42,15 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use talaria_runs_define::{
+    DecisionAnswer, DecisionRequest, RunDefinition, RunRow, RunState, RunStepContext, StepResult,
+    is_drivable, run_definition as registry_definition,
+};
+use talaria_runs_lease::{
+    LeaseResult, LeaseToken, RedisLeases, RunClaim, acquire_run_lease, release_run_lease,
+    renew_lease, run_lease_key,
+};
+use talaria_runs_store::{CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteFailure};
 use tokio::sync::watch;
 
 const LOG: &str = "[runs]";
@@ -435,7 +435,7 @@ enum StepInterrupt {
 
 /// Clamp phase text at the given number of BYTES, on a char boundary — the
 /// cut lands before the boundary, never inside a character.
-pub(crate) fn clamp_text(s: &str, max: usize) -> String {
+pub fn clamp_text(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }
@@ -604,7 +604,7 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
     // and release this lease instead of leaving both to the TTL — the
     // difference between a next-instance resume in seconds and one in eleven
     // minutes plus a false attempt.
-    super::drivers::register(run_id, Arc::new(abort_tx.clone()));
+    talaria_runs_drivers::register(run_id, Arc::new(abort_tx.clone()));
     let renew_every = Duration::from_millis(1_000.max((lease_ms / 3) as u64));
     let renew_task = {
         let deps = deps.clone();
@@ -723,7 +723,7 @@ pub async fn drive(run_id: &str, deps: &RunDeps) -> Result<DriveResult, sqlx::Er
             tracing::error!("{LOG} {run_id}: could not clear the row lease: {e}");
         }
     }
-    super::drivers::unregister(run_id);
+    talaria_runs_drivers::unregister(run_id);
     loop_result
 }
 
@@ -832,13 +832,13 @@ async fn drive_loop(
 
         // ── One step ─────────────────────────────────────────────────────────
         let answer: Option<DecisionAnswer> = row.decision.as_ref().and_then(|d| d.answer.clone());
-        let activity = super::define::StepActivity::new();
+        let activity = talaria_runs_define::StepActivity::new();
         let ctx = RunStepContext {
             run: row.clone(),
             input: row.input.clone(),
             checkpoint: row.checkpoint.clone(),
             decision: answer.clone(),
-            signal: super::define::StepSignal::from_sender(abort_tx),
+            signal: talaria_runs_define::StepSignal::from_sender(abort_tx),
             log: log.clone(),
             attempt: row.attempt,
             activity: activity.clone(),

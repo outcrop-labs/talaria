@@ -57,9 +57,9 @@ use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 
-use crate::runs::define::{RunRow, RunState, is_drivable};
-use crate::runs::run::{DefinitionForFn, DriveResult, DriveStop, NowFn, RunDeps, drive};
-use crate::runs::store::RunStore;
+use talaria_runs_define::{RunRow, RunState, is_drivable};
+use talaria_runs_run::{DefinitionForFn, DriveResult, DriveStop, NowFn, RunDeps, drive};
+use talaria_runs_store::RunStore;
 
 const LOG: &str = "[runs/reclaim]";
 
@@ -295,7 +295,7 @@ pub async fn sweep_reclaimable_runs(
         let expires_at = run
             .lease_expires_at
             .as_deref()
-            .and_then(crate::agent_auth::iso_to_epoch_ms);
+            .and_then(talaria_agent_auth::iso_to_epoch_ms);
         if expires_at.is_some_and(|at| at > now) {
             out.live += 1;
             continue;
@@ -434,7 +434,7 @@ fn give_up_line(run: &RunRow, attempt_after_claim: i32, error: Option<&str>, now
         run.phase
     );
     // An unparseable `updated_at` drops the clause rather than the line.
-    if let Some(moved) = crate::agent_auth::iso_to_epoch_ms(&run.updated_at) {
+    if let Some(moved) = talaria_agent_auth::iso_to_epoch_ms(&run.updated_at) {
         line.push_str(&format!(" {} ago", dur((now - moved).max(0))));
     }
     if let Some(err) = &run.error {
@@ -536,9 +536,9 @@ fn state_name(state: RunState) -> &'static str {
 /// The job the scheduler runs, from a built deps bag — the four declared
 /// timings in their four slots, and nothing invented here. Split out from the
 /// registration so a test can read the numbers without a live registry.
-pub fn reclaim_job_spec(deps: Arc<ReclaimDeps>) -> crate::scheduler::JobSpec {
-    crate::scheduler::JobSpec {
-        name: crate::scheduler::JobName::RunReclaim,
+pub fn reclaim_job_spec(deps: Arc<ReclaimDeps>) -> talaria_scheduler::JobSpec {
+    talaria_scheduler::JobSpec {
+        name: talaria_scheduler::JobName::RunReclaim,
         every_ms: RECLAIM_EVERY_MS,
         first_run_delay_ms: Some(RECLAIM_FIRST_RUN_DELAY_MS),
         max_run_ms: Some(RECLAIM_MAX_RUN_MS),
@@ -572,7 +572,7 @@ pub fn reclaim_job_spec(deps: Arc<ReclaimDeps>) -> crate::scheduler::JobSpec {
 /// without reaching it prints a MISSING JOBS error instead of running with no
 /// durability at all.
 pub fn register_reclaim_job(deps: Arc<ReclaimDeps>) {
-    crate::scheduler::register_job(reclaim_job_spec(deps));
+    talaria_scheduler::register_job(reclaim_job_spec(deps));
 }
 
 #[cfg(test)]
@@ -600,12 +600,12 @@ mod tests {
             error: None,
             attempt: 0,
             lease_owner: Some("dead-driver-token".into()),
-            lease_expires_at: Some(crate::agent_auth::epoch_ms_to_iso(now - 60_000)),
+            lease_expires_at: Some(talaria_agent_auth::epoch_ms_to_iso(now - 60_000)),
             approval_key: None,
             decision: None,
-            created_at: crate::agent_auth::epoch_ms_to_iso(now - 600_000),
-            updated_at: crate::agent_auth::epoch_ms_to_iso(now - 120_000),
-            started_at: Some(crate::agent_auth::epoch_ms_to_iso(now - 600_000)),
+            created_at: talaria_agent_auth::epoch_ms_to_iso(now - 600_000),
+            updated_at: talaria_agent_auth::epoch_ms_to_iso(now - 120_000),
+            started_at: Some(talaria_agent_auth::epoch_ms_to_iso(now - 600_000)),
             finished_at: None,
         }
     }
