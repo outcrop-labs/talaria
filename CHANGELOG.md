@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 141 crates.** Fleet agent access/overview, KB perms.
+- **API workspace: 142 crates.** Daily-brief comms (waiting-on-you).
   Verified: `cargo check -p talaria-api`.
+
 
 
 

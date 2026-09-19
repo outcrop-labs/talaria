@@ -1,5 +1,5 @@
 [package]
-name = "talaria-daily-brief-types"
+name = "talaria-daily-brief-comms"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
@@ -11,5 +11,6 @@ workspace = true
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sha2 = "0.11"
-talaria-agent-auth = { path = "../talaria-agent-auth" }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-daily-brief-types = { path = "../talaria-daily-brief-types" }
+tracing = "0.1"

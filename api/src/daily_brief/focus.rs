@@ -16,6 +16,8 @@ use crate::agent_auth::epoch_ms_to_iso;
 use crate::boards::board_visibility_sql;
 use crate::statuses::status_category_sql;
 
+pub use talaria_daily_brief_types::{as_iso, fingerprint, key_of, nullable_iso};
+
 /// The notification kinds the brief lists — the actionable set, not the bell.
 pub const ACTIONABLE_NOTIFICATION_KINDS: [&str; 11] = [
     "mention",
@@ -30,38 +32,6 @@ pub const ACTIONABLE_NOTIFICATION_KINDS: [&str; 11] = [
     "task-assigned",
     "task-status",
 ];
-
-/// The fingerprint hash: sha256 over the exact bytes JSON serialization
-/// produces. serde_json (with the crate's preserve_order build) writes object
-/// keys in insertion order with minimal escaping, so a `json!` value built in
-/// a fixed key order hashes byte-stably across releases — a mismatch would
-/// read as "everything changed" and append a change row for every line in the
-/// document, exactly once, for no reason.
-pub fn fingerprint(value: &Value) -> String {
-    let bytes = serde_json::to_string(value).expect("value serializes");
-    let mut hasher = Sha256::new();
-    hasher.update(bytes.as_bytes());
-    hasher
-        .finalize()
-        .into_iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-pub fn key_of(source_type: &str, source_id: &str) -> String {
-    format!("{source_type}:{source_id}")
-}
-
-/// Any timestamp the sources read becomes an ISO string; the epoch-ms reads
-/// here are always real Postgres timestamps, and an unparseable timestamp
-/// falls back to epoch 0.
-pub fn as_iso(ms: i64) -> String {
-    epoch_ms_to_iso(ms)
-}
-
-pub fn nullable_iso(ms: Option<i64>) -> Option<String> {
-    ms.map(as_iso)
-}
 
 pub fn priority_for_bucket(bucket: i64) -> &'static str {
     if bucket == 0 {

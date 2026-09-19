@@ -10,6 +10,32 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use sha2::{Digest, Sha256};
+use talaria_agent_auth::epoch_ms_to_iso;
+
+pub fn fingerprint(value: &Value) -> String {
+    let bytes = serde_json::to_string(value).expect("value serializes");
+    let mut hasher = Sha256::new();
+    hasher.update(bytes.as_bytes());
+    hasher
+        .finalize()
+        .into_iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+pub fn key_of(source_type: &str, source_id: &str) -> String {
+    format!("{source_type}:{source_id}")
+}
+
+pub fn as_iso(ms: i64) -> String {
+    epoch_ms_to_iso(ms)
+}
+
+pub fn nullable_iso(ms: Option<i64>) -> Option<String> {
+    ms.map(as_iso)
+}
+
 /// The five places a line can land in the document. Ordered as the document
 /// reads, and that order is load-bearing — the fold sorts sections by this
 /// array, so a section added in the middle moves the document, not just a

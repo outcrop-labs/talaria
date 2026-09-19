@@ -28,7 +28,7 @@
 use serde_json::json;
 use sqlx::PgPool;
 
-use crate::daily_brief::focus::{as_iso, fingerprint, key_of};
+use talaria_daily_brief_types::{as_iso, fingerprint, key_of};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnsweredBy {

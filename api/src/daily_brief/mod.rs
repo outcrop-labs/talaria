@@ -32,7 +32,7 @@
 //   and is therefore the half you least want a second copy of.
 
 pub mod artifact;
-pub mod comms;
+pub use talaria_daily_brief_comms as comms;
 pub use talaria_daily_brief_config as config;
 pub mod delegation;
 pub mod focus;

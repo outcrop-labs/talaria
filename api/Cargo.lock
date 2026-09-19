@@ -3655,6 +3655,7 @@ dependencies = [
  "talaria-claim",
  "talaria-collate",
  "talaria-config",
+ "talaria-daily-brief-comms",
  "talaria-daily-brief-config",
  "talaria-daily-brief-types",
  "talaria-db",
@@ -3958,6 +3959,17 @@ name = "talaria-config"
 version = "0.1.0"
 
 [[package]]
+name = "talaria-daily-brief-comms"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-daily-brief-types",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-daily-brief-config"
 version = "0.1.0"
 dependencies = [
@@ -3976,6 +3988,8 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "talaria-agent-auth",
 ]
 
 [[package]]
