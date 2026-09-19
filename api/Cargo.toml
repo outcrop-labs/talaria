@@ -129,6 +129,7 @@ members = [
     "crates/talaria-update-roll",
     "crates/talaria-update-job",
     "crates/talaria-update-adopt",
+    "crates/talaria-mcp-service",
 ]
 resolver = "3"
 
@@ -282,6 +283,7 @@ talaria-update-render = { path = "crates/talaria-update-render" }
 talaria-update-roll = { path = "crates/talaria-update-roll" }
 talaria-update-job = { path = "crates/talaria-update-job" }
 talaria-update-adopt = { path = "crates/talaria-update-adopt" }
+talaria-mcp-service = { path = "crates/talaria-mcp-service" }
 
 
 

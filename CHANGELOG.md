@@ -4,9 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 122 crates.** YAML 1.1 emitter; update render/roll/job/
-  adopt. The update engine is fully extracted (`update/mod.rs` is
-  re-exports). Verified: `cargo check -p talaria-api`.
+- **API workspace: 123 crates.** MCP local stdio/HTTP service. Verified:
+  `cargo check -p talaria-api`.
+
 
 
 

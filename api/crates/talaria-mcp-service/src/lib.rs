@@ -101,7 +101,7 @@ async fn spawn_child() {
     if let Ok(mut st) = state().lock() {
         st.last_spawn_ms = now_ms();
     }
-    let port = crate::fleet::layout::app_port();
+    let port = talaria_fleet_layout::app_port();
     let mut child = tokio::process::Command::new(js_runtime())
         .arg(&entry)
         .env("MCP_HTTP_PORT", mcp_port().to_string())

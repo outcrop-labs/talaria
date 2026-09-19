@@ -7,4 +7,4 @@ pub use talaria_mcp_oauth as oauth;
 pub mod pkg;
 pub use talaria_mcp_probe as probe;
 pub mod registry;
-pub mod service;
+pub use talaria_mcp_service as service;

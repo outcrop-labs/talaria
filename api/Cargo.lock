@@ -3660,6 +3660,7 @@ dependencies = [
  "talaria-mcp-library",
  "talaria-mcp-oauth",
  "talaria-mcp-probe",
+ "talaria-mcp-service",
  "talaria-me",
  "talaria-mentions",
  "talaria-model-access",
@@ -4446,6 +4447,16 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-service"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "talaria-fleet-layout",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
