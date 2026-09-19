@@ -182,6 +182,7 @@ members = [
     "crates/talaria-artifacts",
     "crates/talaria-google-drive",
     "crates/talaria-daily-brief",
+    "crates/talaria-channel-plan",
     "crates/talaria-inbox-focus-types",
     "crates/talaria-daily-brief-delegation",
 ]
@@ -390,6 +391,7 @@ talaria-kb = { path = "crates/talaria-kb" }
 talaria-artifacts = { path = "crates/talaria-artifacts" }
 talaria-google-drive = { path = "crates/talaria-google-drive" }
 talaria-daily-brief = { path = "crates/talaria-daily-brief" }
+talaria-channel-plan = { path = "crates/talaria-channel-plan" }
 talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }
 talaria-daily-brief-delegation = { path = "crates/talaria-daily-brief-delegation" }
 

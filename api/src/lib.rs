@@ -28,7 +28,7 @@ pub use talaria_brain_health as brain_health;
 pub use talaria_capability as capability;
 pub use talaria_capability_platform as capability_platform;
 pub use talaria_capability_reach as capability_reach;
-pub mod channel_plan;
+pub use talaria_channel_plan as channel_plan;
 pub use talaria_channel_replies as channel_replies;
 pub use talaria_channels as channels;
 pub mod chat_persist;

@@ -10,18 +10,18 @@
 
 use serde_json::json;
 
-use crate::artifacts::plan_doc_for;
-use crate::channels::list_channel_messages;
-use crate::conversations::prior_messages;
-use crate::fleet::describe_agent;
-use crate::harness::defs::channel_plan::{
+use talaria_artifacts::plan_doc_for;
+use talaria_channels::list_channel_messages;
+use talaria_conversations::prior_messages;
+use talaria_fleet_layout::describe_agent;
+use talaria_harness::run::{RunContext, RunLedger, run_harness};
+use talaria_harness::transport::LedgerSource;
+use talaria_harness_defs::defs::channel_plan::{
     ChannelPlanInput, TicketProposal, channel_plan_harness, to_proposals,
 };
-use crate::harness::run::{RunContext, RunLedger, run_harness};
-use crate::harness::transport::LedgerSource;
-use crate::state::AppState;
-use crate::templates::{ResolveContext, resolve_template, template_prompt};
-use crate::workflows::routing_context;
+use talaria_state::AppState;
+use talaria_templates::{ResolveContext, resolve_template, template_prompt};
+use talaria_workflows::routing_context;
 
 /// The alias NAME of a routed persona id, or None when no tier was picked —
 /// the inverse of `routed_model_for`, which is the only thing that builds
