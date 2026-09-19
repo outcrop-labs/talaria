@@ -7,7 +7,7 @@ pub mod models;
 pub mod params;
 pub mod provider;
 pub mod registry;
-pub mod settings;
+pub use talaria_settings as settings;
 pub mod upstream;
 pub mod usage;
 pub mod vault;

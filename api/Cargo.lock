@@ -3480,17 +3480,22 @@ dependencies = [
  "talaria-auth",
  "talaria-auth-config",
  "talaria-body",
+ "talaria-capability",
  "talaria-collate",
  "talaria-config",
  "talaria-db",
  "talaria-error",
  "talaria-fleet-layout",
+ "talaria-guard-coaching",
+ "talaria-instance",
  "talaria-internal-history",
+ "talaria-judge",
  "talaria-native-search",
  "talaria-org-domains",
  "talaria-params",
  "talaria-password",
  "talaria-password-accounts",
+ "talaria-permissions",
  "talaria-push",
  "talaria-ratelimit",
  "talaria-repo-env",
@@ -3498,6 +3503,7 @@ dependencies = [
  "talaria-safe-fetch",
  "talaria-secret-rotation",
  "talaria-secretbox",
+ "talaria-settings",
  "talaria-source-registry",
  "talaria-state",
  "talaria-task-const",
@@ -3551,6 +3557,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-capability"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-collate"
 version = "0.1.0"
 
@@ -3589,6 +3610,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-guard-coaching"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-settings",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-instance"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-internal-history"
 version = "0.1.0"
 dependencies = [
@@ -3597,6 +3644,18 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "uuid",
+]
+
+[[package]]
+name = "talaria-judge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-settings",
+ "tracing",
 ]
 
 [[package]]
@@ -3651,6 +3710,18 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "talaria-permissions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-settings",
+ "talaria-teams",
+ "tracing",
 ]
 
 [[package]]
@@ -3729,6 +3800,14 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "talaria-settings"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
 ]
 
 [[package]]

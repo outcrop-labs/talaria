@@ -3,8 +3,8 @@
 // judge harness (harness/defs/judge.rs), which writes the judge_reviews rows
 // read here.
 
-use crate::agent_auth::epoch_ms_to_iso;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
 
 /// One review row: what the quality gate concluded the last time it ran on
 /// this ticket, and who ran it.
@@ -60,7 +60,7 @@ const CONFIG_KEY: &str = "judge_config";
 /// merged over the stored partial. A stored value of the wrong type falls
 /// to the default per field.
 pub async fn get_judge_config(pg: &PgPool) -> serde_json::Value {
-    let stored = crate::gateway::settings::get_setting(pg, CONFIG_KEY, serde_json::json!({})).await;
+    let stored = talaria_settings::get_setting(pg, CONFIG_KEY, serde_json::json!({})).await;
     let mut out = serde_json::Map::new();
     out.insert(
         "enabled".into(),
@@ -94,5 +94,5 @@ pub async fn get_judge_config(pg: &PgPool) -> serde_json::Value {
 
 /// Store the whole config — a full-object write.
 pub async fn set_judge_config(pg: &PgPool, config: &serde_json::Value) {
-    let _ = crate::gateway::settings::set_setting(pg, CONFIG_KEY, config).await;
+    let _ = talaria_settings::set_setting(pg, CONFIG_KEY, config).await;
 }

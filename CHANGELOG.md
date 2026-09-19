@@ -4,10 +4,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 37 leaf crates.** `talaria-fleet-layout` (paths +
-  `describe_agent`/`read_manifest`) and `talaria-undici` cut the
-  gateway↔fleet `fleet_dir` cycle; `agent_secrets` followed. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 43 leaf crates.** `app_settings` is `talaria-settings`;
+  `capability`, `guard_coaching`, `instance`, `judge`, `permissions`
+  peeled off it. Verified: `cargo check -p talaria-api`.
+
 
 
 

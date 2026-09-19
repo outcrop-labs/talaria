@@ -12,7 +12,7 @@
 
 use sqlx::PgPool;
 
-use crate::gateway::settings::get_setting;
+use talaria_settings::get_setting;
 
 /// Fixed advice per check — the only text coaching ever carries.
 fn coach_advice(check: &str) -> Option<&'static str> {

@@ -44,6 +44,12 @@ members = [
     "crates/talaria-repo-env",
     "crates/talaria-research-origin",
     "crates/talaria-secret-rotation",
+    "crates/talaria-settings",
+    "crates/talaria-capability",
+    "crates/talaria-guard-coaching",
+    "crates/talaria-instance",
+    "crates/talaria-judge",
+    "crates/talaria-permissions",
 ]
 resolver = "3"
 
@@ -112,6 +118,12 @@ talaria-push = { path = "crates/talaria-push" }
 talaria-repo-env = { path = "crates/talaria-repo-env" }
 talaria-research-origin = { path = "crates/talaria-research-origin" }
 talaria-secret-rotation = { path = "crates/talaria-secret-rotation" }
+talaria-settings = { path = "crates/talaria-settings" }
+talaria-capability = { path = "crates/talaria-capability" }
+talaria-guard-coaching = { path = "crates/talaria-guard-coaching" }
+talaria-instance = { path = "crates/talaria-instance" }
+talaria-judge = { path = "crates/talaria-judge" }
+talaria-permissions = { path = "crates/talaria-permissions" }
 
 
 

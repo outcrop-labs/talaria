@@ -8,9 +8,9 @@
 // member's resolved perms array, and of the enum option list in the PUT
 // body's error message.
 
-use crate::gateway::settings::{get_setting, set_setting};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use talaria_settings::{get_setting, set_setting};
 
 /// One catalog entry — wire order is the field
 /// order the SPA consumes.
@@ -240,7 +240,7 @@ pub async fn user_permissions(
             .fetch_all(pg)
             .await?;
     let overrides: HashMap<String, bool> = rows.into_iter().collect();
-    let team = crate::teams::team_perm_overrides_for_user(pg, user_id).await?;
+    let team = talaria_teams::team_perm_overrides_for_user(pg, user_id).await?;
     Ok(PERMISSIONS
         .iter()
         .filter(|p| {
@@ -275,7 +275,7 @@ pub async fn has_perm(
     if let Some(v) = overrides.get(perm).copied() {
         return Ok(v);
     }
-    let team = crate::teams::team_perm_overrides_for_user(pg, user_id).await?;
+    let team = talaria_teams::team_perm_overrides_for_user(pg, user_id).await?;
     if let Some(v) = team.get(perm).copied() {
         return Ok(v);
     }

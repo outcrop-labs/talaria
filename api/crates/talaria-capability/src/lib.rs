@@ -11,11 +11,11 @@
 // probe > declared > catalog > learned; equal rank still wins (a re-probe can
 // correct a probe).
 
-use crate::gateway::settings::{get_setting, set_setting};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_settings::{get_setting, set_setting};
 
 const KEY: &str = "model_capabilities";
 
@@ -93,7 +93,7 @@ fn now_ms() -> u64 {
 /// parse accepts exactly the ISO shape the house formatter writes (its
 /// inverse, no clock crate); anything else is expired.
 fn parse_iso_ms(at: &str) -> Option<u64> {
-    crate::agent_auth::iso_to_epoch_ms(at).map(|ms| ms.max(0) as u64)
+    talaria_agent_auth::iso_to_epoch_ms(at).map(|ms| ms.max(0) as u64)
 }
 
 /// One stored fact, parsed defensively. `app_settings` is JSON that outlives

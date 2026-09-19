@@ -6,10 +6,10 @@
 // DNS, routing, and TLS all actually land on THIS deployment. The verify hop
 // goes through the domain, never around it via this process.
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::gateway::settings::{get_setting, set_setting};
 use sqlx::PgPool;
 use std::time::Duration;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_settings::{get_setting, set_setting};
 
 const ID_KEY: &str = "instance_id";
 const DOMAIN_KEY: &str = "instance_domain";
