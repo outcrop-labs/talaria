@@ -12,22 +12,22 @@
 // it destroys a good one — the regression check below is the only thing
 // standing between the two.
 
-use crate::artifacts::{
+use talaria_artifacts::{
     Artifact, SaveArtifactPatch, agent_category_folder, artifacts_for_target, attach_artifact,
     create_artifact, guarded, index_plan_doc, save_artifact,
 };
-use crate::conversations::{list_plan_members, prior_messages};
-use crate::fleet::describe_agent;
-use crate::harness::defs::plan_doc::{PlanDocInput, plan_doc_harness, plan_doc_regression};
-use crate::harness::run::{HarnessError, RunContext, RunLedger, run_harness};
-use crate::harness::transport::LedgerSource;
-use crate::kb::perms::{EditorGrant, can_read, list_editors, set_editors};
-use crate::mentions::{Mentionee, notify_mentions};
-use crate::notify::NotifyDeps;
-use crate::state::AppState;
-use crate::templates::{ResolveContext, resolve_template, template_prompt};
-use crate::users::list_users;
-use crate::workflows::routing_context;
+use talaria_conversations::{list_plan_members, prior_messages};
+use talaria_fleet_layout::describe_agent;
+use talaria_harness::run::{HarnessError, RunContext, RunLedger, run_harness};
+use talaria_harness::transport::LedgerSource;
+use talaria_harness_defs::defs::plan_doc::{PlanDocInput, plan_doc_harness, plan_doc_regression};
+use talaria_kb::perms::{EditorGrant, can_read, list_editors, set_editors};
+use talaria_mentions::{Mentionee, notify_mentions};
+use talaria_notify::NotifyDeps;
+use talaria_state::AppState;
+use talaria_templates::{ResolveContext, resolve_template, template_prompt};
+use talaria_users::list_users;
+use talaria_workflows::routing_context;
 
 /// The plan-mode harness, prepended to every plan-conversation turn.
 /// Without it the agent treats a planning
@@ -78,7 +78,7 @@ pub async fn notify_plan_mentions(
             let mut team_map: std::collections::HashMap<String, Vec<String>> =
                 std::collections::HashMap::new();
             for (id, _, _) in &users {
-                if let Ok(ids) = crate::teams::team_ids_for_user(pg, id).await {
+                if let Ok(ids) = talaria_teams::team_ids_for_user(pg, id).await {
                     team_map.insert(id.clone(), ids);
                 }
             }
@@ -128,7 +128,7 @@ pub async fn notify_plan_mentions(
 pub async fn plan_doc_for(
     pg: &sqlx::PgPool,
     conversation_id: &str,
-) -> Result<Option<crate::artifacts::Artifact>, sqlx::Error> {
+) -> Result<Option<talaria_artifacts::Artifact>, sqlx::Error> {
     Ok(artifacts_for_target(pg, "plan", conversation_id)
         .await?
         .into_iter()
@@ -398,8 +398,8 @@ pub async fn sync_plan_doc(
     // Best-effort — the brain is a consumer, not the answer.
     let _ = index_plan_doc(
         &pg,
-        &crate::retrieval::qdrant::real_deps(),
-        &crate::retrieval::embed::real_deps(),
+        &talaria_retrieval_qdrant::real_deps(),
+        &talaria_retrieval_embed::real_deps(),
         &saved,
         conversation_id,
     )

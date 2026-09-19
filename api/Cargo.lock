@@ -3764,6 +3764,7 @@ dependencies = [
  "talaria-permissions",
  "talaria-persona",
  "talaria-personal-agent",
+ "talaria-plan-doc",
  "talaria-platform-agents",
  "talaria-price-oracle",
  "talaria-push",
@@ -5451,6 +5452,31 @@ dependencies = [
  "talaria-state",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-plan-doc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-conversations",
+ "talaria-fleet-layout",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-kb",
+ "talaria-mentions",
+ "talaria-notify",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-state",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-users",
+ "talaria-workflows",
 ]
 
 [[package]]

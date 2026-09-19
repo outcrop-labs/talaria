@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 178 crates.** Channel plan harness. Verified:
+- **API workspace: 179 crates.** Plan-doc engine. Verified:
   `cargo check -p talaria-api`.
+
 
 
 
