@@ -47,6 +47,7 @@
 //   a human can read and amend, and a false positive here costs one comment
 //   rewrite while a false negative costs another round.
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { loadAuthority, unclassified as unclassifiedHermes } from './hermes-skill-authority.mjs'
 import { join, relative, sep } from 'node:path'
@@ -748,6 +749,72 @@ for (const rule of RULES) {
       what: `the MIGRATIONS array parses as ${statements.length} statements, below the destructive guard's baseline of ${GUARD_FROM_INDEX}`,
       fix: ['Statements are append-only — find what removed entries, or fix the parser in scripts/check-invariants.mjs.'],
       found: [],
+    })
+  }
+}
+
+// A TYPE-ONLY PACKAGE (@types/*) IS COMPILE-TIME, SO IT LIVES IN
+// devDependencies — never dependencies, optionalDependencies or
+// peerDependencies, in ANY tracked package.json.
+//
+// THE HISTORY THIS KEEPS FROM REPEATING: @types/nodemailer sat in
+// ui/package.json's dependencies and rode every production install, shipping
+// to every deploy while being usable at no point in it — type stubs are
+// consumed by the compiler and erased, so a production install can never run
+// them. It was pulled out by hand (GH #264). This rule is the tripwire: the
+// next @types/* package placed the same way fails the tree instead of waiting
+// for someone to notice the bloat.
+//
+// This is a standalone block rather than a RULES/CENSUS entry because both of
+// those scan TS/Svelte source under SOURCE_DIRS — they cannot see a
+// package.json. It reads the manifests directly, and discovers them through
+// git (`git ls-files`), which keeps gitignored client subrepos under apps/ out
+// of scope automatically; the static list of the repo's own manifests is the
+// fallback for a tree where git is unavailable.
+{
+  const RUNTIME_SECTIONS = ['dependencies', 'optionalDependencies', 'peerDependencies']
+  let manifests = []
+  try {
+    manifests = execFileSync('git', ['ls-files', '*package.json'], { cwd: ROOT, encoding: 'utf8' })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+  } catch {
+    // git failed or this is not a repository — the static fallback below applies
+  }
+  if (manifests.length === 0) {
+    manifests = ['package.json', 'ui/package.json', 'mcp/package.json', 'cli/package.json', 'desktop/package.json']
+  }
+  const hits = []
+  for (const rel of manifests) {
+    let pkg
+    try {
+      pkg = JSON.parse(readFileSync(join(ROOT, rel), 'utf8'))
+    } catch {
+      continue // an unparseable manifest fails every other gate; not this rule's subject
+    }
+    for (const section of RUNTIME_SECTIONS) {
+      for (const name of Object.keys(pkg[section] ?? {})) {
+        if (name.startsWith('@types/')) hits.push({ path: rel, line: 0, text: `${section}: ${name}` })
+      }
+    }
+  }
+  if (hits.length) {
+    failures.push({
+      id: 'types-package-in-runtime-dependencies',
+      what: 'a @types/* package sits in a runtime dependency section',
+      fix: [
+        'Move it to the devDependencies of that package.json. Type stubs are compile-time only:',
+        'in dependencies (or optionalDependencies / peerDependencies) they ride production',
+        'installs and ship to every deploy, where nothing can ever run them. That is exactly',
+        'how @types/nodemailer got into ui/package.json dependencies and rode production',
+        'installs until GH #264 pulled it out by hand. Every production install skips',
+        'devDependencies — that is where type stubs live.',
+        '',
+        'If you believe a specific @types/* package genuinely belongs in a runtime section,',
+        'make that argument in the PR — do not widen this rule to make it pass.',
+      ],
+      found: hits,
     })
   }
 }
