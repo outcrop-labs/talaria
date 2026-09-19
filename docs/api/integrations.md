@@ -48,7 +48,7 @@
 
 ## `/api/integrations/google`
 
-Source: [`api/src/routes/integrations/integrations_google.rs`](../../api/src/routes/integrations/integrations_google.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google.rs)
 
 > /api/integrations/google. This user's Google connection: status (never
 > exposes tokens) and disconnect (revoke + forget).
@@ -60,7 +60,7 @@ Source: [`api/src/routes/integrations/integrations_google.rs`](../../api/src/rou
 
 ## `/api/integrations/google/agent/calendar`
 
-Source: [`api/src/routes/integrations/integrations_google_agent_calendar.rs`](../../api/src/routes/integrations/integrations_google_agent_calendar.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_calendar.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_calendar.rs)
 
 > /api/integrations/google/agent/calendar. Agent-facing calendar: a personal
 > assistant acts as its owner; a general fleet agent acts on the shared ORG
@@ -87,7 +87,7 @@ Source: [`api/src/routes/integrations/integrations_google_agent_calendar.rs`](..
 
 ## `/api/integrations/google/agent/drive`
 
-Source: [`api/src/routes/integrations/integrations_google_agent_drive.rs`](../../api/src/routes/integrations/integrations_google_agent_drive.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_drive.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_drive.rs)
 
 > GET /api/integrations/google/agent/drive?q= — find files in the Drive the
 > calling agent acts for (its owner's, or the shared org Drive).
@@ -100,7 +100,7 @@ Source: [`api/src/routes/integrations/integrations_google_agent_drive.rs`](../..
 
 ## `/api/integrations/google/agent/gmail`
 
-Source: [`api/src/routes/integrations/integrations_google_agent_gmail.rs`](../../api/src/routes/integrations/integrations_google_agent_gmail.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail.rs)
 
 > /api/integrations/google/agent/gmail. Agent-facing Gmail: a personal
 > assistant acts as its owner; a general fleet agent acts on the shared ORG
@@ -125,7 +125,7 @@ Source: [`api/src/routes/integrations/integrations_google_agent_gmail.rs`](../..
 
 ## `/api/integrations/google/agent/gmail/{id}`
 
-Source: [`api/src/routes/integrations/integrations_google_agent_gmail_id.rs`](../../api/src/routes/integrations/integrations_google_agent_gmail_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail_id.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail_id.rs)
 
 > GET /api/integrations/google/agent/gmail/{id} — one FULL message (headers
 > + plain-text body) for the calling agent. The listing tool hands out ids
@@ -138,7 +138,7 @@ Source: [`api/src/routes/integrations/integrations_google_agent_gmail_id.rs`](..
 
 ## `/api/integrations/google/agent/gmail/labels`
 
-Source: [`api/src/routes/integrations/integrations_google_agent_gmail_labels.rs`](../../api/src/routes/integrations/integrations_google_agent_gmail_labels.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail_labels.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail_labels.rs)
 
 > /api/integrations/google/agent/gmail/labels. The label half of inbox
 > organizing. Gmail's folders ARE labels: INBOX and UNREAD are system labels a
@@ -159,7 +159,7 @@ Source: [`api/src/routes/integrations/integrations_google_agent_gmail_labels.rs`
 
 ## `/api/integrations/google/agent/gmail/organize`
 
-Source: [`api/src/routes/integrations/integrations_google_agent_gmail_organize.rs`](../../api/src/routes/integrations/integrations_google_agent_gmail_organize.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail_organize.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_agent_gmail_organize.rs)
 
 > POST /api/integrations/google/agent/gmail/organize — file/archive/read
 > messages by label. THE HITL LINE, stated once because it is the one
@@ -181,7 +181,7 @@ Source: [`api/src/routes/integrations/integrations_google_agent_gmail_organize.r
 
 ## `/api/integrations/google/calendar/events`
 
-Source: [`api/src/routes/integrations/integrations_google_calendar_events.rs`](../../api/src/routes/integrations/integrations_google_calendar_events.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_calendar_events.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_calendar_events.rs)
 
 > /api/integrations/google/calendar/events.
 > GET  → upcoming events on the user's primary calendar
@@ -206,7 +206,7 @@ Source: [`api/src/routes/integrations/integrations_google_calendar_events.rs`](.
 
 ## `/api/integrations/google/callback`
 
-Source: [`api/src/routes/integrations/integrations_google_callback.rs`](../../api/src/routes/integrations/integrations_google_callback.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_callback.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_callback.rs)
 
 > GET /api/integrations/google/callback — verify state, exchange the code for
 > an offline refresh token, and store the connection for the signed-in user.
@@ -220,7 +220,7 @@ Source: [`api/src/routes/integrations/integrations_google_callback.rs`](../../ap
 
 ## `/api/integrations/google/connect`
 
-Source: [`api/src/routes/integrations/integrations_google_connect.rs`](../../api/src/routes/integrations/integrations_google_connect.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_connect.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_connect.rs)
 
 > GET /api/integrations/google/connect — begin the offline-access consent
 > dance: set the one-shot state cookie and 302 to Google. Requires an
@@ -234,7 +234,7 @@ Source: [`api/src/routes/integrations/integrations_google_connect.rs`](../../api
 
 ## `/api/integrations/google/drive/browse`
 
-Source: [`api/src/routes/integrations/integrations_google_drive_browse.rs`](../../api/src/routes/integrations/integrations_google_drive_browse.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_browse.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_browse.rs)
 
 > /api/integrations/google/drive/browse?d=<rosterKey>&parent=&q=&pageSize=&pageToken=&sort=
 > One folder of one Drive, folders included, paginated, with the walked path
@@ -248,7 +248,7 @@ Source: [`api/src/routes/integrations/integrations_google_drive_browse.rs`](../.
 
 ## `/api/integrations/google/drive/drives`
 
-Source: [`api/src/routes/integrations/integrations_google_drive_drives.rs`](../../api/src/routes/integrations/integrations_google_drive_drives.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_drives.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_drives.rs)
 
 > /api/integrations/google/drive/drives. The Drive roster: every Drive this
 > person can browse across BOTH connections — personal My Drive, shared
@@ -262,7 +262,7 @@ Source: [`api/src/routes/integrations/integrations_google_drive_drives.rs`](../.
 
 ## `/api/integrations/google/drive/import`
 
-Source: [`api/src/routes/integrations/integrations_google_drive_import.rs`](../../api/src/routes/integrations/integrations_google_drive_import.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_import.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_import.rs)
 
 > POST /api/integrations/google/drive/import { fileId } — pull a Drive file
 > in as a new artifact owned by the caller (Doc→doc, Sheet→sheet, else→file).
@@ -279,7 +279,7 @@ Source: [`api/src/routes/integrations/integrations_google_drive_import.rs`](../.
 
 ## `/api/integrations/google/drive/rename`
 
-Source: [`api/src/routes/integrations/integrations_google_drive_manage.rs`](../../api/src/routes/integrations/integrations_google_drive_manage.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_manage.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_drive_manage.rs)
 
 > /api/integrations/google/drive/{rename,move,trash,create-folder}. The
 > Drive place's management verbs — all POST, all audited (a Drive write is a
@@ -312,7 +312,7 @@ Body schema `Value` is not an object literal in the route file — see the route
 
 ## `/api/integrations/google/gmail/messages`
 
-Source: [`api/src/routes/integrations/integrations_google_gmail_messages.rs`](../../api/src/routes/integrations/integrations_google_gmail_messages.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_gmail_messages.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_gmail_messages.rs)
 
 > GET /api/integrations/google/gmail/messages?q= — recent mail (metadata
 > only).
@@ -323,7 +323,7 @@ Source: [`api/src/routes/integrations/integrations_google_gmail_messages.rs`](..
 
 ## `/api/integrations/google/gmail/send`
 
-Source: [`api/src/routes/integrations/integrations_google_gmail_send.rs`](../../api/src/routes/integrations/integrations_google_gmail_send.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_gmail_send.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_gmail_send.rs)
 
 > POST /api/integrations/google/gmail/send — send a plain-text email as the
 > user.
@@ -344,7 +344,7 @@ Source: [`api/src/routes/integrations/integrations_google_gmail_send.rs`](../../
 
 ## `/api/integrations/google/org`
 
-Source: [`api/src/routes/integrations/integrations_google_org.rs`](../../api/src/routes/integrations/integrations_google_org.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org.rs)
 
 > /api/integrations/google/org — the shared org Google connection
 > (admin-managed); general fleet agents act as this identity for
@@ -367,7 +367,7 @@ Source: [`api/src/routes/integrations/integrations_google_org.rs`](../../api/src
 
 ## `/api/integrations/google/org/callback`
 
-Source: [`api/src/routes/integrations/integrations_google_org_callback.rs`](../../api/src/routes/integrations/integrations_google_org_callback.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_callback.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_callback.rs)
 
 > GET /api/integrations/google/org/callback — store the SHARED org
 > connection. The shared connect body plus the org's two differences: only an
@@ -380,7 +380,7 @@ Source: [`api/src/routes/integrations/integrations_google_org_callback.rs`](../.
 
 ## `/api/integrations/google/org/connect`
 
-Source: [`api/src/routes/integrations/integrations_google_org_connect.rs`](../../api/src/routes/integrations/integrations_google_org_connect.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_connect.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_connect.rs)
 
 > GET /api/integrations/google/org/connect — an admin begins connecting the
 > shared org Google account (offline access). Wider scopes
@@ -394,7 +394,7 @@ Source: [`api/src/routes/integrations/integrations_google_org_connect.rs`](../..
 
 ## `/api/integrations/google/org/health`
 
-Source: [`api/src/routes/integrations/integrations_google_org_health.rs`](../../api/src/routes/integrations/integrations_google_org_health.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_health.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_health.rs)
 
 > GET /api/integrations/google/org/health — live probe of Drive / Calendar /
 > Gmail with the org connection's token. Admin-only, and
@@ -408,7 +408,7 @@ Source: [`api/src/routes/integrations/integrations_google_org_health.rs`](../../
 
 ## `/api/integrations/google/org/provision`
 
-Source: [`api/src/routes/integrations/integrations_google_org_provision.rs`](../../api/src/routes/integrations/integrations_google_org_provision.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_provision.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_org_provision.rs)
 
 > /api/integrations/google/org/provision — the org workspace provisioning
 > surface (admin). GET → what the panel draws: scope readiness,
@@ -429,7 +429,7 @@ Source: [`api/src/routes/integrations/integrations_google_org_provision.rs`](../
 
 ## `/api/integrations/google/pending`
 
-Source: [`api/src/routes/integrations/integrations_google_pending.rs`](../../api/src/routes/integrations/integrations_google_pending.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_pending.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_pending.rs)
 
 > GET /api/integrations/google/pending — the caller's agent-drafted actions
 > awaiting their approval (send email / create event).
@@ -440,7 +440,7 @@ Source: [`api/src/routes/integrations/integrations_google_pending.rs`](../../api
 
 ## `/api/integrations/google/pending/{id}`
 
-Source: [`api/src/routes/integrations/integrations_google_pending_id.rs`](../../api/src/routes/integrations/integrations_google_pending_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/integrations/integrations_google_pending_id.rs`](../../api/crates/talaria-api-routes/src/routes/integrations/integrations_google_pending_id.rs)
 
 > POST /api/integrations/google/pending/{id} — approve (executes as the
 > owner, or the org for org actions) or reject an agent-drafted action.

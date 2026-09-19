@@ -1,0 +1,13 @@
+[package]
+name = "talaria-update-layout"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+

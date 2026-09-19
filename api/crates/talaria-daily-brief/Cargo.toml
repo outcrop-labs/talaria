@@ -1,0 +1,35 @@
+[package]
+name = "talaria-daily-brief"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+uuid = { version = "1", features = ["v4"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-artifacts = { path = "../talaria-artifacts" }
+talaria-daily-brief-comms = { path = "../talaria-daily-brief-comms" }
+talaria-daily-brief-config = { path = "../talaria-daily-brief-config" }
+talaria-daily-brief-delegation = { path = "../talaria-daily-brief-delegation" }
+talaria-daily-brief-focus = { path = "../talaria-daily-brief-focus" }
+talaria-daily-brief-types = { path = "../talaria-daily-brief-types" }
+talaria-google-calendar = { path = "../talaria-google-calendar" }
+talaria-harness = { path = "../talaria-harness" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-me = { path = "../talaria-me" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-realtime = { path = "../talaria-realtime" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-session = { path = "../talaria-session" }
+talaria-state = { path = "../talaria-state" }
+talaria-tz = { path = "../talaria-tz" }
+tokio = { version = "1", features = ["macros"] }
+tracing = "0.1"

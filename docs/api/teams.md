@@ -28,7 +28,7 @@
 
 ## `/api/teams`
 
-Source: [`api/src/routes/teams/teams.rs`](../../api/src/routes/teams/teams.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/teams/teams.rs`](../../api/crates/talaria-api-routes/src/routes/teams/teams.rs)
 
 > /api/teams. GET → the caller's teams, resolved through ACTING user (a
 > personal assistant acts as its owner — the identity-proxy model);
@@ -38,17 +38,11 @@ Source: [`api/src/routes/teams/teams.rs`](../../api/src/routes/teams/teams.rs)
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{teams}` | 200, 401 | — |
-| POST | `session` | [body](#post-apiteams-body) | `{team}` | 200, 400 | — |
-
-### POST `/api/teams` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `name` | `string(1, 120)` |  |
+| POST | `session` | — | `{team}` | 200, 400 | — |
 
 ## `/api/teams/{id}`
 
-Source: [`api/src/routes/teams/teams_id.rs`](../../api/src/routes/teams/teams_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/teams/teams_id.rs`](../../api/crates/talaria-api-routes/src/routes/teams/teams_id.rs)
 
 > /api/teams/{id}. GET → team + members + agents (member, or Manage → Teams).
 > PATCH { name?, description? } → rename / set blurb (owner); DELETE → delete
@@ -71,7 +65,7 @@ Source: [`api/src/routes/teams/teams_id.rs`](../../api/src/routes/teams/teams_id
 
 ## `/api/teams/{id}/access`
 
-Source: [`api/src/routes/teams/teams_id_access.rs`](../../api/src/routes/teams/teams_id_access.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/teams/teams_id_access.rs`](../../api/crates/talaria-api-routes/src/routes/teams/teams_id_access.rs)
 
 > /api/teams/{id}/access. GET/PUT the team's platform views and permission
 > overrides — admin-only, same privilege as Admin → People. A team grant
@@ -91,7 +85,7 @@ Source: [`api/src/routes/teams/teams_id_access.rs`](../../api/src/routes/teams/t
 
 ## `/api/teams/{id}/agents`
 
-Source: [`api/src/routes/teams/teams_id_agents.rs`](../../api/src/routes/teams/teams_id_agents.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/teams/teams_id_agents.rs`](../../api/crates/talaria-api-routes/src/routes/teams/teams_id_agents.rs)
 
 > /api/teams/{id}/agents. GET → agent members (any team member).
 > POST { model } → add (owner). DELETE { model } → remove (owner).
@@ -116,7 +110,7 @@ Source: [`api/src/routes/teams/teams_id_agents.rs`](../../api/src/routes/teams/t
 
 ## `/api/teams/{id}/members`
 
-Source: [`api/src/routes/teams/teams_id_members.rs`](../../api/src/routes/teams/teams_id_members.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/teams/teams_id_members.rs`](../../api/crates/talaria-api-routes/src/routes/teams/teams_id_members.rs)
 
 > /api/teams/{id}/members. GET → members (any member of the team).
 > POST { email, role? } → add (owner; the role defaults to 'member', and the
@@ -145,7 +139,7 @@ Source: [`api/src/routes/teams/teams_id_members.rs`](../../api/src/routes/teams/
 
 ## `/api/teams/directory`
 
-Source: [`api/src/routes/teams/teams_directory.rs`](../../api/src/routes/teams/teams_directory.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/teams/teams_directory.rs`](../../api/crates/talaria-api-routes/src/routes/teams/teams_directory.rs)
 
 > /api/teams/directory. GET → every org team as id/name/counts, for share
 > pickers. Any signed-in human (or identity-proxied assistant). Membership

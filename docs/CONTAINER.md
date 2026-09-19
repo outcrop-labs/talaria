@@ -271,7 +271,7 @@ Two docker networks, one socket — this is the "right shape"
   the shared network — **no host firewall rule needed**, which is the entire
   point: the dev/host install needs an INPUT-chain rule for exactly this hop.
 - **App → agents**: `TALARIA_AGENT_DIAL=container` makes the fleet manifest
-  ([`api/src/fleet/render.rs`](../api/src/fleet/render.rs)) dial agents by their
+  ([`api/crates/talaria-fleet-render/src/lib.rs`](../api/crates/talaria-fleet-render/src/lib.rs)) dial agents by their
   compose service names (`agent-<dept>:8642`, slot-aware) instead of the
   host-loopback ports the dev stack publishes — and in this mode the renderer
   doesn't publish those ports at all (the manifest never dials them, and

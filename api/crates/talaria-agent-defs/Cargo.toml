@@ -1,0 +1,38 @@
+[package]
+name = "talaria-agent-defs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-body = { path = "../talaria-body" }
+talaria-config = { path = "../talaria-config" }
+talaria-permissions = { path = "../talaria-permissions" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-teams = { path = "../talaria-teams" }
+talaria-tz = { path = "../talaria-tz" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+tokio = { version = "1", features = ["sync", "time", "fs", "macros"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+regex = "1"
+getrandom = "0.3"
+base64 = "0.23"
+thiserror = "2"
+futures-util = "0.3"
+url = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+hmac = "0.13"
+sha2 = "0.11"
+sha1 = "0.10"
+hex = "0.4"

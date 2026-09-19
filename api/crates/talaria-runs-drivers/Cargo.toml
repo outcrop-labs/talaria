@@ -1,0 +1,14 @@
+[package]
+name = "talaria-runs-drivers"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing = "0.1"
+

@@ -170,33 +170,50 @@ purpose**, decided against the TS route it replaced. This list is the contract
   `routes/fleet/fleet_agents_id_secrets.rs`)
 - Nothing else yet.
 
-## Layout of the crate
+## Layout of the workspace
 
-`api/src/` — the scaffold first: `main.rs` (axum serve, graceful shutdown),
-`config.rs` (env, the secret-root precedence `TALARIA_SECRET_KEY` → `_FILE` →
-`AUTH_SECRET`), `error.rs` (the two envelopes, byte-tested), `db.rs` (pool +
-the migration discipline), `state.rs`, `auth.rs`, `ratelimit.rs`,
-`secretbox.rs` (the cross-language cipher, vector-pinned from both sides).
-Then one dir per engine family, and the routes one dir per subsystem:
+`api/` is a Cargo workspace: `talaria-api` is a thin binary (`main.rs` plus an
+alias-only `src/lib.rs`) and every engine lives in its own crate under
+`api/crates/talaria-*` (206 at the time of this writing). `talaria-api-routes`
+holds the handler modules and the router table; `talaria-jobs` is the
+composition root that wires the cross-crate seams.
 
-- `routes/` — 23 subsystem dirs mirroring the `docs/api` groups
-  (`routes/boards/boards_id.rs`, `routes/fleet/fleet_defs.rs`, …); the router
-  table in `routes/mod.rs` names the system each handler belongs to
-- `runs/` + `scheduler.rs` + `jobs.rs` — the durable-run engine (leases, CAS,
-  reclaim, decide), the sweep, and the registered job table
-- `gateway/` — the LLM gateway: registry, vault, provider, params, usage,
-  budget, guard
-- `harness/` + `fitness/` — the persona/capability engine, and the
-  model-fitness battery
-- `fleet/` — render, reconcile, preflight, docker, cascade, federate: the
-  fleet's whole write plane
-- `google/` — OAuth, connections, calendar/drive/gmail, provisioning
-- `mcp/`, `model/`, `kb/`, `inbox_focus/`, `workbench/`, `retrieval/`,
-  `daily_brief/` — the other engine families
-- the top level holds the singles that never grew a family — `body.rs` (the
-  validation engine, every 400 sentence probed and pinned), `password.rs`,
-  `session.rs`, `realtime.rs` (the SSE fanout), `yaml_string.rs` (the
-  byte-identical `yaml` emitter, fixture-pinned), `workspace_secrets.rs`,
-  and friends
+### Where new code goes
 
-`Cargo.lock` is committed, as `bun.lock` is.
+1. **A new domain gets a new crate** — `api/crates/talaria-<domain>/`, one
+   concern, `[lints] workspace = true`, registered in the members list of
+   `api/Cargo.toml`. Crate-per-domain is the point of the split; do not grow a
+   grab-bag crate.
+2. **Dependencies point DOWN only** — leaf crates (config, db, error, body,
+   secretbox, state, realtime…) at the bottom; platform crates (gateway);
+   engines above them; `talaria-api-routes` and the binary at the top. If a
+   lower crate needs something above it, the seam becomes a `OnceLock`
+   injected at boot in `talaria-jobs` (see `CALL_MCP_TOOL`,
+   `BUILD_DISPATCH`, `GET_TASK` for the pattern) — never an upward import.
+3. **Types outrank engines** — shared row/patch/actor shapes live in a
+   `-types` crate (`talaria-tasks-types`, `talaria-inbox-focus-types`) so two
+   engines can share them without either depending on the other.
+4. **A run kind lives next to its driver** — `talaria-research-def`,
+   `talaria-runs-plan-draft`, `talaria-runs-work-session`… registered in
+   `talaria-jobs`' arming census so a kind that falls out fails boot.
+
+### The crate families
+
+| Family | Crates (pattern) |
+| :--- | :--- |
+| binary | `talaria-api` (main.rs + aliases), `talaria-api-routes` (handlers, router) |
+| composition | `talaria-jobs` (scheduler jobs + every OnceLock injection) |
+| engines | `talaria-{harness,fitness,retrieval,kb,tasks,runs-*,fleet-*,google-*,mcp*,inbox-focus*,daily-brief*,workbench*,approvals,digest,research*,alerts,…}` |
+| defs | `talaria-harness-defs` (every harness definition + registry), the `-def` run kinds |
+| platform | `talaria-gateway`, `talaria-scheduler`, `talaria-notify`, `talaria-audit` |
+| leaves | `talaria-{config,db,error,body,secretbox,state,auth,session,realtime,tz,yaml,…}` |
+
+Names follow the module they replaced: `src/tasks.rs` → `talaria-tasks`,
+`src/google/drive.rs` → `talaria-google-drive`. When you extract the next
+one, keep the moves mechanical — rewrites to crate paths, the OnceLock only
+where a cycle forces it — and run the full gate (`clippy -D warnings`,
+`cargo test --workspace`, `bun run check`) before committing.
+
+`Cargo.lock` is committed, as `bun.lock` is. The shared target dir stays
+`api/target` so `.dockerignore` and the package Dockerfile's context keep
+working unchanged.

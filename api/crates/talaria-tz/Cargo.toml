@@ -1,0 +1,15 @@
+[package]
+name = "talaria-tz"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+tracing = "0.1"

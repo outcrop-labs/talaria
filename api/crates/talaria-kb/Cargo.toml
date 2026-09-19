@@ -1,0 +1,30 @@
+[package]
+name = "talaria-kb"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-email = { path = "../talaria-email" }
+talaria-error = { path = "../talaria-error" }
+talaria-harness = { path = "../talaria-harness" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-internal-history = { path = "../talaria-internal-history" }
+talaria-kb-perms = { path = "../talaria-kb-perms" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
+talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
+talaria-retrieval-sources = { path = "../talaria-retrieval-sources" }
+talaria-state = { path = "../talaria-state" }
+talaria-teams = { path = "../talaria-teams" }
+tokio = { version = "1", features = ["macros"] }
+tracing = "0.1"
+getrandom = "0.3"

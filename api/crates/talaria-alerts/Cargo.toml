@@ -1,0 +1,27 @@
+[package]
+name = "talaria-alerts"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-boards = { path = "../talaria-boards" }
+talaria-brain-health = { path = "../talaria-brain-health" }
+talaria-fleet-agents = { path = "../talaria-fleet-agents" }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-mcp-service = { path = "../talaria-mcp-service" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-retrieval = { path = "../talaria-retrieval" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+talaria-state = { path = "../talaria-state" }
+tokio = { version = "1", features = ["macros"] }
+tracing = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

@@ -1,0 +1,30 @@
+[package]
+name = "talaria-runs-reindex"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+tokio = { version = "1", features = ["macros"] }
+talaria-artifacts = { path = "../talaria-artifacts" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-realtime = { path = "../talaria-realtime" }
+talaria-retrieval = { path = "../talaria-retrieval" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-state = { path = "../talaria-state" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }
+talaria-runs-run = { path = "../talaria-runs-run" }
+tracing = "0.1"
+regex = "1"
+sha2 = "0.11"
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+talaria-runs-store = { path = "../talaria-runs-store" }

@@ -17,31 +17,61 @@
 # Then hand it to the app image (docs/CONTAINER.md → The api binary):
 #
 #   docker build --build-arg TALARIA_API_IMAGE=talaria-api:local .
+#
+# ── caching, and why this file is shaped like this ───────────────────────────
+# The workflow builds with buildx's REGISTRY cache (--cache-from/--cache-to
+# type=registry, mode=max, the :buildcache tag), because a hosted runner has
+# no state of its own and registry cache — unlike the gha backend — works
+# from a workflow_call (release.yml calls this build for every publish).
+# mode=max exports the INTERMEDIATE layers, which only pays off if they are
+# keyed on something stabler than "any file changed". That is the three
+# stages below, the standard cargo-chef shape:
+#
+#   planner  copies the full source, reduces it to recipe.json — a digest of
+#            the manifests and nothing else.
+#   deps     cooks the dependency tree from recipe.json ALONE. Its layers
+#            bust only when a manifest moves (a dep added, a path dep
+#            renamed), so the ~400 third-party crates build once per
+#            dependency change and ride the cache forever after.
+#   build    copies the real source and builds the workspace. A source-only
+#            change recompiles OUR crates and nothing else.
+#
+# There are deliberately NO `RUN --mount=type=cache` mounts left in here: a
+# cache mount's contents are invisible to the layer cache, so every layer
+# after one would re-run on every cold runner and the exported cache would
+# carry nothing. Layer cache + chef is the whole trick.
 
-# ── build ────────────────────────────────────────────────────────────────────
+# ── planner ──────────────────────────────────────────────────────────────────
 # Same 1.97.1 the devboxes and CI pin via api/rust-toolchain.toml, and the
 # alpine variant so the default target is musl — the artifact is static-native
 # and drops into the app's alpine runtime with no interpreter, no extra
 # packages.
-#
-# build-base + cmake: aws-lc-sys — the TLS stack's C half, the same reason
-# the devbox image carries build-essential — compiles C here, in CI, once.
-FROM docker.io/library/rust:1.97.1-alpine3.21 AS build
-RUN apk add --no-cache build-base cmake
-
+FROM docker.io/library/rust:1.97.1-alpine3.21 AS planner
+RUN cargo install cargo-chef --locked
 WORKDIR /repo
 COPY api ./api
-# include_str! in fleet/hermes_skills.rs walks to repo-root scripts/. Flattening
+# include_str! in talaria-hermes-skills walks to repo-root scripts/. Flattening
 # api/ onto /repo made that path /scripts/... and the package build 404'd.
 COPY scripts/hermes-skill-authority.json ./scripts/hermes-skill-authority.json
 WORKDIR /repo/api
-# Cache mounts carry the registry and target dir across CI runs, so a source
-# change recompiles the crate, not the dependency tree. The binary is copied
-# OUT of the target mount before the layer closes — a cache mount's contents
-# do not survive into the image.
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/repo/api/target \
-    cargo build --release --locked \
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── deps ─────────────────────────────────────────────────────────────────────
+# build-base + cmake: aws-lc-sys — the TLS stack's C half, the same reason
+# the devbox image carries build-essential — compiles C here, in CI, once.
+FROM docker.io/library/rust:1.97.1-alpine3.21 AS deps
+RUN apk add --no-cache build-base cmake
+RUN cargo install cargo-chef --locked
+WORKDIR /repo/api
+COPY --from=planner /repo/api/recipe.json .
+RUN cargo chef cook --release --locked --recipe-path recipe.json
+
+# ── build ────────────────────────────────────────────────────────────────────
+FROM deps AS build
+COPY api ./api
+COPY scripts/hermes-skill-authority.json /repo/scripts/hermes-skill-authority.json
+# The binary is copied OUT to a stable path before the layer closes.
+RUN cargo build --release --locked \
  && cp target/release/talaria-api /talaria-api
 
 # ── package ──────────────────────────────────────────────────────────────────

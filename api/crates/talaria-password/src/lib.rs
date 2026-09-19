@@ -1,0 +1,152 @@
+// Password hashing. scrypt, the
+// parameters traveling inside the entry (`scrypt$N$r$p$salt$hash`, standard
+// base64) so a future bump keeps verifying old hashes — including entries
+// written before this crate existed.
+//
+// A mangled entry — exponent/hex N, junk base64, empty salt or key — fails
+// the parse and verifies false rather than throwing. An entry that malformed
+// was never a credential anyone could present.
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use scrypt::{Params, scrypt as kdf};
+use std::sync::LazyLock;
+
+/// Constant-time compare — no early exit on the first differing byte.
+/// Length first; that leaks only the length.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+// OWASP interactive-login parameters; encoded per-entry (see hash_password).
+const SCRYPT_N: u32 = 16384;
+const SCRYPT_R: u32 = 8;
+const SCRYPT_P: u32 = 1;
+const KEYLEN: usize = 32;
+
+fn log2_exact(n: u32) -> Option<u8> {
+    if n < 2 || !n.is_power_of_two() {
+        return None; // scrypt requires a power of two greater than 1
+    }
+    Some(n.trailing_zeros() as u8)
+}
+
+/// Hash a password for storage: `scrypt$N$r$p$salt$hash` (base64 salt + key).
+pub fn hash_password(password: &str) -> String {
+    let mut salt = [0u8; 16];
+    getrandom::fill(&mut salt).expect("system rng");
+    let key = derive(password, &salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, KEYLEN);
+    format!(
+        "scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${}{}{}",
+        STANDARD.encode(salt),
+        '$',
+        STANDARD.encode(key)
+    )
+}
+
+fn derive(password: &str, salt: &[u8], n: u32, r: u32, p: u32, out_len: usize) -> Vec<u8> {
+    let log_n = log2_exact(n).expect("caller checks power-of-two N");
+    // Params carries N/r/p only — the output length is the buffer's own size,
+    // which is how the entry's stored key length rides through on verify.
+    let params = Params::new(log_n, r, p).expect("params mirror the entry's own encoding");
+    let mut out = vec![0u8; out_len];
+    kdf(password.as_bytes(), salt, &params, &mut out).expect("buffer matches output_len");
+    out
+}
+
+/// Verify a password against a `scrypt$…` entry. Parameters are read from the
+/// entry, not the constants — an entry always verifies as it was hashed.
+pub fn verify_password_hash(password: &str, stored: &str) -> bool {
+    let parts: Vec<&str> = stored.split('$').collect();
+    if parts.len() != 6 || parts[0] != "scrypt" {
+        return false;
+    }
+    let (Ok(n), Ok(r), Ok(p)) = (
+        parts[1].parse::<u32>(),
+        parts[2].parse::<u32>(),
+        parts[3].parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if n < 1 || r < 1 || p < 1 || log2_exact(n).is_none() {
+        return false;
+    }
+    let (salt, expected) = match (STANDARD.decode(parts[4]), STANDARD.decode(parts[5])) {
+        (Ok(s), Ok(e)) if !s.is_empty() && !e.is_empty() => (s, e),
+        _ => return false,
+    };
+    let key = derive(password, &salt, n, r, p, expected.len());
+    key.len() == expected.len() && constant_time_eq(&key, &expected)
+}
+
+/// A hash that exists only to be verified and discarded: an unknown email
+/// burns this, so a miss on the email fails
+/// exactly as slowly as a miss on the password and timing never reveals which
+/// emails have accounts. Memoized — the point is to spend the same cost every
+/// time, not a fresh one each time.
+pub fn dummy_hash() -> &'static str {
+    static DUMMY: LazyLock<String> = LazyLock::new(|| hash_password("talaria-account-probe"));
+    &DUMMY
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entries_round_trip_and_reject_wrong_passwords() {
+        let h = hash_password("correct horse battery staple");
+        let parts: Vec<&str> = h.split('$').collect();
+        assert_eq!(parts[0], "scrypt");
+        assert_eq!(parts[1], "16384");
+        assert_eq!(parts[2], "8");
+        assert_eq!(parts[3], "1");
+        assert!(verify_password_hash("correct horse battery staple", &h));
+        assert!(!verify_password_hash("Tr0ub4dor&3", &h));
+    }
+
+    #[test]
+    fn verifies_a_node_shaped_entry_with_its_own_parameters() {
+        // Entry as the runtime that hashed these rows first wrote it
+        // (node:crypto scrypt, N=16384 r=8 p=1, 16-byte salt, 32-byte key,
+        // standard base64) for the password below — stored credentials outlive
+        // the code that hashed them.
+        let entry = "scrypt$16384$8$1$JMXWb7G0vMR4mJomDJ6fXA==$UXCe0nEBueXHtYskEFUWOwiBxhmdZbMvdtwV4SIxpHE=";
+        assert!(verify_password_hash("talaria-test-密码-π", entry));
+        assert!(!verify_password_hash("other", entry));
+    }
+
+    #[test]
+    fn malformed_entries_verify_false_not_panic() {
+        for bad in [
+            "",
+            "scrypt",
+            "$1$1$1$AAAA$AAAA",
+            "bcrypt$16384$8$1$AAAA$AAAA",
+            "scrypt$0$8$1$AAAA$AAAA",
+            "scrypt$16384$0$1$AAAA$AAAA",
+            "scrypt$16384$8$0$AAAA$AAAA",
+            "scrypt$3$8$1$AAAA$AAAA", // not a power of two
+            "scrypt$1e4$8$1$AAAA$AAAA",
+            "scrypt$16384$8$1$$AAAA", // empty salt
+            "scrypt$16384$8$1$AAAA$", // empty key
+            "scrypt$16384$8$1$!!!$AAAA",
+            "scrypt$16384$8$1$AAAA$AAAA$extra",
+        ] {
+            assert!(!verify_password_hash("anything", bad), "entry: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn dummy_hash_is_stable_and_verifies() {
+        assert_eq!(dummy_hash(), dummy_hash());
+        assert!(verify_password_hash("talaria-account-probe", dummy_hash()));
+    }
+}

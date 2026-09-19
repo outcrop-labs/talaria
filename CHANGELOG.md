@@ -4,6 +4,127 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **CI: api job timeout 15 → 30 minutes.** The workspace split multiplied
+ test binaries (~200, one per crate); the cold `cargo test` was cancelled
+ mid-build at 15. Verified: the rerun on this change is the first to fit
+ the budget cold.
+
+ it. Verified: `bun run check` (doc links).
+
+ build is cargo-chef-layered (deps build once per manifest change) and
+ exports its layers through a buildx registry cache (`:buildcache`, mode=max)
+ — the gha backend can't be used because release.yml calls the build via
+ workflow_call. Verified: `bun run check`; the image build itself exercises
+ on the next push to `main` (no docker on this box).
+
+
+  the split: clippy `-D warnings` and 868 tests green. Verified:
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- **API dev builds: opt-level 1 + mold.** `api/Cargo.toml` `[profile.dev]`
+  compiles our crate at `-C opt-level=1`, deps at 3, `debug =
+  "line-tables-only"` (unwind stays — tests and catch-panic). gnu linux
+  links with mold (`api/.cargo/config.toml`); CI installs the package, the
+  devbox image does too. musl/package image unchanged until mold-on-musl is
+  proven. Verified: `cargo build` after the profile flip (4m 34s, deps at
+  opt-level 3); incremental `touch src/routes/mod.rs` 20.7s (was 23.7s);
+  `cargo clippy --all-targets -- -D warnings` green; `cargo test` green;
+  `bun run check`.
+
+
 - **Workbench agents pack against the docker host, not a 3-job stall.**
   Admit uses `docker info` MemTotal when the API is cgrouped smaller than
   the VM (`/proc/meminfo` when they match). Keep-back is 25% of that total

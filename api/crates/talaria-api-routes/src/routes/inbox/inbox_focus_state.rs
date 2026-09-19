@@ -1,0 +1,119 @@
+// /api/inbox/focus/state. PUT → mark a focus item viewed, or snooze it
+// until a time. Unlocked by design: the tables this writes
+// (inbox_focus_state, the snooze's inbox_decisions row) are tables the
+// assistant turn never touches, so a snooze mid-stream is a state change,
+// not a conflict — the user lock belongs to the turn-running routes.
+
+use axum::Json;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde_json::{Value, json};
+use talaria_body::{
+    as_object, enum_member, optional_boolean_member, present_nullable_datetime_member,
+    string_member,
+};
+use talaria_error::{house_error, thrown_internal_error};
+use talaria_inbox_focus::conversation::record_inbox_snooze;
+use talaria_inbox_focus::types::FOCUS_SOURCE_TYPES;
+use talaria_inbox_focus::update_focus_state;
+use talaria_session::require_user;
+use talaria_state::AppState;
+
+/// The PUT body shape.
+struct StateBody {
+    source_type: String,
+    source_id: String,
+    snoozed_until: Option<Option<String>>,
+    viewed: bool,
+}
+
+fn validate(obj: &serde_json::Map<String, Value>) -> Result<StateBody, String> {
+    let source_type = enum_member(obj, "sourceType", &FOCUS_SOURCE_TYPES)?;
+    let source_id = string_member(obj, "sourceId", 1, 500)?;
+    let snoozed_until = present_nullable_datetime_member(obj, "snoozedUntil")?;
+    let viewed = optional_boolean_member(obj, "viewed")?.unwrap_or(false);
+    // 'state change required' — present-null still counts as a change (it
+    // clears the snooze); only absent-and-not-viewed is the empty request.
+    if snoozed_until.is_none() && !viewed {
+        return Err("state change required".into());
+    }
+    Ok(StateBody {
+        source_type,
+        source_id,
+        snoozed_until,
+        viewed,
+    })
+}
+
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let user = match require_user(&state, &headers).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let parsed = talaria_body::parse(&body);
+    let obj = match as_object(&parsed) {
+        Ok(o) => o,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let body = match validate(obj) {
+        Ok(b) => b,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let updated = match update_focus_state(
+        &state.pg,
+        &user,
+        &body.source_type,
+        &body.source_id,
+        body.snoozed_until.as_ref().map(|o| o.as_deref()),
+        body.viewed,
+    )
+    .await
+    {
+        Ok(ok) => ok,
+        Err(e) => {
+            tracing::error!("[inbox-focus] state write failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    if !updated {
+        return house_error(
+            StatusCode::CONFLICT,
+            "That focus item is no longer available.",
+        );
+    }
+    // truthiness: only a present non-null (the regex guarantees non-empty)
+    // value records the snooze decision row.
+    let timeline_entry = match body.snoozed_until.as_ref().and_then(|o| o.as_deref()) {
+        Some(snoozed_until) => match record_inbox_snooze(
+            &state,
+            &user,
+            &body.source_type,
+            &body.source_id,
+            snoozed_until,
+        )
+        .await
+        {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::error!("[inbox-focus] snooze record failed: {e}");
+                return thrown_internal_error();
+            }
+        },
+        None => None,
+    };
+    let mut ok = json!({ "ok": true });
+    if let Some(entry) = timeline_entry
+        && let Some(object) = ok.as_object_mut()
+    {
+        object.insert(
+            "timelineEntry".into(),
+            serde_json::to_value(&entry).expect("entry serializes"),
+        );
+    }
+    (StatusCode::OK, Json(ok)).into_response()
+}

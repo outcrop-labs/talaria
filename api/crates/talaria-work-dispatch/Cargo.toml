@@ -1,0 +1,33 @@
+[package]
+name = "talaria-work-dispatch"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+futures-util = "0.3"
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-fleet-budget = { path = "../talaria-fleet-budget" }
+talaria-realtime = { path = "../talaria-realtime" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-runs-run = { path = "../talaria-runs-run" }
+talaria-runs-store = { path = "../talaria-runs-store" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+talaria-statuses = { path = "../talaria-statuses" }
+talaria-tasks = { path = "../talaria-tasks" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }
+talaria-work-wait = { path = "../talaria-work-wait" }
+talaria-workbench = { path = "../talaria-workbench" }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tracing = "0.1"
+talaria-runs-decide = { path = "../talaria-runs-decide" }
+talaria-runs-work-session = { path = "../talaria-runs-work-session" }

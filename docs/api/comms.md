@@ -43,7 +43,7 @@
 
 ## `/api/channels`
 
-Source: [`api/src/routes/comms/channels.rs`](../../api/src/routes/comms/channels.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels.rs)
 
 > /api/channels.
 > GET → the user's channels/relays/DMs (agents see the channels they've been
@@ -66,7 +66,7 @@ Source: [`api/src/routes/comms/channels.rs`](../../api/src/routes/comms/channels
 
 ## `/api/channels/{id}`
 
-Source: [`api/src/routes/comms/channels_id.rs`](../../api/src/routes/comms/channels_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id.rs)
 
 > /api/channels/{id}.
 > GET → channel detail (role + members + agents + teams). PUT → rename / set topic
@@ -88,7 +88,7 @@ Source: [`api/src/routes/comms/channels_id.rs`](../../api/src/routes/comms/chann
 
 ## `/api/channels/{id}/agents`
 
-Source: [`api/src/routes/comms/channels_id_agents.rs`](../../api/src/routes/comms/channels_id_agents.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_agents.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_agents.rs)
 
 > /api/channels/{id}/agents.
 > POST { model } → add a fleet agent to the channel (the adder needs access
@@ -113,7 +113,7 @@ Source: [`api/src/routes/comms/channels_id_agents.rs`](../../api/src/routes/comm
 
 ## `/api/channels/{id}/conclude`
 
-Source: [`api/src/routes/comms/channels_id_conclude.rs`](../../api/src/routes/comms/channels_id_conclude.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_conclude.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_conclude.rs)
 
 > /api/channels/{id}/conclude.
 > POST → conclude a Relay: summarize what was decided (posted as the final
@@ -127,7 +127,7 @@ Source: [`api/src/routes/comms/channels_id_conclude.rs`](../../api/src/routes/co
 
 ## `/api/channels/{id}/events`
 
-Source: [`api/src/routes/comms/channels_id_events.rs`](../../api/src/routes/comms/channels_id_events.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_events.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_events.rs)
 
 > /api/channels/{id}/events.
 > SSE stream of the channel's live events (messages, membership),
@@ -140,7 +140,7 @@ Source: [`api/src/routes/comms/channels_id_events.rs`](../../api/src/routes/comm
 
 ## `/api/channels/{id}/members`
 
-Source: [`api/src/routes/comms/channels_id_members.rs`](../../api/src/routes/comms/channels_id_members.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_members.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_members.rs)
 
 > /api/channels/{id}/members.
 > POST { email } → add a member (any member can invite; they must have
@@ -166,7 +166,7 @@ Source: [`api/src/routes/comms/channels_id_members.rs`](../../api/src/routes/com
 
 ## `/api/channels/{id}/messages`
 
-Source: [`api/src/routes/comms/channels_id_messages.rs`](../../api/src/routes/comms/channels_id_messages.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_messages.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_messages.rs)
 
 > /api/channels/{id}/messages.
 > GET ?since=<seq>&thread=<id> → the channel's messages (members; agents in
@@ -188,7 +188,7 @@ Source: [`api/src/routes/comms/channels_id_messages.rs`](../../api/src/routes/co
 
 ## `/api/channels/{id}/messages/{msgId}`
 
-Source: [`api/src/routes/comms/channels_id_messages_msgid.rs`](../../api/src/routes/comms/channels_id_messages_msgid.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_messages_msgid.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_messages_msgid.rs)
 
 > /api/channels/{id}/messages/{msgId}.
 > PATCH { content } → edit your own message (edited marker shows).
@@ -208,7 +208,7 @@ Source: [`api/src/routes/comms/channels_id_messages_msgid.rs`](../../api/src/rou
 
 ## `/api/channels/{id}/messages/{msgId}/reactions`
 
-Source: [`api/src/routes/comms/channels_id_messages_msgid_reactions.rs`](../../api/src/routes/comms/channels_id_messages_msgid_reactions.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_messages_msgid_reactions.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_messages_msgid_reactions.rs)
 
 > /api/channels/{id}/messages/{msgId}/reactions.
 > POST { emoji } → toggle your reaction on a message. Agents react too, under
@@ -226,7 +226,7 @@ Source: [`api/src/routes/comms/channels_id_messages_msgid_reactions.rs`](../../a
 
 ## `/api/channels/{id}/plan`
 
-Source: [`api/src/routes/comms/channels_id_plan.rs`](../../api/src/routes/comms/channels_id_plan.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_plan.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_plan.rs)
 
 > /api/channels/{id}/plan.
 > The channel Plan button: POST enqueues a 'plan-draft' run on a channel
@@ -258,7 +258,7 @@ source.
 
 ## `/api/channels/{id}/read`
 
-Source: [`api/src/routes/comms/channels_id_read.rs`](../../api/src/routes/comms/channels_id_read.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_read.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_read.rs)
 
 > /api/channels/{id}/read.
 > POST { seq } → advance the caller's read cursor (drives unread badges).
@@ -275,7 +275,7 @@ Source: [`api/src/routes/comms/channels_id_read.rs`](../../api/src/routes/comms/
 
 ## `/api/channels/{id}/teams`
 
-Source: [`api/src/routes/comms/channels_id_teams.rs`](../../api/src/routes/comms/channels_id_teams.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/channels_id_teams.rs`](../../api/crates/talaria-api-routes/src/routes/comms/channels_id_teams.rs)
 
 > /api/channels/{id}/teams.
 > POST { teamId } → grant a team (any member). DELETE { teamId } → revoke
@@ -301,7 +301,7 @@ Source: [`api/src/routes/comms/channels_id_teams.rs`](../../api/src/routes/comms
 
 ## `/api/chat`
 
-Source: [`api/src/routes/comms/chat.rs`](../../api/src/routes/comms/chat.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/chat.rs`](../../api/crates/talaria-api-routes/src/routes/comms/chat.rs)
 
 > /api/chat. POST { model,
 > conversationId?, content } → durable streaming chat: the turn is persisted
@@ -329,7 +329,7 @@ Source: [`api/src/routes/comms/chat.rs`](../../api/src/routes/comms/chat.rs)
 
 ## `/api/conversations`
 
-Source: [`api/src/routes/comms/conversations.rs`](../../api/src/routes/comms/conversations.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/conversations.rs`](../../api/crates/talaria-api-routes/src/routes/comms/conversations.rs)
 
 > /api/conversations. GET
 > ?kind=plan → the user's plan conversations; anything else → their chats.
@@ -341,7 +341,7 @@ Source: [`api/src/routes/comms/conversations.rs`](../../api/src/routes/comms/con
 
 ## `/api/conversations/{id}`
 
-Source: [`api/src/routes/comms/conversations_id.rs`](../../api/src/routes/comms/conversations_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/conversations_id.rs`](../../api/crates/talaria-api-routes/src/routes/comms/conversations_id.rs)
 
 > /api/conversations/{id}.
 > GET → the conversation + its messages (ownership-checked). PATCH { title }
@@ -362,7 +362,7 @@ Source: [`api/src/routes/comms/conversations_id.rs`](../../api/src/routes/comms/
 
 ## `/api/conversations/{id}/read`
 
-Source: [`api/src/routes/comms/conversations_id_read.rs`](../../api/src/routes/comms/conversations_id_read.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/conversations_id_read.rs`](../../api/crates/talaria-api-routes/src/routes/comms/conversations_id_read.rs)
 
 > /api/conversations/{id}/read.
 > POST { seq? } → advance the caller's read cursor (drives the thread's
@@ -382,7 +382,7 @@ Source: [`api/src/routes/comms/conversations_id_read.rs`](../../api/src/routes/c
 
 ## `/api/dms`
 
-Source: [`api/src/routes/comms/dms.rs`](../../api/src/routes/comms/dms.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/comms/dms.rs`](../../api/crates/talaria-api-routes/src/routes/comms/dms.rs)
 
 > /api/dms. POST { userId } → find-or-create the DM with that person (rides
 > the channel machinery: same messages, SSE feed, and composer as

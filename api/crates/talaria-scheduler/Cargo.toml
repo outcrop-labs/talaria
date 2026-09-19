@@ -1,0 +1,17 @@
+[package]
+name = "talaria-scheduler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util = "0.3"
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-runs-lease = { path = "../talaria-runs-lease" }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
+tracing = "0.1"

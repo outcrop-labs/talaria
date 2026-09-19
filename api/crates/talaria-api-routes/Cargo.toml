@@ -1,0 +1,235 @@
+[package]
+name = "talaria-api-routes"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-activity = { path = "../talaria-activity" }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-agent-crons = { path = "../talaria-agent-crons" }
+talaria-agent-defs = { path = "../talaria-agent-defs" }
+talaria-agent-mcp = { path = "../talaria-agent-mcp" }
+talaria-agent-media = { path = "../talaria-agent-media" }
+talaria-agent-memory = { path = "../talaria-agent-memory" }
+talaria-agent-role-templates = { path = "../talaria-agent-role-templates" }
+talaria-agent-secrets = { path = "../talaria-agent-secrets" }
+talaria-agent-skills = { path = "../talaria-agent-skills" }
+talaria-agent-writes = { path = "../talaria-agent-writes" }
+talaria-agents-registry = { path = "../talaria-agents-registry" }
+talaria-alerts = { path = "../talaria-alerts" }
+talaria-approvals = { path = "../talaria-approvals" }
+talaria-apps = { path = "../talaria-apps" }
+talaria-artifacts = { path = "../talaria-artifacts" }
+talaria-attribution = { path = "../talaria-attribution" }
+talaria-audit = { path = "../talaria-audit" }
+talaria-auth = { path = "../talaria-auth" }
+talaria-auth-config = { path = "../talaria-auth-config" }
+talaria-boards = { path = "../talaria-boards" }
+talaria-body = { path = "../talaria-body" }
+talaria-brain-health = { path = "../talaria-brain-health" }
+talaria-capability = { path = "../talaria-capability" }
+talaria-capability-platform = { path = "../talaria-capability-platform" }
+talaria-capability-reach = { path = "../talaria-capability-reach" }
+talaria-channel-plan = { path = "../talaria-channel-plan" }
+talaria-channel-replies = { path = "../talaria-channel-replies" }
+talaria-channels = { path = "../talaria-channels" }
+talaria-chat-persist = { path = "../talaria-chat-persist" }
+talaria-claim = { path = "../talaria-claim" }
+talaria-collate = { path = "../talaria-collate" }
+talaria-comms-decay = { path = "../talaria-comms-decay" }
+talaria-config = { path = "../talaria-config" }
+talaria-conversations = { path = "../talaria-conversations" }
+talaria-daily-brief = { path = "../talaria-daily-brief" }
+talaria-daily-brief-comms = { path = "../talaria-daily-brief-comms" }
+talaria-daily-brief-config = { path = "../talaria-daily-brief-config" }
+talaria-daily-brief-delegation = { path = "../talaria-daily-brief-delegation" }
+talaria-daily-brief-focus = { path = "../talaria-daily-brief-focus" }
+talaria-daily-brief-types = { path = "../talaria-daily-brief-types" }
+talaria-db = { path = "../talaria-db" }
+talaria-digest = { path = "../talaria-digest" }
+talaria-effort-prefs = { path = "../talaria-effort-prefs" }
+talaria-email = { path = "../talaria-email" }
+talaria-error = { path = "../talaria-error" }
+talaria-fitness = { path = "../talaria-fitness" }
+talaria-fitness-code-runner = { path = "../talaria-fitness-code-runner" }
+talaria-fitness-talaria-tools = { path = "../talaria-fitness-talaria-tools" }
+talaria-fitness-toolbox = { path = "../talaria-fitness-toolbox" }
+talaria-fitness-world = { path = "../talaria-fitness-world" }
+talaria-fleet-agents = { path = "../talaria-fleet-agents" }
+talaria-fleet-brain = { path = "../talaria-fleet-brain" }
+talaria-fleet-budget = { path = "../talaria-fleet-budget" }
+talaria-fleet-cascade = { path = "../talaria-fleet-cascade" }
+talaria-fleet-create = { path = "../talaria-fleet-create" }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+talaria-fleet-federate = { path = "../talaria-fleet-federate" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
+talaria-fleet-reconcile = { path = "../talaria-fleet-reconcile" }
+talaria-fleet-render = { path = "../talaria-fleet-render" }
+talaria-fleet-resources = { path = "../talaria-fleet-resources" }
+talaria-gaps = { path = "../talaria-gaps" }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-github = { path = "../talaria-github" }
+talaria-google-agent = { path = "../talaria-google-agent" }
+talaria-google-api-health = { path = "../talaria-google-api-health" }
+talaria-google-calendar = { path = "../talaria-google-calendar" }
+talaria-google-client = { path = "../talaria-google-client" }
+talaria-google-connections = { path = "../talaria-google-connections" }
+talaria-google-drive = { path = "../talaria-google-drive" }
+talaria-google-errors = { path = "../talaria-google-errors" }
+talaria-google-gmail = { path = "../talaria-google-gmail" }
+talaria-google-oauth = { path = "../talaria-google-oauth" }
+talaria-google-org = { path = "../talaria-google-org" }
+talaria-google-pending = { path = "../talaria-google-pending" }
+talaria-google-provisioning = { path = "../talaria-google-provisioning" }
+talaria-guard-coaching = { path = "../talaria-guard-coaching" }
+talaria-harness = { path = "../talaria-harness" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-harness-json = { path = "../talaria-harness-json" }
+talaria-harness-json-schema = { path = "../talaria-harness-json-schema" }
+talaria-harness-model = { path = "../talaria-harness-model" }
+talaria-harness-prompt-rules = { path = "../talaria-harness-prompt-rules" }
+talaria-harness-schema = { path = "../talaria-harness-schema" }
+talaria-harness-text = { path = "../talaria-harness-text" }
+talaria-hermes-skills = { path = "../talaria-hermes-skills" }
+talaria-home = { path = "../talaria-home" }
+talaria-inbox-focus = { path = "../talaria-inbox-focus" }
+talaria-inbox-focus-types = { path = "../talaria-inbox-focus-types" }
+talaria-instance = { path = "../talaria-instance" }
+talaria-internal-history = { path = "../talaria-internal-history" }
+talaria-invites = { path = "../talaria-invites" }
+talaria-jobs = { path = "../talaria-jobs" }
+talaria-judge = { path = "../talaria-judge" }
+talaria-kb = { path = "../talaria-kb" }
+talaria-kb-perms = { path = "../talaria-kb-perms" }
+talaria-labels = { path = "../talaria-labels" }
+talaria-llm-keys = { path = "../talaria-llm-keys" }
+talaria-mcp = { path = "../talaria-mcp" }
+talaria-mcp-apply = { path = "../talaria-mcp-apply" }
+talaria-mcp-icons = { path = "../talaria-mcp-icons" }
+talaria-mcp-jsonrpc = { path = "../talaria-mcp-jsonrpc" }
+talaria-mcp-library = { path = "../talaria-mcp-library" }
+talaria-mcp-oauth = { path = "../talaria-mcp-oauth" }
+talaria-mcp-probe = { path = "../talaria-mcp-probe" }
+talaria-mcp-service = { path = "../talaria-mcp-service" }
+talaria-me = { path = "../talaria-me" }
+talaria-mentions = { path = "../talaria-mentions" }
+talaria-model-access = { path = "../talaria-model-access" }
+talaria-model-catalog = { path = "../talaria-model-catalog" }
+talaria-model-efforts = { path = "../talaria-model-efforts" }
+talaria-model-info = { path = "../talaria-model-info" }
+talaria-model-roles = { path = "../talaria-model-roles" }
+talaria-native-search = { path = "../talaria-native-search" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-org = { path = "../talaria-org" }
+talaria-org-domains = { path = "../talaria-org-domains" }
+talaria-outreach = { path = "../talaria-outreach" }
+talaria-params = { path = "../talaria-params" }
+talaria-password = { path = "../talaria-password" }
+talaria-password-accounts = { path = "../talaria-password-accounts" }
+talaria-permissions = { path = "../talaria-permissions" }
+talaria-persona = { path = "../talaria-persona" }
+talaria-personal-agent = { path = "../talaria-personal-agent" }
+talaria-plan-doc = { path = "../talaria-plan-doc" }
+talaria-plan-drafts = { path = "../talaria-plan-drafts" }
+talaria-platform-agents = { path = "../talaria-platform-agents" }
+talaria-price-oracle = { path = "../talaria-price-oracle" }
+talaria-push = { path = "../talaria-push" }
+talaria-ratelimit = { path = "../talaria-ratelimit" }
+talaria-realtime = { path = "../talaria-realtime" }
+talaria-realtime-watch = { path = "../talaria-realtime-watch" }
+talaria-refs = { path = "../talaria-refs" }
+talaria-repo-env = { path = "../talaria-repo-env" }
+talaria-research = { path = "../talaria-research" }
+talaria-research-def = { path = "../talaria-research-def" }
+talaria-research-origin = { path = "../talaria-research-origin" }
+talaria-retrieval = { path = "../talaria-retrieval" }
+talaria-retrieval-collections = { path = "../talaria-retrieval-collections" }
+talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
+talaria-retrieval-http = { path = "../talaria-retrieval-http" }
+talaria-retrieval-index = { path = "../talaria-retrieval-index" }
+talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
+talaria-retrieval-rerank = { path = "../talaria-retrieval-rerank" }
+talaria-retrieval-sources = { path = "../talaria-retrieval-sources" }
+talaria-retrieval-sparse = { path = "../talaria-retrieval-sparse" }
+talaria-runs-agent-hire = { path = "../talaria-runs-agent-hire" }
+talaria-runs-decide = { path = "../talaria-runs-decide" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-runs-drivers = { path = "../talaria-runs-drivers" }
+talaria-runs-lease = { path = "../talaria-runs-lease" }
+talaria-runs-plan-draft = { path = "../talaria-runs-plan-draft" }
+talaria-runs-reclaim = { path = "../talaria-runs-reclaim" }
+talaria-runs-reindex = { path = "../talaria-runs-reindex" }
+talaria-runs-run = { path = "../talaria-runs-run" }
+talaria-runs-store = { path = "../talaria-runs-store" }
+talaria-runs-work-session = { path = "../talaria-runs-work-session" }
+talaria-safe-fetch = { path = "../talaria-safe-fetch" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+talaria-search = { path = "../talaria-search" }
+talaria-secret-health = { path = "../talaria-secret-health" }
+talaria-secret-rotation = { path = "../talaria-secret-rotation" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-session = { path = "../talaria-session" }
+talaria-settings = { path = "../talaria-settings" }
+talaria-skill-access = { path = "../talaria-skill-access" }
+talaria-source-registry = { path = "../talaria-source-registry" }
+talaria-state = { path = "../talaria-state" }
+talaria-statuses = { path = "../talaria-statuses" }
+talaria-storage = { path = "../talaria-storage" }
+talaria-task-const = { path = "../talaria-task-const" }
+talaria-tasks = { path = "../talaria-tasks" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }
+talaria-teams = { path = "../talaria-teams" }
+talaria-templates = { path = "../talaria-templates" }
+talaria-ticket-chat = { path = "../talaria-ticket-chat" }
+talaria-titler = { path = "../talaria-titler" }
+talaria-tz = { path = "../talaria-tz" }
+talaria-undici = { path = "../talaria-undici" }
+talaria-update-adopt = { path = "../talaria-update-adopt" }
+talaria-update-docker = { path = "../talaria-update-docker" }
+talaria-update-job = { path = "../talaria-update-job" }
+talaria-update-layout = { path = "../talaria-update-layout" }
+talaria-update-mode = { path = "../talaria-update-mode" }
+talaria-update-registry = { path = "../talaria-update-registry" }
+talaria-update-render = { path = "../talaria-update-render" }
+talaria-update-roll = { path = "../talaria-update-roll" }
+talaria-update-state = { path = "../talaria-update-state" }
+talaria-uploads = { path = "../talaria-uploads" }
+talaria-users = { path = "../talaria-users" }
+talaria-vision = { path = "../talaria-vision" }
+talaria-web-search = { path = "../talaria-web-search" }
+talaria-work-dispatch = { path = "../talaria-work-dispatch" }
+talaria-work-wait = { path = "../talaria-work-wait" }
+talaria-workbench = { path = "../talaria-workbench" }
+talaria-workbench-harnesses = { path = "../talaria-workbench-harnesses" }
+talaria-workbench-mcp = { path = "../talaria-workbench-mcp" }
+talaria-workchains = { path = "../talaria-workchains" }
+talaria-workflows = { path = "../talaria-workflows" }
+talaria-workspace-handles = { path = "../talaria-workspace-handles" }
+talaria-workspace-secrets = { path = "../talaria-workspace-secrets" }
+talaria-yaml = { path = "../talaria-yaml" }
+talaria-yaml11 = { path = "../talaria-yaml11" }
+axum = { version = "0.8", features = ["multipart"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "catch-panic", "request-id", "propagate-header"] }
+tower = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+url = "2"
+base64 = "0.23"
+sha2 = "0.11"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+getrandom = "0.3"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }

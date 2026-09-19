@@ -25,7 +25,7 @@
 
 ## `/api/secrets`
 
-Source: [`api/src/routes/secrets/secrets.rs`](../../api/src/routes/secrets/secrets.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets.rs)
 
 > /api/secrets.
 >
@@ -70,7 +70,7 @@ Source: [`api/src/routes/secrets/secrets.rs`](../../api/src/routes/secrets/secre
 
 ## `/api/secrets/folders`
 
-Source: [`api/src/routes/secrets/secrets_folders.rs`](../../api/src/routes/secrets/secrets_folders.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets_folders.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets_folders.rs)
 
 > /api/secrets/folders.
 >
@@ -91,7 +91,7 @@ source.
 
 ## `/api/secrets/git-credential`
 
-Source: [`api/src/routes/secrets/secrets_git_credential.rs`](../../api/src/routes/secrets/secrets_git_credential.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets_git_credential.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets_git_credential.rs)
 
 > /api/secrets/git-credential.
 >
@@ -113,7 +113,7 @@ Source: [`api/src/routes/secrets/secrets_git_credential.rs`](../../api/src/route
 
 ## `/api/secrets/git-push-check`
 
-Source: [`api/src/routes/secrets/secrets_git_push_check.rs`](../../api/src/routes/secrets/secrets_git_push_check.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets_git_push_check.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets_git_push_check.rs)
 
 > /api/secrets/git-push-check.
 >
@@ -134,7 +134,7 @@ Source: [`api/src/routes/secrets/secrets_git_push_check.rs`](../../api/src/route
 
 ## `/api/secrets/relay`
 
-Source: [`api/src/routes/secrets/secrets_relay.rs`](../../api/src/routes/secrets/secrets_relay.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets_relay.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets_relay.rs)
 
 > /api/secrets/relay.
 >
@@ -158,7 +158,7 @@ Source: [`api/src/routes/secrets/secrets_relay.rs`](../../api/src/routes/secrets
 
 ## `/api/secrets/reveal`
 
-Source: [`api/src/routes/secrets/secrets_reveal.rs`](../../api/src/routes/secrets/secrets_reveal.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets_reveal.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets_reveal.rs)
 
 > /api/secrets/reveal.
 >
@@ -179,7 +179,7 @@ Source: [`api/src/routes/secrets/secrets_reveal.rs`](../../api/src/routes/secret
 
 ## `/api/secrets/share`
 
-Source: [`api/src/routes/secrets/secrets_share.rs`](../../api/src/routes/secrets/secrets_share.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/secrets/secrets_share.rs`](../../api/crates/talaria-api-routes/src/routes/secrets/secrets_share.rs)
 
 > /api/secrets/share.
 >

@@ -47,7 +47,7 @@
 
 ## `/api/kb/comments/{id}`
 
-Source: [`api/src/routes/knowledge/kb_comments_id.rs`](../../api/src/routes/knowledge/kb_comments_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_comments_id.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_comments_id.rs)
 
 > /api/kb/comments/{id}. One comment. PATCH { resolved } → resolve/unresolve
 > its thread (author, thread starter, or doc owner). DELETE → remove your own
@@ -66,7 +66,7 @@ Source: [`api/src/routes/knowledge/kb_comments_id.rs`](../../api/src/routes/know
 
 ## `/api/kb/docs/{id}`
 
-Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledge/kb_docs_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id.rs)
 
 > /api/kb/docs/{id}. One KB doc. Read/edit gated by the doc's EFFECTIVE
 > audience — inherited from its folder unless customized. Sharing changes are
@@ -97,7 +97,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id.rs`](../../api/src/routes/knowledg
 
 ## `/api/kb/docs/{id}/backlinks`
 
-Source: [`api/src/routes/knowledge/kb_docs_id_backlinks.rs`](../../api/src/routes/knowledge/kb_docs_id_backlinks.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_backlinks.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_backlinks.rs)
 
 > /api/kb/docs/{id}/backlinks. Docs that link to this one ("linked from").
 > Editor links point at /knowledge/<id>, so backlinks fall out of a substring
@@ -110,7 +110,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id_backlinks.rs`](../../api/src/route
 
 ## `/api/kb/docs/{id}/comments`
 
-Source: [`api/src/routes/knowledge/kb_docs_id_comments.rs`](../../api/src/routes/knowledge/kb_docs_id_comments.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_comments.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_comments.rs)
 
 > /api/kb/docs/{id}/comments. Doc comment threads. GET → all comments (client
 > assembles threads). POST { content, parentId?, quote? } → comment/reply.
@@ -133,7 +133,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id_comments.rs`](../../api/src/routes
 
 ## `/api/kb/docs/{id}/live`
 
-Source: [`api/src/routes/knowledge/kb_docs_id_live.rs`](../../api/src/routes/knowledge/kb_docs_id_live.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_live.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_live.rs)
 
 > /api/kb/docs/{id}/live. Doc presence (the multiplayer layer's heartbeat).
 > PUT { mode } → I'm here, viewing or editing. GET → who's here right now,
@@ -154,7 +154,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id_live.rs`](../../api/src/routes/kno
 
 ## `/api/kb/docs/{id}/move`
 
-Source: [`api/src/routes/knowledge/kb_docs_id_move.rs`](../../api/src/routes/knowledge/kb_docs_id_move.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_move.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_docs_id_move.rs)
 
 > /api/kb/docs/{id}/move. Reparent / reorder a doc in the sidebar tree.
 > Rejects cycles server-side. Moving a doc is an edit of it, so it takes the
@@ -175,7 +175,7 @@ Source: [`api/src/routes/knowledge/kb_docs_id_move.rs`](../../api/src/routes/kno
 
 ## `/api/kb/public/{slug}`
 
-Source: [`api/src/routes/knowledge/kb_public.rs`](../../api/src/routes/knowledge/kb_public.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_public.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_public.rs)
 
 > /api/kb/public/{slug}. Public doc read — no auth. Only docs with visibility
 > 'public' resolve; the response body is title/body/updatedAt only (routing
@@ -187,7 +187,7 @@ Source: [`api/src/routes/knowledge/kb_public.rs`](../../api/src/routes/knowledge
 
 ## `/api/kb/public/space/{slug}`
 
-Source: [`api/src/routes/knowledge/kb_public_space.rs`](../../api/src/routes/knowledge/kb_public_space.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_public_space.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_public_space.rs)
 
 > /api/kb/public/space/{slug}. Public folder read — no auth. Only spaces with
 > visibility 'public' resolve; returns the folder's name + overview (its
@@ -199,7 +199,7 @@ Source: [`api/src/routes/knowledge/kb_public_space.rs`](../../api/src/routes/kno
 
 ## `/api/kb/search`
 
-Source: [`api/src/routes/knowledge/kb_search.rs`](../../api/src/routes/knowledge/kb_search.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_search.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_search.rs)
 
 > /api/kb/search. Full-text search across the knowledgebase (docs the caller
 > can read). The engine (ranked union of docs + space overviews,
@@ -212,7 +212,7 @@ Source: [`api/src/routes/knowledge/kb_search.rs`](../../api/src/routes/knowledge
 
 ## `/api/kb/spaces`
 
-Source: [`api/src/routes/knowledge/kb_spaces.rs`](../../api/src/routes/knowledge/kb_spaces.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_spaces.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_spaces.rs)
 
 > /api/kb/spaces. KB spaces (any member). GET → all the caller can read
 > (agents over MCP see org/public + granted + — for a personal assistant —
@@ -234,7 +234,7 @@ Source: [`api/src/routes/knowledge/kb_spaces.rs`](../../api/src/routes/knowledge
 
 ## `/api/kb/spaces/{id}`
 
-Source: [`api/src/routes/knowledge/kb_spaces_id.rs`](../../api/src/routes/knowledge/kb_spaces_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_spaces_id.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_spaces_id.rs)
 
 > /api/kb/spaces/{id}. One KB folder. Same permission model as docs: read
 > gated by visibility, writes by the edit policy + editor grants, sharing
@@ -259,7 +259,7 @@ Source: [`api/src/routes/knowledge/kb_spaces_id.rs`](../../api/src/routes/knowle
 
 ## `/api/kb/spaces/{id}/docs`
 
-Source: [`api/src/routes/knowledge/kb_spaces_id_docs.rs`](../../api/src/routes/knowledge/kb_spaces_id_docs.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/kb_spaces_id_docs.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/kb_spaces_id_docs.rs)
 
 > /api/kb/spaces/{id}/docs. A space's doc tree. GET → doc metadata list
 > (agents gate on agent space-access — org/public, a grant, or a personal
@@ -283,7 +283,7 @@ Source: [`api/src/routes/knowledge/kb_spaces_id_docs.rs`](../../api/src/routes/k
 
 ## `/api/memory/{id}`
 
-Source: [`api/src/routes/knowledge/memory_id.rs`](../../api/src/routes/knowledge/memory_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/memory_id.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/memory_id.rs)
 
 > /api/memory/{id}. One managed agent's MEMORY.md, read/written through its
 > running container. Writes: admin, or the owner of a personal assistant for
@@ -302,7 +302,7 @@ Source: [`api/src/routes/knowledge/memory_id.rs`](../../api/src/routes/knowledge
 
 ## `/api/rag/collections`
 
-Source: [`api/src/routes/knowledge/rag_collections.rs`](../../api/src/routes/knowledge/rag_collections.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/rag_collections.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/rag_collections.rs)
 
 > /api/rag/collections. The RAG collection registry. GET → every collection +
 > its access bindings (the two auto ones ensured first; members get the
@@ -324,7 +324,7 @@ Source: [`api/src/routes/knowledge/rag_collections.rs`](../../api/src/routes/kno
 
 ## `/api/rag/collections/{id}`
 
-Source: [`api/src/routes/knowledge/rag_collections_id.rs`](../../api/src/routes/knowledge/rag_collections_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/rag_collections_id.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/rag_collections_id.rs)
 
 > /api/rag/collections/{id}. One collection, admin. PUT → replace its access
 > bindings wholesale; an unknown (but well-formed) id 404s. DELETE → drop it
@@ -344,7 +344,7 @@ source.
 
 ## `/api/rag/search`
 
-Source: [`api/src/routes/knowledge/rag_search.rs`](../../api/src/routes/knowledge/rag_search.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/rag_search.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/rag_search.rs)
 
 > /api/rag/search. Ranked retrieval across the caller's accessible
 > collections, for EITHER caller shape: a signed-in user (their bindings) or
@@ -366,7 +366,7 @@ Source: [`api/src/routes/knowledge/rag_search.rs`](../../api/src/routes/knowledg
 
 ## `/api/search`
 
-Source: [`api/src/routes/knowledge/search.rs`](../../api/src/routes/knowledge/search.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/search.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/search.rs)
 
 > /api/search.
 >
@@ -386,7 +386,7 @@ Source: [`api/src/routes/knowledge/search.rs`](../../api/src/routes/knowledge/se
 
 ## `/api/templates`
 
-Source: [`api/src/routes/knowledge/templates.rs`](../../api/src/routes/knowledge/templates.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/templates.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/templates.rs)
 
 > /api/templates. The org's template library (ticket + plan formats). GET →
 > all (any member — the library grounds pickers everywhere). POST → create
@@ -408,7 +408,7 @@ Source: [`api/src/routes/knowledge/templates.rs`](../../api/src/routes/knowledge
 
 ## `/api/templates/{id}`
 
-Source: [`api/src/routes/knowledge/templates_id.rs`](../../api/src/routes/knowledge/templates_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/knowledge/templates_id.rs`](../../api/crates/talaria-api-routes/src/routes/knowledge/templates_id.rs)
 
 > /api/templates/{id}. One template: PUT → edit (kind is immutable — retire
 > and recreate instead), DELETE → remove (bindings cascade/null out;

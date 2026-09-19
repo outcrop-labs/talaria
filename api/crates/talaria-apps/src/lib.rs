@@ -1,0 +1,404 @@
+// Talaria apps — the ADMIN half of the registry (the read
+// plane lives in users.rs): enablement, runtime install from git, the
+// marketplace catalog, and the app-data wipe. Apps are self-contained
+// TypeScript codebases under apps/<slug>/ that this instance compiles and
+// runs without a host rebuild; their surfaces and MCP dispatch stay TS
+// (rule 10) — this module owns the registry state around them.
+//
+//   enablement   admin-controlled set in app_settings; disabled apps have no
+//                nav presence and their server routes 404
+//   install      marketplace/git: shallow-clone a repo into apps/<slug> —
+//                the UI process compiles it and spawns its Postgres
+//   catalog      the marketplace feed — JSON, source URL configurable,
+//                always through the SSRF guard
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use serde_json::Value;
+use sqlx::PgPool;
+
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_secretbox::SecretBox;
+use talaria_users::{
+    app_build_status, app_builds_dir, app_data_dir, apps_dir, discovered_apps, enable_block_reason,
+    slug_ok,
+};
+
+const ENABLED_KEY: &str = "apps_enabled";
+const INSTALLED_KEY: &str = "apps_installed";
+const CATALOG_URL_KEY: &str = "apps_catalog_url";
+const DEFAULT_CATALOG: &str =
+    "https://raw.githubusercontent.com/outcrop-labs/talaria-apps/main/index.json";
+
+/// The enabled set, sorted —
+/// the setting is always stored sorted.
+pub async fn enabled_app_slugs(pg: &PgPool) -> Vec<String> {
+    get_setting(pg, ENABLED_KEY, Value::Array(vec![]))
+        .await
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reconcile registry rows with the ENABLED apps that publish MCP tools:
+/// upsert one row per app, drop rows
+/// whose app went away — rolling the agents that carried them.
+///
+/// The cached `tools` column is untouched here: the live authority for an
+/// app server's tool list is the TS dispatcher (app runtime — rule 10),
+/// which serves tools/list from the module on every call — so an update
+/// keeps the row's cache and an insert seeds `[]`.
+pub async fn sync_app_mcp_servers(pg: &PgPool, sb: &SecretBox) {
+    let want: Vec<_> = talaria_users::enabled_apps(pg)
+        .await
+        .into_iter()
+        .filter(|a| a.mcp)
+        .map(|a| (a.slug, a.name, a.description))
+        .collect();
+    let have: Vec<(String, String)> = sqlx::query_as(
+        "select id::text, app_slug::text from mcp_servers where app_slug is not null",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for (id, app_slug) in have {
+        if !want.iter().any(|(slug, _, _)| *slug == app_slug) {
+            talaria_mcp_apply::roll_agents_for_server(pg, sb, &id).await;
+            let _ = sqlx::query("delete from mcp_servers where id::text = $1")
+                .bind(&id)
+                .execute(pg)
+                .await;
+        }
+    }
+    for (slug, name, description) in want {
+        let _ = sqlx::query(
+            "insert into mcp_servers \
+                (name, label, description, url, all_agents, app_slug, tools, tools_refreshed_at, created_by) \
+             values ($1, $2, $3, $4, false, $5, '[]'::jsonb, now(), 'talaria') \
+             on conflict (name) do update set \
+                label = excluded.label, description = excluded.description, \
+                app_slug = excluded.app_slug, tools_refreshed_at = now(), \
+                enabled = true, updated_at = now()",
+        )
+        .bind(format!("app-{slug}"))
+        .bind(&name)
+        .bind(if description.is_empty() { None } else { Some(description) })
+        .bind(format!("talaria-app://{slug}"))
+        .bind(&slug)
+        .execute(pg)
+        .await;
+    }
+}
+
+/// Flip one app's enablement. Enabling an app that is not on disk
+/// is an error — the set must name real code.
+pub async fn set_app_enabled(
+    pg: &PgPool,
+    sb: &SecretBox,
+    slug: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut cur: BTreeSet<String> = enabled_app_slugs(pg).await.into_iter().collect();
+    if enabled {
+        if !discovered_apps().iter().any(|a| a.slug == slug) {
+            return Err(format!("no app \"{slug}\" installed"));
+        }
+        if let Some(msg) = enable_block_reason(&app_build_status(slug)) {
+            return Err(msg);
+        }
+        cur.insert(slug.to_string());
+    } else {
+        cur.remove(slug);
+    }
+    let sorted = Value::Array(cur.into_iter().map(Value::String).collect());
+    set_setting(pg, ENABLED_KEY, &sorted)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Apps that publish MCP tools follow their enablement into the registry
+    // (rows appear/disappear; carriers get rolled on removal).
+    sync_app_mcp_servers(pg, sb).await;
+    Ok(())
+}
+
+/// Drop enabled apps whose last compile/load failed. Called at api boot
+/// (and by the UI reconciler via `apps_enabled`); GET /admin/apps does not.
+pub async fn disable_broken_apps(pg: &PgPool, sb: &SecretBox) {
+    for slug in enabled_app_slugs(pg).await {
+        if app_build_status(&slug).status == "failed" {
+            let _ = set_app_enabled(pg, sb, &slug, false).await;
+        }
+    }
+}
+
+fn app_db_container(slug: &str) -> String {
+    let instance = std::env::var("TALARIA_WORKTREE")
+        .or_else(|_| std::env::var("TALARIA_DEVBOX"))
+        .unwrap_or_else(|_| "talaria".into());
+    format!("talaria-appdb-{instance}-{slug}")
+}
+
+async fn stop_app_db(slug: &str) {
+    let file = app_data_dir().join(slug).join("docker-compose.yml");
+    let project = app_db_container(slug);
+    if file.exists() {
+        let file_s = file.to_string_lossy().into_owned();
+        let _ = tokio::process::Command::new("docker")
+            .args([
+                "compose",
+                "-p",
+                &project,
+                "-f",
+                &file_s,
+                "down",
+                "--remove-orphans",
+            ])
+            .output()
+            .await;
+    }
+    let _ = tokio::process::Command::new("docker")
+        .args(["rm", "-f", &project])
+        .output()
+        .await;
+}
+
+async fn forget_app_db_password(pg: &PgPool, slug: &str) {
+    let mut stored = get_setting(pg, "app_db_passwords", Value::Object(Default::default())).await;
+    if let Some(obj) = stored.as_object_mut()
+        && obj.remove(slug).is_some()
+    {
+        let _ = set_setting(pg, "app_db_passwords", &stored).await;
+    }
+}
+
+/// Install an app by shallow-cloning its git repo into apps/<slug>.
+/// This instance compiles it and spawns its Postgres — no host rebuild.
+pub async fn install_app_from_git(
+    pg: &PgPool,
+    url: &str,
+    slug_override: Option<&str>,
+) -> Result<String, String> {
+    let u = url.trim();
+    let https_ok = u
+        .strip_prefix("https://")
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(char::is_whitespace));
+    if !https_ok {
+        return Err("install URL must be https://".into());
+    }
+    let base = u.rsplit('/').next().unwrap_or("");
+    let derived = slug_override
+        .unwrap_or(base)
+        .trim_end_matches(".git")
+        .to_lowercase();
+    let derived = derived.strip_prefix("talaria-app-").unwrap_or(&derived);
+    if !slug_ok(derived) {
+        return Err(format!(
+            "\"{derived}\" is not a usable app slug (lowercase letters, digits, dashes)"
+        ));
+    }
+    let target = apps_dir().join(derived);
+    if !target.starts_with(apps_dir()) {
+        return Err("bad target path".into());
+    }
+    if target.exists() {
+        return Err(format!("apps/{derived} already exists"));
+    }
+    let clone = tokio::time::timeout(Duration::from_secs(60), async {
+        tokio::process::Command::new("git")
+            .args(["clone", "--depth", "1", u, &target.to_string_lossy()])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+    })
+    .await
+    .map_err(|_| "git clone …: timed out after 60s".to_string())?
+    .map_err(|e| format!("git clone …: {e}"))?;
+    if !clone.status.success() {
+        let stderr = String::from_utf8_lossy(&clone.stderr);
+        return Err(format!("git clone failed: {}", stderr.trim()));
+    }
+    let manifest_ok = tokio::fs::metadata(target.join("talaria.json"))
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false);
+    if !manifest_ok {
+        let _ = tokio::fs::remove_dir_all(&target).await;
+        return Err("that repository is not a Talaria app (no talaria.json at its root)".into());
+    }
+    let mut installed = installed_sources(pg).await;
+    let Some(obj) = installed.as_object_mut() else {
+        return Err("apps_installed setting is corrupt".into());
+    };
+    obj.insert(
+        derived.to_string(),
+        serde_json::json!({
+            "source": u,
+            "installedAt": talaria_agent_auth::epoch_ms_to_iso(now_ms()),
+        }),
+    );
+    set_setting(pg, INSTALLED_KEY, &installed)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(derived.to_string())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Remove an app's codebase, its Postgres container, build artifacts, and
+/// enablement + install record. Data wipe is the caller's confirm.
+pub async fn uninstall_app(pg: &PgPool, sb: &SecretBox, slug: &str) -> Result<(), String> {
+    if !slug_ok(slug) {
+        return Err("bad slug".into());
+    }
+    set_app_enabled(pg, sb, slug, false).await?;
+    let target: PathBuf = apps_dir().join(slug);
+    if !target.starts_with(apps_dir()) {
+        return Err("bad target path".into());
+    }
+    stop_app_db(slug).await;
+    forget_app_db_password(pg, slug).await;
+    let _ = tokio::fs::remove_dir_all(&target).await;
+    let _ = tokio::fs::remove_dir_all(app_builds_dir().join(slug)).await;
+    let _ = tokio::fs::remove_dir_all(app_data_dir().join(slug)).await;
+    let mut installed = installed_sources(pg).await;
+    if let Some(obj) = installed.as_object_mut() {
+        obj.remove(slug);
+    }
+    set_setting(pg, INSTALLED_KEY, &installed)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Where each installed app came from: slug →
+/// { source, installedAt }.
+pub async fn installed_sources(pg: &PgPool) -> Value {
+    get_setting(pg, INSTALLED_KEY, serde_json::json!({})).await
+}
+
+/// Wipe every document in one app's store — TRUNCATE in its own Postgres.
+pub async fn wipe_app_data(_pg: &PgPool, slug: &str) -> Result<u64, sqlx::Error> {
+    let _ = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            &app_db_container(slug),
+            "psql",
+            "-U",
+            "talaria",
+            "-d",
+            "talaria",
+            "-c",
+            "truncate docs",
+        ])
+        .output()
+        .await;
+    Ok(0)
+}
+
+// ── Marketplace catalog ──────────────────────────────────────────────────────
+
+pub async fn catalog_url(pg: &PgPool) -> String {
+    let stored = get_setting(pg, CATALOG_URL_KEY, Value::String(DEFAULT_CATALOG.into())).await;
+    match stored.as_str() {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => DEFAULT_CATALOG.to_string(),
+    }
+}
+
+/// Empty (or blank) resets to the default.
+pub async fn set_catalog_url(pg: &PgPool, url: Option<&str>) -> Result<(), String> {
+    let v = match url.map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => Value::String(u.to_string()),
+        None => Value::String(DEFAULT_CATALOG.to_string()),
+    };
+    set_setting(pg, CATALOG_URL_KEY, &v)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The marketplace feed. Unreachable/invalid → empty list
+/// with the error, so the Discover tab can say why it's blank instead of
+/// pretending it's empty.
+pub async fn fetch_catalog(pg: &PgPool) -> (Vec<Value>, Option<String>) {
+    let url = catalog_url(pg).await;
+    let fetch = talaria_safe_fetch::safe_fetch(
+        &url,
+        talaria_safe_fetch::SafeFetch {
+            headers: vec![("accept", "application/json")],
+            timeout_ms: Some(10_000),
+            max_bytes: Some(2 * 1024 * 1024),
+            ..Default::default()
+        },
+    )
+    .await;
+    let resp = match fetch {
+        Ok(r) => r,
+        Err(e) => return (Vec::new(), Some(e.to_string())),
+    };
+    if !(200..300).contains(&resp.status) {
+        return (
+            Vec::new(),
+            Some(format!("catalog fetch failed ({})", resp.status)),
+        );
+    }
+    let Ok(j) = serde_json::from_slice::<Value>(&resp.body) else {
+        return (Vec::new(), Some("expected a JSON catalog".to_string()));
+    };
+    let mut out = Vec::new();
+    for a in j
+        .get("apps")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        let field = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
+        // Admission: real slug, a name, an https repo. Everything else
+        // coerces to defaults.
+        let Some(slug) = field("slug").filter(|s| slug_ok(s)) else {
+            continue;
+        };
+        let (Some(name), Some(repo)) = (field("name"), field("repo")) else {
+            continue;
+        };
+        if !repo.starts_with("https://") {
+            continue;
+        }
+        let mut obj = serde_json::Map::new();
+        obj.insert("slug".into(), slug.into());
+        obj.insert("name".into(), name.into());
+        obj.insert(
+            "icon".into(),
+            field("icon").unwrap_or_else(|| "⬡".into()).into(),
+        );
+        obj.insert(
+            "description".into(),
+            field("description").unwrap_or_default().into(),
+        );
+        obj.insert("repo".into(), repo.into());
+        obj.insert(
+            "author".into(),
+            field("author").unwrap_or_else(|| "community".into()).into(),
+        );
+        obj.insert(
+            "official".into(),
+            Value::Bool(a.get("official").and_then(Value::as_bool) == Some(true)),
+        );
+        // version is OMITTED unless present and non-empty.
+        if let Some(v) = field("version").filter(|v| !v.is_empty()) {
+            obj.insert("version".into(), v.into());
+        }
+        out.push(Value::Object(obj));
+    }
+    (out, None)
+}

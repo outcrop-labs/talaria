@@ -25,7 +25,7 @@
 
 ## `/api/research`
 
-Source: [`api/src/routes/research/research.rs`](../../api/src/routes/research/research.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/research/research.rs`](../../api/crates/talaria-api-routes/src/routes/research/research.rs)
 
 > /api/research.
 > GET → recent runs scoped to the viewer + the mode catalog. POST { question,
@@ -48,7 +48,7 @@ Source: [`api/src/routes/research/research.rs`](../../api/src/routes/research/re
 
 ## `/api/research/{id}`
 
-Source: [`api/src/routes/research/research_id.rs`](../../api/src/routes/research/research_id.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/research/research_id.rs`](../../api/crates/talaria-api-routes/src/routes/research/research_id.rs)
 
 > /api/research/{id}.
 > GET → one run + its citation registry (owner / shared member / org runs).
@@ -62,7 +62,7 @@ Source: [`api/src/routes/research/research_id.rs`](../../api/src/routes/research
 
 ## `/api/research/{id}/conversation`
 
-Source: [`api/src/routes/research/research_id_conversation.rs`](../../api/src/routes/research/research_id_conversation.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/research/research_id_conversation.rs`](../../api/crates/talaria-api-routes/src/routes/research/research_id_conversation.rs)
 
 > /api/research/{id}/conversation.
 >
@@ -76,7 +76,7 @@ Source: [`api/src/routes/research/research_id_conversation.rs`](../../api/src/ro
 
 ## `/api/research/{id}/decide`
 
-Source: [`api/src/routes/research/research_id_decide.rs`](../../api/src/routes/research/research_id_decide.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/research/research_id_decide.rs`](../../api/crates/talaria-api-routes/src/routes/research/research_id_decide.rs)
 
 > /api/research/{id}/decide.
 >
@@ -97,7 +97,7 @@ Source: [`api/src/routes/research/research_id_decide.rs`](../../api/src/routes/r
 
 ## `/api/research/{id}/members`
 
-Source: [`api/src/routes/research/research_id_members.rs`](../../api/src/routes/research/research_id_members.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/research/research_id_members.rs`](../../api/crates/talaria-api-routes/src/routes/research/research_id_members.rs)
 
 > /api/research/{id}/members.
 > Multiplayer research, mirroring plan membership. GET → members (any member).
@@ -124,7 +124,7 @@ Source: [`api/src/routes/research/research_id_members.rs`](../../api/src/routes/
 
 ## `/api/research/{id}/teams`
 
-Source: [`api/src/routes/research/research_id_teams.rs`](../../api/src/routes/research/research_id_teams.rs)
+Source: [`api/crates/talaria-api-routes/src/routes/research/research_id_teams.rs`](../../api/crates/talaria-api-routes/src/routes/research/research_id_teams.rs)
 
 > /api/research/{id}/teams.
 > POST { teamId } → grant a team (run owner). DELETE { teamId } → revoke
