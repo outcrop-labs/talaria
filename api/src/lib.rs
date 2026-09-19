@@ -103,7 +103,7 @@ pub use talaria_state as state;
 pub use talaria_statuses as statuses;
 pub use talaria_storage as storage;
 pub use talaria_task_const as task_const;
-pub mod tasks;
+pub use talaria_tasks as tasks;
 pub use talaria_teams as teams;
 pub use talaria_templates as templates;
 pub use talaria_ticket_chat as ticket_chat;

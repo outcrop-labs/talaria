@@ -8,25 +8,24 @@
 // twin spelling were deleted at the cutover, and the MCP tools ask the api.
 // See `agent_ticket_refusal`.
 
-use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
-use crate::agent_writes::{WriteAuthor, guard_agent_fields};
-use crate::boards::{board_allows_agent, board_info, board_role};
-use crate::gateway::usage::task_usage;
-use crate::judge::list_judge_reviews;
-use crate::labels::ensure_labels;
-use crate::notify::{NotificationInput, NotifyDeps, add_notification};
-use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
-use crate::retrieval::sources::{
-    ActivityField, CommentSrc, comment_doc, index_activity, purge_activity_by_field,
-};
-use crate::retrieval::{embed, qdrant};
-use crate::runs::run::RunDeps;
-use crate::statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
-use crate::work_dispatch::{DispatchTicket, maybe_dispatch_ticket};
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
+use talaria_agent_writes::{WriteAuthor, guard_agent_fields};
+use talaria_boards::{board_allows_agent, board_info, board_role};
+use talaria_gateway::usage::task_usage;
+use talaria_judge::list_judge_reviews;
+use talaria_labels::ensure_labels;
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_realtime::{BoardEvent, RealtimeDeps, publish_board};
+use talaria_retrieval::sources::{
+    ActivityField, CommentSrc, comment_doc, index_activity, purge_activity_by_field,
+};
+use talaria_retrieval::{embed, qdrant};
+use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
+use talaria_tasks_types::DispatchTicket;
 
 pub use talaria_tasks_types::{
     Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
@@ -209,10 +208,10 @@ pub struct TaskFull {
     pub activity: Vec<TaskActivity>,
     pub watchers: Vec<String>,
     pub reviews: Vec<QualityReview>,
-    pub judge_reviews: Vec<crate::judge::JudgeReview>,
+    pub judge_reviews: Vec<talaria_judge::JudgeReview>,
     pub blocked_by: Vec<TaskLink>,
     pub blocks: Vec<TaskLink>,
-    pub usage: crate::gateway::usage::TaskUsage,
+    pub usage: talaria_gateway::usage::TaskUsage,
 }
 
 pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sqlx::Error> {
@@ -1112,7 +1111,7 @@ pub async fn update_task(
             let task_id = id.to_string();
             let status = next_status.clone();
             tokio::spawn(async move {
-                if let Err(e) = crate::workchains::advance_workchains(
+                if let Err(e) = talaria_workchains::advance_workchains(
                     &deps.pg,
                     &deps.notify,
                     &board_id,
@@ -1328,7 +1327,13 @@ fn spawn_dispatch(deps: &TaskDeps, task: Task, only_agents: Option<Vec<String>>)
     let pg = deps.pg.clone();
     tokio::spawn(async move {
         let only = only_agents.as_deref();
-        maybe_dispatch_ticket(&pg, &dispatch, &dispatch_ticket_of(&task), only).await;
+        talaria_tasks_types::maybe_dispatch_ticket(
+            &pg,
+            &Some(dispatch),
+            &dispatch_ticket_of(&task),
+            only,
+        )
+        .await;
     });
 }
 
@@ -1341,9 +1346,9 @@ fn spawn_dispatch_id(deps: &TaskDeps, id: String, only_agents: Option<Vec<String
         // The ticket is re-read inside the detached block: the push decides
         // on the row as it stands now, not the caller's stale copy.
         if let Ok(Some(fresh)) = get_task(&pg, &id).await {
-            maybe_dispatch_ticket(
+            talaria_tasks_types::maybe_dispatch_ticket(
                 &pg,
-                &dispatch,
+                &Some(dispatch),
                 &dispatch_ticket_of(&fresh),
                 only_agents.as_deref(),
             )
@@ -1478,7 +1483,7 @@ pub async fn ensure_task_channel(
     // The room's name and topic are the ticket's identity, for every place
     // a channel renders them (transcripts, notifications, the gateway
     // history) — the ref line is what a room about WEB-31 should say it is.
-    let ticket = crate::ticket_chat::ticket_head(pg, task_id).await;
+    let ticket = talaria_ticket_chat::ticket_head(pg, task_id).await;
     let name: String = head.title.chars().take(60).collect();
     let topic = ticket.as_ref().map(|t| t.line());
     sqlx::query(
@@ -1506,7 +1511,7 @@ pub async fn ensure_task_channel(
 pub async fn room_comment_fanout(
     pg: &PgPool,
     realtime: &RealtimeDeps,
-    meta: &crate::ticket_chat::TicketMeta,
+    meta: &talaria_ticket_chat::TicketMeta,
     message_id: &str,
     author: &str,
     content: &str,
@@ -1643,7 +1648,7 @@ pub async fn add_comment(
     } else {
         "agent"
     };
-    let message = crate::channels::insert_channel_message(
+    let message = talaria_channels::insert_channel_message(
         &deps.notify,
         &channel_id,
         author_type,
@@ -1656,7 +1661,7 @@ pub async fn add_comment(
     .await?;
     // The board's edges — the same ones the doors a human and an agent use
     // owe it.
-    if let Some(meta) = crate::ticket_chat::ticket_for_room(pg, &channel_id).await {
+    if let Some(meta) = talaria_ticket_chat::ticket_for_room(pg, &channel_id).await {
         room_comment_fanout(
             pg,
             &deps.realtime,
@@ -2049,13 +2054,13 @@ pub async fn complete_quality_review(
     // (inbox_focus approve moves the ticket into the board's first done
     // column via this very call). Firing only on terminal keeps the
     // trigger surface exactly the one the update_task hook documents.
-    if crate::workchains::terminal_of(&meta, next_status) != crate::workchains::Terminal::Live {
+    if talaria_workchains::terminal_of(&meta, next_status) != talaria_workchains::Terminal::Live {
         let deps = deps.clone();
         let board_id = current.board_id.clone();
         let task_id = task_id.to_string();
         let status = next_status.to_string();
         tokio::spawn(async move {
-            if let Err(e) = crate::workchains::advance_workchains(
+            if let Err(e) = talaria_workchains::advance_workchains(
                 &deps.pg,
                 &deps.notify,
                 &board_id,
@@ -2316,7 +2321,7 @@ pub struct AssignedWork {
     /// at all).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workchain_ready: Option<bool>,
-    pub workflows: Vec<crate::workflows::WorkflowDelivery>,
+    pub workflows: Vec<talaria_workflows::WorkflowDelivery>,
 }
 
 /// Work assigned to an agent (by name), across all boards, for the
@@ -2406,7 +2411,7 @@ pub async fn assigned_work(
     // heartbeat, asked here so the answer keys on the candidates the
     // column join already narrowed to.
     let candidates: Vec<String> = rows.iter().map(|r| r.0.clone()).collect();
-    let readiness = crate::workchains::chain_readiness(pg, &metas, &candidates).await?;
+    let readiness = talaria_workchains::chain_readiness(pg, &metas, &candidates).await?;
     let mut servable = Vec::new();
     for (id, title, description, tags, board_id, status, archived_ms) in rows {
         let target = AgentWriteTarget {
@@ -2424,7 +2429,7 @@ pub async fn assigned_work(
         // ready head rides with its flag; a chain-free ticket stays the
         // shape it always was.
         match readiness.get(&id) {
-            Some(crate::workchains::Readiness::Blocked) => continue,
+            Some(talaria_workchains::Readiness::Blocked) => continue,
             ready => servable.push((
                 id,
                 title,
@@ -2446,19 +2451,19 @@ pub async fn assigned_work(
     let flows = if servable.is_empty() {
         Vec::new()
     } else {
-        crate::workflows::list_workflows(pg).await?
+        talaria_workflows::list_workflows(pg).await?
     };
     Ok(servable
         .into_iter()
         .map(
             |(id, title, description, tags, board_id, workchain_ready)| {
-                let target = crate::workflows::MatchTarget {
+                let target = talaria_workflows::MatchTarget {
                     title: &title,
                     description: description.as_deref(),
                     tags: &tags,
                     board_id: &board_id,
                 };
-                let workflows = crate::workflows::workflows_from(&flows, &target);
+                let workflows = talaria_workflows::workflows_from(&flows, &target);
                 AssignedWork {
                     id,
                     title,

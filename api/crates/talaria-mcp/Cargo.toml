@@ -14,7 +14,7 @@ regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
 talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-fleet-docker = { path = "../talaria-fleet-docker" }
 talaria-fleet-layout = { path = "../talaria-fleet-layout" }

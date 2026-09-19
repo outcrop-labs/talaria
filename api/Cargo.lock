@@ -3842,6 +3842,7 @@ dependencies = [
  "talaria-statuses",
  "talaria-storage",
  "talaria-task-const",
+ "talaria-tasks",
  "talaria-tasks-types",
  "talaria-teams",
  "talaria-templates",
@@ -6495,6 +6496,39 @@ dependencies = [
 [[package]]
 name = "talaria-task-const"
 version = "0.1.0"
+
+[[package]]
+name = "talaria-tasks"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-boards",
+ "talaria-channels",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-judge",
+ "talaria-labels",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-retrieval",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "talaria-ticket-chat",
+ "talaria-workchains",
+ "talaria-workflows",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "talaria-tasks-types"

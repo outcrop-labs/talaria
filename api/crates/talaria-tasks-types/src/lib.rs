@@ -198,3 +198,44 @@ pub async fn update_task(
         None => Err(TaskError::Refusal("task update is not wired".into())),
     }
 }
+
+/// The task fields dispatch reads — exactly the five the push side depends
+/// on. The full row is the Task, which converts into this.
+#[derive(Debug, Clone)]
+pub struct DispatchTicket {
+    pub id: String,
+    pub board_id: String,
+    pub status: String,
+    pub assignees: Vec<String>,
+    pub archived_at: Option<String>,
+}
+
+pub static MAYBE_DISPATCH_TICKET: OnceLock<
+    Arc<
+        dyn Fn(
+                PgPool,
+                Option<RunDeps>,
+                DispatchTicket,
+                Option<Vec<String>>,
+            ) -> BoxFuture<'static, ()>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
+
+pub async fn maybe_dispatch_ticket(
+    pg: &PgPool,
+    dispatch: &Option<RunDeps>,
+    ticket: &DispatchTicket,
+    only_agents: Option<&[String]>,
+) {
+    if let Some(f) = MAYBE_DISPATCH_TICKET.get() {
+        f(
+            pg.clone(),
+            dispatch.clone(),
+            ticket.clone(),
+            only_agents.map(|s| s.to_vec()),
+        )
+        .await;
+    }
+}

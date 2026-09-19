@@ -35,6 +35,7 @@ use crate::runs::defs::work_session::{session_run_id, work_session_run};
 use crate::runs::run::{EnqueueOptions, RunDeps, enqueue};
 use crate::{realtime, statuses, tasks};
 use sqlx::PgPool;
+use talaria_tasks_types::DispatchTicket;
 
 const LOG: &str = "[work-dispatch]";
 
@@ -57,16 +58,6 @@ pub const MAX_SESSIONS_PER_TICKET_AGENT: u32 = 25;
 /// `unique_violation`. Same spelling as password_accounts' login collision.
 fn is_duplicate_key(e: &sqlx::Error) -> bool {
     e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505")
-}
-
-/// The task fields dispatch reads — exactly the five the push side depends
-/// on. The full row is tasks.rs's Task, which converts into this.
-pub struct DispatchTicket {
-    pub id: String,
-    pub board_id: String,
-    pub status: String,
-    pub assignees: Vec<String>,
-    pub archived_at: Option<String>,
 }
 
 /// The dispatch assembly: the FULL real one, `real_run_deps`. A run that

@@ -612,7 +612,7 @@ pub async fn seed_shared_skills() -> Result<(), String> {
 /// (Hermes' user-plugin root). The compose bind source must exist before
 /// any up — the #369 symlink lesson.
 async fn seed_events_plugin() -> Result<(), String> {
-    let dir = crate::fleet::layout::fleet_dir()
+    let dir = talaria_fleet_layout::fleet_dir()
         .join("plugins")
         .join("talaria-events");
     tokio::fs::create_dir_all(&dir)
