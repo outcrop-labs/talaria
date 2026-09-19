@@ -24,16 +24,16 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 
-use crate::boards::{agent_board_policy_sql, board_visibility_sql};
-use crate::body::{truncate_utf16, utf16_len, utf16_substr};
-use crate::retrieval::collections::{collections_for_principal, get_collection};
-use crate::retrieval::embed::{EmbedDeps, embed, embed_one};
-use crate::retrieval::qdrant::{
+use talaria_boards::{agent_board_policy_sql, board_visibility_sql};
+use talaria_body::{truncate_utf16, utf16_len, utf16_substr};
+use talaria_retrieval_collections::{collections_for_principal, get_collection};
+use talaria_retrieval_embed::{EmbedDeps, embed, embed_one};
+use talaria_retrieval_qdrant::{
     QdrantDeps, QdrantPoint, delete_points, hybrid_query, search as qdrant_search, upsert_points,
 };
-use crate::retrieval::rerank::{get_rerank_config, rerank};
-use crate::retrieval::sparse::sparse_encode;
-use crate::state::AppState;
+use talaria_retrieval_rerank::{get_rerank_config, rerank};
+use talaria_retrieval_sparse::sparse_encode;
+use talaria_state::AppState;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IndexDoc {
@@ -391,7 +391,7 @@ pub struct RetrievalHit {
     pub href: Option<String>,
 }
 
-fn hit_of(collection: &str, h: &crate::retrieval::qdrant::SearchHit) -> RetrievalHit {
+fn hit_of(collection: &str, h: &talaria_retrieval_qdrant::SearchHit) -> RetrievalHit {
     let str_field = |key: &str| -> String {
         h.payload
             .get(key)
@@ -596,7 +596,7 @@ pub async fn search_for_principal(
     state: &AppState,
     qd: &QdrantDeps,
     ed: &EmbedDeps,
-    http: &crate::retrieval::HttpFetch,
+    http: &talaria_retrieval_http::HttpFetch,
     principal: Principal<'_>,
     query: &str,
     opts: SearchOpts<'_>,

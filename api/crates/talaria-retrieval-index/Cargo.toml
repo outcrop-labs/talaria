@@ -1,0 +1,28 @@
+[package]
+name = "talaria-retrieval-index"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-boards = { path = "../talaria-boards" }
+talaria-body = { path = "../talaria-body" }
+talaria-retrieval-collections = { path = "../talaria-retrieval-collections" }
+talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
+talaria-retrieval-http = { path = "../talaria-retrieval-http" }
+talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
+talaria-retrieval-rerank = { path = "../talaria-retrieval-rerank" }
+talaria-retrieval-sparse = { path = "../talaria-retrieval-sparse" }
+talaria-state = { path = "../talaria-state" }
+tracing = "0.1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"

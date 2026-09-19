@@ -10,13 +10,13 @@
 use serde_json::{Map, json};
 use sqlx::{PgPool, Row};
 
-use crate::retrieval::collections::{
+use talaria_retrieval_collections::{
     PersonalOpts, RagCollection, ensure_auto_collections, ensure_personal_collection,
     personal_collection_for,
 };
-use crate::retrieval::embed::EmbedDeps;
-use crate::retrieval::index::{DocAcl, IndexDoc, index_document, unindex_document};
-use crate::retrieval::qdrant::{QdrantDeps, delete_by_filter};
+use talaria_retrieval_embed::EmbedDeps;
+use talaria_retrieval_index::{DocAcl, IndexDoc, index_document, unindex_document};
+use talaria_retrieval_qdrant::{QdrantDeps, delete_by_filter};
 
 /// The auto collection of a kind ('activity' | 'org-kb'), ensuring the auto
 /// pair exists on a miss (first-ever write after boot, or the health sweep is
@@ -379,7 +379,7 @@ pub async fn resync_space_docs(
     Ok(docs.len())
 }
 
-pub(crate) fn kb_doc_of(r: &sqlx::postgres::PgRow) -> KbDocSync {
+pub fn kb_doc_of(r: &sqlx::postgres::PgRow) -> KbDocSync {
     KbDocSync {
         id: r.try_get("id").unwrap_or_default(),
         space_id: r.try_get("spaceId").unwrap_or(None),
