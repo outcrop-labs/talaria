@@ -442,18 +442,14 @@ pub fn gateway_pulse() -> GatewayPulse {
     }
 }
 
-/// `pub(crate)` for one cross-module reason: the fitness probes' latency test
-/// writes this same process-global ring and takes the turnstile below.
+/// `pub` for one cross-crate reason: the fitness probes' latency test writes
+/// this same process-global ring and takes this turnstile. ONE RING AT A
+/// TIME — the stat ring is process-global and two test binaries write it.
+pub static STAT_RING_TURNSTILE: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 pub(crate) mod pulse_tests {
     use super::*;
-
-    /// ONE RING AT A TIME. The stat ring is process-global and two test
-    /// modules write it — this one, and the fitness probes' latency test,
-    /// which seeds the ring to read a pulse back. The exact nearest-rank
-    /// assertions below are only stable on a ring nobody else is writing, so
-    /// every test that records stats holds this turnstile for its whole body.
-    pub(crate) static STAT_RING_TURNSTILE: Mutex<()> = Mutex::new(());
 
     /// The ring is process-global and outlives every test in the binary; the
     /// absolute percentile assertions below need one nobody has written to, so

@@ -4,8 +4,12 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 200 crates.** Runs decide + real assembly (decide path,
-  `real_run_deps`/`real_decide_deps`). Verified: `cargo check -p talaria-api`.
+- **API workspace: 205 crates.** Tasks engine, work-session kind, work
+  dispatch, workbench MCP, jobs composition root. First full-gate run on
+  the split: clippy `-D warnings` and 868 tests green. Verified:
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`.
+
 
 
 

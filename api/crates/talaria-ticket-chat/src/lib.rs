@@ -17,8 +17,6 @@
 // slightly unnecessary reply; the alternative is a thread that looks
 // delivered and isn't.
 
-use serde_json::Value;
-use serde_json::json;
 use sqlx::PgPool;
 
 use futures_util::future::BoxFuture;

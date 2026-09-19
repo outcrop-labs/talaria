@@ -494,6 +494,11 @@ pub fn wire_schema_of(harness_id: &str, schema: &Schema) -> Option<WireSchema> {
     })
 }
 
+use std::sync::Arc;
+
+/// Def's own restructure of a parsed reply before schema validation.
+pub type PreFn = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,8 +909,3 @@ mod tests {
         );
     }
 }
-
-use std::sync::Arc;
-
-/// Def's own restructure of a parsed reply before schema validation.
-pub type PreFn = Arc<dyn Fn(&serde_json::Value) -> serde_json::Value + Send + Sync>;

@@ -312,16 +312,6 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
     }
 }
 
-/// A run an org agent started FOR THE ORG — org-readable, ambient-indexed,
-/// anyone signed-in's to open — even though the attribution ladder stamps the
-/// human it answers as the run's `owner_user_id`. DERIVED FROM THE ROW, never
-/// a serialized flag: `requested_by` equals the model exactly when the AGENT
-/// started the run (a human start carries their email/name there), and the
-/// agent_defs test says that agent is a general one (ownerless) rather than
-/// somebody's personal assistant. Both halves are already on every existing
-/// row, so a run in flight at deploy resolves as correctly as one started
-/// after it — the reason a defaulted input flag was rejected here.
-
 /// Runs a viewer may see: their own, ones shared with them, and org runs —
 /// an org agent's research, whoever the ladder stamped as its owner, plus the
 /// ownerless runs that predate the ladder. None viewer (a general agent) sees

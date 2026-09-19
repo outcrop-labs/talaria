@@ -16,3 +16,5 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 talaria-capability-reach = { path = "../talaria-capability-reach" }
 talaria-search = { path = "../talaria-search" }
 
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -402,10 +402,10 @@ pub async fn create_personal_agent(
     .await;
     private_doc_sync(state, user.id);
 
-    if let Ok(sb) = state.secretbox().await {
-        if let Some(rf) = talaria_fleet_create::RENDER_FLEET.get() {
-            let _ = rf(pg.clone(), sb.clone()).await;
-        }
+    if let Ok(sb) = state.secretbox().await
+        && let Some(rf) = talaria_fleet_create::RENDER_FLEET.get()
+    {
+        let _ = rf(pg.clone(), sb.clone()).await;
     }
     let _ = fleet_up(pg, &department).await;
     wait_healthy_spawn(state, &department);

@@ -1072,7 +1072,7 @@ mod tests {
     /// invoked from the repo root or from `api/`, and a cwd-relative path
     /// silently points at a different tree depending on which.
     fn mcp_source() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../mcp/src/index.ts")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../mcp/src/index.ts")
     }
 
     fn source() -> String {

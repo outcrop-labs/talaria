@@ -1774,10 +1774,11 @@ async fn execute_action_arms(
     } else if item.source_type == "task"
         && (action_id == "approve_task" || action_id == "request_changes")
     {
-        let task = match {
+        let fetched = {
             let f = GET_TASK.get().expect("GET_TASK");
             f(pg.clone(), item.source_id.clone()).await?
-        } {
+        };
+        let task = match fetched {
             Some(task) => task,
             None => {
                 return finish_early(
@@ -1828,7 +1829,7 @@ async fn execute_action_arms(
             .await;
         }
         let task_deps = TaskDeps::from_route(pg.clone(), state.redis().await.ok());
-        let updated = match {
+        let decided = {
             let f = COMPLETE_QUALITY_REVIEW
                 .get()
                 .expect("COMPLETE_QUALITY_REVIEW");
@@ -1840,7 +1841,8 @@ async fn execute_action_arms(
                 next_status.as_deref().expect("checked above").to_string(),
             )
             .await
-        } {
+        };
+        let updated = match decided {
             Ok(updated) => updated,
             Err(TaskError::Refusal(m)) | Err(TaskError::ApprovalRequired(m)) => {
                 return Err(FocusError::Throw(m));

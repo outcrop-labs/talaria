@@ -234,9 +234,9 @@ pub fn platform_agent_of(harness: &RegisteredHarness) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::define::Output;
     use super::*;
     use talaria_gateway::guard::rule_ids;
+    use talaria_harness::define::Output;
     use talaria_platform_agents::PLATFORM_AGENTS;
 
     const EXPECTED_IDS: &[&str] = &[

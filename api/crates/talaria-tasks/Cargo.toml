@@ -36,3 +36,6 @@ talaria-workchains = { path = "../talaria-workchains" }
 talaria-workflows = { path = "../talaria-workflows" }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

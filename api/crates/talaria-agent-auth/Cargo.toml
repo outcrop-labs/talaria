@@ -22,3 +22,6 @@ talaria-password = { path = "../talaria-password" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

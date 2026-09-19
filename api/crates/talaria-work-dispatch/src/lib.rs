@@ -31,7 +31,6 @@
 use std::sync::Arc;
 
 use sqlx::PgPool;
-use talaria_realtime;
 use talaria_runs_define::is_terminal;
 use talaria_runs_run::{EnqueueOptions, RunDeps, enqueue};
 use talaria_runs_work_session::{session_run_id, work_session_run};

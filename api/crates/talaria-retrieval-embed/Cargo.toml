@@ -12,3 +12,7 @@ workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 talaria-retrieval-http = { path = "../talaria-retrieval-http" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+futures-util = "0.3"

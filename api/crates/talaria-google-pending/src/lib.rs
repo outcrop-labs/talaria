@@ -23,13 +23,6 @@ pub static ANNOUNCE_APPROVAL: OnceLock<
     Arc<dyn Fn(sqlx::PgPool, RealtimeDeps, String) -> BoxFuture<'static, ()> + Send + Sync>,
 > = OnceLock::new();
 
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// One held outbound action. `created_ms` epoch — every caller renders it
 /// through `as_iso`, which is what the wire's `createdAt` is.
 #[derive(Debug, Clone)]

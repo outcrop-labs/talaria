@@ -3446,6 +3446,7 @@ dependencies = [
  "axum",
  "getrandom 0.3.4",
  "serde",
+ "serde_json",
  "sqlx",
  "talaria-auth",
  "talaria-collate",
@@ -4065,6 +4066,7 @@ dependencies = [
  "sqlx",
  "talaria-capability-reach",
  "talaria-search",
+ "tokio",
 ]
 
 [[package]]
@@ -4495,6 +4497,7 @@ dependencies = [
  "talaria-fitness-talaria-tools",
  "talaria-fitness-world",
  "talaria-harness",
+ "tokio",
 ]
 
 [[package]]
@@ -5458,6 +5461,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -6087,9 +6091,11 @@ dependencies = [
 name = "talaria-retrieval-embed"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde",
  "serde_json",
  "talaria-retrieval-http",
+ "tokio",
 ]
 
 [[package]]
@@ -6129,16 +6135,19 @@ dependencies = [
 name = "talaria-retrieval-qdrant"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde",
  "serde_json",
  "talaria-retrieval-http",
  "talaria-retrieval-sparse",
+ "tokio",
 ]
 
 [[package]]
 name = "talaria-retrieval-rerank"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "serde",
  "serde_json",
  "sqlx",
@@ -6147,6 +6156,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-retrieval-http",
  "talaria-state",
+ "tokio",
 ]
 
 [[package]]
@@ -6267,6 +6277,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "serde",
+ "serde_json",
  "sqlx",
  "talaria-agent-auth",
  "talaria-runs-define",

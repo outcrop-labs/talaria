@@ -2481,6 +2481,7 @@ pub async fn assigned_work(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
 
     #[test]
     fn human_assignees_strip_their_prefix_and_leave_agent_ids_alone() {

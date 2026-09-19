@@ -4924,7 +4924,7 @@ mod tests {
         // percentiles over this same ring, so the two of us take turns — its
         // writer holds the turnstile for its body, and this one holds it across
         // the seeds and the read.
-        let _ring = talaria_gateway::upstream::pulse_tests::STAT_RING_TURNSTILE
+        let _ring = talaria_gateway::upstream::STAT_RING_TURNSTILE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         talaria_gateway::upstream::record_gateway_stat(140, true, "qwen3-14b");

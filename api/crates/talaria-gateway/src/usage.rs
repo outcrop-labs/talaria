@@ -759,10 +759,10 @@ pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::E
             .bind(&model)
             .fetch_optional(&pg)
             .await;
-            if matches!(priced, Ok(None)) {
-                if let Some(nudge) = NUDGE_AUTO_PRICES.get() {
-                    nudge(&pg);
-                }
+            if matches!(priced, Ok(None))
+                && let Some(nudge) = NUDGE_AUTO_PRICES.get()
+            {
+                nudge(&pg);
             }
         });
     }

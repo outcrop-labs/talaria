@@ -15,7 +15,6 @@
 
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use talaria_conversations::mechanical_from;
 use talaria_state::AppState;
@@ -47,10 +46,6 @@ pub async fn generate_title(state: &AppState, kind: TitleKind, text: &str) -> Op
     let f = GENERATE_TITLE.get()?;
     f(state.clone(), kind, text.to_string()).await
 }
-
-/// The mechanical default stamped at creation — a title still equal to it
-/// means nobody has named the conversation on purpose. (The shape lives in
-/// conversations.rs beside the stamp that writes it.)
 
 /// Retitle a chat/plan once its first exchange completes. Cheap early-outs:
 /// only within the first few messages, and only while the title is still the

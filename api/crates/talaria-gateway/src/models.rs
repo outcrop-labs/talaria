@@ -294,7 +294,7 @@ mod tests {
             sorted: Vec<String>,
         }
         let fix: Battery =
-            serde_json::from_str(include_str!("../../tests/fixtures/collation.json")).unwrap();
+            serde_json::from_str(include_str!("../../../tests/fixtures/collation.json")).unwrap();
         assert_eq!(fix.battery.len(), 400);
         let mut sorted = fix.battery.clone();
         sorted.sort_by(|a, b| locale_cmp(a, b));

@@ -15,3 +15,6 @@ talaria-fitness-talaria-tools = { path = "../talaria-fitness-talaria-tools" }
 talaria-fitness-world = { path = "../talaria-fitness-world" }
 talaria-harness = { path = "../talaria-harness" }
 regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

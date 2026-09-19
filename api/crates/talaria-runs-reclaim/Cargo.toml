@@ -19,3 +19,6 @@ talaria-scheduler = { path = "../talaria-scheduler" }
 tokio = { version = "1", features = ["sync", "time", "macros"] }
 tracing = "0.1"
 futures-util = "0.3"
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
