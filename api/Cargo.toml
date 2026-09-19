@@ -145,6 +145,7 @@ members = [
     "crates/talaria-fitness-talaria-tools",
     "crates/talaria-org",
     "crates/talaria-invites",
+    "crates/talaria-agent-mcp",
 ]
 resolver = "3"
 
@@ -314,6 +315,7 @@ talaria-fitness-world = { path = "crates/talaria-fitness-world" }
 talaria-fitness-talaria-tools = { path = "crates/talaria-fitness-talaria-tools" }
 talaria-org = { path = "crates/talaria-org" }
 talaria-invites = { path = "crates/talaria-invites" }
+talaria-agent-mcp = { path = "crates/talaria-agent-mcp" }
 
 
 

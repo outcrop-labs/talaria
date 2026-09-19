@@ -6,7 +6,7 @@ pub use talaria_activity as activity;
 pub use talaria_agent_auth as agent_auth;
 pub use talaria_agent_crons as agent_crons;
 pub use talaria_agent_defs as agent_defs;
-pub mod agent_mcp;
+pub use talaria_agent_mcp as agent_mcp;
 pub use talaria_agent_media as agent_media;
 pub use talaria_agent_memory as agent_memory;
 pub use talaria_agent_role_templates as agent_role_templates;

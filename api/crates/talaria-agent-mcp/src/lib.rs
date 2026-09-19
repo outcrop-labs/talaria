@@ -7,7 +7,7 @@
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::mcp::service::mcp_fleet_url;
+use talaria_mcp_service::mcp_fleet_url;
 
 /// One server entry as the roster answers it.
 #[derive(Debug, Clone)]
@@ -33,7 +33,7 @@ fn entry(name: &str, raw: &Map<String, Value>) -> McpServerEntry {
         name: name.to_string(),
         url: raw
             .get("url")
-            .map(crate::body::js_string)
+            .map(talaria_body::js_string)
             .unwrap_or_default(),
         // a JSON number, nothing else — strings and null don't count.
         timeout: raw.get("timeout").and_then(Value::as_i64),

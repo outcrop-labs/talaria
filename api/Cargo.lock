@@ -3506,6 +3506,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-mcp-service",
+]
+
+[[package]]
 name = "talaria-agent-media"
 version = "0.1.0"
 dependencies = [
@@ -3624,6 +3635,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-mcp",
  "talaria-agent-media",
  "talaria-agent-memory",
  "talaria-agent-role-templates",

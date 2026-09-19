@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 138 crates.** Agent crons, fitness world/talaria-tools,
-  org profile, invites. Verified: `cargo check -p talaria-api`.
+- **API workspace: 139 crates.** Agent MCP roster URLs. Verified:
+  `cargo check -p talaria-api`.
+
 
 
 
