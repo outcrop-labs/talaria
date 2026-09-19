@@ -1,0 +1,19 @@
+[package]
+name = "talaria-harness-model"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util = "0.3"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-model-access = { path = "../talaria-model-access" }
+talaria-model-roles = { path = "../talaria-model-roles" }
+talaria-platform-agents = { path = "../talaria-platform-agents" }
+talaria-users = { path = "../talaria-users" }
+tokio = { version = "1", features = ["macros"] }

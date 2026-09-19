@@ -21,14 +21,14 @@
 // materially better sentence naming the thing to go and install rather than
 // blaming the model.
 
-use crate::capability::{CapabilityFact, get_capabilities};
-use crate::gateway::settings::get_setting;
-use crate::model::roles::resolve_role_model;
 use futures_util::future::join_all;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use talaria_capability::{CapabilityFact, get_capabilities};
+use talaria_gateway::settings::get_setting;
+use talaria_model_roles::resolve_role_model;
 
 /// How a capability is satisfied for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,7 +402,7 @@ const CHECK_MS: Duration = Duration::from_millis(4_000);
 async fn search_canary_ok(pg: &PgPool) -> bool {
     match tokio::time::timeout(
         CHECK_MS,
-        crate::search::search_reachable(pg, &crate::search::real_deps()),
+        talaria_search::search_reachable(pg, &talaria_search::real_deps()),
     )
     .await
     {
@@ -605,7 +605,7 @@ mod tests {
                     at: "2026-08-07T00:00:00.000Z".into(),
                     detail: None,
                     score: None,
-                    probe_rev: Some(crate::capability::probe_revision(cap)),
+                    probe_rev: Some(talaria_capability::probe_revision(cap)),
                 },
             );
         }

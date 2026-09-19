@@ -136,6 +136,10 @@ members = [
     "crates/talaria-fleet-resources",
     "crates/talaria-fleet-brain",
     "crates/talaria-fleet-preflight",
+    "crates/talaria-effort-prefs",
+    "crates/talaria-capability-reach",
+    "crates/talaria-capability-platform",
+    "crates/talaria-harness-model",
 ]
 resolver = "3"
 
@@ -296,6 +300,10 @@ talaria-fleet-budget = { path = "crates/talaria-fleet-budget" }
 talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
 talaria-fleet-brain = { path = "crates/talaria-fleet-brain" }
 talaria-fleet-preflight = { path = "crates/talaria-fleet-preflight" }
+talaria-effort-prefs = { path = "crates/talaria-effort-prefs" }
+talaria-capability-reach = { path = "crates/talaria-capability-reach" }
+talaria-capability-platform = { path = "crates/talaria-capability-platform" }
+talaria-harness-model = { path = "crates/talaria-harness-model" }
 
 
 

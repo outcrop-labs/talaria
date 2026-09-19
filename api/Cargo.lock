@@ -3621,6 +3621,8 @@ dependencies = [
  "talaria-body",
  "talaria-brain-health",
  "talaria-capability",
+ "talaria-capability-platform",
+ "talaria-capability-reach",
  "talaria-channels",
  "talaria-claim",
  "talaria-collate",
@@ -3628,6 +3630,7 @@ dependencies = [
  "talaria-daily-brief-config",
  "talaria-daily-brief-types",
  "talaria-db",
+ "talaria-effort-prefs",
  "talaria-email",
  "talaria-error",
  "talaria-fitness-code-runner",
@@ -3651,6 +3654,7 @@ dependencies = [
  "talaria-google-provisioning",
  "talaria-guard-coaching",
  "talaria-harness-json-schema",
+ "talaria-harness-model",
  "talaria-harness-schema",
  "talaria-harness-text",
  "talaria-hermes-skills",
@@ -3844,6 +3848,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-capability-platform"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability-reach",
+ "talaria-search",
+]
+
+[[package]]
+name = "talaria-capability-reach"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability",
+ "talaria-gateway",
+ "talaria-model-roles",
+ "talaria-search",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-channels"
 version = "0.1.0"
 dependencies = [
@@ -3919,6 +3951,17 @@ dependencies = [
  "sqlx",
  "talaria-config",
  "tracing",
+]
+
+[[package]]
+name = "talaria-effort-prefs"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-efforts",
 ]
 
 [[package]]
@@ -4338,6 +4381,20 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "talaria-harness-schema",
+]
+
+[[package]]
+name = "talaria-harness-model"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-access",
+ "talaria-model-roles",
+ "talaria-platform-agents",
+ "talaria-users",
+ "tokio",
 ]
 
 [[package]]

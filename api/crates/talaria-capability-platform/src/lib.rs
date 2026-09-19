@@ -33,11 +33,11 @@
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use crate::search::{SearchDeps, search_web};
+use talaria_search::{SearchDeps, search_web};
 
 /// Spelled once, in capability_reach (where the supply half lives); this is
 /// its platform-facing alias.
-pub use crate::capability_reach::PLATFORM_SERVER;
+pub use talaria_capability_reach::PLATFORM_SERVER;
 
 /// Is this supplier Talaria itself, rather than a registered MCP server? Every
 /// caller that dispatches a tool call has to ask, because the two go to
@@ -133,7 +133,7 @@ mod tests {
         SearchDeps {
             fetch: Arc::new(move |_url| {
                 Box::pin(async move {
-                    Ok(crate::search::FetchReply {
+                    Ok(talaria_search::FetchReply {
                         status: 200,
                         body: body.into(),
                     })
