@@ -3707,6 +3707,7 @@ dependencies = [
  "talaria-fleet-layout",
  "talaria-fleet-preflight",
  "talaria-fleet-reconcile",
+ "talaria-fleet-render",
  "talaria-fleet-resources",
  "talaria-gaps",
  "talaria-gateway",
@@ -4554,6 +4555,37 @@ dependencies = [
  "sqlx",
  "talaria-fleet-docker",
  "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-render"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-secrets",
+ "talaria-fleet-brain",
+ "talaria-fleet-budget",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-github",
+ "talaria-guard-coaching",
+ "talaria-mcp",
+ "talaria-mcp-service",
+ "talaria-org",
+ "talaria-repo-env",
+ "talaria-secretbox",
+ "talaria-workbench",
+ "talaria-workbench-harnesses",
+ "talaria-workspace-handles",
+ "talaria-yaml11",
  "tokio",
  "tracing",
 ]

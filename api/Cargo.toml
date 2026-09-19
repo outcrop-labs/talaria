@@ -186,6 +186,7 @@ members = [
     "crates/talaria-plan-doc",
     "crates/talaria-outreach",
     "crates/talaria-mcp",
+    "crates/talaria-fleet-render",
     "crates/talaria-comms-decay",
     "crates/talaria-chat-persist",
     "crates/talaria-inbox-focus-types",
@@ -400,6 +401,7 @@ talaria-channel-plan = { path = "crates/talaria-channel-plan" }
 talaria-plan-doc = { path = "crates/talaria-plan-doc" }
 talaria-outreach = { path = "crates/talaria-outreach" }
 talaria-mcp = { path = "crates/talaria-mcp" }
+talaria-fleet-render = { path = "crates/talaria-fleet-render" }
 talaria-comms-decay = { path = "crates/talaria-comms-decay" }
 talaria-chat-persist = { path = "crates/talaria-chat-persist" }
 talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }

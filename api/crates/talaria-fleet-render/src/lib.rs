@@ -33,10 +33,10 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::agent_auth::ensure_agent_api_key;
-use crate::fleet::layout::GATEWAY_PORT_BASE;
-use crate::secretbox::SecretBox;
-use crate::workbench::harnesses::{HarnessAuth, McpConfigFormat, list_harness_defs};
+use talaria_agent_auth::ensure_agent_api_key;
+use talaria_fleet_layout::GATEWAY_PORT_BASE;
+use talaria_secretbox::SecretBox;
+use talaria_workbench_harnesses::{HarnessAuth, McpConfigFormat, list_harness_defs};
 
 /// The def columns the render loop reads — the agent_defs row for
 /// MANAGED+ENABLED agents (the current version rides alongside in
@@ -239,7 +239,7 @@ pub fn parse_chassis(text: &str) -> Result<Chassis, String> {
 /// a missing file and a file with no service block both stop the render (there
 /// is no default chassis — the harness cannot render agents without one).
 pub async fn read_chassis() -> Result<Chassis, String> {
-    let path = crate::fleet::layout::chassis_file();
+    let path = talaria_fleet_layout::chassis_file();
     let text = tokio::fs::read_to_string(&path).await.map_err(|_| {
         format!(
             "fleet chassis missing at {} — the harness cannot render agents without it",
@@ -320,7 +320,7 @@ fn with_trailing_newline(content: &str) -> &str {
 /// (presence is enough); per-agent keys are rewritten from the DB every render
 /// ([`ensure_agent_env_keys`]).
 pub async fn ensure_fleet_env_key(pg: &PgPool) -> Result<(), String> {
-    let env_path = crate::fleet::layout::fleet_env();
+    let env_path = talaria_fleet_layout::fleet_env();
     let current = tokio::fs::read_to_string(&env_path)
         .await
         .unwrap_or_default();
@@ -396,14 +396,14 @@ pub async fn ensure_agent_env_keys(
     sb: &SecretBox,
     targets: &[RenderTarget],
 ) -> Result<(), String> {
-    let env_path = crate::fleet::layout::fleet_env();
+    let env_path = talaria_fleet_layout::fleet_env();
     let current = tokio::fs::read_to_string(&env_path)
         .await
         .unwrap_or_default();
     let mut next = current.clone();
     let mut append: Vec<String> = Vec::new();
     for t in targets {
-        let name = crate::fleet::layout::agent_key_var(&t.def.slug);
+        let name = talaria_fleet_layout::agent_key_var(&t.def.slug);
         let secret = ensure_agent_api_key(pg, sb, &t.def.id).await?;
         let line = format!("{name}={secret}");
         match replace_env_line(&next, &name, &line) {
@@ -558,7 +558,7 @@ async fn seed_one(
 /// best-effort at the top: a missing seeds dir is a repo layout with nothing
 /// to seed, not a failure.
 pub async fn seed_shared_skills() -> Result<(), String> {
-    let dest = crate::fleet::layout::fleet_dir().join("skills");
+    let dest = talaria_fleet_layout::fleet_dir().join("skills");
     tokio::fs::create_dir_all(&dest)
         .await
         .map_err(|e| format!("{}: {e}", dest.display()))?;
@@ -570,7 +570,7 @@ pub async fn seed_shared_skills() -> Result<(), String> {
         .unwrap_or_default();
     let mut manifest = manifest;
     let mut dirty = false;
-    let seeds_dir = crate::fleet::layout::seed_skills_dir();
+    let seeds_dir = talaria_fleet_layout::seed_skills_dir();
     let Ok(mut entries) = tokio::fs::read_dir(&seeds_dir).await else {
         return Ok(());
     };
@@ -679,7 +679,7 @@ fn soul_md(soul_header: &str, coaching: &str, handles: &str, soul: &str) -> Stri
 // gateway path cannot be stripped and is not ours to guess at: fall back to
 // the dev origin rather than minting a wrong URL.
 fn gateway_origin() -> String {
-    gateway_origin_of(&crate::fleet::brain::self_url())
+    gateway_origin_of(&talaria_fleet_brain::self_url())
         .unwrap_or_else(|| "http://host.docker.internal:5273".to_string())
 }
 
@@ -856,7 +856,7 @@ pub struct RenderResult {
 /// port — cutover is a DB update + a plain re-render after health.
 pub struct RollOverlay<'a> {
     pub slug: &'a str,
-    pub slot: crate::fleet::docker::Slot,
+    pub slot: talaria_fleet_docker::Slot,
     pub port: i64,
 }
 
@@ -876,7 +876,7 @@ pub async fn render_fleet(
 
     // The fleet's default brain is Talaria's own gateway. Best-effort — never
     // blocks a render.
-    let brain = match crate::fleet::brain::ensure_gateway_brain(pg).await {
+    let brain = match talaria_fleet_brain::ensure_gateway_brain(pg).await {
         Ok(b) => Some(b),
         Err(e) => {
             result.warnings.push(format!("gateway brain: {e}"));
@@ -894,30 +894,30 @@ pub async fn render_fleet(
 
     // Every rendered soul opens with the toolkit contract (always) and the
     // organization context (when configured).
-    let org_header = crate::org::org_soul_header(&crate::org::org_profile(pg).await);
+    let org_header = talaria_org::org_soul_header(&talaria_org::org_profile(pg).await);
     let soul_header = [
         org_header.as_deref(),
-        Some(crate::org::voice_soul_header().as_str()),
-        Some(crate::org::toolkit_soul_header().as_str()),
+        Some(talaria_org::voice_soul_header().as_str()),
+        Some(talaria_org::toolkit_soul_header().as_str()),
     ]
     .into_iter()
     .flatten()
     .collect::<Vec<_>>()
     .join("\n\n");
-    let coach_on = crate::guard_coaching::coach_enabled(pg).await;
+    let coach_on = talaria_guard_coaching::coach_enabled(pg).await;
 
     // Agents' configs point at the toolkit MCP — make sure it's actually up,
     // and that the compose env can interpolate each agent's key into the
     // header.
-    crate::mcp::service::ensure_mcp_service();
+    talaria_mcp_service::ensure_mcp_service();
     ensure_fleet_env_key(pg).await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
     seed_shared_skills().await?;
     seed_events_plugin().await?;
 
     // Credential-migration visibility — a render is the operator's moment.
-    if let Ok(legacy) = crate::agent_auth::legacy_migration_status(pg).await
-        && let Some(w) = crate::agent_auth::legacy_migration_warning(&legacy)
+    if let Ok(legacy) = talaria_agent_auth::legacy_migration_status(pg).await
+        && let Some(w) = talaria_agent_auth::legacy_migration_warning(&legacy)
     {
         result.warnings.push(w.clone());
         if legacy.window_open {
@@ -927,7 +927,7 @@ pub async fn render_fleet(
         }
     }
 
-    let gw_models = crate::fleet::brain::gateway_model_set(pg).await;
+    let gw_models = talaria_fleet_brain::gateway_model_set(pg).await;
     let mut remapped: Vec<String> = Vec::new();
     let ports = ensure_gateway_ports(
         pg,
@@ -952,9 +952,9 @@ pub async fn render_fleet(
     .await
     .map_err(|e| e.to_string())?;
 
-    let gw_base = crate::fleet::layout::mcp_gw_base();
-    let fleet_skills = crate::fleet::layout::fleet_dir().join("skills");
-    let fleet_plugins = crate::fleet::layout::fleet_dir()
+    let gw_base = talaria_fleet_layout::mcp_gw_base();
+    let fleet_skills = talaria_fleet_layout::fleet_dir().join("skills");
+    let fleet_plugins = talaria_fleet_layout::fleet_dir()
         .join("plugins")
         .join("talaria-events");
 
@@ -964,7 +964,7 @@ pub async fn render_fleet(
 
     for target in &targets {
         let (def, version) = (&target.def, &target.version);
-        let agent_dir = crate::fleet::layout::fleet_dir()
+        let agent_dir = talaria_fleet_layout::fleet_dir()
             .join("agents")
             .join(&def.slug);
         tokio::fs::create_dir_all(&agent_dir)
@@ -990,7 +990,7 @@ pub async fn render_fleet(
 
         // Un-interweave: all model tiers point at Talaria's gateway.
         let raw = def_raw_config(&version.config);
-        let routed = crate::fleet::brain::route_config_through_gateway(&raw, &gw_models, |m| {
+        let routed = talaria_fleet_brain::route_config_through_gateway(&raw, &gw_models, |m| {
             if !remapped.contains(&m) {
                 remapped.push(m);
             }
@@ -1008,7 +1008,7 @@ pub async fn render_fleet(
             .cloned()
             .unwrap_or_default();
 
-        let agent_servers = crate::mcp::registry::servers_for_agent(pg, &def.model)
+        let agent_servers = talaria_mcp::registry::servers_for_agent(pg, &def.model)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -1022,13 +1022,13 @@ pub async fn render_fleet(
             }),
         );
 
-        let wb_agent = crate::workbench::WorkbenchAgent {
+        let wb_agent = talaria_workbench::WorkbenchAgent {
             department: &def.department,
             role: def.role.as_deref(),
             workbench: def.workbench.as_deref().unwrap_or("auto"),
             workbench_profile: def.workbench_profile.as_deref(),
         };
-        let wb = crate::workbench::resolve_workbench(pg, &wb_agent)
+        let wb = talaria_workbench::resolve_workbench(pg, &wb_agent)
             .await
             .unwrap_or(None);
 
@@ -1127,11 +1127,11 @@ pub async fn render_fleet(
 
         // The rendered soul: standing headers + coaching + handles + soul.
         let coaching = if coach_on {
-            crate::guard_coaching::guard_coaching_for(pg, &def.model).await
+            talaria_guard_coaching::guard_coaching_for(pg, &def.model).await
         } else {
             String::new()
         };
-        let secret_handles = crate::workspace_handles::granted_handles_for(pg, &def.model)
+        let secret_handles = talaria_workspace_handles::granted_handles_for(pg, &def.model)
             .await
             .unwrap_or_default();
         let soul_path = agent_dir.join("SOUL.md");
@@ -1163,14 +1163,14 @@ pub async fn render_fleet(
         // should) and mounted below at /opt/workbench-env/owner/repo.env.
         // Access control was the grant; the value leaves the database exactly
         // once, in this write.
-        let granted = crate::github::granted_repos(pg, &def.id).await;
+        let granted = talaria_github::granted_repos(pg, &def.id).await;
         let env_root = agent_dir.join("workbench-env");
         let _ = tokio::fs::remove_dir_all(&env_root).await;
-        for repo in crate::repo_env::repos_with_env(pg).await {
+        for repo in talaria_repo_env::repos_with_env(pg).await {
             if !granted.contains(&repo) {
                 continue;
             }
-            let Some(body) = crate::repo_env::env_file(pg, sb, &repo)
+            let Some(body) = talaria_repo_env::env_file(pg, sb, &repo)
                 .await
                 .ok()
                 .flatten()
@@ -1238,7 +1238,7 @@ pub async fn render_fleet(
             "TALARIA_AGENT_KEY".into(),
             json!(format!(
                 "${{{}}}",
-                crate::fleet::layout::agent_key_var(&def.slug)
+                talaria_fleet_layout::agent_key_var(&def.slug)
             )),
         );
         // The app's origin as the fleet reaches it — the git credential
@@ -1274,16 +1274,16 @@ pub async fn render_fleet(
             }
             // Ceiling is this VM minus the platform keep-back, not a
             // hardcoded 32g that overcommits an 8g box.
-            let ceil = crate::fleet::budget::workbench_limit().await;
+            let ceil = talaria_fleet_budget::workbench_limit().await;
             obj.insert(
                 "mem_reservation".into(),
-                json!(crate::fleet::budget::compose_size(
-                    crate::fleet::budget::WB_BASE_RESERVE.min(ceil)
+                json!(talaria_fleet_budget::compose_size(
+                    talaria_fleet_budget::WB_BASE_RESERVE.min(ceil)
                 )),
             );
             obj.insert(
                 "mem_limit".into(),
-                json!(crate::fleet::budget::compose_size(ceil)),
+                json!(talaria_fleet_budget::compose_size(ceil)),
             );
             obj.insert("pids_limit".into(), json!("${AGENT_WB_PIDS_LIMIT:-2048}"));
             obj.insert("oom_score_adj".into(), json!(500));
@@ -1349,7 +1349,7 @@ pub async fn render_fleet(
             if imported {
                 json!({
                     "external": true,
-                    "name": format!("{}_{}", crate::fleet::layout::LEGACY_DOCKER_PROJECT, state_volume),
+                    "name": format!("{}_{}", talaria_fleet_layout::LEGACY_DOCKER_PROJECT, state_volume),
                 })
             } else {
                 json!({})
@@ -1412,7 +1412,7 @@ pub async fn render_fleet(
             // `$OPENAI_API_KEY` interpolates from the container env at request
             // time (gateway_env already set OPENAI_*).
             let llm_base = format!("{}/api/llm/v1", gateway_origin());
-            let effort = crate::workbench::harnesses::effort_models(pg, None)
+            let effort = talaria_workbench_harnesses::effort_models(pg, None)
                 .await
                 .unwrap_or_default();
             let mut model_ids: Vec<String> = Vec::new();
@@ -1581,7 +1581,7 @@ pub async fn render_fleet(
 
         // Per-agent secrets (UI-configured, DB-encrypted) materialize into the
         // agent dir and load via env_file.
-        if crate::agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await? {
+        if talaria_agent_secrets::materialize_agent_secrets(pg, sb, &def.id, &def.slug).await? {
             svc.as_object_mut().expect("checked above").insert(
                 "env_file".into(),
                 json!([agent_dir.join("secrets.env").display().to_string()]),
@@ -1642,8 +1642,8 @@ pub async fn render_fleet(
                 "agent-{}{}",
                 def.department,
                 match r.slot {
-                    crate::fleet::docker::Slot::B => "-b",
-                    crate::fleet::docker::Slot::A => "",
+                    talaria_fleet_docker::Slot::B => "-b",
+                    talaria_fleet_docker::Slot::A => "",
                 }
             );
             services.insert(incoming_name, incoming);
@@ -1658,7 +1658,7 @@ pub async fn render_fleet(
     }
 
     let mut compose: Map<String, Value> = Map::new();
-    compose.insert("name".into(), json!(crate::fleet::layout::fleet_project()));
+    compose.insert("name".into(), json!(talaria_fleet_layout::fleet_project()));
     compose.insert("services".into(), Value::Object(services));
     compose.insert("volumes".into(), Value::Object(volumes));
     if !secrets.is_empty() {
@@ -1670,10 +1670,10 @@ pub async fn render_fleet(
     );
     let compose_yaml = serde_yaml_ng::to_string(&Value::Object(compose))
         .map_err(|e| format!("compose emit: {e}"))?;
-    let compose_path = crate::fleet::layout::fleet_dir().join("docker-compose.yml");
-    tokio::fs::create_dir_all(crate::fleet::layout::fleet_dir())
+    let compose_path = talaria_fleet_layout::fleet_dir().join("docker-compose.yml");
+    tokio::fs::create_dir_all(talaria_fleet_layout::fleet_dir())
         .await
-        .map_err(|e| format!("{}: {e}", crate::fleet::layout::fleet_dir().display()))?;
+        .map_err(|e| format!("{}: {e}", talaria_fleet_layout::fleet_dir().display()))?;
     tokio::fs::write(
         &compose_path,
         format!("# Generated by Talaria — the managed fleet. Do not hand-edit.\n{compose_yaml}"),
@@ -1783,7 +1783,7 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
     .await
     .map_err(|e| e.to_string())?;
 
-    let env = tokio::fs::read_to_string(crate::fleet::layout::fleet_env())
+    let env = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
         .unwrap_or_default();
     let hermes_re =
@@ -1822,7 +1822,7 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
         } else {
             format!(
                 "http://{}:{}",
-                crate::fleet::layout::agent_host(),
+                talaria_fleet_layout::agent_host(),
                 gateway_port.unwrap_or(0)
             )
         };
@@ -1841,7 +1841,7 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
             }
         }
     }
-    let path = crate::fleet::layout::fleet_dir().join("fleet.json");
+    let path = talaria_fleet_layout::fleet_dir().join("fleet.json");
     tokio::fs::write(&path, serde_json::to_string(&manifest).unwrap_or_default())
         .await
         .map_err(|e| format!("{}: {e}", path.display()))?;

@@ -1,0 +1,36 @@
+[package]
+name = "talaria-fleet-render"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-agent-secrets = { path = "../talaria-agent-secrets" }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-github = { path = "../talaria-github" }
+talaria-guard-coaching = { path = "../talaria-guard-coaching" }
+talaria-mcp = { path = "../talaria-mcp" }
+talaria-mcp-service = { path = "../talaria-mcp-service" }
+talaria-org = { path = "../talaria-org" }
+talaria-repo-env = { path = "../talaria-repo-env" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-workbench = { path = "../talaria-workbench" }
+talaria-workbench-harnesses = { path = "../talaria-workbench-harnesses" }
+talaria-workspace-handles = { path = "../talaria-workspace-handles" }
+tokio = { version = "1", features = ["macros", "fs"] }
+tracing = "0.1"
+sha2 = "0.11"
+serde_yaml_ng = "0.10.0"
+talaria-fleet-brain = { path = "../talaria-fleet-brain" }
+talaria-fleet-budget = { path = "../talaria-fleet-budget" }
+talaria-yaml11 = { path = "../talaria-yaml11" }
