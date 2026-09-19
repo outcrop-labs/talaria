@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 157 crates.** Capability gaps (audience via OnceLock).
-  Verified: `cargo check -p talaria-api`.
+- **API workspace: 158 crates.** Realtime watch ACL (task board via
+  OnceLock). Verified: `cargo check -p talaria-api`.
+
 
 
 

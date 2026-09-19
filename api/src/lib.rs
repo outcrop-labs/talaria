@@ -82,7 +82,7 @@ pub use talaria_platform_agents as platform_agents;
 pub use talaria_price_oracle as price_oracle;
 pub use talaria_push as push;
 pub use talaria_ratelimit as ratelimit;
-pub mod realtime;
+pub use talaria_realtime_watch as realtime;
 pub mod refs;
 pub use talaria_repo_env as repo_env;
 pub mod research;

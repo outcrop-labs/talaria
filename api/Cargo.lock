@@ -3752,6 +3752,7 @@ dependencies = [
  "talaria-push",
  "talaria-ratelimit",
  "talaria-realtime",
+ "talaria-realtime-watch",
  "talaria-repo-env",
  "talaria-research-origin",
  "talaria-retrieval-collections",
@@ -5179,6 +5180,21 @@ dependencies = [
  "talaria-users",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-realtime-watch"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "sqlx",
+ "talaria-boards",
+ "talaria-channels",
+ "talaria-conversations",
+ "talaria-realtime",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-users",
 ]
 
 [[package]]

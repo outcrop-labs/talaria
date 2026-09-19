@@ -2,10 +2,19 @@
 // Run ACL wiring stays here (store / channels / conversations / tasks).
 pub use talaria_realtime::*;
 
-use crate::runs::run::{PublishFn as RunPublishFn, RunEvent};
-use crate::runs::store::RunStore;
 use futures_util::FutureExt;
-use std::sync::Arc;
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+use talaria_runs_run::{PublishFn as RunPublishFn, RunEvent};
+use talaria_runs_store::RunStore;
+
+pub static TASK_BOARD_ID: OnceLock<
+    Arc<
+        dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, Result<Option<String>, String>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
 
 /// The real `RunDeps.publish` assembly the driver's deps point at.
 pub fn run_publish(deps: RealtimeDeps) -> RunPublishFn {
@@ -49,7 +58,7 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         get_run: Arc::new(move |id| {
             let pg = get_run_pg.clone();
             async move {
-                let store = crate::runs::store::PgRunStore::new(pg);
+                let store = talaria_runs_store::PgRunStore::new(pg);
                 let row = store
                     .get(&id)
                     .await
@@ -66,7 +75,7 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         board_role: Arc::new(move |user_id, board_id| {
             let pg = board_pg.clone();
             async move {
-                crate::boards::board_role(&pg, &user_id, &board_id)
+                talaria_boards::board_role(&pg, &user_id, &board_id)
                     .await
                     .map_err(|e| e.to_string())
             }
@@ -75,7 +84,7 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         channel_role: Arc::new(move |user_id, channel_id| {
             let pg = channel_pg.clone();
             async move {
-                crate::channels::channel_role(&pg, &user_id, &channel_id)
+                talaria_channels::channel_role(&pg, &user_id, &channel_id)
                     .await
                     .map_err(|e| e.to_string())
             }
@@ -84,16 +93,17 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         task_board_id: Arc::new(move |task_id| {
             let pg = task_pg.clone();
             async move {
-                crate::tasks::task_board_id(&pg, &task_id)
-                    .await
-                    .map_err(|e| e.to_string())
+                match TASK_BOARD_ID.get() {
+                    Some(f) => f(pg, task_id).await,
+                    None => Ok(None),
+                }
             }
             .boxed()
         }),
         conversation_access: Arc::new(move |user_id, conversation_id| {
             let pg = conversation_pg.clone();
             async move {
-                crate::conversations::conversation_accessible(&pg, &user_id, &conversation_id)
+                talaria_conversations::conversation_accessible(&pg, &user_id, &conversation_id)
                     .await
                     .map_err(|e| e.to_string())
             }
@@ -102,7 +112,7 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         is_admin: Arc::new(move |user_id| {
             let pg = admin_pg.clone();
             async move {
-                crate::users::get_user_role(&pg, &user_id)
+                talaria_users::get_user_role(&pg, &user_id)
                     .await
                     .map(|role| role == "admin")
                     .map_err(|e| e.to_string())

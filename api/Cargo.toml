@@ -164,6 +164,7 @@ members = [
     "crates/talaria-conversations",
     "crates/talaria-titler",
     "crates/talaria-gaps",
+    "crates/talaria-realtime-watch",
 ]
 resolver = "3"
 
@@ -352,6 +353,7 @@ talaria-uploads = { path = "crates/talaria-uploads" }
 talaria-conversations = { path = "crates/talaria-conversations" }
 talaria-titler = { path = "crates/talaria-titler" }
 talaria-gaps = { path = "crates/talaria-gaps" }
+talaria-realtime-watch = { path = "crates/talaria-realtime-watch" }
 
 
 
