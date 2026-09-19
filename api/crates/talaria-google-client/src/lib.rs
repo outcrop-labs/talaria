@@ -4,10 +4,10 @@
 // only when it is complete — a half-saved record never takes over from
 // working env credentials, so exactly one client is ever active.
 
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::secretbox::SecretBox;
 use serde_json::Value;
 use sqlx::PgPool;
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_secretbox::SecretBox;
 
 const KEY: &str = "google_oauth_client";
 const LOGIN_KEY: &str = "google_login_enabled";

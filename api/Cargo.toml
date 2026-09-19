@@ -92,6 +92,12 @@ members = [
     "crates/talaria-retrieval-sparse",
     "crates/talaria-runs-drivers",
     "crates/talaria-model-access",
+    "crates/talaria-harness-text",
+    "crates/talaria-daily-brief-types",
+    "crates/talaria-model-roles",
+    "crates/talaria-google-client",
+    "crates/talaria-runs-store",
+    "crates/talaria-model-catalog",
 ]
 resolver = "3"
 
@@ -208,6 +214,12 @@ talaria-harness-schema = { path = "crates/talaria-harness-schema" }
 talaria-retrieval-sparse = { path = "crates/talaria-retrieval-sparse" }
 talaria-runs-drivers = { path = "crates/talaria-runs-drivers" }
 talaria-model-access = { path = "crates/talaria-model-access" }
+talaria-harness-text = { path = "crates/talaria-harness-text" }
+talaria-daily-brief-types = { path = "crates/talaria-daily-brief-types" }
+talaria-model-roles = { path = "crates/talaria-model-roles" }
+talaria-google-client = { path = "crates/talaria-google-client" }
+talaria-runs-store = { path = "crates/talaria-runs-store" }
+talaria-model-catalog = { path = "crates/talaria-model-catalog" }
 
 
 

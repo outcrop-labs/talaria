@@ -2,7 +2,7 @@
 pub mod agent;
 pub mod api_health;
 pub mod calendar;
-pub mod client;
+pub use talaria_google_client as client;
 pub mod connections;
 pub mod drive;
 pub mod errors;

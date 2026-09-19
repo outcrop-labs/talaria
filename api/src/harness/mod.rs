@@ -39,5 +39,5 @@ pub mod recorded;
 pub mod registry;
 pub mod run;
 pub use talaria_harness_schema as schema;
-pub mod text;
+pub use talaria_harness_text as text;
 pub mod transport;

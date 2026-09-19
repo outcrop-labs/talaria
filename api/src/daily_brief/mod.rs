@@ -36,7 +36,7 @@ pub mod comms;
 pub mod config;
 pub mod delegation;
 pub mod focus;
-pub mod types;
+pub use talaria_daily_brief_types as types;
 pub mod view;
 
 use std::collections::{HashMap, HashSet};

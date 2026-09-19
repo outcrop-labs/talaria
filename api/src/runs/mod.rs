@@ -10,7 +10,7 @@ pub use talaria_runs_drivers as drivers;
 pub use talaria_runs_lease as lease;
 pub mod reclaim;
 pub mod run;
-pub mod store;
+pub use talaria_runs_store as store;
 
 use std::sync::Arc;
 

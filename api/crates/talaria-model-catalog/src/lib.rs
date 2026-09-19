@@ -21,13 +21,13 @@
 // The full refresh sweep lives with the admin refresh button (the surface
 // that owns it); the effort ladder's needs stop at what is here.
 
-use crate::capability::{CapabilityFact, capability_key, merge_capabilities};
-use crate::gateway::provider::CatalogModel;
-use crate::gateway::registry::LlmEndpoint;
-use crate::gateway::settings::{get_setting, set_setting};
 use sqlx::PgPool;
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_capability::{CapabilityFact, capability_key, merge_capabilities};
+use talaria_gateway::provider::CatalogModel;
+use talaria_gateway::registry::LlmEndpoint;
+use talaria_gateway::settings::{get_setting, set_setting};
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -108,14 +108,14 @@ pub async fn advertised_window(pg: &PgPool, model: &str) -> Option<f64> {
 /// already knows.
 pub async fn catalog_entries_for_targets(
     pg: &PgPool,
-    targets: &[crate::persona::ModelTarget],
+    targets: &[talaria_persona::ModelTarget],
 ) -> Vec<(String, CatalogModel)> {
     targets_in_store(&read_store(pg).await, targets)
 }
 
 pub fn targets_in_store(
     store: &serde_json::Value,
-    targets: &[crate::persona::ModelTarget],
+    targets: &[talaria_persona::ModelTarget],
 ) -> Vec<(String, CatalogModel)> {
     let mut out = Vec::new();
     let obj = store.as_object();
@@ -301,10 +301,10 @@ pub struct RefreshResult {
 /// unreachable must not empty the picker or un-declare facts an admin is
 /// looking at; the error is reported and the last good catalog stays.
 pub async fn refresh_endpoint_catalog(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     ep: &LlmEndpoint,
 ) -> RefreshResult {
-    let models = match crate::gateway::provider::catalog_models(state, ep).await {
+    let models = match talaria_gateway::provider::catalog_models(state, ep).await {
         Ok(m) => m,
         Err(err) => {
             return RefreshResult {
@@ -322,12 +322,12 @@ pub async fn refresh_endpoint_catalog(
 /// the request, so the refresh reuses it — the provider is asked once, never
 /// twice.
 pub async fn refresh_endpoint_catalog_with(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     ep: &LlmEndpoint,
-    models: Vec<crate::gateway::provider::CatalogModel>,
+    models: Vec<talaria_gateway::provider::CatalogModel>,
 ) -> RefreshResult {
     // `new Date().toISOString()` — millisecond precision, Z.
-    let at = crate::agent_auth::epoch_ms_to_iso(now_ms() as i64);
+    let at = talaria_agent_auth::epoch_ms_to_iso(now_ms() as i64);
 
     let mut store = read_store(&state.pg).await;
     let entry = serde_json::json!({

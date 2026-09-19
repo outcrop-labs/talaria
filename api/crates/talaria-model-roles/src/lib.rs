@@ -11,11 +11,11 @@
 // invisible failure for another, and the admin may well know something the
 // probe suite does not.
 
-use crate::capability::{capability_key, missing_capabilities};
-use crate::gateway::registry::{resolve_route, routing_for};
-use crate::gateway::settings::{get_setting, set_setting};
 use futures_util::future::join_all;
 use sqlx::PgPool;
+use talaria_capability::{capability_key, missing_capabilities};
+use talaria_gateway::registry::{resolve_route, routing_for};
+use talaria_gateway::settings::{get_setting, set_setting};
 
 pub struct RoleSpec {
     pub role: &'static str,
