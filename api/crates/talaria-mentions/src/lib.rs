@@ -3,7 +3,7 @@
 // mentions are surfaced separately by each surface (channels trigger replies;
 // comments pull the agent's attention).
 
-use crate::notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 
 /// Tokens a person answers to: email localpart, dashed full name, first name.
 fn user_mention_tokens(name: Option<&str>, email: Option<&str>) -> Vec<String> {

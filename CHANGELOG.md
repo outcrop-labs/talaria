@@ -4,8 +4,8 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 67 crates.** `runs/lease` and the background
-  scheduler are crates. Verified: `cargo check -p talaria-api`.
+- **API workspace: 69 crates.** notify + mentions. Verified:
+  `cargo check -p talaria-api`.
 
 
 

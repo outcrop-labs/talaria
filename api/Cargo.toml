@@ -74,6 +74,8 @@ members = [
     "crates/talaria-labels",
     "crates/talaria-runs-lease",
     "crates/talaria-scheduler",
+    "crates/talaria-notify",
+    "crates/talaria-mentions",
 ]
 resolver = "3"
 
@@ -172,6 +174,8 @@ talaria-realtime = { path = "crates/talaria-realtime" }
 talaria-labels = { path = "crates/talaria-labels" }
 talaria-runs-lease = { path = "crates/talaria-runs-lease" }
 talaria-scheduler = { path = "crates/talaria-scheduler" }
+talaria-notify = { path = "crates/talaria-notify" }
+talaria-mentions = { path = "crates/talaria-mentions" }
 
 
 

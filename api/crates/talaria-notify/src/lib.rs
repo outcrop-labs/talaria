@@ -15,11 +15,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use futures_util::future::BoxFuture;
 
-use crate::agent_auth::epoch_ms_to_iso;
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::realtime::{RealtimeDeps, UserEvent, publish_user};
 use serde_json::Value;
 use sqlx::PgPool;
+use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_realtime::{RealtimeDeps, UserEvent, publish_user};
+use talaria_settings::{get_setting, set_setting};
 
 /// One class as declared above — id and the fallback route
 /// a person who never touched the switch gets. Order is the wire order: the
@@ -388,9 +388,9 @@ pub async fn add_notification(
     // plane fans it to every subscribed browser. Detached and quiet like the
     // nudge above: the row is the record, the delivery is best-effort on top.
     if route != "email" {
-        crate::push::push_notification(
+        talaria_push::push_notification(
             user_id,
-            crate::push::PushNote {
+            talaria_push::PushNote {
                 id: notification_id.clone(),
                 title: n.title.to_string(),
                 body: n.body.unwrap_or("").to_string(),
@@ -605,7 +605,7 @@ pub struct GatedMail<'a> {
 /// to send mail at all.
 pub async fn send_gated_mail(
     pg: &PgPool,
-    sb: &crate::secretbox::SecretBox,
+    sb: &talaria_secretbox::SecretBox,
     mail: &GatedMail<'_>,
 ) -> GatedSendResult {
     let on = match read_delivery_switch(pg).await {
@@ -644,19 +644,19 @@ pub async fn send_gated_mail(
             error: Some("email delivery is switched off for this instance".into()),
         };
     }
-    let mut input = crate::email::EmailInput::new(mail.to, mail.subject, mail.html, mail.text);
+    let mut input = talaria_email::EmailInput::new(mail.to, mail.subject, mail.html, mail.text);
     if let Some(url) = mail.unsubscribe_url {
         input
             .headers
             .push(("List-Unsubscribe".into(), format!("<{url}>")));
     }
-    match crate::email::send_email(pg, sb, &input).await {
-        crate::email::SendOutcome::Sent => GatedSendResult {
+    match talaria_email::send_email(pg, sb, &input).await {
+        talaria_email::SendOutcome::Sent => GatedSendResult {
             ok: true,
             blocked: false,
             error: None,
         },
-        crate::email::SendOutcome::Failed(e) => GatedSendResult {
+        talaria_email::SendOutcome::Failed(e) => GatedSendResult {
             ok: false,
             blocked: false,
             error: Some(e),
@@ -1139,8 +1139,8 @@ pub async fn drain_notification_mail(deps: &DrainDeps, budget_ms: i64) -> MailDr
 /// is built on it — the digest's deep links and its button, the notification
 /// mail's settings link — so "no verified domain" has to mean "no links",
 /// never "links that do not resolve".
-pub(crate) async fn instance_base_url(pg: &PgPool) -> Option<String> {
-    let cfg = crate::instance::get_instance_domain(pg).await;
+pub async fn instance_base_url(pg: &PgPool) -> Option<String> {
+    let cfg = talaria_instance::get_instance_domain(pg).await;
     let verified = cfg.get("verified") == Some(&Value::Bool(true));
     let domain = cfg.get("domain").and_then(|d| d.as_str()).unwrap_or("");
     if !verified || domain.is_empty() {
@@ -1181,7 +1181,7 @@ fn notification_email_parts(
     deep_link: Option<&str>,
     settings_url: Option<&str>,
 ) -> EmailParts {
-    use crate::email::{email_button, email_escape, email_shell};
+    use talaria_email::{email_button, email_escape, email_shell};
     let body = body.unwrap_or("").trim();
     let cta = match deep_link {
         Some(link) => email_button(link, "Open in Talaria"),
@@ -1253,7 +1253,7 @@ fn notification_email_parts(
 /// that was refused at the gate.
 async fn send_notification_email(
     pg: &PgPool,
-    sb: &crate::secretbox::SecretBox,
+    sb: &talaria_secretbox::SecretBox,
     m: &QueuedMailPayload,
 ) -> SendOneResult {
     // The recipient lookup failing is a FAILED SEND, not "no address":
@@ -1368,7 +1368,7 @@ async fn mark_read_on_delivery(pg: &PgPool, notification_id: &str) {
 
 /// Production drain edges over the pool + secretbox. The boot path in jobs.rs
 /// builds these (the secretbox loads through AppState) and registers the job.
-pub fn real_drain_deps(pg: PgPool, sb: crate::secretbox::SecretBox) -> Arc<DrainDeps> {
+pub fn real_drain_deps(pg: PgPool, sb: talaria_secretbox::SecretBox) -> Arc<DrainDeps> {
     let delivery: DeliveryFn = {
         let pg = pg.clone();
         Arc::new(move || {
@@ -1480,8 +1480,8 @@ fn job_message(r: &MailDrainResult, oldest_queued_ms: Option<i64>) -> Option<Str
 /// because the queue is in THIS process's memory: a Redis lease would let one
 /// instance win the tick and leave every other instance's queue undrained
 /// forever.
-pub fn notification_mail_job_spec(deps: Arc<DrainDeps>) -> crate::scheduler::JobSpec {
-    use crate::scheduler::{JobName, JobSpec};
+pub fn notification_mail_job_spec(deps: Arc<DrainDeps>) -> talaria_scheduler::JobSpec {
+    use talaria_scheduler::{JobName, JobSpec};
     JobSpec {
         name: JobName::NotificationMail,
         every_ms: NOTIFY_MAIL_EVERY_MS,
@@ -1499,7 +1499,7 @@ pub fn notification_mail_job_spec(deps: Arc<DrainDeps>) -> crate::scheduler::Job
 }
 
 pub fn register_notification_mail_job(deps: Arc<DrainDeps>) {
-    crate::scheduler::register_job(notification_mail_job_spec(deps));
+    talaria_scheduler::register_job(notification_mail_job_spec(deps));
 }
 
 /// The members of a channel — who a message in it might be about.
@@ -1636,10 +1636,14 @@ pub async fn conversation_notification_href(
     conversation_id: &str,
 ) -> Option<String> {
     if kind == "research" {
-        let run_id = crate::research::research_run_for_conversation(pg, conversation_id)
-            .await
-            .ok()
-            .flatten();
+        let run_id: Option<String> =
+            sqlx::query_as("select id::text from research_runs where conversation_id = $1::uuid")
+                .bind(conversation_id)
+                .fetch_optional(pg)
+                .await
+                .ok()
+                .flatten()
+                .map(|(id,): (String,)| id);
         return notification_href(kind, agent_model, conversation_id, run_id.as_deref(), None);
     }
     if kind == "ticket" {
@@ -1773,10 +1777,10 @@ pub async fn notify_agent_reply(deps: &NotifyDeps, conversation_id: &str, messag
     .fetch_all(&deps.pg)
     .await
     .unwrap_or_default();
-    let label = crate::fleet::describe_agent(&agent_model).label;
+    let label = talaria_fleet_layout::describe_agent(&agent_model).label;
     // 200 UTF-16 units, '…' only past the bound — the DM body contract.
-    let body = if crate::body::utf16_len(&content) > 200 {
-        format!("{}…", crate::body::truncate_utf16(&content, 200))
+    let body = if talaria_body::utf16_len(&content) > 200 {
+        format!("{}…", talaria_body::truncate_utf16(&content, 200))
     } else {
         content.clone()
     };
@@ -2306,7 +2310,7 @@ mod tests {
         assert_eq!(p.subject, "Q3 plan");
         assert!(p.html.contains(&format!(
             "<p style=\"white-space:pre-wrap\">line one\nline two</p>{}",
-            crate::email::email_button("https://talaria.example/plans/q3", "Open in Talaria")
+            talaria_email::email_button("https://talaria.example/plans/q3", "Open in Talaria")
         )));
         assert!(p.html.contains(
             "Sent by Talaria because of your notification settings · <a href=\"https://talaria.example/settings/notifications\" style=\"color:#8a8a84\">change what Talaria emails you</a>"
