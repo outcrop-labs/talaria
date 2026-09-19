@@ -85,7 +85,7 @@ pub use talaria_ratelimit as ratelimit;
 pub use talaria_realtime_watch as realtime;
 pub use talaria_refs as refs;
 pub use talaria_repo_env as repo_env;
-pub mod research;
+pub use talaria_research as research;
 pub use talaria_research_origin as research_origin;
 pub mod retrieval;
 pub mod routes;

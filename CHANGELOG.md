@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 197 crates.** Digest mailer. Verified:
-  `cargo check -p talaria-api`.
+- **API workspace: 199 crates.** Research: run definition + domain (dispatch
+  via BUILD_DISPATCH). Verified: `cargo check -p talaria-api`.
+
 
 
 

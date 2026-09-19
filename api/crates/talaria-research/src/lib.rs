@@ -30,14 +30,14 @@ use uuid::Uuid;
 // RE-EXPORTED, not re-declared. `plan_search` and its companions live in the
 // run definition with the pipeline they belong to — the module that owns the
 // work owns its resolution; callers import them from here.
-use crate::realtime::RealtimeDeps;
-pub use crate::runs::defs::research::{
+use talaria_realtime::RealtimeDeps;
+pub use talaria_research_def::{
     ModeBudget, NO_SEARCH_REASON, SearchPlan, budget_for, plan_search, research_modes,
 };
-use crate::runs::defs::research::{ResearchInput, research_run};
-use crate::runs::run::{EnqueueOptions, cancel_run, enqueue};
-use crate::source_registry::{MARKER_RE, ResearchSource};
-use crate::work_dispatch::dispatch_deps;
+use talaria_research_def::{ORG_AGENT_RUN, ResearchInput, research_run};
+use talaria_runs_run::{EnqueueOptions, cancel_run, enqueue};
+use talaria_source_registry::{MARKER_RE, ResearchSource};
+use talaria_tasks_types::BUILD_DISPATCH;
 
 /// What the agent in a research conversation is for: answer from the report,
 /// cite the same [n] markers, and never state as established anything the
@@ -306,9 +306,9 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
         artifact_id: row.get(11),
         error: row.get(12),
         stats: row.get(13),
-        created_at: crate::agent_auth::epoch_ms_to_iso(created_ms),
-        updated_at: crate::agent_auth::epoch_ms_to_iso(updated_ms),
-        completed_at: completed_ms.map(crate::agent_auth::epoch_ms_to_iso),
+        created_at: talaria_agent_auth::epoch_ms_to_iso(created_ms),
+        updated_at: talaria_agent_auth::epoch_ms_to_iso(updated_ms),
+        completed_at: completed_ms.map(talaria_agent_auth::epoch_ms_to_iso),
     }
 }
 
@@ -321,24 +321,6 @@ fn row_of(row: &sqlx::postgres::PgRow) -> ResearchRun {
 /// somebody's personal assistant. Both halves are already on every existing
 /// row, so a run in flight at deploy resolves as correctly as one started
 /// after it — the reason a defaulted input flag was rejected here.
-pub const ORG_AGENT_RUN: &str = "research_runs.requested_by = research_runs.agent_model \
-     and exists(select 1 from agent_defs d \
-                where d.model = research_runs.agent_model and d.owner_user_id is null)";
-
-/// The same test, one run at a time, for the run driver's report edges — the
-/// list and role queries inline the fragment; the driver's deps closure holds
-/// this. A missing row answers false, which reads as "personal": a run whose
-/// record is gone writes no more reports anyway.
-pub async fn is_org_agent_run(pg: &PgPool, run_id: &str) -> Result<bool, sqlx::Error> {
-    // AssertSqlSafe: the interpolation is ORG_AGENT_RUN, this module's own
-    // predicate — no caller text reaches the statement.
-    let sql = format!("select ({ORG_AGENT_RUN}) from research_runs where id = $1::uuid");
-    let row: Option<(bool,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(run_id)
-        .fetch_optional(pg)
-        .await?;
-    Ok(row.map(|(v,)| v).unwrap_or(false))
-}
 
 /// Runs a viewer may see: their own, ones shared with them, and org runs —
 /// an org agent's research, whoever the ladder stamped as its owner, plus the
@@ -631,15 +613,18 @@ pub async fn briefable_research(
 /// `terminal` (a finished run) are both perfectly normal, and neither is a
 /// reason to leave the record behind.
 pub async fn delete_research_run(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     run_id: &str,
 ) -> Result<(), sqlx::Error> {
     if let Ok(redis) = state.redis().await {
         let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
-        let deps = dispatch_deps(state.pg.clone(), redis, realtime);
-        if let Err(e) = cancel_run(run_id, Some("the research run was deleted".into()), &deps).await
-        {
-            tracing::error!("[research] could not cancel {run_id} before deleting it: {e}");
+        if let Some(build) = BUILD_DISPATCH.get() {
+            let deps = build(state.pg.clone(), redis, realtime);
+            if let Err(e) =
+                cancel_run(run_id, Some("the research run was deleted".into()), &deps).await
+            {
+                tracing::error!("[research] could not cancel {run_id} before deleting it: {e}");
+            }
         }
     }
     sqlx::query("delete from research_runs where id = $1::uuid")
@@ -726,7 +711,7 @@ pub async fn get_research_run(
 /// its publish, and the drive; this process's scheduler advances the run,
 /// and the reclaim sweep is the guarantee either way.
 pub async fn start_research(
-    state: &crate::state::AppState,
+    state: &talaria_state::AppState,
     input: ResearchInput,
 ) -> Result<ResearchRun, String> {
     // THE UP-FRONT GATE, and the sentence it throws is the exported one so
@@ -748,7 +733,11 @@ pub async fn start_research(
         .await
         .map_err(|_| "the run could not be enqueued: redis is unavailable".to_string())?;
     let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
-    let deps = dispatch_deps(state.pg.clone(), redis, realtime);
+    let deps = BUILD_DISPATCH
+        .get()
+        .ok_or_else(|| "dispatch not wired".to_string())?(
+        state.pg.clone(), redis, realtime
+    );
     let run_input = serde_json::to_value(&input).expect("ResearchInput is plain data");
     enqueue(
         research_run(),
@@ -776,7 +765,7 @@ pub async fn start_research(
     .bind(&input.owner_user_id)
     .bind(&input.requested_by)
     .bind(&input.agent_model)
-    .bind(crate::runs::defs::research::depth_str(input.mode))
+    .bind(talaria_research_def::depth_str(input.mode))
     .bind(&input.question)
     .bind(&input.parent_run_id)
     .execute(&state.pg)
@@ -808,7 +797,8 @@ pub async fn start_research(
     let st = state.clone();
     tokio::spawn(async move {
         if let Some(t) =
-            crate::titler::generate_title(&st, crate::titler::TitleKind::Research, &question).await
+            talaria_titler::generate_title(&st, talaria_titler::TitleKind::Research, &question)
+                .await
             && let Err(e) = sqlx::query("update research_runs set title = $1 where id = $2::uuid")
                 .bind(&t)
                 .bind(&run_id)
@@ -886,7 +876,7 @@ pub async fn ensure_research_conversation(
     };
 
     let heading = title.unwrap_or_else(|| question.chars().take(80).collect());
-    let id = crate::conversations::create_conversation(
+    let id = talaria_conversations::create_conversation(
         pg,
         &owner,
         &agent_model,
@@ -912,19 +902,6 @@ pub async fn ensure_research_conversation(
             .fetch_optional(pg)
             .await?;
     Ok(after.and_then(|(v,)| v).or(Some(id)))
-}
-
-/// The run's discussion, if it has one. Reads the column `ensure_research_
-/// conversation` owns: ownerless org runs and rows predating the eager
-/// conversation answer None, which is the run definition's signal to proceed
-/// without asking anything of a discussion that does not exist.
-pub async fn conversation_of_run(pg: &PgPool, run_id: &str) -> Result<Option<String>, sqlx::Error> {
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("select conversation_id::text from research_runs where id = $1::uuid")
-            .bind(run_id)
-            .fetch_optional(pg)
-            .await?;
-    Ok(row.and_then(|(v,)| v))
 }
 
 /// The run a conversation belongs to, for the surfaces that start from the

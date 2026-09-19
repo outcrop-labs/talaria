@@ -199,6 +199,8 @@ members = [
     "crates/talaria-runs-reindex",
     "crates/talaria-approvals",
     "crates/talaria-digest",
+    "crates/talaria-research-def",
+    "crates/talaria-research",
     "crates/talaria-runs-agent-hire",
     "crates/talaria-comms-decay",
     "crates/talaria-chat-persist",
@@ -427,6 +429,8 @@ talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
 talaria-runs-reindex = { path = "crates/talaria-runs-reindex" }
 talaria-approvals = { path = "crates/talaria-approvals" }
 talaria-digest = { path = "crates/talaria-digest" }
+talaria-research-def = { path = "crates/talaria-research-def" }
+talaria-research = { path = "crates/talaria-research" }
 talaria-runs-agent-hire = { path = "crates/talaria-runs-agent-hire" }
 talaria-comms-decay = { path = "crates/talaria-comms-decay" }
 talaria-chat-persist = { path = "crates/talaria-chat-persist" }

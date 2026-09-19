@@ -73,33 +73,63 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-use crate::artifacts::{
+use talaria_artifacts::{
     SaveArtifactPatch, agent_category_folder, attach_artifact, create_artifact, save_artifact,
 };
-use crate::capability_reach::{ReachVia, Supplier, reach_for_keys};
-use crate::fleet::describe_agent;
-use crate::harness::defs::research::{
+use talaria_capability_reach::{ReachVia, Supplier, reach_for_keys};
+use talaria_fleet_layout::describe_agent;
+use talaria_harness::run::{
+    RunContext, RunLedger, capability_keys_for, real_deps as harness_real_deps, run_harness,
+};
+use talaria_harness::transport::LedgerSource;
+use talaria_harness_defs::defs::research::{
     ResearchDepth, ScopeInput, ScopeVerdict, SearchSink, SynthSource, SynthesisInput,
     ToolSearchDeps, clamp_queries, queries_from_lines, queries_harness, scope_harness,
     search_harness, search_transport, synthesis_harness, tool_search_transport,
 };
-use crate::harness::run::{
-    RunContext, RunLedger, capability_keys_for, real_deps as harness_real_deps, run_harness,
-};
-use crate::harness::transport::LedgerSource;
-use crate::kb::perms::{EditorGrant, set_editors};
-use crate::model::access::gateway_models;
-use crate::model::roles::resolve_role_model;
-use crate::notify::{NotificationInput, NotifyDeps, add_notification};
-use crate::retrieval::index::IndexDoc;
-use crate::retrieval::sources::{index_activity, index_personal};
-use crate::retrieval::{embed, qdrant};
-use crate::runs::define::{
+use talaria_kb::perms::{EditorGrant, set_editors};
+use talaria_model_access::gateway_models;
+use talaria_model_roles::resolve_role_model;
+use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
+use talaria_retrieval::index::IndexDoc;
+use talaria_retrieval::sources::{index_activity, index_personal};
+use talaria_retrieval::{embed, qdrant};
+use talaria_runs_define::{
     Authority, DEFAULT_MAX_ATTEMPTS, DecisionOption, DecisionRequest, RunDefinition, RunRow,
     RunStepContext, StepResult, register_run,
 };
-use crate::source_registry::{ResearchSource, SourceRegistry, SourceSeed};
-use crate::state::AppState;
+use talaria_source_registry::{ResearchSource, SourceRegistry, SourceSeed};
+use talaria_state::AppState;
+
+pub const ORG_AGENT_RUN: &str = "research_runs.requested_by = research_runs.agent_model \
+     and exists(select 1 from agent_defs d \
+                where d.model = research_runs.agent_model and d.owner_user_id is null)";
+/// The same test, one run at a time, for the run driver's report edges — the
+/// list and role queries inline the fragment; the driver's deps closure holds
+/// this. A missing row answers false, which reads as "personal": a run whose
+/// record is gone writes no more reports anyway.
+pub async fn is_org_agent_run(pg: &PgPool, run_id: &str) -> Result<bool, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is ORG_AGENT_RUN, this module's own
+    // predicate — no caller text reaches the statement.
+    let sql = format!("select ({ORG_AGENT_RUN}) from research_runs where id = $1::uuid");
+    let row: Option<(bool,)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(run_id)
+        .fetch_optional(pg)
+        .await?;
+    Ok(row.map(|(v,)| v).unwrap_or(false))
+}
+/// The run's discussion, if it has one. Reads the column `ensure_research_
+/// conversation` owns: ownerless org runs and rows predating the eager
+/// conversation answer None, which is the run definition's signal to proceed
+/// without asking anything of a discussion that does not exist.
+pub async fn conversation_of_run(pg: &PgPool, run_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select conversation_id::text from research_runs where id = $1::uuid")
+            .bind(run_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(v,)| v))
+}
 
 /// The registry key and the `kind` column. Written into every row this
 /// definition has ever produced, so it never changes.
@@ -1028,7 +1058,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
         org_run: Arc::new(move |run_id: String| {
             let pg = st_org.pg.clone();
             Box::pin(async move {
-                crate::research::is_org_agent_run(&pg, &run_id)
+                crate::is_org_agent_run(&pg, &run_id)
                     .await
                     .map_err(|e| e.to_string())
             })
@@ -1261,7 +1291,7 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
         conversation_of: Arc::new(move |run_id: String| {
             let pg = st_conv.pg.clone();
             Box::pin(async move {
-                crate::research::conversation_of_run(&pg, &run_id)
+                crate::conversation_of_run(&pg, &run_id)
                     .await
                     .map_err(|e| e.to_string())
             })
@@ -1274,13 +1304,13 @@ pub fn real_research_deps(state: AppState) -> ResearchRunDeps {
                 // the scope questions are courtesies the run extends to the
                 // people already talking about it, and an ownerless run (or a
                 // row from before conversations existed) simply skips them.
-                let Some(conversation) = crate::research::conversation_of_run(&pg, &args.run_id)
+                let Some(conversation) = crate::conversation_of_run(&pg, &args.run_id)
                     .await
                     .map_err(|e| e.to_string())?
                 else {
                     return Ok(());
                 };
-                crate::conversations::post_agent_turn(&pg, &conversation, &args.marker, &args.body)
+                talaria_conversations::post_agent_turn(&pg, &conversation, &args.marker, &args.body)
                     .await
                     .map(|_| ())
                     .map_err(|e| e.to_string())
@@ -2130,7 +2160,7 @@ mod tests {
     // checkpoint write does, and how the at-least-once cost is
     // stated as a number rather than as a paragraph.
     use super::*;
-    use crate::runs::define::{DecisionAnswer, RunState, StepSignal};
+    use talaria_runs_define::{DecisionAnswer, RunState, StepSignal};
 
     // ── The fake world ──────────────────────────────────────────────────────
 
@@ -2624,7 +2654,7 @@ mod tests {
             let mut row = row_for(input);
             row.attempt = attempt;
             let ctx = RunStepContext {
-                activity: crate::runs::define::StepActivity::new(),
+                activity: talaria_runs_define::StepActivity::new(),
                 run: row,
                 input: serde_json::to_value(input).expect("the test input serializes"),
                 checkpoint: checkpoint.clone(),
@@ -3256,7 +3286,7 @@ mod tests {
         row.checkpoint = checkpoint.clone();
         let res = research_step(
             RunStepContext {
-                activity: crate::runs::define::StepActivity::new(),
+                activity: talaria_runs_define::StepActivity::new(),
                 run: row,
                 input: serde_json::to_value(&inp).unwrap(),
                 checkpoint,
@@ -3324,7 +3354,7 @@ mod tests {
         row.checkpoint = checkpoint.clone();
         let res = research_step(
             RunStepContext {
-                activity: crate::runs::define::StepActivity::new(),
+                activity: talaria_runs_define::StepActivity::new(),
                 run: row,
                 input: serde_json::to_value(&inp).unwrap(),
                 checkpoint,
@@ -3360,20 +3390,20 @@ mod tests {
         // a private report with these grants opens for the run's agent and
         // for no other.
         let grants = personal_report_grants(&[], "gregasaurus-personal");
-        let private = crate::kb::perms::Guarded {
+        let private = talaria_kb::perms::Guarded {
             owner_user_id: None,
             created_by: None,
             visibility: "private".into(),
             edit_policy: "editors".into(),
         };
-        assert!(crate::kb::perms::can_read_agent(
+        assert!(talaria_kb::perms::can_read_agent(
             &private,
             "gregasaurus-personal",
             None,
             &grants,
             &[],
         ));
-        assert!(!crate::kb::perms::can_read_agent(
+        assert!(!talaria_kb::perms::can_read_agent(
             &private,
             "leo-engineering",
             None,
