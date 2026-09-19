@@ -3679,6 +3679,7 @@ dependencies = [
  "talaria-collate",
  "talaria-config",
  "talaria-conversations",
+ "talaria-daily-brief",
  "talaria-daily-brief-comms",
  "talaria-daily-brief-config",
  "talaria-daily-brief-delegation",
@@ -4096,6 +4097,36 @@ dependencies = [
  "talaria-gateway",
  "talaria-secretbox",
  "talaria-uploads",
+]
+
+[[package]]
+name = "talaria-daily-brief"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-artifacts",
+ "talaria-daily-brief-comms",
+ "talaria-daily-brief-config",
+ "talaria-daily-brief-delegation",
+ "talaria-daily-brief-focus",
+ "talaria-daily-brief-types",
+ "talaria-google-calendar",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-me",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-state",
+ "talaria-tz",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

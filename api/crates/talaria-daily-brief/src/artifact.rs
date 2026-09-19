@@ -19,8 +19,8 @@
 
 use sqlx::PgPool;
 
-use crate::artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
-use crate::daily_brief::types::{BRIEF_SECTIONS, BriefEntry, fold_entries};
+use talaria_artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
+use talaria_daily_brief_types::{BRIEF_SECTIONS, BriefEntry, fold_entries};
 
 const SECTION_TITLES: [(&str, &str); 4] = [
     ("action", "Needs you"),
@@ -74,7 +74,7 @@ pub async fn mirror_brief_artifact(
         return Ok(());
     };
 
-    let entries = crate::daily_brief::load_brief_entries(pg, brief_id).await?;
+    let entries = crate::load_brief_entries(pg, brief_id).await?;
 
     let title = format!("Daily brief: {brief_date}");
     let actor = owner_email
@@ -231,7 +231,7 @@ pub fn render_brief(entries: &[BriefEntry], row: &RenderContext<'_>) -> String {
     out.join("\n")
 }
 
-fn render_line(line: &crate::daily_brief::types::BriefLine) -> String {
+fn render_line(line: &talaria_daily_brief_types::BriefLine) -> String {
     let e = &line.current;
     let label = match &e.source_href {
         Some(href) => format!("[{}]({href})", e.title),

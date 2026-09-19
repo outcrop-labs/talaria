@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 176 crates.** Google Drive. Verified:
+- **API workspace: 177 crates.** Daily-brief engine. Verified:
   `cargo check -p talaria-api`.
+
 
 
 
