@@ -11,7 +11,6 @@
 use crate::agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use crate::agent_writes::{WriteAuthor, guard_agent_fields};
 use crate::boards::{board_allows_agent, board_info, board_role};
-use crate::error::house_error;
 use crate::gateway::usage::task_usage;
 use crate::judge::list_judge_reviews;
 use crate::labels::ensure_labels;
@@ -30,84 +29,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// ── The edges a ticket write touches beyond its own row ─────────────────────
-
-/// Everything a ticket write reaches for past its own SQL: the board's realtime
-/// topic, the notification fan-out, and the work-dispatch push. Clone-cheap
-/// (all Arcs and pools), so the detached fire-and-forget legs can take a copy
-/// into their own task.
-///
-/// `dispatch` is Option because assembling the runs edge needs a live Redis
-/// connection and a route may be serving while Redis is down. None stands the
-/// push down without failing the write: the ticket write survives.
-#[derive(Clone)]
-pub struct TaskDeps {
-    pub pg: PgPool,
-    pub realtime: RealtimeDeps,
-    pub notify: NotifyDeps,
-    pub dispatch: Option<RunDeps>,
-}
-
-impl TaskDeps {
-    /// From the pieces a route handler holds. Realtime unreachable publishes
-    /// nothing, notification rows still land, dispatch stands down — each edge
-    /// degrades alone, never fatally to the write.
-    pub fn from_route(pg: PgPool, redis: Option<redis::aio::ConnectionManager>) -> Self {
-        let realtime = RealtimeDeps::publish_only(redis.clone());
-        let notify = NotifyDeps::publishing(pg.clone(), redis.clone());
-        let dispatch = redis.map(|conn| dispatch_deps(pg.clone(), conn, realtime.clone()));
-        TaskDeps {
-            pg,
-            realtime,
-            notify,
-            dispatch,
-        }
-    }
-}
-
-/// The two refusal shapes, kept apart because the route answers them
-/// differently: a plain refusal is a refused write (400 — the request was
-/// well-formed but the board says no), approval-required is 403 (the
-/// write needs a person), and a database failure is 500.
-pub enum TaskError {
-    /// The sentence is the product's refusal.
-    Refusal(String),
-    /// HumanApprovalRequired — a write that needs a person.
-    ApprovalRequired(String),
-    Db(sqlx::Error),
-}
-
-impl From<sqlx::Error> for TaskError {
-    fn from(e: sqlx::Error) -> Self {
-        TaskError::Db(e)
-    }
-}
-
-impl TaskError {
-    pub fn message(&self) -> String {
-        match self {
-            TaskError::Refusal(m) | TaskError::ApprovalRequired(m) => m.clone(),
-            TaskError::Db(e) => e.to_string(),
-        }
-    }
-
-    /// The status the route answers with — decided in one place, so a new
-    /// error kind cannot inherit the wrong one.
-    pub fn status(&self) -> StatusCode {
-        match self {
-            TaskError::Refusal(_) => StatusCode::BAD_REQUEST,
-            TaskError::ApprovalRequired(_) => StatusCode::FORBIDDEN,
-            TaskError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    /// The house envelope, ready to return.
-    pub fn into_response(self) -> axum::response::Response {
-        house_error(self.status(), &self.message())
-    }
-}
-
-pub type TaskResult<T> = Result<T, TaskError>;
+pub use talaria_tasks_types::{
+    Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
+    human_assignee_ids, is_human_assignee, json_strings,
+};
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -116,78 +41,7 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-// ── Mixed assignees ──────────────────────────────────────────────────────────
-// The assignees array mixes AGENT model ids (bare strings, unchanged — the
-// heartbeat/outreach `@>` predicates keep matching) and HUMANS as
-// `user:<uuid>`. Helpers below split the two worlds.
-
-/// Does this assignee string name a human (`user:<uuid>`)?
-pub fn is_human_assignee(a: &str) -> bool {
-    a.starts_with("user:")
-}
-
-/// The human half of a mixed assignees array, with the `user:` prefix
-/// stripped.
-pub fn human_assignee_ids(assignees: &[String]) -> Vec<String> {
-    assignees
-        .iter()
-        .filter(|a| is_human_assignee(a))
-        .map(|a| a[5..].to_string())
-        .collect()
-}
-
-/// The agent half of a mixed assignees array, bare model ids unchanged — the
-/// strings the heartbeat's `@>` predicates and the dispatch walk match.
-pub fn agent_assignees(assignees: &[String]) -> Vec<String> {
-    assignees
-        .iter()
-        .filter(|a| !is_human_assignee(a))
-        .cloned()
-        .collect()
-}
-
 // ── The row and its select ───────────────────────────────────────────────────
-
-/// The ticket as every reader serves it: TASK_SELECT's column list in order,
-/// camelCase on the wire. Timestamps are ISO strings — the select fetches
-/// epoch-ms and shapes them here, the same contract boards.rs established.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Task {
-    pub id: String,
-    pub board_id: String,
-    /// `PREFIX-12` — the board's prefix and the per-board counter, or None
-    /// for pre-ref tickets.
-    pub ticket_ref: Option<String>,
-    pub title: String,
-    pub description: Option<String>,
-    pub status: String,
-    pub priority: String,
-    pub effort: Option<String>,
-    pub assignees: Vec<String>,
-    pub created_by: String,
-    pub due_date: Option<String>,
-    pub start_date: Option<String>,
-    pub color: Option<String>,
-    pub tags: Vec<String>,
-    pub attachments: serde_json::Value,
-    pub time_spent_seconds: i64,
-    /// Human planning estimate; the `::float8` cast in the select is what
-    /// makes the estimate-activity comparison numeric — `numeric` never
-    /// reaches the wire as text.
-    pub estimated_hours: Option<f64>,
-    pub parent_id: Option<String>,
-    /// The task's discussion room's message count — the kanban badge and the
-    /// Discussion tab's own count read the same number.
-    pub comment_count: i32,
-    pub outcome: Option<String>,
-    pub resolution: Option<String>,
-    pub error_message: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub completed_at: Option<String>,
-    pub archived_at: Option<String>,
-}
 
 /// TASK_SELECT, verbatim but for the sqlx needs: uuid columns `::text`-cast,
 /// timestamptz as epoch-ms (shaped to ISO by the row mapping), aliases
@@ -241,10 +95,6 @@ struct TaskRow {
     updated_at_ms: i64,
     completed_at_ms: Option<i64>,
     archived_at_ms: Option<i64>,
-}
-
-pub fn json_strings(v: &serde_json::Value) -> Vec<String> {
-    serde_json::from_value(v.clone()).unwrap_or_default()
 }
 
 impl From<TaskRow> for Task {
@@ -702,44 +552,6 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
 // agent write whether it arrives over PUT /api/tasks/:id or from a future
 // tool.
 
-/// `Platform` is Talaria itself (the QA judge, dispatch) — trusted like a
-/// human, and named as itself in the activity log.
-#[derive(Debug, Clone)]
-pub struct TaskActor {
-    pub kind: TaskActorKind,
-    /// Activity/notification identity: an email for humans, a model id for
-    /// agents, `judge:<model>` for the platform.
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskActorKind {
-    Human,
-    Agent,
-    Platform,
-}
-
-impl TaskActor {
-    pub fn human(id: impl Into<String>) -> Self {
-        TaskActor {
-            kind: TaskActorKind::Human,
-            id: id.into(),
-        }
-    }
-    pub fn agent(model: impl Into<String>) -> Self {
-        TaskActor {
-            kind: TaskActorKind::Agent,
-            id: model.into(),
-        }
-    }
-    pub fn platform(id: impl Into<String>) -> Self {
-        TaskActor {
-            kind: TaskActorKind::Platform,
-            id: id.into(),
-        }
-    }
-}
-
 /// The system Blocked column (statuses.rs owns the key and refuses to let
 /// any board mint another one), so a literal is the honest handle: no
 /// board_statuses row carries the 'blocked' category, which is exactly why
@@ -927,45 +739,6 @@ async fn handoff_target(pg: &PgPool, cur: &Task, meta: &StatusMeta) -> TaskResul
 }
 
 // ── Update ───────────────────────────────────────────────────────────────────
-
-/// The tri-state fields (`Option<Option<T>>`) keep three meanings apart:
-/// absent (None — don't touch), present-null (Some(None) — clear it), and a
-/// value (Some(Some(v))). Several of the activity lines below exist
-/// precisely because "cleared" used to be indistinguishable from
-/// "untouched".
-#[derive(Debug, Default)]
-pub struct TaskPatch {
-    pub title: Option<String>,
-    pub description: Option<Option<String>>,
-    pub status: Option<String>,
-    pub priority: Option<String>,
-    pub effort: Option<Option<String>>,
-    pub assignees: Option<Vec<String>>,
-    pub due_date: Option<Option<String>>,
-    pub start_date: Option<Option<String>>,
-    pub color: Option<Option<String>>,
-    pub tags: Option<Vec<String>>,
-    pub outcome: Option<Option<String>>,
-    pub resolution: Option<Option<String>>,
-    pub error_message: Option<Option<String>>,
-    pub archived: Option<bool>,
-    pub estimated_hours: Option<Option<f64>>,
-    pub parent_id: Option<Option<String>>,
-    /// Full replacement list of attachment chips (uploads + refs), already
-    /// resolved/ACL-checked by the route — same shape as message
-    /// attachments.
-    pub attachments: Option<serde_json::Value>,
-    /// Seconds to add to accumulated time-spent (agents report per
-    /// iteration).
-    pub add_time_spent_seconds: Option<f64>,
-    /// WHY the column moved, when the reason is not visible from the move
-    /// itself — appended to the one 'status' activity line this function
-    /// writes. It exists so a caller with a reason does not have to become a
-    /// second writer of `tasks.status` to record one: `delete_status`
-    /// reassigns a doomed column's tickets through here and says so. Never a
-    /// substitute for the move itself.
-    pub status_note: Option<String>,
-}
 
 /// Absent → fallback, everything else (null included) → the value.
 fn pick<T: Clone>(v: &Option<Option<T>>, fallback: Option<T>) -> Option<T> {

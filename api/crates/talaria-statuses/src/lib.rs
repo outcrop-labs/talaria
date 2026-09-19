@@ -5,10 +5,10 @@
 // reassigns) — never a second writer of tasks.status, which is the exact
 // shape those functions exist to avoid.
 
-use crate::boards::get_board_agent_config;
-use crate::realtime::{BoardEvent, RealtimeDeps, publish_board};
 use sqlx::PgPool;
 use std::collections::HashSet;
+use talaria_boards::get_board_agent_config;
+use talaria_realtime::{BoardEvent, RealtimeDeps, publish_board};
 
 /// Legal on every board but never board COLUMNS, so they carry no category —
 /// terminal in every UI that reads them, and agents may not park work there.
@@ -781,7 +781,7 @@ pub struct StatusPatch {
 /// belongs to the person who caused it. Optional would mean a caller could
 /// forget, and the moves would land on the record unattributed.
 pub async fn update_status(
-    deps: &crate::tasks::TaskDeps,
+    deps: &talaria_tasks_types::TaskDeps,
     board_id: &str,
     key: &str,
     patch: &StatusPatch,
@@ -924,7 +924,7 @@ fn signoff_what(category: &str) -> Option<&'static str> {
 /// halfway says exactly where it stopped and that re-asking carries on.
 #[allow(clippy::too_many_arguments)] // the drain's inputs are the column's — all eight name one
 async fn drain_signoff_column(
-    deps: &crate::tasks::TaskDeps,
+    deps: &talaria_tasks_types::TaskDeps,
     board_id: &str,
     key: &str,
     label: &str,
@@ -996,15 +996,20 @@ async fn drain_signoff_column(
     // are.
     let mut moved = 0usize;
     for (i, (ticket,)) in held.iter().enumerate() {
-        let patch = crate::tasks::TaskPatch {
+        let patch = talaria_tasks_types::TaskPatch {
             status: Some(dest_key.clone()),
             status_note: Some(format!(
                 "the \"{label}\" column was recategorised as \"{to}\""
             )),
             ..Default::default()
         };
-        match crate::tasks::update_task(deps, ticket, patch, &crate::tasks::TaskActor::human(actor))
-            .await
+        match talaria_tasks_types::update_task(
+            deps,
+            ticket,
+            patch,
+            &talaria_tasks_types::TaskActor::human(actor),
+        )
+        .await
         {
             Ok(_) => {}
             Err(e) => {
@@ -1047,7 +1052,7 @@ async fn drain_signoff_column(
 /// N updates instead of one statement is the price, and deleting a populated
 /// column is a rare admin action; being wrong four ways was the alternative.
 pub async fn delete_status(
-    deps: &crate::tasks::TaskDeps,
+    deps: &talaria_tasks_types::TaskDeps,
     board_id: &str,
     key: &str,
     reassign_to: &str,
@@ -1095,13 +1100,18 @@ pub async fn delete_status(
     // still resolve for the ticket it is reading. A refused move names the
     // ticket that could not move.
     for (ticket,) in &doomed {
-        let patch = crate::tasks::TaskPatch {
+        let patch = talaria_tasks_types::TaskPatch {
             status: Some(reassign_to.to_string()),
             status_note: Some(format!("the \"{victim_label}\" column was deleted")),
             ..Default::default()
         };
-        match crate::tasks::update_task(deps, ticket, patch, &crate::tasks::TaskActor::human(actor))
-            .await
+        match talaria_tasks_types::update_task(
+            deps,
+            ticket,
+            patch,
+            &talaria_tasks_types::TaskActor::human(actor),
+        )
+        .await
         {
             Ok(_) => {}
             Err(e) => return Ok(Err(e.message())),

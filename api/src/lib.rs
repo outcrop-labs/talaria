@@ -100,7 +100,7 @@ pub use talaria_session as session;
 pub use talaria_skill_access as skill_access;
 pub use talaria_source_registry as source_registry;
 pub use talaria_state as state;
-pub mod statuses;
+pub use talaria_statuses as statuses;
 pub use talaria_storage as storage;
 pub use talaria_task_const as task_const;
 pub mod tasks;
