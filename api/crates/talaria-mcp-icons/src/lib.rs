@@ -207,9 +207,9 @@ pub fn icons() -> Arc<IconCache> {
         let fetch: FetchIcon = Arc::new(|url: &str| {
             let url = url.to_string();
             Box::pin(async move {
-                let r = crate::safe_fetch::safe_fetch(
+                let r = talaria_safe_fetch::safe_fetch(
                     &url,
-                    crate::safe_fetch::SafeFetch {
+                    talaria_safe_fetch::SafeFetch {
                         timeout_ms: Some(5_000),
                         max_bytes: Some(ICON_MAX_BYTES),
                         ..Default::default()

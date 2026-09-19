@@ -82,6 +82,8 @@ members = [
     "crates/talaria-fleet-docker",
     "crates/talaria-agent-media",
     "crates/talaria-agent-memory",
+    "crates/talaria-mcp-jsonrpc",
+    "crates/talaria-mcp-icons",
 ]
 resolver = "3"
 
@@ -188,6 +190,8 @@ talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
 talaria-fleet-docker = { path = "crates/talaria-fleet-docker" }
 talaria-agent-media = { path = "crates/talaria-agent-media" }
 talaria-agent-memory = { path = "crates/talaria-agent-memory" }
+talaria-mcp-jsonrpc = { path = "crates/talaria-mcp-jsonrpc" }
+talaria-mcp-icons = { path = "crates/talaria-mcp-icons" }
 
 
 

@@ -4,9 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 75 crates.** `talaria-fleet-docker` (preflight via
-  OnceLock), `agent_media`, `agent_memory`. Verified:
+- **API workspace: 77 crates.** MCP jsonrpc + icon fetch. Verified:
   `cargo check -p talaria-api`.
+
 
 
 

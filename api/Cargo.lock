@@ -3605,6 +3605,8 @@ dependencies = [
  "talaria-judge",
  "talaria-labels",
  "talaria-llm-keys",
+ "talaria-mcp-icons",
+ "talaria-mcp-jsonrpc",
  "talaria-me",
  "talaria-mentions",
  "talaria-native-search",
@@ -4021,6 +4023,30 @@ dependencies = [
  "talaria-body",
  "talaria-permissions",
  "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-icons"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-safe-fetch",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-mcp-jsonrpc"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
