@@ -302,13 +302,7 @@ struct OrgReply {
 /// the surface callers see: transport failures read bare "fetch failed"
 /// (the cause chain carries the detail, the message does not) and a timeout
 /// expiry reads "The operation was aborted due to timeout".
-pub(crate) fn undici_message(e: &reqwest::Error) -> String {
-    if e.is_timeout() {
-        "The operation was aborted due to timeout".into()
-    } else {
-        "fetch failed".into()
-    }
-}
+pub(crate) use talaria_undici::undici_message;
 
 /// The same shapes for the safe-fetch leg — except a blocked URL, whose
 /// refusal sentence is itself the message that surfaces, so it passes

@@ -15,9 +15,9 @@ use axum::body::Bytes;
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
-use crate::fleet::{describe_agent, read_manifest};
 use crate::gateway::provider::http;
 use crate::gateway::vault::{SecretVault, seal_content};
+use talaria_fleet_layout::{describe_agent, read_manifest};
 
 use std::pin::Pin;
 use std::time::Duration;

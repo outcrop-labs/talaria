@@ -1,0 +1,13 @@
+[package]
+name = "talaria-ratelimit"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+http = "1"
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }

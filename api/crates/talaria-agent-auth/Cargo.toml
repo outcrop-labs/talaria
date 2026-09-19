@@ -1,0 +1,24 @@
+[package]
+name = "talaria-agent-auth"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", default-features = false }
+getrandom = "0.3"
+tokio = { version = "1", features = ["sync", "time"] }
+
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-auth = { path = "../talaria-auth" }
+talaria-collate = { path = "../talaria-collate" }
+talaria-error = { path = "../talaria-error" }
+talaria-password = { path = "../talaria-password" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

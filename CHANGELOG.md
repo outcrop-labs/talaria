@@ -4,6 +4,31 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **API workspace: 37 leaf crates.** `talaria-fleet-layout` (paths +
+  `describe_agent`/`read_manifest`) and `talaria-undici` cut the
+  gateway↔fleet `fleet_dir` cycle; `agent_secrets` followed. Verified:
+  `cargo check -p talaria-api`.
+
+
+
+
+
+
+
+
+
+
+- **API dev builds: opt-level 1 + mold.** `api/Cargo.toml` `[profile.dev]`
+  compiles our crate at `-C opt-level=1`, deps at 3, `debug =
+  "line-tables-only"` (unwind stays — tests and catch-panic). gnu linux
+  links with mold (`api/.cargo/config.toml`); CI installs the package, the
+  devbox image does too. musl/package image unchanged until mold-on-musl is
+  proven. Verified: `cargo build` after the profile flip (4m 34s, deps at
+  opt-level 3); incremental `touch src/routes/mod.rs` 20.7s (was 23.7s);
+  `cargo clippy --all-targets -- -D warnings` green; `cargo test` green;
+  `bun run check`.
+
+
 - **Workbench agents pack against the docker host, not a 3-job stall.**
   Admit uses `docker info` MemTotal when the API is cgrouped smaller than
   the VM (`/proc/meminfo` when they match). Keep-back is 25% of that total

@@ -1,0 +1,14 @@
+# Leaf: the YAML emitter (`stringify`) used by /api/history. Extracted first
+# so the workspace scaffold is a real second rustc unit, not a paper one.
+[package]
+name = "talaria-yaml"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

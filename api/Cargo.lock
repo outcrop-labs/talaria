@@ -3393,6 +3393,58 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
+name = "talaria-agent-auth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "getrandom 0.3.4",
+ "serde",
+ "sqlx",
+ "talaria-auth",
+ "talaria-collate",
+ "talaria-error",
+ "talaria-password",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agent-role-templates"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+]
+
+[[package]]
+name = "talaria-agent-secrets"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-layout",
+ "talaria-secretbox",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agents-registry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-api"
 version = "0.1.0"
 dependencies = [
@@ -3420,6 +3472,43 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.11.0",
  "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-role-templates",
+ "talaria-agent-secrets",
+ "talaria-agents-registry",
+ "talaria-audit",
+ "talaria-auth",
+ "talaria-auth-config",
+ "talaria-body",
+ "talaria-collate",
+ "talaria-config",
+ "talaria-db",
+ "talaria-error",
+ "talaria-fleet-layout",
+ "talaria-internal-history",
+ "talaria-native-search",
+ "talaria-org-domains",
+ "talaria-params",
+ "talaria-password",
+ "talaria-password-accounts",
+ "talaria-push",
+ "talaria-ratelimit",
+ "talaria-repo-env",
+ "talaria-research-origin",
+ "talaria-safe-fetch",
+ "talaria-secret-rotation",
+ "talaria-secretbox",
+ "talaria-source-registry",
+ "talaria-state",
+ "talaria-task-const",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-tz",
+ "talaria-undici",
+ "talaria-work-wait",
+ "talaria-workspace-handles",
+ "talaria-workspace-secrets",
+ "talaria-yaml",
  "thiserror",
  "tokio",
  "tower",
@@ -3428,6 +3517,323 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-audit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-auth"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.11.0",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-auth-config"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-body"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "talaria-collate"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-config"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-db"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "talaria-config",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-error"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-layout"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-internal-history"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-native-search"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-org-domains"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "hickory-resolver",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-params"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "talaria-error",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-password"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "scrypt",
+]
+
+[[package]]
+name = "talaria-password-accounts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-password",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-push"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hmac",
+ "p256",
+ "reqwest",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-ratelimit"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "redis",
+]
+
+[[package]]
+name = "talaria-repo-env"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "sqlx",
+ "talaria-secretbox",
+]
+
+[[package]]
+name = "talaria-research-origin"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "talaria-state",
+]
+
+[[package]]
+name = "talaria-safe-fetch"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-secret-rotation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-secretbox",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-secretbox"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "scrypt",
+ "sqlx",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-source-registry"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-state"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "sqlx",
+ "talaria-config",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-task-const"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-teams"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-templates"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-internal-history",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-tz"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "talaria-agent-auth",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-undici"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+]
+
+[[package]]
+name = "talaria-work-wait"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-workspace-handles"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "sqlx",
+]
+
+[[package]]
+name = "talaria-workspace-secrets"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-audit",
+ "talaria-secretbox",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-yaml"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ pub mod create;
 pub mod docker;
 pub mod federate;
 pub mod hermes_skills;
-pub mod layout;
+pub use talaria_fleet_layout as layout;
 pub mod preflight;
 pub mod reconcile;
 pub mod render;
@@ -20,60 +20,7 @@ pub mod resources;
 use crate::users::personal_assistant_owners;
 use sqlx::PgPool;
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct AgentModel {
-    pub id: String,
-    /// Display label — the leading segment of the id, capitalised.
-    pub label: String,
-    /// Role remainder of the id.
-    pub role: String,
-}
-
-/// Split an agent id into its display halves: "<slug>-<role>". An empty
-/// leading segment (an id like "-lead") keeps the WHOLE id as the label.
-pub fn describe_agent(id: &str) -> AgentModel {
-    let (first, rest) = match id.split_once('-') {
-        Some((f, r)) => (f, r),
-        None => (id, ""),
-    };
-    let label = if first.is_empty() {
-        id.to_string()
-    } else {
-        // One code point uppercased; agent ids are ASCII.
-        let mut c = first.chars();
-        match c.next() {
-            Some(h) => h.to_uppercase().collect::<String>() + c.as_str(),
-            None => first.to_string(),
-        }
-    };
-    AgentModel {
-        id: id.to_string(),
-        label,
-        // dashes become spaces; empty when the id has no dash at all.
-        role: rest.replace('-', " "),
-    }
-}
-
-/// fleet.json — the render OUTPUT table of {model, url, key} per agent. The
-/// url/key halves are the comms transport's (gateway/fleet_chat.rs); here only
-/// `model` is read, and the keys never leave the fleet plane.
-#[derive(serde::Deserialize)]
-pub struct ManifestEntry {
-    pub model: String,
-    pub url: String,
-    pub key: Option<String>,
-}
-
-/// read_manifest: a missing or unparseable manifest is an EMPTY fleet, and
-/// says so — it never falls back to invented agents.
-pub async fn read_manifest() -> Vec<ManifestEntry> {
-    let Ok(raw) =
-        tokio::fs::read_to_string(crate::gateway::provider::fleet_dir().join("fleet.json")).await
-    else {
-        return Vec::new();
-    };
-    serde_json::from_str::<Vec<ManifestEntry>>(&raw).unwrap_or_default()
-}
+pub use talaria_fleet_layout::{AgentModel, ManifestEntry, describe_agent, read_manifest};
 
 /// The fleet from the manifest — base models only; tier entries like
 /// "<base>-<alias>" are hidden from the picker.

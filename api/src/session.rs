@@ -343,16 +343,7 @@ pub fn state_matches(a: &str, b: &str) -> bool {
     constant_time_eq(a.as_bytes(), b.as_bytes())
 }
 
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
+pub use talaria_password::constant_time_eq;
 
 /// Random URL-safe token for session ids / OAuth state — 32 bytes as
 /// base64url, no pad.

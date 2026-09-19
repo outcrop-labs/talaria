@@ -23,7 +23,7 @@ FROM docker.io/library/node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client procps less \
-      build-essential cmake pkg-config \
+      build-essential cmake pkg-config mold \
  && rm -rf /var/lib/apt/lists/*
 
 # Docker CLI + compose v2, copied from the upstream CLI image (statically

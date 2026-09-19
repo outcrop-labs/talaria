@@ -74,7 +74,7 @@ pub fn key_env_allowed(env_var: &str) -> bool {
 /// now that the write plane resolves through it too; this is the read side's
 /// alias for the same one definition.
 pub(crate) fn fleet_dir() -> std::path::PathBuf {
-    crate::fleet::layout::fleet_dir()
+    talaria_fleet_layout::fleet_dir()
 }
 
 fn fleet_env_path() -> std::path::PathBuf {
@@ -713,7 +713,7 @@ async fn fetch_models(
         // string rides the `available` route's note verbatim (byte-stable).
         req.send()
             .await
-            .map_err(|e| crate::mcp::registry::undici_message(&e))
+            .map_err(|e| talaria_undici::undici_message(&e))
     };
     let direct = attempt(format!("{base}/models{qs}")).await;
     match direct {

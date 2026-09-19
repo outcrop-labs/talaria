@@ -472,12 +472,15 @@ jobs:
         with:
           workspaces: api
 
+      # mold: api/.cargo/config.toml passes -fuse-ld=mold on gnu linux.
+      # ubuntu-latest's gcc understands the flag; the package is the missing
+      # binary. aws-lc-sys still uses the image's compiler + cmake.
+      - name: mold
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+
       # Same order as api:check: format (instant, and its failures are the
       # cheapest to read), then clippy as the port's lint gate (-D warnings —
-      # the crate develops clean or not at all), then the tests. No apt step:
-      # aws-lc-sys compiles C and wants a compiler + cmake, both of which
-      # ship on the ubuntu-latest image — if a runner-image change ever
-      # breaks this job at the aws-lc-sys build, that is the line to read.
+      # the crate develops clean or not at all), then the tests.
       - name: Format
         run: cargo fmt --check
 

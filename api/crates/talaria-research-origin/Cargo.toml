@@ -1,0 +1,13 @@
+[package]
+name = "talaria-research-origin"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+talaria-state = { path = "../talaria-state" }

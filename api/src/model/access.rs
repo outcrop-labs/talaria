@@ -122,31 +122,8 @@ pub fn canonical_model_id(id: &str, catalog: &[GatewayModel]) -> String {
     }
 }
 
-/// `String.prototype.localeCompare` — default locale, ICU root collation —
-/// for the id alphabet Talaria actually registers (ASCII letters, digits,
-/// `/ . - _`). Byte order is NOT it: case is a tertiary difference there, so
-/// `Z.ai/glm-5.3` sorts at its lowercased position, after every `o...` id,
-/// while a byte sort hoists the uppercase Z to the front. Fold case first;
-/// where folding ties, lowercase wins (ICU's default case-first), and a full
-/// tie falls back to bytes for a total order.
-pub fn collating_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let fold = a
-        .chars()
-        .flat_map(char::to_lowercase)
-        .cmp(b.chars().flat_map(char::to_lowercase));
-    if fold != Ordering::Equal {
-        return fold;
-    }
-    let case = a
-        .chars()
-        .map(|c| c.is_uppercase() as u8)
-        .cmp(b.chars().map(|c| c.is_uppercase() as u8));
-    if case != Ordering::Equal {
-        return case;
-    }
-    a.cmp(b)
-}
+/// `String.prototype.localeCompare` — see [`talaria_collate::collating_cmp`].
+pub use talaria_collate::collating_cmp;
 
 /// Bare model ids members may use. Empty = no restriction. Non-string
 /// entries in a hand-edited row never match anything — only string entries
