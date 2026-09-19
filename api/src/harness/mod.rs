@@ -30,17 +30,14 @@
 // post-parse refine hook). The definitions live in `defs/`, one module per
 // family.
 
-pub mod define;
+pub use talaria_harness::{define, recorded, run, transport};
 pub mod defs;
 pub use talaria_harness_json as json;
 pub use talaria_harness_json_schema as json_schema;
 pub use talaria_harness_prompt_rules as prompt_rules;
-pub mod recorded;
 pub mod registry;
-pub mod run;
 pub use talaria_harness_schema as schema;
 pub use talaria_harness_text as text;
-pub mod transport;
 
 #[cfg(test)]
 mod prompt_rules_coverage {

@@ -36,11 +36,11 @@ use super::run::{
     DeltaFn, HarnessDeps, HarnessResult, HarnessRunRow, RunContext, StreamFn, StreamOptions,
 };
 use super::transport::{TransportKind, TransportReply, TransportRequest};
-use crate::capability::{CapabilityFact, capability_key};
-use crate::capability_reach::{Reach, ReachVia, Supplier};
-use crate::gateway::guard::{self, Finding, GuardConfig, GuardMode};
-use crate::harness_model::ModelChainStep;
-use crate::persona::{PersonaRow, persona_index};
+use talaria_capability::{CapabilityFact, capability_key};
+use talaria_capability_reach::{Reach, ReachVia, Supplier};
+use talaria_gateway::guard::{self, Finding, GuardConfig, GuardMode};
+use talaria_harness_model::ModelChainStep;
+use talaria_persona::{PersonaRow, persona_index};
 
 /// What the transport hands back, in order. THE LAST ONE REPEATS, and the
 /// repeat is load-bearing rather than convenient: a JSON harness that repairs

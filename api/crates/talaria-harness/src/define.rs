@@ -35,10 +35,10 @@
 
 use std::sync::Arc;
 
-use super::schema::Schema;
 use super::transport::{ToolCall, ToolDefinition, ToolPolicy};
-use crate::harness_model::ModelSpec;
 use serde_json::Value;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_schema::Schema;
 
 // ── The message ──────────────────────────────────────────────────────────────
 

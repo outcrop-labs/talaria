@@ -4,8 +4,10 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 164 crates.** Channel replies (room comment fanout via
-  OnceLock). Verified: `cargo check -p talaria-api`.
+- **API workspace: 165 crates.** Harness engine (`define`/`transport`/`run`/
+  `recorded`). Defs and registry stay in the monolith. Verified:
+  `cargo check -p talaria-api`.
+
 
 
 

@@ -45,20 +45,20 @@ use super::define::{
     Fallback, Grounding as GroundMaterial, HarnessDefinition, Message, OnFailure, Output,
     RenderContext, Role,
 };
-use super::json::{ParseResult, parse_json, repair_prompt};
-use super::json_schema::{WireSchema, prompt_shape, wire_schema_of};
 use super::transport::{
     LedgerAttribution, LedgerSource, TransportKind, TransportReply, TransportRequest,
     dispatch_transport, tool_wire_message,
 };
-use crate::capability::{CapabilityFact, capability_key, get_capabilities, missing_capabilities};
-use crate::capability_reach::{Reach, reach_for_keys};
-use crate::effort_prefs::{agent_slot, role_slot, slot_effort_for_model};
-use crate::gateway::guard::{self, Available, Finding, GuardConfig, GuardMode, ToolRecord};
-use crate::gateway::registry::routing_for;
-use crate::harness_model::{self, ModelChainStep, ModelSpec};
-use crate::persona;
-use crate::state::AppState;
+use talaria_capability::{CapabilityFact, capability_key, get_capabilities, missing_capabilities};
+use talaria_capability_reach::{Reach, reach_for_keys};
+use talaria_effort_prefs::{agent_slot, role_slot, slot_effort_for_model};
+use talaria_gateway::guard::{self, Available, Finding, GuardConfig, GuardMode, ToolRecord};
+use talaria_gateway::registry::routing_for;
+use talaria_harness_json::{ParseResult, parse_json, repair_prompt};
+use talaria_harness_json_schema::{WireSchema, prompt_shape, wire_schema_of};
+use talaria_harness_model::{self, ModelChainStep, ModelSpec};
+use talaria_persona;
+use talaria_state::AppState;
 
 // ── The result ───────────────────────────────────────────────────────────────
 
@@ -225,7 +225,7 @@ pub fn real_deps(state: &AppState) -> HarnessDeps {
                         user_id: user_id.as_deref().or(spec.user_id),
                         ..spec
                     };
-                    harness_model::resolve_harness_model(&pg, &spec)
+                    talaria_harness_model::resolve_harness_model(&pg, &spec)
                         .await
                         .ok()
                         .flatten()
@@ -262,7 +262,7 @@ pub fn real_deps(state: &AppState) -> HarnessDeps {
             let pg = state.pg.clone();
             Arc::new(move |model| {
                 let pg = pg.clone();
-                Box::pin(async move { persona::persona_capability_keys(&pg, &model).await })
+                Box::pin(async move { talaria_persona::persona_capability_keys(&pg, &model).await })
             })
         },
         missing_capabilities: {
@@ -396,7 +396,7 @@ pub async fn capability_keys_for(pg: &sqlx::PgPool, model: &str) -> Vec<String> 
     };
     let keys = capability_keys_of(&endpoints, &upstream);
     if keys.is_empty() {
-        persona::persona_capability_keys(pg, model).await
+        talaria_persona::persona_capability_keys(pg, model).await
     } else {
         keys
     }
@@ -803,7 +803,7 @@ async fn fail(
 /// production spellings (they inject `real_deps`); this one exists for the
 /// recorded world — every def's tests and the fitness sweep drive the SAME
 /// runner the product drives rather than a copy of it.
-pub(crate) async fn execute(
+pub async fn execute(
     deps: &HarnessDeps,
     def: &HarnessDefinition,
     input: &Value,
@@ -1508,12 +1508,12 @@ async fn transport_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::define::{CleanFn, GroundFn, GuardDecl, RoleFloor, Widen, define_harness};
-    use crate::harness::schema::{Field, Schema};
-    use crate::harness::transport::ToolPolicy;
-    use crate::persona::PersonaRow;
-    use crate::state::AppState;
+    use crate::define::{CleanFn, GroundFn, GuardDecl, RoleFloor, Widen, define_harness};
+    use crate::transport::ToolPolicy;
     use std::sync::Mutex;
+    use talaria_harness_schema::{Field, Schema};
+    use talaria_persona::PersonaRow;
+    use talaria_state::AppState;
 
     // The runner is exercised end to end against RECORDED REPLIES. That is not
     // a convenience: the whole point of the harness layer is that a 14B model
@@ -1691,7 +1691,7 @@ mod tests {
     // is worse than a second copy of real code. The aliases keep this
     // corpus's vocabulary; the wrappers below keep its ergonomics.
 
-    use crate::harness::recorded::{
+    use crate::recorded::{
         RecordedModel as ModelAnswer, RecordedReply as Reply, RecordedRun as Recorder,
         RecordedWorld as World, facts, probe, recorded_run, replies, sourced,
     };
@@ -2880,8 +2880,8 @@ mod tests {
 
     // ── Tool definitions on the request ──────────────────────────────────────
 
-    fn weather_tool() -> crate::harness::transport::ToolDefinition {
-        crate::harness::transport::ToolDefinition {
+    fn weather_tool() -> crate::transport::ToolDefinition {
+        crate::transport::ToolDefinition {
             name: "get_weather".into(),
             description: "Current weather for a city.".into(),
             parameters: json!({
@@ -2927,7 +2927,7 @@ mod tests {
             kind: TransportKind::Gateway,
             text: "Filed 3f0c8a52-6b1d-4a7e-9d21-0f8e5c4b2a91 for you.".into(),
             tool_names: vec!["create_ticket".into()],
-            tool_calls: Some(vec![crate::harness::transport::ToolCall {
+            tool_calls: Some(vec![crate::transport::ToolCall {
                 name: "create_ticket".into(),
                 id: None,
                 args: "{\"title\":\"x\"}".into(),
@@ -3710,7 +3710,7 @@ mod tests {
         // act. Both refusals are asserted before either touches the network:
         // the throw is the first statement in each transport.
         let cfg = std::sync::Arc::new(
-            crate::config::Config::from_parts(
+            talaria_config::Config::from_parts(
                 "postgres://nobody:nobody@127.0.0.1:1/none".into(),
                 "redis://127.0.0.1:1/1".into(),
                 "test-root".into(),
@@ -3722,7 +3722,7 @@ mod tests {
         );
         // connect_lazy: no I/O at construction, and both refusals fire before
         // any query could run.
-        let state = AppState::new(crate::db::pool(&cfg), cfg);
+        let state = AppState::new(talaria_db::pool(&cfg), cfg);
         let req = TransportRequest {
             liveness: None,
             watch: None,

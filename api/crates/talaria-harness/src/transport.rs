@@ -26,8 +26,8 @@
 // failing the call rather than by ignoring it.
 
 use super::define::Message;
-use super::json_schema::WireSchema;
 use serde_json::{Map, Value};
+use talaria_harness_json_schema::WireSchema;
 
 /// Which side of the house a turn ran on. The runner records it; the guard
 /// pass is told what the transport could honestly observe on each.
@@ -618,11 +618,11 @@ pub fn replays_tools(req: &TransportRequest) -> bool {
 // turn, `pump_persona_stream`, and the `transport_kind` rule that chooses
 // between the sides — lives at the bottom of this file.
 
-use crate::gateway::registry::resolve_route;
-use crate::gateway::upstream::{Reply, build_upstream, fetch_upstream};
-use crate::gateway::usage::{TokenCounts, estimate_tokens, record_gateway_usage};
-use crate::state::AppState;
 use futures_util::StreamExt;
+use talaria_gateway::registry::resolve_route;
+use talaria_gateway::upstream::{Reply, build_upstream, fetch_upstream};
+use talaria_gateway::usage::{TokenCounts, estimate_tokens, record_gateway_usage};
+use talaria_state::AppState;
 
 /// `gateway completion {status}: {body}` — the failure sentence both blocking
 /// paths throw with, body cut at 300 characters (on chars, not bytes: a cut
@@ -636,7 +636,7 @@ fn completion_error(status: u16, body: String) -> String {
 /// path, so a ledger hiccup never fails a turn that already succeeded.
 fn meter(
     state: &AppState,
-    route: &crate::gateway::registry::ResolvedRoute,
+    route: &talaria_gateway::registry::ResolvedRoute,
     caller: &str,
     usage: Option<TokenPair>,
     prompt_chars: usize,
@@ -1068,10 +1068,10 @@ pub async fn gateway_stream(
 
 // ── The FLEET half — a persona turn through the agent's own gateway ──────────
 
-use crate::fleet::list_agents;
-use crate::gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, ByteStream, proxy_chat};
-use crate::gateway::usage::{UsageInput, record_usage};
-use crate::me::gateway_models;
+use talaria_fleet_agents::list_agents;
+use talaria_gateway::fleet_chat::{AgentStreamEvent, AgentStreamParser, ByteStream, proxy_chat};
+use talaria_gateway::usage::{UsageInput, record_usage};
+use talaria_me::gateway_models;
 
 /// A persona turn's assembled result. The parser reports reasoning text too;
 /// it is dropped — only content, tool names and usage feed the turn.
@@ -1178,8 +1178,8 @@ pub async fn pump_persona_stream_alive(
 /// which is where the agent's harness steering is legible). The preview is
 /// clamped here so one call cannot flood the tail; the full turn is the
 /// transcript artifact's business, not the live stream's.
-fn watch_line(ev: &crate::gateway::fleet_chat::AgentStreamEvent) -> Option<String> {
-    use crate::gateway::fleet_chat::AgentStreamEvent;
+fn watch_line(ev: &talaria_gateway::fleet_chat::AgentStreamEvent) -> Option<String> {
+    use talaria_gateway::fleet_chat::AgentStreamEvent;
     let v = match ev {
         AgentStreamEvent::Content { text } => serde_json::json!({ "t": "d", "v": text }),
         AgentStreamEvent::Reasoning { text } => serde_json::json!({ "t": "r", "v": text }),
@@ -1215,7 +1215,7 @@ fn watch_line(ev: &crate::gateway::fleet_chat::AgentStreamEvent) -> Option<Strin
 /// enough for a long steering prompt, small enough that a pathological
 /// argument cannot dwarf the tail.
 fn clamp_label(label: &str) -> String {
-    crate::body::truncate_utf16(label, 2_000).to_string()
+    talaria_body::truncate_utf16(label, 2_000).to_string()
 }
 
 /// The ledger row for a persona turn. It meters because nothing else will:
@@ -1232,7 +1232,7 @@ async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &Pe
         },
         None => TokenCounts {
             prompt_tokens: estimate_tokens(req.prompt_chars()),
-            completion_tokens: estimate_tokens(crate::body::utf16_len(&turn.text)),
+            completion_tokens: estimate_tokens(talaria_body::utf16_len(&turn.text)),
             ..TokenCounts::default()
         },
     };
@@ -1543,7 +1543,7 @@ pub async fn gateway_image_turn(
     });
     let prompt_chars: usize = messages
         .iter()
-        .map(|m| crate::body::utf16_len(&m.content))
+        .map(|m| talaria_body::utf16_len(&m.content))
         .sum();
     meter(
         state,
@@ -1551,7 +1551,7 @@ pub async fn gateway_image_turn(
         caller,
         usage,
         prompt_chars,
-        crate::body::utf16_len(&text),
+        talaria_body::utf16_len(&text),
     );
     Ok(text)
 }
@@ -1622,7 +1622,7 @@ pub async fn persona_probe_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::define::{Message, Role};
+    use crate::define::{Message, Role};
 
     fn req(json_mode: bool) -> TransportRequest {
         TransportRequest {
