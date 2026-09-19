@@ -20,21 +20,21 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::boards::board_visibility_sql;
-use crate::brain_health::fleet_brain_health;
-use crate::fleet::docker::container_status;
-use crate::fleet::list_agents;
-use crate::fleet::preflight::last_fleet_preflight;
-use crate::gateway::budget::group;
-use crate::gateway::usage::cost_overview;
-use crate::mcp::service::mcp_port;
-use crate::notify::notification_mail_stats;
-use crate::retrieval::backfill::rag_health;
-use crate::retrieval::embed;
-use crate::retrieval::migrate::retrieval_upgrade_status;
-use crate::retrieval::qdrant;
-use crate::scheduler::{HealthSeverity, scheduler_status, unhealthy_jobs};
-use crate::state::AppState;
+use talaria_boards::board_visibility_sql;
+use talaria_brain_health::fleet_brain_health;
+use talaria_fleet_agents::list_agents;
+use talaria_fleet_docker::container_status;
+use talaria_fleet_preflight::last_fleet_preflight;
+use talaria_gateway::budget::group;
+use talaria_gateway::usage::cost_overview;
+use talaria_mcp_service::mcp_port;
+use talaria_notify::notification_mail_stats;
+use talaria_retrieval::backfill::rag_health;
+use talaria_retrieval::embed;
+use talaria_retrieval::migrate::retrieval_upgrade_status;
+use talaria_retrieval::qdrant;
+use talaria_scheduler::{HealthSeverity, scheduler_status, unhealthy_jobs};
+use talaria_state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]

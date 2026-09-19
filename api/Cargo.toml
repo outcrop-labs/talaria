@@ -191,6 +191,7 @@ members = [
     "crates/talaria-statuses",
     "crates/talaria-workchains",
     "crates/talaria-retrieval",
+    "crates/talaria-alerts",
     "crates/talaria-comms-decay",
     "crates/talaria-chat-persist",
     "crates/talaria-inbox-focus-types",
@@ -410,6 +411,7 @@ talaria-tasks-types = { path = "crates/talaria-tasks-types" }
 talaria-statuses = { path = "crates/talaria-statuses" }
 talaria-workchains = { path = "crates/talaria-workchains" }
 talaria-retrieval = { path = "crates/talaria-retrieval" }
+talaria-alerts = { path = "crates/talaria-alerts" }
 talaria-comms-decay = { path = "crates/talaria-comms-decay" }
 talaria-chat-persist = { path = "crates/talaria-chat-persist" }
 talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }

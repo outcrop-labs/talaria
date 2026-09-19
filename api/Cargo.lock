@@ -3623,6 +3623,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-alerts"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "sqlx",
+ "talaria-boards",
+ "talaria-brain-health",
+ "talaria-fleet-agents",
+ "talaria-fleet-docker",
+ "talaria-fleet-preflight",
+ "talaria-gateway",
+ "talaria-mcp-service",
+ "talaria-notify",
+ "talaria-retrieval",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-api"
 version = "0.1.0"
 dependencies = [
@@ -3661,6 +3683,7 @@ dependencies = [
  "talaria-agent-skills",
  "talaria-agent-writes",
  "talaria-agents-registry",
+ "talaria-alerts",
  "talaria-apps",
  "talaria-artifacts",
  "talaria-attribution",

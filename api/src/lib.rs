@@ -14,7 +14,7 @@ pub use talaria_agent_secrets as agent_secrets;
 pub use talaria_agent_skills as agent_skills;
 pub use talaria_agent_writes as agent_writes;
 pub use talaria_agents_registry as agents_registry;
-pub mod alerts;
+pub use talaria_alerts as alerts;
 pub mod approvals;
 pub use talaria_apps as apps;
 pub use talaria_artifacts as artifacts;
