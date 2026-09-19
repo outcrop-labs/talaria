@@ -71,19 +71,19 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use regex::Regex;
 
-use crate::gateway::guard::{
+use talaria_gateway::guard::{
     self, Finding, Grounding, GuardConfig, GuardContext, GuardMode, Spread, ToolRecord,
 };
-use crate::gateway::params::{epoch_to_iso, now_ms};
-use crate::gateway::usage::estimate_tokens;
-use crate::harness::define::{
+use talaria_gateway::params::{epoch_to_iso, now_ms};
+use talaria_gateway::usage::estimate_tokens;
+use talaria_harness::define::{
     GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, Role, RoleFloor,
 };
-use crate::harness::run::{BoxFut, RunContext, TransportFn, real_deps};
-use crate::harness::schema::{Field, Schema};
-use crate::harness::transport::{TokenPair, TransportRequest};
-use crate::harness_model::ModelSpec;
-use crate::state::AppState;
+use talaria_harness::run::{BoxFut, RunContext, TransportFn, real_deps};
+use talaria_harness::transport::{TokenPair, TransportRequest};
+use talaria_harness_model::ModelSpec;
+use talaria_harness_schema::{Field, Schema};
+use talaria_state::AppState;
 
 use super::live_feed::note_live;
 use super::probes::{AskFn, AskSpec, ask_with_caller};
@@ -897,7 +897,7 @@ fn cut(text: &str) -> Option<String> {
     if text.is_empty() {
         None
     } else {
-        Some(crate::body::truncate_utf16(text, DRILLDOWN_CAP).to_string())
+        Some(talaria_body::truncate_utf16(text, DRILLDOWN_CAP).to_string())
     }
 }
 
@@ -1269,7 +1269,7 @@ pub fn provocation_line(c: &ProvocationScore, ms: i64) -> EvalLogLine {
         tokens: 0,
         calls: 0,
         up: None,
-        note: Some(crate::body::truncate_utf16(&note, 200).to_string()),
+        note: Some(talaria_body::truncate_utf16(&note, 200).to_string()),
     }
 }
 
@@ -1733,13 +1733,17 @@ pub fn default_escalate_with(state: &AppState, adversary_model: &str) -> Escalat
                 deps: Some(Arc::new(deps)),
                 ..RunContext::default()
             };
-            let res =
-                match crate::harness::run::run_harness(&state, &def, &serde_json::Value::Null, ctx)
-                    .await
-                {
-                    Ok(res) => res,
-                    Err(_) => return None,
-                };
+            let res = match talaria_harness::run::run_harness(
+                &state,
+                &def,
+                &serde_json::Value::Null,
+                ctx,
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(_) => return None,
+            };
             res.value
                 .as_ref()
                 .and_then(|v| v.get("turn"))
@@ -1858,7 +1862,7 @@ pub async fn run_adversarial(
                 Arc::new(move |req: TransportRequest| {
                     let state = state.clone();
                     Box::pin(async move {
-                        crate::harness::transport::dispatch_transport(&state, &req).await
+                        talaria_harness::transport::dispatch_transport(&state, &req).await
                     })
                 })
             };
@@ -2054,9 +2058,9 @@ pub async fn estimate_adversarial(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::guard::{rule_ids, rule_severities};
-    use crate::harness::transport::TransportReply;
     use std::collections::HashSet;
+    use talaria_gateway::guard::{rule_ids, rule_severities};
+    use talaria_harness::transport::TransportReply;
 
     // ── Recorded generations ──────────────────────────────────────────────────
 
@@ -2981,7 +2985,7 @@ mod tests {
     // ── The driver ────────────────────────────────────────────────────────────
 
     fn test_state() -> AppState {
-        let cfg = crate::config::Config::from_parts(
+        let cfg = talaria_config::Config::from_parts(
             "postgres://adversarial-test@localhost:5432/adversarial-test".into(),
             "redis://adversarial-test@localhost:6379".into(),
             "test-root".into(),
@@ -2991,7 +2995,7 @@ mod tests {
         )
         .expect("the test config is valid on its face");
         let cfg = Arc::new(cfg);
-        AppState::new(crate::db::pool(&cfg), cfg)
+        AppState::new(talaria_db::pool(&cfg), cfg)
     }
 
     /// A run driven entirely by written-down replies: `generate` answers from a
@@ -3510,7 +3514,7 @@ mod tests {
                         .expect("the request recorder is not contended")
                         .push(req);
                     Ok(TransportReply {
-                        kind: crate::harness::transport::TransportKind::Gateway,
+                        kind: talaria_harness::transport::TransportKind::Gateway,
                         text,
                         tool_names: Vec::new(),
                         tool_calls: None,

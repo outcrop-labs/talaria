@@ -24,7 +24,7 @@
 
 use sqlx::PgPool;
 
-use crate::fitness::evals::EvalCaseScore;
+use crate::evals::EvalCaseScore;
 
 /// One archived case, as it comes back out.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -70,7 +70,7 @@ pub fn verdict_of(c: &EvalCaseScore) -> &'static str {
         "gap"
     } else if !c.contract_held || c.error.is_some() {
         "error"
-    } else if c.task == crate::fitness::evals::TaskVerdict::Fail {
+    } else if c.task == crate::evals::TaskVerdict::Fail {
         "fail"
     } else {
         "pass"
@@ -109,9 +109,9 @@ pub async fn record_transcript(pg: &PgPool, model: &str, run_started_at: &str, c
     let raw = c.raw.as_deref().and_then(capped);
     let verdict = verdict_of(c);
     let band = match c.band {
-        crate::harness::define::EvalBand::Easy => "easy",
-        crate::harness::define::EvalBand::Standard => "standard",
-        crate::harness::define::EvalBand::Hard => "hard",
+        talaria_harness::define::EvalBand::Easy => "easy",
+        talaria_harness::define::EvalBand::Standard => "standard",
+        talaria_harness::define::EvalBand::Hard => "hard",
     };
     let turned = sqlx::query(sql)
         .bind(model)
@@ -193,7 +193,7 @@ pub async fn transcript_runs(pg: &PgPool, model: &str) -> Result<Vec<TranscriptR
     Ok(rows
         .into_iter()
         .map(|r| TranscriptRun {
-            run_started_at: crate::agent_auth::epoch_ms_to_iso(r.run_started_ms),
+            run_started_at: talaria_agent_auth::epoch_ms_to_iso(r.run_started_ms),
             cases: r.cases,
         })
         .collect())
@@ -253,7 +253,7 @@ pub async fn read_transcripts(
         .into_iter()
         .map(|r| Transcript {
             model: r.model,
-            run_started_at: crate::agent_auth::epoch_ms_to_iso(r.run_started_ms),
+            run_started_at: talaria_agent_auth::epoch_ms_to_iso(r.run_started_ms),
             harness: r.harness,
             case: r.case_name,
             band: r.band,
@@ -265,10 +265,10 @@ pub async fn read_transcripts(
             upstream: r.upstream,
             latency_ms: r.latency_ms,
             wall_ms: r.wall_ms,
-            started_at: r.started_ms.map(crate::agent_auth::epoch_ms_to_iso),
+            started_at: r.started_ms.map(talaria_agent_auth::epoch_ms_to_iso),
             prompt_tokens: r.prompt_tokens,
             completion_tokens: r.completion_tokens,
-            created_at: crate::agent_auth::epoch_ms_to_iso(r.created_ms),
+            created_at: talaria_agent_auth::epoch_ms_to_iso(r.created_ms),
         })
         .collect())
 }
@@ -299,8 +299,8 @@ mod tests {
     // load-bearing for every row written, so they are pinned here without a
     // database.
     use super::*;
-    use crate::fitness::evals::TaskVerdict;
-    use crate::harness::define::EvalBand;
+    use crate::evals::TaskVerdict;
+    use talaria_harness::define::EvalBand;
 
     fn case() -> EvalCaseScore {
         EvalCaseScore {

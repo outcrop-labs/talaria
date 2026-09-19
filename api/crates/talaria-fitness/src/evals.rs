@@ -59,29 +59,29 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::capability_reach::{self, DbReach, ReachDeps, Supplier};
-use crate::fitness::toolbox::credential_tools::CredentialSandbox;
-use crate::fitness::toolbox::dry_run::{
+use talaria_capability_reach::{self, DbReach, ReachDeps, Supplier};
+use talaria_fitness_toolbox::credential_tools::CredentialSandbox;
+use talaria_fitness_toolbox::dry_run::{
     DispatchSandbox, DryRunResult, sandbox_transport, turn_budget,
 };
-use crate::fitness::toolbox::hermes_tools::WorkbenchSandbox;
-use crate::fitness::toolbox::sandbox::{DispatchResult, Sandbox, SandboxCall, SandboxOptions};
-use crate::gateway::guard::{self, GuardMode};
-use crate::gateway::settings::{get_setting, set_setting};
-use crate::gateway::usage::estimate_tokens;
-use crate::harness::define::{
+use talaria_fitness_toolbox::hermes_tools::WorkbenchSandbox;
+use talaria_fitness_toolbox::sandbox::{DispatchResult, Sandbox, SandboxCall, SandboxOptions};
+use talaria_gateway::guard::{self, GuardMode};
+use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_gateway::usage::estimate_tokens;
+use talaria_harness::define::{
     CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, Output, is_gap,
 };
-use crate::harness::defs::research::{SearchSink, ToolSearchDeps, tool_search_transport};
-use crate::harness::registry::{RegisteredHarness, builtin_activity_harnesses};
-use crate::harness::run::{
+use talaria_harness::run::{
     BoxFut, HarnessDeps, HarnessRunRow, RecordFindingsFn, RecordRunFn, TransportFn,
     real_deps as runner_real_deps, run_harness,
 };
-use crate::harness::transport::{
+use talaria_harness::transport::{
     ToolPolicy, TransportRequest, offers_tool_definitions, runs_own_tool_loop,
 };
-use crate::state::AppState;
+use talaria_harness_defs::defs::research::{SearchSink, ToolSearchDeps, tool_search_transport};
+use talaria_harness_defs::registry::{RegisteredHarness, builtin_activity_harnesses};
+use talaria_state::AppState;
 
 // ── The scoring surface ──────────────────────────────────────────────────────
 
@@ -507,7 +507,7 @@ pub struct EvalDeps {
     /// without this seam the only way to exercise the empty-search gap was to
     /// let a unit test reach a live engine over the network and hope it found
     /// nothing, and a test whose verdict depends on the internet is not a test.
-    pub search_tool: Option<crate::harness::defs::research::CallToolFn>,
+    pub search_tool: Option<talaria_harness_defs::defs::research::CallToolFn>,
     pub harness_deps: Option<Arc<HarnessDeps>>,
     /// THIS CANDIDATE'S checkpoint. Per model since sweeps run concurrently —
     /// a single row would have three candidates' cases overwrite each other.
@@ -593,7 +593,7 @@ pub fn real_deps(state: &AppState) -> EvalDeps {
                 let servers = reach.servers().await;
                 let providers = reach.providers().await;
                 let platform = reach.platform().await;
-                capability_reach::supplier_for(&capability, &servers, &providers, &platform)
+                talaria_capability_reach::supplier_for(&capability, &servers, &providers, &platform)
             })
         })),
         search_tool: None,
@@ -1330,9 +1330,9 @@ pub fn meta_of(h: &RegisteredHarness) -> HarnessMeta {
         id: h.def.id.to_string(),
         label: h.def.label.to_string(),
         source: match h.source {
-            crate::harness::registry::HarnessSource::Builtin => "builtin".to_string(),
-            crate::harness::registry::HarnessSource::App(slug) => format!("app:{slug}"),
-            crate::harness::registry::HarnessSource::Custom => "custom".to_string(),
+            talaria_harness_defs::registry::HarnessSource::Builtin => "builtin".to_string(),
+            talaria_harness_defs::registry::HarnessSource::App(slug) => format!("app:{slug}"),
+            talaria_harness_defs::registry::HarnessSource::Custom => "custom".to_string(),
         },
         output_kind: if h.def.output.is_json() {
             "json"
@@ -1762,7 +1762,7 @@ fn cap(text: Option<&str>) -> Option<String> {
 /// A single-turn case returns None: `prompt` and `raw` already carry the whole
 /// exchange, and writing it twice per case would double the size of a settings
 /// row for no reading anyone would do.
-fn record_turns(messages: &[crate::harness::define::Message]) -> Option<Vec<EvalTurn>> {
+fn record_turns(messages: &[talaria_harness::define::Message]) -> Option<Vec<EvalTurn>> {
     if messages.len() <= 2 {
         return None;
     }
@@ -1904,7 +1904,7 @@ impl CaseSurface {
 }
 
 impl DispatchSandbox for CaseSurface {
-    fn tools(&self) -> Vec<crate::harness::transport::ToolDefinition> {
+    fn tools(&self) -> Vec<talaria_harness::transport::ToolDefinition> {
         match self {
             CaseSurface::Toolkit(s) => Sandbox::tool_definitions(s),
             CaseSurface::Files(s) => WorkbenchSandbox::tools(s),
@@ -1950,7 +1950,7 @@ fn sweep_harness_deps(
 // ripple through every constructor for no behavioral gain.
 #[allow(clippy::large_enum_variant)]
 enum CaseOutcome {
-    Done(Result<crate::harness::run::HarnessResult, String>),
+    Done(Result<talaria_harness::run::HarnessResult, String>),
     Stopped,
     /// `idle` names which clock fired — the sentence and the score read it.
     TimedOut {
@@ -2128,7 +2128,7 @@ async fn run_one_case(
         record_findings,
     ));
 
-    let ctx = crate::harness::run::RunContext {
+    let ctx = talaria_harness::run::RunContext {
         caller: format!("fitness:{}", def.id),
         model: Some(model.to_string()),
         deps: Some(harness_deps),
@@ -2259,7 +2259,7 @@ async fn run_one_case(
                 guard
                     .recorded()
                     .iter()
-                    .map(|c| crate::harness::define::CheckCall {
+                    .map(|c| talaria_harness::define::CheckCall {
                         tool: c.tool.clone(),
                         errored: c.error.is_some(),
                         args: c.args.clone(),
@@ -3202,17 +3202,17 @@ fn sweep_of(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::CapabilityFact;
-    use crate::capability_reach::{Reach, ReachVia};
-    use crate::fitness::toolbox::dry_run::MAX_TURNS;
-    use crate::harness::define::{
+    use talaria_capability::CapabilityFact;
+    use talaria_capability_reach::{Reach, ReachVia};
+    use talaria_fitness_toolbox::dry_run::MAX_TURNS;
+    use talaria_harness::define::{
         CheckFn, DryRunDecl, Fallback, Message, OnFailure, RenderContext, RoleFloor, define_harness,
     };
-    use crate::harness::defs::research::{CallToolFn, ToolOutput};
-    use crate::harness::registry::HarnessSource;
-    use crate::harness::schema::{Field, Schema};
-    use crate::harness::transport::{TokenPair, ToolCall, TransportKind, TransportReply};
-    use crate::harness_model::ModelSpec;
+    use talaria_harness::transport::{TokenPair, ToolCall, TransportKind, TransportReply};
+    use talaria_harness_defs::defs::research::{CallToolFn, ToolOutput};
+    use talaria_harness_defs::registry::HarnessSource;
+    use talaria_harness_model::ModelSpec;
+    use talaria_harness_schema::{Field, Schema};
 
     /// THE SWEEP'S GLOBALS ARE PROCESS-WIDE — the in-flight map, the stop set,
     /// the per-model lock — and `cargo test` runs these tests on many threads
@@ -3970,7 +3970,7 @@ mod tests {
 
     fn test_state() -> AppState {
         let cfg = std::sync::Arc::new(
-            crate::config::Config::from_parts(
+            talaria_config::Config::from_parts(
                 "postgres://nobody:nobody@127.0.0.1:1/none".into(),
                 "redis://127.0.0.1:1/1".into(),
                 "test-root".into(),
@@ -3982,7 +3982,7 @@ mod tests {
         );
         // connect_lazy: no I/O at construction. Every edge is injected, so
         // nothing here is ever hit.
-        AppState::new(crate::db::pool(&cfg), cfg)
+        AppState::new(talaria_db::pool(&cfg), cfg)
     }
 
     /// The caller holds ONE_SWEEP_AT_A_TIME for the whole test.

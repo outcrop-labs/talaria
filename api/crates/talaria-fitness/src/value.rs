@@ -43,14 +43,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fitness::evals::HarnessScore;
-use crate::fitness::observed::ObservedHarness;
-use crate::fitness::score::{
+use crate::evals::HarnessScore;
+use crate::observed::ObservedHarness;
+use crate::score::{
     FitnessBand, FitnessReport, SlotBinding, SlotKind, band_order, harness_bands, slot_key,
 };
-use crate::fitness::surface::{FitnessIndex, FitnessIndexEntry, ModelPrice, TokenBudget};
-use crate::harness::registry::RegisteredHarness;
-use crate::harness::run::BoxFut;
+use crate::surface::{FitnessIndex, FitnessIndexEntry, ModelPrice, TokenBudget};
+use talaria_harness::run::BoxFut;
+use talaria_harness_defs::registry::RegisteredHarness;
 
 // ── The per-harness half of an index entry ───────────────────────────────────
 
@@ -716,16 +716,16 @@ mod tests {
     // edges, so the whole-read tests are async; everything else is plain
     // arithmetic.
     use super::*;
-    use crate::fitness::evals::{BandScores, HarnessMeta};
-    use crate::fitness::score::{BindingVia, BoundHarness, FitnessSlot};
-    use crate::fitness::surface::{FitnessCell, TierId};
-    use crate::harness::define::{
-        CheckCtx, CheckResult, EvalCase, HarnessDefinition, OnFailure, Output, RenderContext,
-    };
-    use crate::harness::registry::HarnessSource;
-    use crate::harness::schema::Schema;
+    use crate::evals::{BandScores, HarnessMeta};
+    use crate::score::{BindingVia, BoundHarness, FitnessSlot};
+    use crate::surface::{FitnessCell, TierId};
     use serde_json::{Value, json};
     use std::sync::Mutex;
+    use talaria_harness::define::{
+        CheckCtx, CheckResult, EvalCase, HarnessDefinition, OnFailure, Output, RenderContext,
+    };
+    use talaria_harness_defs::registry::HarnessSource;
+    use talaria_harness_schema::Schema;
 
     fn close(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "{a} is not close to {b}");
@@ -743,7 +743,7 @@ mod tests {
             id,
             id,
             "Answers.",
-            crate::harness_model::ModelSpec {
+            talaria_harness_model::ModelSpec {
                 pin: None,
                 role: None,
                 chain: Some(&[]),
@@ -855,8 +855,8 @@ mod tests {
         }
     }
 
-    fn verdict(id: &str, band: FitnessBand) -> crate::fitness::score::HarnessVerdict {
-        crate::fitness::score::HarnessVerdict {
+    fn verdict(id: &str, band: FitnessBand) -> crate::score::HarnessVerdict {
+        crate::score::HarnessVerdict {
             harness: id.to_string(),
             label: id.to_string(),
             band,
@@ -872,8 +872,8 @@ mod tests {
     }
 
     /// A slot verdict shaped only as far as `harness_bands` reads it.
-    fn slot_verdict(id: &str, band: FitnessBand) -> crate::fitness::score::SlotVerdict {
-        crate::fitness::score::SlotVerdict {
+    fn slot_verdict(id: &str, band: FitnessBand) -> crate::score::SlotVerdict {
+        crate::score::SlotVerdict {
             slot: slot_fixture(SlotKind::Role, id),
             band,
             reasons: Vec::new(),
@@ -998,7 +998,7 @@ mod tests {
         let mut b = TokenBudget::new();
         b.insert(
             "ticket".to_string(),
-            crate::fitness::surface::TokenBudgetEntry {
+            crate::surface::TokenBudgetEntry {
                 prompt: 1000,
                 completion: 100,
                 at: "x".to_string(),
@@ -1071,7 +1071,7 @@ mod tests {
         let mut zeroed_budget = TokenBudget::new();
         zeroed_budget.insert(
             "ticket".to_string(),
-            crate::fitness::surface::TokenBudgetEntry {
+            crate::surface::TokenBudgetEntry {
                 prompt: 0,
                 completion: 0,
                 at: "x".to_string(),
@@ -1112,12 +1112,12 @@ mod tests {
             guarded: true,
             unbound: vec![verdict("subject-bound", FitnessBand::Ready)],
             slots: vec![
-                crate::fitness::score::SlotVerdict {
+                crate::score::SlotVerdict {
                     slot: slot_fixture(SlotKind::Role, "lenient"),
                     harnesses: vec![verdict("ticket", FitnessBand::Ready)],
                     ..slot_verdict("lenient", FitnessBand::Ready)
                 },
-                crate::fitness::score::SlotVerdict {
+                crate::score::SlotVerdict {
                     slot: slot_fixture(SlotKind::Role, "strict"),
                     harnesses: vec![verdict("ticket", FitnessBand::Workable)],
                     ..slot_verdict("strict", FitnessBand::Workable)
@@ -1355,7 +1355,7 @@ mod tests {
         let mut budget = TokenBudget::new();
         budget.insert(
             "brief".to_string(),
-            crate::fitness::surface::TokenBudgetEntry {
+            crate::surface::TokenBudgetEntry {
                 prompt: 500,
                 completion: 1000,
                 at: "x".to_string(),
@@ -1624,7 +1624,7 @@ mod tests {
                 Ok(Some(ArchivedRecord {
                     report: FitnessReport {
                         model: "old".to_string(),
-                        slots: vec![crate::fitness::score::SlotVerdict {
+                        slots: vec![crate::score::SlotVerdict {
                             slot: slot_fixture(SlotKind::Role, "worker"),
                             harnesses: vec![verdict("ticket", FitnessBand::Ready)],
                             ..slot_verdict("worker", FitnessBand::Ready)

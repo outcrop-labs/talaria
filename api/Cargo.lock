@@ -3687,6 +3687,7 @@ dependencies = [
  "talaria-effort-prefs",
  "talaria-email",
  "talaria-error",
+ "talaria-fitness",
  "talaria-fitness-code-runner",
  "talaria-fitness-talaria-tools",
  "talaria-fitness-toolbox",
@@ -4202,6 +4203,45 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tracing",
+]
+
+[[package]]
+name = "talaria-fitness"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "getrandom 0.3.4",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-capability",
+ "talaria-capability-reach",
+ "talaria-config",
+ "talaria-db",
+ "talaria-fitness-code-runner",
+ "talaria-fitness-toolbox",
+ "talaria-gateway",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-harness-schema",
+ "talaria-model-access",
+ "talaria-model-catalog",
+ "talaria-model-info",
+ "talaria-model-roles",
+ "talaria-persona",
+ "talaria-platform-agents",
+ "talaria-price-oracle",
+ "talaria-safe-fetch",
+ "talaria-state",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

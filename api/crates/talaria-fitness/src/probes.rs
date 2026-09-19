@@ -92,32 +92,32 @@ use serde_json::Value;
 use sqlx::PgPool;
 use url::Url;
 
-use crate::capability::{
+use crate::live_feed::note_live;
+use crate::surface::{EvalLogLine, LogVerdict};
+use talaria_capability::{
     CapabilityFact, capability_key, get_capabilities, merge_capabilities, probe_revision,
 };
-use crate::fitness::code_runner::{CODE_TASKS, run_code_task};
-use crate::fitness::live_feed::note_live;
-use crate::fitness::surface::{EvalLogLine, LogVerdict};
-use crate::gateway::guard::{GuardConfig, GuardMode};
-use crate::gateway::params::{epoch_to_iso, now_ms};
-use crate::gateway::registry::routing_for;
-use crate::gateway::upstream::gateway_pulse;
-use crate::gateway::usage::estimate_tokens;
-use crate::harness::define::{
+use talaria_fitness_code_runner::{CODE_TASKS, run_code_task};
+use talaria_gateway::guard::{GuardConfig, GuardMode};
+use talaria_gateway::params::{epoch_to_iso, now_ms};
+use talaria_gateway::registry::routing_for;
+use talaria_gateway::upstream::gateway_pulse;
+use talaria_gateway::usage::estimate_tokens;
+use talaria_harness::define::{
     GuardDecl, HarnessDefinition, Message, OnFailure, Output, RenderContext, RoleFloor, VerifyFn,
 };
-use crate::harness::run::{BoxFut, HarnessDeps, RunContext, TransportFn, run_harness};
-use crate::harness::schema::{Field, Schema};
-use crate::harness::transport::{
+use talaria_harness::run::{BoxFut, HarnessDeps, RunContext, TransportFn, run_harness};
+use talaria_harness::transport::{
     ToolCall, ToolDefinition, TransportRequest, dispatch_transport, gateway_image_turn,
     offers_tool_definitions, persona_probe_turn,
 };
-use crate::harness_model::ModelSpec;
-use crate::model::catalog::advertised_window;
-use crate::persona::persona_capability_keys;
-use crate::price_oracle::TokPrice;
-use crate::safe_fetch::{SafeFetch, safe_fetch};
-use crate::state::AppState;
+use talaria_harness_model::ModelSpec;
+use talaria_harness_schema::{Field, Schema};
+use talaria_model_catalog::advertised_window;
+use talaria_persona::persona_capability_keys;
+use talaria_price_oracle::TokPrice;
+use talaria_safe_fetch::{SafeFetch, safe_fetch};
+use talaria_state::AppState;
 
 // ── What a probe is ──────────────────────────────────────────────────────────
 
@@ -274,7 +274,7 @@ fn bounded(s: &str) -> Option<String> {
     if s.is_empty() {
         None
     } else {
-        Some(crate::body::truncate_utf16(s, RAW_CAP).to_string())
+        Some(talaria_body::truncate_utf16(s, RAW_CAP).to_string())
     }
 }
 
@@ -1012,7 +1012,7 @@ pub fn quote_appears(quote: &str, page: &str) -> bool {
     let needle = flat(quote);
     // JS `.length` is UTF-16 units, and the probe's instruction asks for "at
     // least 40 characters" in the units the model counts.
-    if crate::body::utf16_len(&needle) < 40 {
+    if talaria_body::utf16_len(&needle) < 40 {
         return false;
     }
     flat(page).contains(&needle)
@@ -1338,7 +1338,7 @@ fn probe_def(
 fn probe_run_deps(transport: TransportFn) -> HarnessDeps {
     HarnessDeps {
         resolve_model: Arc::new(|_spec, _user| {
-            Box::pin(async move { Option::<(String, crate::harness_model::ModelChainStep)>::None })
+            Box::pin(async move { Option::<(String, talaria_harness_model::ModelChainStep)>::None })
         }),
         slot_effort: Arc::new(|_slot, _model| Box::pin(async move { Option::<String>::None })),
         routing: Arc::new(|m: String| Box::pin(async move { (Vec::<String>::new(), m) })),
@@ -1351,7 +1351,7 @@ fn probe_run_deps(transport: TransportFn) -> HarnessDeps {
             Box::pin(async move { HashMap::<String, CapabilityFact>::new() })
         }),
         reach: Arc::new(|_keys: Vec<String>, _wanted: Vec<String>| {
-            Box::pin(async move { HashMap::<String, crate::capability_reach::Reach>::new() })
+            Box::pin(async move { HashMap::<String, talaria_capability_reach::Reach>::new() })
         }),
         transport,
         // NO GUARD PASS ON A PROBE, declared at both ends: `guard` with no rules
@@ -1446,7 +1446,7 @@ pub fn runner_ask(state: &AppState, model: &str, base: TransportFn) -> AskFn {
 /// as `fitness:adversarial:<id>` rather than being filed as probe spend an
 /// admin reconciling a bill cannot explain — the caller string is attribution,
 /// and attribution is not decoration.
-pub(crate) fn ask_with_caller(
+pub fn ask_with_caller(
     state: &AppState,
     model: &str,
     base: TransportFn,
@@ -2127,7 +2127,7 @@ fn prompt_tokens_of(messages: &[Message]) -> i64 {
     estimate_tokens(
         messages
             .iter()
-            .map(|m| crate::body::utf16_len(&m.content))
+            .map(|m| talaria_body::utf16_len(&m.content))
             .sum(),
     )
 }
@@ -2408,7 +2408,7 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                             } else {
                                 format!(
                                     "answered {} instead of {}",
-                                    js_quoted(crate::body::truncate_utf16(trimmed, 60)),
+                                    js_quoted(talaria_body::truncate_utf16(trimmed, 60)),
                                     js_quoted(t.expect)
                                 )
                             },
@@ -2663,7 +2663,7 @@ pub static PROBES: LazyLock<Vec<ProbeDefinition>> = LazyLock::new(|| {
                             } else {
                                 format!(
                                     "answered {}",
-                                    js_quoted(crate::body::truncate_utf16(a.raw.trim(), 60))
+                                    js_quoted(talaria_body::truncate_utf16(a.raw.trim(), 60))
                                 )
                             },
                             raw: bounded(&a.raw),
@@ -3056,7 +3056,7 @@ pub fn probe_line(r: &ProbeResult, ms: i64) -> EvalLogLine {
         tokens: 0,
         calls: 0,
         up: None,
-        note: note.map(|note| crate::body::truncate_utf16(&note, 200).to_string()),
+        note: note.map(|note| talaria_body::truncate_utf16(&note, 200).to_string()),
     }
 }
 
@@ -3286,8 +3286,8 @@ impl ProbeReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::ALL_CAPABILITIES;
-    use crate::harness::transport::{TransportKind, TransportReply};
+    use talaria_capability::ALL_CAPABILITIES;
+    use talaria_harness::transport::{TransportKind, TransportReply};
 
     // Every scorer here is driven from a RECORDED REPLY, and that is the whole
     // design of the file rather than a testing convenience. These probes are the
@@ -3374,7 +3374,7 @@ mod tests {
 
     /// The `now` every scripted run reads, so `fact.at` is assertable.
     static FIXED_NOW: LazyLock<i64> = LazyLock::new(|| {
-        crate::gateway::params::iso_to_epoch_ms("2026-08-06T09:00:00.000Z")
+        talaria_gateway::params::iso_to_epoch_ms("2026-08-06T09:00:00.000Z")
             .expect("the fixture date parses")
     });
 
@@ -3386,7 +3386,7 @@ mod tests {
     /// tasks die with the test's runtime and are never noticed.
     fn test_state() -> AppState {
         let url = "postgres://probes-test@localhost:5432/probes-test";
-        let cfg = crate::config::Config::from_parts(
+        let cfg = talaria_config::Config::from_parts(
             url.into(),
             "redis://probes-test@localhost:6379".into(),
             "test-root".into(),
@@ -3396,7 +3396,7 @@ mod tests {
         )
         .expect("the test config is valid on its face");
         let cfg = Arc::new(cfg);
-        AppState::new(crate::db::pool(&cfg), cfg)
+        AppState::new(talaria_db::pool(&cfg), cfg)
     }
 
     /// A probe run with every edge injected: no gateway, no database, no network,
@@ -4020,8 +4020,8 @@ mod tests {
     fn haystack_sizes_the_filler_from_the_token_budget_it_was_given() {
         // `.length` is UTF-16 units, and the budget the probe passes is tokens —
         // the comparison is on the same measure the estimate bills.
-        let short = crate::body::utf16_len(&haystack(1_100, "needle", 0.5));
-        let long = crate::body::utf16_len(&haystack(11_000, "needle", 0.5));
+        let short = talaria_body::utf16_len(&haystack(1_100, "needle", 0.5));
+        let long = talaria_body::utf16_len(&haystack(11_000, "needle", 0.5));
         assert!(long > short * 8);
     }
 
@@ -4131,7 +4131,7 @@ mod tests {
             w[0].fact
                 .detail
                 .as_deref()
-                .map(|d| crate::body::utf16_len(d) > 10)
+                .map(|d| talaria_body::utf16_len(d) > 10)
                 .unwrap_or(false)
         );
     }
@@ -4924,12 +4924,12 @@ mod tests {
         // percentiles over this same ring, so the two of us take turns — its
         // writer holds the turnstile for its body, and this one holds it across
         // the seeds and the read.
-        let _ring = crate::gateway::upstream::pulse_tests::STAT_RING_TURNSTILE
+        let _ring = talaria_gateway::upstream::pulse_tests::STAT_RING_TURNSTILE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::gateway::upstream::record_gateway_stat(140, true, "qwen3-14b");
-        crate::gateway::upstream::record_gateway_stat(620, false, "qwen3-14b");
-        crate::gateway::upstream::record_gateway_stat(200, true, "qwen3-14b");
+        talaria_gateway::upstream::record_gateway_stat(140, true, "qwen3-14b");
+        talaria_gateway::upstream::record_gateway_stat(620, false, "qwen3-14b");
+        talaria_gateway::upstream::record_gateway_stat(200, true, "qwen3-14b");
         let (deps, _written, _asked, _route) = harness(good_reply(), None);
         let report = run_probes(&test_state(), "qwen3-14b", opts(&[ProbeId::Json], deps))
             .await

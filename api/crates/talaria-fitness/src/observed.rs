@@ -56,8 +56,8 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::fitness::evals::HarnessScore;
-use crate::harness::run::BoxFut;
+use crate::evals::HarnessScore;
+use talaria_harness::run::BoxFut;
 
 /// Default lookback. Long enough that a weekly-ish harness (the librarian, the
 /// concluder) has a sample, short enough that a model swapped out a month ago
@@ -405,7 +405,7 @@ pub async fn observed_harnesses(
                 error_rate: rate(g.errors as f64, runs),
                 steps,
                 latency_p50: g.latency_p50,
-                last_run_at: Some(crate::agent_auth::epoch_ms_to_iso(g.last_run_ms)),
+                last_run_at: Some(talaria_agent_auth::epoch_ms_to_iso(g.last_run_ms)),
             }
         })
         .collect()

@@ -79,7 +79,7 @@ pub fn clear_live_feed(model: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fitness::surface::LogVerdict;
+    use crate::surface::LogVerdict;
 
     fn line(harness: &str, case: &str) -> EvalLogLine {
         EvalLogLine {

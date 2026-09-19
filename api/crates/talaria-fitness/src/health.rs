@@ -26,8 +26,8 @@
 
 use serde::Serialize;
 
-use crate::fitness::evals::EvalCaseScore;
-use crate::harness::define::EvalBand;
+use crate::evals::EvalCaseScore;
+use talaria_harness::define::EvalBand;
 
 /// One archived run, reduced to what this file needs.
 pub struct HealthInput<'a> {
@@ -102,7 +102,7 @@ fn verdict_reached(c: &EvalCaseScore) -> bool {
 fn wrong(c: &EvalCaseScore) -> bool {
     c.skipped.is_none()
         && (!c.contract_held
-            || c.task == crate::fitness::evals::TaskVerdict::Fail
+            || c.task == crate::evals::TaskVerdict::Fail
             || c.timed_out
             || c.error.is_some())
 }
@@ -277,7 +277,7 @@ mod tests {
     // saying nothing — the first sends somebody to rewrite a working assertion,
     // and the second is the status quo this report exists to replace.
     use super::*;
-    use crate::fitness::evals::TaskVerdict;
+    use crate::evals::TaskVerdict;
 
     fn c(over: impl FnOnce(&mut EvalCaseScore)) -> EvalCaseScore {
         let mut case = EvalCaseScore {

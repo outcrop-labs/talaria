@@ -70,13 +70,13 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::capability::CapabilityFact;
-use crate::capability_reach::{Reach, ReachVia};
-use crate::fitness::evals::{EvalCaseScore, EvalSweep, HarnessScore};
-use crate::harness::registry::{RegisteredHarness, platform_agent_of};
-use crate::harness_model::{ModelSpec, ResolveEdges, resolve_harness_model_with};
-use crate::model::roles::MODEL_ROLES;
-use crate::platform_agents::PLATFORM_AGENTS;
+use crate::evals::{EvalCaseScore, EvalSweep, HarnessScore};
+use talaria_capability::CapabilityFact;
+use talaria_capability_reach::{Reach, ReachVia};
+use talaria_harness_defs::registry::{RegisteredHarness, platform_agent_of};
+use talaria_harness_model::{ModelSpec, ResolveEdges, resolve_harness_model_with};
+use talaria_model_roles::MODEL_ROLES;
+use talaria_platform_agents::PLATFORM_AGENTS;
 
 /// The three words the fitness matrix renders, plus the two a cell can carry
 /// before anything has been measured at it. Kept as ONE enum across every
@@ -381,7 +381,7 @@ impl ResolveEdges for RefusingEdges {
         &'a self,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<Vec<crate::model::access::GatewayModel>, sqlx::Error>>
+            dyn Future<Output = Result<Vec<talaria_model_access::GatewayModel>, sqlx::Error>>
                 + Send
                 + 'a,
         >,
@@ -1166,7 +1166,7 @@ fn harness_verdict(
 
     let failed = cases
         .iter()
-        .find(|c| c.task == crate::fitness::evals::TaskVerdict::Fail && c.task_error.is_some());
+        .find(|c| c.task == crate::evals::TaskVerdict::Fail && c.task_error.is_some());
     if score.task_score.is_none() {
         reasons.push(FitnessReason {
             kind: ReasonKind::Task,
@@ -1495,8 +1495,8 @@ pub fn score_fitness(input: &FitnessInput<'_>, bindings: &[SlotBinding]) -> Fitn
                 task: weighted(
                     &slot_cases,
                     n,
-                    |c| c.task == crate::fitness::evals::TaskVerdict::Pass,
-                    |c| c.task != crate::fitness::evals::TaskVerdict::Unscored,
+                    |c| c.task == crate::evals::TaskVerdict::Pass,
+                    |c| c.task != crate::evals::TaskVerdict::Unscored,
                     "fixture checks passed",
                 ),
             }
@@ -1539,17 +1539,17 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::capability_reach::Supplier;
-    use crate::fitness::evals::{
+    use crate::evals::{
         BandScores, EvalCaseScore, EvalSweep, EvalSweepState, HarnessMeta, HarnessScore,
         SweepConcurrency, TaskVerdict,
     };
-    use crate::harness::define::{
+    use talaria_capability_reach::Supplier;
+    use talaria_harness::define::{
         CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, OnFailure, Output,
         RenderContext,
     };
-    use crate::harness::registry::{HarnessSource, builtin_activity_harnesses};
-    use crate::harness::schema::Schema;
+    use talaria_harness_defs::registry::{HarnessSource, builtin_activity_harnesses};
+    use talaria_harness_schema::Schema;
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
 

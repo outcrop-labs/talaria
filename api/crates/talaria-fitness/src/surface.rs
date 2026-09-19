@@ -17,9 +17,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::fitness::score::FitnessBand;
-use crate::fitness::value::HarnessSummary;
-use crate::harness::run::BoxFut;
+use crate::score::FitnessBand;
+use crate::value::HarnessSummary;
+use talaria_harness::run::BoxFut;
 
 /// What happened to one case, in the vocabulary the terminal colours by.
 ///
@@ -325,7 +325,7 @@ pub struct FitnessSweepSummary {
     /// HOW WIDE IT RAN, archived with the run. Without it a p50 from a 4-wide
     /// sweep and a p50 from a sequential one are the same field holding two
     /// different measurements, and the page would compare them silently.
-    pub concurrency: crate::fitness::evals::SweepConcurrency,
+    pub concurrency: crate::evals::SweepConcurrency,
 }
 
 /// The full report for one model. One settings row per model, fetched only
@@ -340,13 +340,13 @@ pub struct FitnessRecord {
     pub model: String,
     pub at: String,
     pub tiers: Vec<TierId>,
-    pub report: crate::fitness::score::FitnessReport,
-    pub harnesses: Vec<crate::fitness::evals::HarnessScore>,
+    pub report: crate::score::FitnessReport,
+    pub harnesses: Vec<crate::evals::HarnessScore>,
     /// Drill-down cases. Bounded — see [`DRILLDOWN_CAP`].
-    pub cases: Vec<crate::fitness::evals::EvalCaseScore>,
+    pub cases: Vec<crate::evals::EvalCaseScore>,
     pub dropped_cases: i64,
-    pub probes: Option<crate::fitness::probes::ProbeReport>,
-    pub adversarial: Option<crate::fitness::adversarial::AdversarialReport>,
+    pub probes: Option<crate::probes::ProbeReport>,
+    pub adversarial: Option<crate::adversarial::AdversarialReport>,
     /// WHEN EACH TIER WAS LAST MEASURED. A record is merged across runs — a
     /// tier that did not run keeps its previous result — so `at` alone would
     /// put today's date over a month-old probe result.
@@ -359,10 +359,10 @@ pub struct FitnessRecord {
 /// closed, so the width a run ENDED at was also the narrowest it ever reached
 /// — which makes `ended` the correct backfill rather than a guess.
 fn upgrade_concurrency(
-    c: Option<crate::fitness::evals::SweepConcurrency>,
-) -> crate::fitness::evals::SweepConcurrency {
+    c: Option<crate::evals::SweepConcurrency>,
+) -> crate::evals::SweepConcurrency {
     match c {
-        None => crate::fitness::evals::SweepConcurrency {
+        None => crate::evals::SweepConcurrency {
             requested: 1,
             ended: 1,
             low: 1,
@@ -595,10 +595,7 @@ pub const MAX_CONCURRENT_RUNS: usize = 8;
 
 /// Speed, from the cases a sweep recorded. Pure, so the matrix column and the
 /// report card cannot disagree about the same run.
-pub fn speed_of(
-    cases: &[crate::fitness::evals::EvalCaseScore],
-    concurrency: usize,
-) -> Option<SpeedReading> {
+pub fn speed_of(cases: &[crate::evals::EvalCaseScore], concurrency: usize) -> Option<SpeedReading> {
     // OVER THE CASES THIS PASS RAN, never over the whole ledger — see
     // `EvalSweep.measured`. A supplemental pass that ran seven fixtures must
     // not report a latency computed from two hundred and forty inherited ones
@@ -607,7 +604,7 @@ pub fn speed_of(
     // MEASURED CASES ONLY. A skip never called the model and a case the
     // provider never answered has no latency to speak of; averaging their
     // zeros in would make a badly-served model look fast.
-    let scored: Vec<&crate::fitness::evals::EvalCaseScore> = cases
+    let scored: Vec<&crate::evals::EvalCaseScore> = cases
         .iter()
         .filter(|c| c.skipped.is_none() && c.latency_ms > 0)
         .collect();
@@ -638,12 +635,12 @@ pub fn speed_of(
     };
     let starts: Vec<i64> = cases
         .iter()
-        .filter_map(|c| crate::agent_auth::iso_to_epoch_ms(&c.started_at))
+        .filter_map(|c| talaria_agent_auth::iso_to_epoch_ms(&c.started_at))
         .filter(|n| *n > 0)
         .collect();
     let ends: Vec<i64> = cases
         .iter()
-        .filter_map(|c| crate::agent_auth::iso_to_epoch_ms(&c.started_at).map(|n| n + c.wall_ms))
+        .filter_map(|c| talaria_agent_auth::iso_to_epoch_ms(&c.started_at).map(|n| n + c.wall_ms))
         .filter(|n| *n > 0)
         .collect();
     let elapsed_ms = if !starts.is_empty() && !ends.is_empty() {
@@ -667,15 +664,15 @@ pub fn speed_of(
 }
 
 /// THE LIVE FEED'S ONE LINE PER CASE. Same verdict vocabulary the transcript
-/// table writes — see [`crate::fitness::transcripts::verdict_of`].
-pub fn live_log(cases: &[crate::fitness::evals::EvalCaseScore]) -> Vec<EvalLogLine> {
+/// table writes — see [`crate::transcripts::verdict_of`].
+pub fn live_log(cases: &[crate::evals::EvalCaseScore]) -> Vec<EvalLogLine> {
     cases
         .iter()
         .rev()
         .take(LIVE_LOG_CAP)
         .rev()
         .map(|c| {
-            let verdict = crate::fitness::transcripts::verdict_of(c);
+            let verdict = crate::transcripts::verdict_of(c);
             let verdict = match verdict {
                 "pass" => LogVerdict::Pass,
                 "fail" => LogVerdict::Fail,
@@ -709,7 +706,7 @@ pub fn live_log(cases: &[crate::fitness::evals::EvalCaseScore]) -> Vec<EvalLogLi
                     .or(c.gap.as_deref())
                     .or(c.task_error.as_deref())
                     .or(c.skipped.as_deref())
-                    .map(|n| crate::body::truncate_utf16(n, 200).to_string()),
+                    .map(|n| talaria_body::truncate_utf16(n, 200).to_string()),
             }
         })
         .collect()
@@ -738,7 +735,7 @@ fn archived_tier_log(record: Option<&FitnessRecord>, feed: &[EvalLogLine]) -> Ve
         .map(|p| {
             p.results
                 .iter()
-                .map(|r| crate::fitness::probes::probe_line(r, 0))
+                .map(|r| crate::probes::probe_line(r, 0))
                 .collect()
         })
         .unwrap_or_default();
@@ -749,7 +746,7 @@ fn archived_tier_log(record: Option<&FitnessRecord>, feed: &[EvalLogLine]) -> Ve
             .map(|a| {
                 a.cases
                     .iter()
-                    .map(|c| crate::fitness::adversarial::provocation_line(c, 0))
+                    .map(|c| crate::adversarial::provocation_line(c, 0))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
@@ -771,10 +768,7 @@ fn archived_tier_log(record: Option<&FitnessRecord>, feed: &[EvalLogLine]) -> Ve
 /// provocation scores carry no clock of their own. One ordering rule that
 /// works live and after the fact beats two that disagree the moment a run
 /// finishes.
-pub fn run_log(
-    cases: &[crate::fitness::evals::EvalCaseScore],
-    tiers: &[EvalLogLine],
-) -> Vec<EvalLogLine> {
+pub fn run_log(cases: &[crate::evals::EvalCaseScore], tiers: &[EvalLogLine]) -> Vec<EvalLogLine> {
     let of = |harness: &str| -> Vec<EvalLogLine> {
         tiers
             .iter()
@@ -790,13 +784,11 @@ pub fn run_log(
 
 /// The live modal's bounded case list — see [`LIVE_RECENT`].
 pub fn live_cases(
-    cases: &[crate::fitness::evals::EvalCaseScore],
-) -> (Vec<crate::fitness::evals::EvalCaseScore>, i64) {
-    let bad = |c: &crate::fitness::evals::EvalCaseScore| {
+    cases: &[crate::evals::EvalCaseScore],
+) -> (Vec<crate::evals::EvalCaseScore>, i64) {
+    let bad = |c: &crate::evals::EvalCaseScore| {
         c.skipped.is_none()
-            && (c.task == crate::fitness::evals::TaskVerdict::Fail
-                || !c.contract_held
-                || c.timed_out)
+            && (c.task == crate::evals::TaskVerdict::Fail || !c.contract_held || c.timed_out)
     };
     let failed: Vec<_> = cases.iter().filter(|c| bad(c)).cloned().collect();
     let recent: Vec<_> = cases
@@ -821,10 +813,10 @@ pub fn live_cases(
 /// trade than a bounded settings row. `dropped` therefore counts transcripts
 /// an admin cannot see, and nothing else.
 pub fn drilldown(
-    cases: &[crate::fitness::evals::EvalCaseScore],
+    cases: &[crate::evals::EvalCaseScore],
     cap: usize,
-) -> (Vec<crate::fitness::evals::EvalCaseScore>, i64) {
-    let heavy = |c: &crate::fitness::evals::EvalCaseScore| c.prompt.is_some() || c.raw.is_some();
+) -> (Vec<crate::evals::EvalCaseScore>, i64) {
+    let heavy = |c: &crate::evals::EvalCaseScore| c.prompt.is_some() || c.raw.is_some();
     let with_transcript: Vec<_> = cases.iter().filter(|c| heavy(c)).cloned().collect();
     let dropped = with_transcript.len().saturating_sub(cap) as i64;
     let mut kept: Vec<_> = with_transcript.into_iter().take(cap).collect();
@@ -862,7 +854,7 @@ pub fn evict_archive(index: &FitnessIndex, keep: usize) -> (FitnessIndex, Vec<St
 /// for the reason the zero rule below is worth a test of its own.
 pub fn next_budget(
     prev: &TokenBudget,
-    harnesses: &[crate::fitness::evals::HarnessScore],
+    harnesses: &[crate::evals::HarnessScore],
     at: &str,
 ) -> TokenBudget {
     let mut budget = prev.clone();
@@ -904,19 +896,19 @@ pub fn empty_sweep(
     unfixtured: Vec<String>,
     guarded: bool,
     at: &str,
-) -> crate::fitness::evals::EvalSweep {
-    crate::fitness::evals::EvalSweep {
+) -> crate::evals::EvalSweep {
+    crate::evals::EvalSweep {
         model: model.to_string(),
         // No cases ran, so there is no width to report and 1 is the honest
         // reading.
-        concurrency: crate::fitness::evals::SweepConcurrency {
+        concurrency: crate::evals::SweepConcurrency {
             requested: 1,
             ended: 1,
             low: 1,
             narrowed_because: None,
         },
         measured: Vec::new(),
-        state: crate::fitness::evals::EvalSweepState::Idle,
+        state: crate::evals::EvalSweepState::Idle,
         started_at: Some(at.to_string()),
         finished_at: Some(at.to_string()),
         done: 0,
@@ -957,27 +949,27 @@ pub struct SweepStart {
 pub struct SurfaceDeps {
     /// The gateway catalog: every callable id, bare and endpoint-qualified.
     pub models: Arc<
-        dyn Fn() -> BoxFut<Result<Vec<crate::model::access::GatewayModel>, String>> + Send + Sync,
+        dyn Fn() -> BoxFut<Result<Vec<talaria_model_access::GatewayModel>, String>> + Send + Sync,
     >,
     /// Where a model id CAN land, with prices. Used for the estimate only.
     pub routing: Arc<
-        dyn Fn(String) -> BoxFut<Result<crate::gateway::registry::ModelRouting, String>>
+        dyn Fn(String) -> BoxFut<Result<talaria_gateway::registry::ModelRouting, String>>
             + Send
             + Sync,
     >,
     pub capabilities: Arc<
-        dyn Fn(String) -> BoxFut<HashMap<String, crate::capability::CapabilityFact>> + Send + Sync,
+        dyn Fn(String) -> BoxFut<HashMap<String, talaria_capability::CapabilityFact>> + Send + Sync,
     >,
     pub forget: Arc<dyn Fn(String) -> BoxFut<Result<(), String>> + Send + Sync>,
     pub harnesses: Arc<
-        dyn Fn() -> BoxFut<Result<Vec<crate::harness::registry::RegisteredHarness>, String>>
+        dyn Fn() -> BoxFut<Result<Vec<talaria_harness_defs::registry::RegisteredHarness>, String>>
             + Send
             + Sync,
     >,
     pub bind_slots: Arc<
         dyn Fn(
-                Vec<crate::harness::registry::RegisteredHarness>,
-            ) -> BoxFut<Result<Vec<crate::fitness::score::SlotBinding>, String>>
+                Vec<talaria_harness_defs::registry::RegisteredHarness>,
+            ) -> BoxFut<Result<Vec<crate::score::SlotBinding>, String>>
             + Send
             + Sync,
     >,
@@ -986,14 +978,10 @@ pub struct SurfaceDeps {
     pub read_setting: Arc<dyn Fn(String, Value) -> BoxFut<Result<Value, String>> + Send + Sync>,
     pub write_setting: Arc<dyn Fn(String, Value) -> BoxFut<Result<(), String>> + Send + Sync>,
     pub estimate_probes: Arc<
-        dyn Fn(String, bool) -> BoxFut<Result<crate::fitness::probes::ProbeEstimate, String>>
-            + Send
-            + Sync,
+        dyn Fn(String, bool) -> BoxFut<Result<crate::probes::ProbeEstimate, String>> + Send + Sync,
     >,
     pub run_probes: Arc<
-        dyn Fn(String, bool) -> BoxFut<Result<crate::fitness::probes::ProbeReport, String>>
-            + Send
-            + Sync,
+        dyn Fn(String, bool) -> BoxFut<Result<crate::probes::ProbeReport, String>> + Send + Sync,
     >,
     /// Throw away one candidate's resume ledger — see `clear_fitness_results`.
     pub clear_eval_status: Arc<dyn Fn(String) -> BoxFut<Result<(), String>> + Send + Sync>,
@@ -1002,21 +990,22 @@ pub struct SurfaceDeps {
     /// Registered MCP servers, for "the deployment supplies what the model
     /// cannot" — see `supplied_by`.
     pub mcp_servers: Arc<
-        dyn Fn() -> BoxFut<Result<Vec<crate::capability_reach::ReachServer>, String>> + Send + Sync,
+        dyn Fn() -> BoxFut<Result<Vec<talaria_capability_reach::ReachServer>, String>>
+            + Send
+            + Sync,
     >,
     /// Talaria's OWN checked tools, under the registry. Injected rather than
     /// imported at the call site so a matrix test never has to reach SearXNG.
     pub platform_supply: Arc<
-        dyn Fn() -> BoxFut<Result<Vec<crate::capability_reach::PlatformSupply>, String>>
+        dyn Fn() -> BoxFut<Result<Vec<talaria_capability_reach::PlatformSupply>, String>>
             + Send
             + Sync,
     >,
     pub estimate_adversarial: Arc<
         dyn Fn(
                 Option<String>,
-                Option<crate::fitness::adversarial::PriceFn>,
-            )
-                -> BoxFut<Result<crate::fitness::adversarial::AdversarialEstimate, String>>
+                Option<crate::adversarial::PriceFn>,
+            ) -> BoxFut<Result<crate::adversarial::AdversarialEstimate, String>>
             + Send
             + Sync,
     >,
@@ -1024,28 +1013,25 @@ pub struct SurfaceDeps {
         dyn Fn(
                 String,
                 Option<String>,
-            )
-                -> BoxFut<Result<crate::fitness::adversarial::AdversarialReport, String>>
+            ) -> BoxFut<Result<crate::adversarial::AdversarialReport, String>>
             + Send
             + Sync,
     >,
     pub run_eval_sweep: Arc<
-        dyn Fn(String, SweepStart) -> BoxFut<Result<crate::fitness::evals::EvalSweep, String>>
-            + Send
-            + Sync,
+        dyn Fn(String, SweepStart) -> BoxFut<Result<crate::evals::EvalSweep, String>> + Send + Sync,
     >,
     pub eval_sweep_statuses: Arc<
         dyn Fn(
                 Vec<String>,
             )
-                -> BoxFut<Result<HashMap<String, crate::fitness::evals::EvalSweepStatus>, String>>
+                -> BoxFut<Result<HashMap<String, crate::evals::EvalSweepStatus>, String>>
             + Send
             + Sync,
     >,
     /// Synchronous by design: the in-process stop set reads no future.
     pub stop_eval_sweep: Arc<dyn Fn(Option<String>) -> bool + Send + Sync>,
     pub guard_config:
-        Arc<dyn Fn() -> BoxFut<Result<crate::gateway::guard::GuardConfig, String>> + Send + Sync>,
+        Arc<dyn Fn() -> BoxFut<Result<talaria_gateway::guard::GuardConfig, String>> + Send + Sync>,
     /// What this deployment can reach for a model — natively or by tool. The
     /// edge takes the MODEL, not its capability keys: key resolution
     /// (`capabilityKeysFor`) is a database read, and keeping it inside the real
@@ -1055,23 +1041,17 @@ pub struct SurfaceDeps {
                 String,
                 Vec<String>,
             )
-                -> BoxFut<Result<HashMap<String, crate::capability_reach::Reach>, String>>
+                -> BoxFut<Result<HashMap<String, talaria_capability_reach::Reach>, String>>
             + Send
             + Sync,
     >,
     pub observed_harnesses: Arc<
-        dyn Fn(
-                Option<String>,
-            )
-                -> BoxFut<Result<Vec<crate::fitness::observed::ObservedHarness>, String>>
+        dyn Fn(Option<String>) -> BoxFut<Result<Vec<crate::observed::ObservedHarness>, String>>
             + Send
             + Sync,
     >,
-    pub observed_models: Arc<
-        dyn Fn() -> BoxFut<Result<Vec<crate::fitness::observed::ObservedModel>, String>>
-            + Send
-            + Sync,
-    >,
+    pub observed_models:
+        Arc<dyn Fn() -> BoxFut<Result<Vec<crate::observed::ObservedModel>, String>> + Send + Sync>,
     /// ISO, injected so an archive test can pin the ordering the eviction sorts
     /// on rather than racing the wall clock.
     pub now_iso: Arc<dyn Fn() -> String + Send + Sync>,
@@ -1134,7 +1114,7 @@ pub fn panic_deps() -> SurfaceDeps {
 /// The production edges. Each closure OWNS its pool/state clone (the
 /// block-clone before the `move`), because a returned `BoxFut` is `'static`
 /// and may not borrow from the closure that made it.
-pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
+pub fn real_deps(state: &talaria_state::AppState) -> SurfaceDeps {
     let pg = state.pg.clone();
     SurfaceDeps {
         models: Arc::new({
@@ -1142,7 +1122,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move || {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::model::access::gateway_models(&pg)
+                    talaria_model_access::gateway_models(&pg)
                         .await
                         .map_err(|e| e.to_string())
                 })
@@ -1153,7 +1133,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::gateway::registry::routing_for(&pg, &model)
+                    talaria_gateway::registry::routing_for(&pg, &model)
                         .await
                         .map_err(|e| e.to_string())
                 })
@@ -1163,7 +1143,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             let pg = pg.clone();
             move |key| {
                 let pg = pg.clone();
-                Box::pin(async move { crate::capability::get_capabilities(&pg, &key).await })
+                Box::pin(async move { talaria_capability::get_capabilities(&pg, &key).await })
             }
         }),
         forget: Arc::new({
@@ -1171,7 +1151,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |key| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::capability::forget_capabilities(&pg, &key)
+                    talaria_capability::forget_capabilities(&pg, &key)
                         .await
                         .map_err(|e| e.to_string())
                 })
@@ -1181,19 +1161,19 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
         // matrix counts and a run's own registry cannot disagree. App- and
         // workbench-authored harnesses cross with their plane, not here.
         harnesses: Arc::new(|| {
-            Box::pin(
-                async move { Ok(crate::harness::registry::builtin_activity_harnesses().to_vec()) },
-            )
+            Box::pin(async move {
+                Ok(talaria_harness_defs::registry::builtin_activity_harnesses().to_vec())
+            })
         }),
         bind_slots: Arc::new(|harnesses| {
-            Box::pin(async move { Ok(crate::fitness::score::bind_slots(&harnesses).await) })
+            Box::pin(async move { Ok(crate::score::bind_slots(&harnesses).await) })
         }),
         read_setting: Arc::new({
             let pg = pg.clone();
             move |key, fallback| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    Ok(crate::gateway::settings::get_setting(&pg, &key, fallback).await)
+                    Ok(talaria_gateway::settings::get_setting(&pg, &key, fallback).await)
                 })
             }
         }),
@@ -1202,7 +1182,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |key, value| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::gateway::settings::set_setting(&pg, &key, &value)
+                    talaria_gateway::settings::set_setting(&pg, &key, &value)
                         .await
                         .map_err(|e| e.to_string())
                 })
@@ -1213,10 +1193,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model, reprobe| {
                 let st = st.clone();
                 Box::pin(async move {
-                    Ok(
-                        crate::fitness::probes::estimate_probes(&st, &model, None, None, reprobe)
-                            .await,
-                    )
+                    Ok(crate::probes::estimate_probes(&st, &model, None, None, reprobe).await)
                 })
             }
         }),
@@ -1225,10 +1202,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model, reprobe| {
                 let st = st.clone();
                 Box::pin(async move {
-                    crate::fitness::probes::run_probes(
+                    crate::probes::run_probes(
                         &st,
                         &model,
-                        crate::fitness::probes::ProbeOpts {
+                        crate::probes::ProbeOpts {
                             reprobe,
                             ..Default::default()
                         },
@@ -1242,7 +1219,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::fitness::evals::clear_eval_status(&pg, &model).await;
+                    crate::evals::clear_eval_status(&pg, &model).await;
                     Ok(())
                 })
             }
@@ -1252,7 +1229,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    crate::fitness::transcripts::clear_transcripts(&pg, model.as_deref())
+                    crate::transcripts::clear_transcripts(&pg, model.as_deref())
                         .await
                         .map(|n| n as i64)
                         .map_err(|e| e.to_string())
@@ -1264,8 +1241,8 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move || {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let reach = crate::capability_reach::DbReach { pg: &pg };
-                    Ok(crate::capability_reach::ReachDeps::servers(&reach).await)
+                    let reach = talaria_capability_reach::DbReach { pg: &pg };
+                    Ok(talaria_capability_reach::ReachDeps::servers(&reach).await)
                 })
             }
         }),
@@ -1273,17 +1250,15 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             let pg = pg.clone();
             move || {
                 let pg = pg.clone();
-                Box::pin(async move { Ok(crate::capability_reach::platform_supply(&pg).await) })
+                Box::pin(async move { Ok(talaria_capability_reach::platform_supply(&pg).await) })
             }
         }),
         estimate_adversarial: Arc::new(|adversary, price| {
             Box::pin(async move {
-                Ok(crate::fitness::adversarial::estimate_adversarial(
-                    None,
-                    adversary.as_deref(),
-                    price,
+                Ok(
+                    crate::adversarial::estimate_adversarial(None, adversary.as_deref(), price)
+                        .await,
                 )
-                .await)
             })
         }),
         run_adversarial: Arc::new({
@@ -1291,10 +1266,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model, adversary| {
                 let st = st.clone();
                 Box::pin(async move {
-                    Ok(crate::fitness::adversarial::run_adversarial(
+                    Ok(crate::adversarial::run_adversarial(
                         &st,
                         &model,
-                        crate::fitness::adversarial::AdversarialOptions {
+                        crate::adversarial::AdversarialOptions {
                             adversary_model: adversary,
                             ..Default::default()
                         },
@@ -1311,10 +1286,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model, start| {
                 let st = st.clone();
                 Box::pin(async move {
-                    Ok(crate::fitness::evals::run_eval_sweep(
+                    Ok(crate::evals::run_eval_sweep(
                         &st,
                         &model,
-                        crate::fitness::evals::EvalOptions {
+                        crate::evals::EvalOptions {
                             restart: start.restart,
                             only: start.only,
                             retry_failed: start.retry_failed,
@@ -1336,7 +1311,7 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
                                 move |model, run, case| {
                                     let st = st.clone();
                                     Box::pin(async move {
-                                        crate::fitness::transcripts::record_transcript(
+                                        crate::transcripts::record_transcript(
                                             &st.pg, &model, &run, &case,
                                         )
                                         .await;
@@ -1348,10 +1323,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
                                 move |model| {
                                     let st = st.clone();
                                     Box::pin(async move {
-                                        let _ = crate::fitness::transcripts::prune_transcripts(
+                                        let _ = crate::transcripts::prune_transcripts(
                                             &st.pg,
                                             &model,
-                                            crate::fitness::transcripts::KEEP_RUNS_PER_MODEL,
+                                            crate::transcripts::KEEP_RUNS_PER_MODEL,
                                         )
                                         .await;
                                     })
@@ -1368,17 +1343,15 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             let pg = pg.clone();
             move |models| {
                 let pg = pg.clone();
-                Box::pin(async move {
-                    Ok(crate::fitness::evals::eval_sweep_statuses(&pg, &models).await)
-                })
+                Box::pin(async move { Ok(crate::evals::eval_sweep_statuses(&pg, &models).await) })
             }
         }),
-        stop_eval_sweep: Arc::new(|model| crate::fitness::evals::stop_eval_sweep(model.as_deref())),
+        stop_eval_sweep: Arc::new(|model| crate::evals::stop_eval_sweep(model.as_deref())),
         guard_config: Arc::new({
             let pg = pg.clone();
             move || {
                 let pg = pg.clone();
-                Box::pin(async move { Ok(crate::gateway::guard::guard_config(&pg).await) })
+                Box::pin(async move { Ok(talaria_gateway::guard::guard_config(&pg).await) })
             }
         }),
         reach: Arc::new({
@@ -1386,9 +1359,9 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model, wanted| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let keys = crate::harness::run::capability_keys_for(&pg, &model).await;
+                    let keys = talaria_harness::run::capability_keys_for(&pg, &model).await;
                     let wanted: Vec<&str> = wanted.iter().map(|w| w.as_str()).collect();
-                    Ok(crate::capability_reach::reach_for_keys(&pg, &keys, &wanted).await)
+                    Ok(talaria_capability_reach::reach_for_keys(&pg, &keys, &wanted).await)
                 })
             }
         }),
@@ -1397,10 +1370,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move |model| {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let deps = crate::fitness::observed::real_deps(pg.clone());
-                    Ok(crate::fitness::observed::observed_harnesses(
+                    let deps = crate::observed::real_deps(pg.clone());
+                    Ok(crate::observed::observed_harnesses(
                         &deps,
-                        &crate::fitness::observed::ObservedOptions {
+                        &crate::observed::ObservedOptions {
                             since_days: None,
                             model,
                         },
@@ -1414,10 +1387,10 @@ pub fn real_deps(state: &crate::state::AppState) -> SurfaceDeps {
             move || {
                 let pg = pg.clone();
                 Box::pin(async move {
-                    let deps = crate::fitness::observed::real_deps(pg.clone());
-                    Ok(crate::fitness::observed::observed_models(
+                    let deps = crate::observed::real_deps(pg.clone());
+                    Ok(crate::observed::observed_models(
                         &deps,
-                        &crate::fitness::observed::ObservedOptions::default(),
+                        &crate::observed::ObservedOptions::default(),
                     )
                     .await)
                 })
@@ -1432,7 +1405,7 @@ pub fn now_iso() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    crate::agent_auth::epoch_ms_to_iso(now.as_millis() as i64)
+    talaria_agent_auth::epoch_ms_to_iso(now.as_millis() as i64)
 }
 
 // ── Model rows and capability facts ──────────────────────────────────────────
@@ -1483,7 +1456,7 @@ pub struct FactView {
     /// WHICH tool — "supplied" with no attribution is a claim an admin cannot
     /// check, and the supplier is the thing that might be switched off
     /// tomorrow.
-    pub via: Option<crate::capability_reach::Supplier>,
+    pub via: Option<talaria_capability_reach::Supplier>,
 }
 
 /// [`FactView`] with its capability named — the shape a row carries.
@@ -1525,7 +1498,7 @@ pub fn keys_for(id: &str, qualified: bool, endpoints: &[String]) -> Vec<String> 
     };
     endpoints
         .iter()
-        .map(|ep| crate::capability::capability_key(ep, upstream))
+        .map(|ep| talaria_capability::capability_key(ep, upstream))
         .collect()
 }
 
@@ -1565,7 +1538,7 @@ pub const POOLED_DISAGREEMENT: &str =
 /// the rule the whole capability model rests on, and downgrading an
 /// unmeasured member to a lack is what turns a fresh self-host into a wall of
 /// red.
-pub fn merge_fact(facts: &[Option<&crate::capability::CapabilityFact>]) -> FactView {
+pub fn merge_fact(facts: &[Option<&talaria_capability::CapabilityFact>]) -> FactView {
     let unknown = FactView {
         state: CapabilityState::Unknown,
         source: None,
@@ -1577,7 +1550,8 @@ pub fn merge_fact(facts: &[Option<&crate::capability::CapabilityFact>]) -> FactV
     if facts.iter().any(|f| f.is_none()) || facts.is_empty() {
         return unknown;
     }
-    let known: Vec<&crate::capability::CapabilityFact> = facts.iter().map(|f| f.unwrap()).collect();
+    let known: Vec<&talaria_capability::CapabilityFact> =
+        facts.iter().map(|f| f.unwrap()).collect();
     let first = known[0];
     if known.iter().any(|f| f.value != first.value) {
         return FactView {
@@ -1613,7 +1587,7 @@ pub fn merge_fact(facts: &[Option<&crate::capability::CapabilityFact>]) -> FactV
 /// fact and it gets a third tag.
 pub fn supplied_by(
     view: FactView,
-    supplier: Option<crate::capability_reach::Supplier>,
+    supplier: Option<talaria_capability_reach::Supplier>,
 ) -> FactView {
     match supplier {
         Some(supplier)
@@ -1645,11 +1619,11 @@ pub fn supplied_by(
 /// in either case it is the one that named its endpoint.
 pub fn canonical_index(
     index: &FitnessIndex,
-    catalog: &[crate::model::access::GatewayModel],
+    catalog: &[talaria_model_access::GatewayModel],
 ) -> FitnessIndex {
     let mut out: FitnessIndex = FitnessIndex::new();
     for (model, entry) in index {
-        let id = crate::model::access::canonical_model_id(model, catalog);
+        let id = talaria_model_access::canonical_model_id(model, catalog);
         // `entry.model` KEEPS THE STORED SPELLING while the KEY becomes the
         // canonical one, and the distinction is load-bearing rather than tidy.
         // Re-keying the index moves where the page LOOKS a model up; it does
@@ -1693,7 +1667,7 @@ pub fn stored_id_for(model: &str, index: &FitnessIndex) -> String {
 /// share a key, so deduping the reads is the point.
 pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
     let models = ((deps.models)()).await?;
-    let mut facts_cache: HashMap<String, HashMap<String, crate::capability::CapabilityFact>> =
+    let mut facts_cache: HashMap<String, HashMap<String, talaria_capability::CapabilityFact>> =
         HashMap::new();
     let mut keys_of: Vec<(String, Vec<String>)> = Vec::with_capacity(models.len());
     for m in &models {
@@ -1713,20 +1687,20 @@ pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
     // would be one listing per model for an answer that cannot differ between
     // them.
     let servers = ((deps.mcp_servers)()).await.unwrap_or_default();
-    let providers: crate::capability_reach::Providers = deps
-        .setting(crate::capability_reach::PROVIDERS_KEY, HashMap::new())
+    let providers: talaria_capability_reach::Providers = deps
+        .setting(talaria_capability_reach::PROVIDERS_KEY, HashMap::new())
         .await
         .unwrap_or_default();
     // Talaria's own checked tools, under the registry — so a `supplied` tag
     // shows on an install that has registered nothing but can still do the
     // work.
     let platform = ((deps.platform_supply)()).await.unwrap_or_default();
-    let suppliers: HashMap<&str, Option<crate::capability_reach::Supplier>> = CAPABILITY_ORDER
+    let suppliers: HashMap<&str, Option<talaria_capability_reach::Supplier>> = CAPABILITY_ORDER
         .iter()
         .map(|cap| {
             (
                 *cap,
-                crate::capability_reach::supplier_for(cap, &servers, &providers, &platform),
+                talaria_capability_reach::supplier_for(cap, &servers, &providers, &platform),
             )
         })
         .collect();
@@ -1734,7 +1708,7 @@ pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
     let mut rows: Vec<ModelRow> = Vec::with_capacity(models.len());
     for (i, m) in models.iter().enumerate() {
         let keys = &keys_of[i].1;
-        let per_key: Vec<&HashMap<String, crate::capability::CapabilityFact>> =
+        let per_key: Vec<&HashMap<String, talaria_capability::CapabilityFact>> =
             keys.iter().map(|k| &facts_cache[k]).collect();
         rows.push(ModelRow {
             id: m.id.clone(),
@@ -1744,7 +1718,7 @@ pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
             capabilities: CAPABILITY_ORDER
                 .iter()
                 .map(|cap| {
-                    let facts: Vec<Option<&crate::capability::CapabilityFact>> =
+                    let facts: Vec<Option<&talaria_capability::CapabilityFact>> =
                         per_key.iter().map(|f| f.get(*cap)).collect();
                     CapabilityView {
                         cap: cap.to_string(),
@@ -1765,7 +1739,7 @@ pub async fn model_rows(deps: &SurfaceDeps) -> Result<Vec<ModelRow>, String> {
 /// in practice this is one key.
 pub fn capabilities_of(
     row: Option<&ModelRow>,
-) -> HashMap<String, crate::capability::CapabilityFact> {
+) -> HashMap<String, talaria_capability::CapabilityFact> {
     let mut out = HashMap::new();
     let Some(row) = row else { return out };
     for view in &row.capabilities {
@@ -1779,7 +1753,7 @@ pub fn capabilities_of(
         if view.view.state == CapabilityState::Unknown {
             continue;
         }
-        let mut fact = crate::capability::CapabilityFact {
+        let mut fact = talaria_capability::CapabilityFact {
             value: view.view.state == CapabilityState::Yes,
             source,
             at,
@@ -1913,7 +1887,7 @@ pub struct RunEstimate {
 
 #[derive(Clone)]
 pub struct Tier2Shape {
-    pub harnesses: Vec<crate::harness::registry::RegisteredHarness>,
+    pub harnesses: Vec<talaria_harness_defs::registry::RegisteredHarness>,
     pub fixtures: i64,
     /// One repair turn per JSON fixture, worst case. The runner sends a repair
     /// only when the contract fails, so this is a ceiling and never a surprise.
@@ -1940,7 +1914,7 @@ pub async fn tier2_shape(
         // rule: a text harness never gets a repair turn, so budgeting one for
         // it would inflate every estimate on a registry that is
         // thirteen-fourteenths text.
-        if crate::fitness::evals::meta_of(h).repairable {
+        if crate::evals::meta_of(h).repairable {
             repair_ceiling += h.eval_names().count() as i64;
         }
     }
@@ -2051,7 +2025,7 @@ pub async fn estimate_run(
             (None, a) => a,
             (p, None) => p,
         };
-        let price_fn: crate::fitness::adversarial::PriceFn =
+        let price_fn: crate::adversarial::PriceFn =
             Arc::new(move |p, c| Box::pin(async move { usd_of(worst, p, c) }));
         let est = ((deps.estimate_adversarial)(req.adversary_model.clone(), Some(price_fn)))
             .await
@@ -2107,11 +2081,11 @@ pub struct Thresholds {
 
 pub fn thresholds() -> Thresholds {
     Thresholds {
-        contract_ready: crate::fitness::score::CONTRACT_READY,
-        contract_unfit: crate::fitness::score::CONTRACT_UNFIT,
-        repair_workable: crate::fitness::score::REPAIR_WORKABLE,
-        observed_window_days: crate::fitness::observed::DEFAULT_WINDOW_DAYS,
-        min_observed_runs: crate::fitness::observed::MIN_OBSERVED_RUNS,
+        contract_ready: crate::score::CONTRACT_READY,
+        contract_unfit: crate::score::CONTRACT_UNFIT,
+        repair_workable: crate::score::REPAIR_WORKABLE,
+        observed_window_days: crate::observed::DEFAULT_WINDOW_DAYS,
+        min_observed_runs: crate::observed::MIN_OBSERVED_RUNS,
     }
 }
 
@@ -2134,19 +2108,19 @@ pub fn thresholds() -> Thresholds {
 #[serde(rename_all = "camelCase")]
 pub struct SlotView {
     #[serde(flatten)]
-    pub slot: crate::fitness::score::FitnessSlot,
+    pub slot: crate::score::FitnessSlot,
     // camelCase for `taskFloor`, which the panel reads off every slot row.
     pub key: String,
     pub task_floor: f64,
 }
 
 pub fn slot_views() -> Vec<SlotView> {
-    crate::fitness::score::fitness_slots()
+    crate::score::fitness_slots()
         .into_iter()
         .filter(|s| s.live)
         .map(|s| SlotView {
-            key: crate::fitness::score::slot_key(s.kind, &s.id),
-            task_floor: crate::fitness::score::task_floor_for(&s, None),
+            key: crate::score::slot_key(s.kind, &s.id),
+            task_floor: crate::score::task_floor_for(&s, None),
             slot: s,
         })
         .collect()
@@ -2157,10 +2131,10 @@ pub struct IndexEntryParts<'a> {
     pub at: &'a str,
     pub ran: &'a [TierId],
     pub requested: &'a [TierId],
-    pub sweep: &'a crate::fitness::evals::EvalSweep,
-    pub report: &'a crate::fitness::score::FitnessReport,
-    pub probes: Option<&'a crate::fitness::probes::ProbeReport>,
-    pub adversarial: Option<&'a crate::fitness::adversarial::AdversarialReport>,
+    pub sweep: &'a crate::evals::EvalSweep,
+    pub report: &'a crate::score::FitnessReport,
+    pub probes: Option<&'a crate::probes::ProbeReport>,
+    pub adversarial: Option<&'a crate::adversarial::AdversarialReport>,
     /// The reading the last run left behind. Carried so a pass that measured
     /// NOTHING — a probes-only run, a sweep the admin stopped at case one —
     /// keeps the previous number instead of blanking a column somebody paid
@@ -2173,7 +2147,7 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
     let mut cells: HashMap<String, FitnessCell> = HashMap::new();
     for slot in &parts.report.slots {
         cells.insert(
-            crate::fitness::score::slot_key(slot.slot.kind, &slot.slot.id),
+            crate::score::slot_key(slot.slot.kind, &slot.slot.id),
             FitnessCell {
                 band: slot.band,
                 reason: slot.reasons.first().map(|r| r.detail.clone()),
@@ -2234,11 +2208,11 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
             + parts.probes.map(|p| p.results.len() as i64).unwrap_or(0),
         // Partial in either of the two ways a run can be: tier 2 stopped
         // mid-sweep, or a tier the admin asked for never produced a result.
-        partial: parts.sweep.state == crate::fitness::evals::EvalSweepState::Stopped
+        partial: parts.sweep.state == crate::evals::EvalSweepState::Stopped
             || (parts.sweep.total > 0 && parts.sweep.done < parts.sweep.total)
             || parts.ran.len() < parts.requested.len(),
         // The per-harness half, from the one definition the backfill also uses.
-        harnesses: Some(crate::fitness::value::harness_summary(
+        harnesses: Some(crate::value::harness_summary(
             parts.report,
             &parts.sweep.harnesses,
         )),
@@ -2248,7 +2222,7 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
 /// The budget a sweep leaves behind, in one place. A failure to write is
 /// swallowed: the next sweep re-derives the budget from its own run, and a
 /// failed archive write must not void a run the org already paid for.
-async fn record_budget(harnesses: &[crate::fitness::evals::HarnessScore], deps: &SurfaceDeps) {
+async fn record_budget(harnesses: &[crate::evals::HarnessScore], deps: &SurfaceDeps) {
     if harnesses.is_empty() {
         return;
     }
@@ -2362,7 +2336,7 @@ pub fn stale_run(r: &FitnessRunStatus, now: i64) -> bool {
         .heartbeat_at
         .as_deref()
         .or(r.started_at.as_deref())
-        .and_then(crate::agent_auth::iso_to_epoch_ms);
+        .and_then(talaria_agent_auth::iso_to_epoch_ms);
     match beat {
         Some(beat) => now - beat > RUN_STALE_MS,
         // An unparseable (or absent) stamp is not stale: the parse yields
@@ -2549,7 +2523,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
     // when one ends. Clearing at the end wiped the terminal the moment the
     // sweep finished — the point at which somebody who was watching it wants to
     // read it back.
-    crate::fitness::live_feed::start_live_feed(&model);
+    crate::live_feed::start_live_feed(&model);
 
     // The inner body takes `?` on every edge, so a failure lands in the error
     // status, never a panic and never a dropped slot.
@@ -2563,7 +2537,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         )
         .await;
 
-        let mut probes: Option<crate::fitness::probes::ProbeReport> = None;
+        let mut probes: Option<crate::probes::ProbeReport> = None;
         if tiers.contains(&TierId::Probes) && !stopped(&model, &deps).await {
             set_phase(&model, &tiers, Some("probes"), &started_at, &deps).await;
             probes = ((deps.run_probes)(model.clone(), opts.reprobe)).await.ok();
@@ -2573,7 +2547,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         }
 
         let harnesses = ((deps.harnesses)()).await?;
-        let mut sweep: Option<crate::fitness::evals::EvalSweep> = None;
+        let mut sweep: Option<crate::evals::EvalSweep> = None;
         if tiers.contains(&TierId::Evals) && !stopped(&model, &deps).await {
             set_phase(&model, &tiers, Some("evals"), &started_at, &deps).await;
             sweep = ((deps.run_eval_sweep)(
@@ -2594,7 +2568,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
             }
         }
 
-        let mut adversarial: Option<crate::fitness::adversarial::AdversarialReport> = None;
+        let mut adversarial: Option<crate::adversarial::AdversarialReport> = None;
         if tiers.contains(&TierId::Adversarial) && !stopped(&model, &deps).await {
             set_phase(&model, &tiers, Some("adversarial"), &started_at, &deps).await;
             adversarial = ((deps.run_adversarial)(model.clone(), opts.adversary_model.clone()))
@@ -2642,7 +2616,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
         // on.
         let guarded = ((deps.guard_config)())
             .await
-            .map(|c| c.mode != crate::gateway::guard::GuardMode::Off)
+            .map(|c| c.mode != talaria_gateway::guard::GuardMode::Off)
             .unwrap_or(false);
         // A TIER THAT DID NOT RUN KEEPS ITS LAST RESULT. IT DOES NOT GET
         // BLANKED. Re-running ONE tier is the normal thing to want — a fixture
@@ -2668,7 +2642,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
             // `idle` — which for the one comparison this feeds
             // (`state === 'stopped'`) is the safe answer.
             s.state = serde_json::from_value(serde_json::Value::String(p.sweep.state.clone()))
-                .unwrap_or(crate::fitness::evals::EvalSweepState::Idle);
+                .unwrap_or(crate::evals::EvalSweepState::Idle);
             s.done = p.sweep.done;
             s.total = p.sweep.total;
             s.harnesses = p.harnesses.clone();
@@ -2693,7 +2667,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
             .flat_map(|h| h.def.requires.iter().map(|r| r.to_string()))
             .collect();
         wanted.extend(
-            crate::fitness::score::fitness_slots()
+            crate::score::fitness_slots()
                 .into_iter()
                 .flat_map(|s| s.requires),
         );
@@ -2703,13 +2677,13 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
             .await
             .unwrap_or_default();
 
-        let report = crate::fitness::score::score_fitness(
-            &crate::fitness::score::FitnessInput {
+        let report = crate::score::score_fitness(
+            &crate::score::FitnessInput {
                 sweep: &effective,
                 harnesses: &harnesses,
                 capabilities: &capabilities_of(rows.iter().find(|r| r.id == model)),
                 reach: Some(&reach),
-                guard_baseline: Some(&crate::fitness::observed::guard_baseline(&observed)),
+                guard_baseline: Some(&crate::observed::guard_baseline(&observed)),
                 floors: None,
             },
             &((deps.bind_slots)(harnesses.clone())).await?,
@@ -2849,7 +2823,7 @@ pub async fn run_fitness(opts: StartOptions, deps: Arc<SurfaceDeps>) {
 
 /// `EvalSweepState` has no `as_str` (it is serde-only in evals.rs), and this
 /// summary wants the exact wire spelling the archive has always carried.
-fn sweep_state_str(state: &crate::fitness::evals::EvalSweepState) -> String {
+fn sweep_state_str(state: &crate::evals::EvalSweepState) -> String {
     serde_json::to_value(state)
         .ok()
         .and_then(|v| v.as_str().map(String::from))
@@ -2939,7 +2913,7 @@ pub async fn fitness_runs(deps: &SurfaceDeps) -> Result<FitnessRunsView, String>
     // a run that is merely slow would have its row destroyed by whoever looked
     // first. `stop_fitness_run` does the writing, and it does it because
     // somebody asked.
-    let now = crate::agent_auth::iso_to_epoch_ms(&(deps.now_iso)()).unwrap_or(0);
+    let now = talaria_agent_auth::iso_to_epoch_ms(&(deps.now_iso)()).unwrap_or(0);
     let mut runs: Vec<Value> = statuses
         .into_iter()
         .map(|(key, raw)| {
@@ -3055,7 +3029,7 @@ pub async fn read_index_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String
     // `canonical_index` on raw values — same two passes, same comment.
     let mut out = serde_json::Map::new();
     for (model, entry) in &stored {
-        let id = crate::model::access::canonical_model_id(model, &catalog);
+        let id = talaria_model_access::canonical_model_id(model, &catalog);
         if id == *model || !out.contains_key(&id) {
             out.insert(id, entry.clone());
         }
@@ -3072,14 +3046,14 @@ pub async fn read_index_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String
 /// drive the whole page from `SurfaceDeps` and never learn a second deps
 /// shape. `value.rs` itself stays free of every real import — it is arithmetic
 /// over what it is handed.
-pub async fn read_value(deps: &SurfaceDeps) -> Result<crate::fitness::value::ValueView, String> {
+pub async fn read_value(deps: &SurfaceDeps) -> Result<crate::value::ValueView, String> {
     let d = deps.clone();
     let d2 = deps.clone();
     let d3 = deps.clone();
     let d4 = deps.clone();
     let d5 = deps.clone();
     let d6 = deps.clone();
-    crate::fitness::value::value_view(&crate::fitness::value::ValueDeps {
+    crate::value::value_view(&crate::value::ValueDeps {
         observed: Arc::new(move || {
             let d = d.clone();
             Box::pin(async move { (d.observed_harnesses)(None).await })
@@ -3112,16 +3086,14 @@ pub async fn read_value(deps: &SurfaceDeps) -> Result<crate::fitness::value::Val
                     let raw = deps
                         .setting::<Option<FitnessRecord>>(&record_key(&model), None)
                         .await?;
-                    Ok(
-                        upgrade_record(raw).map(|r| crate::fitness::value::ArchivedRecord {
-                            report: r.report,
-                            harnesses: r.harnesses,
-                        }),
-                    )
+                    Ok(upgrade_record(raw).map(|r| crate::value::ArchivedRecord {
+                        report: r.report,
+                        harnesses: r.harnesses,
+                    }))
                 })
             }
         }),
-        window_days: crate::fitness::observed::DEFAULT_WINDOW_DAYS,
+        window_days: crate::observed::DEFAULT_WINDOW_DAYS,
     })
     .await
 }
@@ -3153,7 +3125,7 @@ pub struct MatrixView {
     pub registry: MatrixRegistry,
 }
 
-/// The counts off [`crate::fitness::health::HealthSummary`], small enough to
+/// The counts off [`crate::health::HealthSummary`], small enough to
 /// ride the polled matrix payload: the chip, not the health view.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -3216,7 +3188,7 @@ pub struct LiveRun {
     pub total: i64,
     /// The harness being swept right now, for the line above the list.
     pub harness: Option<String>,
-    pub cases: Vec<crate::fitness::evals::EvalCaseScore>,
+    pub cases: Vec<crate::evals::EvalCaseScore>,
     pub dropped: i64,
     /// THE FEED: one line per landed case, every case, cheap. `cases` above is
     /// the drill-down sample; this is the thing that shows a sweep moving.
@@ -3225,7 +3197,7 @@ pub struct LiveRun {
     /// when the sweep belongs to another instance — see `in_flight_for`. That
     /// reads as an empty panel, never as a wrong one. Several at once: a sweep
     /// runs `concurrency` cases in parallel.
-    pub current: Vec<crate::fitness::evals::InFlightCase>,
+    pub current: Vec<crate::evals::InFlightCase>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3247,9 +3219,9 @@ pub struct DetailView {
     /// Separate from `live` on purpose: `live` is what the panel POLLS on, and
     /// hanging a finished run's console off it would poll forever.
     pub console_log: Vec<EvalLogLine>,
-    pub observed: Vec<crate::fitness::observed::ObservedHarness>,
-    pub observed_model: Option<crate::fitness::observed::ObservedModel>,
-    pub divergences: Vec<crate::fitness::observed::Divergence>,
+    pub observed: Vec<crate::observed::ObservedHarness>,
+    pub observed_model: Option<crate::observed::ObservedModel>,
+    pub divergences: Vec<crate::observed::Divergence>,
     pub thresholds: Thresholds,
 }
 
@@ -3275,17 +3247,15 @@ pub struct FitnessQuery {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptView {
     pub model: String,
-    pub runs: Vec<crate::fitness::transcripts::TranscriptRun>,
-    pub cases: Vec<crate::fitness::transcripts::Transcript>,
+    pub runs: Vec<crate::transcripts::TranscriptRun>,
+    pub cases: Vec<crate::transcripts::Transcript>,
 }
 
 /// THE HEALTH FOLD, in one place: every record the index still keeps, read and
 /// upgraded exactly as the wire serves it. The health view calls it per open;
 /// `stamp_health_band` calls it whenever the archive changes — the same
 /// archive, so the chip and the tab can never disagree about the number.
-async fn health_summary(
-    deps: &SurfaceDeps,
-) -> Result<crate::fitness::health::HealthSummary, String> {
+async fn health_summary(deps: &SurfaceDeps) -> Result<crate::health::HealthSummary, String> {
     let index = read_index(deps).await?;
     let mut records: Vec<FitnessRecord> = Vec::new();
     for id in index.keys() {
@@ -3297,14 +3267,14 @@ async fn health_summary(
             records.push(rec);
         }
     }
-    let runs: Vec<crate::fitness::health::HealthInput<'_>> = records
+    let runs: Vec<crate::health::HealthInput<'_>> = records
         .iter()
-        .map(|rec| crate::fitness::health::HealthInput {
+        .map(|rec| crate::health::HealthInput {
             model: &rec.model,
             cases: &rec.cases,
         })
         .collect();
-    Ok(crate::fitness::health::summarize(&runs))
+    Ok(crate::health::summarize(&runs))
 }
 
 /// Stamp the cached band after the archive changed. BEST EFFORT BY DESIGN:
@@ -3360,10 +3330,10 @@ pub async fn read_fitness(
         };
         let body = TranscriptView {
             model: model.to_string(),
-            runs: crate::fitness::transcripts::transcript_runs(pg, model)
+            runs: crate::transcripts::transcript_runs(pg, model)
                 .await
                 .map_err(|e| e.to_string())?,
-            cases: crate::fitness::transcripts::read_transcripts(pg, model, query.run.as_deref())
+            cases: crate::transcripts::read_transcripts(pg, model, query.run.as_deref())
                 .await
                 .map_err(|e| e.to_string())?,
         };
@@ -3425,8 +3395,8 @@ pub async fn read_fitness(
             )
             .await?,
             adversary_requirement: serde_json::json!({
-                "capabilities": crate::fitness::adversarial::ADVERSARY_REQUIREMENT.0,
-                "note": crate::fitness::adversarial::ADVERSARY_REQUIREMENT.1,
+                "capabilities": crate::adversarial::ADVERSARY_REQUIREMENT.0,
+                "note": crate::adversarial::ADVERSARY_REQUIREMENT.1,
             }),
         };
         return serde_json::to_value(&body).map_err(|e| e.to_string());
@@ -3474,7 +3444,7 @@ async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
         registry: MatrixRegistry {
             harnesses: shape.harnesses.len(),
             fixtures: shape.fixtures,
-            provocations: crate::fitness::adversarial::SEEDS.len(),
+            provocations: crate::adversarial::SEEDS.len(),
             unfixtured: shape
                 .harnesses
                 .iter()
@@ -3529,7 +3499,7 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
     // builder — the console needs the counters as numbers, and the wire's raw
     // rows exist for serialization order (see `fitness_runs`).
     let statuses = read_runs(deps).await.unwrap_or_default();
-    let now = crate::agent_auth::iso_to_epoch_ms(&(deps.now_iso)()).unwrap_or(0);
+    let now = talaria_agent_auth::iso_to_epoch_ms(&(deps.now_iso)()).unwrap_or(0);
     let running = statuses
         .values()
         .find(|s| {
@@ -3551,7 +3521,7 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
         // console with two hundred and forty-seven fixture lines from a run
         // that finished hours ago, above the probes it was actually running.
         let sweeping = running.tiers.contains(&TierId::Evals);
-        let cases: Vec<crate::fitness::evals::EvalCaseScore> = if sweeping {
+        let cases: Vec<crate::evals::EvalCaseScore> = if sweeping {
             sweep.map(|s| s.cases.clone()).unwrap_or_default()
         } else {
             Vec::new()
@@ -3581,26 +3551,23 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
             // sequence and the console is read as a timeline, so concatenating
             // "sweep cases, then the rest" printed tier 1's probes UNDERNEATH
             // the fixtures that ran after them.
-            log: run_log(&cases, &crate::fitness::live_feed::live_feed_for(model)),
-            current: crate::fitness::evals::in_flight_for(model),
+            log: run_log(&cases, &crate::live_feed::live_feed_for(model)),
+            current: crate::evals::in_flight_for(model),
         });
     }
 
     let console_log = live.as_ref().map(|l| l.log.clone()).unwrap_or_else(|| {
         run_log(
             record.as_ref().map(|r| r.cases.as_slice()).unwrap_or(&[]),
-            &archived_tier_log(
-                record.as_ref(),
-                &crate::fitness::live_feed::live_feed_for(model),
-            ),
+            &archived_tier_log(record.as_ref(), &crate::live_feed::live_feed_for(model)),
         )
     });
     let divergences = match &record {
-        Some(record) => crate::fitness::observed::divergences(
+        Some(record) => crate::observed::divergences(
             model,
             &record.harnesses,
             &observed,
-            &crate::fitness::observed::DivergenceOptions::default(),
+            &crate::observed::DivergenceOptions::default(),
         ),
         None => Vec::new(),
     };
@@ -3840,7 +3807,7 @@ pub async fn stop_fitness_run(model: Option<&str>, deps: &SurfaceDeps) -> StopRe
     // orphaned, and killing its row from here would report a sweep as failed
     // while it was still spending money. The heartbeat is what tells them
     // apart.
-    let now_ms = crate::agent_auth::iso_to_epoch_ms(&(deps.now_iso)()).unwrap_or(0);
+    let now_ms = talaria_agent_auth::iso_to_epoch_ms(&(deps.now_iso)()).unwrap_or(0);
     for m in &targets {
         let Some(row) = persisted_now.get(m) else {
             continue;
@@ -4039,29 +4006,27 @@ mod tests {
     // The parent module's own `use` lines are private, so everything its code
     // spells unqualified is imported here too — glob only carries its pub items.
     use super::*;
-    use crate::capability::CapabilityFact;
-    use crate::fitness::adversarial::AdversarialEstimate;
-    use crate::fitness::evals::{
+    use crate::adversarial::AdversarialEstimate;
+    use crate::evals::{
         BandScores, EvalCaseScore, EvalSweep, EvalSweepState, HarnessMeta, HarnessScore,
         SweepConcurrency, TaskVerdict,
     };
-    use crate::fitness::probes::{
-        LatencyReading, ProbeEstimate, ProbeEstimateRow, ProbeId, ProbeReport,
-    };
-    use crate::fitness::score::FitnessReport;
-    use crate::gateway::registry::{LlmEndpoint, ModelRouting};
-    use crate::harness::define::{
-        CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, OnFailure, Output,
-        RenderContext,
-    };
-    use crate::harness::registry::{HarnessSource, RegisteredHarness};
-    use crate::harness::run::BoxFut;
-    use crate::harness::schema::Schema;
-    use crate::harness_model::ModelSpec;
-    use crate::model::access::GatewayModel;
+    use crate::probes::{LatencyReading, ProbeEstimate, ProbeEstimateRow, ProbeId, ProbeReport};
+    use crate::score::FitnessReport;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::{Arc, LazyLock, Mutex};
+    use talaria_capability::CapabilityFact;
+    use talaria_gateway::registry::{LlmEndpoint, ModelRouting};
+    use talaria_harness::define::{
+        CheckCtx, CheckResult, EvalBand, EvalCase, HarnessDefinition, OnFailure, Output,
+        RenderContext,
+    };
+    use talaria_harness::run::BoxFut;
+    use talaria_harness_defs::registry::{HarnessSource, RegisteredHarness};
+    use talaria_harness_model::ModelSpec;
+    use talaria_harness_schema::Schema;
+    use talaria_model_access::GatewayModel;
 
     static RUN_SOLE: LazyLock<tokio::sync::Mutex<()>> =
         LazyLock::new(|| tokio::sync::Mutex::new(()));
