@@ -5,7 +5,10 @@
 // data, content) expose their own gated verbs from the same dispatcher.
 //
 // The git-flow contract (why it never gets messy): Talaria cuts the branch
-// (talaria/<ticket-ref>-<slug>) from default at start_job, the harness works
+// (talaria/<ticket-ref>-<slug>, or under the repo grant's configured branch
+// prefix when its branch law requires one — the name satisfies
+// github::push_allowed, which the sandbox push check enforces) from default
+// at start_job, the harness works
 // ONLY inside that branch via the authenticated clone URL, finish_job opens
 // the PR with the templated ticket-linked body. No raw pushes to default —
 // the workbench token is the only credential in the sandbox, and every
@@ -223,7 +226,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "start_job",
-            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch and returns an authenticated clone URL. Work ONLY on that branch; commit and push to it as you go. For feature-scale work, write your plan first (it is recorded and rides into the PR). One job per ticket at a time.",
+            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — and returns an authenticated clone URL. Work ONLY on that branch; commit and push to it as you go. For feature-scale work, write your plan first (it is recorded and rides into the PR). One job per ticket at a time.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -744,27 +747,22 @@ async fn call_tool(
                 },
                 None => (String::new(), String::new()),
             };
-            let branch = if !ticket_ref.is_empty() {
-                truncate_utf16(
-                    &format!(
-                        "talaria/{}-{}",
-                        ticket_ref.to_lowercase(),
-                        if slugify(&title).is_empty() {
-                            "work".into()
-                        } else {
-                            slugify(&title)
-                        }
-                    ),
-                    80,
-                )
-                .to_string()
-            } else {
-                truncate_utf16(
-                    &format!("talaria/job-{}-{}", slugify(&repo), random_base36(6)),
-                    80,
-                )
-                .to_string()
-            };
+            // Mint the branch under the repo's own branch law: a grant with a
+            // configured prefix gets the job branch under it, so the name
+            // git's push gate (and the sandbox push check) will actually
+            // accept. No rule, no prefix — the historical `talaria/…` shape.
+            let branch = job_branch_name(
+                pg,
+                &agent.id,
+                &repo,
+                &ticket_ref,
+                &if slugify(&title).is_empty() {
+                    "work".to_string()
+                } else {
+                    slugify(&title)
+                },
+            )
+            .await;
             let created_branch = match gh::create_branch(pg, &deps.sb, &repo, &branch, None).await {
                 Ok(cb) => cb,
                 Err(e) => return thrown(e),
@@ -1059,7 +1057,7 @@ async fn call_tool(
                     .to_string()
             } else {
                 format!(
-                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; commit and push as you go — commits are authored as YOU. Never touch {base}. You are the orchestrator: the CHOSEN harness (first in the list) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Escalate effort only when the work truly needs it. When the change is right, finish_job — Talaria opens the PR.",
+                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go — commits are authored as YOU. Never touch {base}. You are the orchestrator: the CHOSEN harness (first in the list) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Escalate effort only when the work truly needs it. When the change is right, finish_job — Talaria opens the PR.",
                     base = created_branch.base,
                 )
             };
@@ -1311,14 +1309,27 @@ async fn call_tool(
                 Ok(base) => base,
                 Err(e) => return thrown(e),
             };
+            // The branch this job names has to be one the repo's branch law
+            // would accept a push for at all. Jobs minted before start_job
+            // obeyed the grant's branch prefix carry a name the sandbox push
+            // check refuses forever — no push can ever land, and finishing
+            // would only end in GitHub's 404 on the compare. Say so, and
+            // point at the recovery: abandon and restart, which mints a
+            // compliant branch.
+            if let Some(rule) = gh::repo_rule(pg, &agent.id, &job.repo).await
+                && let Err(sentence) = gh::push_allowed(&rule, &base, &job.branch)
+            {
+                return CallOutcome::Fail(format!(
+                    "this job's branch can never be pushed: {sentence} — abandon this job and start_job again; the new job's branch obeys the rule"
+                ));
+            }
             let ahead = match gh::branch_ahead(pg, &deps.sb, &job.repo, &base, &job.branch).await {
                 Ok(ahead) => ahead,
                 Err(e) => return thrown(e),
             };
             if ahead == 0 {
                 return CallOutcome::Fail(
-                    "the branch has no commits yet — push your work first (or finish with abandon:true)"
-                        .into(),
+                    "the branch has no commits yet — commit and push your work to this job's branch first (or finish with abandon:true)".into(),
                 );
             }
             // The ticket ref and TITLE go into a PUBLIC PR title and body, so
@@ -1457,6 +1468,48 @@ fn random_base36(len: usize) -> String {
         .iter()
         .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
         .collect()
+}
+
+/// The job branch name — the ticket slug under the repo grant's configured
+/// branch prefix when the branch law (`github::push_allowed`, enforced on
+/// every sandbox push) demands one, the historical `talaria/<ref>-<slug>`
+/// shape otherwise. A job branch that violates the prefix could never be
+/// pushed, so the mint obeys the rule up front instead of dead-ending
+/// finish_job on a branch git will always refuse. Pure; GitHub is not
+/// consulted.
+fn composed_job_branch(
+    prefix: Option<&str>,
+    repo: &str,
+    ticket_ref: &str,
+    title_slug: &str,
+) -> String {
+    let stem = if ticket_ref.is_empty() {
+        format!("job-{}-{}", slugify(repo), random_base36(6))
+    } else {
+        format!("{}-{}", ticket_ref.to_lowercase(), title_slug)
+    };
+    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.len() + 1));
+    let body = truncate_utf16(&stem, budget).to_string();
+    match prefix.filter(|p| !p.is_empty()) {
+        Some(p) => format!("{p}/{body}"),
+        None => format!("talaria/{body}"),
+    }
+}
+
+/// The live read behind `composed_job_branch`: the agent's grant rule for
+/// this repo, or no prefix when there is no rule (the default posture allows
+/// any branch but the base, and `talaria/…` is never the base).
+async fn job_branch_name(
+    pg: &PgPool,
+    agent_id: &str,
+    repo: &str,
+    ticket_ref: &str,
+    title_slug: &str,
+) -> String {
+    let prefix = gh::repo_rule(pg, agent_id, repo)
+        .await
+        .and_then(|r| r.branch_prefix);
+    composed_job_branch(prefix.as_deref(), repo, ticket_ref, title_slug)
 }
 
 /// The job slice `merge_job_to_testing` reads — the agent verb passes a fresh
@@ -1668,6 +1721,59 @@ mod tests {
         assert_eq!(slugify(""), "");
         let long = "x".repeat(120);
         assert_eq!(slugify(&long).len(), 40);
+    }
+
+    #[test]
+    fn job_branches_obey_the_grants_branch_prefix() {
+        // No rule (the default posture allows any branch but the base): the
+        // historical shape.
+        assert_eq!(
+            composed_job_branch(
+                None,
+                "outcrop-labs/talaria",
+                "TALA-37",
+                "finish-job-dead-ends"
+            ),
+            "talaria/tala-37-finish-job-dead-ends"
+        );
+        // A configured prefix: the mint goes under it, where pushes pass.
+        assert_eq!(
+            composed_job_branch(
+                Some("agent"),
+                "outcrop-labs/talaria",
+                "TALA-37",
+                "fix-the-thing"
+            ),
+            "agent/tala-37-fix-the-thing"
+        );
+        // An empty prefix string is no rule at all.
+        assert_eq!(
+            composed_job_branch(Some(""), "o/r", "TALA-9", "x"),
+            "talaria/tala-9-x"
+        );
+        // The self-referential contract: a minted branch passes the very
+        // branch law it was minted for.
+        let rule = gh::RepoRule {
+            repo: "outcrop-labs/talaria".into(),
+            base_branch: None,
+            push_mode: "branches_only".into(),
+            branch_prefix: Some("agent".into()),
+        };
+        let branch = composed_job_branch(
+            Some("agent"),
+            "outcrop-labs/talaria",
+            "TALA-37",
+            "fix-the-thing",
+        );
+        gh::push_allowed(&rule, "main", &format!("refs/heads/{branch}"))
+            .expect("a minted job branch must pass its own repo's push rule");
+        // The old shape fails that same law — the bug this closes.
+        gh::push_allowed(&rule, "main", "refs/heads/talaria/tala-37-fix-the-thing")
+            .expect_err("a talaria/* branch under an agent/* rule is the dead end");
+        // Ticketless mint keeps the random suffix and the 80-char budget.
+        let job = composed_job_branch(Some("agent"), "o/some-repo", "", "");
+        assert!(job.starts_with("agent/job-o-some-repo-"));
+        assert!(job.chars().count() <= 80);
     }
 
     #[test]
