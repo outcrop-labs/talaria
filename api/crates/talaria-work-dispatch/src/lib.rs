@@ -30,11 +30,13 @@
 
 use std::sync::Arc;
 
-use crate::runs::define::is_terminal;
-use crate::runs::defs::work_session::{session_run_id, work_session_run};
-use crate::runs::run::{EnqueueOptions, RunDeps, enqueue};
-use crate::{realtime, statuses, tasks};
 use sqlx::PgPool;
+use talaria_realtime;
+use talaria_runs_define::is_terminal;
+use talaria_runs_run::{EnqueueOptions, RunDeps, enqueue};
+use talaria_runs_work_session::{session_run_id, work_session_run};
+use talaria_statuses as statuses;
+use talaria_tasks as tasks;
 use talaria_tasks_types::DispatchTicket;
 
 const LOG: &str = "[work-dispatch]";
@@ -66,9 +68,9 @@ fn is_duplicate_key(e: &sqlx::Error) -> bool {
 pub fn dispatch_deps(
     pg: PgPool,
     redis: redis::aio::ConnectionManager,
-    rt: realtime::RealtimeDeps,
+    rt: talaria_realtime::RealtimeDeps,
 ) -> RunDeps {
-    crate::runs::real_run_deps(pg, redis, rt)
+    talaria_runs_decide::assembly::real_run_deps(pg, redis, rt)
 }
 
 /// Drive one ticket with one agent as a SESSION. Fire-and-forget from task
@@ -239,9 +241,9 @@ pub async fn maybe_dispatch_ticket(
             // classify — dispatch proceeds and the refusal walk below decides.
             None => false,
             Some((department, role, workbench, workbench_profile)) => {
-                let resolved = crate::workbench::resolve_workbench(
+                let resolved = talaria_workbench::resolve_workbench(
                     pg,
-                    &crate::workbench::WorkbenchAgent {
+                    &talaria_workbench::WorkbenchAgent {
                         department,
                         role: role.as_deref(),
                         workbench,
@@ -253,7 +255,7 @@ pub async fn maybe_dispatch_ticket(
                 match resolved {
                     None => false,
                     Some(_) => {
-                        match crate::fleet::budget::admit_work(crate::fleet::budget::JOB_STANDARD)
+                        match talaria_fleet_budget::admit_work(talaria_fleet_budget::JOB_STANDARD)
                             .await
                         {
                             Ok(()) => false,
@@ -262,7 +264,8 @@ pub async fn maybe_dispatch_ticket(
                                     "{LOG} {}: {agent} waiting on host RAM ({reason})",
                                     task.id
                                 );
-                                crate::work_wait::mark_waiting(pg, &task.id, &agent, &reason).await;
+                                talaria_work_wait::mark_waiting(pg, &task.id, &agent, &reason)
+                                    .await;
                                 true
                             }
                         }
@@ -273,12 +276,12 @@ pub async fn maybe_dispatch_ticket(
         if capped {
             continue;
         }
-        let subject = crate::agent_auth::AgentSubject::Model(agent.clone());
+        let subject = talaria_agent_auth::AgentSubject::Model(agent.clone());
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
             Ok(None) => {
                 if dispatch_ticket_work(deps, task, &agent, None).await {
-                    crate::work_wait::clear_waiting(pg, &task.id).await;
+                    talaria_work_wait::clear_waiting(pg, &task.id).await;
                 }
             }
             Err(e) => {
@@ -378,9 +381,9 @@ const REDISPATCH_EVERY_MS: u64 = 60_000;
 pub fn redispatch_job_spec(
     pg: sqlx::PgPool,
     run: std::sync::Arc<RunDeps>,
-) -> crate::scheduler::JobSpec {
-    crate::scheduler::JobSpec {
-        name: crate::scheduler::JobName::WorkRedispatch,
+) -> talaria_scheduler::JobSpec {
+    talaria_scheduler::JobSpec {
+        name: talaria_scheduler::JobName::WorkRedispatch,
         every_ms: REDISPATCH_EVERY_MS,
         first_run_delay_ms: Some(90_000),
         max_run_ms: Some(30_000),
@@ -400,7 +403,7 @@ pub fn redispatch_job_spec(
 }
 
 pub fn register_redispatch_job(pg: sqlx::PgPool, run: std::sync::Arc<RunDeps>) {
-    crate::scheduler::register_job(redispatch_job_spec(pg, run));
+    talaria_scheduler::register_job(redispatch_job_spec(pg, run));
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -412,17 +415,17 @@ pub fn register_redispatch_job(pg: sqlx::PgPool, run: std::sync::Arc<RunDeps>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runs::define::{DecisionAnswer, RunDecision, RunRow, RunState};
-    use crate::runs::defs::work_session::WORK_SESSION_KIND;
-    use crate::runs::run::{LeaseClaim, LeaseRenewal, PauseOutcome, RunLease};
-    use crate::runs::store::{
-        AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteFailure, WriteOutcome,
-    };
     use futures_util::future::BoxFuture;
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use talaria_runs_define::{DecisionAnswer, RunDecision, RunRow, RunState};
+    use talaria_runs_run::{LeaseClaim, LeaseRenewal, PauseOutcome, RunLease};
+    use talaria_runs_store::{
+        AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, RunStore, WriteFailure, WriteOutcome,
+    };
+    use talaria_runs_work_session::WORK_SESSION_KIND;
 
     /// A store that answers `get` from a map and records inserts. Two modes
     /// beyond the default: `duplicate_first` refuses the FIRST insert with a

@@ -114,7 +114,7 @@ pub use talaria_uploads as uploads;
 pub use talaria_users as users;
 pub use talaria_vision as vision;
 pub use talaria_web_search as web_search;
-pub mod work_dispatch;
+pub use talaria_work_dispatch as work_dispatch;
 pub use talaria_work_wait as work_wait;
 pub mod workbench;
 pub use talaria_workchains as workchains;
