@@ -39,8 +39,8 @@
 // rendering the output side instead collapses transformed harnesses into an
 // empty schema that Anthropic rejects.
 
-use super::schema::Schema;
 use serde_json::{Map, Value};
+use talaria_harness_schema::Schema;
 
 /// A schema ready for `response_format.json_schema`.
 #[derive(Clone)]
@@ -501,15 +501,15 @@ mod tests {
 
     fn judge_schema() -> Schema {
         Schema::Object(vec![
-            super::super::schema::Field::required(
+            talaria_harness_schema::Field::required(
                 "verdict",
                 Schema::Enum(["pass", "fail"].iter().map(|s| s.to_string()).collect()),
             ),
-            super::super::schema::Field::required("summary", Schema::string()),
+            talaria_harness_schema::Field::required("summary", Schema::string()),
         ])
     }
 
-    fn obj(fields: Vec<super::super::schema::Field>) -> Schema {
+    fn obj(fields: Vec<talaria_harness_schema::Field>) -> Schema {
         Schema::Object(fields)
     }
 
@@ -539,7 +539,7 @@ mod tests {
     fn drops_schema_document_annotations_providers_reject() {
         let wire = wire_schema_of(
             "t",
-            &obj(vec![super::super::schema::Field::required(
+            &obj(vec![talaria_harness_schema::Field::required(
                 "a",
                 Schema::string(),
             )]),
@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(
             wire_schema_of(
                 "muse:ticket",
-                &obj(vec![super::super::schema::Field::required(
+                &obj(vec![talaria_harness_schema::Field::required(
                     "a",
                     Schema::string()
                 )])
@@ -589,8 +589,8 @@ mod tests {
         let wire = wire_schema_of(
             "t",
             &obj(vec![
-                super::super::schema::Field::required("a", Schema::string()),
-                super::super::schema::Field::required("b", Schema::optional(Schema::Num)),
+                talaria_harness_schema::Field::required("a", Schema::string()),
+                talaria_harness_schema::Field::required("b", Schema::optional(Schema::Num)),
             ]),
         )
         .unwrap();
@@ -623,12 +623,11 @@ mod tests {
     fn walks_arrays_and_unions_rather_than_judging_only_the_root() {
         let wire = wire_schema_of(
             "t",
-            &obj(vec![super::super::schema::Field::required(
+            &obj(vec![talaria_harness_schema::Field::required(
                 "rows",
-                Schema::Array(Box::new(obj(vec![super::super::schema::Field::required(
-                    "id",
-                    Schema::string(),
-                )]))),
+                Schema::Array(Box::new(obj(vec![
+                    talaria_harness_schema::Field::required("id", Schema::string()),
+                ]))),
             )]),
         )
         .unwrap();
@@ -648,7 +647,7 @@ mod tests {
         // different subsets and reject what they do not know.
         let wire = wire_schema_of(
             "t",
-            &obj(vec![super::super::schema::Field::required(
+            &obj(vec![talaria_harness_schema::Field::required(
                 "queries",
                 Schema::Array(Box::new(Schema::Str {
                     trim: false,
@@ -675,7 +674,7 @@ mod tests {
         // Nothing is lost by dropping them: the validator still parses the
         // reply, so a bound is enforced on validate. The wire schema shapes
         // decoding; it was never the validator.
-        let schema = obj(vec![super::super::schema::Field::required(
+        let schema = obj(vec![talaria_harness_schema::Field::required(
             "q",
             Schema::Str {
                 trim: false,
@@ -683,9 +682,9 @@ mod tests {
                 max: None,
             },
         )]);
-        let (_, issues) = super::super::schema::validate(&schema, &json!({"q": "x"}));
+        let (_, issues) = talaria_harness_schema::validate(&schema, &json!({"q": "x"}));
         assert!(!issues.is_empty());
-        let (_, issues) = super::super::schema::validate(&schema, &json!({"q": "xy"}));
+        let (_, issues) = talaria_harness_schema::validate(&schema, &json!({"q": "xy"}));
         assert!(issues.is_empty());
     }
 
@@ -718,18 +717,18 @@ mod tests {
         let wire = wire_schema_of(
             "muse:ticket",
             &Schema::Object(vec![
-                super::super::schema::Field::required(
+                talaria_harness_schema::Field::required(
                     "estimatedHours",
                     Schema::optional(Schema::nullable(Schema::BoundedNum {
                         min: 0.0,
                         max: 999.0,
                     })),
                 ),
-                super::super::schema::Field::required(
+                talaria_harness_schema::Field::required(
                     "dueDate",
                     Schema::optional(Schema::nullable(Schema::DateTime)),
                 ),
-                super::super::schema::Field::required(
+                talaria_harness_schema::Field::required(
                     "tags",
                     Schema::optional(Schema::ArrayMax(
                         Box::new(Schema::trimmed_string(1, 40)),
@@ -766,12 +765,12 @@ mod tests {
         let wire = wire_schema_of(
             "judge",
             &Schema::Object(vec![
-                super::super::schema::Field::required(
+                talaria_harness_schema::Field::required(
                     "verdict",
                     Schema::Enum(["pass", "revise"].iter().map(|s| s.to_string()).collect()),
                 ),
-                super::super::schema::Field::required("summary", Schema::string()),
-                super::super::schema::Field::required(
+                talaria_harness_schema::Field::required("summary", Schema::string()),
+                talaria_harness_schema::Field::required(
                     "issues",
                     Schema::optional(Schema::Array(Box::new(Schema::string()))),
                 ),
@@ -789,8 +788,8 @@ mod tests {
         let wire = wire_schema_of(
             "t",
             &Schema::Object(vec![
-                super::super::schema::Field::required("a", Schema::string()),
-                super::super::schema::Field::required("b", Schema::optional(Schema::Num)),
+                talaria_harness_schema::Field::required("a", Schema::string()),
+                talaria_harness_schema::Field::required("b", Schema::optional(Schema::Num)),
             ]),
         )
         .unwrap();
@@ -816,9 +815,9 @@ mod tests {
     fn omits_a_shape_too_large_to_be_a_prompt_rather_than_truncating_it() {
         // A truncated shape is worse than none: it reads as the whole
         // contract and is not one.
-        let fields: Vec<super::super::schema::Field> = (0..80)
+        let fields: Vec<talaria_harness_schema::Field> = (0..80)
             .map(|i| {
-                super::super::schema::Field::required(
+                talaria_harness_schema::Field::required(
                     Box::leak(format!("field_{i}").into_boxed_str()),
                     Schema::string(),
                 )
@@ -832,7 +831,7 @@ mod tests {
 
     #[test]
     fn the_renderer_matches_zods_documents_key_order_and_all() {
-        use super::super::schema::Field;
+        use talaria_harness_schema::Field;
         // Every assertion is the exact `z.toJSONSchema({io:'input'})`
         // document, key order included.
         assert_eq!(render(&Schema::string()), json!({"type": "string"}));

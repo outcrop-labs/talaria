@@ -33,7 +33,7 @@
 pub mod define;
 pub mod defs;
 pub mod json;
-pub mod json_schema;
+pub use talaria_harness_json_schema as json_schema;
 pub mod prompt_rules;
 pub mod recorded;
 pub mod registry;

@@ -4,8 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **API workspace: 101 crates.** Retrieval index + source indexers.
+- **API workspace: 102 crates.** Harness JSON-schema wire renderer.
   Verified: `cargo check -p talaria-api`.
+
 
 
 

@@ -108,6 +108,7 @@ members = [
     "crates/talaria-retrieval-collections",
     "crates/talaria-retrieval-index",
     "crates/talaria-retrieval-sources",
+    "crates/talaria-harness-json-schema",
 ]
 resolver = "3"
 
@@ -240,6 +241,7 @@ talaria-retrieval-rerank = { path = "crates/talaria-retrieval-rerank" }
 talaria-retrieval-collections = { path = "crates/talaria-retrieval-collections" }
 talaria-retrieval-index = { path = "crates/talaria-retrieval-index" }
 talaria-retrieval-sources = { path = "crates/talaria-retrieval-sources" }
+talaria-harness-json-schema = { path = "crates/talaria-harness-json-schema" }
 
 
 
