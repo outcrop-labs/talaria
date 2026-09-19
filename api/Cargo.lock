@@ -3701,6 +3701,7 @@ dependencies = [
  "talaria-fleet-federate",
  "talaria-fleet-layout",
  "talaria-fleet-preflight",
+ "talaria-fleet-reconcile",
  "talaria-fleet-resources",
  "talaria-gaps",
  "talaria-gateway",
@@ -4410,6 +4411,19 @@ dependencies = [
  "talaria-fleet-layout",
  "talaria-gateway",
  "talaria-llm-keys",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-reconcile"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "sqlx",
+ "talaria-fleet-docker",
+ "talaria-secretbox",
  "tokio",
  "tracing",
 ]

@@ -8,15 +8,33 @@ use sqlx::PgPool;
 
 use std::collections::HashSet;
 
-use crate::fleet::docker::Slot;
-use crate::fleet::render::{RollOverlay, next_free_port, render_fleet};
-use crate::secretbox::SecretBox;
+use talaria_fleet_docker::Slot;
+use talaria_secretbox::SecretBox;
+
+use futures_util::future::BoxFuture;
+use std::sync::{Arc, OnceLock};
+
+/// Overlay: (slug, slot, port) when rolling.
+pub static RENDER_FLEET: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                SecretBox,
+                Option<(String, Slot, i64)>,
+            ) -> BoxFuture<'static, Result<(usize, Vec<String>), String>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
+pub static NEXT_FREE_PORT: OnceLock<
+    Arc<dyn Fn(sqlx::PgPool) -> BoxFuture<'static, Result<i64, String>> + Send + Sync>,
+> = OnceLock::new();
 
 /// How long the old container keeps serving after cutover so in-flight
 /// replies drain (TALARIA_ROLL_DRAIN_SECONDS; default 45s). The app's own
 /// rolls read the same knob — one drain policy per host — so this is
 /// crate-visible to update/layout.rs.
-pub(crate) fn roll_drain_ms() -> u64 {
+pub fn roll_drain_ms() -> u64 {
     std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
@@ -59,34 +77,45 @@ pub async fn roll_agent(
     } else {
         Slot::A
     };
-    let new_port = next_free_port(pg).await.map_err(|e| e.to_string())?;
+    let new_port = {
+        let f = NEXT_FREE_PORT
+            .get()
+            .ok_or_else(|| "next_free_port not wired".to_string())?;
+        f(pg.clone()).await?
+    };
 
     // 1. Overlay render: both slots in the compose file; manifest still old.
-    render_fleet(
-        pg,
-        sb,
-        Some(RollOverlay {
-            slug: &slug,
-            slot: new_slot,
-            port: new_port,
-        }),
-    )
-    .await?;
+    {
+        let f = RENDER_FLEET
+            .get()
+            .ok_or_else(|| "fleet render not wired".to_string())?;
+        f(
+            pg.clone(),
+            sb.clone(),
+            Some((slug.clone(), new_slot, new_port)),
+        )
+        .await?;
+    }
     // 2. Bring the incoming slot up and wait for real health.
-    crate::fleet::docker::fleet_up_slot(pg, department, new_slot).await?;
-    if !crate::fleet::docker::wait_healthy_slot(department, new_slot, 120_000).await {
-        let _ = crate::fleet::docker::remove_container_by_name(
-            &crate::fleet::docker::slot_container(department, new_slot),
+    talaria_fleet_docker::fleet_up_slot(pg, department, new_slot).await?;
+    if !talaria_fleet_docker::wait_healthy_slot(department, new_slot, 120_000).await {
+        let _ = talaria_fleet_docker::remove_container_by_name(
+            &talaria_fleet_docker::slot_container(department, new_slot),
         )
         .await;
-        render_fleet(pg, sb, None).await?; // back to steady state; the old container never blinked
+        {
+            let f = RENDER_FLEET
+                .get()
+                .ok_or_else(|| "fleet render not wired".to_string())?;
+            f(pg.clone(), sb.clone(), None).await?
+        }; // back to steady state; the old container never blinked
         return Ok(Some(format!(
             "{display_name}: replacement never became healthy — kept the old container"
         )));
     }
     // Toolkit-first by default: strip the image's bundled note-tool skills the
     // moment the newcomer is healthy (Talaria-managed skills are untouched).
-    let _ = crate::fleet::docker::prune_bundled_skills(department, new_slot).await;
+    let _ = talaria_fleet_docker::prune_bundled_skills(department, new_slot).await;
     // 3. Cutover: incoming slot becomes active (new port), manifest re-renders.
     sqlx::query("update agent_defs set active_slot = $2, gateway_port = $3 where slug = $1")
         .bind(&slug)
@@ -95,10 +124,15 @@ pub async fn roll_agent(
         .execute(pg)
         .await
         .map_err(|e| e.to_string())?;
-    render_fleet(pg, sb, None).await?;
+    {
+        let f = RENDER_FLEET
+            .get()
+            .ok_or_else(|| "fleet render not wired".to_string())?;
+        f(pg.clone(), sb.clone(), None).await?
+    };
     // 4. Drain in-flight replies on the old container, then retire it.
     tokio::time::sleep(std::time::Duration::from_millis(roll_drain_ms())).await;
-    let _ = crate::fleet::docker::remove_container_by_name(&crate::fleet::docker::slot_container(
+    let _ = talaria_fleet_docker::remove_container_by_name(&talaria_fleet_docker::slot_container(
         department, old_slot,
     ))
     .await;
@@ -126,7 +160,12 @@ pub struct ReconcileResult {
 /// enabled/created while Talaria was down, a stopped container, a manifest
 /// change).
 pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileResult, String> {
-    let render = render_fleet(pg, sb, None).await?;
+    let render = {
+        let f = RENDER_FLEET
+            .get()
+            .ok_or_else(|| "fleet render not wired".to_string())?;
+        f(pg.clone(), sb.clone(), None).await?
+    };
     let managed: Vec<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where managed and enabled order by slug",
     )
@@ -136,7 +175,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     let states = if managed.is_empty() {
         Vec::new()
     } else {
-        crate::fleet::docker::container_status(
+        talaria_fleet_docker::container_status(
             &managed.iter().map(|m| m.0.clone()).collect::<Vec<_>>(),
         )
         .await
@@ -151,13 +190,13 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
     };
     let mut started = Vec::new();
     let mut already_running = Vec::new();
-    let mut warnings = render.warnings.clone();
+    let mut warnings = render.1.clone();
     for (department, display_name) in &managed {
         if running(department) {
             already_running.push(display_name.clone());
             continue;
         }
-        match crate::fleet::docker::fleet_up(pg, department).await {
+        match talaria_fleet_docker::fleet_up(pg, department).await {
             Ok(_) => {
                 started.push(display_name.clone());
                 // New containers get the bundled note-tool skills stripped once
@@ -166,9 +205,9 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
                 let dept = department.clone();
                 let pg_bg = pg.clone();
                 tokio::spawn(async move {
-                    if crate::fleet::docker::wait_healthy(&pg_bg, &dept, 120_000).await {
-                        let slot = crate::fleet::docker::active_slot(&pg_bg, &dept).await;
-                        let _ = crate::fleet::docker::prune_bundled_skills(&dept, slot).await;
+                    if talaria_fleet_docker::wait_healthy(&pg_bg, &dept, 120_000).await {
+                        let slot = talaria_fleet_docker::active_slot(&pg_bg, &dept).await;
+                        let _ = talaria_fleet_docker::prune_bundled_skills(&dept, slot).await;
                     }
                 });
             }
@@ -176,7 +215,7 @@ pub async fn reconcile_fleet(pg: &PgPool, sb: &SecretBox) -> Result<ReconcileRes
         }
     }
     Ok(ReconcileResult {
-        rendered: render.agents.len(),
+        rendered: render.0,
         started,
         already_running,
         warnings,
@@ -187,7 +226,12 @@ pub async fn roll_running_agents(
     pg: &PgPool,
     sb: &SecretBox,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    let render = render_fleet(pg, sb, None).await?;
+    let render = {
+        let f = RENDER_FLEET
+            .get()
+            .ok_or_else(|| "fleet render not wired".to_string())?;
+        f(pg.clone(), sb.clone(), None).await?
+    };
     let managed: Vec<(String, String)> = sqlx::query_as(
         "select department, display_name from agent_defs where managed and enabled order by slug",
     )
@@ -197,7 +241,7 @@ pub async fn roll_running_agents(
     let running: HashSet<String> = if managed.is_empty() {
         HashSet::new()
     } else {
-        crate::fleet::docker::running_departments(
+        talaria_fleet_docker::running_departments(
             &managed.iter().map(|m| m.0.clone()).collect::<Vec<_>>(),
         )
         .await?
@@ -205,7 +249,7 @@ pub async fn roll_running_agents(
         .collect()
     };
     let mut rolled = Vec::new();
-    let mut warnings = render.warnings;
+    let mut warnings = render.1;
     for (department, display_name) in &managed {
         if !running.contains(department) {
             continue;
