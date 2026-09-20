@@ -73,7 +73,7 @@
 
 ## `/api/admin/apps`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_apps.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_apps.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_apps.rs)
 
 > /api/admin/apps. App administration. GET → installed apps (+ ?catalog=1
 > for the marketplace feed). Reads are open to anyone granted the /apps
@@ -109,7 +109,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_apps.rs`](../../a
 
 ## `/api/admin/domains`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_domains.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_domains.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_domains.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_domains.rs)
 
 > /api/admin/domains. Sign-up domains. GET → the list. POST { domain } → add
 > (returns the TXT token to publish). POST { verifyId } → run the DNS check.
@@ -135,7 +135,7 @@ source.
 
 ## `/api/admin/email`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_email.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_email.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_email.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_email.rs)
 
 > /api/admin/email. Transactional email config. GET → config with secrets
 > MASKED (set-flags only). PUT → config patch (the write); POST { test: true }
@@ -162,7 +162,7 @@ source.
 
 ## `/api/admin/encryption`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_encryption.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_encryption.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_encryption.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_encryption.rs)
 
 > /api/admin/encryption. Encryption status + one-click key rotation.
 > Rotating re-generates the data key and re-encrypts every stored secret
@@ -182,7 +182,7 @@ source.
 
 ## `/api/admin/google-client`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_google_client.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_google_client.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
 
 > /api/admin/google-client. The Google OAuth client — the credential the
 > whole Google integration (login + workspace connect) runs on. Admins
@@ -206,7 +206,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_google_client.rs`
 
 ## `/api/admin/google-client/login`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_google_client.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_google_client.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
 
 > /api/admin/google-client. The Google OAuth client — the credential the
 > whole Google integration (login + workspace connect) runs on. Admins
@@ -226,7 +226,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_google_client.rs`
 
 ## `/api/admin/guardrails`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_guardrails.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_guardrails.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_guardrails.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_guardrails.rs)
 
 > /api/admin/guardrails. Confab guardrail config + observability (admin).
 > GET → config + stats + recent findings. PUT → update config. The config
@@ -248,7 +248,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_guardrails.rs`](.
 
 ## `/api/admin/instance`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_instance.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_instance.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_instance.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_instance.rs)
 
 > /api/admin/instance. The instance's hosting domain and display name.
 > GET → both configs. PUT { domain } sets the domain (unverified until the
@@ -277,7 +277,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_instance.rs`](../
 
 ## `/api/admin/invites`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_invites.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_invites.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_invites.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_invites.rs)
 
 > /api/admin/invites. Invites. GET → recent invites with state. POST
 > { email } → create + send (re-invites re-issue with a fresh token).
@@ -303,7 +303,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_invites.rs`](../.
 
 ## `/api/admin/judge`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_judge.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_judge.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_judge.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_judge.rs)
 
 > /api/admin/judge. The automated QA judge config (admin). GET → current +
 > available models. PUT → enable/disable + pick the judge model.
@@ -323,7 +323,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_judge.rs`](../../
 
 ## `/api/admin/model-fitness`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_model_fitness.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_model_fitness.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_model_fitness.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_model_fitness.rs)
 
 > /api/admin/model-fitness. Admin → Models → Fitness, over HTTP. THIS FILE
 > IS PLUMBING: the admin gate, the query string, the body parse, the audit
@@ -344,7 +344,7 @@ source.
 
 ## `/api/admin/model-roles`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_model_roles.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_model_roles.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_model_roles.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_model_roles.rs)
 
 > /api/admin/model-roles. Model Roles — which model handles each activity
 > class. GET → the catalog of roles + current assignments + assignable
@@ -367,7 +367,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_model_roles.rs`](
 
 ## `/api/admin/outreach`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_outreach.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_outreach.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_outreach.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_outreach.rs)
 
 > /api/admin/outreach. GET → config + per-agent proactive flags + recent
 > events. PUT → save both. Admin-only; the sweep itself stays off unless
@@ -388,7 +388,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_outreach.rs`](../
 
 ## `/api/admin/password-accounts`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_password_accounts.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_password_accounts.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_password_accounts.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_password_accounts.rs)
 
 > /api/admin/password-accounts. The admin console's API for DB-backed
 > password accounts (Admin → People).
@@ -426,7 +426,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_password_accounts
 
 ## `/api/admin/permissions`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_permissions.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_permissions.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_permissions.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_permissions.rs)
 
 > /api/admin/permissions. Fine-grained permissions admin. GET → the catalog
 > + org member defaults + every user's overrides. PUT { userId, perm,
@@ -447,7 +447,7 @@ source.
 
 ## `/api/admin/platform-agents`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_platform_agents.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_platform_agents.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_platform_agents.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_platform_agents.rs)
 
 > /api/admin/platform-agents. Platform sub-agents — Talaria's own workers —
 > and which model powers each. GET → registry + assignments + assignable
@@ -469,7 +469,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_platform_agents.r
 
 ## `/api/admin/rag`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_rag.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_rag.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_rag.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_rag.rs)
 
 > /api/admin/rag. The retrieval console. GET → services health + both repair
 > runs' projections + the upgrade status + reranker providers/config +
@@ -497,7 +497,7 @@ source.
 
 ## `/api/admin/search`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_search.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_search.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_search.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_search.rs)
 
 > /api/admin/search. LIVE WEB SEARCH — where it points, and whether it is
 > actually answering.
@@ -518,7 +518,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_search.rs`](../..
 
 ## `/api/admin/secrets`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_secrets.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_secrets.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_secrets.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_secrets.rs)
 
 > /api/admin/secrets. The secrets inventory. GET is a VIEW over the stores
 > that own each value — presence, provenance and readability, never the
@@ -539,7 +539,7 @@ source.
 
 ## `/api/admin/settings`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_settings.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_settings.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_settings.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_settings.rs)
 
 > /api/admin/settings. App settings (admin). GET → current values. PUT →
 > update. Grows as more app-wide settings land; audit retention is the
@@ -559,7 +559,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_settings.rs`](../
 
 ## `/api/admin/storage`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_storage.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_storage.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_storage.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_storage.rs)
 
 > /api/admin/storage. Object storage (uploads blob store) config. GET →
 > config (secrets masked) + blob stats + migration/sync status + the
@@ -586,7 +586,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_storage.rs`](../.
 
 ## `/api/admin/updates`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_updates.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_updates.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_updates.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_updates.rs)
 
 > /api/admin/updates — the update engine's panel surface and the fleet's
 > machine surface. GET is the panel's whole read (and green's first read
@@ -615,7 +615,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_updates.rs`](../.
 
 ## `/api/admin/users`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_users.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_users.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_users.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_users.rs)
 
 > /api/admin/users. The people console. GET → every user with role, agent
 > allow-list, view denials. PUT → the per-user levers, applied in order
@@ -638,7 +638,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_users.rs`](../../
 
 ## `/api/admin/workspace-secrets`
 
-Source: [`api/crates/talaria-api-routes/src/routes/admin/admin_workspace_secrets.rs`](../../api/crates/talaria-api-routes/src/routes/admin/admin_workspace_secrets.rs)
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_workspace_secrets.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_workspace_secrets.rs)
 
 > /api/admin/workspace-secrets.
 >

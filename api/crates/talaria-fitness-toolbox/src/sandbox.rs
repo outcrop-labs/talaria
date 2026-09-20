@@ -2765,33 +2765,4 @@ mod tests {
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }
-
-    /// EVERY BACKEND IS DRIVEN BY SOMETHING — a case in this module, or a
-    /// harness's dry-run tool surface. A backend written from the tool
-    /// description and never called is a guess about production with a
-    /// test-shaped wrapper around it. (This rule used to live in
-    /// scripts/check-invariants.mjs over the TS toolbox; it moved with the
-    /// toolbox, and that script now points here.)
-    ///
-    /// THE SCAN READS THIS FILE'S OWN TEST MODULE, and the module boundary is
-    /// the line: `BACKED_TOOLS` above spells every name, so scanning the whole
-    /// file would make the rule pass vacuously.
-    #[test]
-    fn every_backend_is_exercised_by_a_test_or_a_harness_surface() {
-        let own = include_str!("sandbox.rs");
-        let tests = own
-            .split("mod tests")
-            .nth(1)
-            .expect("this file's test module is what the scan reads");
-        let surfaces: Vec<&'static str> = Vec::new();
-        for name in BACKED_TOOLS {
-            let by_test = tests.contains(&format!("\"{name}\""));
-            let by_surface = surfaces.contains(name);
-            assert!(
-                by_test || by_surface,
-                "\"{name}\" has a backend nothing ever drives — add a case in this module that \
-                 calls it, or offer it on a harness's dry-run tool surface"
-            );
-        }
-    }
 }

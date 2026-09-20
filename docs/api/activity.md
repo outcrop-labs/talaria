@@ -26,7 +26,7 @@
 
 ## `/api/activity`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/activity.rs`](../../api/crates/talaria-api-routes/src/routes/activity/activity.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/activity.rs`](../../api/crates/talaria-routes-comms/src/activity/activity.rs)
 
 > GET /api/activity. The merged workspace activity feed, scoped to the
 > requesting user.
@@ -37,7 +37,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/activity.rs`](../../
 
 ## `/api/alerts`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/alerts.rs`](../../api/crates/talaria-api-routes/src/routes/activity/alerts.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/alerts.rs`](../../api/crates/talaria-routes-comms/src/activity/alerts.rs)
 
 > /api/alerts. GET → derived system alerts (no persistence) for the
 > requesting user.
@@ -48,7 +48,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/alerts.rs`](../../ap
 
 ## `/api/cost`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/cost.rs`](../../api/crates/talaria-api-routes/src/routes/activity/cost.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/cost.rs`](../../api/crates/talaria-routes-comms/src/activity/cost.rs)
 
 > GET /api/cost. The token ledger overview (totals, per-agent, per-day).
 > Org-wide financials: admins + people granted the Observability view.
@@ -59,7 +59,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/cost.rs`](../../api/
 
 ## `/api/history`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/history.rs`](../../api/crates/talaria-api-routes/src/routes/activity/history.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/history.rs`](../../api/crates/talaria-routes-comms/src/activity/history.rs)
 
 > /api/history. Version history for agent internals, one API over two
 > stores:
@@ -73,7 +73,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/history.rs`](../../a
 
 ## `/api/home`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/home.rs`](../../api/crates/talaria-api-routes/src/routes/activity/home.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/home.rs`](../../api/crates/talaria-routes-comms/src/activity/home.rs)
 
 > /api/home. GET → the Home/Today summary for the signed-in user.
 >
@@ -86,7 +86,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/home.rs`](../../api/
 
 ## `/api/notifications`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/notifications.rs`](../../api/crates/talaria-api-routes/src/routes/activity/notifications.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/notifications.rs`](../../api/crates/talaria-routes-comms/src/activity/notifications.rs)
 
 > /api/notifications. The caller's inbox: GET is the bell's one read (list,
 > unread, prefs, digest, the instance switch, whether THIS user may flip it),
@@ -115,7 +115,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/notifications.rs`](.
 
 ## `/api/push/key`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/push.rs`](../../api/crates/talaria-api-routes/src/routes/activity/push.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crates/talaria-routes-comms/src/activity/push.rs)
 
 > /api/push — the browser's half of the closed-tab plane. GET /key hands the
 > instance's VAPID public key (what pushManager.subscribe wants as
@@ -143,7 +143,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/activity/push.rs`](../../api/
 
 ## `/api/unreads`
 
-Source: [`api/crates/talaria-api-routes/src/routes/activity/unreads.rs`](../../api/crates/talaria-api-routes/src/routes/activity/unreads.rs)
+Source: [`api/crates/talaria-routes-comms/src/activity/unreads.rs`](../../api/crates/talaria-routes-comms/src/activity/unreads.rs)
 
 > /api/unreads. The rail badges' one read: how much is waiting in each part
 > of the app, as { comms, plan, research, notifications }. Comms is rooms

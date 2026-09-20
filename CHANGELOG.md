@@ -4,8 +4,17 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-- **P4 first slice: unwrap triage, unsafe audit, dedupe.** The live
- unwrap inventory (205 outside tests after classifying 1,228 in-test and
+- **Routes partition: 7 group crates + a facades crate.** The 98-second
+ `talaria-api-routes` unit becomes seven parallel crates; cold build
+ 207.3s → 183s (now faster than the pre-split monolith's 186s), routes
+ edit rebuild 8.5s → 4.8s. Also repairs two latent split casualties the
+ fail-fast test runner had been hiding: the toolbox census test lost its
+ registry scan (moved to harness-defs next to the registry), and
+ hermes-skills read `scripts/skills` off a stale relative path. The full
+ suite is 2,175 tests — the earlier "868" figure was an undercount from
+ aborted runs. Verified: `cargo test --workspace` (2,175 passed, exit 0),
+ `clippy -D warnings`, `bun run check` (245-route table unchanged).
+
  117 static-init) is safe-by-construction — constant regexes, guarded
  doubles; the two fragile guarded-unwrap shapes (history `kind`, oauth
  callback tuple) are destructured instead. The workspace's one remaining

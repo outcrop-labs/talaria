@@ -16,7 +16,7 @@
 
 ## `/api/apps`
 
-Source: [`api/crates/talaria-api-routes/src/routes/apps/apps.rs`](../../api/crates/talaria-api-routes/src/routes/apps/apps.rs)
+Source: [`api/crates/talaria-routes-fleet/src/apps/apps.rs`](../../api/crates/talaria-routes-fleet/src/apps/apps.rs)
 
 > GET /api/apps. The signed-in view of installed apps: ENABLED apps only,
 > manifest data the client needs to draw nav items, routes, and settings tabs.

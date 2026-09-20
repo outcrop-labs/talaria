@@ -362,11 +362,41 @@ function parseRouterTable(modText) {
   return routes
 }
 
-/** module path (`boards::boards_id_statuses`) → repo-relative handler file. */
+/** The handler groups live one crate per family; the table's fn paths carry
+ *  the crate prefix (`talaria_routes_boards::boards::boards_id_statuses`). */
+const ROUTE_GROUP_CRATES = {
+  admin: 'talaria-routes-admin',
+  fleet: 'talaria-routes-fleet',
+  agents: 'talaria-routes-fleet',
+  apps: 'talaria-routes-fleet',
+  models: 'talaria-routes-fleet',
+  llm: 'talaria-routes-fleet',
+  mcp: 'talaria-routes-fleet',
+  boards: 'talaria-routes-boards',
+  tasks: 'talaria-routes-boards',
+  workchains: 'talaria-routes-boards',
+  plans: 'talaria-routes-boards',
+  comms: 'talaria-routes-comms',
+  inbox: 'talaria-routes-comms',
+  brief: 'talaria-routes-comms',
+  activity: 'talaria-routes-comms',
+  knowledge: 'talaria-routes-knowledge',
+  files: 'talaria-routes-knowledge',
+  integrations: 'talaria-routes-integrations',
+  secrets: 'talaria-routes-integrations',
+  account: 'talaria-routes-integrations',
+  teams: 'talaria-routes-integrations',
+  workbench: 'talaria-routes-workbench',
+  research: 'talaria-routes-workbench',
+  system: 'talaria-routes-workbench',
+}
+
+/** module path (`talaria_routes_boards::boards::boards_id_statuses`) → repo-relative handler file. */
 function moduleFile(fnPath) {
   const segs = fnPath.split('::')
   segs.pop() // the fn itself
-  return `api/crates/talaria-api-routes/src/routes/${segs.join('/')}.rs`
+  const [crate, group, ...rest] = segs
+  return `api/crates/${ROUTE_GROUP_CRATES[group]}/src/${group}/${rest.join('/')}.rs`
 }
 
 /** Find `fn name(…) {body}` in comment-stripped Rust text. Returns the body's
@@ -1247,7 +1277,7 @@ for (const { file, entries, path } of byModule.values()) {
       }
     }
   }
-  walk(ROUTES_DIR)
+  for (const c of new Set(Object.values(ROUTE_GROUP_CRATES))) walk(join(ROOT, 'api/crates', c, 'src'))
 }
 
 // The TS residents, extracted exactly as before.

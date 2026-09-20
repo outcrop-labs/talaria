@@ -234,6 +234,41 @@ pub fn platform_agent_of(harness: &RegisteredHarness) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    /// EVERY BACKEND IS DRIVEN BY SOMETHING — a case in the toolbox's own
+    /// test module, or a harness's dry-run tool surface. A backend written
+    /// from the tool description and never called is a guess about
+    /// production with a test-shaped wrapper around it. (The rule predates
+    /// the split: it lived in scripts/check-invariants.mjs over the TS
+    /// toolbox, then in sandbox.rs; it moved HERE because the census needs
+    /// the registry and the registry's crate depends on the toolbox.)
+    ///
+    /// THE SCAN READS THE TOOLBOX'S OWN TEST MODULE, and the module boundary
+    /// is the line: `BACKED_TOOLS` spells every name, so scanning the whole
+    /// file would make the rule pass vacuously.
+    #[test]
+    fn every_backend_is_exercised_by_a_test_or_a_harness_surface() {
+        let own = include_str!("../../talaria-fitness-toolbox/src/sandbox.rs");
+        let tests = own
+            .split("mod tests")
+            .nth(1)
+            .expect("the toolbox's test module is what the scan reads");
+        let mut surfaces: Vec<&'static str> = Vec::new();
+        for h in builtin_activity_harnesses() {
+            if let Some(d) = &h.def.dry_run {
+                surfaces.extend(d.tools.iter().copied());
+            }
+        }
+        for name in talaria_fitness_toolbox::sandbox::BACKED_TOOLS {
+            let by_test = tests.contains(&format!("\"{name}\""));
+            let by_surface = surfaces.contains(name);
+            assert!(
+                by_test || by_surface,
+                "\"{name}\" has a backend nothing ever drives — add a case in the toolbox's \
+                 test module that calls it, or offer it on a harness's dry-run tool surface"
+            );
+        }
+    }
+
     use super::*;
     use talaria_gateway::guard::rule_ids;
     use talaria_harness::define::Output;

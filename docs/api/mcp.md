@@ -26,7 +26,7 @@
 
 ## `/api/mcp`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp.rs)
 
 > /api/mcp.
 > GET → MCP servers per agent: the agent's own config version PLUS the org
@@ -40,7 +40,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp.rs`](../../api/crates
 
 ## `/api/mcp/gw/{server}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_gw_server.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_gw_server.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs)
 
 > /api/mcp/gw/{server}.
 > The MCP gateway — the registry's ENFORCEMENT point. Agents never see an
@@ -55,7 +55,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_gw_server.rs`](../../
 
 ## `/api/mcp/icon`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_icon.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_icon.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_icon.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_icon.rs)
 
 > /api/mcp/icon.
 > FALLBACK marketplace icons: the publisher's favicon, proxied + cached
@@ -69,7 +69,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_icon.rs`](../../api/c
 
 ## `/api/mcp/library`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_library.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_library.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
 
 > /api/mcp/library.
 > GET ?q= → the MCP server library (the official registry, live, filtered to
@@ -83,7 +83,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_library.rs`](../../ap
 
 ## `/api/mcp/oauth/callback`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_oauth_callback.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_oauth_callback.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_oauth_callback.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_oauth_callback.rs)
 
 > /api/mcp/oauth/callback.
 > The OAuth redirect target. No session requirement — identity was bound to
@@ -95,7 +95,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_oauth_callback.rs`](.
 
 ## `/api/mcp/oauth/start`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_oauth_start.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_oauth_start.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_oauth_start.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_oauth_start.rs)
 
 > /api/mcp/oauth/start.
 > GET ?server=<id>&scope=org|me → 302 into the provider's authorization page.
@@ -108,7 +108,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_oauth_start.rs`](../.
 
 ## `/api/mcp/servers`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_servers.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_servers.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs)
 
 > /api/mcp/servers.
 > The org MCP registry. GET → servers + their assignments + user/team access
@@ -136,7 +136,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_servers.rs`](../../ap
 
 ## `/api/mcp/servers/{id}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_servers_id.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_servers_id.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs)
 
 > /api/mcp/servers/{id}.
 > One registry server: PUT patches config / assignment / user access / team
@@ -169,7 +169,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_servers_id.rs`](../..
 
 ## `/api/mcp/test`
 
-Source: [`api/crates/talaria-api-routes/src/routes/mcp/mcp_test.rs`](../../api/crates/talaria-api-routes/src/routes/mcp/mcp_test.rs)
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_test.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_test.rs)
 
 > /api/mcp/test.
 > POST → probe an MCP server's reachability + auth state (admin only; it
