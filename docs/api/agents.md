@@ -36,7 +36,7 @@
 
 ## `/api/agent-role-templates`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_role_templates.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agent_role_templates.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_role_templates.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_role_templates.rs)
 
 > /api/agent-role-templates. The business roles a new agent can start from.
 >   GET    → built-ins + the org's own (anyone who may create an agent).
@@ -62,7 +62,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_role_templates.r
 
 ## `/api/agent/gap`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_gap.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agent_gap.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_gap.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_gap.rs)
 
 > /api/agent/gap. POST — an agent reports a capability gap (the honesty loop). Deduped by
 > work-shape server-side: repeats bump seen_count, never re-notify. Lands in
@@ -83,7 +83,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_gap.rs`](../../a
 
 ## `/api/agent/message-user`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_message_user.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agent_message_user.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_message_user.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_message_user.rs)
 
 > /api/agent/message-user. POST (agent key) → an agent starts or continues a direct conversation with
 > a human teammate. The message lands as a normal turn in their chat with
@@ -103,7 +103,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_message_user.rs`
 
 ## `/api/agent/problem`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_problem.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agent_problem.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_problem.rs)
 
 > /api/agent/problem. POST (agent key) → an agent hit something broken it
 > shouldn't explain to a normal person. Talaria elevates it: the admins who
@@ -126,7 +126,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_problem.rs`](../
 
 ## `/api/agent/whoami`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_whoami.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agent_whoami.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_whoami.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_whoami.rs)
 
 > /api/agent/whoami. GET (agent key) → who is calling and what it may touch.
 >
@@ -140,7 +140,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agent_whoami.rs`](../.
 
 ## `/api/agents`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agents.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agents.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agents.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents.rs)
 
 > GET /api/agents. The fleet the current user may use (definition-backed
 > agents with their model tiers, filtered by per-agent access). Auth-gated.
@@ -151,7 +151,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agents.rs`](../../api/
 
 ## `/api/agents/{id}/heartbeat`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agents_id_heartbeat.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agents_id_heartbeat.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs)
 
 > GET /api/agents/{id}/heartbeat. Refresh last_seen and return the agent's
 > assigned work (tasks assigned to it, across boards). MC-compatible.
@@ -162,7 +162,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agents_id_heartbeat.rs
 
 ## `/api/agents/register`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/agents_register.rs`](../../api/crates/talaria-api-routes/src/routes/agents/agents_register.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../api/crates/talaria-routes-fleet/src/agents/agents_register.rs)
 
 > POST /api/agents/register. An agent registers with Talaria (MC-compatible
 > contract, so the existing plugin works repointed). Agent-key auth.
@@ -181,7 +181,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/agents_register.rs`](.
 
 ## `/api/agents/tool-events`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/tool_events.rs`](../../api/crates/talaria-api-routes/src/routes/agents/tool_events.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/tool_events.rs`](../../api/crates/talaria-routes-fleet/src/agents/tool_events.rs)
 
 > POST /api/agents/tool-events. The inbound half of the talaria-events
 > Hermes plugin: the agent's plugin reports each tool call's lifecycle
@@ -195,7 +195,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/tool_events.rs`](../..
 
 ## `/api/gaps`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/gaps.rs`](../../api/crates/talaria-api-routes/src/routes/agents/gaps.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/gaps.rs`](../../api/crates/talaria-routes-fleet/src/agents/gaps.rs)
 
 > /api/gaps. GET → the Studio's Suggested queue: capability gaps agents have reported,
 > ranked by how often the work-shape recurs. Any member reads (the queue is
@@ -207,7 +207,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/gaps.rs`](../../api/cr
 
 ## `/api/gaps/{id}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/gaps_id.rs`](../../api/crates/talaria-api-routes/src/routes/agents/gaps_id.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/gaps_id.rs`](../../api/crates/talaria-routes-fleet/src/agents/gaps_id.rs)
 
 > /api/gaps/{id}. PUT status (open | dismissed | resolved) — agents.manage. Dismissed shapes
 > that keep recurring reopen automatically; resolved sticks.
@@ -224,7 +224,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/gaps_id.rs`](../../api
 
 ## `/api/muse`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/muse.rs`](../../api/crates/talaria-api-routes/src/routes/agents/muse.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/muse.rs`](../../api/crates/talaria-routes-fleet/src/agents/muse.rs)
 
 > /api/muse.
 >
@@ -246,7 +246,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/muse.rs`](../../api/cr
 
 ## `/api/runs/{id}/events`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/runs_events.rs`](../../api/crates/talaria-api-routes/src/routes/agents/runs_events.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/runs_events.rs`](../../api/crates/talaria-routes-fleet/src/agents/runs_events.rs)
 
 > GET /api/runs/{id}/events → SSE stream of one run's live transitions (state,
 > phase, terminal error). Auth-gated by the run's read ACL. This is what makes
@@ -260,7 +260,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/runs_events.rs`](../..
 
 ## `/api/runs/{id}/watch`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/runs_watch.rs`](../../api/crates/talaria-api-routes/src/routes/agents/runs_watch.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/runs_watch.rs`](../../api/crates/talaria-routes-fleet/src/agents/runs_watch.rs)
 
 > GET /api/runs/{id}/watch → SSE of the run's WORK TERMINAL: the agent's
 > own stream events (words as they land, tool calls as they start) as one
@@ -274,7 +274,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/runs_watch.rs`](../../
 
 ## `/api/skills`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/skills.rs`](../../api/crates/talaria-api-routes/src/routes/agents/skills.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/skills.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills.rs)
 
 > /api/skills.
 > Skills across the fleet: shared + per-agent, straight from the mounts the
@@ -288,7 +288,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/agents/skills.rs`](../../api/
 
 ## `/api/skills/{owner}/{name}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/skills_owner_name.rs`](../../api/crates/talaria-api-routes/src/routes/agents/skills_owner_name.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/skills_owner_name.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_owner_name.rs)
 
 > /api/skills/{owner}/{name}. One skill's SKILL.md. GET → content + file list (any member — the library
 > is org work material). PUT → save (creates the skill if new). DELETE →
@@ -317,7 +317,7 @@ source.
 
 ## `/api/vision/describe`
 
-Source: [`api/crates/talaria-api-routes/src/routes/agents/vision_describe.rs`](../../api/crates/talaria-api-routes/src/routes/agents/vision_describe.rs)
+Source: [`api/crates/talaria-routes-fleet/src/agents/vision_describe.rs`](../../api/crates/talaria-routes-fleet/src/agents/vision_describe.rs)
 
 > /api/vision/describe.
 >

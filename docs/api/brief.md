@@ -20,7 +20,7 @@
 
 ## `/api/brief`
 
-Source: [`api/crates/talaria-api-routes/src/routes/brief/brief.rs`](../../api/crates/talaria-api-routes/src/routes/brief/brief.rs)
+Source: [`api/crates/talaria-routes-comms/src/brief/brief.rs`](../../api/crates/talaria-routes-comms/src/brief/brief.rs)
 
 > /api/brief. GET → the caller's daily brief: the assistant-assembled digest of what
 > needs them. The read sweeps-if-due first, then answers with the document —
@@ -34,7 +34,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/brief/brief.rs`](../../api/cr
 
 ## `/api/brief/delegate`
 
-Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_delegate.rs`](../../api/crates/talaria-api-routes/src/routes/brief/brief_delegate.rs)
+Source: [`api/crates/talaria-routes-comms/src/brief/brief_delegate.rs`](../../api/crates/talaria-routes-comms/src/brief/brief_delegate.rs)
 
 > /api/brief/delegate. GET → the caller's live reply grants. POST
 > { channelId, granted } → grant
@@ -56,7 +56,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_delegate.rs`](../
 
 ## `/api/brief/item`
 
-Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_item.rs`](../../api/crates/talaria-api-routes/src/routes/brief/brief_item.rs)
+Source: [`api/crates/talaria-routes-comms/src/brief/brief_item.rs`](../../api/crates/talaria-routes-comms/src/brief/brief_item.rs)
 
 > /api/brief/item. POST { sourceKey, action, tz } → check off, dismiss, or
 > restore one brief
@@ -78,7 +78,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_item.rs`](../../a
 
 ## `/api/brief/read`
 
-Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_read.rs`](../../api/crates/talaria-api-routes/src/routes/brief/brief_read.rs)
+Source: [`api/crates/talaria-routes-comms/src/brief/brief_read.rs`](../../api/crates/talaria-routes-comms/src/brief/brief_read.rs)
 
 > /api/brief/read. POST { briefId, seq } → move the brief reader's cursor.
 > The ONLY mutation
@@ -99,7 +99,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_read.rs`](../../a
 
 ## `/api/brief/reply`
 
-Source: [`api/crates/talaria-api-routes/src/routes/brief/brief_reply.rs`](../../api/crates/talaria-api-routes/src/routes/brief/brief_reply.rs)
+Source: [`api/crates/talaria-routes-comms/src/brief/brief_reply.rs`](../../api/crates/talaria-routes-comms/src/brief/brief_reply.rs)
 
 > /api/brief/reply. POST { draftId, decision } → approve or reject a reply
 > the assistant

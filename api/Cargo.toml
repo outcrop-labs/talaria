@@ -208,6 +208,14 @@ members = [
     "crates/talaria-workbench-mcp",
     "crates/talaria-jobs",
     "crates/talaria-api-routes",
+    "crates/talaria-routes-workbench",
+    "crates/talaria-routes-integrations",
+    "crates/talaria-routes-knowledge",
+    "crates/talaria-routes-comms",
+    "crates/talaria-routes-boards",
+    "crates/talaria-routes-fleet",
+    "crates/talaria-routes-admin",
+    "crates/talaria-api-facades",
     "crates/talaria-runs-agent-hire",
     "crates/talaria-comms-decay",
     "crates/talaria-chat-persist",
@@ -245,6 +253,14 @@ workspace = true
 
 [dependencies]
 talaria-api-routes = { path = "crates/talaria-api-routes" }
+talaria-routes-workbench = { path = "crates/talaria-routes-workbench" }
+talaria-routes-integrations = { path = "crates/talaria-routes-integrations" }
+talaria-routes-knowledge = { path = "crates/talaria-routes-knowledge" }
+talaria-routes-comms = { path = "crates/talaria-routes-comms" }
+talaria-routes-boards = { path = "crates/talaria-routes-boards" }
+talaria-routes-fleet = { path = "crates/talaria-routes-fleet" }
+talaria-routes-admin = { path = "crates/talaria-routes-admin" }
+talaria-api-facades = { path = "crates/talaria-api-facades" }
 talaria-yaml = { path = "crates/talaria-yaml" }
 talaria-fleet-layout = { path = "crates/talaria-fleet-layout" }
 talaria-undici = { path = "crates/talaria-undici" }

@@ -52,7 +52,7 @@
 
 ## `/api/boards`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards.rs`](../../api/crates/talaria-routes-boards/src/boards/boards.rs)
 
 > /api/boards. GET → the boards the caller owns or that are shared with them;
 > an agent key swaps the question
@@ -74,7 +74,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards.rs`](../../api/
 
 ## `/api/boards/{id}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id.rs)
 
 > /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName? }
 > → rename/archive/set the QA
@@ -99,7 +99,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id.rs`](../../a
 
 ## `/api/boards/{id}/agent-requests`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_agent_requests.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_agent_requests.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agent_requests.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_agent_requests.rs)
 
 > /api/boards/{id}/agent-requests. The request half of board access for a
 > personal assistant whose owner CANNOT read the board — self-service
@@ -130,7 +130,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_agent_reques
 
 ## `/api/boards/{id}/agents`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_agents.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_agents.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs)
 
 > /api/boards/{id}/agents. GET → { allowAll, models }. PUT → set the board's
 > agent policy (owner/editor,
@@ -156,7 +156,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_agents.rs`](
 
 ## `/api/boards/{id}/events`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_events.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_events.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_events.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_events.rs)
 
 > /api/boards/{id}/events. SSE stream of this board's live events
 > (task/comment changes), auth-gated to board members. Powers multiplayer
@@ -169,7 +169,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_events.rs`](
 
 ## `/api/boards/{id}/labels`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_labels.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_labels.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_labels.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_labels.rs)
 
 > /api/boards/{id}/labels. Board labels: GET → the registry (any member);
 > POST create, PUT rename/recolor (a rename cascades into tickets), DELETE
@@ -207,7 +207,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_labels.rs`](
 
 ## `/api/boards/{id}/members`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_members.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_members.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_members.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_members.rs)
 
 > /api/boards/{id}/members. GET → the member list. POST { email, role } →
 > share; DELETE { userId |
@@ -237,7 +237,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_members.rs`]
 
 ## `/api/boards/{id}/statuses`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_statuses.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_statuses.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs)
 
 > /api/boards/{id}/statuses. Board statuses (custom workflow columns). GET →
 > the ordered list incl. the
@@ -286,7 +286,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_statuses.rs`
 
 ## `/api/boards/{id}/tasks`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_tasks.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_tasks.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_tasks.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_tasks.rs)
 
 > /api/boards/{id}/tasks. GET → the board's tasks (any member, or a
 > board-allowed agent; only humans
@@ -317,7 +317,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_tasks.rs`](.
 
 ## `/api/boards/{id}/templates`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_templates.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_templates.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_templates.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_templates.rs)
 
 > /api/boards/{id}/templates. The ticket templates a board uses. GET → the
 > bindings (any member); PUT
@@ -339,7 +339,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_templates.rs
 
 ## `/api/boards/{id}/views`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_views.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_views.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_views.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_views.rs)
 
 > /api/boards/{id}/views. Saved board views: named filter/layout presets
 > shared with the board.
@@ -376,7 +376,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_views.rs`](.
 
 ## `/api/boards/{id}/work-sessions`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_work_sessions.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_work_sessions.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_work_sessions.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_work_sessions.rs)
 
 > GET /api/boards/{id}/work-sessions. The board's LIVE WORK SESSIONS as a
 > taskId → session map — the list view's question ("which cards are being
@@ -390,7 +390,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_work_session
 
 ## `/api/boards/{id}/workchains`
 
-Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_workchains.rs`](../../api/crates/talaria-api-routes/src/routes/boards/boards_id_workchains.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_workchains.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_workchains.rs)
 
 > /api/boards/{id}/workchains. The board's workchains — ordered pipelines
 > of its tickets. GET → the chains with their steps joined to task
@@ -411,7 +411,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/boards/boards_id_workchains.r
 
 ## `/api/workchains/{id}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/workchains/workchains_id.rs`](../../api/crates/talaria-api-routes/src/routes/workchains/workchains_id.rs)
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
 
 > /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
 > pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
@@ -433,7 +433,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/workchains/workchains_id.rs`]
 
 ## `/api/workchains/{id}/steps`
 
-Source: [`api/crates/talaria-api-routes/src/routes/workchains/workchains_id.rs`](../../api/crates/talaria-api-routes/src/routes/workchains/workchains_id.rs)
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
 
 > /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
 > pause/unpause, reorder steps. DELETE → remove the chain (its tickets are

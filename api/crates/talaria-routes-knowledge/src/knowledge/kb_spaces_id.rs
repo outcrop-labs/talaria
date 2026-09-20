@@ -1,0 +1,360 @@
+// /api/kb/spaces/{id}. One KB folder. Same permission model as docs: read
+// gated by visibility, writes by the edit policy + editor grants, sharing
+// owner-only (can_govern).
+
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde_json::{Value, json};
+
+use talaria_agent_auth::{AgentSubject, agent_caller};
+use talaria_api_facades::kb::perms::{
+    EditorGrant, ITEM_SPACE, can_edit_agent, can_edit_human, can_govern, can_read, list_editors,
+    set_editors,
+};
+use talaria_api_facades::kb::{SpacePatch, delete_space, get_space, update_space};
+use talaria_api_facades::retrieval::{embed, qdrant};
+use talaria_audit::{AuditEntry, log_audit};
+use talaria_body::{
+    array_too_big_msg, as_object, enum_member, object_msg, optional_enum_member, parse,
+    present_nullable_max_string_member, string_member, zod_type_name,
+};
+use talaria_error::{house_error, thrown_internal_error};
+use talaria_session::{actor_of, require_user, who_of};
+use talaria_state::AppState;
+
+use super::kb_spaces::guarded_of;
+
+/// The grant list on the wire — principalType, principalId, role, in that
+/// order.
+pub(crate) fn editors_json(grants: &[EditorGrant]) -> Vec<Value> {
+    grants
+        .iter()
+        .map(|g| {
+            json!({
+                "principalType": g.principal_type,
+                "principalId": g.principal_id,
+                "role": g.role,
+            })
+        })
+        .collect()
+}
+
+/// editors: an array capped at 200 — elements validate BEFORE the array-length
+/// check (the same issue order the rag bindings are pinned on). Each Editor:
+/// enum principalType, min-1/max-200 principalId, role enum defaulting
+/// 'viewer'.
+pub(crate) fn parse_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>>, String> {
+    let Some(v) = v else {
+        return Ok(None); // absent — no editors change requested
+    };
+    let arr = v.as_array().ok_or_else(|| {
+        format!(
+            "Invalid input: expected array, received {}",
+            zod_type_name(v)
+        )
+    })?;
+    let mut out = Vec::with_capacity(arr.len());
+    for el in arr {
+        let inner = el
+            .as_object()
+            .ok_or_else(|| object_msg(zod_type_name(el)))?;
+        let principal_type = enum_member(inner, "principalType", &["user", "agent", "team"])?;
+        let principal_id = string_member(inner, "principalId", 1, 200)?;
+        let role = match inner.get("role") {
+            None | Some(Value::Null) => "viewer".to_string(), // role defaults to 'viewer'
+            Some(_) => enum_member(inner, "role", &["viewer", "editor"])?,
+        };
+        out.push(EditorGrant {
+            principal_type,
+            principal_id,
+            role,
+        });
+    }
+    if arr.len() > 200 {
+        return Err(array_too_big_msg(200));
+    }
+    Ok(Some(out))
+}
+
+/// The Patch body → the tri-state engine patch. Field-by-field, each with its
+/// own shape (name min-1/max-80, description/icon nullish, body max 500k,
+/// visibility/editPolicy enums, editors the shared parser).
+fn parse_patch(obj: &serde_json::Map<String, Value>) -> Result<SpacePatch, String> {
+    Ok(SpacePatch {
+        name: match obj.get("name") {
+            None => None,
+            Some(_) => Some(string_member(obj, "name", 1, 80)?),
+        },
+        description: present_nullable_max_string_member(obj, "description", 400)?,
+        icon: present_nullable_max_string_member(obj, "icon", 16)?,
+        body: talaria_body::optional_max_string_member(obj, "body", 500_000)?,
+        visibility: optional_enum_member(obj, "visibility", &["private", "org", "public"])?,
+        edit_policy: optional_enum_member(obj, "editPolicy", &["owner", "org", "restricted"])?,
+    })
+}
+
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let space = match get_space(&state.pg, &id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("[kb] space read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let Some(space) = space else {
+        return house_error(StatusCode::NOT_FOUND, "not found");
+    };
+    let user = match require_user(&state, &headers).await {
+        Ok(u) => u,
+        Err(gate) => return gate,
+    };
+    let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] editor read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let who = who_of(&user);
+    let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    if !can_read(
+        &guarded_of(&space),
+        Some(&user.id),
+        who.as_deref(),
+        &editors,
+        &team_ids,
+    ) {
+        return house_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    Json(json!({ "space": space, "editors": editors_json(&editors) })).into_response()
+}
+
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Response {
+    let space = match get_space(&state.pg, &id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("[kb] space read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let Some(space) = space else {
+        return house_error(StatusCode::NOT_FOUND, "not found");
+    };
+    let parsed = parse(&body);
+    let obj = match as_object(&parsed) {
+        Ok(o) => o,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let mut patch = match parse_patch(obj) {
+        Ok(p) => p,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let editors_req = match parse_editors(obj.get("editors")) {
+        Ok(v) => v,
+        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+    };
+    let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] editor read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    // Agents (over MCP) may edit a space they created, hold an editor grant
+    // on, or — elevated — any non-private one: the same predicate the doc PUT
+    // admits them by. The landing page (`body`) is the surface this branch
+    // exists for: an agent building out a space writes the intro + table of
+    // contents where a person will actually read it. Sharing stays human, so
+    // those fields are dropped rather than trusted to be absent.
+    let agent = match agent_caller(&state.pg, &headers).await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let actor: String;
+    if let Some(agent) = agent {
+        let name = agent.model.clone();
+        let elevated = space.visibility != "private"
+            && match talaria_users::is_elevated_assistant(
+                &state.pg,
+                &AgentSubject::Caller(agent.clone()),
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("[kb] elevation read failed: {e}");
+                    return thrown_internal_error();
+                }
+            };
+        let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let may_edit = space.created_by.as_deref() == Some(name.as_str())
+            || can_edit_agent(&name, &editors, &team_ids)
+            || elevated;
+        if !may_edit {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        // Sharing stays human: the patch's sharing fields are dropped rather
+        // than trusted to be absent, and an editors array is never applied on
+        // this path (set_editors runs only for a human owner below).
+        patch.visibility = None;
+        patch.edit_policy = None;
+        actor = name;
+    } else {
+        let user = match require_user(&state, &headers).await {
+            Ok(u) => u,
+            Err(gate) => return gate,
+        };
+        let who = who_of(&user);
+        let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] team membership read failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        if !can_edit_human(
+            &guarded_of(&space),
+            Some(&user.id),
+            who.as_deref(),
+            &editors,
+            &team_ids,
+        ) {
+            return house_error(StatusCode::FORBIDDEN, "forbidden");
+        }
+        let owner = match can_govern(
+            &state.pg,
+            &guarded_of(&space),
+            &user.id,
+            &user.role,
+            who.as_deref(),
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("[kb] govern check failed: {e}");
+                return thrown_internal_error();
+            }
+        };
+        let sharing_touched =
+            patch.visibility.is_some() || patch.edit_policy.is_some() || editors_req.is_some();
+        if !owner && sharing_touched {
+            return house_error(StatusCode::FORBIDDEN, "only the owner can change sharing");
+        }
+        if owner
+            && let Some(grants) = &editors_req
+            && set_editors(&state.pg, ITEM_SPACE, &id, grants)
+                .await
+                .is_err()
+        {
+            return thrown_internal_error();
+        }
+        actor = who_of(&user).unwrap_or_else(|| "user".into());
+    }
+    let updated = match update_space(&state.pg, &id, &patch, Some(&actor)).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("[kb] space update failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let editors_after = match list_editors(&state.pg, ITEM_SPACE, &id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] editor read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    Json(json!({ "space": updated, "editors": editors_json(&editors_after) })).into_response()
+}
+
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let space = match get_space(&state.pg, &id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("[kb] space read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let Some(space) = space else {
+        return house_error(StatusCode::NOT_FOUND, "not found");
+    };
+    let user = match require_user(&state, &headers).await {
+        Ok(u) => u,
+        Err(gate) => return gate,
+    };
+    let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] editor read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    let who = who_of(&user);
+    let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[kb] team membership read failed: {e}");
+            return thrown_internal_error();
+        }
+    };
+    if !can_edit_human(
+        &guarded_of(&space),
+        Some(&user.id),
+        who.as_deref(),
+        &editors,
+        &team_ids,
+    ) {
+        return house_error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let qd = qdrant::real_deps();
+    let ed = embed::real_deps();
+    if delete_space(&state.pg, &qd, &ed, &id).await.is_err() {
+        return thrown_internal_error();
+    }
+    let (pg, actor) = (state.pg.clone(), actor_of(&user));
+    tokio::spawn(async move {
+        log_audit(
+            &pg,
+            AuditEntry {
+                actor: &actor,
+                action: "kb.space.delete",
+                target_type: "kb-space",
+                target_id: Some(&id),
+                target_label: None,
+                before: None,
+                after: None,
+            },
+        )
+        .await;
+    });
+    Json(json!({ "ok": true })).into_response()
+}

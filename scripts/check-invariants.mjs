@@ -884,7 +884,7 @@ for (const rule of CENSUS) {
     ['api/crates/talaria-fitness-talaria-tools/src/lib.rs', 'fn reads_the_real_registrations_at_all'],
     ['api/crates/talaria-fitness-talaria-tools/src/lib.rs', 'fn models_every_tool_the_toolkit_registers'],
     ['api/crates/talaria-fitness-toolbox/src/sandbox.rs', 'fn every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog'],
-    ['api/crates/talaria-fitness-toolbox/src/sandbox.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
+    ['api/crates/talaria-harness-defs/src/registry.rs', 'fn every_backend_is_exercised_by_a_test_or_a_harness_surface'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_catalogued_hermes_pack_is_classified'],
     ['api/crates/talaria-hermes-skills/src/lib.rs', 'fn every_replaced_pack_has_a_signpost_skill_occupying_the_name'],
   ]
@@ -1207,8 +1207,8 @@ for (const rule of CENSUS) {
   // the bytes across the language line, because a guard that stops at the edge
   // of the tree its subject moved out of guards nothing.
   const RUST_BYTES_ROUTES = [
-    'api/crates/talaria-api-routes/src/routes/files/uploads_id.rs',
-    'api/crates/talaria-api-routes/src/routes/files/artifacts_public_slug_download.rs',
+    'api/crates/talaria-routes-knowledge/src/files/uploads_id.rs',
+    'api/crates/talaria-routes-knowledge/src/files/artifacts_public_slug_download.rs',
   ]
   const RUST_SERVE = 'api/crates/talaria-uploads/src/lib.rs'
 

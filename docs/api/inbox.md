@@ -23,7 +23,7 @@
 
 ## `/api/inbox/focus`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus.rs)
 
 > /api/inbox/focus. GET → the focus inbox queue: what the assistant has
 > teed up for the caller. No options are taken (the queue defaults:
@@ -35,7 +35,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus.rs`](../../
 
 ## `/api/inbox/focus/actions`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_actions.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_actions.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus_actions.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus_actions.rs)
 
 > /api/inbox/focus/actions. POST → execute a focus-inbox action: fire an
 > action, confirm or cancel a pending decision, undo the last one. Every
@@ -61,7 +61,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_actions.rs`
 
 ## `/api/inbox/focus/command`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_command.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_command.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus_command.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus_command.rs)
 
 > /api/inbox/focus/command. POST → run one instruction from the focus inbox
 > panel through the assistant (normal / fast / plan mode, optional model
@@ -89,7 +89,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_command.rs`
 
 ## `/api/inbox/focus/conversations`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_conversations.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_conversations.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus_conversations.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus_conversations.rs)
 
 > /api/inbox/focus/conversations. GET → the panel's chat picker. POST →
 > start a fresh conversation instance. Segmentation is the context
@@ -103,7 +103,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_conversatio
 
 ## `/api/inbox/focus/conversations/{id}`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_conversations_id.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_conversations_id.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus_conversations_id.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus_conversations_id.rs)
 
 > /api/inbox/focus/conversations/{id}. One conversation instance, by its
 > path id. GET → its timeline page (cursor paginates); DELETE → archive it.
@@ -118,7 +118,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_conversatio
 
 ## `/api/inbox/focus/state`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_state.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_state.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus_state.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus_state.rs)
 
 > /api/inbox/focus/state. PUT → mark a focus item viewed, or snooze it
 > until a time. Unlocked by design: the tables this writes
@@ -141,7 +141,7 @@ Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_state.rs`](
 
 ## `/api/inbox/focus/summary`
 
-Source: [`api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_summary.rs`](../../api/crates/talaria-api-routes/src/routes/inbox/inbox_focus_summary.rs)
+Source: [`api/crates/talaria-routes-comms/src/inbox/inbox_focus_summary.rs`](../../api/crates/talaria-routes-comms/src/inbox/inbox_focus_summary.rs)
 
 > /api/inbox/focus/summary. GET → the one-screen summary of the caller's
 > focus state: how many items are queued (snoozed ones excluded), as
