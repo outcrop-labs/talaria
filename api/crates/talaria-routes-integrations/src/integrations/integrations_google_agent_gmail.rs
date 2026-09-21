@@ -18,31 +18,32 @@ use talaria_api_facades::google::errors::google_fail;
 use talaria_api_facades::google::gmail::list_recent_messages_with_token;
 use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
-use talaria_body::{as_object, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, house_error_msg, internal};
+use talaria_body::{optional_max_string_member, parse, string_member};
+use talaria_error::{house_error, house_error_msg, internal, object_or_400};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     // Acting as a HUMAN — the owner's mailbox (or the shared org one). A
     // legacy shared-key caller only ASSERTS which agent it is, so it never
     // reaches a token; the refusal names the container to roll.
     if let Some(denied) = refuse_legacy(&caller, "Gmail access") {
-        return denied;
+        return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
     else {
-        return house_error_msg(
+        return Ok(house_error_msg(
             StatusCode::CONFLICT,
             "not_connected",
             "No Google account is connected for this agent (its owner, or the org account).",
-        );
+        ));
     };
     // Absent OR empty q folds to the inbox default.
     let q = query_pairs(uri.query())
@@ -50,52 +51,60 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         .cloned()
         .filter(|q| !q.is_empty())
         .unwrap_or_else(|| "in:inbox".to_string());
-    match list_recent_messages_with_token(&google.token, 8, &q).await {
-        Ok(messages) => Json(json!({ "messages": messages })).into_response(),
-        Err(e) => google_fail(e, "Gmail"),
-    }
+    Ok(
+        match list_recent_messages_with_token(&google.token, 8, &q).await {
+            Ok(messages) => Json(json!({ "messages": messages })).into_response(),
+            Err(e) => google_fail(e, "Gmail"),
+        },
+    )
 }
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     if let Some(denied) = refuse_legacy(&caller, "Gmail access") {
-        return denied;
+        return Ok(denied);
     }
     let agent_model = caller.model.clone();
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let to = match string_member(obj, "to", 3, 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Absent subject folds to the empty string.
     let subject = match optional_max_string_member(obj, "subject", 500) {
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let text = match optional_max_string_member(obj, "body", 50_000) {
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let cc = match optional_max_string_member(obj, "cc", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let bcc = match optional_max_string_member(obj, "bcc", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let principal = match resolve_agent_principal(&state.pg, &agent_model).await {
         Ok(p) => p,
-        Err(e) => return internal("[integrations/google/agent] principal read failed", e),
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/agent] principal read failed",
+                e,
+            ));
+        }
     };
     // The payload IS the validated draft, stored as drafted and executed as
     // stored at approve time; subject/body always ride (their defaults),
@@ -134,7 +143,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .await
     {
         Ok(q) => q,
-        Err(e) => return internal("[integrations/google/agent] queue failed", e),
+        Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
     let message = if queued.already_pending {
         "An identical draft is already waiting for approval — nothing new queued."
@@ -143,9 +152,9 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     } else {
         "Drafted — waiting for the owner to approve before it sends."
     };
-    Json(json!({
+    Ok(Json(json!({
         "pending": { "id": queued.action.id, "status": "pending" },
         "message": message,
     }))
-    .into_response()
+    .into_response())
 }

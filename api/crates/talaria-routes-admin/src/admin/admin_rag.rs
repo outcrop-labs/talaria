@@ -24,11 +24,11 @@ use talaria_api_facades::retrieval::sources::resync_space_docs;
 use talaria_api_facades::runs::defs::reindex::{start_backfill, start_reindex};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, as_object, nullable_uuid_member, optional_enum_member, optional_number_member, parse,
+    NumKind, nullable_uuid_member, optional_enum_member, optional_number_member, parse,
     present_nullable_max_string_member, too_big_msg, too_small_msg, utf16_len, uuid_member,
     zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -53,10 +53,8 @@ struct SpaceRow {
     collection_id: Option<String>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     let health = rag_health(&qd, &ed).await;
@@ -84,9 +82,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     .unwrap_or(None),
             })
             .collect(),
-        Err(e) => return internal("[admin] query failed", e),
+        Err(e) => return Ok(internal("[admin] query failed", e)),
     };
-    Json(json!({
+    Ok(Json(json!({
         "health": health,
         "backfill": backfill,
         "upgrade": upgrade,
@@ -94,23 +92,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "rerank": { "providers": providers_public(), "config": config },
         "spaces": spaces,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
 
     // The WHOLE body validates before any write — a valid reranker beside an
     // invalid spaceBrain must write NEITHER. Both sections parse into locals
@@ -119,31 +111,31 @@ pub async fn put(
     if let Some(v) = obj.get("reranker") {
         let inner = match nested_object(v) {
             Ok(o) => o,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         // the enum list is 'off' plus the catalog, in catalog order.
         let mut ids: Vec<&str> = vec!["off"];
         ids.extend(RERANK_PROVIDERS.iter().map(|p| p.id));
         let provider = match optional_enum_member(inner, "provider", &ids) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         let url = match present_nullable_max_string_member(inner, "url", 500) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         let model = match present_nullable_max_string_member(inner, "model", 200) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         let api_key = match present_nullable_max_string_member(inner, "apiKey", 500) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         let candidates = match optional_number_member(inner, "candidates", NumKind::Int, 5.0, 100.0)
         {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         reranker = Some(RerankPatch {
             provider,
@@ -159,15 +151,15 @@ pub async fn put(
     if let Some(v) = obj.get("spaceBrain") {
         let inner = match nested_object(v) {
             Ok(o) => o,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         let space_id = match uuid_member(inner, "spaceId") {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         let collection_id = match nullable_uuid_member(inner, "collectionId") {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         space_brain = Some((space_id, collection_id));
     }
@@ -203,7 +195,7 @@ pub async fn put(
                 });
             }
             // a config-write failure is a 500.
-            Err(e) => return internal("[admin] admin_rag failed", e),
+            Err(e) => return Ok(internal("[admin] admin_rag failed", e)),
         }
     }
 
@@ -215,7 +207,7 @@ pub async fn put(
                 .execute(&state.pg)
                 .await;
         if let Err(e) = updated {
-            return internal("[admin] admin_rag failed", e);
+            return Ok(internal("[admin] admin_rag failed", e));
         }
         // Existing docs move to their new home right away — detached, its
         // errors swallowed.
@@ -248,9 +240,10 @@ pub async fn put(
             .await;
         });
     }
-
-    Json(json!({ "rerank": { "config": rerank::rerank_config_public(&state.pg).await } }))
-        .into_response()
+    Ok(
+        Json(json!({ "rerank": { "config": rerank::rerank_config_public(&state.pg).await } }))
+            .into_response(),
+    )
 }
 
 // ── POST's union, decoded ────────────────────────────────────────────────────
@@ -312,17 +305,11 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
-    match classify_post(obj) {
+    let obj = object_or_400(&parsed)?;
+    Ok(match classify_post(obj) {
         Ok(PostIntent::Kick(action)) => {
             // 'reindex' rebuilds collections in the current model's shape
             // then refills; 'backfill' refills in place. Both detach — the
@@ -373,7 +360,7 @@ pub async fn post(
             }
         }
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
-    }
+    })
 }
 
 #[cfg(test)]

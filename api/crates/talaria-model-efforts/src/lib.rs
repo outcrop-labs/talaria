@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_agent_auth::now_ms;
 use talaria_gateway::provider::CatalogModel;
 use talaria_gateway::registry::{LlmEndpoint, list_endpoints};
 use talaria_model_catalog::{
@@ -30,13 +30,6 @@ use talaria_model_catalog::{
 };
 use talaria_persona::{ModelTarget, persona_targets_for};
 use talaria_state::AppState;
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// THE SECOND VOICE THAT CAN VOUCH.
 /// An admin's declaration REPLACES the catalog's ladder for that endpoint's
@@ -179,7 +172,7 @@ async fn refresh_throttled(state: &AppState, ep: &LlmEndpoint) {
             .clone()
     };
     let _held = guard.lock().await;
-    if now_ms().saturating_sub(
+    if (now_ms() as u64).saturating_sub(
         attempted_at()
             .lock()
             .unwrap()
@@ -193,7 +186,7 @@ async fn refresh_throttled(state: &AppState, ep: &LlmEndpoint) {
     attempted_at()
         .lock()
         .unwrap()
-        .insert(ep.name.clone(), now_ms());
+        .insert(ep.name.clone(), now_ms() as u64);
     // Best-effort by construction: a failed fetch keeps the old entry, and the
     // throttle decides when to try again.
     let _ = talaria_model_catalog::refresh_endpoint_catalog(state, ep).await;
@@ -226,7 +219,7 @@ pub async fn ensure_efforts_catalog(state: &AppState, model: &str) -> Vec<String
             names.push(name);
         }
     }
-    let now = now_ms();
+    let now = now_ms() as u64;
     let stale: Vec<String> = {
         let attempted = attempted_at().lock().unwrap();
         names

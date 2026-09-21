@@ -13,34 +13,30 @@ use talaria_inbox_focus::conversation::{create_inbox_conversation, list_inbox_co
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
-    match list_inbox_conversations(&state.pg, &user.id).await {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(match list_inbox_conversations(&state.pg, &user.id).await {
         Ok(conversations) => (
             StatusCode::OK,
             Json(json!({ "conversations": conversations })),
         )
             .into_response(),
         Err(e) => internal("[inbox-focus] conversation list failed", e),
-    }
+    })
 }
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
-    // no agent model at create — the instance starts model-less and picks
-    // up the owner's assistant at command time.
-    match create_inbox_conversation(&state.pg, &user.id, None).await {
-        Ok(id) => (
-            StatusCode::CREATED,
-            Json(json!({ "conversation": { "id": id } })),
-        )
-            .into_response(),
-        Err(e) => internal("[inbox-focus] conversation create failed", e),
-    }
+pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(
+        // no agent model at create — the instance starts model-less and picks
+        // up the owner's assistant at command time.
+        match create_inbox_conversation(&state.pg, &user.id, None).await {
+            Ok(id) => (
+                StatusCode::CREATED,
+                Json(json!({ "conversation": { "id": id } })),
+            )
+                .into_response(),
+            Err(e) => internal("[inbox-focus] conversation create failed", e),
+        },
+    )
 }

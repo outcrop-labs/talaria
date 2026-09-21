@@ -12,14 +12,14 @@ use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let pending = match list_pending(&state.pg, &user.id, user.role == "admin").await {
         Ok(p) => p,
-        Err(e) => return internal("[integrations/google/pending] list failed", e),
+        Err(e) => return Ok(internal("[integrations/google/pending] list failed", e)),
     };
-    Json(json!({ "pending": pending.iter().map(pending_wire).collect::<Vec<_>>() })).into_response()
+    Ok(
+        Json(json!({ "pending": pending.iter().map(pending_wire).collect::<Vec<_>>() }))
+            .into_response(),
+    )
 }

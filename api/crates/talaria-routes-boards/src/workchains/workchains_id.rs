@@ -19,11 +19,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{
-    NumKind, array_msg, array_too_big_msg, as_object, number_member, object_msg,
-    optional_boolean_member, optional_string_member, optional_uuid_member, parse, uuid_member,
-    zod_type_name,
+    NumKind, array_msg, array_too_big_msg, number_member, object_msg, optional_boolean_member,
+    optional_string_member, optional_uuid_member, parse, uuid_member, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_realtime_watch::{BoardEvent, RealtimeDeps, publish_board};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -110,39 +109,33 @@ pub async fn patch(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("workchains", "PATCH", &id) {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match optional_string_member(obj, "name", 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let paused = match optional_boolean_member(obj, "paused") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let positions = match validate_positions(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let board_id = match write_gate(&state, &user.id, &id, "PATCH").await {
         Ok(b) => b,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     // Nothing was asked for: ok, no write, no bump — the empty patch is the
     // workflows family's own quiet shape.
     if name.is_none() && paused.is_none() && positions.is_none() {
-        return Json(json!({ "ok": true })).into_response();
+        return Ok(Json(json!({ "ok": true })).into_response());
     }
     if let Some(name) = &name
         && let Err(e) = sqlx::query(
@@ -153,7 +146,7 @@ pub async fn patch(
         .execute(&state.pg)
         .await
     {
-        return internal("[workchains] rename failed", e);
+        return Ok(internal("[workchains] rename failed", e));
     }
     if let Some(paused) = paused
         && let Err(e) = sqlx::query(
@@ -164,16 +157,16 @@ pub async fn patch(
         .execute(&state.pg)
         .await
     {
-        return internal("[workchains] pause write failed", e);
+        return Ok(internal("[workchains] pause write failed", e));
     }
     if let Some(order) = &positions
         && let Err(msg) = reorder_steps(&state, &id, order).await
     {
-        return msg;
+        return Ok(msg);
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 async fn reorder_steps(
@@ -231,17 +224,14 @@ pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("workchains", "DELETE", &id) {
-        return gate;
+        return Ok(gate);
     }
     let board_id = match write_gate(&state, &user.id, &id, "DELETE").await {
         Ok(b) => b,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     // The tickets are NOT touched: the cascade fires the step rows (their
     // workchain_id references), never the tasks.
@@ -250,11 +240,11 @@ pub async fn delete(
         .execute(&state.pg)
         .await
     {
-        return internal("[workchains] delete failed", e);
+        return Ok(internal("[workchains] delete failed", e));
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn post_step(
@@ -262,30 +252,24 @@ pub async fn post_step(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("workchains", "POST step", &id) {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let task_id = match uuid_member(obj, "taskId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let after = match optional_uuid_member(obj, "after") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let board_id = match write_gate(&state, &user.id, &id, "POST step").await {
         Ok(b) => b,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     // The task must exist, and on this chain's board — the same sentence
     // the dependency door answers a cross-board target with.
@@ -296,13 +280,16 @@ pub async fn post_step(
             .await
         {
             Ok(v) => v,
-            Err(e) => return internal("[workchains] task read on POST step failed", e),
+            Err(e) => return Ok(internal("[workchains] task read on POST step failed", e)),
         };
     let Some((Some(task_board),)) = task else {
-        return house_error(StatusCode::BAD_REQUEST, "no such ticket");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "no such ticket"));
     };
     if task_board != board_id {
-        return house_error(StatusCode::BAD_REQUEST, "must be a ticket on this board");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "must be a ticket on this board",
+        ));
     }
     // v1: one chain per task. The precheck answers the friendly 409; the
     // unique index on task_id is what makes it true under a race.
@@ -314,13 +301,13 @@ pub async fn post_step(
     .await
     {
         Ok(v) => v,
-        Err(e) => return internal("[workchains] chain read on POST step failed", e),
+        Err(e) => return Ok(internal("[workchains] chain read on POST step failed", e)),
     };
     if in_chain.is_some() {
-        return house_error(
+        return Ok(house_error(
             StatusCode::CONFLICT,
             "this ticket is already in a workchain",
-        );
+        ));
     }
     // Insert: appended at the tail, or wedged after the named step with the
     // rest shifted down. `after` must name a step of THIS chain — the same
@@ -350,7 +337,7 @@ pub async fn post_step(
             .await;
             match shifted {
                 Ok(_) => {}
-                Err(e) => return internal("[workchains] step shift failed", e),
+                Err(e) => return Ok(internal("[workchains] step shift failed", e)),
             }
             sqlx::query(
                 "insert into task_workchain_steps (workchain_id, task_id, position) \
@@ -369,44 +356,41 @@ pub async fn post_step(
         // rows_affected 0 = the `after` step is not in this chain (or the
         // position subselect found nothing): nothing was written.
         Ok(res) if res.rows_affected() == 0 => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 "'after' must name a step of this workchain",
-            );
+            ));
         }
         Ok(_) => {}
-        Err(e) => return internal("[workchains] step insert failed", e),
+        Err(e) => return Ok(internal("[workchains] step insert failed", e)),
     }
     if let Err(e) = sqlx::query("update task_workchains set updated_at = now() where id = $1::uuid")
         .bind(&id)
         .execute(&state.pg)
         .await
     {
-        return internal("[workchains] step bump failed", e);
+        return Ok(internal("[workchains] step bump failed", e));
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete_step(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((id, task_id)): Path<(String, String)>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("workchains", "DELETE step", &id) {
-        return gate;
+        return Ok(gate);
     }
     if let Some(gate) = talaria_params::uuid_gate("workchains", "DELETE step task", &task_id) {
-        return gate;
+        return Ok(gate);
     }
     let board_id = match write_gate(&state, &user.id, &id, "DELETE step").await {
         Ok(b) => b,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     // A miss is a quiet ok — the outcome the caller wanted (labels' delete
     // rule). The task is never touched: removing a step unlinks.
@@ -418,16 +402,16 @@ pub async fn delete_step(
     .execute(&state.pg)
     .await
     {
-        return internal("[workchains] step delete failed", e);
+        return Ok(internal("[workchains] step delete failed", e));
     }
     if let Err(e) = sqlx::query("update task_workchains set updated_at = now() where id = $1::uuid")
         .bind(&id)
         .execute(&state.pg)
         .await
     {
-        return internal("[workchains] step delete bump failed", e);
+        return Ok(internal("[workchains] step delete bump failed", e));
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

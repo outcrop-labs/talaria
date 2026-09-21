@@ -10,7 +10,8 @@
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use talaria_agent_auth::now_ms;
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -146,13 +147,6 @@ fn info_in<'a>(cat: &'a Catalog, model_id: &str) -> Option<&'a ModelInfo> {
     (candidates.len() == 1).then(|| &candidates[0])
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 struct Cache {
     at: u64,
     catalog: Catalog,
@@ -167,7 +161,7 @@ async fn catalog() -> Option<Catalog> {
     const TTL_MS: u64 = 6 * 60 * 60_000;
     if let Ok(cell) = cache_cell().lock()
         && let Some(c) = cell.as_ref()
-        && now_ms() - c.at < TTL_MS
+        && now_ms() as u64 - c.at < TTL_MS
     {
         return Some(clone_of(c).catalog);
     }
@@ -190,7 +184,7 @@ async fn catalog() -> Option<Catalog> {
         Some(c) => {
             if let Ok(mut cell) = cache_cell().lock() {
                 *cell = Some(Cache {
-                    at: now_ms(),
+                    at: now_ms() as u64,
                     catalog: Catalog {
                         by_id: c.by_id.clone(),
                         by_suffix: c.by_suffix.clone(),

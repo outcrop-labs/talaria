@@ -31,9 +31,9 @@ use talaria_api_facades::kb::{
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
+    optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -62,24 +62,21 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let doc = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => return internal("[kb] doc read failed", e),
+        Err(e) => return Ok(internal("[kb] doc read failed", e)),
     };
     let Some(doc) = doc else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let eff = match effective_doc_perms(&state.pg, &doc).await {
         Ok(e) => e,
-        Err(e) => return internal("[kb] perms read failed", e),
+        Err(e) => return Ok(internal("[kb] perms read failed", e)),
     };
     // Agents (over MCP) read by effective audience: org/public, a grant — or,
     // for a personal assistant, its owner's own read reach (can_read_agent).
-    let reader = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let reader = agent_caller(&state.pg, &headers).await?;
     if let Some(reader) = reader {
         let owner = match talaria_users::assistant_owner_for(
             &state.pg,
@@ -88,11 +85,11 @@ pub async fn get(
         .await
         {
             Ok(v) => v,
-            Err(e) => return internal("[kb] owner resolve failed", e),
+            Err(e) => return Ok(internal("[kb] owner resolve failed", e)),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &reader.model).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         if !can_read_agent(
             &eff.perms,
@@ -101,21 +98,18 @@ pub async fn get(
             &eff.grants,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
-        return Json(
+        return Ok(Json(
             json!({ "doc": doc_overlay(&doc, &eff.perms, None), "editors": editors_json(&eff.grants) }),
         )
-        .into_response();
+        .into_response());
     }
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] team membership read failed", e),
+        Err(e) => return Ok(internal("[kb] team membership read failed", e)),
     };
     if !can_read(
         &eff.perms,
@@ -124,18 +118,19 @@ pub async fn get(
         &eff.grants,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let governs =
         match can_govern(&state.pg, &eff.perms, &user.id, &user.role, who.as_deref()).await {
             Ok(g) => g,
-            Err(e) => return internal("[kb] govern check failed", e),
+            Err(e) => return Ok(internal("[kb] govern check failed", e)),
         };
+    Ok(
     // Surface the effective visibility/policy so the UI shows what applies.
     Json(
         json!({ "doc": doc_overlay(&doc, &eff.perms, Some(governs)), "editors": editors_json(&eff.grants) }),
     )
-    .into_response()
+    .into_response())
 }
 
 /// The PUT body, holding every field the handler's state machine mutates.
@@ -174,34 +169,28 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let doc = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => return internal("[kb] doc read failed", e),
+        Err(e) => return Ok(internal("[kb] doc read failed", e)),
     };
     let Some(doc) = doc else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let mut body = match parse_put_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let eff = match effective_doc_perms(&state.pg, &doc).await {
         Ok(e) => e,
-        Err(e) => return internal("[kb] perms read failed", e),
+        Err(e) => return Ok(internal("[kb] perms read failed", e)),
     };
 
     let actor: String;
     let mut owner = false;
-    let agent = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let agent = agent_caller(&state.pg, &headers).await?;
     if let Some(agent) = agent.clone() {
         let name = agent.model.clone();
         // Its own authored doc, an editor grant — or an admin-elevated
@@ -216,17 +205,17 @@ pub async fn put(
             .await
             {
                 Ok(v) => v,
-                Err(e) => return internal("[kb] elevation read failed", e),
+                Err(e) => return Ok(internal("[kb] elevation read failed", e)),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         let may_edit = doc.created_by.as_deref() == Some(name.as_str())
             || can_edit_agent(&name, &eff.grants, &team_ids)
             || elevated;
         if !may_edit {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         actor = name;
         body.visibility = None;
@@ -235,14 +224,11 @@ pub async fn put(
         body.perms_inherited = None;
         body.official = None;
     } else {
-        let user = match require_perm(&state, &headers, "kb.edit").await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_perm(&state, &headers, "kb.edit").await?;
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         if !can_edit_human(
             &eff.perms,
@@ -251,7 +237,7 @@ pub async fn put(
             &eff.grants,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         // Marking OFFICIAL grounds every agent — a curation power of its own.
         if body.official.is_some()
@@ -260,30 +246,33 @@ pub async fn put(
                 Ok(true)
             )
         {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 "no permission to curate official knowledge",
-            );
+            ));
         }
         actor = actor_of(&user);
         owner = match can_govern(&state.pg, &eff.perms, &user.id, &user.role, who.as_deref()).await
         {
             Ok(v) => v,
-            Err(e) => return internal("[kb] govern check failed", e),
+            Err(e) => return Ok(internal("[kb] govern check failed", e)),
         };
         let sharing = body.visibility.is_some()
             || body.edit_policy.is_some()
             || body.editors.is_some()
             || body.perms_inherited.is_some();
         if !owner && sharing {
-            return house_error(StatusCode::FORBIDDEN, "only the owner can change sharing");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "only the owner can change sharing",
+            ));
         }
         // Routing decides which brain can retrieve the doc — owner's call.
         if !owner && body.rag_routing.is_some() {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 "only the owner can change brain routing",
-            );
+            ));
         }
     }
     if agent.is_some() {
@@ -294,7 +283,7 @@ pub async fn put(
         if body.perms_inherited == Some(true) {
             // Reset to inherit from the folder — drop the doc's own grants.
             if let Err(e) = set_editors(&state.pg, ITEM_DOC, &id, &[]).await {
-                return internal("[knowledge] kb_docs_id failed", e);
+                return Ok(internal("[knowledge] kb_docs_id failed", e));
             }
             body.editors = None;
         } else if body.visibility.is_some() || body.edit_policy.is_some() || body.editors.is_some()
@@ -305,7 +294,7 @@ pub async fn put(
             if let Some(editors) = &body.editors
                 && let Err(e) = set_editors(&state.pg, ITEM_DOC, &id, editors).await
             {
-                return internal("[knowledge] set_editors failed", e);
+                return Ok(internal("[knowledge] set_editors failed", e));
             }
         }
     }
@@ -323,7 +312,7 @@ pub async fn put(
         )
         .await
         {
-            return house_error(StatusCode::BAD_REQUEST, &msg);
+            return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
         }
     }
     let qd = qdrant::real_deps();
@@ -347,8 +336,8 @@ pub async fn put(
     .await
     {
         Ok(Some(d)) => d,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[kb] doc save failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[kb] doc save failed", e)),
     };
     if let Some(official) = body.official
         && official != updated.official
@@ -356,7 +345,7 @@ pub async fn put(
         updated = match set_official(&state.pg, &qd, &ed, &id, official, &actor).await {
             Ok(Some(d)) => d,
             Ok(None) => updated,
-            Err(e) => return internal("[kb] officialize failed", e),
+            Err(e) => return Ok(internal("[kb] officialize failed", e)),
         };
         let (pg, actor_, action, target_id, target_label) = (
             state.pg.clone(),
@@ -400,25 +389,26 @@ pub async fn put(
     }
     let eff = match effective_doc_perms(&state.pg, &updated).await {
         Ok(e) => e,
-        Err(e) => return internal("[kb] perms read failed", e),
+        Err(e) => return Ok(internal("[kb] perms read failed", e)),
     };
+    Ok(
     Json(
         json!({ "doc": doc_overlay(&updated, &eff.perms, None), "editors": editors_json(&eff.grants) }),
     )
-    .into_response()
+    .into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let doc = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => return internal("[kb] doc read failed", e),
+        Err(e) => return Ok(internal("[kb] doc read failed", e)),
     };
     let Some(doc) = doc else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // Delete is unrecoverable — versions and embeddings go with the row — so
     // an agent's admission here is NARROWER than the edit it holds on the same
@@ -426,32 +416,26 @@ pub async fn delete(
     // versioned; a doc somebody else created leaves with a human, and the
     // agent's honest move for a misfiled doc it cannot delete is move, not
     // duplicate.
-    let agent = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let agent = agent_caller(&state.pg, &headers).await?;
     let actor: String;
     if let Some(agent) = agent {
         if doc.created_by.as_deref() != Some(agent.model.as_str()) {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 "agents can only delete docs they created",
-            );
+            ));
         }
         actor = agent.model;
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         let eff = match effective_doc_perms(&state.pg, &doc).await {
             Ok(e) => e,
-            Err(e) => return internal("[kb] perms read failed", e),
+            Err(e) => return Ok(internal("[kb] perms read failed", e)),
         };
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         if !can_edit_human(
             &eff.perms,
@@ -460,14 +444,14 @@ pub async fn delete(
             &eff.grants,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         actor = actor_of(&user);
     }
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     if let Err(e) = delete_doc(&state.pg, &qd, &ed, &id).await {
-        return internal("[knowledge] team_ids_for_user failed", e);
+        return Ok(internal("[knowledge] team_ids_for_user failed", e));
     }
     // The one kb write with no undo, so it is the one that always lands in the
     // audit log — whoever pulled the trigger.
@@ -487,5 +471,5 @@ pub async fn delete(
         )
         .await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

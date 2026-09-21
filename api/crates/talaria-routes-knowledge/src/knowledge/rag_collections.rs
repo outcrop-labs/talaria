@@ -16,10 +16,10 @@ use talaria_api_facades::retrieval::collections::{self, AccessBinding, RagCollec
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, enum_member, object_msg, optional_max_string_member,
-    parse, present_nullable_max_string_member, string_member, zod_type_name,
+    array_msg, array_too_big_msg, enum_member, object_msg, optional_max_string_member, parse,
+    present_nullable_max_string_member, string_member, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin, require_user};
 use talaria_state::AppState;
 
@@ -69,11 +69,8 @@ pub(crate) fn parse_bindings(v: Option<&Value>) -> Result<Option<Vec<AccessBindi
     Ok(Some(out))
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // The two auto collections exist before the list is read — errors
     // swallowed: a dead Qdrant must not take the registry down with it.
     let qd = qdrant::real_deps();
@@ -81,7 +78,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let _ = collections::ensure_auto_collections(&state.pg, &qd, &ed).await;
     let list = match collections::list_collections(&state.pg).await {
         Ok(l) => l,
-        Err(e) => return internal("[knowledge] list_collections failed", e),
+        Err(e) => return Ok(internal("[knowledge] list_collections failed", e)),
     };
     // Members get names only — the doc "Brain" picker. Key order is part of
     // the contract, and `bindings` is an EMPTY array, not omitted.
@@ -95,7 +92,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 })
             })
             .collect();
-        return Json(json!({ "collections": rows })).into_response();
+        return Ok(Json(json!({ "collections": rows })).into_response());
     }
     // Each binding on the wire carries its own collectionId.
     let rows: Vec<Value> = list
@@ -121,34 +118,28 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             row
         })
         .collect();
-    Json(json!({ "collections": rows })).into_response()
+    Ok(Json(json!({ "collections": rows })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 2, 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let description = match optional_max_string_member(obj, "description", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let bindings = match parse_bindings(obj.get("bindings")) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let created_by = user
         .email
@@ -174,7 +165,7 @@ pub async fn post(
         Ok(c) => c,
         // The create's own error sentence (a down embedding service, a Qdrant
         // that will not build the collection) IS the answer, at 400.
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let (pg, actor, target_id, target_label) = (
         state.pg.clone(),
@@ -197,7 +188,7 @@ pub async fn post(
         )
         .await;
     });
-    Json(json!({ "collection": row_json(&col) })).into_response()
+    Ok(Json(json!({ "collection": row_json(&col) })).into_response())
 }
 
 #[cfg(test)]

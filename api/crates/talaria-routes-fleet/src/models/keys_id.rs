@@ -8,8 +8,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{NumKind, as_object, nullable_number_member, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::{NumKind, nullable_number_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_llm_keys::{KeyPolicy, revoke_key, set_key_policy};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -24,16 +24,13 @@ pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = uuid_or_500(&id, "DELETE") {
-        return gate;
+        return Ok(gate);
     }
     if let Err(e) = revoke_key(&state.pg, &user.id, &id).await {
-        return internal("[keys] revoke failed", e);
+        return Ok(internal("[keys] revoke failed", e));
     }
     log_audit(
         &state.pg,
@@ -48,7 +45,7 @@ pub async fn delete(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn put(
@@ -56,33 +53,27 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // Body validation before the uuid gate — a bad body wins the 400.
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let spend_cap_tokens =
         match nullable_number_member(obj, "spendCapTokens", NumKind::Int, 0.0, 1e15) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
     let spend_cap_usd = match nullable_number_member(obj, "spendCapUsd", NumKind::Float, 0.0, 1e9) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let rate_limit_per_minute =
         match nullable_number_member(obj, "rateLimitPerMinute", NumKind::Int, 0.0, 10_000.0) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
     if let Some(gate) = uuid_or_500(&id, "PUT") {
-        return gate;
+        return Ok(gate);
     }
     // The echo: absent and null both answer null, but a literal 0 STAYS 0
     // in the response and the audit row even though the write normalizes it
@@ -105,10 +96,10 @@ pub async fn put(
     .await
     {
         Ok(v) => v,
-        Err(e) => return internal("[keys] policy write failed", e),
+        Err(e) => return Ok(internal("[keys] policy write failed", e)),
     };
     if !set {
-        return house_error(StatusCode::NOT_FOUND, "no such key");
+        return Ok(house_error(StatusCode::NOT_FOUND, "no such key"));
     }
     log_audit(
         &state.pg,
@@ -123,5 +114,5 @@ pub async fn put(
         },
     )
     .await;
-    Json(json!({ "ok": true, "policy": policy_json })).into_response()
+    Ok(Json(json!({ "ok": true, "policy": policy_json })).into_response())
 }

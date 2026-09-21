@@ -10,10 +10,8 @@ use serde_json::{Value, json};
 
 use talaria_api_facades::kb::perms::{can_read, granted_item_ids};
 use talaria_artifacts::{create_folder, guarded_folder, list_folders};
-use talaria_body::{
-    as_object, optional_enum_member, parse, present_nullable_uuid_member, string_member,
-};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_enum_member, parse, present_nullable_uuid_member, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -35,22 +33,19 @@ fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
     })
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let who = who_of(&user);
     // Folders used to be returned wholesale, which was fine while they had no
     // access of their own. Now they do, so this read is gated exactly like the
     // artifact list beside it — same canRead, same grant escape hatch.
     let granted = match granted_item_ids(&state.pg, ITEM_FOLDER, &user.id).await {
         Ok(g) => g,
-        Err(e) => return internal("[folders] grants read failed", e),
+        Err(e) => return Ok(internal("[folders] grants read failed", e)),
     };
     let folders = match list_folders(&state.pg).await {
         Ok(f) => f,
-        Err(e) => return internal("[folders] list failed", e),
+        Err(e) => return Ok(internal("[folders] list failed", e)),
     };
     let folders: Vec<_> = folders
         .iter()
@@ -59,27 +54,21 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 || can_read(&guarded_folder(f), Some(&user.id), who.as_deref(), &[], &[])
         })
         .collect();
-    Json(json!({ "folders": folders })).into_response()
+    Ok(Json(json!({ "folders": folders })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     // Folders shape the artifact tree — same perm as creating artifacts.
-    let user = match require_perm(&state, &headers, "artifacts.create").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_perm(&state, &headers, "artifacts.create").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let parent = match body.parent_id {
         Some(Some(id)) => Some(id),
@@ -98,7 +87,7 @@ pub async fn post(
     .await
     {
         Ok(f) => f,
-        Err(e) => return internal("[folders] create failed", e),
+        Err(e) => return Ok(internal("[folders] create failed", e)),
     };
-    Json(json!({ "folder": folder })).into_response()
+    Ok(Json(json!({ "folder": folder })).into_response())
 }

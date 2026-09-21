@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the hot-path caches (cargo test -- --ignored). Each cache
 // buys the gateway its zero-checkout warm turn, and each one has a law the
 // pure tests can't pin because the law is about the DATABASE round trip:
@@ -12,7 +13,7 @@
 // through the same box production resolves through.)
 
 use serde_json::json;
-use sqlx::PgPool;
+use support::{fabricate_user, pg, sweep_user_rows};
 use talaria_api::auth::{authenticate_key, reset_identity_cache, sha256_hex};
 use talaria_api::config::Config;
 use talaria_api::db::pool as app_pool;
@@ -28,13 +29,6 @@ use talaria_api::inbox_focus::update_focus_state;
 use talaria_api::secretbox::SecretBox;
 use talaria_api::session::SessionUser;
 use talaria_api::state::AppState;
-
-async fn pg() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// An AppState on the live database, configured exactly the way the live
 /// tests before this one configure one — the secretbox test needs the real
 /// root so the box it loads can open what it sealed.
@@ -53,29 +47,6 @@ async fn app_state() -> AppState {
 
 /// A user row for the FKs, swept by its distinctive sub. CASCADE covers every
 /// child these tests write.
-async fn fabricate_user(pg: &PgPool, tag: &str) -> String {
-    let sub = format!("hot-caches:{tag}:{}", uuid::Uuid::new_v4());
-    sqlx::query("insert into users (sub) values ($1)")
-        .bind(&sub)
-        .execute(pg)
-        .await
-        .unwrap();
-    let id: String = sqlx::query_scalar("select id::text from users where sub = $1")
-        .bind(&sub)
-        .fetch_one(pg)
-        .await
-        .unwrap();
-    id
-}
-
-async fn sweep_user_rows(pg: &PgPool, tag: &str) {
-    sqlx::query("delete from users where sub like $1")
-        .bind(format!("hot-caches:{tag}:%"))
-        .execute(pg)
-        .await
-        .unwrap();
-}
-
 // ── The endpoints cache ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -213,7 +184,7 @@ async fn the_key_cache_pins_within_its_window_and_drops_on_rotation() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_identity_cache_pins_revocation_until_reset() {
     let pg = pg().await;
-    let user = fabricate_user(&pg, "identity").await;
+    let user = fabricate_user(&pg, "hot-caches", "identity").await;
     let secret = format!("tlk_hotcache_{}", uuid::Uuid::new_v4().simple());
     let hash = sha256_hex(&secret);
     sqlx::query(
@@ -271,7 +242,7 @@ async fn the_identity_cache_pins_revocation_until_reset() {
         "and resets with the rest of the map"
     );
 
-    sweep_user_rows(&pg, "identity").await;
+    sweep_user_rows(&pg, "hot-caches", "identity").await;
     reset_identity_cache();
 }
 
@@ -281,7 +252,7 @@ async fn the_identity_cache_pins_revocation_until_reset() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_inbox_reads_and_snoozes_under_a_held_turn_lock() {
     let state = app_state().await;
-    let user_id = fabricate_user(&state.pg, "inbox").await;
+    let user_id = fabricate_user(&state.pg, "hot-caches", "inbox").await;
     let user = SessionUser {
         id: user_id.clone(),
         sub: format!("hot-caches:inbox:{user_id}"),
@@ -366,5 +337,5 @@ async fn the_inbox_reads_and_snoozes_under_a_held_turn_lock() {
         "the lock itself still works — release on drop, one turn at a time"
     );
 
-    sweep_user_rows(&state.pg, "inbox").await;
+    sweep_user_rows(&state.pg, "hot-caches", "inbox").await;
 }

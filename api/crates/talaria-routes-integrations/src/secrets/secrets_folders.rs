@@ -146,45 +146,40 @@ fn parse_post(obj: &serde_json::Map<String, Value>) -> Result<FolderPost, String
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    match list_secret_folders(&state.pg, &user.id, false).await {
-        Ok(folders) => Json(json!({ "folders": folders })).into_response(),
-        Err(e) => internal("[secrets] folder list failed", e),
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(
+        match list_secret_folders(&state.pg, &user.id, false).await {
+            Ok(folders) => Json(json!({ "folders": folders })).into_response(),
+            Err(e) => internal("[secrets] folder list failed", e),
+        },
+    )
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
     // The body schema is a UNION, and a union flattens EVERY failure to the
     // same two words — even a body that isn't an object at all.
     let obj = match parsed.as_object() {
         Some(o) => o,
-        None => return house_error(StatusCode::BAD_REQUEST, "Invalid input"),
+        None => return Ok(house_error(StatusCode::BAD_REQUEST, "Invalid input")),
     };
     let action = match parse_post(obj) {
         Ok(a) => a,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let actor = actor_of(&user);
-
-    match action {
+    Ok(match action {
         FolderPost::Create { name } => {
             let folder = match create_secret_folder(&state.pg, &name, Some(user.id.as_str())).await
             {
                 Ok(f) => f,
-                Err(e) => return internal("[secrets] folder create failed", e),
+                Err(e) => return Ok(internal("[secrets] folder create failed", e)),
             };
             log_audit(
                 &state.pg,
@@ -204,10 +199,10 @@ pub async fn post(
         FolderPost::Rename { id, name } => {
             let ok = match rename_secret_folder(&state.pg, &id, &name, &user.id, false).await {
                 Ok(o) => o,
-                Err(e) => return internal("[secrets] folder rename failed", e),
+                Err(e) => return Ok(internal("[secrets] folder rename failed", e)),
             };
             if !ok {
-                return house_error(StatusCode::FORBIDDEN, "not yours to rename");
+                return Ok(house_error(StatusCode::FORBIDDEN, "not yours to rename"));
             }
             log_audit(
                 &state.pg,
@@ -230,10 +225,10 @@ pub async fn post(
             // a label would be an unforgivable way to lose them.
             let ok = match delete_secret_folder(&state.pg, &id, &user.id, false).await {
                 Ok(o) => o,
-                Err(e) => return internal("[secrets] folder delete failed", e),
+                Err(e) => return Ok(internal("[secrets] folder delete failed", e)),
             };
             if !ok {
-                return house_error(StatusCode::FORBIDDEN, "not yours to delete");
+                return Ok(house_error(StatusCode::FORBIDDEN, "not yours to delete"));
             }
             log_audit(
                 &state.pg,
@@ -273,10 +268,10 @@ pub async fn post(
             };
             let ok = match share_secret_folder(&state.pg, &id, &who, on, &user.id, false).await {
                 Ok(o) => o,
-                Err(e) => return internal("[secrets] folder share failed", e),
+                Err(e) => return Ok(internal("[secrets] folder share failed", e)),
             };
             if !ok {
-                return house_error(StatusCode::FORBIDDEN, "not yours to share");
+                return Ok(house_error(StatusCode::FORBIDDEN, "not yours to share"));
             }
             let after = if let Some(uid) = &who.user_id {
                 json!({ "userId": uid })
@@ -304,7 +299,7 @@ pub async fn post(
             .await;
             folders_response(&state.pg, &user.id).await
         }
-    }
+    })
 }
 
 async fn folders_response(pg: &sqlx::PgPool, user_id: &str) -> Response {

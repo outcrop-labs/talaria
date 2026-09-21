@@ -10,11 +10,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{
-    as_object, optional_string_member, parse, preprocessed_email_member, string_member,
-};
+use talaria_body::{optional_string_member, parse, preprocessed_email_member, string_member};
 use talaria_claim::claim_admin;
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_password::hash_password;
 use talaria_ratelimit::{client_ip, rate_limit, rate_limit_reset};
 use talaria_session::{
@@ -33,23 +31,20 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let email = match preprocessed_email_member(obj, "email", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let password = match string_member(obj, "password", 8, 1000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = match optional_string_member(obj, "name", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let ip_key = format!("claim:ip:{}", client_ip(&headers));
@@ -63,7 +58,7 @@ pub async fn post(
             if let Ok(v) = header::HeaderValue::from_str(&by_ip.retry_after.to_string()) {
                 resp.headers_mut().insert(header::RETRY_AFTER, v);
             }
-            return resp;
+            return Ok(resp);
         }
     }
 
@@ -71,7 +66,7 @@ pub async fn post(
     let pw = password.clone();
     let hash = match tokio::task::spawn_blocking(move || hash_password(&pw)).await {
         Ok(h) => h,
-        Err(e) => return internal("[auth/claim] hash task panicked", e),
+        Err(e) => return Ok(internal("[auth/claim] hash task panicked", e)),
     };
 
     // a name that trims to empty falls back to the email.
@@ -88,12 +83,12 @@ pub async fn post(
     let claimed = match claim_admin(&state.pg, &identity, Some(&hash)).await {
         Ok(Some(c)) => c,
         Ok(None) => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::CONFLICT,
                 "This instance already has an admin — sign in instead.",
-            );
+            ));
         }
-        Err(e) => return internal("[auth/claim] claim failed", e),
+        Err(e) => return Ok(internal("[auth/claim] claim failed", e)),
     };
 
     if let Ok(mut redis) = state.redis().await {
@@ -133,14 +128,14 @@ pub async fn post(
     };
     let sid = match create_session(&state, &user).await {
         Ok(sid) => sid,
-        Err(e) => return internal("[auth/claim] session create failed", e),
+        Err(e) => return Ok(internal("[auth/claim] session create failed", e)),
     };
-    json_with_cookies(
+    Ok(json_with_cookies(
         Json(ClaimBody {
             ok: true,
             user: WireUser::from(&user),
         }),
         &[session_cookie_for(&headers, &sid)],
     )
-    .into_response()
+    .into_response())
 }

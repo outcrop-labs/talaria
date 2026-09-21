@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the mark-read selectors (cargo test -- --ignored). The
 // href arm is an UPDATE whose matching only Postgres can confirm, and the
 // precedence it promises — ids win over href, an empty href folds into all
@@ -8,14 +9,8 @@
 //   DATABASE_URL=postgres://… cargo test --test notifications_reads -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::notify::{mark_notifications_read, unread_count};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// One throwaway user; the cascade takes the notification rows with it.
 async fn cleanup(pg: &PgPool) {
     sqlx::query("delete from users where email = 'notify-reads@test.invalid'")
@@ -55,7 +50,7 @@ async fn is_read(pg: &PgPool, id: &str) -> bool {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn href_marks_only_what_points_there_and_ids_still_win() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let (user,): (String,) = sqlx::query_as(
         "insert into users (sub, email, name, role) \

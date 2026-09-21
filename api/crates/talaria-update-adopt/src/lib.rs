@@ -35,6 +35,7 @@ use redis::aio::ConnectionManager;
 use serde_json::Value;
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_iso;
 use talaria_fleet_docker::docker;
 use talaria_runs_lease::{AcquireResult, RedisLeases, acquire_lease, keep_lease_alive};
 use talaria_update_docker::{
@@ -49,8 +50,8 @@ use talaria_update_mode::install_mode;
 use talaria_update_registry::{fetch_version_label, is_digest, parse_image_ref, resolve_latest};
 use talaria_update_render::{digest_ref, repo_of, slot_spec_from_inspect};
 use talaria_update_roll::{
-    HEALTH_GATE_MS, ROLL_LOCK_TTL_MS, now_iso, reconcile_boot, roll_lease_key, run_in_flight,
-    self_name, transition, write_project,
+    HEALTH_GATE_MS, ROLL_LOCK_TTL_MS, reconcile_boot, roll_lease_key, run_in_flight, self_name,
+    transition, write_project,
 };
 use talaria_update_state::{Pin, RunBy, RunRecord, RunState, UpdateState, load, patch, record_run};
 

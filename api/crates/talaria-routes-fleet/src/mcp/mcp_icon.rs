@@ -20,12 +20,13 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<IconQuery>,
-) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
     let Some(domain) = query.domain else {
-        return talaria_error::house_error(StatusCode::BAD_REQUEST, "bad request");
+        return Ok(talaria_error::house_error(
+            StatusCode::BAD_REQUEST,
+            "bad request",
+        ));
     };
     // a bare host shape — alphanumerics, dots, hyphens; nothing else.
     let shape_ok = !domain.is_empty()
@@ -33,7 +34,10 @@ pub async fn get(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
     if !shape_ok {
-        return talaria_error::house_error(StatusCode::BAD_REQUEST, "bad request");
+        return Ok(talaria_error::house_error(
+            StatusCode::BAD_REQUEST,
+            "bad request",
+        ));
     }
     let Some(icon) = icons()
         .resolve_icon(&IconKey {
@@ -44,12 +48,12 @@ pub async fn get(
     else {
         // an empty body and NO content-type; axum's `(status, "")` pair would
         // stamp text/plain on it.
-        return Response::builder()
+        return Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(axum::body::Body::empty())
-            .expect("a bare 404 builds");
+            .expect("a bare 404 builds"));
     };
-    (
+    Ok((
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, icon.content_type.clone()),
@@ -57,5 +61,5 @@ pub async fn get(
         ],
         icon.buf.clone(),
     )
-        .into_response()
+        .into_response())
 }

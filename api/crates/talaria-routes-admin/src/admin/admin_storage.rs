@@ -9,12 +9,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{
-    as_object, enum_member, object_msg, optional_enum_member, parse, zod_type_name,
-};
-use talaria_error::{house_error, internal};
-use talaria_secretbox::SecretBox;
-use talaria_session::{actor_of, require_admin};
+use talaria_body::{enum_member, object_msg, optional_enum_member, parse, zod_type_name};
+use talaria_error::{house_error, object_or_400};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 use talaria_storage::{
     BucketTarget, StorageConfig, ensure_bucket, get_storage_config, internal_target,
@@ -24,34 +21,25 @@ use talaria_uploads::{
     migrate_status, migrate_uploads_to_s3, sync_status, sync_uploads_to_replica, upload_stats,
 };
 
-async fn secretbox_or_500(state: &AppState) -> Result<SecretBox, Response> {
-    state
-        .secretbox()
-        .await
-        .map_err(|e| internal("[admin/storage] secretbox unavailable", e))
-}
-
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(r) => return r,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[admin/storage] secretbox unavailable").await?;
     let config = public_storage_config(&state.pg, &sb).await;
     let stats = upload_stats(&state.pg).await;
     let migrate = migrate_status(&state.pg).await;
     let sync = sync_status(&state.pg).await;
     let internal = internal_target();
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "config": config,
         "stats": stats,
         "migrate": migrate,
         "sync": sync,
         "internal": { "endpoint": internal.endpoint, "bucket": internal.bucket },
     }))
-    .into_response()
+    .into_response())
 }
 
 /// One Target block (the five required S3 fields + the optional secret),
@@ -101,43 +89,44 @@ pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(r) => return r,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[admin/storage] secretbox unavailable").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Body key order: mode, the Target spread, replica — a bad mode answers
     // before any Target field can.
     let mode = match enum_member(obj, "mode", &["local", "internal", "s3"]) {
         Ok(m) => m,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let target = match target_of(obj) {
         Ok(t) => t,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let (replica_obj, replica_enabled) = match obj.get("replica") {
-        None => return house_error(StatusCode::BAD_REQUEST, &object_msg("undefined")),
+        None => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &object_msg("undefined"),
+            ));
+        }
         Some(v) => match v.as_object() {
             Some(o) => match talaria_body::boolean_member(o, "enabled") {
                 Ok(b) => (o, b),
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             },
-            None => return house_error(StatusCode::BAD_REQUEST, &object_msg(zod_type_name(v))),
+            None => {
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    &object_msg(zod_type_name(v)),
+                ));
+            }
         },
     };
     let replica = match target_of(replica_obj) {
         Ok(t) => t,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let current = get_storage_config(&state.pg, &sb).await;
@@ -179,34 +168,25 @@ pub async fn put(
     )
     .await;
     let config = public_storage_config(&state.pg, &sb).await;
-    Json(serde_json::json!({ "config": config })).into_response()
+    Ok(Json(serde_json::json!({ "config": config })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(r) => return r,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[admin/storage] secretbox unavailable").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // action is an optional enum (test|test-replica|migrate|sync) — a bad
     // value answers the enum's own message, and an absent action falls
     // through to "unknown action" below.
     let action =
         match optional_enum_member(obj, "action", &["test", "test-replica", "migrate", "sync"]) {
             Ok(a) => a,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
     let cfg = get_storage_config(&state.pg, &sb).await;
     let audit = |action: &str, after: Option<Value>| {
@@ -230,55 +210,57 @@ pub async fn post(
             .await;
         });
     };
-    // Every action failure answers the same shape: a 400 {error}.
-    match action.as_deref() {
-        Some("test") => {
-            // Test what the current mode would actually use.
-            let result: Result<Value, String> = if cfg.mode == "internal" {
-                let t = internal_target();
-                match refuse_dev_secret(&t) {
-                    Ok(()) => match ensure_bucket(&t).await {
-                        Ok(()) => Ok(test_storage(&t).await),
+    Ok(
+        // Every action failure answers the same shape: a 400 {error}.
+        match action.as_deref() {
+            Some("test") => {
+                // Test what the current mode would actually use.
+                let result: Result<Value, String> = if cfg.mode == "internal" {
+                    let t = internal_target();
+                    match refuse_dev_secret(&t) {
+                        Ok(()) => match ensure_bucket(&t).await {
+                            Ok(()) => Ok(test_storage(&t).await),
+                            Err(msg) => Err(msg),
+                        },
                         Err(msg) => Err(msg),
-                    },
-                    Err(msg) => Err(msg),
+                    }
+                } else {
+                    Ok(test_storage(&cfg.target).await)
+                };
+                match result {
+                    Ok(v) => Json(v).into_response(),
+                    Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
                 }
-            } else {
-                Ok(test_storage(&cfg.target).await)
-            };
-            match result {
-                Ok(v) => Json(v).into_response(),
+            }
+            Some("test-replica") => {
+                let replica = replica_target(&cfg).unwrap_or_else(|| cfg.replica.clone());
+                Json(test_storage(&replica).await).into_response()
+            }
+            Some("migrate") => match migrate_uploads_to_s3(&state.pg, &sb).await {
+                Ok(status) => {
+                    audit(
+                        "migrate",
+                        Some(
+                            serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) }),
+                        ),
+                    );
+                    Json(serde_json::json!({ "migrate": status })).into_response()
+                }
                 Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
-            }
-        }
-        Some("test-replica") => {
-            let replica = replica_target(&cfg).unwrap_or_else(|| cfg.replica.clone());
-            Json(test_storage(&replica).await).into_response()
-        }
-        Some("migrate") => match migrate_uploads_to_s3(&state.pg, &sb).await {
-            Ok(status) => {
-                audit(
-                    "migrate",
-                    Some(
-                        serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) }),
-                    ),
-                );
-                Json(serde_json::json!({ "migrate": status })).into_response()
-            }
-            Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
+            },
+            Some("sync") => match sync_uploads_to_replica(&state.pg, &sb).await {
+                Ok(status) => {
+                    audit(
+                        "sync",
+                        Some(
+                            serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) }),
+                        ),
+                    );
+                    Json(serde_json::json!({ "sync": status })).into_response()
+                }
+                Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
+            },
+            _ => house_error(StatusCode::BAD_REQUEST, "unknown action"),
         },
-        Some("sync") => match sync_uploads_to_replica(&state.pg, &sb).await {
-            Ok(status) => {
-                audit(
-                    "sync",
-                    Some(
-                        serde_json::json!({ "total": status.get("total").cloned().unwrap_or(Value::Null) }),
-                    ),
-                );
-                Json(serde_json::json!({ "sync": status })).into_response()
-            }
-            Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
-        },
-        _ => house_error(StatusCode::BAD_REQUEST, "unknown action"),
-    }
+    )
 }

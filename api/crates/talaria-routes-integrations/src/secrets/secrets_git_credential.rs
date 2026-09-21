@@ -22,9 +22,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_agent_auth::require_agent;
-use talaria_body::{as_object, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_max_string_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as github;
+use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
 use talaria_workspace_secrets::{HostCredential, credential_for_host};
 
@@ -32,27 +33,24 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let host = match string_member(obj, "host", 1, 253) {
         Ok(h) => h,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let protocol = match optional_max_string_member(obj, "protocol", 20) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let path = match optional_max_string_member(obj, "path", 400) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // HTTPS ONLY. Answering for `http` would hand a live credential to a
@@ -65,19 +63,16 @@ pub async fn post(
             "[secrets] {} asked for a {p} credential for {host} — refused",
             caller.model
         );
-        return house_error(StatusCode::BAD_REQUEST, "https only");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "https only"));
     }
 
     // TWO SOURCES, workspace store first. A credential somebody deliberately
     // granted for this host is a more specific answer than the platform's
     // own GitHub token, and an operator who pinned one expects it used.
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => return internal("[secrets] credential read failed", e),
-    };
+    let sb = secretbox_or_500(&state, "[secrets] credential read failed").await?;
     let mut cred = match credential_for_host(&state.pg, &sb, &caller.model, &host).await {
         Ok(c) => c,
-        Err(e) => return internal("[secrets] credential read failed", e),
+        Err(e) => return Ok(internal("[secrets] credential read failed", e)),
     };
     if cred.is_none()
         && let Some(agent_id) = &caller.id
@@ -98,7 +93,7 @@ pub async fn post(
                 });
             }
             Ok(None) => {}
-            Err(e) => return internal("[secrets] github credential failed", e),
+            Err(e) => return Ok(internal("[secrets] github credential failed", e)),
         }
     }
     let Some(cred) = cred else {
@@ -114,7 +109,10 @@ pub async fn post(
             "[secrets] {} has no credential allowed for {host}{asked}",
             caller.model
         );
-        return house_error(StatusCode::NOT_FOUND, "no credential for that host");
+        return Ok(house_error(
+            StatusCode::NOT_FOUND,
+            "no credential for that host",
+        ));
     };
 
     tracing::warn!(
@@ -122,7 +120,7 @@ pub async fn post(
         caller.model,
         cred.name
     );
-    (
+    Ok((
         [
             (
                 header::CACHE_CONTROL,
@@ -132,5 +130,5 @@ pub async fn post(
         ],
         Json(json!({ "username": cred.username, "password": cred.password })),
     )
-        .into_response()
+        .into_response())
 }

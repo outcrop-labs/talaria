@@ -12,6 +12,7 @@ workspace = true
 futures-util = "0.3"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+talaria-update-layout = { path = "../talaria-update-layout" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 tokio = { version = "1", features = ["macros", "time"] }
 tracing = "0.1"

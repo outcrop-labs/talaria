@@ -17,10 +17,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, boolean_member, enum_member, enum_msg, object_msg, optional_max_string_member,
+    boolean_member, enum_member, enum_msg, object_msg, optional_max_string_member,
     optional_uuid_array_member, parse, record_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{
     NOTIFY_CLASSES, NotifyDeps, get_notify_delivery, get_notify_settings, list_notifications,
     mark_brief_stale, mark_notifications_read, set_notify_delivery, set_notify_settings,
@@ -101,24 +101,21 @@ async fn delivery_or_off(pg: &sqlx::PgPool) -> bool {
     get_notify_delivery(pg).await
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let notifications = match list_notifications(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[notifications] list failed", e),
+        Err(e) => return Ok(internal("[notifications] list failed", e)),
     };
     let unread = match unread_count(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[notifications] unread count failed", e),
+        Err(e) => return Ok(internal("[notifications] unread count failed", e)),
     };
     // prefs + digest from one row, so the two can never be read a moment
     // apart — and the response keeps this key order.
     let (prefs, digest) = get_notify_settings(&state.pg, &user.id).await;
     let email_enabled = delivery_or_off(&state.pg).await;
-    Json(json!({
+    Ok(Json(json!({
         "notifications": notifications,
         "unread": unread,
         "prefs": prefs,
@@ -126,39 +123,33 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         "delivery": { "emailEnabled": email_enabled },
         "canSetDelivery": user.role == "admin",
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // ids absent OR EMPTY both mean "all of mine" — the data layer folds
     // them together. `href` is the surface's selector (mark everything that
     // points at the place I just opened); the data layer gives ids priority
     // when both arrive, the same precedence this parse checks them in.
     let ids = match optional_uuid_array_member(obj, "ids", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let href = match optional_max_string_member(obj, "href", 512) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) =
         mark_notifications_read(&state.pg, &user.id, ids.as_deref(), href.as_deref()).await
     {
-        return internal("[notifications] mark-read failed", e);
+        return Ok(internal("[notifications] mark-read failed", e));
     }
     // The brief nudge, fired after the update — the FULL one: clear the
     // sweep throttle AND ring the bell. Awaiting it costs one UPDATE; its
@@ -167,26 +158,20 @@ pub async fn put(
     if let Err(e) = mark_brief_stale(&notify, std::slice::from_ref(&user.id)).await {
         tracing::error!("[notifications] brief nudge failed: {e}");
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn patch(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let patch = match validate_prefs_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // The master switch decides whether the whole instance mails ANYBODY.
@@ -194,10 +179,10 @@ pub async fn patch(
     // half-apply: a member who sends both gets 403 and neither change.
     if let Some(email_enabled) = patch.delivery {
         if user.role != "admin" {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         if let Err(e) = set_notify_delivery(&state.pg, email_enabled).await {
-            return internal("[notifications] set delivery failed", e);
+            return Ok(internal("[notifications] set delivery failed", e));
         }
         // Audited: turning this on starts mailing every user in the
         // workspace, and "who did that, and when" is the first question.
@@ -231,19 +216,19 @@ pub async fn patch(
         {
             Ok(v) => v,
             // Includes the no-row corner — a user with no row 500s here.
-            Err(e) => return internal("[notifications] set settings failed", e),
+            Err(e) => return Ok(internal("[notifications] set settings failed", e)),
         }
     } else {
         get_notify_settings(&state.pg, &user.id).await
     };
     let email_enabled = delivery_or_off(&state.pg).await;
-    Json(json!({
+    Ok(Json(json!({
         "prefs": prefs,
         "digest": digest,
         "delivery": { "emailEnabled": email_enabled },
         "canSetDelivery": user.role == "admin",
     }))
-    .into_response()
+    .into_response())
 }
 
 #[cfg(test)]

@@ -18,12 +18,12 @@ use serde_json::{Value, json};
 
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    array_msg, array_too_big_msg, array_too_small_msg, as_object, nullable_uuid_member,
+    array_msg, array_too_big_msg, array_too_small_msg, nullable_uuid_member,
     nullish_max_string_member, object_msg, optional_string_array_member,
     optional_uuid_array_member, optional_uuid_member, parse, string_member, string_value_member,
     too_big_msg, utf16_substr, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_workspace_secrets::{
@@ -123,36 +123,29 @@ fn slug_for(title: &str) -> String {
     format!("{stem}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    // Mine, plus what has been shared with me. Keys and labels; no values — a
-    // LISTING never carries one, only an explicit reveal does.
-    match list_secrets_for_user(&state.pg, &user.id).await {
-        Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
-        Err(e) => internal("[secrets] list failed", e),
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(
+        // Mine, plus what has been shared with me. Keys and labels; no values — a
+        // LISTING never carries one, only an explicit reveal does.
+        match list_secrets_for_user(&state.pg, &user.id).await {
+            Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
+            Err(e) => internal("[secrets] list failed", e),
+        },
+    )
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_create(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // A failed secretbox is the create failing: the value cannot be sealed,
@@ -161,10 +154,10 @@ pub async fn post(
         Ok(sb) => sb,
         Err(e) => {
             tracing::error!("[secrets] create failed: {e}");
-            return house_error(
+            return Ok(house_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "could not save that secret — see server logs",
-            );
+            ));
         }
     };
 
@@ -206,10 +199,10 @@ pub async fn post(
             // Never echo the engine's error: it names the values it was
             // handed.
             tracing::error!("[secrets] create failed: {e}");
-            return house_error(
+            return Ok(house_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "could not save that secret — see server logs",
-            );
+            ));
         }
     };
 
@@ -231,7 +224,7 @@ pub async fn post(
         },
     )
     .await;
-    Json(json!({ "secret": doc })).into_response()
+    Ok(Json(json!({ "secret": doc })).into_response())
 }
 
 // Move it into (or out of) a folder. Owner-only, like every other change to
@@ -240,24 +233,18 @@ pub async fn patch(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // name is max-only; folderId is REQUIRED but may be null.
     let name = match string_member(obj, "name", 0, 80) {
         Ok(n) => n,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let folder_id = match nullable_uuid_member(obj, "folderId") {
         Ok(f) => f,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // isAdmin is never raised here — owner-only, even for admins, by design.
@@ -265,10 +252,10 @@ pub async fn patch(
         .await
     {
         Ok(m) => m,
-        Err(e) => return internal("[secrets] move failed", e),
+        Err(e) => return Ok(internal("[secrets] move failed", e)),
     };
     if !moved {
-        return house_error(StatusCode::FORBIDDEN, "not yours to move");
+        return Ok(house_error(StatusCode::FORBIDDEN, "not yours to move"));
     }
     log_audit(
         &state.pg,
@@ -283,46 +270,40 @@ pub async fn patch(
         },
     )
     .await;
-    match get_secret_doc(&state.pg, &name).await {
+    Ok(match get_secret_doc(&state.pg, &name).await {
         Ok(doc) => Json(json!({ "secret": doc })).into_response(),
         Err(e) => internal("[secrets] move re-read failed", e),
-    }
+    })
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 0, 80) {
         Ok(n) => n,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let doc = match get_secret_doc(&state.pg, &name).await {
         Ok(d) => d,
-        Err(e) => return internal("[secrets] delete read failed", e),
+        Err(e) => return Ok(internal("[secrets] delete read failed", e)),
     };
     let Some(doc) = doc else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // OWNER ONLY. A reader was let in to USE the credential, not to destroy
     // it for everyone else — and an admin deleting one goes through the
     // admin route, where the act is recorded as administration.
     if !doc.revealable || doc.owner_user_id.as_deref() != Some(user.id.as_str()) {
-        return house_error(StatusCode::FORBIDDEN, "not yours to delete");
+        return Ok(house_error(StatusCode::FORBIDDEN, "not yours to delete"));
     }
     if let Err(e) = delete_secret_doc(&state.pg, &name).await {
-        return internal("[secrets] delete failed", e);
+        return Ok(internal("[secrets] delete failed", e));
     }
     log_audit(
         &state.pg,
@@ -337,7 +318,7 @@ pub async fn delete(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

@@ -21,63 +21,58 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::parse;
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_search::{SEARCH_URL_KEY, real_deps, search_reachable, search_url};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let stored = get_setting(&state.pg, SEARCH_URL_KEY, Value::String(String::new())).await;
     let health = search_reachable(&state.pg, &real_deps()).await;
     // SEARXNG_URL set-but-empty reads as false.
     let from_env = std::env::var("SEARXNG_URL")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "url": search_url(&state.pg).await,
         "stored": stored,
         "fromEnv": from_env,
         "reachable": health.ok,
         "error": health.error,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // url max 300 — empty is a real instruction.
     let raw = match talaria_body::string_member(obj, "url", 0, 300) {
         Ok(u) => u,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Empty means "use the environment / the bundled instance" — an admin
     // clearing the field is a real instruction, not a validation failure.
     // strip ONE trailing slash.
     let url = raw.trim().strip_suffix('/').unwrap_or(raw.trim());
     if !url.is_empty() && !(url.starts_with("http://") || url.starts_with("https://")) {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             "the search URL must start with http:// or https://",
-        );
+        ));
     }
     if let Err(e) = set_setting(&state.pg, SEARCH_URL_KEY, &Value::String(url.to_string())).await {
-        return internal("[admin/search] setting write failed", e);
+        return Ok(internal("[admin/search] setting write failed", e));
     }
     log_audit(
         &state.pg,
@@ -97,10 +92,10 @@ pub async fn put(
     // admin whether what they just saved works, and a check against the old
     // value would answer a question nobody asked.
     let health = search_reachable(&state.pg, &real_deps()).await;
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "url": search_url(&state.pg).await,
         "reachable": health.ok,
         "error": health.error,
     }))
-    .into_response()
+    .into_response())
 }

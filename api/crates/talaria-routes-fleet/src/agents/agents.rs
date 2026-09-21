@@ -15,11 +15,8 @@ struct AgentsBody {
     agents: Vec<talaria_api_facades::fleet::FleetAgentEntry>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // Owner-aware: a personal assistant is only visible to its owner.
     let (agents, gate) = tokio::join!(
         list_fleet_agents(&state.pg),
@@ -27,8 +24,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     );
     let (agents, gate) = match (agents, gate) {
         (Ok(a), Ok(g)) => (a, g),
-        (Err(e), _) | (_, Err(e)) => return internal("[agents] fleet read failed", e),
+        (Err(e), _) | (_, Err(e)) => return Ok(internal("[agents] fleet read failed", e)),
     };
     let visible = agents.into_iter().filter(|a| gate(&a.agent.id)).collect();
-    Json(AgentsBody { agents: visible }).into_response()
+    Ok(Json(AgentsBody { agents: visible }).into_response())
 }

@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_api_facades::kb::comments::{delete_comment, set_resolved};
-use talaria_body::{as_object, boolean_member, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::{boolean_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -20,39 +20,32 @@ pub async fn patch(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let resolved = match boolean_member(obj, "resolved") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    match set_resolved(&state.pg, &id, resolved, &user.id).await {
-        Ok(true) => Json(json!({ "ok": true })).into_response(),
-        Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => internal("[kb] resolve failed", e),
-    }
+    Ok(
+        match set_resolved(&state.pg, &id, resolved, &user.id).await {
+            Ok(true) => Json(json!({ "ok": true })).into_response(),
+            Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
+            Err(e) => internal("[kb] resolve failed", e),
+        },
+    )
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    match delete_comment(&state.pg, &id, &user.id).await {
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(match delete_comment(&state.pg, &id, &user.id).await {
         Ok(true) => Json(json!({ "ok": true })).into_response(),
         Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
         Err(e) => internal("[kb] comment delete failed", e),
-    }
+    })
 }

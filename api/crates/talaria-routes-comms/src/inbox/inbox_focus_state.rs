@@ -10,10 +10,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_body::{
-    as_object, enum_member, optional_boolean_member, present_nullable_datetime_member,
-    string_member,
+    enum_member, optional_boolean_member, present_nullable_datetime_member, string_member,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_inbox_focus::conversation::record_inbox_snooze;
 use talaria_inbox_focus::types::FOCUS_SOURCE_TYPES;
 use talaria_inbox_focus::update_focus_state;
@@ -50,19 +49,13 @@ pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let updated = match update_focus_state(
         &state.pg,
@@ -75,13 +68,13 @@ pub async fn put(
     .await
     {
         Ok(ok) => ok,
-        Err(e) => return internal("[inbox-focus] state write failed", e),
+        Err(e) => return Ok(internal("[inbox-focus] state write failed", e)),
     };
     if !updated {
-        return house_error(
+        return Ok(house_error(
             StatusCode::CONFLICT,
             "That focus item is no longer available.",
-        );
+        ));
     }
     // truthiness: only a present non-null (the regex guarantees non-empty)
     // value records the snooze decision row.
@@ -96,7 +89,7 @@ pub async fn put(
         .await
         {
             Ok(entry) => entry,
-            Err(e) => return internal("[inbox-focus] snooze record failed", e),
+            Err(e) => return Ok(internal("[inbox-focus] snooze record failed", e)),
         },
         None => None,
     };
@@ -109,5 +102,5 @@ pub async fn put(
             serde_json::to_value(&entry).expect("entry serializes"),
         );
     }
-    (StatusCode::OK, Json(ok)).into_response()
+    Ok((StatusCode::OK, Json(ok)).into_response())
 }

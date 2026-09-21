@@ -14,8 +14,8 @@ use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{
     AgentBoard, Board, create_board, list_all_boards, list_boards, list_boards_for_agent,
 };
-use talaria_body::{as_object, optional_uuid_member, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_uuid_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_permissions::has_perm;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -33,36 +33,40 @@ struct AgentBoardAsEditor<'a> {
     role: &'static str,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
     // The dual-auth question: an agent credential, else a session. Err is the
     // refusal to return verbatim; Ok(None) means no credential was presented
     // and the human path takes over.
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(Some(c)) => c,
         Ok(None) => return get_as_user(&state, &headers, &uri).await,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     let subject = AgentSubject::Caller(caller.clone());
     let policy_boards = match list_boards_for_agent(&state.pg, &caller.model).await {
         Ok(v) => v,
-        Err(e) => return internal("[boards] agent listing failed", e),
+        Err(e) => return Ok(internal("[boards] agent listing failed", e)),
     };
     // Owner-proxying and org-wide reach key off the CALLER: a legacy
     // shared-key caller only ever gets the boards its policy allows.
     let owner_id = match assistant_owner_for(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => return internal("[boards] owner lookup failed", e),
+        Err(e) => return Ok(internal("[boards] owner lookup failed", e)),
     };
     let Some(owner_id) = owner_id else {
-        return Json(json!({ "boards": policy_boards })).into_response();
+        return Ok(Json(json!({ "boards": policy_boards })).into_response());
     };
     let owner_boards = match list_boards(&state.pg, &owner_id, false).await {
         Ok(v) => v,
-        Err(e) => return internal("[boards] owner listing failed", e),
+        Err(e) => return Ok(internal("[boards] owner listing failed", e)),
     };
     let elevated = match is_elevated_assistant(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => return internal("[boards] elevation read failed", e),
+        Err(e) => return Ok(internal("[boards] elevation read failed", e)),
     };
     // The merged listing is heterogeneous BY DESIGN: the owner's boards carry
     // their role, the elevated rest carries 'editor', and a plain agent's
@@ -78,7 +82,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     let rest: Vec<AgentBoard> = if elevated {
         match list_all_boards(&state.pg).await {
             Ok(v) => v,
-            Err(e) => return internal("[boards] org-wide listing failed", e),
+            Err(e) => return Ok(internal("[boards] org-wide listing failed", e)),
         }
     } else {
         policy_boards
@@ -97,13 +101,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         };
         boards.push(v.unwrap_or(Value::Null));
     }
-    Json(json!({ "boards": boards })).into_response()
+    Ok(Json(json!({ "boards": boards })).into_response())
 }
 
-async fn get_as_user(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Response {
+async fn get_as_user(
+    state: &AppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Result<Response, Response> {
     let user = match require_user(state, headers).await {
         Ok(u) => u,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     // ?archived=1 — the exact string '1' — asks for the retired boards;
     // everything else sees the live ones.
@@ -118,55 +126,55 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Respon
         == Some("1");
     let boards: Vec<Board> = match list_boards(&state.pg, &user.id, archived).await {
         Ok(v) => v,
-        Err(e) => return internal("[boards] list failed", e),
+        Err(e) => return Ok(internal("[boards] list failed", e)),
     };
-    Json(json!({ "boards": boards })).into_response()
+    Ok(Json(json!({ "boards": boards })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // Authorization BEFORE body parsing — never do work for a caller who
     // can't take the action.
     let allowed = match has_perm(&state.pg, &user.id, &user.role, "boards.create").await {
         Ok(v) => v,
-        Err(e) => return internal("[boards] permission read failed", e),
+        Err(e) => return Ok(internal("[boards] permission read failed", e)),
     };
     if !allowed {
-        return house_error(StatusCode::FORBIDDEN, "no permission to create boards");
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "no permission to create boards",
+        ));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 1, 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let team_id = match optional_uuid_member(obj, "teamId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Team boards require membership in that team.
     if let Some(tid) = &team_id {
         match team_role(&state.pg, &user.id, tid).await {
             Ok(Some(_)) => {}
             Ok(None) => {
-                return house_error(StatusCode::FORBIDDEN, "not a member of that team");
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "not a member of that team",
+                ));
             }
-            Err(e) => return internal("[boards] team role read failed", e),
+            Err(e) => return Ok(internal("[boards] team role read failed", e)),
         }
     }
     let board = match create_board(&state.pg, &user.id, &name, team_id.as_deref()).await {
         Ok(b) => b,
-        Err(e) => return internal("[boards] create failed", e),
+        Err(e) => return Ok(internal("[boards] create failed", e)),
     };
-    Json(json!({ "board": board })).into_response()
+    Ok(Json(json!({ "board": board })).into_response())
 }

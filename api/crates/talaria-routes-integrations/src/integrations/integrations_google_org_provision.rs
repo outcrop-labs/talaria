@@ -14,29 +14,37 @@ use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::org::{get_org_connection_status, get_org_email};
 use talaria_api_facades::google::pending_actions::agent_from_address;
 use talaria_api_facades::google::provisioning::{provision_workspace, provisioning_readiness};
-use talaria_body::{as_object, optional_boolean_member, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_boolean_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
 // GET → readiness, container ids, and every ORG agent's effective address
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     // Four independent reads; any failure fails the route, and none writes,
     // so sequential order answers the same.
     let readiness = match provisioning_readiness(&state.pg).await {
         Ok(r) => r,
-        Err(e) => return internal("[integrations/google/org] readiness read failed", e),
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/org] readiness read failed",
+                e,
+            ));
+        }
     };
     let status = match get_org_connection_status(&state.pg).await {
         Ok(s) => s,
-        Err(e) => return internal("[integrations/google/org] status read failed", e),
+        Err(e) => return Ok(internal("[integrations/google/org] status read failed", e)),
     };
     let org_email = match get_org_email(&state.pg).await {
         Ok(e) => e,
-        Err(e) => return internal("[integrations/google/org] org email read failed", e),
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/org] org email read failed",
+                e,
+            ));
+        }
     };
     // The agent_defs row, cut to the five columns this read uses, ordered by
     // slug asc. Personal assistants are filtered out — they send as their
@@ -55,8 +63,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(rows) => rows,
-        Err(e) => return internal("[integrations/google/org] agent defs read failed", e)
-    };
+        Err(e) => return Ok(internal("[integrations/google/org] agent defs read failed", e))};
     let agents: Vec<Value> = defs
         .into_iter()
         // org agents only — an owner_user_id means a personal assistant
@@ -72,67 +79,68 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             })
         })
         .collect();
-    Json(json!({
+    Ok(Json(json!({
         "readiness": readiness,
         "orgEmail": org_email,
         "calendarId": status.targets.calendar_id,
         "sharedDriveId": status.targets.shared_drive_id,
         "agents": agents,
     }))
-    .into_response()
+    .into_response())
 }
 
 // POST → run the requested provisions ({calendar?, drive?}, at least one)
-pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let calendar = match optional_boolean_member(obj, "calendar") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let drive = match optional_boolean_member(obj, "drive") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let (calendar, drive) = (calendar.unwrap_or(false), drive.unwrap_or(false));
     if !calendar && !drive {
-        return house_error(StatusCode::BAD_REQUEST, "bad request");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "bad request"));
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    match provision_workspace(
-        &state.pg,
-        &sb,
-        talaria_api_facades::google::provisioning::ProvisionRequest { calendar, drive },
-        now_ms(),
+    Ok(
+        match provision_workspace(
+            &state.pg,
+            &sb,
+            talaria_api_facades::google::provisioning::ProvisionRequest { calendar, drive },
+            now_ms(),
+        )
+        .await
+        {
+            Ok(result) => {
+                // Each key rides only when requested — absent is omitted from the
+                // wire, not written as null.
+                let mut body = serde_json::Map::new();
+                if let Some(c) = result.calendar {
+                    body.insert(
+                        "calendar".into(),
+                        serde_json::to_value(&c).unwrap_or(Value::Null),
+                    );
+                }
+                if let Some(d) = result.drive {
+                    body.insert(
+                        "drive".into(),
+                        serde_json::to_value(&d).unwrap_or(Value::Null),
+                    );
+                }
+                Json(Value::Object(body)).into_response()
+            }
+            // provision_workspace folds its throws into per-item outcomes; the
+            // Err here is a DB write it could not fold — the route's throw.
+            Err(e) => internal("[integrations/google/org] provision failed", e),
+        },
     )
-    .await
-    {
-        Ok(result) => {
-            // Each key rides only when requested — absent is omitted from the
-            // wire, not written as null.
-            let mut body = serde_json::Map::new();
-            if let Some(c) = result.calendar {
-                body.insert(
-                    "calendar".into(),
-                    serde_json::to_value(&c).unwrap_or(Value::Null),
-                );
-            }
-            if let Some(d) = result.drive {
-                body.insert(
-                    "drive".into(),
-                    serde_json::to_value(&d).unwrap_or(Value::Null),
-                );
-            }
-            Json(Value::Object(body)).into_response()
-        }
-        // provision_workspace folds its throws into per-item outcomes; the
-        // Err here is a DB write it could not fold — the route's throw.
-        Err(e) => internal("[integrations/google/org] provision failed", e),
-    }
 }

@@ -12,9 +12,9 @@ use serde_json::json;
 use talaria_agent_secrets::{delete_agent_secret, list_agent_secrets, set_agent_secret};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, string_member, trimmed_string_member};
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_personal_agent::owns_agent;
-use talaria_session::{actor_of, require_user};
+use talaria_session::{actor_of, require_user, secretbox_or_500};
 use talaria_state::AppState;
 
 async fn gate(state: &AppState, user_id: &str, role: &str, id: &str) -> bool {
@@ -25,18 +25,15 @@ pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if !gate(&state, &user.id, &user.role, &id).await {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    match list_agent_secrets(&state.pg, &id).await {
+    Ok(match list_agent_secrets(&state.pg, &id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => internal("[fleet] list_agent_secrets failed", e),
-    }
+    })
 }
 
 pub async fn put(
@@ -44,46 +41,39 @@ pub async fn put(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if !gate(&state, &user.id, &user.role, &id).await {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match trimmed_string_member(obj, "name", 2, 64) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // value is UNtrimmed — a leading space is a legal secret character.
     let value = match string_member(obj, "value", 1, 8192) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => return internal("[fleet] secretbox failed", e),
-    };
+    let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
     let actor = user.email.clone().or_else(|| user.name.clone());
-    match set_agent_secret(&state.pg, &sb, &id, &name, &value, actor.as_deref()).await {
-        Ok(()) => {
-            audit(
-                &state,
-                &user,
-                "agent.secret_set",
-                &id,
-                json!({ "name": name }),
-            );
-            Json(json!({ "ok": true })).into_response()
-        }
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
-    }
+    Ok(
+        match set_agent_secret(&state.pg, &sb, &id, &name, &value, actor.as_deref()).await {
+            Ok(()) => {
+                audit(
+                    &state,
+                    &user,
+                    "agent.secret_set",
+                    &id,
+                    json!({ "name": name }),
+                );
+                Json(json!({ "ok": true })).into_response()
+            }
+            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        },
+    )
 }
 
 pub async fn delete(
@@ -92,13 +82,10 @@ pub async fn delete(
     headers: HeaderMap,
     uri: Uri,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if !gate(&state, &user.id, &user.role, &id).await {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     // Body { name } — matches PUT's transport. When the body doesn't parse
     // (unparseable JSON, wrong shape, failed validation), the old ?name=
@@ -111,11 +98,11 @@ pub async fn delete(
         Some(n) => n,
         None => match query_param(&uri, "name") {
             Some(n) if !n.is_empty() => n,
-            _ => return house_error(StatusCode::BAD_REQUEST, "missing name"),
+            _ => return Ok(house_error(StatusCode::BAD_REQUEST, "missing name")),
         },
     };
     if let Err(e) = delete_agent_secret(&state.pg, &id, &name).await {
-        return internal("[fleet] query_param failed", e);
+        return Ok(internal("[fleet] query_param failed", e));
     }
     audit(
         &state,
@@ -124,7 +111,7 @@ pub async fn delete(
         &id,
         json!({ "name": name }),
     );
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 /// Query lookup — the FIRST value for the key.

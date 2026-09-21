@@ -19,94 +19,105 @@ use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
 use talaria_api_facades::google::org::get_org_targets;
 use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
 use talaria_body::{
-    as_object, optional_boolean_member, optional_email_array_member, optional_max_string_member,
-    parse, string_member,
+    optional_boolean_member, optional_email_array_member, optional_max_string_member, parse,
+    string_member,
 };
-use talaria_error::{house_error, house_error_msg, internal};
+use talaria_error::{house_error, house_error_msg, internal, object_or_400};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     // Acting as a HUMAN — the owner's calendar (or the shared org one). A
     // legacy shared-key caller only ASSERTS which agent it is, so it never
     // reaches a token; the refusal names the container to roll.
     if let Some(denied) = refuse_legacy(&caller, "Calendar access") {
-        return denied;
+        return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
     else {
-        return house_error_msg(
+        return Ok(house_error_msg(
             StatusCode::CONFLICT,
             "not_connected",
             "No Google account is connected for this agent (its owner, or the org account).",
-        );
+        ));
     };
     let calendar_id = if google.principal == "org" {
         match get_org_targets(&state.pg).await {
             Ok(t) => t.calendar_id,
-            Err(e) => return internal("[integrations/google/agent] org targets read failed", e),
+            Err(e) => {
+                return Ok(internal(
+                    "[integrations/google/agent] org targets read failed",
+                    e,
+                ));
+            }
         }
     } else {
         None
     };
-    match list_upcoming_events_with_token(&google.token, now_ms(), 10, calendar_id.as_deref()).await
-    {
-        Ok(events) => Json(json!({ "events": events })).into_response(),
-        Err(e) => google_fail_with(GoogleError::from(e), "Calendar", "calendar_error"),
-    }
+    Ok(
+        match list_upcoming_events_with_token(&google.token, now_ms(), 10, calendar_id.as_deref())
+            .await
+        {
+            Ok(events) => Json(json!({ "events": events })).into_response(),
+            Err(e) => google_fail_with(GoogleError::from(e), "Calendar", "calendar_error"),
+        },
+    )
 }
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     if let Some(denied) = refuse_legacy(&caller, "Calendar access") {
-        return denied;
+        return Ok(denied);
     }
     let agent_model = caller.model.clone();
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let summary = match string_member(obj, "summary", 1, 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let description = match optional_max_string_member(obj, "description", 8000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let location = match optional_max_string_member(obj, "location", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let start = match string_member(obj, "start", 4, usize::MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let end = match string_member(obj, "end", 4, usize::MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let all_day = match optional_boolean_member(obj, "allDay") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let attendees = match optional_email_array_member(obj, "attendees", 50) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let principal = match resolve_agent_principal(&state.pg, &agent_model).await {
         Ok(p) => p,
-        Err(e) => return internal("[integrations/google/agent] principal read failed", e),
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/agent] principal read failed",
+                e,
+            ));
+        }
     };
     // The payload IS the validated draft, stored exactly as drafted and
     // executed as stored at approve time — optional members ride only when
@@ -144,7 +155,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .await
     {
         Ok(q) => q,
-        Err(e) => return internal("[integrations/google/agent] queue failed", e),
+        Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
     // Calendar has no signature in the dedupe yet, so `already_pending` is
     // false from this route today — the wording branch exists so the kind
@@ -156,9 +167,9 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     } else {
         "Drafted — waiting for the owner to approve."
     };
-    Json(json!({
+    Ok(Json(json!({
         "pending": { "id": queued.action.id, "status": "pending" },
         "message": message,
     }))
-    .into_response()
+    .into_response())
 }

@@ -664,6 +664,13 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The current time as an ISO-8601 string, the spelling every wire field uses.
+/// Three crates had their own `now_iso` (two of them wrapping this crate's own
+/// `epoch_ms_to_iso`); the pair belongs with `now_ms`.
+pub fn now_iso() -> String {
+    epoch_ms_to_iso(now_ms())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

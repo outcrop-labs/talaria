@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::score::FitnessBand;
 use crate::value::HarnessSummary;
+use talaria_agent_auth::now_iso;
 use talaria_harness::run::BoxFut;
 
 /// What happened to one case, in the vocabulary the terminal colours by.
@@ -1398,14 +1399,6 @@ pub fn real_deps(state: &talaria_state::AppState) -> SurfaceDeps {
         }),
         now_iso: Arc::new(now_iso),
     }
-}
-
-/// The wall clock, as `new Date().toISOString()` writes it.
-pub fn now_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    talaria_agent_auth::epoch_ms_to_iso(now.as_millis() as i64)
 }
 
 // ── Model rows and capability facts ──────────────────────────────────────────

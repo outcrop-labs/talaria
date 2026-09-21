@@ -20,10 +20,10 @@ use talaria_api_facades::kb::perms::{
 };
 use talaria_artifacts::{delete_folder, get_folder, guarded_folder, update_folder};
 use talaria_body::{
-    as_object, enum_member, object_msg, optional_enum_member, parse,
-    present_nullable_max_string_member, present_nullable_uuid_member, string_member, zod_type_name,
+    enum_member, object_msg, optional_enum_member, parse, present_nullable_max_string_member,
+    present_nullable_uuid_member, string_member, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -82,25 +82,22 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => return internal("[folders] read failed", e),
+        Err(e) => return Ok(internal("[folders] read failed", e)),
     };
     let Some(folder) = folder else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let editors = match list_editors(&state.pg, ITEM_FOLDER, &folder.id).await {
         Ok(e) => e,
-        Err(e) => return internal("[folders] grants read failed", e),
+        Err(e) => return Ok(internal("[folders] grants read failed", e)),
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[folders] team membership read failed", e),
+        Err(e) => return Ok(internal("[folders] team membership read failed", e)),
     };
     if !can_read(
         &guarded_folder(&folder),
@@ -109,11 +106,13 @@ pub async fn get(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    // `editors` is the key the Share dialog reads; it seeds an EDITABLE list
-    // from it and PUTs that list back wholesale, so the shape is a contract.
-    Json(json!({ "folder": folder, "editors": editors_json(&editors) })).into_response()
+    Ok(
+        // `editors` is the key the Share dialog reads; it seeds an EDITABLE list
+        // from it and PUTs that list back wholesale, so the shape is a contract.
+        Json(json!({ "folder": folder, "editors": editors_json(&editors) })).into_response(),
+    )
 }
 
 pub async fn put(
@@ -121,35 +120,29 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "artifacts.create").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "artifacts.create").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_patch(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => return internal("[folders] read failed", e),
+        Err(e) => return Ok(internal("[folders] read failed", e)),
     };
     let Some(folder) = folder else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let editors = match list_editors(&state.pg, ITEM_FOLDER, &folder.id).await {
         Ok(e) => e,
-        Err(e) => return internal("[folders] grants read failed", e),
+        Err(e) => return Ok(internal("[folders] grants read failed", e)),
     };
     let g = guarded_folder(&folder);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[folders] team membership read failed", e),
+        Err(e) => return Ok(internal("[folders] team membership read failed", e)),
     };
     if !can_edit_human(
         &g,
@@ -158,7 +151,7 @@ pub async fn put(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
 
     let sharing = body.visibility.is_some() || body.edit_policy.is_some() || body.editors.is_some();
@@ -168,10 +161,13 @@ pub async fn put(
         let who = who_of(&user);
         let governor = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
             Ok(v) => v,
-            Err(e) => return internal("[folders] govern check failed", e),
+            Err(e) => return Ok(internal("[folders] govern check failed", e)),
         };
         if !governor {
-            return house_error(StatusCode::FORBIDDEN, "not allowed to change sharing");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "not allowed to change sharing",
+            ));
         }
         if body.visibility.as_deref() == Some("public")
             && !matches!(
@@ -180,12 +176,15 @@ pub async fn put(
                 Ok(true)
             )
         {
-            return house_error(StatusCode::FORBIDDEN, "no permission to publish to the web");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "no permission to publish to the web",
+            ));
         }
         if let Some(editors) = &body.editors
             && let Err(e) = set_editors(&state.pg, ITEM_FOLDER, &id, editors).await
         {
-            return internal("[knowledge] set_editors failed", e);
+            return Ok(internal("[knowledge] set_editors failed", e));
         }
     }
     let updated = match update_folder(
@@ -200,27 +199,24 @@ pub async fn put(
     .await
     {
         Ok(Some(f)) => f,
-        Ok(None) => return house_error(StatusCode::BAD_REQUEST, "invalid"),
-        Err(e) => return internal("[folders] update failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::BAD_REQUEST, "invalid")),
+        Err(e) => return Ok(internal("[folders] update failed", e)),
     };
-    Json(json!({ "folder": updated })).into_response()
+    Ok(Json(json!({ "folder": updated })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_perm(&state, &headers, "artifacts.create").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "artifacts.create").await?;
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => return internal("[folders] read failed", e),
+        Err(e) => return Ok(internal("[folders] read failed", e)),
     };
     let Some(folder) = folder else {
-        return Json(json!({ "ok": true })).into_response();
+        return Ok(Json(json!({ "ok": true })).into_response());
     };
     // Deleting a folder scatters everything inside it to the root — a bigger
     // act than an edit, so it takes the same rights as re-sharing rather than
@@ -236,13 +232,13 @@ pub async fn delete(
     .await
     {
         Ok(v) => v,
-        Err(e) => return internal("[folders] govern check failed", e),
+        Err(e) => return Ok(internal("[folders] govern check failed", e)),
     };
     if !governor {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     if let Err(e) = delete_folder(&state.pg, &id).await {
-        return internal("[folders] delete failed", e);
+        return Ok(internal("[folders] delete failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

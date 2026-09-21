@@ -28,11 +28,8 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<BriefQuery>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let user = BriefUser::from(&user);
     let deps = real_brief_deps(&state).await;
     // Sweep BEFORE the read, not after, and only if the throttle allows it. A
@@ -45,7 +42,7 @@ pub async fn get(
     if let Err(e) = sweep_if_due(&deps, &user).await {
         tracing::error!("[brief] on-read sweep failed: {e}");
     }
-    match get_brief(&deps, &user, query.tz.as_deref()).await {
+    Ok(match get_brief(&deps, &user, query.tz.as_deref()).await {
         Ok(BriefRead::Document(doc)) => Json(doc).into_response(),
         // The absent literal in wire key order: absent, nextAt, agent. Every
         // absence carries `agent` — the surface offers assistant settings
@@ -55,5 +52,5 @@ pub async fn get(
             Json(json!({ "absent": kind, "nextAt": next_at, "agent": agent })).into_response()
         }
         Err(e) => internal("[brief] read failed", e),
-    }
+    })
 }

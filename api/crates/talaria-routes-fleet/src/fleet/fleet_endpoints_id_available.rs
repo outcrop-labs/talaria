@@ -23,22 +23,20 @@ pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let eps = match list_endpoints(&state.pg).await {
         Ok(e) => e,
-        Err(e) => return internal("[fleet] list_endpoints failed", e),
+        Err(e) => return Ok(internal("[fleet] list_endpoints failed", e)),
     };
     let Some(ep) = eps.iter().find(|e| e.id == id).cloned() else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let models = match catalog_models(&state, &ep).await {
         Ok(m) => m,
         // the failure arm: models [], note = the thrown message.
         Err(message) => {
-            return Json(json!({ "models": [], "note": message })).into_response();
+            return Ok(Json(json!({ "models": [], "note": message })).into_response());
         }
     };
     // The ids stay the contract this route has always had; the descriptive
@@ -54,5 +52,5 @@ pub async fn get(
     tokio::spawn(async move {
         let _ = refresh_endpoint_catalog_with(&st, &ep, models).await;
     });
-    Json(out).into_response()
+    Ok(Json(out).into_response())
 }

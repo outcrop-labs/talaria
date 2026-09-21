@@ -18,12 +18,12 @@ use talaria_api_facades::gateway::provider::catalog_models;
 use talaria_api_facades::gateway::registry::{LlmEndpoint, add_endpoint_models, list_endpoints};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
-    optional_boolean_member, optional_max_string_member, parse, string_member, string_msg,
-    too_big_msg, too_small_msg, utf16_len, zod_type_name,
+    NumKind, array_msg, array_too_big_msg, nullable_number_member, optional_boolean_member,
+    optional_max_string_member, parse, string_member, string_msg, too_big_msg, too_small_msg,
+    utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, internal};
-use talaria_session::{actor_of, require_perm};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_perm, secretbox_or_500};
 use talaria_state::AppState;
 
 /// One Target: `{ endpoint, model, contextLength?, effort? }`. The effort is
@@ -110,23 +110,17 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let soul = match string_member(obj, "soul", 0, 200_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let main = match target_member(obj, "main") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let aliases = match target_array(obj, "aliases", 20, |m| {
         Ok(AliasTarget {
@@ -135,20 +129,20 @@ pub async fn post(
         })
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let fallbacks = match target_array(obj, "fallbacks", 10, parse_target) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let note = match optional_max_string_member(obj, "note", 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Re-render + restart the managed container so the edit takes effect now.
     let apply = match optional_boolean_member(obj, "apply") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     }
     .unwrap_or(false);
 
@@ -160,18 +154,21 @@ pub async fn post(
     .await
     {
         Ok(row) => row,
-        Err(e) => return internal("[fleet/defs/edit] def read failed", e),
+        Err(e) => return Ok(internal("[fleet/defs/edit] def read failed", e)),
     };
     let Some((def_id, department, managed, display_name)) = def else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
 
     let versions = match list_versions(&state.pg, &def_id).await {
         Ok(v) => v,
-        Err(e) => return internal("[fleet/defs/edit] versions read failed", e),
+        Err(e) => return Ok(internal("[fleet/defs/edit] versions read failed", e)),
     };
     let Some(latest) = versions.first() else {
-        return house_error(StatusCode::BAD_REQUEST, "no base version — import first");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "no base version — import first",
+        ));
     };
 
     // A picked model must actually route: auto-register it on its endpoint
@@ -181,7 +178,7 @@ pub async fn post(
     // dies with a gateway 404 on its first turn — a silent-freeze chat.
     let endpoints: Vec<LlmEndpoint> = match list_endpoints(&state.pg).await {
         Ok(eps) => eps,
-        Err(e) => return internal("[fleet/defs/edit] endpoints read failed", e),
+        Err(e) => return Ok(internal("[fleet/defs/edit] endpoints read failed", e)),
     };
     let mut endpoints: HashMap<String, LlmEndpoint> =
         endpoints.into_iter().map(|e| (e.name.clone(), e)).collect();
@@ -194,10 +191,10 @@ pub async fn post(
         .chain(fallbacks.iter().map(|f| (&f.endpoint, &f.model)));
     for (endpoint, model) in targets {
         let Some(ep) = endpoints.get(endpoint) else {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 &format!("endpoint \"{endpoint}\" does not exist"),
-            );
+            ));
         };
         if ep.models.iter().any(|m| m == model) {
             continue;
@@ -215,11 +212,14 @@ pub async fn post(
             if let Err(e) =
                 add_endpoint_models(&state.pg, &ep.name, std::slice::from_ref(model)).await
             {
-                return internal("[fleet/defs/edit] endpoint model register failed", e);
+                return Ok(internal(
+                    "[fleet/defs/edit] endpoint model register failed",
+                    e,
+                ));
             }
             ep.models.push(model.to_string());
         } else {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 &format!(
                     "\"{model}\" is not registered on \"{endpoint}\"{} — pick it on /models first",
@@ -229,7 +229,7 @@ pub async fn post(
                         ""
                     }
                 ),
-            );
+            ));
         }
     }
 
@@ -242,7 +242,7 @@ pub async fn post(
     };
     let config = match apply_config_edits(&state.pg, &latest.config, &edits).await {
         Ok(c) => c,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let created_by = user
         .email
@@ -263,7 +263,7 @@ pub async fn post(
     .await
     {
         Ok(vc) => vc,
-        Err(e) => return internal("[fleet/defs/edit] version write failed", e),
+        Err(e) => return Ok(internal("[fleet/defs/edit] version write failed", e)),
     };
     if created {
         log_audit(
@@ -285,25 +285,24 @@ pub async fn post(
         // Roll, don't restart: the new config comes up beside the old
         // container and traffic cuts over only after health — applying an
         // edit never interrupts conversations in flight.
-        let sb = match state.secretbox().await {
-            Ok(sb) => sb,
-            Err(e) => return internal("[fleet/defs/edit] secretbox unavailable", e),
-        };
+        let sb = secretbox_or_500(&state, "[fleet/defs/edit] secretbox unavailable").await?;
         match roll_agent(&state.pg, &sb, &department).await {
             Ok(None) => applied = true,
             Ok(Some(warning)) => {
-                return Json(json!({
+                return Ok(Json(json!({
                     "ok": true,
                     "version": version,
                     "created": created,
                     "applied": false,
                     "warning": warning,
                 }))
-                .into_response();
+                .into_response());
             }
-            Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
         }
     }
-    Json(json!({ "ok": true, "version": version, "created": created, "applied": applied }))
-        .into_response()
+    Ok(
+        Json(json!({ "ok": true, "version": version, "created": created, "applied": applied }))
+            .into_response(),
+    )
 }

@@ -18,10 +18,8 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
-) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let agent = params.get("agent").map(String::as_str);
     let minutes: i32 = params
         .get("minutes")
@@ -42,7 +40,7 @@ pub async fn get(
     .await
     {
         Ok(r) => r,
-        Err(e) => return internal("[fleet/resources] read failed", e),
+        Err(e) => return Ok(internal("[fleet/resources] read failed", e)),
     };
     let mut series: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     let mut mem_series: HashMap<String, Vec<i64>> = HashMap::new();
@@ -87,5 +85,5 @@ pub async fn get(
             "pressure": talaria_api_facades::fleet::budget::host_pressure(h.available, reserve).as_str(),
         })
     });
-    Json(json!({ "host": host, "agents": agents })).into_response()
+    Ok(Json(json!({ "host": host, "agents": agents })).into_response())
 }

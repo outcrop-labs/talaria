@@ -17,10 +17,10 @@ use talaria_boards::{
     set_board_team,
 };
 use talaria_body::{
-    as_object, optional_boolean_member, optional_enum_member, optional_string_member, parse,
+    optional_boolean_member, optional_enum_member, optional_string_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{acting_user, require_user, unauthorized};
 use talaria_state::AppState;
 
@@ -56,33 +56,30 @@ pub async fn patch(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     // Humans, or a personal assistant acting as its owner; a legacy agent key
     // has no owner to act as and no identity of its own → the 401.
     let user = match acting_user(&state, &headers).await {
         Ok(Some(u)) => u,
-        Ok(None) => return unauthorized(),
-        Err(gate) => return gate,
+        Ok(None) => return Ok(unauthorized()),
+        Err(gate) => return Ok(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "PATCH", &id) {
-        return gate;
+        return Ok(gate);
     }
     // An elevated assistant edits any board (never owner-level).
     let role = match board_role(&state.pg, &user.id, &id).await {
         Ok(r) => r.or_else(|| user.elevated.then(|| "editor".to_string())),
-        Err(e) => return internal("[boards] role read on PATCH failed", e),
+        Err(e) => return Ok(internal("[boards] role read on PATCH failed", e)),
     };
     if !can_edit(role.as_deref()) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let patch = match validate_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // Team by NAME (assistant-friendly): "" / "personal" / null → no team;
@@ -107,12 +104,12 @@ pub async fn patch(
             {
                 Ok(Some(team)) => Some(team),
                 Ok(None) => {
-                    return house_error(
+                    return Ok(house_error(
                         StatusCode::BAD_REQUEST,
                         &format!("no team named \"{raw_str}\""),
-                    );
+                    ));
                 }
-                Err(e) => return internal("[boards] team-by-name read failed", e),
+                Err(e) => return Ok(internal("[boards] team-by-name read failed", e)),
             }
         };
         team_id = Some(resolved);
@@ -120,17 +117,17 @@ pub async fn patch(
     if let Some(target) = team_id {
         // A team move changes who can see the board — owner's call alone.
         if role.as_deref() != Some("owner") {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 "only the owner can move a board between teams",
-            );
+            ));
         }
         match set_board_team(&state.pg, &id, target.as_deref()).await {
             Ok(Ok(())) => {}
             // setBoardTeam's refusal is the 400 body verbatim; 'unknown
             // team' is its only in-practice message.
-            Ok(Err(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
-            Err(e) => return internal("[boards] team move failed", e),
+            Ok(Err(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+            Err(e) => return Ok(internal("[boards] team move failed", e)),
         }
     }
     // The remaining writes, in the schema's order — each independent, each a
@@ -138,43 +135,40 @@ pub async fn patch(
     if let Some(name) = &patch.name
         && let Err(e) = rename_board(&state.pg, &id, name).await
     {
-        return internal("[boards] rename failed", e);
+        return Ok(internal("[boards] rename failed", e));
     }
     if let Some(archived) = patch.archived
         && let Err(e) = archive_board(&state.pg, &id, archived).await
     {
-        return internal("[boards] archive failed", e);
+        return Ok(internal("[boards] archive failed", e));
     }
     if let Some(mode) = &patch.judge_mode
         && let Err(e) = set_board_judge_mode(&state.pg, &id, mode).await
     {
-        return internal("[boards] judge mode failed", e);
+        return Ok(internal("[boards] judge mode failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "DELETE", &id) {
-        return gate;
+        return Ok(gate);
     }
     let is_owner = match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(role)) => role == "owner",
         Ok(None) => false,
-        Err(e) => return internal("[boards] role read on DELETE failed", e),
+        Err(e) => return Ok(internal("[boards] role read on DELETE failed", e)),
     };
     if !is_owner {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     if let Err(e) = delete_board(&state.pg, &id).await {
-        return internal("[boards] delete failed", e);
+        return Ok(internal("[boards] delete failed", e));
     }
     // A delete removes the board's tickets + comments — purge their activity
     // points too so nothing orphans in the index (the channel analog fires in
@@ -185,7 +179,7 @@ pub async fn delete(
         let qd = qdrant::real_deps();
         let _ = purge_activity_by_field(&pg, &qd, ActivityField::BoardId, &board_id).await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

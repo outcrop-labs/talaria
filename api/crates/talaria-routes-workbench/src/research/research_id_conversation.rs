@@ -28,19 +28,17 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("research", "POST conversation", &id) {
-        return gate;
+        return Ok(gate);
     }
     match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[research] role read on conversation failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[research] role read on conversation failed", e)),
     }
+    Ok(
     match ensure_research_conversation(&state.pg, &id).await {
         Ok(Some(conversation_id)) => Json(json!({ "conversationId": conversation_id })).into_response(),
         // A run an AGENT started for the org has no human owner, so there is
@@ -52,5 +50,5 @@ pub async fn post(
         )
             .into_response(),
         Err(e) => internal("[research] conversation ensure failed", e)
-    }
+    })
 }

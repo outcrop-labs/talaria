@@ -11,8 +11,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::parse;
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_permissions::{
     PERM_IDS, PERMISSIONS, get_org_default_perms, get_user_perm_overrides, set_org_default_perm,
     set_user_perm_override,
@@ -20,10 +20,11 @@ use talaria_permissions::{
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     // Every override row, folded per user in ROW order — insertion order
     // is the wire order.
     let rows: Result<Vec<(String, String, bool)>, sqlx::Error> =
@@ -32,7 +33,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
             .await;
     let rows = match rows {
         Ok(r) => r,
-        Err(e) => return internal("[admin/permissions] overrides read failed", e),
+        Err(e) => return Ok(internal("[admin/permissions] overrides read failed", e)),
     };
     let mut overrides = serde_json::Map::new();
     for (user_id, perm, allowed) in rows {
@@ -43,12 +44,12 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
             o.insert(perm, Value::Bool(allowed));
         }
     }
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "catalog": PERMISSIONS,
         "orgDefaults": get_org_default_perms(&state.pg).await,
         "overrides": Value::Object(overrides),
     }))
-    .into_response()
+    .into_response())
 }
 
 /// The PUT body is a union of two shapes. Extra keys never fail a branch,
@@ -128,26 +129,20 @@ pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let actor = actor_of(&user);
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(_) => return house_error(StatusCode::BAD_REQUEST, "Invalid input"),
-    };
+    let obj = object_or_400(&parsed)
+        .map_err(|_| house_error(StatusCode::BAD_REQUEST, "Invalid input"))?;
     let body = match parse_union_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-
-    match body {
+    Ok(match body {
         UnionBody::OrgDefault { perm, enabled } => {
             if let Err(e) = set_org_default_perm(&state.pg, &perm, enabled).await {
-                return internal("[admin/permissions] org default write failed", e);
+                return Ok(internal("[admin/permissions] org default write failed", e));
             }
             log_audit(
                 &state.pg,
@@ -174,7 +169,7 @@ pub async fn put(
             allowed,
         } => {
             if let Err(e) = set_user_perm_override(&state.pg, &user_id, &perm, allowed).await {
-                return internal("[admin/permissions] override write failed", e);
+                return Ok(internal("[admin/permissions] override write failed", e));
             }
             log_audit(
                 &state.pg,
@@ -191,11 +186,11 @@ pub async fn put(
             .await;
             let overrides = match get_user_perm_overrides(&state.pg, &user_id).await {
                 Ok(v) => v,
-                Err(e) => return internal("[admin/permissions] overrides read failed", e),
+                Err(e) => return Ok(internal("[admin/permissions] overrides read failed", e)),
             };
             Json(serde_json::json!({ "overrides": overrides })).into_response()
         }
-    }
+    })
 }
 
 #[cfg(test)]

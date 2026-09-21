@@ -113,6 +113,89 @@ pub fn as_object(body: &Value) -> Result<&serde_json::Map<String, Value>, String
         .ok_or_else(|| object_msg(zod_type_name(body)))
 }
 
+/// Lowercase hex of a byte slice. Four crates had their own (the LLM key
+/// minting, the update signing, the S3 SigV4 canonical request, the skill
+/// hash) — two spelled it with `format!` per byte, two with a lookup table,
+/// and the wire cannot tell which, so the next reader should not have to.
+pub fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+/// JavaScript's `encodeURIComponent`: the unreserved set (`A-Za-z0-9` plus
+/// `-_.!~*'()`) rides through, every other byte percent-escapes as uppercase
+/// `%XX` of its UTF-8 form.
+///
+/// WHY IT LIVES HERE: four crates wrote this out (the gateway's provider URLs,
+/// google-client's path segments, session's cookies, the inbox timeline's
+/// cursor), and the set they agreed on is a JS contract — `!`, `~`, `'`, `(`
+/// and `)` are unreserved to the browser and MUST stay literal, while `:`
+/// escapes. A crate that got one character wrong produced cursors the other end
+/// could not decode; one implementation means one answer.
+pub fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
+            _ => {
+                out.push('%');
+                out.push(HEX_UPPER[(b >> 4) as usize] as char);
+                out.push(HEX_UPPER[(b & 0xF) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
+
+/// The inverse of [`percent_encode`]: component semantics, so `+` stays a
+/// literal plus (query strings would read it as a space). `None` on a
+/// truncated or non-hex escape, or when the decoded bytes are not UTF-8 — a
+/// malformed cursor is a caller's "no", not a repaired guess.
+pub fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = hex_val(*bytes.get(i + 1)?)?;
+            let lo = hex_val(*bytes.get(i + 2)?)?;
+            out.push(hi * 16 + lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// UTF-16 code-unit length — what the min/max bounds count. An emoji
 /// outside the BMP counts 2, so chars().count() would misjudge exactly the
 /// strings people put in display names.

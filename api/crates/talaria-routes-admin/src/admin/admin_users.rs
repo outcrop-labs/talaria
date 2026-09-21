@@ -9,8 +9,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::parse;
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 use talaria_users::{
@@ -18,15 +18,16 @@ use talaria_users::{
     set_denied_views, set_user_agent_access, set_user_can_mint_keys, set_user_role,
 };
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let users = match list_users_admin(&state.pg).await {
         Ok(u) => u,
-        Err(e) => return internal("[admin/users] list failed", e),
+        Err(e) => return Ok(internal("[admin/users] list failed", e)),
     };
-    Json(serde_json::json!({ "users": users })).into_response()
+    Ok(Json(serde_json::json!({ "users": users })).into_response())
 }
 
 /// The PUT body. `agentModels`/`deniedViews`/`allowedManageViews` and the
@@ -96,20 +97,14 @@ pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let actor = actor_of(&user);
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_put_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // The last admin is undemotable — that includes self-demotion, which is
@@ -129,14 +124,17 @@ pub async fn put(
                 .and_then(Value::as_str)
                 == Some("admin")
             {
-                return house_error(StatusCode::BAD_REQUEST, "cannot demote the last admin");
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "cannot demote the last admin",
+                ));
             }
         }
     }
 
     if let Some(role) = &body.role {
         if let Err(e) = set_user_role(&state.pg, &body.user_id, role).await {
-            return internal("[admin/users] role write failed", e);
+            return Ok(internal("[admin/users] role write failed", e));
         }
         // Live sessions pick the role up immediately — no re-login dance.
         if let Err(e) = talaria_session::update_sessions_for_user(
@@ -146,7 +144,7 @@ pub async fn put(
         )
         .await
         {
-            return internal("[admin/users] session patch failed", e);
+            return Ok(internal("[admin/users] session patch failed", e));
         }
         log_audit(
             &state.pg,
@@ -184,10 +182,10 @@ pub async fn put(
                     .map(String::from)
             });
             if target_role.as_deref() != Some("admin") {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     "only an admin\u{2019}s assistant can be elevated",
-                );
+                ));
             }
             let has_assistant = target
                 .as_ref()
@@ -195,14 +193,14 @@ pub async fn put(
                 .map(|m| !m.is_null())
                 .unwrap_or(false);
             if !has_assistant {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     "that user has no personal assistant",
-                );
+                ));
             }
         }
         if let Err(e) = set_assistant_elevated(&state.pg, &body.user_id, elevated).await {
-            return internal("[admin/users] assistant elevation failed", e);
+            return Ok(internal("[admin/users] assistant elevation failed", e));
         }
         log_audit(
             &state.pg,
@@ -222,7 +220,7 @@ pub async fn put(
     // An empty array still writes — the console's clear gesture.
     if let Some(models) = &body.agent_models {
         if let Err(e) = set_user_agent_access(&state.pg, &body.user_id, models).await {
-            return internal("[admin/users] agent access write failed", e);
+            return Ok(internal("[admin/users] agent access write failed", e));
         }
         log_audit(
             &state.pg,
@@ -241,7 +239,7 @@ pub async fn put(
 
     if let Some(mint) = body.can_mint_keys {
         if let Err(e) = set_user_can_mint_keys(&state.pg, &body.user_id, mint).await {
-            return internal("[admin/users] can-mint-keys write failed", e);
+            return Ok(internal("[admin/users] can-mint-keys write failed", e));
         }
         log_audit(
             &state.pg,
@@ -260,7 +258,7 @@ pub async fn put(
 
     if let Some(denied) = &body.denied_views {
         if let Err(e) = set_denied_views(&state.pg, &body.user_id, denied).await {
-            return internal("[admin/users] denied views write failed", e);
+            return Ok(internal("[admin/users] denied views write failed", e));
         }
         log_audit(
             &state.pg,
@@ -279,7 +277,7 @@ pub async fn put(
 
     if let Some(allowed) = &body.allowed_manage_views {
         if let Err(e) = set_allowed_manage_views(&state.pg, &body.user_id, allowed).await {
-            return internal("[admin/users] manage views write failed", e);
+            return Ok(internal("[admin/users] manage views write failed", e));
         }
         log_audit(
             &state.pg,
@@ -295,6 +293,5 @@ pub async fn put(
         )
         .await;
     }
-
-    Json(serde_json::json!({ "ok": true })).into_response()
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }

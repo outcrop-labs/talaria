@@ -13,15 +13,15 @@
 | :--- | :--- | :--- |
 | [`/api/teams`](#apiteams) | GET | `dual` |
 | [`/api/teams`](#apiteams) | POST | `session` |
-| [`/api/teams/{id}`](#apiteamsid) | GET | `session` |
+| [`/api/teams/{id}`](#apiteamsid) | GET | `session` + `view:/teams` |
 | [`/api/teams/{id}`](#apiteamsid) | PATCH | `session` |
 | [`/api/teams/{id}`](#apiteamsid) | DELETE | `session` |
 | [`/api/teams/{id}/access`](#apiteamsidaccess) | GET | `admin` |
 | [`/api/teams/{id}/access`](#apiteamsidaccess) | PUT | `admin` |
-| [`/api/teams/{id}/agents`](#apiteamsidagents) | GET | `session` |
+| [`/api/teams/{id}/agents`](#apiteamsidagents) | GET | `session` + `view:/teams` |
 | [`/api/teams/{id}/agents`](#apiteamsidagents) | POST | `session` |
 | [`/api/teams/{id}/agents`](#apiteamsidagents) | DELETE | `session` |
-| [`/api/teams/{id}/members`](#apiteamsidmembers) | GET | `session` |
+| [`/api/teams/{id}/members`](#apiteamsidmembers) | GET | `session` + `view:/teams` |
 | [`/api/teams/{id}/members`](#apiteamsidmembers) | POST | `session` |
 | [`/api/teams/{id}/members`](#apiteamsidmembers) | DELETE | `session` |
 | [`/api/teams/directory`](#apiteamsdirectory) | GET | `dual` |
@@ -52,7 +52,7 @@ Source: [`api/crates/talaria-routes-integrations/src/teams/teams_id.rs`](../../a
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{team, members, agents}` | 200, 404 | — |
+| GET | `session` + `view:/teams` | — | `{team, members, agents}` | 200, 404 | — |
 | PATCH | `session` | [body](#patch-apiteamsid-body) | `{ok}` | 200, 400, 403 | audit |
 | DELETE | `session` | — | `{ok}` | 200, 403 | audit |
 
@@ -92,7 +92,7 @@ Source: [`api/crates/talaria-routes-integrations/src/teams/teams_id_agents.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{agents}` | 200 | — |
+| GET | `session` + `view:/teams` | — | `{agents}` | 200 | — |
 | POST | `session` | [body](#post-apiteamsidagents-body) | `{ok}` | 200, 400, 403 | audit |
 | DELETE | `session` | [body](#delete-apiteamsidagents-body) | `{ok}` | 200, 400, 403 | audit |
 
@@ -120,7 +120,7 @@ Source: [`api/crates/talaria-routes-integrations/src/teams/teams_id_members.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{members}` | 200 | — |
+| GET | `session` + `view:/teams` | — | `{members}` | 200 | — |
 | POST | `session` | [body](#post-apiteamsidmembers-body) | `{ok}` | 200, 400, 403 | audit |
 | DELETE | `session` | [body](#delete-apiteamsidmembers-body) | `{ok}` | 200, 400, 403 | audit |
 

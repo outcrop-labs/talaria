@@ -537,8 +537,6 @@ pub async fn exchange_google_tokens(
     })
 }
 
-pub use talaria_google_client::encode_uri_component;
-
 // ── The connect flow's savers + shared callback body ──────────────────────────
 
 /// Exchange the connect code and store the connection (encrypted) for a user.

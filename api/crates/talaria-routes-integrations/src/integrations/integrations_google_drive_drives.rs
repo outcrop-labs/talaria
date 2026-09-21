@@ -16,25 +16,24 @@ use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
-    match drive_roster(&state.pg, &sb, &user.id, now_ms()).await {
-        Ok(drives) => {
-            if drives.is_empty() {
-                // Both connections absent — the connect screen's answer.
-                google_fail_with(
-                    GoogleError::NotConnected,
-                    "Drive",
-                    "Connect a Google account to browse its Drive.",
-                )
-            } else {
-                Json(json!({ "drives": drives })).into_response()
+    Ok(
+        match drive_roster(&state.pg, &sb, &user.id, now_ms()).await {
+            Ok(drives) => {
+                if drives.is_empty() {
+                    // Both connections absent — the connect screen's answer.
+                    google_fail_with(
+                        GoogleError::NotConnected,
+                        "Drive",
+                        "Connect a Google account to browse its Drive.",
+                    )
+                } else {
+                    Json(json!({ "drives": drives })).into_response()
+                }
             }
-        }
-        Err(e) => google_fail_with(e, "Drive", "drive_error"),
-    }
+            Err(e) => google_fail_with(e, "Drive", "drive_error"),
+        },
+    )
 }

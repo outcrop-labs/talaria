@@ -34,14 +34,11 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     let parsed: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(_) => return house_error(StatusCode::BAD_REQUEST, "body must be JSON"),
+        Err(_) => return Ok(house_error(StatusCode::BAD_REQUEST, "body must be JSON")),
     };
     let tool = parsed
         .get("toolName")
@@ -49,7 +46,7 @@ pub async fn post(
         .unwrap_or("")
         .to_string();
     if tool.is_empty() {
-        return house_error(StatusCode::BAD_REQUEST, "toolName required");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "toolName required"));
     }
     let status = match parsed.get("status").and_then(|v| v.as_str()) {
         Some("running") | Some("completed") => parsed
@@ -57,7 +54,12 @@ pub async fn post(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        _ => return house_error(StatusCode::BAD_REQUEST, "status must be running|completed"),
+        _ => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "status must be running|completed",
+            ));
+        }
     };
     // The newest LIVE work session for this agent — the run whose tail this
     // frame joins. None live: the frame has nowhere to land (the session
@@ -73,10 +75,10 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(e) => return internal("[tool-events] run lookup failed", e),
+        Err(e) => return Ok(internal("[tool-events] run lookup failed", e)),
     };
     let Some(run_id) = run_id else {
-        return Json(json!({ "ok": true, "landed": false })).into_response();
+        return Ok(Json(json!({ "ok": true, "landed": false })).into_response());
     };
     let frame = json!({
         "t": "toolfull",
@@ -113,5 +115,5 @@ pub async fn post(
             tracing::warn!("[tool-events] redis unreachable, frame dropped: {e}");
         }
     }
-    Json(json!({ "ok": true, "landed": true })).into_response()
+    Ok(Json(json!({ "ok": true, "landed": true })).into_response())
 }

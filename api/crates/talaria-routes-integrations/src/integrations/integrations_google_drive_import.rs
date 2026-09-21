@@ -12,25 +12,23 @@ use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::drive::import_drive_file;
 use talaria_api_facades::google::errors::{GoogleError, reconnect_needed};
 use talaria_artifacts::{SaveArtifactPatch, create_artifact, record_google_export, save_artifact};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, house_error_msg};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, house_error_msg, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // fileId: min 1, no max.
     let file_id = match string_member(obj, "fileId", 1, usize::MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // WHERE the import lands: optional, uuid, None = My Files root. The
     // browse place's Import batches files into the source folder's twin —
@@ -38,7 +36,12 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     let folder_id: Option<String> = match obj.get("folderId") {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
-        _ => return house_error(StatusCode::BAD_REQUEST, "folderId must be a uuid string"),
+        _ => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "folderId must be a uuid string",
+            ));
+        }
     };
 
     let actor = user
@@ -49,7 +52,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
 
     let content = match import_drive_file(&state.pg, &sb, &user.id, &file_id, now_ms()).await {
         Ok(c) => c,
-        Err(e) => return import_failed(e),
+        Err(e) => return Ok(import_failed(e)),
     };
     let artifact = match create_artifact(
         &state.pg,
@@ -64,7 +67,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(a) => a,
         Err(e) => {
             tracing::error!("[drive/import] artifact create failed: {e}");
-            return import_failed(GoogleError::Failed(e.to_string()));
+            return Ok(import_failed(GoogleError::Failed(e.to_string())));
         }
     };
     if let Err(e) = save_artifact(
@@ -85,14 +88,14 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .await
     {
         tracing::error!("[drive/import] artifact save failed: {e}");
-        return import_failed(GoogleError::Failed(e.to_string()));
+        return Ok(import_failed(GoogleError::Failed(e.to_string())));
     }
     // Remember where it came from so "Open in Google Drive" links back.
     if let Some(source_url) = &content.source_url
         && let Err(e) = record_google_export(&state.pg, &artifact.id, &file_id, source_url).await
     {
         tracing::error!("[drive/import] export record failed: {e}");
-        return import_failed(GoogleError::Failed(e.to_string()));
+        return Ok(import_failed(GoogleError::Failed(e.to_string())));
     }
     // The wire artifact keeps its serialized field order; kind and title
     // overwrite keys it already carries.
@@ -101,7 +104,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         obj.insert("kind".into(), json!(content.kind));
         obj.insert("title".into(), json!(content.title));
     }
-    Json(json!({ "artifact": wire })).into_response()
+    Ok(Json(json!({ "artifact": wire })).into_response())
 }
 
 /// The catch ladder — the import's own noun on the 502 rung, plus the

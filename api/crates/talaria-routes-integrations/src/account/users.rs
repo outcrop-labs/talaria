@@ -31,19 +31,17 @@ struct UsersBody {
     users: Vec<DirectoryUser>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     // A presented agent credential that is REJECTED returns its refusal —
     // falling through would turn a forgery into a quiet 401.
     match agent_caller(&state.pg, &headers).await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            if let Err(gate) = require_user(&state, &headers).await {
-                return gate;
-            }
+            require_user(&state, &headers).await?;
         }
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     }
-    match list_users(&state.pg).await {
+    Ok(match list_users(&state.pg).await {
         Ok(rows) => Json(UsersBody {
             users: rows
                 .into_iter()
@@ -52,5 +50,5 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         })
         .into_response(),
         Err(e) => internal("[users] directory query failed", e),
-    }
+    })
 }

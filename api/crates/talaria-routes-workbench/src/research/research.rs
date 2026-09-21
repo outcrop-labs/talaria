@@ -15,8 +15,8 @@ use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::fleet::usable_agent_gate;
 use talaria_api_facades::runs::defs::research::research_modes;
-use talaria_body::{as_object, optional_string_member, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_string_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_harness_defs::defs::research::ResearchDepth;
 use talaria_permissions::has_perm;
 use talaria_research as research;
@@ -49,66 +49,63 @@ fn modes_json() -> serde_json::Value {
     )
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     // Scope to the viewer: a user sees their own + shared + org runs; an
     // agent sees through its owner's eyes (general agents: org runs only).
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(Some(c)) => c,
         Ok(None) => return get_as_user(&state, &headers).await,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     // The CALLER: seeing a human's private runs is owner-proxying, so an
     // asserted identity resolves to no owner (org runs only).
     let viewer =
         match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await {
             Ok(v) => v,
-            Err(e) => return internal("[research] owner resolve on list failed", e),
+            Err(e) => return Ok(internal("[research] owner resolve on list failed", e)),
         };
-    match research::list_research_runs(&state.pg, viewer.as_deref(), 60).await {
-        Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
-        Err(e) => internal("[research] list failed", e),
-    }
+    Ok(
+        match research::list_research_runs(&state.pg, viewer.as_deref(), 60).await {
+            Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
+            Err(e) => internal("[research] list failed", e),
+        },
+    )
 }
 
-async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
+async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Result<Response, Response> {
     let user = match require_user(state, headers).await {
         Ok(u) => u,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
-    match research::list_research_runs(&state.pg, Some(&user.id), 60).await {
-        Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
-        Err(e) => internal("[research] list failed", e),
-    }
+    Ok(
+        match research::list_research_runs(&state.pg, Some(&user.id), 60).await {
+            Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
+            Err(e) => internal("[research] list failed", e),
+        },
+    )
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let question = match string_member(obj, "question", 8, 4000) {
         Ok(q) => q,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let mode = match mode_member(obj) {
         Ok(m) => m,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let body_agent = match optional_string_member(obj, "agentModel", 200) {
         Ok(a) => a,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(Some(c)) => Some(c),
-        Ok(None) => None,
-        Err(resp) => return resp,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     let (agent_model, owner_user_id, requested_by) = if let Some(caller) = caller.as_ref() {
         // The ladder, not the PA-only resolve: the run's owner is a STAMP —
         // the PA's owner, the human an org agent is answering mid-chat, the
@@ -125,32 +122,35 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => return internal("[research] owner resolve on start failed", e),
+            Err(e) => return Ok(internal("[research] owner resolve on start failed", e)),
         };
         (caller.model.clone(), owner, caller.model.clone())
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         match has_perm(&state.pg, &user.id, &user.role, "research.run").await {
             Ok(true) => {}
             Ok(false) => {
-                return house_error(StatusCode::FORBIDDEN, "no permission to run research");
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "no permission to run research",
+                ));
             }
-            Err(e) => return internal("[research] perm read on start failed", e),
+            Err(e) => return Ok(internal("[research] perm read on start failed", e)),
         }
         // Humans pick the agent (and need access to it); an agent-key caller
         // is pinned to itself above and never reaches this leg.
         let Some(agent_model) = body_agent else {
-            return house_error(StatusCode::BAD_REQUEST, "agentModel required");
+            return Ok(house_error(StatusCode::BAD_REQUEST, "agentModel required"));
         };
         let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
             Ok(g) => g,
-            Err(e) => return internal("[research] agent access read on start failed", e),
+            Err(e) => return Ok(internal("[research] agent access read on start failed", e)),
         };
         if !gate(&agent_model) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "forbidden: no access to this agent",
+            ));
         }
         (
             agent_model,
@@ -174,14 +174,14 @@ pub async fn post(
     .await
     {
         Ok(d) => d,
-        Err(e) => return internal("[research] duplicate check failed", e),
+        Err(e) => return Ok(internal("[research] duplicate check failed", e)),
     };
     if let Some((id,)) = dupe {
-        return (
+        return Ok((
             StatusCode::CONFLICT,
             Json(json!({ "run": null, "duplicateOf": id })),
         )
-            .into_response();
+            .into_response());
     }
 
     // ── IS THIS A FOLLOW-UP? ──────────────────────────────────────────────────
@@ -223,7 +223,7 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // WHO IS OWED THE ANSWER. An agent that starts a run mid-conversation
@@ -236,5 +236,5 @@ pub async fn post(
     {
         remember_research_origin(&state, &run.id, origin).await;
     }
-    Json(json!({ "run": run })).into_response()
+    Ok(Json(json!({ "run": run })).into_response())
 }

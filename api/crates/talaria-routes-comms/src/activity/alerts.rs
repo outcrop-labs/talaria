@@ -10,10 +10,7 @@ use talaria_alerts::compute_alerts;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    Json(json!({ "alerts": compute_alerts(&state, &user.id).await })).into_response()
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(Json(json!({ "alerts": compute_alerts(&state, &user.id).await })).into_response())
 }

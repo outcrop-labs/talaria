@@ -18,10 +18,10 @@ use talaria_api_facades::kb::{SpacePatch, delete_space, get_space, update_space}
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    array_too_big_msg, as_object, enum_member, object_msg, optional_enum_member, parse,
+    array_too_big_msg, enum_member, object_msg, optional_enum_member, parse,
     present_nullable_max_string_member, string_member, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 
@@ -94,26 +94,23 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => return internal("[kb] space read failed", e),
+        Err(e) => return Ok(internal("[kb] space read failed", e)),
     };
     let Some(space) = space else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] editor read failed", e),
+        Err(e) => return Ok(internal("[kb] editor read failed", e)),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] team membership read failed", e),
+        Err(e) => return Ok(internal("[kb] team membership read failed", e)),
     };
     if !can_read(
         &guarded_of(&space),
@@ -122,9 +119,9 @@ pub async fn get(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    Json(json!({ "space": space, "editors": editors_json(&editors) })).into_response()
+    Ok(Json(json!({ "space": space, "editors": editors_json(&editors) })).into_response())
 }
 
 pub async fn put(
@@ -132,30 +129,27 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => return internal("[kb] space read failed", e),
+        Err(e) => return Ok(internal("[kb] space read failed", e)),
     };
     let Some(space) = space else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let mut patch = match parse_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let editors_req = match parse_editors(obj.get("editors")) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] editor read failed", e),
+        Err(e) => return Ok(internal("[kb] editor read failed", e)),
     };
     // Agents (over MCP) may edit a space they created, hold an editor grant
     // on, or — elevated — any non-private one: the same predicate the doc PUT
@@ -163,10 +157,7 @@ pub async fn put(
     // exists for: an agent building out a space writes the intro + table of
     // contents where a person will actually read it. Sharing stays human, so
     // those fields are dropped rather than trusted to be absent.
-    let agent = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let agent = agent_caller(&state.pg, &headers).await?;
     let actor: String;
     if let Some(agent) = agent {
         let name = agent.model.clone();
@@ -178,17 +169,17 @@ pub async fn put(
             .await
             {
                 Ok(v) => v,
-                Err(e) => return internal("[kb] elevation read failed", e),
+                Err(e) => return Ok(internal("[kb] elevation read failed", e)),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         let may_edit = space.created_by.as_deref() == Some(name.as_str())
             || can_edit_agent(&name, &editors, &team_ids)
             || elevated;
         if !may_edit {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         // Sharing stays human: the patch's sharing fields are dropped rather
         // than trusted to be absent, and an editors array is never applied on
@@ -197,14 +188,11 @@ pub async fn put(
         patch.edit_policy = None;
         actor = name;
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         if !can_edit_human(
             &guarded_of(&space),
@@ -213,7 +201,7 @@ pub async fn put(
             &editors,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         let owner = match can_govern(
             &state.pg,
@@ -225,56 +213,56 @@ pub async fn put(
         .await
         {
             Ok(v) => v,
-            Err(e) => return internal("[kb] govern check failed", e),
+            Err(e) => return Ok(internal("[kb] govern check failed", e)),
         };
         let sharing_touched =
             patch.visibility.is_some() || patch.edit_policy.is_some() || editors_req.is_some();
         if !owner && sharing_touched {
-            return house_error(StatusCode::FORBIDDEN, "only the owner can change sharing");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "only the owner can change sharing",
+            ));
         }
         if owner
             && let Some(grants) = &editors_req
             && let Err(e) = set_editors(&state.pg, ITEM_SPACE, &id, grants).await
         {
-            return internal("[knowledge] set_editors failed", e);
+            return Ok(internal("[knowledge] set_editors failed", e));
         }
         actor = who_of(&user).unwrap_or_else(|| "user".into());
     }
     let updated = match update_space(&state.pg, &id, &patch, Some(&actor)).await {
         Ok(s) => s,
-        Err(e) => return internal("[kb] space update failed", e),
+        Err(e) => return Ok(internal("[kb] space update failed", e)),
     };
     let editors_after = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] editor read failed", e),
+        Err(e) => return Ok(internal("[kb] editor read failed", e)),
     };
-    Json(json!({ "space": updated, "editors": editors_json(&editors_after) })).into_response()
+    Ok(Json(json!({ "space": updated, "editors": editors_json(&editors_after) })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => return internal("[kb] space read failed", e),
+        Err(e) => return Ok(internal("[kb] space read failed", e)),
     };
     let Some(space) = space else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] editor read failed", e),
+        Err(e) => return Ok(internal("[kb] editor read failed", e)),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] team membership read failed", e),
+        Err(e) => return Ok(internal("[kb] team membership read failed", e)),
     };
     if !can_edit_human(
         &guarded_of(&space),
@@ -283,12 +271,12 @@ pub async fn delete(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     if let Err(e) = delete_space(&state.pg, &qd, &ed, &id).await {
-        return internal("[knowledge] team_ids_for_user failed", e);
+        return Ok(internal("[knowledge] team_ids_for_user failed", e));
     }
     let (pg, actor) = (state.pg.clone(), actor_of(&user));
     tokio::spawn(async move {
@@ -306,5 +294,5 @@ pub async fn delete(
         )
         .await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

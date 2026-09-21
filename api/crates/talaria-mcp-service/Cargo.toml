@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-fleet-layout = { path = "../talaria-fleet-layout" }
 tokio = { version = "1", features = ["process", "io-util", "macros", "rt"] }
 tracing = "0.1"

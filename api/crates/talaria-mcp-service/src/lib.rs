@@ -11,8 +11,9 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use talaria_agent_auth::now_ms;
 use tokio::io::AsyncBufReadExt;
 
 /// The toolkit's HTTP port.
@@ -50,13 +51,6 @@ fn state() -> &'static Mutex<SpawnState> {
     })
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 async fn reachable() -> bool {
     let url = format!("http://127.0.0.1:{}/mcp", mcp_port());
     let Ok(client) = reqwest::Client::builder()
@@ -91,7 +85,7 @@ async fn spawn_child() {
         return;
     }
     if let Ok(mut st) = state().lock() {
-        st.last_spawn_ms = now_ms();
+        st.last_spawn_ms = now_ms() as u64;
     }
     let port = talaria_fleet_layout::app_port();
     let mut child = tokio::process::Command::new(js_runtime())
@@ -142,7 +136,7 @@ pub fn ensure_mcp_service() {
         let Ok(mut st) = state().lock() else {
             return;
         };
-        if st.starting || now_ms().saturating_sub(st.last_spawn_ms) < 10_000 {
+        if st.starting || (now_ms() as u64).saturating_sub(st.last_spawn_ms) < 10_000 {
             return;
         }
         st.starting = true;

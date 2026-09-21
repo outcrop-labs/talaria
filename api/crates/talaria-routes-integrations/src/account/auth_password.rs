@@ -8,8 +8,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::time::Duration;
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_password_accounts::{has_password_accounts, verify_password_login};
 use talaria_ratelimit::{client_ip, rate_limit, rate_limit_reset};
 use talaria_session::{
@@ -39,26 +39,28 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     match has_password_accounts(&state.pg).await {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::BAD_REQUEST, "Password login is disabled"),
-        Err(e) => return internal("[auth/password] account probe failed", e),
+        Ok(false) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "Password login is disabled",
+            ));
+        }
+        Err(e) => return Ok(internal("[auth/password] account probe failed", e)),
     }
 
     // Parse first: the username is what the primary counter keys on.
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let username = match string_member(obj, "username", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let password = match string_member(obj, "password", 1, 1000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // Either limiter refusing answers 429; a Redis outage fails open (the
@@ -83,7 +85,7 @@ pub async fn post(
         if let Ok(v) = header::HeaderValue::from_str(&l.retry_after.to_string()) {
             resp.headers_mut().insert(header::RETRY_AFTER, v);
         }
-        return resp;
+        return Ok(resp);
     }
 
     let identity = match verify_password_login(&state.pg, &username, &password).await {
@@ -91,9 +93,9 @@ pub async fn post(
         Ok(None) => {
             // Slow the failure path a touch to blunt brute force.
             tokio::time::sleep(Duration::from_millis(400)).await;
-            return house_error(StatusCode::UNAUTHORIZED, "Invalid credentials");
+            return Ok(house_error(StatusCode::UNAUTHORIZED, "Invalid credentials"));
         }
-        Err(e) => return internal("[auth/password] credential lookup failed", e),
+        Err(e) => return Ok(internal("[auth/password] credential lookup failed", e)),
     };
 
     // A real login clears the budget so a fat-fingered morning doesn't lock
@@ -113,7 +115,7 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(e) => return internal("[auth/password] upsert failed", e),
+        Err(e) => return Ok(internal("[auth/password] upsert failed", e)),
     };
     let user = SessionUser {
         id: row.0,
@@ -126,14 +128,14 @@ pub async fn post(
     };
     let sid = match create_session(&state, &user).await {
         Ok(sid) => sid,
-        Err(e) => return internal("[auth/password] session create failed", e),
+        Err(e) => return Ok(internal("[auth/password] session create failed", e)),
     };
-    json_with_cookies(
+    Ok(json_with_cookies(
         Json(LoginBody {
             ok: true,
             user: WireUser::from(&user),
         }),
         &[session_cookie_for(&headers, &sid)],
     )
-    .into_response()
+    .into_response())
 }

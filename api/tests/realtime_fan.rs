@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the two rail fans (cargo test -- --ignored): who a
 // channel event reaches (every member, nobody else) and who a conversation
 // event reaches (the owner, plus a plan's members). The publish edge is the
@@ -8,17 +9,9 @@
 
 use futures_util::FutureExt;
 use std::sync::{Arc, Mutex};
+use support::pg;
 use talaria_api::notify::{NotifyDeps, fan_channel_event, fan_conversation_event};
 use talaria_api::realtime::RealtimeDeps;
-
-async fn pool() -> sqlx::postgres::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    sqlx::postgres::PgPool::connect(&url)
-        .await
-        .expect("connect")
-}
-
 /// Delete the throwaway people; the cascade takes their channels and plans.
 async fn cleanup(pg: &sqlx::PgPool) {
     sqlx::query("delete from users where email like 'fan-test-%@test.invalid'")
@@ -88,7 +81,7 @@ async fn settle(seen: &Captured, expected: usize) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_fans_reach_exactly_their_audiences() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let owner = person(&pg, "fan-test-owner", "fan-test-owner@test.invalid").await;
     let mate = person(&pg, "fan-test-mate", "fan-test-mate@test.invalid").await;

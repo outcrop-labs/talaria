@@ -20,9 +20,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, internal};
-use talaria_session::{actor_of, require_user};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_user, secretbox_or_500};
 use talaria_state::AppState;
 use talaria_workspace_secrets::reveal_entry;
 
@@ -30,33 +30,24 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 0, 80) {
         Ok(n) => n,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let key = match string_member(obj, "key", 0, 40) {
         Ok(k) => k,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let actor = actor_of(&user);
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => return internal("[secrets] reveal failed", e),
-    };
+    let sb = secretbox_or_500(&state, "[secrets] reveal failed").await?;
     let out = match reveal_entry(&state.pg, &sb, &name, &key, &user.id, Some(&actor)).await {
         Ok(o) => o,
-        Err(e) => return internal("[secrets] reveal failed", e),
+        Err(e) => return Ok(internal("[secrets] reveal failed", e)),
     };
     if out.value.is_none() {
         // The refusal reason goes to the CALLER here, unlike the agent
@@ -69,21 +60,22 @@ pub async fn post(
             "not-shared" | "not-revealable" => StatusCode::FORBIDDEN,
             _ => StatusCode::CONFLICT,
         };
-        return house_error(status, out.refusal);
+        return Ok(house_error(status, out.refusal));
     }
-
-    // Belt and braces on the header that would otherwise carry the path of
-    // this request to wherever the page navigates next.
-    (
-        [
-            (
-                header::CACHE_CONTROL,
-                "no-store, no-cache, must-revalidate, private",
-            ),
-            (header::PRAGMA, "no-cache"),
-            (header::REFERRER_POLICY, "no-referrer"),
-        ],
-        Json(json!({ "value": out.value })),
+    Ok(
+        // Belt and braces on the header that would otherwise carry the path of
+        // this request to wherever the page navigates next.
+        (
+            [
+                (
+                    header::CACHE_CONTROL,
+                    "no-store, no-cache, must-revalidate, private",
+                ),
+                (header::PRAGMA, "no-cache"),
+                (header::REFERRER_POLICY, "no-referrer"),
+            ],
+            Json(json!({ "value": out.value })),
+        )
+            .into_response(),
     )
-        .into_response()
 }

@@ -12,14 +12,14 @@ use talaria_session::{acting_user, unauthorized};
 use talaria_state::AppState;
 use talaria_teams::list_team_directory;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     match acting_user(&state, &headers).await {
         Ok(Some(_)) => {}
-        Ok(None) => return unauthorized(),
-        Err(gate) => return gate,
+        Ok(None) => return Ok(unauthorized()),
+        Err(gate) => return Err(gate),
     }
-    match list_team_directory(&state.pg).await {
+    Ok(match list_team_directory(&state.pg).await {
         Ok(teams) => Json(json!({ "teams": teams })).into_response(),
         Err(e) => internal("[teams] directory list failed", e),
-    }
+    })
 }

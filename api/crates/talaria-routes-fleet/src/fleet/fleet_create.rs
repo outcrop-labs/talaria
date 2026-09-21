@@ -13,11 +13,10 @@ use serde_json::{Value, json};
 use talaria_api_facades::runs::defs::agent_hire::{AgentHireInput, SkillSeed, agent_hire_run};
 use talaria_api_facades::runs::run::{EnqueueOptions, enqueue};
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, object_msg, optional_boolean_member,
-    optional_max_string_member, optional_uuid_member, parse, string_member, too_big_msg, utf16_len,
-    zod_type_name,
+    array_msg, array_too_big_msg, object_msg, optional_boolean_member, optional_max_string_member,
+    optional_uuid_member, parse, string_member, too_big_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -133,19 +132,13 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // The one check that stays synchronous: a handle somebody can fix in the
@@ -157,13 +150,13 @@ pub async fn post(
         .await
     {
         Ok(t) => t,
-        Err(e) => return internal("[fleet] taken-slug check failed", e),
+        Err(e) => return Ok(internal("[fleet] taken-slug check failed", e)),
     };
     if taken.is_some() {
-        return house_error(
+        return Ok(house_error(
             StatusCode::CONFLICT,
             &format!("an agent with the handle \"{}\" already exists", body.slug),
-        );
+        ));
     }
 
     // Registration only: a process that enqueues a hire can also be the
@@ -188,16 +181,16 @@ pub async fn post(
     // row IS the feature here, so a start without it fails the start rather
     // than half-happening (same posture as the plan-draft twin).
     let Some(redis) = state.redis().await.ok() else {
-        return house_error(
+        return Ok(house_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "the hire could not be enqueued: redis is unavailable",
-        );
+        ));
     };
     let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
     let deps = dispatch_deps(state.pg.clone(), redis, realtime);
     let input = match serde_json::to_value(input) {
         Ok(v) => v,
-        Err(e) => return internal("[fleet] hire input serialize failed", e),
+        Err(e) => return Ok(internal("[fleet] hire input serialize failed", e)),
     };
     let row = match enqueue(
         def,
@@ -217,11 +210,11 @@ pub async fn post(
     .await
     {
         Ok(row) => row,
-        Err(e) => return internal("[fleet] hire enqueue failed", e),
+        Err(e) => return Ok(internal("[fleet] hire enqueue failed", e)),
     };
-    Json(json!({
+    Ok(Json(json!({
         "ok": true,
         "hire": { "id": row.id, "state": row.state, "phase": row.phase }
     }))
-    .into_response()
+    .into_response())
 }

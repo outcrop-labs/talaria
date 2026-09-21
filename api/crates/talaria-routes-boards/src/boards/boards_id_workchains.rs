@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::{board_role, can_edit};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_workchains::{Workchain, list_workchains};
@@ -20,23 +20,20 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "GET workchains", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[boards] role read on GET workchains failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on GET workchains failed", e)),
     }
-    match list_workchains(&state.pg, &id).await {
+    Ok(match list_workchains(&state.pg, &id).await {
         Ok(workchains) => Json(json!({ "workchains": workchains })).into_response(),
         Err(e) => internal("[boards] workchain list failed", e),
-    }
+    })
 }
 
 pub async fn post(
@@ -44,27 +41,21 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "POST workchains", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[boards] role read on POST workchains failed", e),
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on POST workchains failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 1, 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // createdBy is the human-readable attribution: email, else name, else
     // 'user' — the same actor ladder the audit log climbs.
@@ -89,10 +80,9 @@ pub async fn post(
     .await
     {
         Ok(v) => v,
-        Err(e) => return internal("[boards] workchain create failed", e)
-    };
+        Err(e) => return Ok(internal("[boards] workchain create failed", e))};
     let (wid, board_id, name, created_by, paused, position, created_ms, updated_ms) = row;
-    Json(json!({
+    Ok(Json(json!({
         "workchain": Workchain {
             id: wid,
             board_id,
@@ -105,5 +95,5 @@ pub async fn post(
             steps: vec![],
         }
     }))
-    .into_response()
+    .into_response())
 }

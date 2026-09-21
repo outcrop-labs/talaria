@@ -20,10 +20,10 @@ use talaria_api_facades::workbench::harnesses::{
     delete_custom_harness, list_harness_defs, upsert_custom_harness,
 };
 use talaria_body::{
-    as_object, enum_member, object_msg, optional_max_string_member, optional_string_array_member,
-    parse, record_msg, string_member, string_value_member, too_big_msg, utf16_len, zod_type_name,
+    enum_member, object_msg, optional_max_string_member, optional_string_array_member, parse,
+    record_msg, string_member, string_value_member, too_big_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, require_user};
 use talaria_state::AppState;
 
@@ -56,11 +56,9 @@ async fn harnesses_json(pg: &sqlx::PgPool) -> Response {
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    harnesses_json(&state.pg).await
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    Ok(harnesses_json(&state.pg).await)
 }
 
 /// The Definition schema → the stored output object. Field checks run in
@@ -204,42 +202,45 @@ fn definition_of(obj: &Map<String, Value>) -> Result<Value, String> {
     Ok(Value::Object(out))
 }
 
-pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let definition = match definition_of(obj) {
         Ok(d) => d,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let slug = definition["slug"].as_str().unwrap_or_default().to_string();
     if let Err(e) = upsert_custom_harness(&state.pg, &slug, &definition, &actor_of(&user)).await {
-        return internal("[workbench/harnesses] definition write failed", e);
+        return Ok(internal("[workbench/harnesses] definition write failed", e));
     }
-    harnesses_json(&state.pg).await
+    Ok(harnesses_json(&state.pg).await)
 }
 
-pub async fn delete(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
     // ?slug= — absent and bare-'?slug' both null.
     let slug = uri
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("slug=")));
     let Some(slug) = slug else {
-        return house_error(StatusCode::BAD_REQUEST, "slug required");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "slug required"));
     };
     if let Err(e) = delete_custom_harness(&state.pg, slug).await {
-        return internal("[workbench/harnesses] definition delete failed", e);
+        return Ok(internal(
+            "[workbench/harnesses] definition delete failed",
+            e,
+        ));
     }
-    harnesses_json(&state.pg).await
+    Ok(harnesses_json(&state.pg).await)
 }
 
 #[cfg(test)]

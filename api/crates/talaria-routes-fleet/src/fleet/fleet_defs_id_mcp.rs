@@ -12,11 +12,11 @@ use talaria_agent_mcp::apply_mcp_edits;
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
-    optional_boolean_member, parse, string_msg, too_big_msg, url_member, zod_type_name,
+    NumKind, array_msg, array_too_big_msg, nullable_number_member, optional_boolean_member, parse,
+    string_msg, too_big_msg, url_member, zod_type_name,
 };
-use talaria_error::{house_error, internal};
-use talaria_session::{actor_of, require_perm};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_perm, secretbox_or_500};
 use talaria_state::AppState;
 
 const NAME_PATTERN: &str = "^[a-z0-9][a-z0-9_-]*$";
@@ -110,27 +110,21 @@ pub async fn post(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let add = match parse_add(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let remove = match parse_remove(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let apply = match optional_boolean_member(obj, "apply") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     }
     .unwrap_or(false);
 
@@ -145,18 +139,20 @@ pub async fn post(
         Ok(row) => row,
         Err(e) => {
             // a non-uuid id is the same postgres refusal — this 500 arm.
-            return internal("[fleet/defs/mcp] def read failed", e)
-        }
+            return Ok(internal("[fleet/defs/mcp] def read failed", e))}
     };
     let Some((def_id, slug, managed, department, display_name)) = def else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let latest = match list_versions(&state.pg, &def_id).await {
         Ok(v) => v,
-        Err(e) => return internal("[fleet/defs/mcp] versions read failed", e),
+        Err(e) => return Ok(internal("[fleet/defs/mcp] versions read failed", e)),
     };
     let Some(latest) = latest.first() else {
-        return house_error(StatusCode::BAD_REQUEST, "no base version — import first");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "no base version — import first",
+        ));
     };
 
     let add_values: Vec<Value> = add
@@ -208,7 +204,7 @@ pub async fn post(
     .await
     {
         Ok(vc) => vc,
-        Err(e) => return internal("[fleet/defs/mcp] version write failed", e),
+        Err(e) => return Ok(internal("[fleet/defs/mcp] version write failed", e)),
     };
     if created {
         log_audit(
@@ -231,25 +227,24 @@ pub async fn post(
     let mut applied = false;
     if created && apply && managed {
         // Roll, don't restart — see fleet_defs_id_edit.
-        let sb = match state.secretbox().await {
-            Ok(sb) => sb,
-            Err(e) => return internal("[fleet/defs/mcp] secretbox unavailable", e),
-        };
+        let sb = secretbox_or_500(&state, "[fleet/defs/mcp] secretbox unavailable").await?;
         match roll_agent(&state.pg, &sb, &department).await {
             Ok(None) => applied = true,
             Ok(Some(warning)) => {
-                return Json(json!({
+                return Ok(Json(json!({
                     "ok": true,
                     "version": version,
                     "created": created,
                     "applied": false,
                     "warning": warning,
                 }))
-                .into_response();
+                .into_response());
             }
-            Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
         }
     }
-    Json(json!({ "ok": true, "version": version, "created": created, "applied": applied }))
-        .into_response()
+    Ok(
+        Json(json!({ "ok": true, "version": version, "created": created, "applied": applied }))
+            .into_response(),
+    )
 }

@@ -187,6 +187,59 @@ const RULES = [
     ],
   },
   {
+    id: 'rust-hand-wrapped-gate',
+    lang: 'rust',
+    // The gate helper answers `Result<_, Response>`; a handler that unwraps it
+    // by hand is a handler that has not taken the handler shape.
+    pattern: /Err\((?:gate|resp)\)\s*=>\s*return (?:gate|resp),/,
+    what: 'a gate result unwrapped by hand instead of with `?`',
+    fix: [
+      'Handlers answer `Result<Response, Response>` (axum implements `Handler` for any',
+      '`R: IntoResponse`, and `Result<Response, Response>` is one), so the gate propagates:',
+      '',
+      '    let user = require_user(&state, &headers).await?;',
+      '',
+      'Every guard — `require_user`, `require_perm`, `require_admin`, `require_view`,',
+      '`agent_caller` — already returns `Result<_, Response>`. ~360 call sites spelled the',
+      'match out by hand, which is why the refusal envelope drifted between them.',
+    ],
+  },
+  {
+    id: 'rust-secretbox-unwrap',
+    lang: 'rust',
+    // The house unwrap: the secretbox or the logged 500. `state.secretbox()`
+    // is the one call every key-touching route makes; a route that spells the
+    // match out again is route 27. (Routes whose refusal is their OWN — a 400,
+    // a page, a `catch(e)` — keep their own three lines and are not matched.)
+    pattern: /let sb = match state\.secretbox\(\)\.await \{[\s\S]{0,80}?Err\(e\) => return (?:Ok\()?internal\(/,
+    what: 'the secretbox unwrapped by hand instead of through `secretbox_or_500`',
+    fix: [
+      'Write `let sb = secretbox_or_500(&state, "<context>").await?;` — `talaria-session`',
+      "owns the one conversion (it is the layer that may name `AppState` AND answer a",
+      '`Response`; `talaria-error` cannot, because `AppState` depends on it).',
+      '',
+      'A route whose failure answer is its OWN — a 400 with the route\'s sentence, an OAuth',
+      'callback page, a `catch(e)` that flattens to an operator message — keeps its own',
+      'match; the rule only matches the house 500.',
+    ],
+  },
+  {
+    id: 'rust-as-object-unwrap',
+    lang: 'rust',
+    // The hand-wrapped 400 for a non-object body.
+    pattern: /match as_object\(&/,
+    allow: ['api/crates/talaria-error/src/lib.rs'], // object_or_400 IS the conversion
+    what: 'the non-object-body 400 unwrapped by hand',
+    fix: [
+      'Write `let obj = object_or_400(&parsed)?;` — `talaria-error` owns the one conversion',
+      "from `talaria_body`'s message to the 400 that carries it. ~194 route files spelled the",
+      'match out by hand.',
+      '',
+      'Keep `talaria_body` pure: it answers the message and knows nothing about HTTP, which',
+      'is why the conversion lives beside the envelope it produces.',
+    ],
+  },
+  {
     id: 'rust-trap-block',
     lang: 'rust',
     // The hand-written pair, in every spelling it grew in: `return
@@ -1499,74 +1552,6 @@ for (const rule of CENSUS) {
  *  work is done fails the next `bun run check`, so the list cannot rot into a
  *  standing amnesty. Read the `why` as a to-do list, not as an exemption. */
 const DUPLICATE_BODY_ALLOW = [
-  {
-    name: 'roll_drain_ms',
-    paths: ['api/crates/talaria-fleet-reconcile/src/lib.rs', 'api/crates/talaria-update-layout/src/lib.rs'],
-    why: 'roll_drain_ms — collapse onto one home in the rollout engine (W3).',
-  },
-  {
-    name: 'encode_uri_component',
-    paths: ['api/crates/talaria-google-client/src/lib.rs', 'api/crates/talaria-inbox-focus/src/timeline.rs'],
-    why: 'encode_uri_component — fold both encoders onto talaria_body::percent_encode (W3).',
-  },
-  {
-    name: 'assistant_owner_for',
-    paths: ['api/crates/talaria-mcp/src/registry.rs', 'api/crates/talaria-users/src/lib.rs'],
-    why: 'assistant_owner_for — talaria-users owns it; registry.rs imports it (W3).',
-  },
-  {
-    name: 'has_oauth_tokens',
-    paths: ['api/crates/talaria-mcp-oauth/src/lib.rs', 'api/crates/talaria-mcp/src/registry.rs'],
-    why: 'has_oauth_tokens — talaria-mcp-oauth owns it; registry.rs imports it (W3).',
-  },
-  {
-    name: 'personal_assistant_owners',
-    paths: ['api/crates/talaria-mcp/src/registry.rs', 'api/crates/talaria-users/src/lib.rs'],
-    why: 'personal_assistant_owners — talaria-users owns it; registry.rs imports it (W3).',
-  },
-  {
-    name: 'audience',
-    paths: [
-      'api/crates/talaria-research-def/src/lib.rs',
-      'api/crates/talaria-runs-agent-hire/src/lib.rs',
-      'api/crates/talaria-runs-plan-draft/src/lib.rs',
-    ],
-    why: 'audience — three copies of the marketing-audience builder (W3).',
-  },
-  {
-    name: 'edit_gate',
-    paths: [
-      'api/crates/talaria-routes-boards/src/boards/boards_id_labels.rs',
-      'api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs',
-    ],
-    why: 'edit_gate — hoist into talaria-routes-boards/src/boards/mod.rs (W2e).',
-  },
-  {
-    name: 'gate',
-    paths: [
-      'api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs',
-      'api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.rs',
-    ],
-    why: 'gate — fleet/mod.rs gains can_manage_agent for these two (W2e).',
-  },
-  {
-    name: 'owner_gate',
-    paths: [
-      'api/crates/talaria-routes-integrations/src/teams/teams_id.rs',
-      'api/crates/talaria-routes-integrations/src/teams/teams_id_agents.rs',
-      'api/crates/talaria-routes-integrations/src/teams/teams_id_members.rs',
-    ],
-    why: 'owner_gate — hoist into talaria-routes-integrations/src/teams/mod.rs (W2e).',
-  },
-  {
-    name: 'uuid_gate',
-    paths: [
-      'api/crates/talaria-routes-integrations/src/teams/teams_id_access.rs',
-      'api/crates/talaria-routes-integrations/src/teams/teams_id_agents.rs',
-      'api/crates/talaria-routes-integrations/src/teams/teams_id_members.rs',
-    ],
-    why: 'uuid_gate — import talaria_params::uuid_gate instead of three copies (W2c).',
-  },
   {
     name: 'onKeyDown',
     paths: ['ui/src/components/chat/EmojiList.svelte', 'ui/src/components/ui/MentionList.svelte'],

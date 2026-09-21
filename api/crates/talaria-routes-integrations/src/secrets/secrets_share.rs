@@ -109,25 +109,21 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
     // The body schema is a union, and a union flattens every failure —
     // non-object bodies included — to the same two words.
     let obj = match parsed.as_object() {
         Some(o) => o,
-        None => return house_error(StatusCode::BAD_REQUEST, "Invalid input"),
+        None => return Ok(house_error(StatusCode::BAD_REQUEST, "Invalid input")),
     };
     let action = match parse_post(obj) {
         Ok(a) => a,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let actor = actor_of(&user);
-
-    match action {
+    Ok(match action {
         SharePost::With {
             action,
             name,
@@ -140,10 +136,10 @@ pub async fn post(
             };
             let ok = match ok {
                 Ok(o) => o,
-                Err(e) => return internal("[secrets] share failed", e),
+                Err(e) => return Ok(internal("[secrets] share failed", e)),
             };
             if !ok {
-                return house_error(StatusCode::FORBIDDEN, "not yours to share");
+                return Ok(house_error(StatusCode::FORBIDDEN, "not yours to share"));
             }
             log_audit(
                 &state.pg,
@@ -174,13 +170,13 @@ pub async fn post(
             // credentials it owns by definition.
             let doc = match get_secret_doc(&state.pg, &name).await {
                 Ok(d) => d,
-                Err(e) => return internal("[secrets] grant read failed", e),
+                Err(e) => return Ok(internal("[secrets] grant read failed", e)),
             };
             let Some(doc) = doc else {
-                return house_error(StatusCode::NOT_FOUND, "not found");
+                return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
             };
             if !doc.revealable || doc.owner_user_id.as_deref() != Some(user.id.as_str()) {
-                return house_error(StatusCode::FORBIDDEN, "not yours to share");
+                return Ok(house_error(StatusCode::FORBIDDEN, "not yours to share"));
             }
 
             let wrote = if action == "grant" {
@@ -189,7 +185,7 @@ pub async fn post(
                 revoke_secret(&state.pg, &name, &agent_model).await
             };
             if let Err(e) = wrote {
-                return internal("[secrets] grant failed", e);
+                return Ok(internal("[secrets] grant failed", e));
             }
             log_audit(
                 &state.pg,
@@ -210,7 +206,7 @@ pub async fn post(
             .await;
             secret_response(&state.pg, &name).await
         }
-    }
+    })
 }
 
 async fn secret_response(pg: &sqlx::PgPool, name: &str) -> Response {

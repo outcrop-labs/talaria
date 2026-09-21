@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{board_allows_agent, board_role, list_members};
-use talaria_body::{as_object, optional_uuid_member, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_uuid_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_session::{get_session_user, require_user};
@@ -130,36 +130,33 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("tasks", "POST comment", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[tasks] read on POST comment failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on POST comment failed", e)),
     };
     let author = match comment_author(&state, &headers, &task).await {
         Ok(a) => a,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let content = match string_member(obj, "content", 1, 20_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let parent_id = match optional_uuid_member(obj, "parentId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let comment = match add_comment(&deps, &id, &author, &content, parent_id.as_deref()).await {
         Ok(c) => c,
-        Err(e) => return internal("[tasks] comment add failed", e),
+        Err(e) => return Ok(internal("[tasks] comment add failed", e)),
     };
     // The comment landed through the room insert — the agent-writes door
     // every channel post goes through — and `add_comment`'s fan-out already
@@ -210,5 +207,5 @@ pub async fn post(
         )
         .await;
     });
-    Json(json!({ "comment": comment })).into_response()
+    Ok(Json(json!({ "comment": comment })).into_response())
 }

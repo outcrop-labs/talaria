@@ -16,16 +16,13 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[channels] role read on events failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on events failed", e)),
     }
     let deps = RealtimeDeps::streams_only(&state.cfg.redis_url);
-    channel_event_stream(&deps, &id).await
+    Ok(channel_event_stream(&deps, &id).await)
 }

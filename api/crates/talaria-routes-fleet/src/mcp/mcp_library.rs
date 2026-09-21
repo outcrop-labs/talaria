@@ -88,18 +88,21 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<LibraryQuery>,
-) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
     let lib = library();
     if query.featured.as_deref() == Some("1") {
         let shelf = lib.featured().await;
-        return Json(json!({ "servers": shelf.iter().map(server_wire).collect::<Vec<_>>() }))
-            .into_response();
+        return Ok(
+            Json(json!({ "servers": shelf.iter().map(server_wire).collect::<Vec<_>>() }))
+                .into_response(),
+        );
     }
     // absent and empty are the same query.
     let q = query.q.unwrap_or_default();
     let servers = lib.search(&q).await;
-    Json(json!({ "servers": servers.iter().map(server_wire).collect::<Vec<_>>() })).into_response()
+    Ok(
+        Json(json!({ "servers": servers.iter().map(server_wire).collect::<Vec<_>>() }))
+            .into_response(),
+    )
 }

@@ -20,3 +20,22 @@ pub mod fleet_hires;
 pub mod fleet_reconcile;
 pub mod fleet_render;
 pub mod fleet_resources;
+
+use talaria_permissions::has_perm;
+use talaria_personal_agent::owns_agent;
+use talaria_state::AppState;
+
+/// `agents.manage`, or the owner of a personal assistant — the identical
+/// question the two cron route files each asked in its own copy.
+pub(crate) async fn can_manage_agent(
+    state: &AppState,
+    user_id: &str,
+    role: &str,
+    id: &str,
+) -> bool {
+    match has_perm(&state.pg, user_id, role, "agents.manage").await {
+        Ok(true) => true,
+        Ok(false) => owns_agent(&state.pg, user_id, None, Some(id)).await,
+        Err(_) => false,
+    }
+}

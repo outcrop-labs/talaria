@@ -12,12 +12,12 @@ use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{board_allows_agent, board_role, can_edit, invalid_assignee, list_members};
 use talaria_body::{
-    NumKind, as_object, nullish_datetime_member, nullish_enum_member, nullish_member,
-    optional_boolean_member, optional_enum_member, optional_max_string_member,
-    optional_number_member, optional_string_array_member, optional_string_member,
-    optional_uuid_array_member, optional_uuid_member, parse,
+    NumKind, nullish_datetime_member, nullish_enum_member, nullish_member, optional_boolean_member,
+    optional_enum_member, optional_max_string_member, optional_number_member,
+    optional_string_array_member, optional_string_member, optional_uuid_array_member,
+    optional_uuid_member, parse,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_refs::{MessageRef, RefChip, RefUser, resolve_refs};
@@ -34,21 +34,18 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("tasks", "GET task", &id) {
-        return gate;
+        return Ok(gate);
     }
     // 404 comes BEFORE any auth: a ticket's existence is not revealed by who
     // asks about it — unknown id and no session answer the same 404.
     let full = match get_task_full(&state.pg, &id).await {
         Ok(Some(f)) => f,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[tasks] full read failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] full read failed", e)),
     };
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     if let Some(caller) = caller {
         // The CALLER, not its model — board policy's elevated bypass is only
         // for an identity that was proven, never merely asserted.
@@ -60,10 +57,10 @@ pub async fn get(
         .await
         {
             Ok(a) => a,
-            Err(e) => return internal("[tasks] agent policy read on GET task failed", e),
+            Err(e) => return Ok(internal("[tasks] agent policy read on GET task failed", e)),
         };
         if !allowed {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         let target = MatchTarget {
             title: &full.task.title,
@@ -73,13 +70,13 @@ pub async fn get(
         };
         let workflows = match talaria_workflows::workflows_for_task(&state.pg, &target).await {
             Ok(w) => w,
-            Err(e) => return internal("[tasks] workflow read on GET task failed", e),
+            Err(e) => return Ok(internal("[tasks] workflow read on GET task failed", e)),
         };
         // The detail body plus a one-off `workflows` payload — the list an
         // agent caller dispatches against.
         let mut body = match serde_json::to_value(&full) {
             Ok(v) => v,
-            Err(e) => return internal("[tasks] full detail serialize failed", e),
+            Err(e) => return Ok(internal("[tasks] full detail serialize failed", e)),
         };
         if let Some(obj) = body.as_object_mut() {
             obj.insert(
@@ -87,17 +84,16 @@ pub async fn get(
                 serde_json::to_value(&workflows).unwrap_or(Value::Array(vec![])),
             );
         }
-        return Json(body).into_response();
+        return Ok(Json(body).into_response());
     }
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    match board_role(&state.pg, &user.id, &full.task.board_id).await {
-        Ok(Some(_)) => Json(full).into_response(),
-        Ok(None) => house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => internal("[tasks] role read on GET task failed", e),
-    }
+    let user = require_user(&state, &headers).await?;
+    Ok(
+        match board_role(&state.pg, &user.id, &full.task.board_id).await {
+            Ok(Some(_)) => Json(full).into_response(),
+            Ok(None) => house_error(StatusCode::FORBIDDEN, "forbidden"),
+            Err(e) => internal("[tasks] role read on GET task failed", e),
+        },
+    )
 }
 
 /// The PUT's `refs` member — an optional array (max 3) of {type, id}
@@ -145,19 +141,16 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("tasks", "PUT task", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[tasks] read on PUT task failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on PUT task failed", e)),
     };
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     let who = if let Some(caller) = caller {
         // Identity comes from the credential, so board policy is
         // unconditional — there is no unnamed caller to wave through. Pass
@@ -170,28 +163,25 @@ pub async fn put(
         .await
         {
             Ok(a) => a,
-            Err(e) => return internal("[tasks] agent policy read on PUT task failed", e),
+            Err(e) => return Ok(internal("[tasks] agent policy read on PUT task failed", e)),
         };
         if !allowed {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 &format!("agent \"{}\" is not allowed on this board", caller.model),
-            );
+            ));
         }
         PatchActor::Agent {
             model: caller.model,
         }
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         let role = match board_role(&state.pg, &user.id, &task.board_id).await {
             Ok(r) => r,
-            Err(e) => return internal("[tasks] role read on PUT task failed", e),
+            Err(e) => return Ok(internal("[tasks] role read on PUT task failed", e)),
         };
         if !can_edit(role.as_deref()) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         let actor = TaskActor::human(
             user.email
@@ -206,10 +196,7 @@ pub async fn put(
         PatchActor::Human { actor, user } => (actor, Some(user)),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Patch, in schema declaration order — the FIRST failing field is the
     // one answered.
     // `status`'s min(1) is not cosmetic: `""` was once a legal patch value,
@@ -218,81 +205,81 @@ pub async fn put(
     // route schema and the library both refuse it now.
     let title = match optional_string_member(obj, "title", 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let description = match nullish_member(obj, "description", |o, k| {
         optional_max_string_member(o, k, 20_000)
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let status = match optional_string_member(obj, "status", 40) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let priority = match optional_enum_member(obj, "priority", PRIORITIES) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let effort = match nullish_member(obj, "effort", |o, k| nullish_enum_member(o, k, EFFORTS)) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let assignees = match optional_string_array_member(obj, "assignees", 0, 200, 20) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let due_date = match nullish_member(obj, "dueDate", nullish_datetime_member) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let start_date = match nullish_member(obj, "startDate", nullish_datetime_member) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let color = match nullish_member(obj, "color", |o, k| {
         nullish_enum_member(o, k, TICKET_COLORS)
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // tags elements carry min(1) — `[""]` once minted a blank label on the
     // board. `[]` stays legal: it clears the labels.
     let tags = match optional_string_array_member(obj, "tags", 1, 40, 20) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let outcome = match nullish_member(obj, "outcome", |o, k| {
         optional_max_string_member(o, k, 50_000)
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let resolution = match nullish_member(obj, "resolution", |o, k| {
         optional_max_string_member(o, k, 50_000)
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let error_message = match nullish_member(obj, "errorMessage", |o, k| {
         optional_max_string_member(o, k, 50_000)
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let archived = match optional_boolean_member(obj, "archived") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let estimated_hours = match nullish_member(obj, "estimatedHours", |o, k| {
         talaria_body::nullable_number_member(o, k, NumKind::Float, 0.0, 999.0)
     }) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let parent_id = match nullish_member(obj, "parentId", optional_uuid_member) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let add_time_spent_seconds = match optional_number_member(
         obj,
@@ -302,17 +289,17 @@ pub async fn put(
         86_400.0 * 30.0,
     ) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Full replacement list, same contract as chat messages: upload ids +
     // knowledge/artifact refs. Omit both to leave attachments unchanged.
     let attachment_ids = match optional_uuid_array_member(obj, "attachmentIds", 20) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let refs = match refs_member(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Human-in-the-loop guardrails (assignment, sign-off, archival) belong
     // to the ACTOR, not this route: update_task enforces them for every
@@ -325,8 +312,8 @@ pub async fn put(
     .await
     {
         Ok(None) => {}
-        Ok(Some(bad)) => return house_error(StatusCode::BAD_REQUEST, &bad),
-        Err(e) => return internal("[tasks] assignee check on PUT task failed", e),
+        Ok(Some(bad)) => return Ok(house_error(StatusCode::BAD_REQUEST, &bad)),
+        Err(e) => return Ok(internal("[tasks] assignee check on PUT task failed", e)),
     }
     let attachments = if attachment_ids.is_some() || refs.is_some() {
         // Resolve to canonical chips server-side (never trust client
@@ -336,7 +323,7 @@ pub async fn put(
         let uploads =
             match resolve_attachments(&state.pg, attachment_ids.as_deref().unwrap_or(&[])).await {
                 Ok(u) => u,
-                Err(e) => return internal("[tasks] attachment resolve failed", e),
+                Err(e) => return Ok(internal("[tasks] attachment resolve failed", e)),
             };
         let chips: Vec<RefChip> = if let Some(user) = session_user.as_ref() {
             let ref_user = RefUser {
@@ -346,7 +333,7 @@ pub async fn put(
             };
             match resolve_refs(&state.pg, &ref_user, refs.as_deref().unwrap_or(&[])).await {
                 Ok(c) => c,
-                Err(e) => return internal("[tasks] ref resolve failed", e),
+                Err(e) => return Ok(internal("[tasks] ref resolve failed", e)),
             }
         } else {
             Vec::new()
@@ -387,9 +374,11 @@ pub async fn put(
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let updated = match update_task(&deps, &id, patch, &actor).await {
         Ok(t) => t,
-        Err(TaskError::ApprovalRequired(msg)) => return house_error(StatusCode::FORBIDDEN, &msg),
-        Err(TaskError::Refusal(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(TaskError::Db(e)) => return internal("[tasks] update failed", e),
+        Err(TaskError::ApprovalRequired(msg)) => {
+            return Ok(house_error(StatusCode::FORBIDDEN, &msg));
+        }
+        Err(TaskError::Refusal(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        Err(TaskError::Db(e)) => return Ok(internal("[tasks] update failed", e)),
     };
     // No inline index or judge trigger on this path: a text edit reaches the
     // activity brain only through the opportunistic RAG sweep (keyed on
@@ -446,32 +435,29 @@ pub async fn put(
             .await;
         });
     }
-    Json(json!({ "task": updated })).into_response()
+    Ok(Json(json!({ "task": updated })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("tasks", "DELETE task", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[tasks] read on DELETE task failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on DELETE task failed", e)),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => return internal("[tasks] role read on DELETE task failed", e),
+        Err(e) => return Ok(internal("[tasks] role read on DELETE task failed", e)),
     };
     if !can_edit(role.as_deref()) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     // Comments are the task room's turns: their ids are the room's channel
     // messages, read before the row dies — the delete takes the room (FK
@@ -489,7 +475,7 @@ pub async fn delete(
     .await
     .unwrap_or_default();
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
-    match delete_task(&deps, &id).await {
+    Ok(match delete_task(&deps, &id).await {
         Ok(()) => {
             // Fire-and-forget, like the board and channel deletes.
             let pg = state.pg.clone();
@@ -511,5 +497,5 @@ pub async fn delete(
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => internal("[tasks] delete failed", e),
-    }
+    })
 }

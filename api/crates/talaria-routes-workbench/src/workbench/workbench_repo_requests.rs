@@ -12,8 +12,8 @@ use sqlx::AssertSqlSafe;
 
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, enum_member, parse, uuid_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{enum_member, parse, uuid_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as gh;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -53,10 +53,8 @@ fn req_wire(r: &ReqRow) -> serde_json::Value {
     })
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let rows: Vec<ReqRow> = match sqlx::query_as(AssertSqlSafe(format!(
         "select {ROW} from workbench_repo_requests where status = 'pending' order by created_at"
     )))
@@ -64,28 +62,26 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(r) => r,
-        Err(e) => return internal("[workbench/repo-requests] queue read failed", e),
+        Err(e) => return Ok(internal("[workbench/repo-requests] queue read failed", e)),
     };
-    Json(json!({ "requests": rows.iter().map(req_wire).collect::<Vec<_>>() })).into_response()
+    Ok(Json(json!({ "requests": rows.iter().map(req_wire).collect::<Vec<_>>() })).into_response())
 }
 
-pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let id = match uuid_member(obj, "id") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let action = match enum_member(obj, "action", &["approve", "reject"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let req = match sqlx::query_as::<_, ReqRow>(AssertSqlSafe(format!(
         "select {ROW} from workbench_repo_requests where id = $1::uuid and status = 'pending'"
@@ -95,10 +91,13 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     .await
     {
         Ok(r) => r,
-        Err(e) => return internal("[workbench/repo-requests] request read failed", e),
+        Err(e) => return Ok(internal("[workbench/repo-requests] request read failed", e)),
     };
     let Some(req) = req else {
-        return house_error(StatusCode::NOT_FOUND, "not found or already decided");
+        return Ok(house_error(
+            StatusCode::NOT_FOUND,
+            "not found or already decided",
+        ));
     };
     let actor = actor_of(&user);
     if action == "reject" {
@@ -111,9 +110,9 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         .execute(&state.pg)
         .await
         {
-            return internal("[workbench/repo-requests] reject write failed", e);
+            return Ok(internal("[workbench/repo-requests] reject write failed", e));
         }
-        return Json(json!({ "ok": true })).into_response();
+        return Ok(Json(json!({ "ok": true })).into_response());
     }
     // Approve — any failure folds into one 400 {error}: repo creation, the
     // grant, the decision write, the (only log) activity line. A failure
@@ -122,7 +121,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     let sb = state.secretbox().await.unwrap_or_default();
     let created = match gh::create_repo(&state.pg, &sb, &req.3, &req.4, &req.5).await {
         Ok(c) => c,
-        Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+        Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
     };
     // The requester gets the repo granted the moment it exists — appended
     // after their existing grants, deduped.
@@ -131,7 +130,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         grants.push(created.full_name.clone());
     }
     if let Err(e) = gh::set_granted_repos(&state.pg, &req.1, &grants).await {
-        return house_error(StatusCode::BAD_REQUEST, &e);
+        return Ok(house_error(StatusCode::BAD_REQUEST, &e));
     }
     if let Err(e) = sqlx::query(
         "update workbench_repo_requests set status = 'approved', decided_by = $1, \
@@ -143,7 +142,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     .await
     {
         tracing::error!("[workbench/repo-requests] approve write failed: {e}");
-        return house_error(StatusCode::BAD_REQUEST, &e.to_string());
+        return Ok(house_error(StatusCode::BAD_REQUEST, &e.to_string()));
     }
     if let Some(task_id) = &req.7 {
         // Best-effort — the ticket's activity line is not load-bearing.
@@ -177,5 +176,5 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         )
         .await;
     });
-    Json(json!({ "ok": true, "repo": created.full_name, "url": created.url })).into_response()
+    Ok(Json(json!({ "ok": true, "repo": created.full_name, "url": created.url })).into_response())
 }

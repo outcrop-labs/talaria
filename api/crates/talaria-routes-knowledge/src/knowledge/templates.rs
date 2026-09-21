@@ -7,70 +7,64 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_body::{as_object, optional_max_string_member, parse, trimmed_string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_max_string_member, parse, trimmed_string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_perm, require_user};
 use talaria_state::AppState;
 use talaria_templates::{NewTemplate, create_template, list_templates};
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    match list_templates(&state.pg, None).await {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    Ok(match list_templates(&state.pg, None).await {
         Ok(templates) => Json(json!({ "templates": templates })).into_response(),
         Err(e) => internal("[templates] list failed", e),
-    }
+    })
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "templates.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "templates.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match trimmed_string_member(obj, "name", 1, 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let kind = match talaria_body::enum_member(obj, "kind", &["ticket", "plan"]) {
         Ok(k) => k,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let body_text = match optional_max_string_member(obj, "body", 50_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let guidance = match optional_max_string_member(obj, "guidance", 10_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let created_by = user
         .email
         .as_deref()
         .or(user.name.as_deref())
         .unwrap_or("user");
-    match create_template(
-        &state.pg,
-        NewTemplate {
-            name: &name,
-            kind: &kind,
-            body: body_text.as_deref(),
-            guidance: guidance.as_deref(),
-            created_by,
+    Ok(
+        match create_template(
+            &state.pg,
+            NewTemplate {
+                name: &name,
+                kind: &kind,
+                body: body_text.as_deref(),
+                guidance: guidance.as_deref(),
+                created_by,
+            },
+        )
+        .await
+        {
+            Ok(template) => Json(json!({ "template": template })).into_response(),
+            Err(e) => internal("[templates] create failed", e),
         },
     )
-    .await
-    {
-        Ok(template) => Json(json!({ "template": template })).into_response(),
-        Err(e) => internal("[templates] create failed", e),
-    }
 }

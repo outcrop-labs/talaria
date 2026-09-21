@@ -10,67 +10,59 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_crons::{create_fleet_crons, list_fleet_crons};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse, trimmed_string_member, uuid_array_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, trimmed_string_member, uuid_array_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
-    match list_fleet_crons(&state.pg).await {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
+    Ok(match list_fleet_crons(&state.pg).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
         Err(e) => internal("[fleet] list_fleet_crons failed", e),
-    }
+    })
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // agentIds: min(1).max(64) — the helper carries the max; the min (a
     // fleet cron with no agents is nothing) is checked here.
     let agent_ids = match uuid_array_member(obj, "agentIds", 64) {
         Ok(ids) => ids,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if agent_ids.is_empty() {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             &talaria_body::array_too_small_msg(1),
-        );
+        ));
     }
     let name = match trimmed_string_member(obj, "name", 1, 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let schedule = match trimmed_string_member(obj, "schedule", 1, 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let prompt = match trimmed_string_member(obj, "prompt", 1, 20_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let stagger = match stagger_minutes(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let results =
         match create_fleet_crons(&state.pg, &agent_ids, &name, &schedule, &prompt, stagger).await {
             Ok(r) => r,
-            Err(e) => return internal("[fleet] create_fleet_crons failed", e),
+            Err(e) => return Ok(internal("[fleet] create_fleet_crons failed", e)),
         };
     let actor = actor_of(&user);
     let after = json!({
@@ -94,7 +86,7 @@ pub async fn post(
         )
         .await;
     });
-    Json(json!({ "results": results })).into_response()
+    Ok(Json(json!({ "results": results })).into_response())
 }
 
 /// staggerMinutes — optional int in [0, 30].

@@ -24,26 +24,23 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let src = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => return internal("[folders] read failed", e),
+        Err(e) => return Ok(internal("[folders] read failed", e)),
     };
     let Some(src) = src else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let editors = match list_editors(&state.pg, ITEM_FOLDER, &src.id).await {
         Ok(e) => e,
-        Err(e) => return internal("[folders] grants read failed", e),
+        Err(e) => return Ok(internal("[folders] grants read failed", e)),
     };
     // The read gate the GET uses, owner arm included.
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[folders] team membership read failed", e),
+        Err(e) => return Ok(internal("[folders] team membership read failed", e)),
     };
     if !can_read(
         &guarded_folder(&src),
@@ -52,11 +49,13 @@ pub async fn post(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    match duplicate_folder(&state.pg, &src.id, &user.id, Some(&user.id)).await {
-        Ok(Some(copy)) => Json(json!({ "folder": copy })).into_response(),
-        Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => internal("[folders] duplicate failed", e),
-    }
+    Ok(
+        match duplicate_folder(&state.pg, &src.id, &user.id, Some(&user.id)).await {
+            Ok(Some(copy)) => Json(json!({ "folder": copy })).into_response(),
+            Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
+            Err(e) => internal("[folders] duplicate failed", e),
+        },
+    )
 }

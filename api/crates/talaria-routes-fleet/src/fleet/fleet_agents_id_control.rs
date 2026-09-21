@@ -19,8 +19,8 @@ use talaria_api_facades::fleet::docker::{
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, enum_member, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::{enum_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_permissions::has_perm;
 use talaria_personal_agent::owns_agent;
 use talaria_session::{actor_of, require_user};
@@ -31,16 +31,10 @@ pub async fn post(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let action = match enum_member(
         obj,
         "action",
@@ -49,7 +43,7 @@ pub async fn post(
         ],
     ) {
         Ok(a) => a,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let owner_allowed = matches!(action.as_str(), "up" | "stop" | "restart")
         && owns_agent(&state.pg, &user.id, None, Some(&id)).await;
@@ -57,12 +51,12 @@ pub async fn post(
         .await
         .unwrap_or(false);
     if !perm && !owner_allowed {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let def = match agent_def_by_id(&state.pg, &id).await {
         Ok(Some(d)) => d,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[fleet] agent_def_by_id failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[fleet] agent_def_by_id failed", e)),
     };
 
     // Lifecycle actions are governance-relevant — record them, BEFORE the
@@ -99,21 +93,20 @@ pub async fn post(
         let _ = e;
         house_error(StatusCode::INTERNAL_SERVER_ERROR, &could_not(&action))
     };
-
-    match action.as_str() {
+    Ok(match action.as_str() {
         "up" => {
             if !def.managed {
-                return house_error(StatusCode::BAD_REQUEST, "not a managed agent");
+                return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return catch(e),
+                Err(e) => return Ok(catch(e)),
             };
             if let Err(e) = render_fleet(&state.pg, &sb, None).await {
-                return catch(e);
+                return Ok(catch(e));
             }
             if let Err(e) = fleet_up(&state.pg, &def.department).await {
-                return catch(e);
+                return Ok(catch(e));
             }
             // Don't block on health — the roster shows the warm-up phase.
             spawn_health_prune(&state.pg, &def.department);
@@ -127,7 +120,7 @@ pub async fn post(
             // Quick bounce (brief downtime; in-flight replies drop). For a
             // no-downtime reboot use 'roll'.
             if !def.managed {
-                return house_error(StatusCode::BAD_REQUEST, "not a managed agent");
+                return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
             match fleet_restart(&state.pg, &def.department).await {
                 Ok(_) => Json(json!({ "ok": true, "warming": true })).into_response(),
@@ -139,10 +132,10 @@ pub async fn post(
             // Long (health wait + drain), so it runs detached; the roster's
             // health polling tells the story.
             if !perm {
-                return house_error(StatusCode::FORBIDDEN, "forbidden");
+                return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
             }
             if !def.managed {
-                return house_error(StatusCode::BAD_REQUEST, "not a managed agent");
+                return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
             if let Ok(sb) = state.secretbox().await {
                 let pg = state.pg.clone();
@@ -164,14 +157,14 @@ pub async fn post(
             .await
             .is_err()
             {
-                return catch(String::new());
+                return Ok(catch(String::new()));
             }
             if let Err(e) = fleet_remove(&state.pg, &def.department).await {
-                return catch(e);
+                return Ok(catch(e));
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return catch(e),
+                Err(e) => return Ok(catch(e)),
             };
             match render_fleet(&state.pg, &sb, None).await {
                 // manifest drops it; bridge hot-reloads
@@ -183,11 +176,11 @@ pub async fn post(
             // Permanent: def + versions + secrets + rendered files + (for
             // created agents) the state volume. Admin only, retired only.
             if !perm {
-                return house_error(StatusCode::FORBIDDEN, "forbidden");
+                return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return catch(e),
+                Err(e) => return Ok(catch(e)),
             };
             match delete_agent_forever(&state.pg, &sb, &def.id).await {
                 Ok(removed_volume) => {
@@ -209,26 +202,26 @@ pub async fn post(
             .await
             .is_err()
             {
-                return catch(String::new());
+                return Ok(catch(String::new()));
             }
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => return catch(e),
+                Err(e) => return Ok(catch(e)),
             };
             if let Err(e) = render_fleet(&state.pg, &sb, None).await {
-                return catch(e);
+                return Ok(catch(e));
             }
             if def.managed {
                 if let Err(e) = fleet_up(&state.pg, &def.department).await {
-                    return catch(e);
+                    return Ok(catch(e));
                 }
                 spawn_health_prune(&state.pg, &def.department);
-                return Json(json!({ "ok": true, "warming": true })).into_response();
+                return Ok(Json(json!({ "ok": true, "warming": true })).into_response());
             }
             Json(json!({ "ok": true })).into_response()
         }
         _ => internal("[fleet] control: unknown action", &action),
-    }
+    })
 }
 
 /// wait_healthy, then prune_bundled_skills on success — 120s health

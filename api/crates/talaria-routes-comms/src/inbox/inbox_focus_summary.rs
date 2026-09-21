@@ -12,13 +12,10 @@ use talaria_inbox_focus::focus_summary;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
-    match focus_summary(&state.pg, &user).await {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(match focus_summary(&state.pg, &user).await {
         Ok(count) => (StatusCode::OK, Json(json!({ "count": count }))).into_response(),
         Err(e) => internal("[inbox-focus] summary read failed", e),
-    }
+    })
 }

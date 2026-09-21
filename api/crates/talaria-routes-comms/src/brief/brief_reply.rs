@@ -13,9 +13,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_body::{as_object, enum_member, uuid_member};
+use talaria_body::{enum_member, uuid_member};
 use talaria_daily_brief::delegation::{DraftOutcome, decide_draft};
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -35,19 +35,13 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let notify = talaria_notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     let outcome = match decide_draft(
@@ -59,9 +53,9 @@ pub async fn post(
     .await
     {
         Ok(o) => o,
-        Err(e) => return internal("[brief] draft decide failed", e),
+        Err(e) => return Ok(internal("[brief] draft decide failed", e)),
     };
-    match outcome {
+    Ok(match outcome {
         DraftOutcome::Gone => {
             house_error(StatusCode::NOT_FOUND, "That draft is no longer available.")
         }
@@ -71,5 +65,5 @@ pub async fn post(
         DraftOutcome::Stale(message) => house_error(StatusCode::CONFLICT, message),
         DraftOutcome::Sent => Json(json!({ "status": "sent" })).into_response(),
         DraftOutcome::Rejected => Json(json!({ "status": "rejected" })).into_response(),
-    }
+    })
 }

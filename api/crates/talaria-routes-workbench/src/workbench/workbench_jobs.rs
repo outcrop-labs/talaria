@@ -21,8 +21,8 @@ use talaria_api_facades::workbench::mcp::{
     MergeJob, WorkbenchActor, WorkbenchDeps, merge_job_to_testing,
 };
 use talaria_boards::{board_role, can_edit};
-use talaria_body::{as_object, enum_member, optional_max_string_member, parse, uuid_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{enum_member, optional_max_string_member, parse, uuid_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as gh;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -79,33 +79,34 @@ async fn job_by_id(pg: &PgPool, id: &str) -> Result<Option<Row>, sqlx::Error> {
     .await
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // ?taskId= — absent and bare-'?taskId' both null.
     let task_id = uri
         .query()
         .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("taskId=")));
     let Some(task_id) = task_id else {
-        return house_error(StatusCode::BAD_REQUEST, "taskId required");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "taskId required"));
     };
     let task = match get_task(&state.pg, task_id).await {
         Ok(t) => t,
-        Err(e) => return internal("[workbench/jobs] task read failed", e),
+        Err(e) => return Ok(internal("[workbench/jobs] task read failed", e)),
     };
     let Some(task) = task else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // Membership, not editorship: the strip is how a MEMBER watches the plan
     // gate and PR links on their board's ticket.
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => return internal("[workbench/jobs] board role read failed", e),
+        Err(e) => return Ok(internal("[workbench/jobs] board role read failed", e)),
     };
     if role.is_none() {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let rows: Vec<Row> = match sqlx::query_as::<_, Row>(AssertSqlSafe(format!(
         "select {JOB_ROW} from workbench_jobs where task_id = $1::uuid order by created_at desc"
@@ -115,7 +116,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     .await
     {
         Ok(r) => r,
-        Err(e) => return internal("[workbench/jobs] jobs read failed", e),
+        Err(e) => return Ok(internal("[workbench/jobs] jobs read failed", e)),
     };
     // Per-row read, fanned out: each wire gets its repo's testing branch
     // appended — testingBranch is null only when the flow read SAYS so; an
@@ -130,40 +131,38 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     for (r, flow) in rows.iter().zip(flows) {
         match flow {
             Ok(f) => wires.push(row_wire(r, f.testing_branch)),
-            Err(e) => return internal("[workbench/jobs] repo flow read failed", e),
+            Err(e) => return Ok(internal("[workbench/jobs] repo flow read failed", e)),
         }
     }
-    Json(json!({ "jobs": wires })).into_response()
+    Ok(Json(json!({ "jobs": wires })).into_response())
 }
 
-pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let job_id = match uuid_member(obj, "jobId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let action = match enum_member(obj, "action", &["approve", "reject", "merge_testing"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let note = match optional_max_string_member(obj, "note", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let job = match job_by_id(&state.pg, &job_id).await {
         Ok(j) => j,
-        Err(e) => return internal("[workbench/jobs] job read failed", e),
+        Err(e) => return Ok(internal("[workbench/jobs] job read failed", e)),
     };
     let Some(job) = job else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // A job with no ticket has no board to gate on — this route cannot act on
     // it (the agent's own verbs remain the only doors).
@@ -175,7 +174,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         edit_allowed = can_edit(role.as_deref());
     }
     if !edit_allowed {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let actor = actor_of(&user);
     if action == "merge_testing" {
@@ -194,7 +193,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         // BOTH engine flavors — the tool sentence and the thrown infra
         // error — fold into one 400 {error}.
         let r = merge_job_to_testing(&deps, &merge, &WorkbenchActor::Human(actor.clone())).await;
-        return match r {
+        return Ok(match r {
             Ok(_) => Json(json!({ "ok": true })).into_response(),
             Err(e) => {
                 let msg = match e {
@@ -203,10 +202,13 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 };
                 house_error(StatusCode::BAD_REQUEST, &msg)
             }
-        };
+        });
     }
     if job.7 != "awaiting_approval" {
-        return house_error(StatusCode::BAD_REQUEST, &format!("job is {}", job.7));
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            &format!("job is {}", job.7),
+        ));
     }
     let (status, description) = if action == "approve" {
         // Approving STARTS the job (clone + harness in the agent's container).
@@ -219,7 +221,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             if let Some(tid) = &job.2 {
                 talaria_work_wait::mark_waiting(&state.pg, tid, &job.1, &reason).await;
             }
-            return house_error(StatusCode::BAD_REQUEST, &reason);
+            return Ok(house_error(StatusCode::BAD_REQUEST, &reason));
         }
         let started = sqlx::query_scalar::<_, i64>(
             "select count(*) from workbench_jobs \
@@ -234,16 +236,16 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 if n >= talaria_api_facades::workbench::mcp::MAX_CONCURRENT_JOBS_PER_AGENT
                     as i64 =>
             {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     &format!(
                         "{} already has {n} live jobs (runaway cap) — finish or abandon one first",
                         job.1
                     ),
-                );
+                ));
             }
             Ok(_) => {}
-            Err(e) => return internal("[workbench/jobs] job count failed", e),
+            Err(e) => return Ok(internal("[workbench/jobs] job count failed", e)),
         }
         (
             "started",
@@ -268,7 +270,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             .execute(&state.pg)
             .await
     {
-        return internal("[workbench/jobs] job write failed", e);
+        return Ok(internal("[workbench/jobs] job write failed", e));
     }
     if let Err(e) = log_activity(
         &state.pg,
@@ -279,7 +281,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     )
     .await
     {
-        return internal("[workbench/jobs] activity write failed", e);
+        return Ok(internal("[workbench/jobs] activity write failed", e));
     }
     if status == "started"
         && let Ok(Some(department)) =
@@ -304,5 +306,5 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         )
         .await;
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

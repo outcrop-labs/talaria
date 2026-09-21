@@ -15,8 +15,8 @@ use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::kb::perms::{can_edit_agent, can_edit_human};
 use talaria_api_facades::kb::{effective_doc_perms, get_doc, move_doc};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{NumKind, as_object, nullable_uuid_member, number_member, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::{NumKind, nullable_uuid_member, number_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, who_of};
 use talaria_state::AppState;
 
@@ -25,27 +25,24 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let existing = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => return internal("[kb] doc read failed", e),
+        Err(e) => return Ok(internal("[kb] doc read failed", e)),
     };
     let Some(existing) = existing else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let eff = match effective_doc_perms(&state.pg, &existing).await {
         Ok(e) => e,
-        Err(e) => return internal("[kb] perms read failed", e),
+        Err(e) => return Ok(internal("[kb] perms read failed", e)),
     };
     // The same agent admission the doc PUT carries, because a move IS an edit
     // of the doc: its own authored doc, an editor grant — or an
     // admin-elevated assistant on any non-private doc. Without this, an agent
     // that filed a doc one level too deep could edit its body but never lift
     // it, and the workaround is a duplicate.
-    let agent = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let agent = agent_caller(&state.pg, &headers).await?;
     let actor: String;
     if let Some(agent) = agent {
         let name = agent.model.clone();
@@ -57,28 +54,25 @@ pub async fn post(
             .await
             {
                 Ok(v) => v,
-                Err(e) => return internal("[kb] elevation read failed", e),
+                Err(e) => return Ok(internal("[kb] elevation read failed", e)),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         let may_edit = existing.created_by.as_deref() == Some(name.as_str())
             || can_edit_agent(&name, &eff.grants, &team_ids)
             || elevated;
         if !may_edit {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         actor = name;
     } else {
-        let user = match require_perm(&state, &headers, "kb.edit").await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_perm(&state, &headers, "kb.edit").await?;
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] team membership read failed", e),
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         if !can_edit_human(
             &eff.perms,
@@ -87,18 +81,15 @@ pub async fn post(
             &eff.grants,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         actor = actor_of(&user);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let parent_id = match nullable_uuid_member(obj, "parentId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // sort — optional integer; absent is 0.
     let sort = match obj.get("sort") {
@@ -106,7 +97,7 @@ pub async fn post(
         Some(_) => match number_member(obj, "sort", NumKind::Int, i32::MIN as f64, i32::MAX as f64)
         {
             Ok(v) => v as i32,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
     // The tree is per-space: a cross-space parent would drag the doc under a
@@ -114,22 +105,22 @@ pub async fn post(
     if let Some(parent) = &parent_id {
         let parent_doc = match get_doc(&state.pg, parent).await {
             Ok(d) => d,
-            Err(e) => return internal("[kb] parent read failed", e),
+            Err(e) => return Ok(internal("[kb] parent read failed", e)),
         };
         match parent_doc {
             Some(p) if p.space_id == existing.space_id => {}
             _ => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     "parent must live in the same space",
-                );
+                ));
             }
         }
     }
     let doc = match move_doc(&state.pg, &id, parent_id.as_deref(), sort).await {
         Ok(Some(d)) => d,
-        Ok(None) => return house_error(StatusCode::BAD_REQUEST, "invalid move"),
-        Err(e) => return internal("[kb] move failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::BAD_REQUEST, "invalid move")),
+        Err(e) => return Ok(internal("[kb] move failed", e)),
     };
     let (pg, actor, target_id, target_label, after) = (
         state.pg.clone(),
@@ -153,5 +144,5 @@ pub async fn post(
         )
         .await;
     });
-    Json(json!({ "doc": doc })).into_response()
+    Ok(Json(json!({ "doc": doc })).into_response())
 }

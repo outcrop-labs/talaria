@@ -10,8 +10,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use talaria_body::{as_object, optional_max_string_member, parse, string_msg, zod_type_name};
-use talaria_error::{house_error, internal};
+use talaria_body::{optional_max_string_member, parse, string_msg, zod_type_name};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_personal_agent::{
     HANDLE_RE_NOTE, PersonalAgentInput, PersonalAgentPatch, PersonalUser, create_personal_agent,
     handle_ok, personal_agent_for, update_personal_agent,
@@ -81,117 +81,106 @@ fn friendly(msg: &str) -> String {
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    match personal_agent_for(&state.pg, &user.id).await {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(match personal_agent_for(&state.pg, &user.id).await {
         Ok(assistant) => Json(json!({ "assistant": assistant })).into_response(),
         Err(e) => internal("[me.assistant] read failed", e),
-    }
+    })
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match parse_name(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let handle = match parse_handle(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let personality = match optional_max_string_member(obj, "personality", 4000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let owner = PersonalUser {
         id: &user.id,
         email: user.email.as_deref(),
         name: user.name.as_deref(),
     };
-    match create_personal_agent(
-        &state,
-        &owner,
-        &PersonalAgentInput {
-            name: name.as_deref(),
-            handle: handle.as_deref(),
-            personality: personality.as_deref(),
+    Ok(
+        match create_personal_agent(
+            &state,
+            &owner,
+            &PersonalAgentInput {
+                name: name.as_deref(),
+                handle: handle.as_deref(),
+                personality: personality.as_deref(),
+            },
+        )
+        .await
+        {
+            Ok(assistant) => Json(json!({ "assistant": assistant })).into_response(),
+            Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
         },
     )
-    .await
-    {
-        Ok(assistant) => Json(json!({ "assistant": assistant })).into_response(),
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
-    }
 }
 
 pub async fn patch(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match parse_name(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let handle = match parse_handle(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let personality = match optional_max_string_member(obj, "personality", 4000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let model = match parse_model(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // members parse first (each gets its own error), then the at-least-one
     // check rejects an empty patch.
     if name.is_none() && handle.is_none() && personality.is_none() && model.is_none() {
-        return house_error(StatusCode::BAD_REQUEST, "nothing to update");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "nothing to update"));
     }
     let owner = PersonalUser {
         id: &user.id,
         email: user.email.as_deref(),
         name: user.name.as_deref(),
     };
-    match update_personal_agent(
-        &state,
-        &owner,
-        &PersonalAgentPatch {
-            name: name.as_deref(),
-            handle: handle.as_deref(),
-            personality: personality.as_deref(),
-            model: model.as_deref(),
+    Ok(
+        match update_personal_agent(
+            &state,
+            &owner,
+            &PersonalAgentPatch {
+                name: name.as_deref(),
+                handle: handle.as_deref(),
+                personality: personality.as_deref(),
+                model: model.as_deref(),
+            },
+        )
+        .await
+        {
+            Ok(assistant) => Json(json!({ "assistant": assistant })).into_response(),
+            Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
         },
     )
-    .await
-    {
-        Ok(assistant) => Json(json!({ "assistant": assistant })).into_response(),
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &friendly(&e)),
-    }
 }

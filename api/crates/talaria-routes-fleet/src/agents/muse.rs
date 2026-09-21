@@ -46,10 +46,10 @@ use talaria_api_facades::harness::run::{
 };
 use talaria_api_facades::harness::transport::gateway_stream;
 use talaria_body::{
-    array_too_big_msg, as_object, enum_member, optional_max_string_member, parse, string_msg,
-    too_big_msg, zod_type_name,
+    array_too_big_msg, enum_member, optional_max_string_member, parse, string_msg, too_big_msg,
+    zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_harness_defs::defs::muse::{
     MuseDraftInput, MuseProseInput, MuseProseKind, MuseTurn, muse_agent_harness, muse_cron_harness,
     muse_draft_harness, muse_skill_form_harness, muse_template_form_harness, muse_ticket_harness,
@@ -214,50 +214,52 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let kind = match enum_member(obj, "kind", &KINDS) {
         Ok(k) => k,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // instruction: trimmed, then 1..8_000 (empty after trim is a 400).
     let instruction = match obj.get("instruction") {
-        None => return house_error(StatusCode::BAD_REQUEST, &string_msg("undefined")),
+        None => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &string_msg("undefined"),
+            ));
+        }
         Some(v) => {
             let s = v.as_str().ok_or_else(|| string_msg(zod_type_name(v)));
             let s = match s {
                 Ok(s) => s,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let trimmed = s.trim();
             if trimmed.is_empty() {
-                return house_error(StatusCode::BAD_REQUEST, &talaria_body::too_small_msg(1));
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    &talaria_body::too_small_msg(1),
+                ));
             }
             if trimmed.chars().count() > 8_000 {
-                return house_error(StatusCode::BAD_REQUEST, &too_big_msg(8_000));
+                return Ok(house_error(StatusCode::BAD_REQUEST, &too_big_msg(8_000)));
             }
             trimmed.to_string()
         }
     };
     let current = match optional_max_string_member(obj, "current", 300_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let context = match optional_max_string_member(obj, "context", 2_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let chat = match parse_chat(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let caller = format!(
         "platform:muse:{}",
@@ -295,10 +297,10 @@ pub async fn post(
         let resolved: Option<ResolvedHarnessModel> =
             match resolve_harness_model(&state.pg, &user_spec).await {
                 Ok(r) => r,
-                Err(e) => return internal("[muse] model resolution failed", e),
+                Err(e) => return Ok(internal("[muse] model resolution failed", e)),
             };
         let Some(resolved) = resolved else {
-            return house_error(StatusCode::BAD_REQUEST, NO_MODEL);
+            return Ok(house_error(StatusCode::BAD_REQUEST, NO_MODEL));
         };
         // `userId` is what arms the member model allowlist inside the chain
         // (see MUSE_MODEL) — a harness run without it would hand a member the
@@ -344,9 +346,9 @@ pub async fn post(
                 if let Some(m) = model.as_deref() {
                     resp = resp.header("x-muse-model", m);
                 }
-                return resp
+                return Ok(resp
                     .body(Body::from(body))
-                    .expect("static headers build");
+                    .expect("static headers build"));
             }
             _ = tokio::time::sleep(FIRST_HEARTBEAT) => {}
         }
@@ -380,13 +382,13 @@ pub async fn post(
         // Header order on the wire is alphabetical — cache-control, then
         // content-type, then x-muse-model (the prose answer below is the
         // precedent for caring).
-        return Response::builder()
+        return Ok(Response::builder()
             .status(StatusCode::OK)
             .header(header::CACHE_CONTROL, "no-cache")
             .header(header::CONTENT_TYPE, "application/json")
             .header("x-muse-model", &model_header)
             .body(Body::from_stream(stream))
-            .expect("static headers build");
+            .expect("static headers build"));
     }
 
     // ── The prose kinds: stream ─────────────────────────────────────────────
@@ -426,10 +428,10 @@ pub async fn post(
     let resolved: Option<ResolvedHarnessModel> =
         match resolve_harness_model(&state.pg, &user_spec).await {
             Ok(r) => r,
-            Err(e) => return internal("[muse] model resolution failed", e),
+            Err(e) => return Ok(internal("[muse] model resolution failed", e)),
         };
     let Some(resolved) = resolved else {
-        return house_error(StatusCode::BAD_REQUEST, NO_MODEL);
+        return Ok(house_error(StatusCode::BAD_REQUEST, NO_MODEL));
     };
     let model = resolved.model.clone();
 
@@ -552,7 +554,7 @@ pub async fn post(
             .and_then(|r| r.ok())
             .and_then(|r| r.error)
             .unwrap_or_else(|| "the model returned nothing".to_string());
-        return house_error(StatusCode::BAD_GATEWAY, &error);
+        return Ok(house_error(StatusCode::BAD_GATEWAY, &error));
     }
 
     let stream =
@@ -560,15 +562,17 @@ pub async fn post(
             brx,
             |mut rx| async move { rx.recv().await.map(|i| (i, rx)) },
         );
-    // Header order on the wire is alphabetical — cache-control, then
-    // content-type, then x-muse-model.
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .header("x-muse-model", &model)
-        .body(Body::from_stream(stream))
-        .expect("static headers build")
+    Ok(
+        // Header order on the wire is alphabetical — cache-control, then
+        // content-type, then x-muse-model.
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CACHE_CONTROL, "no-cache")
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header("x-muse-model", &model)
+            .body(Body::from_stream(stream))
+            .expect("static headers build"),
+    )
 }
 
 #[cfg(test)]

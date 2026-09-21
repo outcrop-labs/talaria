@@ -10,108 +10,98 @@ use talaria_api_facades::gateway::provider::migrate_env_keys_to_cipher;
 use talaria_api_facades::gateway::registry::{create_endpoint, list_endpoints_wire};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, js_numberify, optional_max_string_member, optional_string_array_member, parse,
-    string_member,
+    js_numberify, optional_max_string_member, optional_string_array_member, parse, string_member,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_price_oracle::{kick_auto_prices, maybe_refresh_auto_prices};
-use talaria_session::{actor_of, require_admin};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let listed = list_endpoints_wire(&state.pg).await;
     maybe_refresh_auto_prices(&state.pg); // background; persisted rates show on the next load
     // one-time: seal any config-only keys into the DB (fire-and-forget)
     tokio::spawn(async move {
         let _ = migrate_env_keys_to_cipher(&state).await;
     });
-    match listed {
+    Ok(match listed {
         Ok(endpoints) => {
             let mut body = json!({ "endpoints": endpoints });
             js_numberify(&mut body);
             Json(body).into_response()
         }
         Err(e) => internal("[fleet] fleet_endpoints failed", e),
-    }
+    })
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let parsed = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => return internal("[fleet] secretbox failed", e),
-    };
-    match create_endpoint(
-        &state.pg,
-        &sb,
-        &parsed.name,
-        &parsed.provider,
-        parsed.base_url.as_deref(),
-        &parsed.class,
-        parsed.api_key_env.as_deref(),
-        parsed.api_key.as_deref(),
-        &parsed.models,
-        &parsed.model_prices,
+    let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
+    Ok(
+        match create_endpoint(
+            &state.pg,
+            &sb,
+            &parsed.name,
+            &parsed.provider,
+            parsed.base_url.as_deref(),
+            &parsed.class,
+            parsed.api_key_env.as_deref(),
+            parsed.api_key.as_deref(),
+            &parsed.models,
+            &parsed.model_prices,
+        )
+        .await
+        {
+            Ok(id) => {
+                let actor = actor_of(&user);
+                let after = json!({
+                    "provider": parsed.provider,
+                    "class": parsed.class,
+                });
+                let label = parsed.name.clone();
+                let pg = state.pg.clone();
+                tokio::spawn(async move {
+                    log_audit(
+                        &pg,
+                        AuditEntry {
+                            actor: &actor,
+                            action: "endpoint.create",
+                            target_type: "endpoint",
+                            target_id: None,
+                            target_label: Some(&label),
+                            before: None,
+                            after: Some(after),
+                        },
+                    )
+                    .await;
+                });
+                // Price the new provider's models in the background — never block
+                // an interactive save on a fetch to openrouter.ai (15s worst case
+                // offline).
+                kick_auto_prices(&state.pg);
+                Json(json!({ "ok": true, "id": id })).into_response()
+            }
+            Err(e) => {
+                let message = if e.to_string().contains("duplicate") {
+                    "an endpoint with that name exists".to_string()
+                } else {
+                    e.to_string()
+                };
+                house_error(StatusCode::BAD_REQUEST, &message)
+            }
+        },
     )
-    .await
-    {
-        Ok(id) => {
-            let actor = actor_of(&user);
-            let after = json!({
-                "provider": parsed.provider,
-                "class": parsed.class,
-            });
-            let label = parsed.name.clone();
-            let pg = state.pg.clone();
-            tokio::spawn(async move {
-                log_audit(
-                    &pg,
-                    AuditEntry {
-                        actor: &actor,
-                        action: "endpoint.create",
-                        target_type: "endpoint",
-                        target_id: None,
-                        target_label: Some(&label),
-                        before: None,
-                        after: Some(after),
-                    },
-                )
-                .await;
-            });
-            // Price the new provider's models in the background — never block
-            // an interactive save on a fetch to openrouter.ai (15s worst case
-            // offline).
-            kick_auto_prices(&state.pg);
-            Json(json!({ "ok": true, "id": id })).into_response()
-        }
-        Err(e) => {
-            let message = if e.to_string().contains("duplicate") {
-                "an endpoint with that name exists".to_string()
-            } else {
-                e.to_string()
-            };
-            house_error(StatusCode::BAD_REQUEST, &message)
-        }
-    }
 }
 
 struct Validated {

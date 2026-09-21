@@ -13,11 +13,11 @@ use talaria_api_facades::model::access::gateway_models;
 use talaria_api_facades::model::efforts::efforts_for_model;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, enum_member, nullish_member, optional_max_string_member, parse, string_msg,
-    too_big_msg, too_small_msg, utf16_len, zod_type_name,
+    enum_member, nullish_member, optional_max_string_member, parse, string_msg, too_big_msg,
+    too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_effort_prefs::{agent_slot, get_effort_prefs, set_effort_pref};
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_judge::{get_judge_config, set_judge_config};
 use talaria_platform_agents::{
     PLATFORM_AGENTS, get_platform_agent_models, set_platform_agent_model,
@@ -35,10 +35,11 @@ fn assignable_ids() -> Vec<&'static str> {
         .collect()
 }
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     // assignments = the raw setting, with judge overlaid from judge_config —
     // a missing judge model DROPS the key rather than spelling null.
     let mut assignments = match get_platform_agent_models(&state.pg).await {
@@ -58,7 +59,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     // panel's graceful [].
     let models: Vec<String> = match gateway_models(&state.pg).await {
         Ok(m) => m.into_iter().map(|m| m.id).collect(),
-        Err(e) => return internal("[admin/platform-agents] gateway read failed", e),
+        Err(e) => return Ok(internal("[admin/platform-agents] gateway read failed", e)),
     };
     let prefs = get_effort_prefs(&state.pg).await;
     let mut efforts = serde_json::Map::new();
@@ -67,43 +68,37 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         let effort = prefs.get(&slot).cloned().unwrap_or(Value::Null); // null when unset
         efforts.insert(id.to_string(), effort);
     }
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "agents": PLATFORM_AGENTS.iter().map(|a| a.to_json()).collect::<Vec<_>>(),
         "assignments": Value::Object(assignments),
         "models": models,
         // The per-agent effort preference (null = the model's own default).
         "efforts": Value::Object(efforts),
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let actor = actor_of(&user);
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // id (enum over the assignable ids — the message lists them in catalog
     // order), model (string max 200, nullish), effort (string 1..24,
     // nullish).
     let id = match enum_member(obj, "id", &assignable_ids()) {
         Ok(i) => i,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Tri-state: absent leaves the assignment alone, null clears it, a
     // string sets it — the PATCH distinction nullish_member exists for.
     let model = match nullish_member(obj, "model", |o, k| optional_max_string_member(o, k, 200)) {
         Ok(m) => m,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Absent = leave it alone; null = clear.
     let effort = match obj.get("effort") {
@@ -112,14 +107,19 @@ pub async fn put(
         Some(Value::String(e)) => {
             let n = utf16_len(e);
             if n < 1 {
-                return house_error(StatusCode::BAD_REQUEST, &too_small_msg(1));
+                return Ok(house_error(StatusCode::BAD_REQUEST, &too_small_msg(1)));
             }
             if n > 24 {
-                return house_error(StatusCode::BAD_REQUEST, &too_big_msg(24));
+                return Ok(house_error(StatusCode::BAD_REQUEST, &too_big_msg(24)));
             }
             Some(Some(e.clone()))
         }
-        Some(v) => return house_error(StatusCode::BAD_REQUEST, &string_msg(zod_type_name(v))),
+        Some(v) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &string_msg(zod_type_name(v)),
+            ));
+        }
     };
 
     // The truthy spelling: an empty model string skips the gateway check
@@ -130,10 +130,13 @@ pub async fn put(
         } else {
             let on_gateway = match gateway_models(&state.pg).await {
                 Ok(models) => models.iter().any(|g| &g.id == m),
-                Err(e) => return internal("[admin/platform-agents] gateway read failed", e),
+                Err(e) => return Ok(internal("[admin/platform-agents] gateway read failed", e)),
             };
             if !on_gateway {
-                return house_error(StatusCode::BAD_REQUEST, "that model is not on the gateway");
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "that model is not on the gateway",
+                ));
             }
         }
     }
@@ -161,24 +164,24 @@ pub async fn put(
         };
         if let Some(e) = effort.as_deref() {
             let Some(target) = target else {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     "assign a model before setting its effort",
-                );
+                ));
             };
             if !efforts_for_model(&state.pg, &target)
                 .await
                 .iter()
                 .any(|lvl| lvl == e)
             {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     &format!("that model does not publish the \"{e}\" effort level"),
-                );
+                ));
             }
         }
         if let Err(e) = set_effort_pref(&state.pg, &agent_slot(&id), effort.as_deref()).await {
-            return internal("[admin/platform-agents] effort write failed", e);
+            return Ok(internal("[admin/platform-agents] effort write failed", e));
         }
         log_audit(
             &state.pg,
@@ -216,7 +219,7 @@ pub async fn put(
             }
             set_judge_config(&state.pg, &cfg).await;
         } else if let Err(e) = set_platform_agent_model(&state.pg, &id, model.as_deref()).await {
-            return internal("[admin/platform-agents] assign write failed", e);
+            return Ok(internal("[admin/platform-agents] assign write failed", e));
         }
     }
     log_audit(
@@ -241,5 +244,5 @@ pub async fn put(
         },
     )
     .await;
-    Json(serde_json::json!({ "ok": true })).into_response()
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }

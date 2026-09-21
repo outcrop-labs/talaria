@@ -166,6 +166,32 @@ pub fn internal(context: &str, e: impl std::fmt::Display) -> Response {
     thrown_internal_error()
 }
 
+/// The parsed request body as an object, or the house 400 carrying the zod
+/// sentence — the shape ~160 route handlers wrote out by hand:
+///
+/// ```text
+/// let obj = match as_object(&parsed) {
+///     Ok(o) => o,
+///     Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+/// };
+/// ```
+///
+/// WHY IT EXISTS: `talaria_body` deliberately stays pure — it answers the
+/// MESSAGE and knows nothing about HTTP — so the message-to-400 conversion
+/// lived at every call site instead. It is one conversion, and it belongs
+/// beside the envelope it produces, not 160 times inside the routes.
+// The Err here IS the response to send — a Response is the only thing a route
+// can return, and clippy's size heuristic cannot know that.
+#[allow(clippy::result_large_err)]
+pub fn object_or_400(
+    parsed: &serde_json::Value,
+) -> Result<&serde_json::Map<String, serde_json::Value>, Response> {
+    match talaria_body::as_object(parsed) {
+        Ok(o) => Ok(o),
+        Err(msg) => Err(house_error(StatusCode::BAD_REQUEST, &msg)),
+    }
+}
+
 /// The bare Postgres sentence under a sqlx error — the message
 /// catch-and-answer routes put on the wire. sqlx's own Display wraps it
 /// ("error returned from database: … at line N"), which the wire never

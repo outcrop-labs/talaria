@@ -26,10 +26,10 @@ use talaria_artifacts::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
+    optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 use talaria_users::is_elevated_assistant;
@@ -72,24 +72,21 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => return internal("[artifacts] read failed", e),
+        Err(e) => return Ok(internal("[artifacts] read failed", e)),
     };
     let Some(artifact) = artifact else {
-        return not_found();
+        return Ok(not_found());
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => return internal("[artifacts] grants read failed", e),
+        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
     };
     // Agents (over MCP) read org/public artifacts, ones granted to them, and —
     // for a personal assistant — its owner's own (can_read_agent's owner arm).
-    let reader = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let reader = agent_caller(&state.pg, &headers).await?;
     if let Some(reader) = reader {
         let owner = match talaria_users::assistant_owner_for(
             &state.pg,
@@ -98,11 +95,11 @@ pub async fn get(
         .await
         {
             Ok(v) => v,
-            Err(e) => return internal("[artifacts] owner resolve failed", e),
+            Err(e) => return Ok(internal("[artifacts] owner resolve failed", e)),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &reader.model).await {
             Ok(v) => v,
-            Err(e) => return internal("[artifacts] team membership read failed", e),
+            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
         };
         if !can_read_agent(
             &guarded(&artifact),
@@ -111,18 +108,17 @@ pub async fn get(
             &editors,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
-        return Json(json!({ "artifact": artifact, "editors": editors_json(&editors) }))
-            .into_response();
+        return Ok(
+            Json(json!({ "artifact": artifact, "editors": editors_json(&editors) }))
+                .into_response(),
+        );
     }
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[artifacts] team membership read failed", e),
+        Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
     };
     if !can_read(
         &guarded(&artifact),
@@ -131,9 +127,9 @@ pub async fn get(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    Json(json!({ "artifact": artifact, "editors": editors_json(&editors) })).into_response()
+    Ok(Json(json!({ "artifact": artifact, "editors": editors_json(&editors) })).into_response())
 }
 
 pub async fn put(
@@ -141,50 +137,44 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => return internal("[artifacts] read failed", e),
+        Err(e) => return Ok(internal("[artifacts] read failed", e)),
     };
     let Some(artifact) = artifact else {
-        return not_found();
+        return Ok(not_found());
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let mut body = match parse_put_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => return internal("[artifacts] grants read failed", e),
+        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
     };
     let g = guarded(&artifact);
 
     let actor: String;
     let mut owner = false;
-    let agent = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let agent = agent_caller(&state.pg, &headers).await?;
     if let Some(agent) = agent {
         let name = agent.model.clone();
         // Editor grant — or an admin-elevated assistant on any non-private artifact.
         let elevated = artifact.visibility != "private"
             && match is_elevated_assistant(&state.pg, &AgentSubject::Caller(agent)).await {
                 Ok(v) => v,
-                Err(e) => return internal("[artifacts] elevation read failed", e),
+                Err(e) => return Ok(internal("[artifacts] elevation read failed", e)),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => return internal("[artifacts] team membership read failed", e),
+            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
         };
         let may_edit = can_edit_agent(&name, &editors, &team_ids) || elevated;
         if !may_edit {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         actor = name;
         body.visibility = None;
@@ -193,17 +183,14 @@ pub async fn put(
         body.official = None;
         body.rag_routing = None;
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => return internal("[artifacts] team membership read failed", e),
+            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
         };
         if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         actor = actor_of(&user);
         // `canGovern`, not `isOwner` — the same rule kb/docs/{id} already
@@ -217,7 +204,7 @@ pub async fn put(
         // owners' to govern.
         owner = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
             Ok(v) => v,
-            Err(e) => return internal("[artifacts] govern check failed", e),
+            Err(e) => return Ok(internal("[artifacts] govern check failed", e)),
         };
         if body.visibility.as_deref() == Some("public")
             && !matches!(
@@ -226,19 +213,25 @@ pub async fn put(
                 Ok(true)
             )
         {
-            return house_error(StatusCode::FORBIDDEN, "no permission to publish to the web");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "no permission to publish to the web",
+            ));
         }
         let sharing =
             body.visibility.is_some() || body.edit_policy.is_some() || body.editors.is_some();
         if !owner && sharing {
-            return house_error(StatusCode::FORBIDDEN, "not allowed to change sharing");
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "not allowed to change sharing",
+            ));
         }
         // Routing decides which brain retrieves the content — owner's call.
         if !owner && body.rag_routing.is_some() {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 "only the owner can change brain routing",
-            );
+            ));
         }
     }
 
@@ -249,7 +242,7 @@ pub async fn put(
         && let Some(editors) = &body.editors
         && let Err(e) = set_editors(&state.pg, ITEM_ARTIFACT, &id, editors).await
     {
-        return internal("[knowledge] set_editors failed", e);
+        return Ok(internal("[knowledge] set_editors failed", e));
     }
     let mut updated = match save_artifact(
         &state.pg,
@@ -271,8 +264,8 @@ pub async fn put(
     .await
     {
         Ok(Some(a)) => a,
-        Ok(None) => return not_found(),
-        Err(e) => return internal("[artifacts] save failed", e),
+        Ok(None) => return Ok(not_found()),
+        Err(e) => return Ok(internal("[artifacts] save failed", e)),
     };
     if let Some(official) = body.official
         && official != updated.official
@@ -289,7 +282,7 @@ pub async fn put(
         {
             Ok(Some(a)) => a,
             Ok(None) => updated,
-            Err(e) => return internal("[artifacts] officialize failed", e),
+            Err(e) => return Ok(internal("[artifacts] officialize failed", e)),
         };
         let (pg, actor_, action, target_id, target_label) = (
             state.pg.clone(),
@@ -334,7 +327,7 @@ pub async fn put(
                 });
             }
             Ok(None) => {}
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         }
     }
     // Content edits keep the artifact's retrievable copy current: auto →
@@ -366,34 +359,31 @@ pub async fn put(
     }
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &id).await {
         Ok(e) => e,
-        Err(e) => return internal("[artifacts] grants read failed", e),
+        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
     };
-    Json(json!({ "artifact": updated, "editors": editors_json(&editors) })).into_response()
+    Ok(Json(json!({ "artifact": updated, "editors": editors_json(&editors) })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => return internal("[artifacts] read failed", e),
+        Err(e) => return Ok(internal("[artifacts] read failed", e)),
     };
     let Some(artifact) = artifact else {
-        return not_found();
+        return Ok(not_found());
     };
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => return internal("[artifacts] grants read failed", e),
+        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[artifacts] team membership read failed", e),
+        Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
     };
     if !can_edit_human(
         &guarded(&artifact),
@@ -402,11 +392,11 @@ pub async fn delete(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     if let Err(e) = delete_artifact(&state.pg, &qdrant::real_deps(), &embed::real_deps(), &id).await
     {
-        return internal("[artifacts] delete failed", e);
+        return Ok(internal("[artifacts] delete failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

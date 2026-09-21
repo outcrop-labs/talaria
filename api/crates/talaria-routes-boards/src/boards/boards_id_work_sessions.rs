@@ -20,18 +20,15 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(board_id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("boards", "GET work-sessions", &board_id) {
-        return gate;
+        return Ok(gate);
     }
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     match board_role(&state.pg, &user.id, &board_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[boards/work-sessions] role read failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards/work-sessions] role read failed", e)),
     }
 
     // Every non-terminal work session on this board's tasks, newest per
@@ -52,7 +49,7 @@ pub async fn get(
     .await;
     let rows = match rows {
         Ok(r) => r,
-        Err(e) => return internal("[boards/work-sessions] read failed", e),
+        Err(e) => return Ok(internal("[boards/work-sessions] read failed", e)),
     };
     let mut map = serde_json::Map::new();
     for row in rows {
@@ -79,5 +76,5 @@ pub async fn get(
             waits.insert(task_id, talaria_work_wait::wire(&wait));
         }
     }
-    Json(json!({ "sessions": map, "waits": waits })).into_response()
+    Ok(Json(json!({ "sessions": map, "waits": waits })).into_response())
 }

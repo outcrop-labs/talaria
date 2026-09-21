@@ -11,22 +11,21 @@ use talaria_inbox_focus::{FocusQueueOptions, list_focus_queue};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
-    match list_focus_queue(
-        &state,
-        &user,
-        FocusQueueOptions {
-            enrich: true,
-            include_snoozed: false,
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(
+        match list_focus_queue(
+            &state,
+            &user,
+            FocusQueueOptions {
+                enrich: true,
+                include_snoozed: false,
+            },
+        )
+        .await
+        {
+            Ok(queue) => (StatusCode::OK, Json(queue)).into_response(),
+            Err(e) => internal("[inbox-focus] queue read failed", e),
         },
     )
-    .await
-    {
-        Ok(queue) => (StatusCode::OK, Json(queue)).into_response(),
-        Err(e) => internal("[inbox-focus] queue read failed", e),
-    }
 }

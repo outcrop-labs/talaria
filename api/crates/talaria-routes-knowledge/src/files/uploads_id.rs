@@ -20,13 +20,10 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     // Bytes only for viewers who can reach this upload through something
     // they can already read — never by id alone.
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     let allowed = if let Some(caller) = caller {
         can_access_upload(
             &state.pg,
@@ -37,10 +34,7 @@ pub async fn get(
         )
         .await
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         can_access_upload(
             &state.pg,
             &id,
@@ -53,15 +47,20 @@ pub async fn get(
         .await
     };
     if !allowed {
-        return upload_not_found();
+        return Ok(upload_not_found());
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let found = match get_upload(&state.pg, &sb, &id).await {
         Ok(f) => f,
-        Err(e) => return internal("[uploads] blob read failed", e),
+        Err(e) => return Ok(internal("[uploads] blob read failed", e)),
     };
     let Some((bytes, mime, filename)) = found else {
-        return upload_not_found();
+        return Ok(upload_not_found());
     };
-    serve_upload(bytes, &mime, &filename, "private, max-age=86400")
+    Ok(serve_upload(
+        bytes,
+        &mime,
+        &filename,
+        "private, max-age=86400",
+    ))
 }

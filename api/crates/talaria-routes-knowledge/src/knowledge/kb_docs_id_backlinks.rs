@@ -20,26 +20,23 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let doc = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => return internal("[kb] doc read failed", e),
+        Err(e) => return Ok(internal("[kb] doc read failed", e)),
     };
     let Some(doc) = doc else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let eff = match effective_doc_perms(&state.pg, &doc).await {
         Ok(e) => e,
-        Err(e) => return internal("[kb] perms read failed", e),
+        Err(e) => return Ok(internal("[kb] perms read failed", e)),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return internal("[kb] team membership read failed", e),
+        Err(e) => return Ok(internal("[kb] team membership read failed", e)),
     };
     if !can_read(
         &eff.perms,
@@ -48,10 +45,10 @@ pub async fn get(
         &eff.grants,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    match get_backlinks(&state.pg, &id).await {
+    Ok(match get_backlinks(&state.pg, &id).await {
         Ok(backlinks) => Json(json!({ "backlinks": backlinks })).into_response(),
         Err(e) => internal("[kb] backlink scan failed", e),
-    }
+    })
 }

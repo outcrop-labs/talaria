@@ -21,12 +21,10 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<GapsQuery>,
-) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    match list_gaps(&state.pg, query.status.as_deref()).await {
+) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    Ok(match list_gaps(&state.pg, query.status.as_deref()).await {
         Ok(gaps) => Json(json!({ "gaps": gaps })).into_response(),
         Err(e) => internal("[gaps] list failed", e),
-    }
+    })
 }

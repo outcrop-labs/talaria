@@ -14,11 +14,12 @@ use talaria_error::internal;
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // a missing q is the empty query, which the engine answers with no hits
     // (never an error).
     let q = uri
@@ -30,17 +31,19 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         })
         .unwrap_or_default();
     let who = who_of(&user);
-    match search_docs(
-        &state.pg,
-        &q,
-        SearchViewer {
-            user_id: &user.id,
-            who: who.as_deref(),
+    Ok(
+        match search_docs(
+            &state.pg,
+            &q,
+            SearchViewer {
+                user_id: &user.id,
+                who: who.as_deref(),
+            },
+        )
+        .await
+        {
+            Ok(hits) => Json(json!({ "hits": hits })).into_response(),
+            Err(e) => internal("[kb] search failed", e),
         },
     )
-    .await
-    {
-        Ok(hits) => Json(json!({ "hits": hits })).into_response(),
-        Err(e) => internal("[kb] search failed", e),
-    }
 }

@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
 use talaria_artifacts::{attach_artifact, detach_artifact, get_artifact, guarded};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -71,27 +71,24 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let (user, _artifact) = match gate(&state, &headers, &id).await {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_link_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let actor = who_of(&user).unwrap_or_else(|| "user".into());
     if let Err(e) =
         attach_artifact(&state.pg, &id, &body.target_type, &body.target_id, &actor).await
     {
-        return internal("[artifacts] link write failed", e);
+        return Ok(internal("[artifacts] link write failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
@@ -99,22 +96,19 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let (_user, _artifact) = match gate(&state, &headers, &id).await {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_link_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = detach_artifact(&state.pg, &id, &body.target_type, &body.target_id).await {
-        return internal("[artifacts] link delete failed", e);
+        return Ok(internal("[artifacts] link delete failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

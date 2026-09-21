@@ -18,11 +18,8 @@ use talaria_notify::{unread_count, unread_count_of_kind};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let (rooms, chats, plans, research, bell) = tokio::join!(
         channel_unread_total(&state.pg, &user.id),
         conversation_unread_total(&state.pg, &user.id, "chat"),
@@ -35,25 +32,25 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // it can only do that if a failure is a failure.
     let (rooms, chats) = match (rooms, chats) {
         (Ok(r), Ok(c)) => (r, c),
-        _ => return internal("[unreads]", "comms arms failed"),
+        _ => return Ok(internal("[unreads]", "comms arms failed")),
     };
     let plans = match plans {
         Ok(v) => v,
-        Err(_) => return internal("[unreads]", "plan arm failed"),
+        Err(_) => return Ok(internal("[unreads]", "plan arm failed")),
     };
     let research = match research {
         Ok(v) => v,
-        Err(_) => return internal("[unreads]", "research arm failed"),
+        Err(_) => return Ok(internal("[unreads]", "research arm failed")),
     };
     let bell = match bell {
         Ok(v) => v,
-        Err(_) => return internal("[unreads]", "notifications arm failed"),
+        Err(_) => return Ok(internal("[unreads]", "notifications arm failed")),
     };
-    Json(json!({
+    Ok(Json(json!({
         "comms": rooms + chats,
         "plan": plans,
         "research": research,
         "notifications": bell,
     }))
-    .into_response()
+    .into_response())
 }

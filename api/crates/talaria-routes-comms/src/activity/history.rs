@@ -145,11 +145,12 @@ async fn can_read_snapshot_history(
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let q = query_pairs(uri.query());
     let kind = q.get("kind").map(String::as_str);
     // an absent or EMPTY rev param lists — it doesn't select.
@@ -158,23 +159,23 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if let Some(vkind) = kind.and_then(VersionKind::parse) {
         let id = q.get("id").filter(|i| !i.is_empty()).map(String::as_str);
         let Some(id) = id else {
-            return house_error(StatusCode::BAD_REQUEST, "missing id");
+            return Ok(house_error(StatusCode::BAD_REQUEST, "missing id"));
         };
         if user.role != "admin" && !owns_agent(&state.pg, &user.id, None, Some(id)).await {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         let versions = match list_versions(&state.pg, id).await {
             Ok(v) => v,
-            Err(e) => return internal("[history] versions read failed", e),
+            Err(e) => return Ok(internal("[history] versions read failed", e)),
         };
         if let Some(rev) = rev {
-            return match versions.iter().find(|v| v.id == rev) {
+            return Ok(match versions.iter().find(|v| v.id == rev) {
                 None => house_error(StatusCode::NOT_FOUND, "not found"),
                 Some(v) => Json(ContentBody {
                     content: version_content(vkind, v),
                 })
                 .into_response(),
-            };
+            });
         }
         let revisions: Vec<VersionRevision> = versions
             .iter()
@@ -188,11 +189,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
                 version: v.version,
             })
             .collect();
-        return Json(RevisionsBody { revisions }).into_response();
+        return Ok(Json(RevisionsBody { revisions }).into_response());
     }
 
     let Some(kind) = kind.filter(|k| SNAPSHOT_KINDS.contains(k)) else {
-        return house_error(StatusCode::BAD_REQUEST, "bad kind");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "bad kind"));
     };
     // skill keys on "<owner>/<name>"; the rest key on an id. An empty
     // owner/name/id counts as absent.
@@ -208,26 +209,26 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         q.get("id").filter(|i| !i.is_empty()).cloned()
     };
     let Some(owner_key) = owner_key else {
-        return house_error(StatusCode::BAD_REQUEST, "missing owner");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "missing owner"));
     };
 
     // History serves FULL content — it must honor the same read model as
     // the live item, or it's a bypass of the entire permission system.
     if !can_read_snapshot_history(&state, kind, &owner_key, &user).await {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
 
     if let Some(rev) = rev {
-        return match get_revision(&state.pg, kind, &owner_key, rev).await {
+        return Ok(match get_revision(&state.pg, kind, &owner_key, rev).await {
             Ok(Some(content)) => Json(ContentBody { content }).into_response(),
             Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
             Err(e) => internal("[history] revision read failed", e),
-        };
+        });
     }
-    match list_history(&state.pg, kind, &owner_key).await {
+    Ok(match list_history(&state.pg, kind, &owner_key).await {
         Ok(revisions) => Json(RevisionsBody { revisions }).into_response(),
         Err(e) => internal("[history] snapshot list failed", e),
-    }
+    })
 }
 
 #[cfg(test)]

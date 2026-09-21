@@ -14,35 +14,34 @@ use talaria_session::require_user;
 use talaria_state::AppState;
 
 // GET → this user's Google connection status (never exposes tokens)
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
     let available = google_integration_enabled(&state.pg, &sb).await;
     let status = match get_connection_status(&state.pg, &user.id).await {
         Ok(s) => s,
-        Err(e) => return internal("[integrations/google] status read failed", e),
+        Err(e) => return Ok(internal("[integrations/google] status read failed", e)),
     };
-    // wire key order: available, then the status fields.
-    Json(json!({
-        "available": available,
-        "connected": status.connected,
-        "email": status.email,
-        "scope": status.scope,
-        "connectedAt": status.connected_at,
-    }))
-    .into_response()
+    Ok(
+        // wire key order: available, then the status fields.
+        Json(json!({
+            "available": available,
+            "connected": status.connected,
+            "email": status.email,
+            "scope": status.scope,
+            "connectedAt": status.connected_at,
+        }))
+        .into_response(),
+    )
 }
 
 // DELETE → disconnect (revoke + forget)
-pub async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
     disconnect(&state.pg, &sb, &user.id).await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

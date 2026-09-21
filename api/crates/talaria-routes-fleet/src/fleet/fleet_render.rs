@@ -9,20 +9,14 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_error::{house_error, internal};
-use talaria_session::{actor_of, require_admin};
+use talaria_error::house_error;
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => return internal("[fleet] secretbox failed", e),
-    };
-    match render_fleet(&state.pg, &sb, None).await {
+pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
+    Ok(match render_fleet(&state.pg, &sb, None).await {
         Ok(result) => {
             let actor = actor_of(&user);
             let pg = state.pg.clone();
@@ -56,5 +50,5 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
             StatusCode::INTERNAL_SERVER_ERROR,
             "render failed — see server logs",
         ),
-    }
+    })
 }

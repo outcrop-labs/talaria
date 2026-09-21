@@ -12,9 +12,9 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, literal_true_member, nullable_string_member, parse, present_nullable_string_member,
+    literal_true_member, nullable_string_member, parse, present_nullable_string_member,
 };
-use talaria_error::house_error;
+use talaria_error::{house_error, object_or_400};
 use talaria_instance::{
     VerifyResult, get_company_name, get_instance_domain, set_company_name, set_instance_domain,
     verify_instance_domain,
@@ -59,36 +59,33 @@ fn nullable_or_absent_domain(
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
-    // The raw stored domain config rides the wire — null when unset,
-    // {domain, verified, verifiedAt} as stored — beside the display name.
-    Json(json!({
-        "instance": get_instance_domain(&state.pg).await,
-        "companyName": get_company_name(&state.pg).await,
-    }))
-    .into_response()
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
+    Ok(
+        // The raw stored domain config rides the wire — null when unset,
+        // {domain, verified, verifiedAt} as stored — beside the display name.
+        Json(json!({
+            "instance": get_instance_domain(&state.pg).await,
+            "companyName": get_company_name(&state.pg).await,
+        }))
+        .into_response(),
+    )
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let patch = match validate_instance_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // The fields apply in declaration order with no transaction: a body
     // carrying a good domain and a refused name has already set the domain
@@ -112,7 +109,7 @@ pub async fn put(
                 .await;
             }
             // The normalization refusal is its own 400 sentence, verbatim.
-            Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
         }
     }
     if let Some(name) = &patch.company_name {
@@ -132,32 +129,26 @@ pub async fn put(
                 )
                 .await;
             }
-            Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+            Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
         }
     }
-    Json(json!({
+    Ok(Json(json!({
         "instance": get_instance_domain(&state.pg).await,
         "companyName": get_company_name(&state.pg).await,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     if let Err(msg) = literal_true_member(obj, "verify") {
-        return house_error(StatusCode::BAD_REQUEST, &msg);
+        return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
     }
     let r: VerifyResult = verify_instance_domain(&state.pg).await;
     if r.verified {
@@ -175,7 +166,7 @@ pub async fn post(
         )
         .await;
     }
-    Json(r).into_response()
+    Ok(Json(r).into_response())
 }
 
 #[cfg(test)]

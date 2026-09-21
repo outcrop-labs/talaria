@@ -30,11 +30,8 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
     Query(query): Query<ConversationQuery>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // `current` is the panel's first load, which has no id to name — the
     // server resolves the caller's own latest instance. (DELETE never sees
     // it: no instance is named 'current', so it 404s like any other miss.)
@@ -43,24 +40,25 @@ pub async fn get(
     } else {
         Some(id.as_str())
     };
-    match get_inbox_conversation(&state, &user, query.cursor.as_deref(), requested).await {
-        Ok(page) => (StatusCode::OK, Json(page)).into_response(),
-        Err(e) => internal("[inbox-focus] conversation read failed", e),
-    }
+    Ok(
+        match get_inbox_conversation(&state, &user, query.cursor.as_deref(), requested).await {
+            Ok(page) => (StatusCode::OK, Json(page)).into_response(),
+            Err(e) => internal("[inbox-focus] conversation read failed", e),
+        },
+    )
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
-    match archive_inbox_conversation(&state.pg, &user.id, &id).await {
-        Ok(true) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
-        Ok(false) => house_error(StatusCode::NOT_FOUND, "no such conversation"),
-        Err(e) => internal("[inbox-focus] conversation archive failed", e),
-    }
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(
+        match archive_inbox_conversation(&state.pg, &user.id, &id).await {
+            Ok(true) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+            Ok(false) => house_error(StatusCode::NOT_FOUND, "no such conversation"),
+            Err(e) => internal("[inbox-focus] conversation archive failed", e),
+        },
+    )
 }

@@ -9,8 +9,8 @@
 use serde_json::Value;
 use sqlx::PgPool;
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_body::percent_encode;
 use talaria_gateway::provider::http;
-use talaria_google_client::encode_uri_component;
 use talaria_google_connections::get_access_token;
 use talaria_google_errors::GoogleError;
 use talaria_secretbox::SecretBox;
@@ -72,7 +72,7 @@ fn events_url_with_params(calendar_id: Option<&str>, now_ms: i64, max_results: u
         .append_pair("maxResults", &wanted.saturating_mul(3).min(50).to_string())
         .append_pair("singleEvents", "true")
         .append_pair("orderBy", "startTime");
-    let cal = encode_uri_component(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
+    let cal = percent_encode(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
     format!(
         "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?{}",
         params.finish()
@@ -252,7 +252,7 @@ pub async fn create_event_with_token(
         ),
     );
     let body = Value::Object(body);
-    let cal = encode_uri_component(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
+    let cal = percent_encode(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
     let res = http()
         .post(format!(
             "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?sendUpdates=all"

@@ -27,9 +27,9 @@ use talaria_artifacts::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, optional_enum_member, optional_max_string_member, parse, too_big_msg, zod_type_name,
+    optional_enum_member, optional_max_string_member, parse, too_big_msg, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -72,11 +72,8 @@ fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
     })
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let caller = agent_caller(&state.pg, &headers).await?;
     if let Some(caller) = caller {
         let name = caller.model.clone();
         // The LIST must answer the same question the single-artifact GET
@@ -90,15 +87,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .await
         {
             Ok(o) => o,
-            Err(e) => return internal("[artifacts] owner lookup failed", e),
+            Err(e) => return Ok(internal("[artifacts] owner lookup failed", e)),
         };
         let granted = match granted_item_ids_for_agent(&state.pg, ITEM_ARTIFACT, &name).await {
             Ok(g) => g,
-            Err(e) => return internal("[artifacts] grants read failed", e),
+            Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
         };
         let artifacts = match list_artifacts(&state.pg).await {
             Ok(a) => a,
-            Err(e) => return internal("[artifacts] list failed", e),
+            Err(e) => return Ok(internal("[artifacts] list failed", e)),
         };
         // Agents see org/public artifacts, ones they've been granted, and —
         // for a personal assistant — the owner's own private ones. `&[]`
@@ -118,20 +115,17 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     )
             })
             .collect();
-        return Json(json!({ "artifacts": artifacts })).into_response();
+        return Ok(Json(json!({ "artifacts": artifacts })).into_response());
     }
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     let who = who_of(&user);
     let granted = match granted_item_ids(&state.pg, ITEM_ARTIFACT, &user.id).await {
         Ok(g) => g,
-        Err(e) => return internal("[artifacts] grants read failed", e),
+        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
     };
     let artifacts = match list_artifacts(&state.pg).await {
         Ok(a) => a,
-        Err(e) => return internal("[artifacts] list failed", e),
+        Err(e) => return Ok(internal("[artifacts] list failed", e)),
     };
     let artifacts: Vec<&Artifact> = artifacts
         .iter()
@@ -146,28 +140,22 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 )
         })
         .collect();
-    Json(json!({ "artifacts": artifacts })).into_response()
+    Ok(Json(json!({ "artifacts": artifacts })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     if let Some(caller) = caller {
         let name = caller.model.clone();
         // WHO the agent works for decides two things, deliberately two
@@ -186,7 +174,7 @@ pub async fn post(
         .await
         {
             Ok(o) => o,
-            Err(e) => return internal("[artifacts] owner lookup failed", e),
+            Err(e) => return Ok(internal("[artifacts] owner lookup failed", e)),
         };
         let responsible = match talaria_attribution::responsible_user_for(
             &state.pg,
@@ -196,7 +184,7 @@ pub async fn post(
         .await
         {
             Ok(o) => o,
-            Err(e) => return internal("[artifacts] responsible-user lookup failed", e),
+            Err(e) => return Ok(internal("[artifacts] responsible-user lookup failed", e)),
         };
         let folder_id = match body.folder.as_deref() {
             Some(f) if !f.is_empty() => named_root_folder(&state.pg, f, &name).await,
@@ -222,7 +210,7 @@ pub async fn post(
         .await
         {
             Ok(a) => a,
-            Err(e) => return internal("[artifacts] create failed", e),
+            Err(e) => return Ok(internal("[artifacts] create failed", e)),
         };
         if let Err(e) = set_editors(
             &state.pg,
@@ -236,7 +224,7 @@ pub async fn post(
         )
         .await
         {
-            return internal("[artifacts] editor grant failed", e);
+            return Ok(internal("[artifacts] editor grant failed", e));
         }
         let updated = match save_artifact(
             &state.pg,
@@ -261,15 +249,12 @@ pub async fn post(
         .await
         {
             Ok(u) => u,
-            Err(e) => return internal("[artifacts] save failed", e),
+            Err(e) => return Ok(internal("[artifacts] save failed", e)),
         };
-        return Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response();
+        return Ok(Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response());
     }
 
-    let user = match require_perm(&state, &headers, "artifacts.create").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_perm(&state, &headers, "artifacts.create").await?;
     let actor = who_of(&user).unwrap_or_else(|| "user".into());
     let artifact = match create_artifact(
         &state.pg,
@@ -282,7 +267,7 @@ pub async fn post(
     .await
     {
         Ok(a) => a,
-        Err(e) => return internal("[artifacts] create failed", e),
+        Err(e) => return Ok(internal("[artifacts] create failed", e)),
     };
     let updated = if body.body.is_some() {
         match save_artifact(
@@ -297,7 +282,7 @@ pub async fn post(
         .await
         {
             Ok(u) => u,
-            Err(e) => return internal("[artifacts] save failed", e),
+            Err(e) => return Ok(internal("[artifacts] save failed", e)),
         }
     } else {
         None
@@ -323,5 +308,5 @@ pub async fn post(
         )
         .await;
     });
-    Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response()
+    Ok(Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response())
 }

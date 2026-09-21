@@ -21,34 +21,32 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_agent_auth::require_agent;
-use talaria_body::{as_object, parse, string_array_member, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, string_array_member, string_member};
+use talaria_error::{house_error, object_or_400};
 use talaria_github as github;
+use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let repo = match string_member(obj, "repo", 3, 400) {
         Ok(r) => r,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // The refs git handed the hook: full ref names, ≤200 chars each, ≤50 of
     // them (one push cannot honestly carry more).
     let refs = match string_array_member(obj, "refs", 1, 200, 0, 50) {
         Ok(r) => r,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // No proven identity (the legacy org-wide key) or no grant: the same
@@ -56,14 +54,20 @@ pub async fn post(
     // cannot scope is one we cannot answer for.
     let Some(agent_id) = caller.id.clone() else {
         tracing::warn!("[secrets] a legacy-key caller asked to push to {repo} — refused");
-        return house_error(StatusCode::NOT_FOUND, "no credential for that host");
+        return Ok(house_error(
+            StatusCode::NOT_FOUND,
+            "no credential for that host",
+        ));
     };
     let Some(rule) = github::repo_rule(&state.pg, &agent_id, &repo).await else {
         tracing::warn!(
             "[secrets] {} has no grant covering {repo} — push refused",
             caller.model
         );
-        return house_error(StatusCode::NOT_FOUND, "no credential for that host");
+        return Ok(house_error(
+            StatusCode::NOT_FOUND,
+            "no credential for that host",
+        ));
     };
 
     // A null base_branch resolves to the repo's live default — one GitHub
@@ -72,20 +76,17 @@ pub async fn post(
     let default_branch = match &rule.base_branch {
         Some(b) => b.clone(),
         None => {
-            let sb = match state.secretbox().await {
-                Ok(sb) => sb,
-                Err(e) => return internal("[secrets] push check secretbox", e),
-            };
+            let sb = secretbox_or_500(&state, "[secrets] push check secretbox").await?;
             match github::repo_default_branch(&state.pg, &sb, &repo).await {
                 Some(b) => b,
                 None => {
                     tracing::warn!(
                         "[secrets] could not resolve the default branch of {repo} — push refused"
                     );
-                    return house_error(
+                    return Ok(house_error(
                         StatusCode::BAD_GATEWAY,
                         "could not resolve the repo's default branch — try again",
-                    );
+                    ));
                 }
             }
         }
@@ -97,12 +98,12 @@ pub async fn post(
                 "[secrets] {} push to {repo}:{ref_name} declined — {sentence}",
                 caller.model
             );
-            return (
+            return Ok((
                 StatusCode::FORBIDDEN,
                 [(axum::http::header::CACHE_CONTROL, "no-store")],
                 Json(json!({ "error": sentence })),
             )
-                .into_response();
+                .into_response());
         }
     }
     tracing::warn!(
@@ -110,10 +111,10 @@ pub async fn post(
         caller.model,
         refs.len()
     );
-    (
+    Ok((
         StatusCode::OK,
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(json!({ "ok": true })),
     )
-        .into_response()
+        .into_response())
 }

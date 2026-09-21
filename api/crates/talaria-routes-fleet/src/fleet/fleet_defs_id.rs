@@ -12,10 +12,10 @@ use talaria_agent_defs::{AgentMetaPatch, update_agent_meta};
 use talaria_api_facades::workbench::{set_agent_workbench, set_agent_workbench_tuning};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, object_msg, optional_enum_member, parse, present_nullable_max_string_member,
+    object_msg, optional_enum_member, parse, present_nullable_max_string_member,
     present_nullable_uuid_member, string_msg, too_big_msg, too_small_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
 use talaria_templates::set_agent_templates;
@@ -98,52 +98,46 @@ pub async fn patch(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let role = match present_nullable_max_string_member(obj, "role", 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let display_name = match parse_display_name(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let email_alias = match parse_email_alias(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Template overrides: uuid binds, null clears, omitted leaves unchanged.
     let ticket_template_id = match present_nullable_uuid_member(obj, "ticketTemplateId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let plan_template_id = match present_nullable_uuid_member(obj, "planTemplateId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let workbench = match optional_enum_member(obj, "workbench", &["off", "auto", "on"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let workbench_profile = match present_nullable_max_string_member(obj, "workbenchProfile", 40) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let workbench_harness = match present_nullable_max_string_member(obj, "workbenchHarness", 40) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let workbench_models = match parse_workbench_models(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // the def read — the columns this route touches (the workbench fallback
@@ -157,10 +151,10 @@ pub async fn patch(
     .await
     {
         Ok(row) => row,
-        Err(e) => return internal("[fleet/defs] def read failed", e),
+        Err(e) => return Ok(internal("[fleet/defs] def read failed", e)),
     };
     let Some((def_id, def_model, def_display_name, def_workbench)) = def else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
 
     if let Err(e) = update_agent_meta(
@@ -174,7 +168,7 @@ pub async fn patch(
     )
     .await
     {
-        return internal("[fleet/defs] meta update failed", e);
+        return Ok(internal("[fleet/defs] meta update failed", e));
     }
     if workbench.is_some() || workbench_profile.is_some() {
         // workbench ?? stored ?? 'auto' — a profile-only patch re-states the
@@ -188,7 +182,7 @@ pub async fn patch(
         )
         .await
         {
-            return internal("[fleet/defs] workbench set failed", e);
+            return Ok(internal("[fleet/defs] workbench set failed", e));
         }
     }
     if (workbench_harness.is_some() || workbench_models.is_some())
@@ -200,7 +194,7 @@ pub async fn patch(
         )
         .await
     {
-        return internal("[fleet/defs] workbench tuning failed", e);
+        return Ok(internal("[fleet/defs] workbench tuning failed", e));
     }
     if ticket_template_id.is_some() || plan_template_id.is_some() {
         // Template binds key on the agent's MODEL, not its id — the same
@@ -213,7 +207,7 @@ pub async fn patch(
         )
         .await
         {
-            return internal("[fleet/defs] template bind failed", e);
+            return Ok(internal("[fleet/defs] template bind failed", e));
         }
     }
     log_audit(
@@ -229,5 +223,5 @@ pub async fn patch(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

@@ -33,10 +33,12 @@ use talaria_persona::persona_configured_effort;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
     // the client sends encodeURIComponent, so an OpenRouter name's slashes
     // arrive as %2F and must be decoded (form_urlencoded is the matching
     // decoder) — and a repeated `model` key answers with the FIRST
@@ -50,14 +52,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty())
     else {
-        return house_error(StatusCode::BAD_REQUEST, "model is required");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "model is required"));
     };
     let mut efforts = efforts_for_model(&state.pg, &model).await;
     if efforts.is_empty() {
         efforts = ensure_efforts_catalog(&state, &model).await;
     }
     if efforts.is_empty() {
-        return Json(json!({ "efforts": [], "default": null })).into_response();
+        return Ok(Json(json!({ "efforts": [], "default": null })).into_response());
     }
     // The configured default, held against the levels just read: a level the
     // model no longer publishes (the admin swapped models, the metadata
@@ -65,5 +67,5 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     // never fails — null is already its nature.
     let configured = persona_configured_effort(&state.pg, &model).await;
     let default = configured.filter(|c| efforts.contains(c));
-    Json(json!({ "efforts": efforts, "default": default })).into_response()
+    Ok(Json(json!({ "efforts": efforts, "default": default })).into_response())
 }

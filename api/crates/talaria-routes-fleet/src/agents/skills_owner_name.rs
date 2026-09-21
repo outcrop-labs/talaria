@@ -11,8 +11,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_skills::{copy_skill, delete_skill, read_skill, rename_skill, write_skill};
-use talaria_body::{as_object, parse, string_member, too_big_msg, too_small_msg};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, string_member, too_big_msg, too_small_msg};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_skill_access::{can_edit_skill, can_edit_skills};
 use talaria_state::AppState;
@@ -62,14 +62,12 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
-) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    match read_skill(&state.pg, &owner, &name).await {
+) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    Ok(match read_skill(&state.pg, &owner, &name).await {
         Ok((content, files)) => Json(json!({ "content": content, "files": files })).into_response(),
         Err(e) => house_error(StatusCode::NOT_FOUND, &e),
-    }
+    })
 }
 
 pub async fn put(
@@ -77,36 +75,32 @@ pub async fn put(
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let gate = can_edit_skill(&state.pg, &user.id, &user.role, &owner, &name).await;
     match gate {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[skills] edit gate failed", e),
+        Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[skills] edit gate failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // content: required, max 500_000 — the empty string is legal.
     let content = match string_member(obj, "content", 0, 500_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let author = user
         .email
         .as_deref()
         .or(user.name.as_deref())
         .unwrap_or("admin");
-    match write_skill(&state.pg, &owner, &name, &content, Some(author)).await {
-        Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
-    }
+    Ok(
+        match write_skill(&state.pg, &owner, &name, &content, Some(author)).await {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
+        },
+    )
 }
 
 /// Structural ops: rename in place, copy/move to another owner (e.g. promote
@@ -117,49 +111,43 @@ pub async fn post(
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let op = match obj.get("op") {
         Some(serde_json::Value::String(s)) if s == "rename" || s == "copy" || s == "move" => {
             s.as_str()
         }
-        _ => return house_error(StatusCode::BAD_REQUEST, UNION_MSG),
+        _ => return Ok(house_error(StatusCode::BAD_REQUEST, UNION_MSG)),
     };
     let op = if op == "rename" {
         let to_name = match check_name(obj.get("toName")) {
             Ok(Some(v)) => v,
-            Ok(None) => return house_error(StatusCode::BAD_REQUEST, UNION_MSG),
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Ok(None) => return Ok(house_error(StatusCode::BAD_REQUEST, UNION_MSG)),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         Op::Rename { to_name }
     } else {
         // copy | move — toOwner is required, 1..80
         let to_owner = match obj.get("toOwner") {
             None | Some(serde_json::Value::Null) => {
-                return house_error(StatusCode::BAD_REQUEST, UNION_MSG);
+                return Ok(house_error(StatusCode::BAD_REQUEST, UNION_MSG));
             }
             Some(serde_json::Value::String(s)) => {
                 if s.is_empty() {
-                    return house_error(StatusCode::BAD_REQUEST, &too_small_msg(1));
+                    return Ok(house_error(StatusCode::BAD_REQUEST, &too_small_msg(1)));
                 }
                 if s.chars().count() > 80 {
-                    return house_error(StatusCode::BAD_REQUEST, &too_big_msg(80));
+                    return Ok(house_error(StatusCode::BAD_REQUEST, &too_big_msg(80)));
                 }
                 s.clone()
             }
-            Some(_) => return house_error(StatusCode::BAD_REQUEST, UNION_MSG),
+            Some(_) => return Ok(house_error(StatusCode::BAD_REQUEST, UNION_MSG)),
         };
         let to_name = match check_name(obj.get("toName")) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
         Op::CopyMove {
             to_owner,
@@ -171,8 +159,8 @@ pub async fn post(
     if need_source {
         match can_edit_skill(&state.pg, &user.id, &user.role, &owner, &name).await {
             Ok(true) => {}
-            Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-            Err(e) => return internal("[skills] source gate failed", e),
+            Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(internal("[skills] source gate failed", e)),
         }
     }
     let dest = match &op {
@@ -181,8 +169,8 @@ pub async fn post(
     };
     match can_edit_skills(&state.pg, &user.id, &user.role, dest).await {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[skills] destination gate failed", e),
+        Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[skills] destination gate failed", e)),
     }
     let outcome = match op {
         Op::Rename { to_name } => rename_skill(&state.pg, &owner, &name, &to_name).await,
@@ -202,28 +190,25 @@ pub async fn post(
             .await
         }
     };
-    match outcome {
+    Ok(match outcome {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
-    }
+    })
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((owner, name)): Path<(String, String)>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     match can_edit_skill(&state.pg, &user.id, &user.role, &owner, &name).await {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => return internal("[skills] edit gate failed", e),
+        Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[skills] edit gate failed", e)),
     }
-    match delete_skill(&state.pg, &owner, &name).await {
+    Ok(match delete_skill(&state.pg, &owner, &name).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
-    }
+    })
 }

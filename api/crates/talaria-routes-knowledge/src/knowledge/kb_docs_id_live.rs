@@ -12,8 +12,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use talaria_api_facades::kb::comments::can_discuss_doc;
-use talaria_body::{as_object, enum_member, parse};
-use talaria_error::{house_error, internal};
+use talaria_body::{enum_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -28,27 +28,21 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let who = who_of(&user);
     if !can_discuss_doc(&state.pg, &id, &user.id, who.as_deref()).await {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let mode = match enum_member(obj, "mode", &["view", "edit"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let mut conn = match state.redis().await {
         Ok(c) => c,
-        Err(e) => return internal("[kb] presence redis failed", e),
+        Err(e) => return Ok(internal("[kb] presence redis failed", e)),
     };
     if let Err(e) = redis::cmd("SET")
         .arg(format!("{}{}", key_prefix(&id), user.id))
@@ -58,27 +52,24 @@ pub async fn put(
         .query_async::<()>(&mut conn)
         .await
     {
-        return internal("[kb] presence write failed", e);
+        return Ok(internal("[kb] presence write failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let who = who_of(&user);
     if !can_discuss_doc(&state.pg, &id, &user.id, who.as_deref()).await {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     }
     let mut conn = match state.redis().await {
         Ok(c) => c,
-        Err(e) => return internal("[kb] presence redis failed", e),
+        Err(e) => return Ok(internal("[kb] presence redis failed", e)),
     };
     let prefix = key_prefix(&id);
     let keys: Vec<String> = match redis::cmd("KEYS")
@@ -87,15 +78,15 @@ pub async fn get(
         .await
     {
         Ok(v) => v,
-        Err(e) => return internal("[kb] presence scan failed", e),
+        Err(e) => return Ok(internal("[kb] presence scan failed", e)),
     };
     if keys.is_empty() {
-        return Json(json!({ "active": [] })).into_response();
+        return Ok(Json(json!({ "active": [] })).into_response());
     }
     let modes: Vec<Option<String>> =
         match redis::cmd("MGET").arg(&keys).query_async(&mut conn).await {
             Ok(v) => v,
-            Err(e) => return internal("[kb] presence read failed", e),
+            Err(e) => return Ok(internal("[kb] presence read failed", e)),
         };
     let ids: Vec<String> = keys.iter().map(|k| k[prefix.len()..].to_string()).collect();
     let users: Vec<(String, Option<String>, Option<String>)> =
@@ -105,7 +96,7 @@ pub async fn get(
             .await
         {
             Ok(v) => v,
-            Err(e) => return internal("[kb] presence users failed", e),
+            Err(e) => return Ok(internal("[kb] presence users failed", e)),
         };
     let active: Vec<Value> = ids
         .iter()
@@ -119,5 +110,5 @@ pub async fn get(
             }))
         })
         .collect();
-    Json(json!({ "active": active })).into_response()
+    Ok(Json(json!({ "active": active })).into_response())
 }

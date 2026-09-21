@@ -8,9 +8,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
-use talaria_body::{as_object, parse, uuid_member};
+use talaria_body::{parse, uuid_member};
 use talaria_conversations::{add_plan_team, plan_role, remove_plan_team};
-use talaria_error::{house_error, internal};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_params::uuid_gate;
 use talaria_plan_doc::plan_doc_for;
 use talaria_session::require_user;
@@ -63,35 +63,29 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = owner_gate(&state, &user.id, &id, "POST teams").await {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let team_id = match uuid_member(obj, "teamId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     match get_team(&state.pg, &team_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::BAD_REQUEST, "team not found"),
-        Err(e) => return internal("[plans] team lookup on grant failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::BAD_REQUEST, "team not found")),
+        Err(e) => return Ok(internal("[plans] team lookup on grant failed", e)),
     }
     if let Err(e) = add_plan_team(&state.pg, &id, &team_id).await {
-        return internal("[plans] team grant failed", e);
+        return Ok(internal("[plans] team grant failed", e));
     }
     if let Err(e) = sync_doc_grant_team(&state.pg, &id, &team_id, true).await {
-        return internal("[plans] doc grant on team share failed", e);
+        return Ok(internal("[plans] doc grant on team share failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
@@ -99,28 +93,22 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = owner_gate(&state, &user.id, &id, "DELETE teams").await {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let team_id = match uuid_member(obj, "teamId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = remove_plan_team(&state.pg, &id, &team_id).await {
-        return internal("[plans] team revoke failed", e);
+        return Ok(internal("[plans] team revoke failed", e));
     }
     if let Err(e) = sync_doc_grant_team(&state.pg, &id, &team_id, false).await {
-        return internal("[plans] doc grant on team unshare failed", e);
+        return Ok(internal("[plans] doc grant on team unshare failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

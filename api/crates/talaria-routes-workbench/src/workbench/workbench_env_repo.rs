@@ -11,10 +11,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_repo_env as repo_env;
-use talaria_session::{actor_of, require_perm};
+use talaria_session::{actor_of, require_perm, secretbox_or_500};
 use talaria_state::AppState;
 
 fn repo_ok(repo: &str) -> bool {
@@ -25,15 +25,18 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(repo): Path<String>,
-) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
     if !repo_ok(&repo) {
-        return house_error(StatusCode::BAD_REQUEST, "repo must be owner/name");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "repo must be owner/name",
+        ));
     }
-    Json(json!({ "repo": repo, "keys": repo_env::env_keys(&state.pg, &repo).await }))
-        .into_response()
+    Ok(
+        Json(json!({ "repo": repo, "keys": repo_env::env_keys(&state.pg, &repo).await }))
+            .into_response(),
+    )
 }
 
 pub async fn patch(
@@ -41,40 +44,43 @@ pub async fn patch(
     headers: HeaderMap,
     Path(repo): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     if !repo_ok(&repo) {
-        return house_error(StatusCode::BAD_REQUEST, "repo must be owner/name");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "repo must be owner/name",
+        ));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // set: [{key ≤100, value ≤10k}] — an EMPTY value is the delete affordance
     // the UI offers inline. delete: [key] for removals without re-sending.
     let mut set: Vec<(String, String)> = Vec::new();
     if let Some(v) = obj.get("set") {
         let Some(arr) = v.as_array() else {
-            return house_error(StatusCode::BAD_REQUEST, "set must be an array");
+            return Ok(house_error(StatusCode::BAD_REQUEST, "set must be an array"));
         };
         if arr.len() > 100 {
-            return house_error(StatusCode::BAD_REQUEST, "at most 100 entries per write");
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "at most 100 entries per write",
+            ));
         }
         for el in arr {
             let Some(entry) = el.as_object() else {
-                return house_error(StatusCode::BAD_REQUEST, "set entries must be objects");
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "set entries must be objects",
+                ));
             };
             let key = match string_member(entry, "key", 1, 100) {
                 Ok(k) => k,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let value = match max_string_member_guard(entry, "value", 0, 10_000) {
                 Ok(v) => v,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             set.push((key, value));
         }
@@ -82,30 +88,33 @@ pub async fn patch(
     let mut delete: Vec<String> = Vec::new();
     if let Some(v) = obj.get("delete") {
         let Some(arr) = v.as_array() else {
-            return house_error(StatusCode::BAD_REQUEST, "delete must be an array");
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "delete must be an array",
+            ));
         };
         for el in arr {
             let Some(k) = el.as_str() else {
-                return house_error(StatusCode::BAD_REQUEST, "delete entries must be strings");
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "delete entries must be strings",
+                ));
             };
             delete.push(k.to_string());
         }
     }
     if set.is_empty() && delete.is_empty() {
-        return house_error(StatusCode::BAD_REQUEST, "nothing to do");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "nothing to do"));
     }
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => return internal("[workbench/env] secretbox", e),
-    };
+    let sb = secretbox_or_500(&state, "[workbench/env] secretbox").await?;
     let actor = actor_of(&user);
     if let Err(e) = repo_env::patch_env(&state.pg, &sb, &repo, &actor, &set, &delete).await {
         // A validation sentence is a 400; everything else is ours.
-        return if e.starts_with('"') {
+        return Ok(if e.starts_with('"') {
             house_error(StatusCode::BAD_REQUEST, &e)
         } else {
             internal("[workbench/env] write failed", e)
-        };
+        });
     }
     talaria_audit::log_audit(
         &state.pg,
@@ -123,8 +132,10 @@ pub async fn patch(
         },
     )
     .await;
-    Json(json!({ "repo": repo, "keys": repo_env::env_keys(&state.pg, &repo).await }))
-        .into_response()
+    Ok(
+        Json(json!({ "repo": repo, "keys": repo_env::env_keys(&state.pg, &repo).await }))
+            .into_response(),
+    )
 }
 
 /// zod-style optional bounded string whose absence is None and whose null is

@@ -9,16 +9,18 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse, utf16_len, zod_type_name};
-use talaria_error::{house_error, internal};
+use talaria_body::{parse, utf16_len, zod_type_name};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let org = talaria_org::org_profile(&state.pg).await;
+    Ok(
     Json(serde_json::json!({
         "auditRetentionDays": audit_retention_days(&state.pg).await,
         "org": { "name": org.name, "about": org.about },
@@ -34,7 +36,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
             .as_i64()
             .unwrap_or(5),
     }))
-    .into_response()
+    .into_response())
 }
 
 async fn audit_retention_days(pg: &sqlx::PgPool) -> i64 {
@@ -246,20 +248,14 @@ pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let actor = actor_of(&user);
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_put_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Some(budgets) = &body.llm_budgets {
         // A spend ceiling is a governance control: who moved it, and from
@@ -271,7 +267,7 @@ pub async fn put(
         )
         .await;
         if let Err(e) = set_setting(&state.pg, "llm_budgets", budgets).await {
-            return internal("[admin/settings] budgets write failed", e);
+            return Ok(internal("[admin/settings] budgets write failed", e));
         }
         log_audit(
             &state.pg,
@@ -296,7 +292,7 @@ pub async fn put(
         )
         .await
         {
-            return internal("[admin/settings] cron floor write failed", e);
+            return Ok(internal("[admin/settings] cron floor write failed", e));
         }
         log_audit(
             &state.pg,
@@ -317,7 +313,7 @@ pub async fn put(
         if let Err(e) =
             set_setting(&state.pg, "audit_retention_days", &serde_json::json!(days)).await
         {
-            return internal("[admin/settings] retention write failed", e);
+            return Ok(internal("[admin/settings] retention write failed", e));
         }
         log_audit(
             &state.pg,
@@ -392,6 +388,5 @@ pub async fn put(
         )
         .await;
     }
-
-    Json(serde_json::json!({ "ok": true })).into_response()
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }

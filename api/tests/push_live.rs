@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the push plane's row tending and keypair custody
 // (cargo test -- --ignored). The cryptography is pinned to RFC vectors in
 // the unit tests; what only Postgres can confirm is the LOOP — which rows
@@ -14,6 +15,7 @@ use base64::Engine as _;
 use p256::elliptic_curve::Generate;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::push::{PostPushFn, PushNote, PushPost, VAPID_KEY, deliver_push, vapid_keys};
 use talaria_api::secretbox::SecretBox;
 
@@ -25,13 +27,6 @@ const B64U: base64::engine::GeneralPurpose = base64::engine::general_purpose::UR
 /// the other's insert and its re-read is a spurious "the vapid keypair row
 /// vanished", a flake about scheduling, not about the plane.
 static KEYPAIR_ROW: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// The suite's throwaway person and its keypair row: the user cascade takes
 /// push_subscriptions with it, and the instance keypair row is deleted so
 /// every test births its own.
@@ -131,7 +126,7 @@ fn fake_post(captured: Arc<Mutex<Vec<PushPost>>>) -> PostPushFn {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
     let _row = KEYPAIR_ROW.lock().await;
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let user = person(&pg, "delivery").await;
     let sb = test_box();
@@ -221,7 +216,7 @@ async fn delivery_touches_prunes_and_keeps_by_the_services_answer() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_vapid_keypair_is_born_once_even_under_a_race() {
     let _row = KEYPAIR_ROW.lock().await;
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let sb = test_box();
 
