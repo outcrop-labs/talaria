@@ -32,9 +32,7 @@ use talaria_plan_drafts::{
 };
 use talaria_session::require_user;
 use talaria_state::AppState;
-
-const PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
-const EFFORTS: &[&str] = &["xs", "s", "m", "l", "xl"];
+use talaria_task_const::{EFFORTS, PRIORITIES};
 
 /// The Start body: the channel side names the drafting agent; the plan
 /// side inherits it from the conversation.

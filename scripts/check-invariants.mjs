@@ -1635,7 +1635,53 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
-// ─ Report ───────────────────────────────────────────────────────────────────
+// INSTANCE IDENTITY, PINNED ACROSS THE LANGUAGE LINE.
+//
+// The app-database's container name is composed twice: the resident tier names
+// it when it attaches to an app's Postgres (ui/src/server/app-db.ts), and the
+// CLI names it again when it dumps every app DB for a backup
+// (cli/src/cmd/backup.ts). They agree today by convention — "talaria-appdb-
+// <instance>-<slug>", the instance being the worktree/devbox name with
+// `talaria` as the fallback — and a drift between them would be discovered on
+// the one afternoon somebody needs the dump, as a container that is not there.
+//
+// A pin, not an import: one end is TypeScript with `process.env` and the other
+// is TypeScript with a passed-in env record, so the shared thing is the SHAPE
+// (the prefix, the two variables, the fallback), which is what this reads.
+{
+  const ID_SOURCES = [
+    ['ui/src/server/app-db.ts', 'process.env.TALARIA_WORKTREE'],
+    ['cli/src/cmd/backup.ts', 'env.TALARIA_WORKTREE'],
+  ]
+  const problems = []
+  for (const [path, envPrefix] of ID_SOURCES) {
+    const src = sources.get(path) ?? readFileSync(join(ROOT, path), 'utf8')
+    if (!/TALARIA_DEVBOX/.test(src)) problems.push(`${path}: no TALARIA_DEVBOX in the instance id`)
+    if (!/TALARIA_WORKTREE/.test(src)) problems.push(`${path}: no TALARIA_WORKTREE in the instance id`)
+    if (!envPrefix.split('.').every((part) => src.includes(part))) {
+      problems.push(`${path}: expected the instance id to read ${envPrefix}`)
+    }
+    if (!/'talaria'/.test(src)) problems.push(`${path}: expected 'talaria' as the instance id fallback`)
+    if (!/talaria-appdb-\$\{instanceId\(/.test(src)) {
+      problems.push(`${path}: expected the container name to be \`talaria-appdb-\${instanceId(…)}-<slug>\``)
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'app-db-container-name-drift',
+      what: 'the app-DB container name is composed differently on the two sides that spell it',
+      fix: [
+        'Both ends must compose `talaria-appdb-<instance>-<slug>`, where <instance> is',
+        'TALARIA_WORKTREE || TALARIA_DEVBOX || "talaria". If one end moved or was renamed,',
+        'fix the code rather than this pin — the backup looks the container up by this name.',
+        ...problems.map((p) => `  ${p}`),
+      ],
+      found: [],
+    })
+  }
+}
+
+// ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)
 if (failures.length) {

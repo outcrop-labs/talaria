@@ -52,6 +52,7 @@
 
 use serde_json::{Value, json};
 use std::sync::LazyLock;
+use talaria_task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
 
 // ── The axes a report reads along ────────────────────────────────────────────
 
@@ -147,13 +148,6 @@ fn one_of(values: &[&str], description: &str) -> Value {
     json!({ "type": "string", "enum": values, "description": description })
 }
 
-const PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
-const EFFORTS: &[&str] = &["xs", "s", "m", "l", "xl"];
-const COLORS: &[&str] = &[
-    "slate", "bronze", "green", "amber", "red", "blue", "purple", "teal", "pink", "orange", "lime",
-    "cyan", "indigo", "magenta", "olive", "brown",
-];
-
 // ── The catalog ──────────────────────────────────────────────────────────────
 
 /// WHY A `LazyLock` AND NOT A `const`: the schemas are `serde_json` `Value`s
@@ -236,7 +230,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "tags": strs_schema("Labels"),
                     "dueDate": str_schema("Due date, RFC3339"),
                     "startDate": str_schema("When work should begin (Gantt bars run start → due)"),
-                    "color": one_of(COLORS, "Color-code the ticket (shows on cards + gantt)"),
+                    "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "parentId": str_schema("Create as a sub-task of this ticket (same board, one level deep)"),
                 },
                 "required": ["boardId", "title"],
@@ -260,7 +254,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "tags": strs_schema("Labels (replaces the set)"),
                     "dueDate": str_schema("Due date, RFC3339"),
                     "startDate": str_schema("When work begins (Gantt bars run start → due)"),
-                    "color": one_of(COLORS, "Color-code the ticket (shows on cards + gantt)"),
+                    "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "status": one_of(
                         &["in_progress", "blocked", "quality_review"],
                         "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that.",

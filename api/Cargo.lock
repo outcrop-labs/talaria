@@ -4568,6 +4568,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "talaria-task-const",
 ]
 
 [[package]]
@@ -6344,6 +6345,7 @@ dependencies = [
  "talaria-research-origin",
  "talaria-session",
  "talaria-state",
+ "talaria-task-const",
  "talaria-tasks",
  "talaria-teams",
  "talaria-ticket-chat",
