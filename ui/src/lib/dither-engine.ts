@@ -1,7 +1,3 @@
-// PORTED VERBATIM from ui/src/lib/dither.ts — the signature dither engine. Keep the
-// two in step when the engine changes; this copy exists so the launcher (a
-// separate package) can wear the same field without coupling the builds.
-
 /**
  * The dither engine: Bayer-ordered dithering over a declarative density field.
  *
@@ -20,8 +16,11 @@
  * hardcoded, so the same field reads correctly in both modes.
  */
 
-// In ui/ this is the waiting field's; here in the launcher it is local — the
-// bodies are identical. (`hash01` stays per-engine; see ui/src/lib/dither.ts.)
+// NAMED `-engine` SO THE DESKTOP LAUNCHER CAN SHARE IT. It imports NOTHING —
+// no `@/` alias, no waiting field, no framework — because desktop/ (a separate
+// package with its own vite config) aliases this file directly. `clamp01` is
+// local for that reason: the waiting field's copy was byte-identical anyway,
+// and `hash01` stays per-engine on purpose (see the NOTE in ui/src/lib/waiting/field.ts).
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x))
 
 export type DitherTone = 'neutral' | 'accent' | 'success' | 'danger' | 'surface'

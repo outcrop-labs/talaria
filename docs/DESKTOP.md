@@ -14,9 +14,11 @@ in [`desktop/`](../desktop).
 Two views, one window:
 
 - **welcome** — the launcher (webview label `main`, local content from `desktop/src`) fills the
-  window: the wing mark on the signature dither field, the instance list, add. The brand
-  treatment is ported, not imitated — `WingMark.svelte`, `DitherLayer.svelte` + `lib/dither.ts`
-  are verbatim from ui/ (keep them in step), and typography is Mercury's IBM Plex pair.
+  window: the wing mark on the signature dither field, the instance list, add. The dither
+  ENGINE is not copied — `desktop/vite.config.ts` aliases `@dither` onto ui's
+  `dither-engine.ts` (which imports nothing, so it is safe to share), and only the
+  launcher-shaped wrappers (`WingMark.svelte`, `DitherLayer.svelte`) are per-side. Typography
+  is Mercury's IBM Plex pair.
 - **active** — the instance's webview IS the window; the launcher is hidden (but alive).
   Switching happens **inside the instance UI**: the desktop switcher
   (`ui/src/components/app/DesktopSwitcher.svelte`) wears the current instance's identity
