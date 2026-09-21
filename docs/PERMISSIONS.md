@@ -39,8 +39,8 @@ Admins set team view grants on Manage → Teams (not the roster owner).
 
 ## The permission catalog
 
-13 permissions in five groups (`server/permissions.ts` is the catalog; the groups are what Admin →
-People renders):
+13 permissions in five groups (`api/crates/talaria-permissions/src/lib.rs` is the catalog; the
+groups are what Admin → People renders):
 
 - **Agents** — `agents.manage`.
 - **Work** — `research.run`, `plans.create`, `boards.create`.
@@ -122,7 +122,9 @@ allow-list) stay exactly as they were.
 
 Every API route speaks one dialect ([API-CONVENTIONS.md](./API-CONVENTIONS.md)):
 `requireUser` / `requireAdmin` / `requirePerm(perm)` / `requireView(view)` from
-`server/api-guard.ts`, then resource ACL checks where the resource carries its own. UI affordances
+`server/api-guard.ts` (the Rust twin is `talaria_session`'s `require_*`, which answer
+`Result<_, Response>` and propagate with `?`), then resource ACL checks where the resource
+carries its own. UI affordances
 follow `useHasPerm` / `useDeniedViews` — but the server is the authority; hiding a button is
 courtesy, the 403 is the contract.
 

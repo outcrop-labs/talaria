@@ -11,7 +11,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_daily_brief::{BriefRead, BriefUser, get_brief, real_brief_deps, sweep_if_due};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -28,11 +28,8 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<BriefQuery>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let user = BriefUser::from(&user);
     let deps = real_brief_deps(&state).await;
     // Sweep BEFORE the read, not after, and only if the throttle allows it. A
@@ -45,7 +42,7 @@ pub async fn get(
     if let Err(e) = sweep_if_due(&deps, &user).await {
         tracing::error!("[brief] on-read sweep failed: {e}");
     }
-    match get_brief(&deps, &user, query.tz.as_deref()).await {
+    Ok(match get_brief(&deps, &user, query.tz.as_deref()).await {
         Ok(BriefRead::Document(doc)) => Json(doc).into_response(),
         // The absent literal in wire key order: absent, nextAt, agent. Every
         // absence carries `agent` — the surface offers assistant settings
@@ -54,9 +51,6 @@ pub async fn get(
         Ok(BriefRead::Absent(kind, next_at, agent)) => {
             Json(json!({ "absent": kind, "nextAt": next_at, "agent": agent })).into_response()
         }
-        Err(e) => {
-            tracing::error!("[brief] read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[brief] read failed", e),
+    })
 }

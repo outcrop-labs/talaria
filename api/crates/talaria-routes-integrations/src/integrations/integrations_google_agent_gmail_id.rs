@@ -21,26 +21,23 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     // Acting as a HUMAN — the owner's mailbox (or the shared org one). A
     // legacy shared-key caller only ASSERTS which agent it is, so it never
     // reaches the token.
     if let Some(denied) = refuse_legacy(&caller, "Gmail access") {
-        return denied;
+        return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
     else {
-        return house_error_msg(
+        return Ok(house_error_msg(
             StatusCode::CONFLICT,
             "not_connected",
             "No Google account is connected for this agent (its owner, or the org account).",
-        );
+        ));
     };
     // Hand-checked (not a path param constraint) so the shape of the refusal
     // stays this route's own 400, not the router's.
@@ -49,10 +46,10 @@ pub async fn get(
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         || !(4..=64).contains(&id.len())
     {
-        return house_error(StatusCode::BAD_REQUEST, "bad request");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "bad request"));
     }
-    match get_message_with_token(&google.token, &id).await {
+    Ok(match get_message_with_token(&google.token, &id).await {
         Ok(message) => Json(json!({ "message": message })).into_response(),
         Err(e) => google_fail(e, "Gmail"),
-    }
+    })
 }

@@ -9,16 +9,13 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_api_facades::kb::get_public_space;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
     let space = match get_public_space(&state.pg, &slug).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] public space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] public space read failed", e),
     };
     let Some(space) = space else {
         return house_error(StatusCode::NOT_FOUND, "not found");

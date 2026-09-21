@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-body = { path = "../talaria-body" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1", features = ["derive"] }

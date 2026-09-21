@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof for the pending-draft dedupe (cargo test -- --ignored).
 // The report this file pins, 2026-09-11: the dogfood brief held six
 // SEND EMAIL cards for one reply, because a retried agent run re-drafts
@@ -13,46 +14,11 @@
 //   source ui/.env && cargo test --test pending_dedupe_live -- --ignored
 
 use serde_json::{Value, json};
-use talaria_api::config::Config;
+use support::{app_state, fabricate_user, pg};
 use talaria_api::google::pending_actions::{QueueAction, queue_action};
 use talaria_api::realtime::RealtimeDeps;
-use talaria_api::state::AppState;
-
-async fn pg() -> sqlx::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    sqlx::PgPool::connect(&url).await.expect("connect")
-}
-
 /// Redis on a dead port, exactly like the other live tests: the announce
 /// fan-out degrades to a no-op, and this file is about the rows.
-async fn app_state() -> AppState {
-    let cfg = Config::from_parts(
-        std::env::var("DATABASE_URL").unwrap_or_default(),
-        "redis://127.0.0.1:1".into(),
-        std::env::var("TALARIA_SECRET_KEY").unwrap_or_default(),
-        std::env::var("TALARIA_SECRET_KEY_FILE").unwrap_or_default(),
-        String::new(),
-        String::new(),
-    )
-    .expect("test config assembles");
-    AppState::new(talaria_api::db::pool(&cfg), std::sync::Arc::new(cfg))
-}
-
-async fn fabricate_user(pg: &sqlx::PgPool, tag: &str) -> String {
-    let sub = format!("pending-dedupe:{tag}:{}", uuid::Uuid::new_v4());
-    sqlx::query("insert into users (sub) values ($1)")
-        .bind(&sub)
-        .execute(pg)
-        .await
-        .unwrap();
-    sqlx::query_scalar("select id::text from users where sub = $1")
-        .bind(&sub)
-        .fetch_one(pg)
-        .await
-        .unwrap()
-}
-
 async fn cleanup(pg: &sqlx::PgPool, tag: &str) {
     let pattern = format!("pending-dedupe:{tag}:%");
     sqlx::query(
@@ -100,7 +66,7 @@ async fn a_redrafted_email_converges_on_the_pending_row() {
     let state = app_state().await;
     let tag = "converge";
     cleanup(&pg, tag).await;
-    let owner = fabricate_user(&pg, tag).await;
+    let owner = fabricate_user(&pg, "pending-dedupe", tag).await;
 
     let first = queue_action(
         &state.pg,
@@ -156,7 +122,7 @@ async fn a_decided_row_is_a_fresh_ask_again() {
     let state = app_state().await;
     let tag = "freshask";
     cleanup(&pg, tag).await;
-    let owner = fabricate_user(&pg, tag).await;
+    let owner = fabricate_user(&pg, "pending-dedupe", tag).await;
 
     let queued = queue_action(
         &state.pg,
@@ -198,7 +164,7 @@ async fn a_different_subject_is_a_different_ask() {
     let state = app_state().await;
     let tag = "diffsubj";
     cleanup(&pg, tag).await;
-    let owner = fabricate_user(&pg, tag).await;
+    let owner = fabricate_user(&pg, "pending-dedupe", tag).await;
 
     queue_action(
         &state.pg,

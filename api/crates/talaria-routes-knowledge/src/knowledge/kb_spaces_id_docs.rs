@@ -21,8 +21,8 @@ use talaria_api_facades::kb::perms::{
 use talaria_api_facades::kb::{NewDoc, create_doc, get_space, list_docs, save_doc};
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, optional_max_string_member, optional_uuid_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_max_string_member, optional_uuid_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, who_of};
 use talaria_state::AppState;
 
@@ -32,36 +32,24 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] space read failed", e)),
     };
     let Some(space) = space else {
-        return Json(json!({ "docs": [] })).into_response();
+        return Ok(Json(json!({ "docs": [] })).into_response());
     };
     // Agents (over MCP): gate the tree on agent space-access, then filter docs
     // by their own audience (inherited from the readable folder, or granted).
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     let docs = match list_docs(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] doc list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] doc list failed", e)),
     };
     let space_editors = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] editor read failed", e)),
     };
     if let Some(caller) = caller {
         let owner = match talaria_users::assistant_owner_for(
@@ -71,17 +59,11 @@ pub async fn get(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] owner resolve failed", e)),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &caller.model).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] team membership read failed", e)),
         };
         if !can_read_agent(
             &guarded_of(&space),
@@ -90,14 +72,11 @@ pub async fn get(
             &space_editors,
             &team_ids,
         ) {
-            return Json(json!({ "docs": [] })).into_response();
+            return Ok(Json(json!({ "docs": [] })).into_response());
         }
         let granted = match granted_item_ids_for_agent(&state.pg, "doc", &caller.model).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] grant read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] grant read failed", e)),
         };
         let docs: Vec<_> = docs
             .into_iter()
@@ -107,20 +86,14 @@ pub async fn get(
                     || doc_readable_by_agent(d, owner.as_deref())
             })
             .collect();
-        return Json(json!({ "docs": docs })).into_response();
+        return Ok(Json(json!({ "docs": docs })).into_response());
     }
-    let user = match require_perm(&state, &headers, "kb.edit").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_perm(&state, &headers, "kb.edit").await?;
     // Gate the whole tree on folder access first.
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] team membership read failed", e)),
     };
     if !can_read(
         &guarded_of(&space),
@@ -129,7 +102,7 @@ pub async fn get(
         &space_editors,
         &team_ids,
     ) {
-        return Json(json!({ "docs": [] })).into_response();
+        return Ok(Json(json!({ "docs": [] })).into_response());
     }
     // Inherited docs are as visible as the (readable) folder, so they show.
     // Customized docs are filtered by their own audience (or an explicit
@@ -137,10 +110,7 @@ pub async fn get(
     // filter (the granted-set beside it is the grant half).
     let granted = match granted_item_ids(&state.pg, "doc", &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] grant read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] grant read failed", e)),
     };
     let docs: Vec<_> = docs
         .into_iter()
@@ -161,7 +131,7 @@ pub async fn get(
                 )
         })
         .collect();
-    Json(json!({ "docs": docs })).into_response()
+    Ok(Json(json!({ "docs": docs })).into_response())
 }
 
 /// can_read_agent's non-grant halves on a doc META row (no grants in hand —
@@ -180,45 +150,36 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let title = match optional_max_string_member(obj, "title", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let parent_id = match optional_uuid_member(obj, "parentId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let kind = match talaria_body::optional_enum_member(obj, "kind", &["human", "agent"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Initial markdown body (the MCP create_kb_doc path sets it in one shot).
     let body_text = match optional_max_string_member(obj, "body", 500_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // Agents (over MCP) create docs in spaces they can read. Agent docs start
     // as drafts — they never ground the org brain until a human officializes
     // them, so the write guardrail holds.
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     if let Some(caller) = caller {
         let model = caller.model.clone();
         let space = match get_space(&state.pg, &id).await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[kb] space read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] space read failed", e)),
         };
         // Two different questions about the same caller, deliberately two
         // different answers. The READ gate below uses the personal
@@ -235,10 +196,7 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] owner resolve failed", e)),
         };
         let responsible = match talaria_attribution::responsible_user_for(
             &state.pg,
@@ -248,19 +206,13 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] responsible-user resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] responsible-user resolve failed", e)),
         };
         let readable = match (&space, list_editors(&state.pg, ITEM_SPACE, &id).await) {
             (Some(s), Ok(editors)) => {
                 let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &model).await {
                     Ok(v) => v,
-                    Err(e) => {
-                        tracing::error!("[kb] team membership read failed: {e}");
-                        return thrown_internal_error();
-                    }
+                    Err(e) => return Ok(internal("[kb] team membership read failed", e)),
                 };
                 can_read_agent(
                     &guarded_of(s),
@@ -270,10 +222,10 @@ pub async fn post(
                     &team_ids,
                 )
             }
-            _ => return house_error(StatusCode::FORBIDDEN, "forbidden"),
+            _ => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
         };
         if !readable {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         let doc = match create_doc(
             &state.pg,
@@ -289,10 +241,7 @@ pub async fn post(
         .await
         {
             Ok(d) => d,
-            Err(e) => {
-                tracing::error!("[kb] doc create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[kb] doc create failed", e)),
         };
         let saved = match &body_text {
             Some(b) => {
@@ -311,44 +260,32 @@ pub async fn post(
             }
             None => Ok(Some(doc.clone())),
         };
-        return match saved {
+        return Ok(match saved {
             Ok(Some(d)) => Json(json!({ "doc": d })).into_response(),
             _ => Json(json!({ "doc": doc })).into_response(),
-        };
+        });
     }
 
     // Humans create where they can read: the same gate the GET on this route
     // uses, so a private space stays closed on write as well as on read —
     // requiring only a session would let any signed-in member drop a doc into
     // someone else's private space.
-    let user = match require_perm(&state, &headers, "kb.edit").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_perm(&state, &headers, "kb.edit").await?;
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] space read failed", e)),
     };
     let Some(space) = space else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let editors = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] editor read failed", e)),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] team membership read failed", e)),
     };
     if !can_read(
         &guarded_of(&space),
@@ -357,7 +294,7 @@ pub async fn post(
         &editors,
         &team_ids,
     ) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let created_by = who_of(&user).unwrap_or_else(|| "user".into());
     let doc = match create_doc(
@@ -374,10 +311,7 @@ pub async fn post(
     .await
     {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[kb] doc create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[kb] doc create failed", e)),
     };
     let saved = match &body_text {
         Some(b) => {
@@ -417,8 +351,8 @@ pub async fn post(
         )
         .await;
     });
-    match saved {
+    Ok(match saved {
         Ok(Some(d)) => Json(json!({ "doc": d })).into_response(),
         _ => Json(json!({ "doc": doc })).into_response(),
-    }
+    })
 }

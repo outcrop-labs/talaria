@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the agent-reply fan-out (cargo test -- --ignored). The
 // feature is three gates stacked on one writer — the read cursor ("still
 // looking" files nothing), the unread dedupe (one pointer per thread, further
@@ -9,15 +10,9 @@
 //   DATABASE_URL=postgres://… cargo test --test agent_reply_notify -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::{person, pg};
 use talaria_api::conversations::{create_conversation, mark_conversation_read};
 use talaria_api::notify::{NotifyDeps, notify_agent_reply, notify_class_of};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// Two throwaway people — a thread owner and a plan collaborator. The
 /// cascade takes conversations, members, reads, messages, notifications, and
 /// research_runs (owner_user_id) with them.
@@ -27,20 +22,6 @@ async fn cleanup(pg: &PgPool) {
         .await
         .unwrap();
 }
-
-async fn person(pg: &PgPool, sub: &str, email: &str, name: &str) -> String {
-    let (id,): (String,) = sqlx::query_as(
-        "insert into users (sub, email, name, role) values ($1, $2, $3, 'member') returning id::text",
-    )
-    .bind(sub)
-    .bind(email)
-    .bind(name)
-    .fetch_one(pg)
-    .await
-    .unwrap();
-    id
-}
-
 /// Land an assistant turn and return its message id — direct rows, because
 /// this suite proves the fan-out's gates, not the streaming machinery.
 async fn reply(pg: &PgPool, conversation: &str, seq: i32, content: &str, status: &str) -> String {
@@ -81,7 +62,7 @@ fn utf16_len(s: &str) -> usize {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_reply_rings_once_for_whoever_was_away() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let deps = NotifyDeps::publishing(pg.clone(), None);
     let owner = person(

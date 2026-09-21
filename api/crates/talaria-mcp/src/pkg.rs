@@ -29,6 +29,7 @@ use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 
 use crate::registry::McpServer;
+use talaria_agent_auth::now_ms;
 use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 use talaria_secretbox::SecretBox;
 
@@ -411,13 +412,6 @@ fn spawn_ms() -> &'static Mutex<HashMap<String, u64>> {
     &MS
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 fn rpc_error(code: i64, message: &str, id: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
@@ -629,10 +623,10 @@ async fn ensure_child(
     {
         let mut ms = spawn_ms().lock().unwrap_or_else(|p| p.into_inner());
         let last = *ms.get(&server.name).unwrap_or(&0);
-        if now_ms().saturating_sub(last) < RESPAWN_DEBOUNCE_MS {
+        if (now_ms() as u64).saturating_sub(last) < RESPAWN_DEBOUNCE_MS {
             return Err("package server is restarting; retry shortly".into());
         }
-        ms.insert(server.name.clone(), now_ms());
+        ms.insert(server.name.clone(), now_ms() as u64);
     }
     if spec.pull_state != "ready" {
         let mut waited = 0u64;

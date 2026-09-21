@@ -13,24 +13,19 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::parse;
+use talaria_error::{house_error, object_or_400};
 use talaria_secret_health::{ClearError, clear_secret, clear_unreadable, secret_health};
-use talaria_session::{actor_of, require_admin};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/secrets] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
-    Json(secret_health(&state.pg, &sb, &state.cfg.secret_root).await).into_response()
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[admin/secrets] secretbox unavailable").await?;
+    Ok(Json(secret_health(&state.pg, &sb, &state.cfg.secret_root).await).into_response())
 }
 
 /// DELETE body: { id: string 1..200 } or { unreadable: true }.
@@ -38,17 +33,11 @@ pub async fn delete(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let actor = actor_of(&user);
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
 
     // dispatch by key presence, each branch answering its own words — the
     // id path is checked first (it wins when both would parse, extra keys
@@ -59,22 +48,28 @@ pub async fn delete(
             Some(s) => {
                 let n = talaria_body::utf16_len(s);
                 if n < 1 {
-                    return house_error(StatusCode::BAD_REQUEST, &talaria_body::too_small_msg(1));
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        &talaria_body::too_small_msg(1),
+                    ));
                 }
                 if n > 200 {
-                    return house_error(StatusCode::BAD_REQUEST, &talaria_body::too_big_msg(200));
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        &talaria_body::too_big_msg(200),
+                    ));
                 }
                 Some(s.to_string())
             }
             None => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     &talaria_body::string_msg(talaria_body::zod_type_name(v)),
-                );
+                ));
             }
         },
     };
-    if let Some(id) = id {
+    Ok(if let Some(id) = id {
         match clear_secret(&state.pg, &id).await {
             Ok(changed) => {
                 // Audit the attempt either way: "an admin tried to clear
@@ -108,13 +103,7 @@ pub async fn delete(
         }
     } else if obj.get("unreadable") == Some(&Value::Bool(true)) {
         // must be exactly true — anything else falls to the blanket below.
-        let sb = match state.secretbox().await {
-            Ok(sb) => sb,
-            Err(e) => {
-                tracing::error!("[admin/secrets] secretbox unavailable: {e}");
-                return thrown_internal_error();
-            }
-        };
+        let sb = secretbox_or_500(&state, "[admin/secrets] secretbox unavailable").await?;
         let (cleared, failed) = clear_unreadable(&state.pg, &sb, &state.cfg.secret_root).await;
         let after = serde_json::json!({ "cleared": cleared, "failed": failed });
         log_audit(
@@ -139,5 +128,5 @@ pub async fn delete(
         Json(Value::Object(out)).into_response()
     } else {
         house_error(StatusCode::BAD_REQUEST, "Invalid input")
-    }
+    })
 }

@@ -2,13 +2,12 @@
 // health engine (api/src/secret_health.rs)
 // exactly — including the absence of any field that could hold a plaintext
 // secret, which is the point: there is nowhere for one to arrive.
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type SecretState = 'ok' | 'unreadable' | 'missing' | 'env'
 export type SecretGroup = 'models' | 'integrations' | 'agents' | 'platform'

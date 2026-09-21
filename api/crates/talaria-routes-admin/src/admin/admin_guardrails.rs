@@ -11,10 +11,10 @@ use serde_json::Value;
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, array_msg, array_too_big_msg, as_object, boolean_member, boolean_msg, enum_member,
-    number_member, parse, record_msg, string_msg, too_big_msg, utf16_len, zod_type_name,
+    NumKind, array_msg, array_too_big_msg, boolean_member, boolean_msg, enum_member, number_member,
+    parse, record_msg, string_msg, too_big_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -54,45 +54,37 @@ async fn config_for_wire(pg: &sqlx::PgPool) -> Value {
     Value::Object(out)
 }
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let config = config_for_wire(&state.pg).await;
     let stats = talaria_api_facades::gateway::guard::guard_stats(&state.pg).await;
     // A findings read failure is a failure, not an empty list.
     let findings =
         match talaria_api_facades::gateway::guard::list_guard_findings(&state.pg, 50).await {
             Ok(f) => f,
-            Err(e) => {
-                tracing::error!("[admin/guardrails] findings read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[admin/guardrails] findings read failed", e)),
         };
     let rules = talaria_api_facades::gateway::guard::guard_rule_meta();
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "config": config,
         "stats": stats,
         "findings": findings,
         "rules": rules,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Keys in schema order, every rejection in the schema's own words:
     //   mode — enum off|observe|annotate|strict
     //   checks — a string→boolean record
@@ -101,50 +93,79 @@ pub async fn put(
     //   coach — boolean, default false
     let mode = match enum_member(obj, "mode", &["off", "observe", "annotate", "strict"]) {
         Ok(m) => m,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let checks = match obj.get("checks") {
-        None => return house_error(StatusCode::BAD_REQUEST, &record_msg("undefined")),
+        None => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &record_msg("undefined"),
+            ));
+        }
         Some(v) => match v.as_object() {
             Some(o) => {
                 if let Some(bad) = o.values().find(|v| !v.is_boolean()) {
-                    return house_error(StatusCode::BAD_REQUEST, &boolean_msg(zod_type_name(bad)));
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        &boolean_msg(zod_type_name(bad)),
+                    ));
                 }
                 o.clone()
             }
-            None => return house_error(StatusCode::BAD_REQUEST, &record_msg(zod_type_name(v))),
+            None => {
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    &record_msg(zod_type_name(v)),
+                ));
+            }
         },
     };
     // Validated only — the stored config passes the number through as the
     // client wrote it (a stored 1 reads back as 1, not 1.0).
     if let Err(msg) = number_member(obj, "minConfidence", NumKind::Float, 0.0, 1.0) {
-        return house_error(StatusCode::BAD_REQUEST, &msg);
+        return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
     }
     let hosts = match obj.get("policedHosts") {
-        None => return house_error(StatusCode::BAD_REQUEST, &array_msg("undefined")),
+        None => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &array_msg("undefined"),
+            ));
+        }
         Some(v) => match v.as_array() {
             Some(a) => {
                 if a.len() > 100 {
-                    return house_error(StatusCode::BAD_REQUEST, &array_too_big_msg(100));
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        &array_too_big_msg(100),
+                    ));
                 }
                 for h in a {
                     let Some(s) = h.as_str() else {
-                        return house_error(StatusCode::BAD_REQUEST, &string_msg(zod_type_name(h)));
+                        return Ok(house_error(
+                            StatusCode::BAD_REQUEST,
+                            &string_msg(zod_type_name(h)),
+                        ));
                     };
                     if utf16_len(s) > 200 {
-                        return house_error(StatusCode::BAD_REQUEST, &too_big_msg(200));
+                        return Ok(house_error(StatusCode::BAD_REQUEST, &too_big_msg(200)));
                     }
                 }
                 a.clone()
             }
-            None => return house_error(StatusCode::BAD_REQUEST, &array_msg(zod_type_name(v))),
+            None => {
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    &array_msg(zod_type_name(v)),
+                ));
+            }
         },
     };
     let coach = match obj.get("coach") {
         None => false, // the default
         Some(_) => match boolean_member(obj, "coach") {
             Ok(b) => b,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
     // The stored object is the parsed body in schema order — mode, checks,
@@ -161,8 +182,7 @@ pub async fn put(
     stored.insert("coach".into(), serde_json::json!(coach));
     let stored = Value::Object(stored);
     if let Err(e) = set_setting(&state.pg, CONFIG_KEY, &stored).await {
-        tracing::error!("[admin/guardrails] config write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[admin/guardrails] config write failed", e));
     }
     log_audit(
         &state.pg,
@@ -177,5 +197,5 @@ pub async fn put(
         },
     )
     .await;
-    Json(serde_json::json!({ "config": stored })).into_response()
+    Ok(Json(serde_json::json!({ "config": stored })).into_response())
 }

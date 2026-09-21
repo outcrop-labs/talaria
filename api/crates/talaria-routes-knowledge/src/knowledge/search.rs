@@ -25,8 +25,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::agent_caller;
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::house_error;
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_web_search::search_the_web;
@@ -35,24 +35,18 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let caller = agent_caller(&state.pg, &headers).await?;
     if caller.is_none()
         && let Err(gate) = require_user(&state, &headers).await
     {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let query = match string_member(obj, "query", 2, 400) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let limit = match obj.get("limit") {
         None => None,
@@ -60,15 +54,14 @@ pub async fn post(
             // limit: optional integer, 1..=25 — anything else is the sentence.
             Some(n) if (1..=25).contains(&n) => Some(n as f64),
             _ => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     "limit must be an integer from 1 to 25",
-                );
+                ));
             }
         },
     };
-
-    match search_the_web(&state, &query, limit).await {
+    Ok(match search_the_web(&state, &query, limit).await {
         Ok(found) => Json(json!({
             "query": query,
             "results": found.results,
@@ -88,5 +81,5 @@ pub async fn post(
             *resp.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
             resp
         }
-    }
+    })
 }

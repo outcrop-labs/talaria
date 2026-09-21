@@ -18,32 +18,18 @@ use talaria_api_facades::google::client::{
 };
 use talaria_api_facades::google::connections::get_connection_status;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, nullable_optional_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
-use talaria_secretbox::SecretBox;
-use talaria_session::{actor_of, require_admin};
+use talaria_body::{nullable_optional_string_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
-
-async fn secretbox_or_500(state: &AppState) -> Result<SecretBox, Response> {
-    state.secretbox().await.map_err(|e| {
-        tracing::error!("[admin/google-client] secretbox unavailable: {e}");
-        thrown_internal_error()
-    })
-}
 
 pub async fn get(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     uri: axum::http::Uri,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(res) => return res,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[admin/google-client] secretbox unavailable").await?;
     let origin = talaria_auth_config::get_auth_config().public_url;
     let origin =
         talaria_api_facades::google::oauth::resolve_origin(origin.as_deref(), &headers, &uri);
@@ -56,11 +42,9 @@ pub async fn get(
     );
     let conn = match conn {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[admin/google-client] connection read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[admin/google-client] connection read failed", e)),
     };
+    Ok(
     Json(json!({
         "status": status,
         "loginEnabled": login_enabled,
@@ -72,40 +56,31 @@ pub async fn get(
             { "uri": format!("{origin}/api/auth/google/callback"), "what": "Google login (only if you enable it)" },
         ],
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let client_id = match string_member(obj, "clientId", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let client_secret = match nullable_optional_string_member(obj, "clientSecret", 400) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let hd = match nullable_optional_string_member(obj, "hd", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(res) => return res,
-    };
+    let sb = secretbox_or_500(&state, "[admin/google-client] secretbox unavailable").await?;
     let patch = ClientConfigPatch {
         client_id: Some(client_id.clone()),
         client_secret: client_secret.clone().map(Some),
@@ -113,8 +88,7 @@ pub async fn put(
     };
     if let Err(e) = set_google_client_config(&state.pg, &sb, &patch).await {
         // The one refusal is a client id that trims to nothing — a 500.
-        tracing::error!("[admin/google-client] set failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[admin/google-client] set failed", e));
     }
     // `after` carries hd only when the body's hd was a string — '' rides,
     // null/absent are dropped.
@@ -144,26 +118,22 @@ pub async fn put(
         google_client_status(&state.pg, &sb),
         google_login_enabled(&state.pg, &sb)
     );
-    Json(json!({
+    Ok(Json(json!({
         "status": status,
         "loginEnabled": login_enabled,
         "loginPinnedByEnv": google_login_pinned_by_env(),
     }))
-    .into_response()
+    .into_response())
 }
 
-pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(res) => return res,
-    };
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[admin/google-client] secretbox unavailable").await?;
     if let Err(e) = clear_google_client_config(&state.pg).await {
-        tracing::error!("[admin/google-client] clear failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[admin/google-client] clear failed", e));
     }
     log_audit(
         &state.pg,
@@ -182,12 +152,12 @@ pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMa
         google_client_status(&state.pg, &sb),
         google_login_enabled(&state.pg, &sb)
     );
-    Json(json!({
+    Ok(Json(json!({
         "status": status,
         "loginEnabled": login_enabled,
         "loginPinnedByEnv": google_login_pinned_by_env(),
     }))
-    .into_response()
+    .into_response())
 }
 
 // /api/admin/google-client/login. The Google LOGIN switch — the policy half
@@ -200,29 +170,19 @@ pub async fn put_login(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let enabled = match talaria_body::boolean_member(obj, "enabled") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let sb = match secretbox_or_500(&state).await {
-        Ok(sb) => sb,
-        Err(res) => return res,
-    };
+    let sb = secretbox_or_500(&state, "[admin/google-client] secretbox unavailable").await?;
     if let Err(e) =
         talaria_api_facades::google::client::set_google_login_enabled(&state.pg, enabled).await
     {
-        tracing::error!("[admin/google-client/login] set failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[admin/google-client/login] set failed", e));
     }
     log_audit(
         &state.pg,
@@ -237,5 +197,5 @@ pub async fn put_login(
         },
     )
     .await;
-    Json(json!({ "loginEnabled": google_login_enabled(&state.pg, &sb).await })).into_response()
+    Ok(Json(json!({ "loginEnabled": google_login_enabled(&state.pg, &sb).await })).into_response())
 }

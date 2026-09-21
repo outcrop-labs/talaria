@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{acting_user, require_user, require_view, unauthorized};
 use talaria_state::AppState;
 use talaria_teams::{create_team, list_all_teams, list_teams};
@@ -22,60 +22,49 @@ fn wants_all(uri: &Uri) -> bool {
         .unwrap_or(false)
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
     if wants_all(&uri) {
-        let user = match require_view(&state, &headers, "/teams").await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
-        return match list_all_teams(&state.pg, &user.id).await {
+        let user = require_view(&state, &headers, "/teams").await?;
+        return Ok(match list_all_teams(&state.pg, &user.id).await {
             Ok(teams) => Json(json!({ "teams": teams })).into_response(),
-            Err(e) => {
-                tracing::error!("[teams] list-all failed: {e}");
-                thrown_internal_error()
-            }
-        };
+            Err(e) => internal("[teams] list-all failed", e),
+        });
     }
     let user = match acting_user(&state, &headers).await {
         Ok(Some(u)) => u,
-        Ok(None) => return unauthorized(),
-        Err(gate) => return gate,
+        Ok(None) => return Ok(unauthorized()),
+        Err(gate) => return Err(gate),
     };
-    match list_teams(&state.pg, &user.id).await {
+    Ok(match list_teams(&state.pg, &user.id).await {
         Ok(teams) => Json(json!({ "teams": teams })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[teams] list failed", e),
+    })
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
     let obj = match talaria_body::as_object(&parsed) {
         Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = match talaria_body::string_member(obj, "name", 1, 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let (id, team_name, created_ms) = match create_team(&state.pg, &user.id, &name).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[teams] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[teams] create failed", e)),
     };
-    Json(json!({
+    Ok(Json(json!({
         "team": {
             "id": id,
             "name": team_name,
@@ -85,5 +74,5 @@ pub async fn post(
             "agentCount": 0
         }
     }))
-    .into_response()
+    .into_response())
 }

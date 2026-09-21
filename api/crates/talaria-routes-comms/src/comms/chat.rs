@@ -19,7 +19,7 @@ use talaria_api_facades::retrieval::sources::index_activity;
 use talaria_api_facades::runs::decide::{DecideArgs, DecideResult, decide};
 use talaria_api_facades::runs::real_decide_deps;
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, enum_member, object_msg, optional_boolean_member,
+    array_msg, array_too_big_msg, enum_member, object_msg, optional_boolean_member,
     optional_enum_member, optional_max_string_member, optional_uuid_array_member,
     optional_uuid_member, string_member, uuid_member, zod_type_name,
 };
@@ -31,7 +31,7 @@ use talaria_conversations::{
     insert_streaming_assistant, insert_user_message, list_plan_members, next_seq, prior_messages,
     title_from, touch_conversation,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{NotifyDeps, fan_conversation_event};
 use talaria_permissions::has_perm;
 use talaria_persona::persona_configured_effort;
@@ -44,6 +44,7 @@ use talaria_research::{
 };
 use talaria_research_origin::mark_agent_turn;
 use talaria_session::require_user;
+use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
 use talaria_uploads::{
     attachment_as_data_url, attachment_text_blocks, is_image, resolve_attachments,
@@ -122,19 +123,13 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // Resolve the conversation (access-checked: yours, or a plan you're a
@@ -151,13 +146,10 @@ pub async fn post(
     if let Some(cid) = conv_id.as_deref() {
         let conv = match accessible_conversation(&state.pg, &user.id, cid).await {
             Ok(c) => c,
-            Err(e) => {
-                tracing::error!("[chat] conversation read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[chat] conversation read failed", e)),
         };
         let Some(conv) = conv else {
-            return house_error(StatusCode::NOT_FOUND, "conversation not found");
+            return Ok(house_error(StatusCode::NOT_FOUND, "conversation not found"));
         };
         agent_model = conv.agent_model;
         kind = conv.kind;
@@ -205,32 +197,29 @@ pub async fn post(
     // assistant (which would act as that owner — Google, memory, private soul).
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[chat] agent access read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[chat] agent access read failed", e)),
     };
     if !gate(&agent_model) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "forbidden: no access to this agent",
+        ));
     }
 
     // Tier routing: validate against the agent's defined aliases, then
     // request `<base>-<tier>` — the agent's own gateway resolves the alias.
     let routed_model = match routed_model_for(&state.pg, &agent_model, body.tier.as_deref()).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[chat] tier routing read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[chat] tier routing read failed", e)),
     };
     let Some(routed_model) = routed_model else {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             &format!(
                 "unknown tier \"{}\" for {agent_model}",
                 body.tier.as_deref().unwrap_or("undefined")
             ),
-        );
+        ));
     };
 
     // Effort: the same rule the tier above follows, against the per-model
@@ -253,10 +242,10 @@ pub async fn post(
         } else {
             format!(" (offered: {})", efforts.join(", "))
         };
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             &format!("unsupported effort \"{e}\" for {routed_model}{offered}"),
-        );
+        ));
     }
     if effort.is_none()
         && let Some(configured) = persona_configured_effort(&state.pg, &routed_model)
@@ -304,17 +293,20 @@ pub async fn post(
             // The ensure route is the only creator: a ticket thread needs its
             // task, the owner ladder and the binder — that is the ensure
             // route's job, not the sender's.
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 "ticket threads are opened on the ticket",
-            );
+            ));
         }
         if kind == "plan" {
             let allowed = has_perm(&state.pg, &user.id, &user.role, "plans.create")
                 .await
                 .unwrap_or(false);
             if !allowed {
-                return house_error(StatusCode::FORBIDDEN, "no permission to create plans");
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "no permission to create plans",
+                ));
             }
         }
         let created = create_conversation(
@@ -331,10 +323,7 @@ pub async fn post(
                 conv_id = Some(id);
                 plan_title = Some(title.clone());
             }
-            Err(e) => {
-                tracing::error!("[chat] conversation create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[chat] conversation create failed", e)),
         }
     }
     let conv_id = conv_id.expect("created or resolved above");
@@ -349,30 +338,18 @@ pub async fn post(
 
     // Record this turn (history is built AFTER for normal turns, so the new
     // message isn't duplicated into the prior list).
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[chat] secretbox unusable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[chat] secretbox unusable").await?;
     let prior = if queued {
         Vec::new()
     } else {
         match prior_messages(&state.pg, &sb, &conv_id, None).await {
             Ok(p) => p,
-            Err(e) => {
-                tracing::error!("[chat] history read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[chat] history read failed", e)),
         }
     };
     let user_seq = match next_seq(&state.pg, &conv_id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[chat] seq read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[chat] seq read failed", e)),
     };
     // The effort pick rides the user's row: the queued-message contract. A
     // reply that is already streaming means this turn is covered later by
@@ -394,10 +371,7 @@ pub async fn post(
     .await
     {
         Ok(id) => id,
-        Err(e) => {
-            tracing::error!("[chat] user turn persist failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[chat] user turn persist failed", e)),
     };
     let _ = touch_conversation(&state.pg, &conv_id, Some(&title)).await;
 
@@ -501,14 +475,14 @@ pub async fn post(
             }
         };
         if spent {
-            return (
+            return Ok((
                 StatusCode::ACCEPTED,
                 axum::Json(QueuedAck {
                     queued: true,
                     conversation_id: conv_id.clone(),
                 }),
             )
-                .into_response();
+                .into_response());
         }
         // Not spent — the message still lands as a persona turn below, it
         // just didn't resume anything.
@@ -530,14 +504,14 @@ pub async fn post(
                 continue_conversation(&state, &conv_id, &meta).await;
             });
         }
-        return (
+        return Ok((
             StatusCode::ACCEPTED,
             axum::Json(QueuedAck {
                 queued: true,
                 conversation_id: conv_id,
             }),
         )
-            .into_response();
+            .into_response());
     }
 
     // Give a vision-capable model the actual images (data URLs work even when
@@ -630,10 +604,7 @@ pub async fn post(
     let assistant_id =
         match insert_streaming_assistant(&state.pg, &conv_id, user_seq + 1, &json!({})).await {
             Ok(id) => id,
-            Err(e) => {
-                tracing::error!("[chat] assistant row create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[chat] assistant row create failed", e)),
         };
 
     // WHERE THIS AGENT IS ANSWERING, recorded before the turn leaves for the
@@ -693,7 +664,7 @@ pub async fn post(
     let client_stream = futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|item| (item, rx))
     });
-    Response::builder()
+    Ok(Response::builder()
         .status(StatusCode::from_u16(upstream.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
         // cache-control first — it sits above content-type on the wire, and
         // header order is part of the contract.
@@ -702,7 +673,7 @@ pub async fn post(
         .header("x-conversation-id", conv_id.as_str())
         .header("x-message-id", assistant_id_header.as_str())
         .body(Body::from_stream(client_stream))
-        .expect("static headers build")
+        .expect("static headers build"))
 }
 
 /// The user's plan turn, indexed (plan-owner-scoped) — detached.

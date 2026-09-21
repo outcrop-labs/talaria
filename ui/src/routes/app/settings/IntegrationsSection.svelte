@@ -9,10 +9,10 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
-  import { delJson, errorMessage, getJson } from '@/lib/fetch-json'
+  import { delJson, getJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
 
   interface GoogleStatus {
     available: boolean
@@ -52,7 +52,7 @@
     } catch (e) {
       // Nothing inline to hold it: the status row still claims "connected",
       // so the toast is what says the disconnect didn't happen.
-      pushToast({ title: 'Disconnect failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Disconnect failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['integration-google'] })

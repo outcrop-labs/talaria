@@ -646,7 +646,7 @@ pub async fn get_message_with_token(token: &str, id: &str) -> Result<MailMessage
     let res = http()
         .get(format!(
             "{GMAIL_BASE}/messages/{}?format=full",
-            talaria_google_client::encode_uri_component(id)
+            talaria_body::percent_encode(id)
         ))
         .bearer_auth(token)
         .send()

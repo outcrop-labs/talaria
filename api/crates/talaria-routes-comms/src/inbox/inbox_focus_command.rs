@@ -18,11 +18,11 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use serde_json::Value;
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, enum_member, nullable_optional_string_member,
+    array_msg, array_too_big_msg, enum_member, nullable_optional_string_member,
     nullish_max_string_member, object_msg, optional_enum_member, optional_uuid_array_member,
     optional_uuid_member, uuid_member, zod_type_name,
 };
-use talaria_error::house_error;
+use talaria_error::{house_error, object_or_400};
 use talaria_inbox_focus::FocusError;
 use talaria_inbox_focus::conversation::{
     InboxCommandInput, acquire_inbox_focus_lock, run_inbox_conversation_command,
@@ -104,25 +104,19 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let input = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let Some(guard) = acquire_inbox_focus_lock(&user.id) else {
-        return house_error(
+        return Ok(house_error(
             StatusCode::CONFLICT,
             "Your assistant is already handling another Inbox action.",
-        );
+        ));
     };
 
     // The generator as two channels: the run sends typed events into `etx`
@@ -173,13 +167,15 @@ pub async fn post(
             brx,
             |mut rx| async move { rx.recv().await.map(|i| (i, rx)) },
         );
-    // Header ORDER is the wire order — cache-control, connection,
-    // content-type (alphabetical); chat.rs matches.
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CACHE_CONTROL, "no-cache, no-transform")
-        .header(header::CONNECTION, "keep-alive")
-        .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
-        .body(Body::from_stream(stream))
-        .expect("static headers build")
+    Ok(
+        // Header ORDER is the wire order — cache-control, connection,
+        // content-type (alphabetical); chat.rs matches.
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CACHE_CONTROL, "no-cache, no-transform")
+            .header(header::CONNECTION, "keep-alive")
+            .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
+            .body(Body::from_stream(stream))
+            .expect("static headers build"),
+    )
 }

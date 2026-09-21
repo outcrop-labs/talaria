@@ -5,11 +5,11 @@
   // just that end (day snapping, pointer-captured). Sub-tasks indent under their
   // parent. Below the chart sits the UNSCHEDULED list — drag a ticket up into
   // the chart and it schedules where you drop it. Zoom with the −/+ controls.
+  import StaleBoardNotice from '@/components/board/StaleBoardNotice.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Minus, Plus } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
-  import QueryError from '@/components/ui/QueryError.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import { updateTask, type Board } from '@/lib/boards.svelte'
@@ -233,17 +233,10 @@
 <div class="flex h-full flex-col">
   <!-- The chart itself is the tickets, which loaded — so the timeline stays
       and the failed workflow read is marked rather than replacing it. -->
-  {#if statusesQuery.isError}
-    <QueryError
-      variant="inline"
-      class="border-b border-line-subtle px-4 py-2"
-      title={statusesQuery.data === undefined
-        ? 'Could not load this board’s statuses; bar colours and overdue marks are guesses'
-        : 'Statuses may be out of date'}
-      error={statusesQuery.error}
-      onRetry={() => void statusesQuery.refetch()}
-    />
-  {/if}
+  <StaleBoardNotice
+    statuses={statusesQuery}
+    missingTitle="Could not load this board’s statuses; bar colours and overdue marks are guesses"
+  />
   <div bind:this={scrollEl} class="min-h-0 flex-1 overflow-auto">
     <div class="flex min-h-full flex-col" style="min-width: {labelW + days * dayW}px">
       <!-- ── Header: months + day grid + zoom ── -->

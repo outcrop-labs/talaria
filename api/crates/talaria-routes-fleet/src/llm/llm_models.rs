@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::gateway::models::{EndpointModels, catalog_of};
 use talaria_auth::{authenticate_key, bearer_secret};
-use talaria_error::{openai_error, thrown_internal_error};
+use talaria_error::{internal, openai_error};
 use talaria_state::AppState;
 
 #[derive(serde::Serialize)]
@@ -37,10 +37,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         Ok(Some(id)) => id,
         Ok(None) => return openai_error(StatusCode::UNAUTHORIZED, "invalid API key"),
         Err(e) => {
-            tracing::error!("[llm/v1/models] key lookup failed: {e}");
             // No envelope here — status only, no driver text past the
             // boundary.
-            return thrown_internal_error();
+            return internal("[llm/v1/models] key lookup failed", e);
         }
     };
 
@@ -77,10 +76,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 models: models.0,
             })
             .collect::<Vec<_>>(),
-        Err(e) => {
-            tracing::error!("[llm/v1/models] catalog query failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[llm/v1/models] catalog query failed", e),
     };
 
     let data = catalog_of(&eps)

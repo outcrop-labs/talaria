@@ -7,18 +7,19 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{NumKind, array_too_big_msg, as_object, boolean_member, number_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{NumKind, array_too_big_msg, boolean_member, number_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_outreach::{
     OutreachConfig, get_outreach_config, recent_outreach_events, set_outreach_config,
 };
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let agents: Result<Vec<(String, String, bool, bool)>, sqlx::Error> = sqlx::query_as(
         "select model, display_name, proactive, owner_user_id is not null \
          from agent_defs where enabled order by slug",
@@ -37,13 +38,10 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
                 })
             })
             .collect::<Vec<_>>(),
-        Err(e) => {
-            tracing::error!("[admin/outreach] agents read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[admin/outreach] agents read failed", e)),
     };
     let c = get_outreach_config(&state.pg).await;
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "config": {
             "enabled": c.enabled,
             "intervalMinutes": c.interval_minutes,
@@ -52,49 +50,46 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
         "agents": agents,
         "events": recent_outreach_events(&state.pg, 30).await,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Keys in schema order, rejections in the schema's own words: enabled
     // (bool), intervalMinutes (int 15..1440), dailyDmCap (int 1..20),
     // proactiveAgents (strings, at most 100).
     let enabled = match boolean_member(obj, "enabled") {
         Ok(e) => e,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let interval = match number_member(obj, "intervalMinutes", NumKind::Int, 15.0, 1440.0) {
         Ok(n) => n as i64,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let cap = match number_member(obj, "dailyDmCap", NumKind::Int, 1.0, 20.0) {
         Ok(n) => n as i64,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let proactive = match obj.get("proactiveAgents") {
         None => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 &talaria_body::array_msg("undefined"),
-            );
+            ));
         }
         Some(v) => match v.as_array() {
             Some(a) => {
                 if a.len() > 100 {
-                    return house_error(StatusCode::BAD_REQUEST, &array_too_big_msg(100));
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        &array_too_big_msg(100),
+                    ));
                 }
                 let mut out = Vec::with_capacity(a.len());
                 for x in a {
@@ -103,16 +98,16 @@ pub async fn put(
                         .ok_or_else(|| talaria_body::string_msg(talaria_body::zod_type_name(x)));
                     match s {
                         Ok(s) => out.push(s.to_string()),
-                        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
                     }
                 }
                 out
             }
             None => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     &talaria_body::array_msg(talaria_body::zod_type_name(v)),
-                );
+                ));
             }
         },
     };
@@ -132,8 +127,7 @@ pub async fn put(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[admin/outreach] flags write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[admin/outreach] flags write failed", e));
     }
     log_audit(
         &state.pg,
@@ -148,5 +142,5 @@ pub async fn put(
         },
     )
     .await;
-    Json(serde_json::json!({ "ok": true })).into_response()
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }

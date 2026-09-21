@@ -8,8 +8,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { cn } from '@/lib/cn'
-  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { getJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
 
   interface GuardData {
     config: { mode: string; checks: Record<string, boolean>; minConfidence: number; policedHosts: string[]; coach: boolean }
@@ -34,7 +34,7 @@
     try {
       await putJson<{ config: GuardData['config'] }>('/api/admin/guardrails', body)
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['guardrails'] })

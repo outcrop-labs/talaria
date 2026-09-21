@@ -7,6 +7,7 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_error::internal;
 use talaria_gaps::list_gaps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -20,15 +21,10 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<GapsQuery>,
-) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    match list_gaps(&state.pg, query.status.as_deref()).await {
+) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    Ok(match list_gaps(&state.pg, query.status.as_deref()).await {
         Ok(gaps) => Json(json!({ "gaps": gaps })).into_response(),
-        Err(e) => {
-            tracing::error!("[gaps] list failed: {e}");
-            talaria_error::thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[gaps] list failed", e),
+    })
 }

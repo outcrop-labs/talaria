@@ -707,10 +707,6 @@ impl JobStatus {
         serde_json::Value::Object(f)
     }
 
-    fn now_ms() -> i64 {
-        talaria_agent_auth::now_ms()
-    }
-
     async fn save(&self, pg: &PgPool, key: &str) {
         let _ = talaria_gateway::settings::set_setting(pg, key, &self.to_json()).await;
     }
@@ -788,7 +784,7 @@ pub async fn migrate_uploads_to_s3(
             }
         }
         job.running = false;
-        job.finished_ms = Some(JobStatus::now_ms());
+        job.finished_ms = Some(talaria_agent_auth::now_ms());
         job.save(&pg, MIGRATE_KEY).await;
     });
     Ok(initial)
@@ -854,7 +850,7 @@ pub async fn sync_uploads_to_replica(
             }
         }
         job.running = false;
-        job.finished_ms = Some(JobStatus::now_ms());
+        job.finished_ms = Some(talaria_agent_auth::now_ms());
         job.save(&pg, SYNC_KEY).await;
     });
     Ok(initial)

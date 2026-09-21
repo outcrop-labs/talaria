@@ -24,9 +24,7 @@ use talaria_channel_plan::{
     DraftTemplateCtx, PlanOutcome, plan_from_channel, plan_from_conversation,
 };
 use talaria_harness_defs::defs::channel_plan::{Effort, Priority, TicketProposal};
-use talaria_runs_define::{
-    Authority, RunDefinition, RunRow, RunStepContext, StepResult, register_run,
-};
+use talaria_runs_define::{RunDefinition, RunStepContext, StepResult, audience, register_run};
 use talaria_state::AppState;
 
 pub const PLAN_DRAFT_KIND: &str = "plan-draft";
@@ -156,17 +154,6 @@ pub fn real_plan_draft_deps(state: AppState) -> PlanDraftDeps {
     }
 }
 
-/// The drafter's own run: who may watch it and be told about it is the person
-/// who clicked Draft tickets. (Same authority shape as research.)
-fn audience(run: &RunRow) -> Authority {
-    match &run.owner_user_id {
-        Some(owner) => Authority::User {
-            user_ids: vec![owner.clone()],
-        },
-        None => Authority::Admin { on_board: None },
-    }
-}
-
 async fn plan_draft_step(ctx: RunStepContext, deps: &PlanDraftDeps) -> Result<StepResult, String> {
     let input: PlanDraftInput =
         serde_json::from_value(ctx.input.clone()).map_err(|e| format!("plan-draft input: {e}"))?;
@@ -249,6 +236,7 @@ pub fn plan_draft_run() -> &'static Arc<RunDefinition> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use talaria_runs_define::{Authority, RunRow};
 
     fn minimal_row() -> RunRow {
         use talaria_runs_define::RunState;

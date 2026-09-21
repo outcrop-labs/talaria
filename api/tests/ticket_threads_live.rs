@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the ticket ROOM (cargo test -- --ignored). A ticket's
 // discussion is a channel linked to its task (channels.task_id), and every
 // guarantee this file pins is one a unit test cannot vouch for because it IS
@@ -15,6 +16,7 @@
 use axum::body::Body;
 use axum::http::Request;
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::channels::channel_role;
 use talaria_api::config::Config;
 use talaria_api::routes;
@@ -39,13 +41,6 @@ async fn app_state() -> AppState {
     .expect("test config assembles");
     AppState::new(talaria_api::db::pool(&cfg), std::sync::Arc::new(cfg))
 }
-
-async fn pg() -> PgPool {
-    sqlx::PgPool::connect(&std::env::var("DATABASE_URL").unwrap())
-        .await
-        .expect("connect")
-}
-
 /// The whole fixture hangs off user rows and one team: deleting the users
 /// cascades board → task → room → messages and activity, exactly the
 /// direction production deletes run. The team row itself survives its

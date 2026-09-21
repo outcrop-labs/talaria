@@ -9,10 +9,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, require_agent};
 use talaria_boards::board_allows_agent;
-use talaria_body::{
-    as_object, optional_max_string_member, optional_uuid_member, parse, string_member,
-};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_max_string_member, optional_uuid_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{remember_ticket_refusal, report_gap, report_gap::GapInput};
 use talaria_notify::NotifyDeps;
 use talaria_state::AppState;
@@ -22,32 +20,29 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let agent = caller.model.clone();
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let kind = match string_member(obj, "kind", 2, 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let missing = match string_member(obj, "missing", 5, 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let needs = match optional_max_string_member(obj, "needs", 5000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let task_id = match optional_uuid_member(obj, "taskId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // `taskId` arrives from the agent, so it is AUTHORISED, never taken on
@@ -69,10 +64,7 @@ pub async fn post(
     let task = match task_id.as_deref() {
         Some(id) => match get_task(&state.pg, id).await {
             Ok(t) => t,
-            Err(e) => {
-                tracing::error!("[agent.gap] ticket read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.gap] ticket read failed", e)),
         },
         None => None,
     };
@@ -94,7 +86,7 @@ pub async fn post(
         // reaches every admin as a fact and none of them as words.
         let Some(task) = task.as_ref() else {
             remember_ticket_refusal(&state.pg, &agent, None).await;
-            return refuse();
+            return Ok(refuse());
         };
         // The CALLER, not its model: board policy's elevated bypass is only
         // for an identity that was proven, never merely asserted.
@@ -106,14 +98,11 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[agent.gap] board policy read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.gap] board policy read failed", e)),
         };
         if !allowed {
             remember_ticket_refusal(&state.pg, &agent, None).await;
-            return refuse();
+            return Ok(refuse());
         }
         // A person has taken this ticket off the table (signed off, archived,
         // or its board archived). The SAME predicate `agent_safe_patch` asks:
@@ -139,12 +128,9 @@ pub async fn post(
                 let mut resp =
                     Json(json!({ "error": "forbidden", "message": shut })).into_response();
                 *resp.status_mut() = StatusCode::FORBIDDEN;
-                return resp;
+                return Ok(resp);
             }
-            Err(e) => {
-                tracing::error!("[agent.gap] ticket refusal read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.gap] ticket refusal read failed", e)),
         }
     }
 
@@ -163,10 +149,7 @@ pub async fn post(
     .await
     {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[agent.gap] report failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.gap] report failed", e)),
     };
     if let Some(task) = task.as_ref() {
         // the audit line is best-effort — a failed log is not a failed report.
@@ -195,5 +178,5 @@ pub async fn post(
             gap.seen_count
         )
     };
-    Json(json!({ "ok": true, "seenCount": gap.seen_count, "note": note })).into_response()
+    Ok(Json(json!({ "ok": true, "seenCount": gap.seen_count, "note": note })).into_response())
 }

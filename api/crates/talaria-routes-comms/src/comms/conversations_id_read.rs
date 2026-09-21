@@ -14,9 +14,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_body::{NumKind, as_object, optional_number_member};
+use talaria_body::{NumKind, optional_number_member};
 use talaria_conversations::{conversation_accessible, latest_message_seq, mark_conversation_read};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -25,39 +25,34 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // The same predicate the GET gates with — the owner, or a plan member.
     // Inaccessible and nonexistent answer the same 403, never leaking which.
     match conversation_accessible(&state.pg, &user.id, &id).await {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
+        Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
-            tracing::error!("[conversations] access read on read-cursor failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[conversations] access read on read-cursor failed",
+                e,
+            ));
         }
     }
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // seq: optional integer, min 0, no schema max — the ceiling is the
     // safe-integer bound itself.
     let seq = match optional_number_member(obj, "seq", NumKind::Int, 0.0, 9_007_199_254_740_991.0) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // last_read_seq is int4: past 2^31-1 the write would die on Postgres'
     // own overflow (→ 500), so it is refused here.
     if let Some(seq) = seq
         && seq > 2_147_483_647.0
     {
-        tracing::error!("[conversations] read cursor past int4: {seq}");
-        return thrown_internal_error();
+        return Ok(internal("[conversations] read cursor past int4", seq));
     }
     // The latest is needed either way now: as the absent-seq answer, and as
     // the bar the sweep below only clears rows past — having read to seq 5
@@ -65,14 +60,15 @@ pub async fn post(
     let latest = match latest_message_seq(&state.pg, &id).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("[conversations] latest-seq read on read-cursor failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[conversations] latest-seq read on read-cursor failed",
+                e,
+            ));
         }
     };
     let seq = seq.map(|v| v as i32).unwrap_or(latest);
     if let Err(e) = mark_conversation_read(&state.pg, &id, &user.id, seq).await {
-        tracing::error!("[conversations] read-cursor advance failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[conversations] read-cursor advance failed", e));
     }
     // Reading the WHOLE thread is also the end of its bell rows — the same
     // gesture the bell's own click performs, arriving by the other door.
@@ -85,5 +81,5 @@ pub async fn post(
             Err(e) => tracing::error!("[conversations] notification sweep on read failed: {e}"),
         }
     }
-    Json(json!({ "ok": true, "cleared": cleared })).into_response()
+    Ok(Json(json!({ "ok": true, "cleared": cleared })).into_response())
 }

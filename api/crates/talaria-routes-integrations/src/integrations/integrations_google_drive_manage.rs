@@ -23,7 +23,7 @@ use talaria_api_facades::google::drive::{
 use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::house_error;
 use talaria_session::{require_admin, require_user};
 use talaria_state::AppState;
 
@@ -127,63 +127,65 @@ pub async fn rename(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Json<Value>,
-) -> Response {
+) -> Result<Response, Response> {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return Err(r),
     };
     let file_id = match string_member(&obj, "fileId", 1, usize::MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = match string_member(&obj, "name", 1, 512) {
         Ok(v) => v.trim().to_string(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if name.is_empty() {
-        return house_error(StatusCode::BAD_REQUEST, "name cannot be empty");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "name cannot be empty"));
     }
-    match rename_drive_file_with_token(&ctx.token, &file_id, &name).await {
-        Ok(file) => {
-            log_audit(
-                &state.pg,
-                AuditEntry {
-                    actor: &ctx.actor,
-                    action: "drive.rename",
-                    target_type: "google_drive_file",
-                    target_id: Some(&file_id),
-                    target_label: Some(&name),
-                    before: None,
-                    after: Some(json!({ "name": name })),
-                },
-            )
-            .await;
-            Json(json!({ "file": file })).into_response()
-        }
-        Err(e) => google_fail_with(e, "Drive", "drive_error"),
-    }
+    Ok(
+        match rename_drive_file_with_token(&ctx.token, &file_id, &name).await {
+            Ok(file) => {
+                log_audit(
+                    &state.pg,
+                    AuditEntry {
+                        actor: &ctx.actor,
+                        action: "drive.rename",
+                        target_type: "google_drive_file",
+                        target_id: Some(&file_id),
+                        target_label: Some(&name),
+                        before: None,
+                        after: Some(json!({ "name": name })),
+                    },
+                )
+                .await;
+                Json(json!({ "file": file })).into_response()
+            }
+            Err(e) => google_fail_with(e, "Drive", "drive_error"),
+        },
+    )
 }
 
 pub async fn drive_move(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Json<Value>,
-) -> Response {
+) -> Result<Response, Response> {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return Err(r),
     };
     let file_id = match string_member(&obj, "fileId", 1, usize::MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let remove = obj
         .get("removeParent")
@@ -200,7 +202,7 @@ pub async fn drive_move(
     let before = remove.as_deref().map(|r| json!({ "parent": r }));
     let after = json!({ "parent": add });
     let res = move_drive_file_with_token(&token, &file_id, Some(&add), remove.as_deref()).await;
-    match res {
+    Ok(match res {
         Ok(()) => {
             log_audit(
                 &state.pg,
@@ -218,92 +220,90 @@ pub async fn drive_move(
             Json(json!({ "ok": true })).into_response()
         }
         Err(e) => google_fail_with(e, "Drive", "drive_error"),
-    }
+    })
 }
 
 pub async fn trash(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Json<Value>,
-) -> Response {
+) -> Result<Response, Response> {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return Err(r),
     };
     let file_id = match string_member(&obj, "fileId", 1, usize::MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    match trash_drive_file_with_token(&ctx.token, &file_id).await {
-        Ok(()) => {
-            log_audit(
-                &state.pg,
-                AuditEntry {
-                    actor: &ctx.actor,
-                    action: "drive.trash",
-                    target_type: "google_drive_file",
-                    target_id: Some(&file_id),
-                    target_label: None,
-                    before: Some(json!({ "trashed": false })),
-                    after: Some(json!({ "trashed": true })),
-                },
-            )
-            .await;
-            Json(json!({ "ok": true })).into_response()
-        }
-        Err(e) => google_fail_with(e, "Drive", "drive_error"),
-    }
+    Ok(
+        match trash_drive_file_with_token(&ctx.token, &file_id).await {
+            Ok(()) => {
+                log_audit(
+                    &state.pg,
+                    AuditEntry {
+                        actor: &ctx.actor,
+                        action: "drive.trash",
+                        target_type: "google_drive_file",
+                        target_id: Some(&file_id),
+                        target_label: None,
+                        before: Some(json!({ "trashed": false })),
+                        after: Some(json!({ "trashed": true })),
+                    },
+                )
+                .await;
+                Json(json!({ "ok": true })).into_response()
+            }
+            Err(e) => google_fail_with(e, "Drive", "drive_error"),
+        },
+    )
 }
 
 pub async fn create_folder(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Json<Value>,
-) -> Response {
+) -> Result<Response, Response> {
     let obj = match parse_body(body.0) {
         Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let ctx = match gate(&state, &headers, &obj).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return Err(r),
     };
     let name = match string_member(&obj, "name", 1, 512) {
         Ok(v) => v.trim().to_string(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if name.is_empty() {
-        return house_error(StatusCode::BAD_REQUEST, "name cannot be empty");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "name cannot be empty"));
     }
     let parent = obj.get("parent").and_then(|v| v.as_str()).map(String::from);
     let parent_ref = parent.as_deref().unwrap_or(ctx.root_parent.as_str());
-    match create_drive_folder_with_token(&ctx.token, &name, Some(parent_ref)).await {
-        Ok(file) => {
-            log_audit(
-                &state.pg,
-                AuditEntry {
-                    actor: &ctx.actor,
-                    action: "drive.create_folder",
-                    target_type: "google_drive_file",
-                    target_id: Some(&file.id),
-                    target_label: Some(&name),
-                    before: None,
-                    after: Some(json!({ "name": name, "parent": parent_ref })),
-                },
-            )
-            .await;
-            Json(json!({ "file": file })).into_response()
-        }
-        Err(e) => google_fail_with(e, "Drive", "drive_error"),
-    }
-}
-
-// keep thrown_internal_error linked even if a future arm drops it
-#[allow(dead_code)]
-fn _unused() -> Response {
-    thrown_internal_error()
+    Ok(
+        match create_drive_folder_with_token(&ctx.token, &name, Some(parent_ref)).await {
+            Ok(file) => {
+                log_audit(
+                    &state.pg,
+                    AuditEntry {
+                        actor: &ctx.actor,
+                        action: "drive.create_folder",
+                        target_type: "google_drive_file",
+                        target_id: Some(&file.id),
+                        target_label: Some(&name),
+                        before: None,
+                        after: Some(json!({ "name": name, "parent": parent_ref })),
+                    },
+                )
+                .await;
+                Json(json!({ "file": file })).into_response()
+            }
+            Err(e) => google_fail_with(e, "Drive", "drive_error"),
+        },
+    )
 }

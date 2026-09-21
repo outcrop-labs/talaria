@@ -1,12 +1,11 @@
 // Research client: runs list + detail, mode catalog, start/delete.
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
 import { delJson, errorMessage, getJson, getList, postJson, postJsonOr } from '@/lib/fetch-json'
-import { pushToast } from '@/lib/toast.svelte'
+import { toastError } from '@/lib/toast.svelte'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type ResearchMode = 'recon' | 'brief' | 'expedition'
 /** 'awaiting' is its own value, not a shade of 'running': a run parked on a
@@ -111,7 +110,7 @@ export async function deleteResearch(id: string): Promise<void> {
   } catch (e) {
     // The rail's remove flow has no error state of its own, and its caller
     // does not catch — the toast is the only place a refused delete gets said.
-    pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+    toastError('Delete failed', e)
   }
 }
 

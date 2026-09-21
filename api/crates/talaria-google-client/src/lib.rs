@@ -211,26 +211,6 @@ pub async fn google_login_enabled(pg: &PgPool, sb: &SecretBox) -> bool {
     (google_login_pinned_by_env() || toggled) && resolve_google_client(pg, sb).await.is_some()
 }
 
-/// A path-segment escaper for the ids that ride Google's URLs (a Gmail
-/// message id, an email-shaped calendar id): the unreserved set stays
-/// literal, everything else percent-encodes.
-pub fn encode_uri_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        let unreserved = b.is_ascii_alphanumeric()
-            || matches!(
-                b,
-                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-            );
-        if unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 /// The domain of an email address, lowercased — None when there is no usable
 /// one (no @, nothing before it, nothing after it, null input). The LAST @
 /// wins: a plus-addressed org account gates on its REAL domain.

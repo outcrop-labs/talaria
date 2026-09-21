@@ -11,45 +11,32 @@ use talaria_agent_auth::{AgentSubject, agent_caller, require_agent};
 use talaria_api_facades::gateway::usage::{TokenCounts, UsageInput, record_usage, task_usage};
 use talaria_boards::{board_allows_agent, board_role};
 use talaria_body::{
-    NumKind, as_object, nullish_member, number_member, optional_boolean_member,
-    optional_max_string_member, parse,
+    NumKind, nullish_member, number_member, optional_boolean_member, optional_max_string_member,
+    parse,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_tasks::{AgentIntent, AgentWriteTarget, agent_ticket_refusal, get_task, log_activity};
-use uuid::Uuid;
 
-/// This route gates its id with a 404, not the house uuid_gate's 500:
-/// agents pass taskId verbatim, and "not found" is the honest answer for a
-/// malformed one — not a server fault.
-fn uuid_404(id: &str) -> Option<Response> {
-    if Uuid::parse_str(id).is_ok() {
-        return None;
-    }
-    Some(house_error(StatusCode::NOT_FOUND, "not found"))
-}
+// This route gates its id with a 404, not the house uuid_gate's 500: agents
+// pass taskId verbatim, and "not found" is the honest answer for a malformed
+// one — not a server fault.
 
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    if let Some(gate) = uuid_404(&id) {
-        return gate;
+) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on GET usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on GET usage failed", e)),
     };
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     if let Some(caller) = caller {
         // The CALLER, not its model — the elevated bypass inside board policy
         // is org-wide reach, and a legacy caller only asserted its name.
@@ -61,35 +48,23 @@ pub async fn get(
         .await
         {
             Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[tasks] agent policy read on GET usage failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[tasks] agent policy read on GET usage failed", e)),
         };
         if !allowed {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         match board_role(&state.pg, &user.id, &task.board_id).await {
             Ok(Some(_)) => {}
-            Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-            Err(e) => {
-                tracing::error!("[tasks] role read on GET usage failed: {e}");
-                return thrown_internal_error();
-            }
+            Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(internal("[tasks] role read on GET usage failed", e)),
         }
     }
-    match task_usage(&state.pg, &id).await {
+    Ok(match task_usage(&state.pg, &id).await {
         Ok(usage) => Json(usage).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] usage rollup failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[tasks] usage rollup failed", e),
+    })
 }
 
 pub async fn post(
@@ -97,23 +72,20 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    if let Some(gate) = uuid_404(&id) {
-        return gate;
+) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on POST usage failed", e)),
     };
     // Usage is agent-reported (agents know what they burned); humans don't
     // post token counts by hand.
     let poster = match require_agent(&state.pg, &headers).await {
         Ok(p) => p,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     let name = poster.model.clone();
     let allowed = match board_allows_agent(
@@ -125,15 +97,17 @@ pub async fn post(
     {
         Ok(a) => a,
         Err(e) => {
-            tracing::error!("[tasks] agent policy read on POST usage failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[tasks] agent policy read on POST usage failed",
+                e,
+            ));
         }
     };
     if !allowed {
-        return house_error(
+        return Ok(house_error(
             StatusCode::FORBIDDEN,
             &format!("agent \"{name}\" is not allowed on this board"),
-        );
+        ));
     }
     // Work a person has taken off the table takes no more cost and no more
     // activity lines. This route never reaches update_task — it writes a
@@ -155,38 +129,32 @@ pub async fn post(
     {
         Ok(None) => {}
         Ok(Some(shut)) => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 &format!("{shut}. No further spend attaches to it."),
-            );
+            ));
         }
-        Err(e) => {
-            tracing::error!("[tasks] agent authority on POST usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[tasks] agent authority on POST usage failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let prompt_tokens = match number_member(obj, "promptTokens", NumKind::Int, 0.0, 100_000_000.0) {
         Ok(v) => v as i64,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let completion_tokens =
         match number_member(obj, "completionTokens", NumKind::Int, 0.0, 100_000_000.0) {
             Ok(v) => v as i64,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         };
     // Model tier the work ran on (alias name); defaults to the agent's main.
     let tier = match nullish_member(obj, "tier", |o, k| optional_max_string_member(o, k, 60)) {
         Ok(v) => v.flatten(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let estimated = match optional_boolean_member(obj, "estimated") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // A tier must be one of the agent's real alias names — reject typos and
     // routed-model ids loudly instead of silently recording an
@@ -196,10 +164,10 @@ pub async fn post(
         let routed = talaria_api_facades::fleet::routed_model_for(&state.pg, &name, Some(t)).await;
         let known = matches!(routed, Ok(Some(_)));
         if !known {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 &format!("unknown tier \"{t}\" for {name} — use an alias name or omit"),
-            );
+            ));
         }
     }
     let input = UsageInput {
@@ -218,8 +186,7 @@ pub async fn post(
         estimated: estimated.unwrap_or(false),
     };
     if let Err(e) = record_usage(&state.pg, &input).await {
-        tracing::error!("[tasks] usage record failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[tasks] usage record failed", e));
     }
     let total = prompt_tokens + completion_tokens;
     if let Err(e) = log_activity(
@@ -234,8 +201,7 @@ pub async fn post(
     )
     .await
     {
-        tracing::error!("[tasks] usage activity line failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[tasks] usage activity line failed", e));
     }
-    Json(serde_json::json!({ "ok": true })).into_response()
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }

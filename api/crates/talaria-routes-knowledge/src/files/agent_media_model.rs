@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use talaria_agent_media::read_agent_image;
 use talaria_api_facades::fleet::usable_agent_gate;
-use talaria_error::house_error;
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -23,24 +23,18 @@ pub async fn get(
     headers: HeaderMap,
     Path(model): Path<String>,
     Query(query): Query<MediaQuery>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // Owner-aware: a personal assistant is only ever visible to its owner.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[agent-media] gate read failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent-media] gate read failed", e)),
     };
     if !gate(&model) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let path = query.path.unwrap_or_default();
-    match read_agent_image(&state.pg, &model, &path).await {
+    Ok(match read_agent_image(&state.pg, &model, &path).await {
         Err(media) => {
             let status =
                 StatusCode::from_u16(media.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -56,5 +50,5 @@ pub async fn get(
             media.bytes,
         )
             .into_response(),
-    }
+    })
 }

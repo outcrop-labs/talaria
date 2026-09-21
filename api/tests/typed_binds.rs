@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the typed-bind fixes (cargo test -- --ignored). The port's
 // crash class: sqlx declares each bind's wire type from the Rust value
 // (String → TEXT), so a text bind COMPARED against a non-text column dies at
@@ -13,7 +14,7 @@
 // health gate fronts.
 
 use serde_json::Value;
-use sqlx::postgres::PgPool;
+use support::{fabricate_user, pg, sweep_user_rows};
 use talaria_api::agent_auth::epoch_ms_to_iso;
 use talaria_api::daily_brief::load_recent_row;
 use talaria_api::retrieval::backfill::{rag_health, sweep_new_activity};
@@ -21,13 +22,6 @@ use talaria_api::retrieval::embed::real_deps as real_embed_deps;
 use talaria_api::retrieval::qdrant::real_deps as real_qdrant_deps;
 use talaria_api::retrieval::sources::unindex_activity;
 use talaria_api::runs::defs::reindex::artifact_links_for;
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -37,29 +31,6 @@ fn now_ms() -> i64 {
 
 /// A user row for the FKs, swept by its distinctive sub. CASCADE covers every
 /// child these tests write.
-async fn fabricate_user(pg: &PgPool, tag: &str) -> String {
-    let sub = format!("typed-binds:{tag}:{}", uuid::Uuid::new_v4());
-    sqlx::query("insert into users (sub) values ($1)")
-        .bind(&sub)
-        .execute(pg)
-        .await
-        .unwrap();
-    let id: String = sqlx::query_scalar("select id::text from users where sub = $1")
-        .bind(&sub)
-        .fetch_one(pg)
-        .await
-        .unwrap();
-    id
-}
-
-async fn sweep_user_rows(pg: &PgPool, tag: &str) {
-    sqlx::query("delete from users where sub like $1")
-        .bind(format!("typed-binds:{tag}:%"))
-        .execute(pg)
-        .await
-        .unwrap();
-}
-
 /// The "yesterday's brief is still the current one" read. Pre-fix it 500'd on
 /// every hit: the ISO cutoff bound as TEXT against `created_at > $2` with no
 /// cast, a prepare-time operator error. The cast rides the bind now; the test
@@ -68,8 +39,8 @@ async fn sweep_user_rows(pg: &PgPool, tag: &str) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_brief_recency_read_finds_a_fresh_brief_and_expires_a_stale_one() {
-    let pg = pool().await;
-    let user_id = fabricate_user(&pg, "brief").await;
+    let pg = pg().await;
+    let user_id = fabricate_user(&pg, "typed-binds", "brief").await;
 
     sqlx::query(
         "insert into daily_briefs (user_id, brief_date, last_seq) \
@@ -117,7 +88,7 @@ async fn the_brief_recency_read_finds_a_fresh_brief_and_expires_a_stale_one() {
         "a 49-hour-old brief is nobody's current one"
     );
 
-    sweep_user_rows(&pg, "brief").await;
+    sweep_user_rows(&pg, "typed-binds", "brief").await;
 }
 
 /// The reindex page's link read. Pre-fix `artifact_id = any($1)` bound the
@@ -126,7 +97,7 @@ async fn the_brief_recency_read_finds_a_fresh_brief_and_expires_a_stale_one() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_reindex_page_reads_link_rows_for_its_artifacts() {
-    let pg = pool().await;
+    let pg = pg().await;
     let artifact_id = uuid::Uuid::new_v4().to_string();
     sqlx::query("insert into artifacts (id, kind, title, body) values ($1::uuid, 'doc', 'link probe', 'body text')")
         .bind(&artifact_id)
@@ -188,7 +159,7 @@ async fn the_reindex_page_reads_link_rows_for_its_artifacts() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_rag_sweep_reads_its_window_and_advances_its_watermark() {
-    let pg = pool().await;
+    let pg = pg().await;
     let qd = real_qdrant_deps();
     let ed = real_embed_deps();
     let health = rag_health(&qd, &ed).await;
@@ -198,7 +169,7 @@ async fn the_rag_sweep_reads_its_window_and_advances_its_watermark() {
          talaria-embeddings-dev) to run this test — saw {health:?}"
     );
 
-    let user_id = fabricate_user(&pg, "sweep").await;
+    let user_id = fabricate_user(&pg, "typed-binds", "sweep").await;
     let board_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "insert into boards (id, name, owner_id) values ($1::uuid, 'sweep probe board', $2::uuid)",
@@ -254,7 +225,7 @@ async fn the_rag_sweep_reads_its_window_and_advances_its_watermark() {
 
     // The probe leaves no trace: point out of the brain, rows out of the DB.
     let _ = unindex_activity(&pg, &qd, &ed, "ticket", &task_id).await;
-    sweep_user_rows(&pg, "sweep").await;
+    sweep_user_rows(&pg, "typed-binds", "sweep").await;
 }
 
 /// The board status patch — the "edit where agents start" write. Pre-fix every
@@ -267,8 +238,8 @@ async fn the_rag_sweep_reads_its_window_and_advances_its_watermark() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_status_patch_lands_through_the_dynamic_update() {
-    let pg = pool().await;
-    let user_id = fabricate_user(&pg, "status-patch").await;
+    let pg = pg().await;
+    let user_id = fabricate_user(&pg, "typed-binds", "status-patch").await;
     let board_id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "insert into boards (id, name, owner_id) values ($1::uuid, 'patch probe board', $2::uuid)",
@@ -339,5 +310,5 @@ async fn the_status_patch_lands_through_the_dynamic_update() {
         "agentStart=false must land through the same path"
     );
 
-    sweep_user_rows(&pg, "status-patch").await;
+    sweep_user_rows(&pg, "typed-binds", "status-patch").await;
 }

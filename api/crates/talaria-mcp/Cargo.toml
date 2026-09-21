@@ -29,3 +29,4 @@ tokio = { version = "1", features = ["macros", "time", "process"] }
 tracing = "0.1"
 url = "2"
 talaria-undici = { path = "../talaria-undici" }
+talaria-users = { path = "../talaria-users" }

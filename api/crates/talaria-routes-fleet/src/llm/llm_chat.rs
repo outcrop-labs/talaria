@@ -46,8 +46,8 @@ use talaria_api_facades::gateway::usage::{
 };
 use talaria_auth::{authenticate_key, bearer_secret};
 use talaria_error::{
-    BudgetFacts, js_num, log_upstream_error, openai_budget_error, openai_error,
-    openai_error_null_param, sanitized_upstream_body, thrown_internal_error,
+    BudgetFacts, internal, js_num, log_upstream_error, openai_budget_error, openai_error,
+    openai_error_null_param, sanitized_upstream_body,
 };
 use talaria_ratelimit::rate_limit;
 use talaria_state::AppState;
@@ -74,10 +74,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
     let id = match identity {
         Ok(Some(id)) => id,
         Ok(None) => return openai_error(StatusCode::UNAUTHORIZED, "invalid API key"),
-        Err(e) => {
-            tracing::error!("[llm/v1/chat] key lookup failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[llm/v1/chat] key lookup failed", e),
     };
 
     // Detached last_used_at — same fire-and-forget write as the models route.
@@ -150,10 +147,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                 &format!("unknown model \"{model}\" — GET /v1/models"),
             );
         }
-        Err(e) => {
-            tracing::error!("[llm/v1/chat] route resolve failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[llm/v1/chat] route resolve failed", e),
     };
 
     // The ceiling, BEFORE anything is spent upstream. Off unless an admin

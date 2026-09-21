@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::{clear_session_cookie_for, destroy_session, json_with_cookies};
 use talaria_state::AppState;
 
@@ -15,8 +15,7 @@ struct OkBody {
 
 pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(e) = destroy_session(&state, &headers).await {
-        tracing::error!("[auth/logout] redis delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[auth/logout] redis delete failed", e);
     }
     json_with_cookies(
         Json(OkBody { ok: true }),

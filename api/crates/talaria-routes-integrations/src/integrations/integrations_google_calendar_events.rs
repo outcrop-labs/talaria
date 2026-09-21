@@ -15,10 +15,10 @@ use talaria_api_facades::google::calendar::{
 };
 use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
 use talaria_body::{
-    as_object, optional_boolean_member, optional_email_array_member, optional_max_string_member,
-    parse, string_member,
+    optional_boolean_member, optional_email_array_member, optional_max_string_member, parse,
+    string_member,
 };
-use talaria_error::house_error;
+use talaria_error::{house_error, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -28,37 +28,36 @@ fn fail(e: CalendarError) -> Response {
     google_fail_with(GoogleError::from(e), "Calendar", "calendar_error")
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
-    match list_upcoming_events(&state.pg, &sb, &user.id, now_ms(), 10).await {
-        Ok(events) => Json(json!({ "events": events })).into_response(),
-        Err(e) => fail(e),
-    }
+    Ok(
+        match list_upcoming_events(&state.pg, &sb, &user.id, now_ms(), 10).await {
+            Ok(events) => Json(json!({ "events": events })).into_response(),
+            Err(e) => fail(e),
+        },
+    )
 }
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let input = match draft(obj) {
         Ok(i) => i,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let sb = state.secretbox().await.unwrap_or_default();
-    match create_event(&state.pg, &sb, &user.id, now_ms(), &input.as_input()).await {
-        Ok(event) => Json(json!({ "event": event })).into_response(),
-        Err(e) => google_fail_with(e, "Calendar", "calendar_error"),
-    }
+    Ok(
+        match create_event(&state.pg, &sb, &user.id, now_ms(), &input.as_input()).await {
+            Ok(event) => Json(json!({ "event": event })).into_response(),
+            Err(e) => google_fail_with(e, "Calendar", "calendar_error"),
+        },
+    )
 }
 
 /// The create body as the engine's input (summary/description/location/start/

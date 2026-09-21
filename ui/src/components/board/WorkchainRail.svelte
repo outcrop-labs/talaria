@@ -14,8 +14,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { assigneeInfo, type AssigneeInfo } from '@/lib/assignees'
   import { cn } from '@/lib/cn'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { EFFORT_LABEL, type Task } from '@/lib/task-const'
   import { statusColorOf, type BoardStatus } from '@/lib/statuses'
   import { isOverdueTask } from '@/components/board/field-pills'
@@ -54,7 +53,7 @@
   }
 
   const failure = (what: string) => (e: unknown) =>
-    pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
+    toastError(`${what} failed`, e)
 
   const togglePaused = () =>
     void updateWorkchain(workchain.id, { paused: !workchain.paused })

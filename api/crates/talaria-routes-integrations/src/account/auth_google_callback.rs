@@ -14,7 +14,7 @@ use talaria_api_facades::google::oauth::{
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_auth_config::{get_auth_config, is_email_allowed};
 use talaria_claim::{claim_admin, instance_claimable};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_invites::{invite_allowed, mark_invite_accepted};
 use talaria_org_domains::self_join_allowed;
 use talaria_session::{
@@ -141,10 +141,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
                 return finish_login(&state, &headers, &claimed, PROVIDER).await;
             }
             Ok(None) => {} // race lost — fall through to the doors
-            Err(e) => return internal(&e),
+            Err(e) => return internal("[auth/google] claim_admin failed", e),
         },
         Ok(false) => {}
-        Err(e) => return internal(&e),
+        Err(e) => return internal("[auth/google] instance_claimable read failed", e),
     }
 
     // The org account's domain is the outer gate. Once a Talaria is wired to
@@ -155,7 +155,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     // leftover row must not lock every human out.
     let org_email = match org_login_email(&state.pg).await {
         Ok(e) => e,
-        Err(e) => return internal(&e),
+        Err(e) => return internal("[auth/google] org_login_email read failed", e),
     };
     if !org_login_allowed(org_email.as_deref(), identity.email.as_deref()) {
         return login_error(
@@ -174,12 +174,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     // DNS-verified org domain), or a live INVITE for this address.
     let invited = match invite_allowed(&state.pg, identity.email.as_deref()).await {
         Ok(v) => v,
-        Err(e) => return internal(&e),
+        Err(e) => return internal("[auth/google] invite read failed", e),
     };
     if !is_email_allowed(identity.email.as_deref(), &cfg) {
         let self_join = match self_join_allowed(&state.pg, identity.email.as_deref()).await {
             Ok(v) => v,
-            Err(e) => return internal(&e),
+            Err(e) => return internal("[auth/google] org domain read failed", e),
         };
         if !self_join && !invited {
             return login_error(&headers, "not_allowed", &[]);
@@ -188,7 +188,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
 
     let row = match upsert_user(&state.pg, &identity).await {
         Ok(r) => r,
-        Err(e) => return internal(&e),
+        Err(e) => return internal("[auth/google] upsert_user failed", e),
     };
     if invited && identity.email.is_some() {
         // fire-and-forget — a failed stamp must not fail the sign-in (the
@@ -228,14 +228,6 @@ async fn finish_login(
                 clear_state_cookie_for(headers),
             ],
         ),
-        Err(e) => {
-            tracing::error!("[auth/google] session create failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[auth/google] session create failed", e),
     }
-}
-
-fn internal(e: &sqlx::Error) -> Response {
-    tracing::error!("[auth/google] database read failed: {e}");
-    thrown_internal_error()
 }

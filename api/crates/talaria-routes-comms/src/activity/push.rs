@@ -18,10 +18,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use serde_json::{Value, json};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_push::vapid_keys;
 use talaria_session::require_user;
+use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
 
 /// The wire cap on an endpoint URL: push-service endpoints run a few hundred
@@ -36,28 +37,22 @@ const KEY_MAX: usize = 512;
 /// applicationServerKey. Behind require_user because the only caller is a
 /// signed-in browser mid-subscribe; there is nothing secret in the PUBLIC
 /// half, but the door costs nothing and answers nobody else.
-pub async fn key(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[push/key] the secretbox did not load: {e}");
-            return thrown_internal_error();
-        }
-    };
+pub async fn key(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[push/key] the secretbox did not load").await?;
     let keys = match vapid_keys(&state.pg, &sb).await {
         Ok(k) => k,
         Err(e) => {
-            tracing::error!("[push/key] could not produce the vapid keypair: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[push/key] could not produce the vapid keypair",
+                e,
+            ));
         }
     };
-    Json(json!({
+    Ok(Json(json!({
         "publicKey": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(keys.public),
     }))
-    .into_response()
+    .into_response())
 }
 
 /// The validated subscribe body.
@@ -130,19 +125,13 @@ pub async fn subscribe(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let sub = match validate_subscribe(obj) {
         Ok(s) => s,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = sqlx::query(
         "insert into push_subscriptions (user_id, endpoint, p256dh, auth) \
@@ -158,10 +147,12 @@ pub async fn subscribe(
     .execute(&state.pg)
     .await
     {
-        tracing::error!("[push/subscribe] the subscription write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal(
+            "[push/subscribe] the subscription write failed",
+            e,
+        ));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 /// POST /api/push/unsubscribe — retire the caller's own subscription for one
@@ -173,19 +164,13 @@ pub async fn unsubscribe(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let endpoint = match string_member(obj, "endpoint", 1, ENDPOINT_MAX) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) =
         sqlx::query("delete from push_subscriptions where user_id = $1::uuid and endpoint = $2")
@@ -194,10 +179,12 @@ pub async fn unsubscribe(
             .execute(&state.pg)
             .await
     {
-        tracing::error!("[push/unsubscribe] the subscription delete failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal(
+            "[push/unsubscribe] the subscription delete failed",
+            e,
+        ));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

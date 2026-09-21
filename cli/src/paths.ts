@@ -39,8 +39,6 @@ export function devboxHome(root: string, env: Record<string, string | undefined>
   return canonicalDir(env.TALARIA_DEVBOX_HOME ?? join(root, '..', 'devboxes'))
 }
 
-export const boxDir = (devboxes: string, name: string): string => join(devboxes, name)
-
 /** Lowercase-kebab box/worktree names — they land in container names, docker
  *  networks and directory names; anything else is a typo waiting to hurt. */
 export const NAME_RE = /^[a-z0-9][a-z0-9-]*$/
@@ -69,14 +67,6 @@ export async function portSlot(
     if (!(await taken(p))) return p
   }
   return null
-}
-
-/** mtime comparison: does `candidate` exist and postdate `ref`? The
- *  `find -newer` equivalent — a checkout of an OLDER file still trips it,
- *  because mtime is the checkout time. */
-export function isNewer(candidate: string, ref: string): boolean {
-  if (!existsSync(candidate) || !existsSync(ref)) return false
-  return statSync(candidate).mtimeMs > statSync(ref).mtimeMs
 }
 
 /** Does ANY file under `dir` (recursively) postdate `ref`? The

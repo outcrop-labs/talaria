@@ -13,8 +13,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronRight, Plus } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -58,7 +57,7 @@
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['board-workchains', board.id] })
   const failure = (what: string) => (e: unknown) =>
-    pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
+    toastError(`${what} failed`, e)
 
   const addChain = async () => {
     const name = await prompt({ title: 'New workchain', message: 'Name this chain of tickets.', confirmLabel: 'Create' })

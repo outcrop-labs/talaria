@@ -6,9 +6,9 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
-  import { errorMessage, postJson, putJson } from '@/lib/fetch-json'
+  import { postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import type { RagAdmin } from './retrieval'
 
   // ── Reranker provider (the precision stage after vector recall) ─────────────
@@ -27,7 +27,7 @@
     try {
       await putJson('/api/admin/rag', { reranker: patch })
     } catch (e) {
-      pushToast({ title: 'Apply failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Apply failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
@@ -37,7 +37,7 @@
     try {
       models = (await postJson<{ models: string[] }>('/api/admin/rag', { models: cfg.provider, ...(key ? { key } : {}) })).models
     } catch (e) {
-      pushToast({ title: 'Load models failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Load models failed', e)
     }
   }
   const saveKey = async () => {

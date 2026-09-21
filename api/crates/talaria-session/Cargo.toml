@@ -10,7 +10,9 @@ workspace = true
 
 [dependencies]
 talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-body = { path = "../talaria-body" }
 talaria-error = { path = "../talaria-error" }
+talaria-secretbox = { path = "../talaria-secretbox" }
 talaria-state = { path = "../talaria-state" }
 talaria-users = { path = "../talaria-users" }
 axum = { version = "0.8", default-features = false, features = ["json"] }

@@ -9,8 +9,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::mcp::probe::{McpProbeResult, probe_mcp};
 use talaria_api_facades::mcp::service::{mcp_fleet_url, mcp_port};
-use talaria_body::{as_object, optional_max_string_member, parse, url_member};
-use talaria_error::house_error;
+use talaria_body::{optional_max_string_member, parse, url_member};
+use talaria_error::{house_error, object_or_400};
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
@@ -28,23 +28,17 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let _user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let _user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let url = match url_member(obj, "url", 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let agent_slug = match optional_max_string_member(obj, "agentSlug", 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // The agent slug → X-Agent-Name header (the fleet's convention), so
@@ -70,5 +64,5 @@ pub async fn post(
     };
     let borrowed: Vec<(&str, &str)> = send.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let probe = probe_mcp(&url, borrowed).await;
-    Json(json!({ "state": state_json(&probe), "detail": probe.detail })).into_response()
+    Ok(Json(json!({ "state": state_json(&probe), "detail": probe.detail })).into_response())
 }

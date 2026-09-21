@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use talaria_conversations::list_conversations;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -15,11 +16,12 @@ struct ConversationsEnvelope {
     conversations: Vec<talaria_conversations::ConversationListRow>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // ?kind=plan selects plans; every other value (absent included) → chats.
     let kind = uri
         .query()
@@ -30,7 +32,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         })
         .unwrap_or_default();
     let kind = if kind == "plan" { "plan" } else { "chat" };
-    match list_conversations(&state.pg, &user.id, kind).await {
+    Ok(match list_conversations(&state.pg, &user.id, kind).await {
         Ok(rows) => (
             StatusCode::OK,
             Json(ConversationsEnvelope {
@@ -38,9 +40,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             }),
         )
             .into_response(),
-        Err(e) => {
-            tracing::error!("[conversations] list failed: {e}");
-            talaria_error::thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[conversations] list failed", e),
+    })
 }

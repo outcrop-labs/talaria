@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use talaria_auth::sha256_hex;
-use talaria_error::{house_error, house_error_msg, thrown_internal_error};
+use talaria_error::{house_error, house_error_msg, internal};
 
 /// Mirrors the `tlk_` convention so an unrecognized Bearer token is
 /// distinguishable from an agent credential we simply don't know.
@@ -294,10 +294,7 @@ async fn resolve(
         .bind(sha256_hex(&secret))
         .fetch_optional(pg)
         .await
-        .map_err(|e| {
-            tracing::error!("[agent-auth] key lookup failed: {e}");
-            thrown_internal_error()
-        })?;
+        .map_err(|e| internal("[agent-auth] key lookup failed", e))?;
         let Some((id, model, enabled)) = row else {
             return Err(house_error(
                 StatusCode::UNAUTHORIZED,
@@ -387,10 +384,7 @@ async fn resolve(
     .bind(&claimed)
     .fetch_optional(pg)
     .await
-    .map_err(|e| {
-        tracing::error!("[agent-auth] name lookup failed: {e}");
-        thrown_internal_error()
-    })?;
+    .map_err(|e| internal("[agent-auth] name lookup failed", e))?;
     let Some((_id, slug, model, enabled, personal, elevated)) = def else {
         return Err(house_error(
             StatusCode::FORBIDDEN,
@@ -668,6 +662,13 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// The current time as an ISO-8601 string, the spelling every wire field uses.
+/// Three crates had their own `now_iso` (two of them wrapping this crate's own
+/// `epoch_ms_to_iso`); the pair belongs with `now_ms`.
+pub fn now_iso() -> String {
+    epoch_ms_to_iso(now_ms())
 }
 
 #[cfg(test)]

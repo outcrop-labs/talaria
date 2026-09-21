@@ -18,31 +18,34 @@ use talaria_api_facades::google::oauth::query_pairs;
 use talaria_error::house_error_msg;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     // A Drive listing is the owner's (or the org's) file inventory — a legacy
     // shared-key caller only ASSERTS which agent it is, so it never sees one.
     if let Some(denied) = refuse_legacy(&caller, "Drive access") {
-        return denied;
+        return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
     else {
-        return house_error_msg(
+        return Ok(house_error_msg(
             StatusCode::CONFLICT,
             "not_connected",
             "No Google account is connected for this agent (its owner, or the org account).",
-        );
+        ));
     };
     // Only an ABSENT q means no filter; an empty one rides in (and the
     // engine's trim makes it no filter either).
     let q = query_pairs(uri.query()).get("q").cloned();
-    match list_drive_files_with_token(&google.token, q.as_deref(), 25).await {
-        Ok(files) => Json(json!({ "files": files })).into_response(),
-        Err(e) => google_fail(e, "Drive"),
-    }
+    Ok(
+        match list_drive_files_with_token(&google.token, q.as_deref(), 25).await {
+            Ok(files) => Json(json!({ "files": files })).into_response(),
+            Err(e) => google_fail(e, "Drive"),
+        },
+    )
 }

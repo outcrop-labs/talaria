@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
 use talaria_artifacts::{attach_artifact, detach_artifact, get_artifact, guarded};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -41,27 +41,18 @@ async fn gate(
     };
     let artifact = match get_artifact(&state.pg, id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return Err(thrown_internal_error());
-        }
+        Err(e) => return Err(internal("[artifacts] read failed", e)),
     };
     let Some(artifact) = artifact else {
         return Err(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return Err(thrown_internal_error());
-        }
+        Err(e) => return Err(internal("[artifacts] grants read failed", e)),
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[artifacts] team membership read failed: {e}");
-            return Err(thrown_internal_error());
-        }
+        Err(e) => return Err(internal("[artifacts] team membership read failed", e)),
     };
     if !can_read(
         &guarded(&artifact),
@@ -80,28 +71,24 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let (user, _artifact) = match gate(&state, &headers, &id).await {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_link_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let actor = who_of(&user).unwrap_or_else(|| "user".into());
     if let Err(e) =
         attach_artifact(&state.pg, &id, &body.target_type, &body.target_id, &actor).await
     {
-        tracing::error!("[artifacts] link write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[artifacts] link write failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
@@ -109,23 +96,19 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let (_user, _artifact) = match gate(&state, &headers, &id).await {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_link_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = detach_artifact(&state.pg, &id, &body.target_type, &body.target_id).await {
-        tracing::error!("[artifacts] link delete failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[artifacts] link delete failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

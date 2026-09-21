@@ -14,10 +14,10 @@ use serde_json::{Map, Value, json};
 
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, object_msg, optional_enum_member, optional_max_string_member,
-    optional_string_array_member, parse, present_nullable_max_string_member, zod_type_name,
+    object_msg, optional_enum_member, optional_max_string_member, optional_string_array_member,
+    parse, present_nullable_max_string_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as gh;
 use talaria_github::PatchField;
 use talaria_session::{actor_of, require_admin};
@@ -38,10 +38,12 @@ fn present_nullable_enum_member(
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     // ?installations=… — any NON-EMPTY value counts; the bare
     // `?installations` and `?installations=` are '' and fall through.
     let wants_installations = uri
@@ -58,38 +60,39 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             .iter()
             .map(|(id, account)| json!({ "id": id, "account": account }))
             .collect();
-        return Json(json!({ "installations": list })).into_response();
+        return Ok(Json(json!({ "installations": list })).into_response());
     }
     let status = gh::github_status(&state.pg, &sb).await;
-    Json(json!({ "status": status })).into_response()
+    Ok(Json(json!({ "status": status })).into_response())
 }
 
-pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // The body schema → the engine's tri-state patch, field by field in
     // schema order. `pat` and `app` are optional OBJECTS — present-but-wrong
     // type answers the object message.
     let mode = match present_nullable_enum_member(obj, "mode", &["app", "pat"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let pat_token = match obj.get("pat") {
         None => None,
         Some(v) => {
             let Some(m) = v.as_object() else {
-                return house_error(StatusCode::BAD_REQUEST, &object_msg(zod_type_name(v)));
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    &object_msg(zod_type_name(v)),
+                ));
             };
             match present_nullable_max_string_member(m, "token", 400) {
                 Ok(t) => t,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             }
         }
     };
@@ -97,20 +100,23 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         None => (None, None, None),
         Some(v) => {
             let Some(m) = v.as_object() else {
-                return house_error(StatusCode::BAD_REQUEST, &object_msg(zod_type_name(v)));
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    &object_msg(zod_type_name(v)),
+                ));
             };
             let app_id = match optional_max_string_member(m, "appId", 40) {
                 Ok(v) => v,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let installation_ids =
                 match optional_string_array_member(m, "installationIds", 0, 40, 20) {
                     Ok(v) => v,
-                    Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                    Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
                 };
             let private_key = match present_nullable_max_string_member(m, "privateKey", 20_000) {
                 Ok(v) => v,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             (app_id, installation_ids, private_key)
         }
@@ -118,7 +124,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     let repo_creation_orgs = match optional_string_array_member(obj, "repoCreationOrgs", 1, 100, 10)
     {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // The slice fields borrow: keep the owned Vecs alive beside the patch.
     let installation_refs: Option<Vec<&str>> = installation_ids
@@ -149,8 +155,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     let sb = state.secretbox().await.unwrap_or_default();
     if let Err(e) = gh::set_github_config(&state.pg, &sb, &patch).await {
-        tracing::error!("[workbench/github] config write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[workbench/github] config write failed", e));
     }
     let pg = state.pg.clone();
     let actor = actor_of(&user);
@@ -170,14 +175,14 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         .await;
     });
     let status = gh::github_status(&state.pg, &sb).await;
-    Json(json!({ "status": status })).into_response()
+    Ok(Json(json!({ "status": status })).into_response())
 }
 
-pub async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
     let cur = gh::get_github_config(&state.pg).await;
     // The full clear: mode off, PAT gone, App identity blanked. repoCreation-
@@ -193,8 +198,7 @@ pub async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Respon
         repo_creation_orgs: None,
     };
     if let Err(e) = gh::set_github_config(&state.pg, &sb, &clear).await {
-        tracing::error!("[workbench/github] disconnect failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[workbench/github] disconnect failed", e));
     }
     let target_id = cur.mode.unwrap_or_else(|| "none".to_string());
     let pg = state.pg.clone();
@@ -214,7 +218,7 @@ pub async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Respon
         )
         .await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

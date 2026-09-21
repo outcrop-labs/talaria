@@ -70,6 +70,7 @@ use talaria_tasks_types::{TaskDeps, TaskError};
 
 use futures_util::future::BoxFuture;
 use std::sync::OnceLock;
+use talaria_agent_auth::now_iso;
 use talaria_agent_auth::now_ms;
 use talaria_tasks_types::Task;
 
@@ -139,11 +140,6 @@ fn random_token_24() -> String {
     let mut buf = [0u8; 24];
     getrandom::fill(&mut buf).expect("system rng");
     URL_SAFE_NO_PAD.encode(buf)
-}
-
-/// The current time as ISO — shared with the conversation module.
-pub fn now_iso() -> String {
-    talaria_agent_auth::epoch_ms_to_iso(now_ms())
 }
 
 // ── The assistant adapters────────────────────────

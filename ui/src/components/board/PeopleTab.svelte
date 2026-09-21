@@ -8,7 +8,7 @@
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { shareBoard, unshareBoard, useBoardMembers, type Board } from '@/lib/boards.svelte'
   import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { listStagger } from '@/lib/motion'
 
   // The People tab of BoardSettingsModal.svelte.
@@ -84,7 +84,7 @@
             onclick={() =>
               void unshareBoard(board.id, m.userId)
                 .then(refresh)
-                .catch((e) => pushToast({ title: 'Could not remove member', body: errorMessage(e), tone: 'danger' }))}
+                .catch((e) => toastError('Could not remove member', e))}
           >
             Remove
           </Button>

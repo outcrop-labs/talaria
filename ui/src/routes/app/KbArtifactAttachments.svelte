@@ -7,8 +7,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import { attachArtifact, detachArtifact, useArtifacts, useTargetArtifacts } from '@/lib/artifacts'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
 
   // Attach any artifact to a KB doc (the "attach an artifact to anything" spec).
   let { docId }: { docId: string } = $props()
@@ -61,7 +60,7 @@
                   try {
                     await detachArtifact(a.id, 'kb-doc', docId)
                   } catch (e) {
-                    pushToast({ title: 'Detach failed', body: errorMessage(e), tone: 'danger' })
+                    toastError('Detach failed', e)
                     return
                   }
                   await refresh()
@@ -80,7 +79,7 @@
           try {
             await attachArtifact(v[0], 'kb-doc', docId)
           } catch (e) {
-            pushToast({ title: 'Attach failed', body: errorMessage(e), tone: 'danger' })
+            toastError('Attach failed', e)
             return
           }
           await refresh()

@@ -25,8 +25,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::runs::decide::{DecideArgs, DecideRefusal, DecideResult, decide};
 use talaria_api_facades::runs::real_decide_deps;
-use talaria_body::{as_object, optional_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_string_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_research::research_role;
 use talaria_session::require_user;
@@ -37,35 +37,26 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("research", "POST decide", &id) {
-        return gate;
+        return Ok(gate);
     }
     match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] role read on decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[research] role read on decide failed", e)),
     }
 
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let option_id = match string_member(obj, "optionId", 1, 200) {
         Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let note = match optional_string_member(obj, "note", 2000) {
         Ok(n) => n,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // `note` rides along only when present AND non-blank — a whitespace note
     // is an absent note.
@@ -73,10 +64,7 @@ pub async fn post(
 
     let redis = match state.redis().await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[research] redis for decide deps unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[research] redis for decide deps unavailable", e)),
     };
     let deps = real_decide_deps(
         state.pg.clone(),
@@ -96,12 +84,9 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[research] decide on {id} failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal(&format!("[research] decide on {id} failed"), e)),
     };
-    match res {
+    Ok(match res {
         DecideResult::Decided { run, .. } => {
             Json(json!({ "ok": true, "status": run.state, "phase": run.phase })).into_response()
         }
@@ -128,5 +113,5 @@ pub async fn post(
             )
                 .into_response(),
         },
-    }
+    })
 }

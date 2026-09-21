@@ -1,3 +1,4 @@
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import type { AgentModel } from '@/lib/agents'
 
 // Remembers which agent you were last talking to on a surface, and lets links
@@ -11,8 +12,6 @@ import type { AgentModel } from '@/lib/agents'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (the agents list loads from a query). */
-type MaybeGetter<T> = T | (() => T)
-const resolveValue = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 /** React returned a `[selected, select]` tuple; destructuring a rune would
  *  freeze it, so Svelte callers read `sticky.selected` and call
@@ -27,7 +26,7 @@ export function useStickyAgent(surface: 'chat' | 'plan' | 'research', agents: Ma
   let initialized = false
 
   $effect(() => {
-    const list = resolveValue(agents)
+    const list = resolve(agents)
     if (initialized || list.length === 0) return
     let deepLink: string | null = null
     try {

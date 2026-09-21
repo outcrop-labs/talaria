@@ -16,12 +16,10 @@ struct AppsBody {
     apps: Vec<talaria_users::WireApp>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
-    Json(AppsBody {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
+    Ok(Json(AppsBody {
         apps: enabled_apps(&state.pg).await,
     })
-    .into_response()
+    .into_response())
 }

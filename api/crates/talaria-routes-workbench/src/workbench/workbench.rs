@@ -16,11 +16,11 @@ use talaria_api_facades::workbench::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, object_msg, optional_boolean_member, optional_max_string_member,
-    optional_string_array_member, optional_string_member, parse, record_msg, string_member,
-    too_big_msg, utf16_len, zod_type_name,
+    object_msg, optional_boolean_member, optional_max_string_member, optional_string_array_member,
+    optional_string_member, parse, record_msg, string_member, too_big_msg, utf16_len,
+    zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_users::has_perm;
@@ -74,84 +74,81 @@ fn optional_auto_attach_member(
     }))
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let profiles = match list_profiles(&state.pg).await {
         Ok(p) => p,
-        Err(e) => {
-            tracing::error!("[workbench] profile read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[workbench] profile read failed", e)),
     };
     if has_perm(&state.pg, &user.id, &user.role, "agents.manage")
         .await
         .unwrap_or(false)
     {
-        return Json(json!({
+        return Ok(Json(json!({
             "profiles": profiles.iter().map(|p| profile_wire(p, false)).collect::<Vec<_>>(),
         }))
-        .into_response();
+        .into_response());
     }
-    // A profile's env is injected straight into agent containers and is the
-    // documented home for scoped credentials, so its VALUES are not
-    // member-readable. Keys stay so the attachment UI can still explain
-    // itself.
-    Json(json!({
-        "profiles": profiles.iter().map(|p| profile_wire(p, true)).collect::<Vec<_>>(),
-    }))
-    .into_response()
+    Ok(
+        // A profile's env is injected straight into agent containers and is the
+        // documented home for scoped credentials, so its VALUES are not
+        // member-readable. Keys stay so the attachment UI can still explain
+        // itself.
+        Json(json!({
+            "profiles": profiles.iter().map(|p| profile_wire(p, true)).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+    )
 }
 
-pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
     let mut user = match talaria_session::require_perm(&state, &headers, "agents.manage").await {
         Ok(u) => u,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Patch — schema order (the audit trail's `after` rides it).
     let slug = match string_member(obj, "slug", 1, 40) {
         Ok(s) => s,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = match optional_string_member(obj, "name", 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let description = match optional_max_string_member(obj, "description", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let env = match optional_env_member(obj, "env", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let harnesses = match optional_string_array_member(obj, "harnesses", 0, 40, 20) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let auto_attach = match optional_auto_attach_member(obj, "autoAttach") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let enabled = match optional_boolean_member(obj, "enabled") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // ── admin-only below: these two reach the host, not just the sandbox ──
     let image = match optional_max_string_member(obj, "image", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let mounts = match optional_string_array_member(obj, "mounts", 0, 300, 20) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // image and mounts become compose volumes / the image the sandbox runs as
@@ -167,20 +164,20 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         match talaria_session::require_admin(&state, &headers).await {
             Ok(admin) => user = admin,
             Err(_gate) => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     &format!("{} are admin-only", infra.join(" and ")),
-                );
+                ));
             }
         }
     }
     if let Some(mounts) = &mounts {
         for mount in mounts {
             if let Some(why) = mount_error(mount) {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_REQUEST,
                     &format!("mount \"{mount}\" rejected: {why}"),
-                );
+                ));
             }
         }
     }
@@ -198,11 +195,8 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     match update_profile(&state.pg, &slug, &patch).await {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::NOT_FOUND, "unknown profile"),
-        Err(e) => {
-            tracing::error!("[workbench] profile write failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(false) => return Ok(house_error(StatusCode::NOT_FOUND, "unknown profile")),
+        Err(e) => return Ok(internal("[workbench] profile write failed", e)),
     }
     // after: {...patch, env: keys} — schema key order, env replaced by its
     // KEY LIST. Env values are per-profile config that can carry credentials
@@ -259,7 +253,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         )
         .await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

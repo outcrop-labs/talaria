@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 use talaria_activity::{KINDS, activity_feed};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -15,11 +15,12 @@ struct ActivityBody {
     events: Vec<talaria_activity::ActivityEvent>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // kinds: comma-split with unknown kinds dropped — an absent param is the
     // empty string, whose only split product ('') also drops.
     let kinds: Vec<String> = uri
@@ -34,11 +35,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
                 .collect()
         })
         .unwrap_or_default();
-    match activity_feed(&state.pg, &user.id, &kinds, 80, user.role == "admin").await {
-        Ok(events) => Json(ActivityBody { events }).into_response(),
-        Err(e) => {
-            tracing::error!("[activity] feed query failed: {e}");
-            thrown_internal_error()
-        }
-    }
+    Ok(
+        match activity_feed(&state.pg, &user.id, &kinds, 80, user.role == "admin").await {
+            Ok(events) => Json(ActivityBody { events }).into_response(),
+            Err(e) => internal("[activity] feed query failed", e),
+        },
+    )
 }

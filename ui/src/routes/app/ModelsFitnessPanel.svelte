@@ -21,10 +21,10 @@
   import type { TabItem } from '@/components/ui/tabs'
   import { cn } from '@/lib/cn'
   import IconButton from '@/components/ui/IconButton.svelte'
-  import { errorMessage, postJson } from '@/lib/fetch-json'
+  import { postJson } from '@/lib/fetch-json'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import FitnessDetail from '@/components/models/FitnessDetail.svelte'
   import FitnessMatrix from '@/components/models/FitnessMatrix.svelte'
   import FitnessRunModal from '@/components/models/FitnessRunModal.svelte'
@@ -143,7 +143,7 @@
     try {
       await postJson<{ ok: true }>('/api/admin/model-fitness', body)
     } catch (e) {
-      pushToast({ title: 'Fitness action failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Fitness action failed', e)
       return
     }
     await refresh()

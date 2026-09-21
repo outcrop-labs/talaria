@@ -18,7 +18,7 @@ use serde_json::json;
 use sqlx::Row;
 
 use talaria_boards::board_role;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -26,14 +26,11 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("tasks", "GET work-session", &id) {
-        return gate;
+        return Ok(gate);
     }
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+    let user = require_user(&state, &headers).await?;
     // The task's board decides, exactly like every other read of the ticket.
     let board: Option<(String,)> =
         sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
@@ -42,18 +39,15 @@ pub async fn get(
             .await
             .unwrap_or(None);
     let Some((board_id,)) = board else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     match board_role(&state.pg, &user.id, &board_id).await {
         Ok(Some(_)) => {}
         // Forbidden, not 404: the task's existence is already established
         // for this caller by the ticket being rendered — this gate only
         // decides visibility of the WORK state.
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[work-session] role read failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[work-session] role read failed", e)),
     }
 
     // THE LIVE SESSION: newest non-terminal work-session run on this task.
@@ -71,23 +65,20 @@ pub async fn get(
     .await;
     let row = match row {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[work-session] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[work-session] read failed", e)),
     };
     let wait = talaria_work_wait::for_task(&state.pg, &id)
         .await
         .map(|w| talaria_work_wait::wire(&w));
     let Some(row) = row else {
-        return Json(json!({ "session": null, "wait": wait })).into_response();
+        return Ok(Json(json!({ "session": null, "wait": wait })).into_response());
     };
     let run_id: String = row.get("id");
     let run_state: String = row.get("state");
     let phase: Option<String> = row.get("phase");
     let input: serde_json::Value = row.get("input");
     let checkpoint: serde_json::Value = row.get("checkpoint");
-    Json(json!({
+    Ok(Json(json!({
         "session": {
             "runId": run_id,
             "state": run_state,
@@ -98,5 +89,5 @@ pub async fn get(
         },
         "wait": wait,
     }))
-    .into_response()
+    .into_response())
 }

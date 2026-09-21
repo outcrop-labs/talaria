@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { delJson, getJson, HttpError, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
+import { HttpError, delJson, getJson, postJson, postJsonOr, postStream, putJson, readJson } from '@/lib/fetch-json'
 
 // The mutation door. The whole point of this file's subjects is the ERROR
 // CONTRACT — before they existed, 134 hand-rolled stanzas each decided for

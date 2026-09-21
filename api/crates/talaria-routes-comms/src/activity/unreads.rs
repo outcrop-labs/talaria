@@ -13,16 +13,13 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_channels::channel_unread_total;
 use talaria_conversations::conversation_unread_total;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_notify::{unread_count, unread_count_of_kind};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let (rooms, chats, plans, research, bell) = tokio::join!(
         channel_unread_total(&state.pg, &user.id),
         conversation_unread_total(&state.pg, &user.id, "chat"),
@@ -35,37 +32,25 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // it can only do that if a failure is a failure.
     let (rooms, chats) = match (rooms, chats) {
         (Ok(r), Ok(c)) => (r, c),
-        _ => {
-            tracing::error!("[unreads] comms arms failed");
-            return thrown_internal_error();
-        }
+        _ => return Ok(internal("[unreads]", "comms arms failed")),
     };
     let plans = match plans {
         Ok(v) => v,
-        Err(_) => {
-            tracing::error!("[unreads] plan arm failed");
-            return thrown_internal_error();
-        }
+        Err(_) => return Ok(internal("[unreads]", "plan arm failed")),
     };
     let research = match research {
         Ok(v) => v,
-        Err(_) => {
-            tracing::error!("[unreads] research arm failed");
-            return thrown_internal_error();
-        }
+        Err(_) => return Ok(internal("[unreads]", "research arm failed")),
     };
     let bell = match bell {
         Ok(v) => v,
-        Err(_) => {
-            tracing::error!("[unreads] notifications arm failed");
-            return thrown_internal_error();
-        }
+        Err(_) => return Ok(internal("[unreads]", "notifications arm failed")),
     };
-    Json(json!({
+    Ok(Json(json!({
         "comms": rooms + chats,
         "plan": plans,
         "research": research,
         "notifications": bell,
     }))
-    .into_response()
+    .into_response())
 }

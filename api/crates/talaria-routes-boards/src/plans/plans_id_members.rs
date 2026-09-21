@@ -13,11 +13,11 @@ use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
-use talaria_body::{as_object, email_member, parse, uuid_member};
+use talaria_body::{email_member, parse, uuid_member};
 use talaria_conversations::{
     add_plan_member, list_plan_members, list_plan_teams, plan_role, remove_plan_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_params::uuid_gate;
 use talaria_plan_doc::plan_doc_for;
@@ -72,45 +72,30 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = uuid_gate("plans", "GET members", &id) {
-        return gate;
+        return Ok(gate);
     }
     match plan_role(&state.pg, &user.id, &id).await {
         // Nothing and "not a plan" are the same answer here.
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[plans] plan role read on GET members failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[plans] plan role read on GET members failed", e)),
     }
     let members = match list_plan_members(&state.pg, &id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[plans] member read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[plans] member read failed", e)),
     };
     let mut conn = match state.redis().await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[plans] presence redis unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[plans] presence redis unavailable", e)),
     };
     let mut active = Vec::new();
     for m in &members {
         let flag: i64 = match conn.exists(presence_key(&id, &m.user_id)).await {
             Ok(n) => n,
-            Err(e) => {
-                tracing::error!("[plans] presence read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[plans] presence read failed", e)),
         };
         if flag == 1 {
             active.push(m.user_id.clone());
@@ -118,13 +103,12 @@ pub async fn get(
     }
     let teams = match list_plan_teams(&state.pg, &id).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[plans] team read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[plans] team read failed", e)),
     };
-    Json(json!({ "members": members_json(&members), "active": active, "teams": teams }))
-        .into_response()
+    Ok(
+        Json(json!({ "members": members_json(&members), "active": active, "teams": teams }))
+            .into_response(),
+    )
 }
 
 pub async fn post(
@@ -132,30 +116,26 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = uuid_gate("plans", "POST members", &id) {
-        return gate;
+        return Ok(gate);
     }
     match plan_role(&state.pg, &user.id, &id).await {
         Ok(Some(role)) if role == "owner" => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "only the plan owner can share it"),
-        Err(e) => {
-            tracing::error!("[plans] plan role read on POST members failed: {e}");
-            return thrown_internal_error();
+        Ok(_) => {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "only the plan owner can share it",
+            ));
         }
+        Err(e) => return Ok(internal("[plans] plan role read on POST members failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let email = match email_member(obj, "email") {
         Ok(e) => e,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let invited: Option<(String,)> =
         match sqlx::query_as("select id::text from users where lower(email) = $1")
@@ -164,24 +144,22 @@ pub async fn post(
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[plans] invitee lookup failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[plans] invitee lookup failed", e)),
         };
     let Some((invited_id,)) = invited else {
-        return house_error(StatusCode::BAD_REQUEST, "no user with that email");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "no user with that email",
+        ));
     };
     if invited_id == user.id {
-        return house_error(StatusCode::BAD_REQUEST, "that is you");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "that is you"));
     }
     if let Err(e) = add_plan_member(&state.pg, &id, &invited_id).await {
-        tracing::error!("[plans] member add failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[plans] member add failed", e));
     }
     if let Err(e) = sync_doc_grant(&state.pg, &id, &invited_id, true).await {
-        tracing::error!("[plans] doc grant on share failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[plans] doc grant on share failed", e));
     }
     let plan_title: Option<(Option<String>,)> =
         match sqlx::query_as("select title from conversations where id = $1::uuid")
@@ -190,10 +168,7 @@ pub async fn post(
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[plans] plan title read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[plans] plan title read failed", e)),
         };
     // the notification is best-effort — the share itself already happened.
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
@@ -216,13 +191,10 @@ pub async fn post(
         },
     )
     .await;
-    match list_plan_members(&state.pg, &id).await {
+    Ok(match list_plan_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members_json(&members) })).into_response(),
-        Err(e) => {
-            tracing::error!("[plans] member re-read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[plans] member re-read failed", e),
+    })
 }
 
 pub async fn delete(
@@ -230,13 +202,10 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = uuid_gate("plans", "DELETE members", &id) {
-        return gate;
+        return Ok(gate);
     }
     // the role read precedes the body parse: the role read has no failure
     // surface of its own, and the body's 400 comes ahead of the permission
@@ -244,73 +213,57 @@ pub async fn delete(
     let role = match plan_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("[plans] plan role read on DELETE members failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[plans] plan role read on DELETE members failed",
+                e,
+            ));
         }
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let target = match uuid_member(obj, "userId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Owner removes anyone; a collaborator may remove only themself (leave).
     if role.as_deref() != Some("owner")
         && !(role.as_deref() == Some("collaborator") && target == user.id)
     {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     if let Err(e) = remove_plan_member(&state.pg, &id, &target).await {
-        tracing::error!("[plans] member remove failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[plans] member remove failed", e));
     }
     if let Err(e) = sync_doc_grant(&state.pg, &id, &target, false).await {
-        tracing::error!("[plans] doc grant on unshare failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[plans] doc grant on unshare failed", e));
     }
-    match list_plan_members(&state.pg, &id).await {
+    Ok(match list_plan_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members_json(&members) })).into_response(),
-        Err(e) => {
-            tracing::error!("[plans] member re-read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[plans] member re-read failed", e),
+    })
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = uuid_gate("plans", "PUT members", &id) {
-        return gate;
+        return Ok(gate);
     }
     match plan_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[plans] plan role read on PUT members failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[plans] plan role read on PUT members failed", e)),
     }
     let mut conn = match state.redis().await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[plans] presence redis unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[plans] presence redis unavailable", e)),
     };
     let key = presence_key(&id, &user.id);
     if let Err(e) = conn.set_ex::<_, _, ()>(key, "1", PRESENCE_TTL_S).await {
-        tracing::error!("[plans] presence write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[plans] presence write failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

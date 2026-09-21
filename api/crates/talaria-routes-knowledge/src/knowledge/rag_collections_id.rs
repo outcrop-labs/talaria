@@ -13,8 +13,8 @@ use serde_json::json;
 use talaria_api_facades::retrieval::collections;
 use talaria_api_facades::retrieval::qdrant;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{array_msg, as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{array_msg, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -29,38 +29,34 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // bindings are REQUIRED on this route: absent yields the array message on
     // "undefined", not an empty set.
     let bindings = match parse_bindings(obj.get("bindings")) {
         Ok(Some(v)) => v,
-        Ok(None) => return house_error(StatusCode::BAD_REQUEST, &array_msg("undefined")),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Ok(None) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &array_msg("undefined"),
+            ));
+        }
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Body validation runs before the id's uuid gate — an invalid body
     // answers the validation error, never the uuid one.
     if let Some(gate) = talaria_params::uuid_gate("rag-collections", "PUT", &id) {
-        return gate;
+        return Ok(gate);
     }
     match collections::get_collection(&state.pg, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(_) => return thrown_internal_error(),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[knowledge] get_collection failed", e)),
     }
-    if collections::set_bindings(&state.pg, &id, &bindings)
-        .await
-        .is_err()
-    {
-        return thrown_internal_error();
+    if let Err(e) = collections::set_bindings(&state.pg, &id, &bindings).await {
+        return Ok(internal("[knowledge] set_bindings failed", e));
     }
     let (pg, actor, target_id) = (state.pg.clone(), actor_of(&user), id.clone());
     tokio::spawn(async move {
@@ -78,28 +74,25 @@ pub async fn put(
         )
         .await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("rag-collections", "DELETE", &id) {
-        return gate;
+        return Ok(gate);
     }
     let qd = qdrant::real_deps();
     match collections::delete_collection_by_id(&state.pg, &qd, &id).await {
         Ok(()) => {}
         Err(msg) if msg == AUTO_DELETE_REFUSAL => {
-            return house_error(StatusCode::BAD_REQUEST, &msg);
+            return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
         }
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return Ok(internal("[knowledge] delete_collection_by_id failed", e)),
     }
     let (pg, actor, target_id) = (state.pg.clone(), actor_of(&user), id.clone());
     tokio::spawn(async move {
@@ -117,5 +110,5 @@ pub async fn delete(
         )
         .await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

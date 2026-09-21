@@ -14,11 +14,12 @@ use talaria_api_facades::google::oauth::query_pairs;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     // An absent OR EMPTY q both fold to the inbox default.
     let q = query_pairs(uri.query())
         .get("q")
@@ -26,8 +27,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         .filter(|q| !q.is_empty())
         .unwrap_or_else(|| "in:inbox".to_string());
     let sb = state.secretbox().await.unwrap_or_default();
-    match list_recent_messages(&state.pg, &sb, &user.id, now_ms(), 8, &q).await {
-        Ok(messages) => Json(json!({ "messages": messages })).into_response(),
-        Err(e) => google_fail(e, "Gmail"),
-    }
+    Ok(
+        match list_recent_messages(&state.pg, &sb, &user.id, now_ms(), 8, &q).await {
+            Ok(messages) => Json(json!({ "messages": messages })).into_response(),
+            Err(e) => google_fail(e, "Gmail"),
+        },
+    )
 }

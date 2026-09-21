@@ -8,10 +8,10 @@ use base64::Engine as _;
 use sqlx::PgPool;
 
 use talaria_artifacts::Artifact;
+use talaria_body::percent_encode;
 use talaria_gateway::provider::http;
 use talaria_google_connections::{RequireError, TokenError, get_access_token, require_token};
 use talaria_google_errors::GoogleError;
-use talaria_google_oauth::encode_uri_component;
 use talaria_secretbox::SecretBox;
 use talaria_uploads::{get_upload, save_upload};
 
@@ -733,11 +733,11 @@ pub async fn move_drive_file_with_token(
     let mut query = String::from("supportsAllDrives=true");
     if let Some(add) = add_parent.filter(|p| !p.is_empty()) {
         query.push_str("&addParents=");
-        query.push_str(&encode_uri_component(add));
+        query.push_str(&percent_encode(add));
     }
     if let Some(remove) = remove_parent.filter(|p| !p.is_empty()) {
         query.push_str("&removeParents=");
-        query.push_str(&encode_uri_component(remove));
+        query.push_str(&percent_encode(remove));
     }
     let res = http()
         .patch(format!("{FILES_ENDPOINT}/{file_id}?{query}"))
@@ -988,8 +988,8 @@ async fn export_google_text(
     let res = http()
         .get(format!(
             "{FILES_ENDPOINT}/{}/export?mimeType={}",
-            encode_uri_component(file_id),
-            encode_uri_component(mime_type)
+            percent_encode(file_id),
+            percent_encode(mime_type)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -1015,8 +1015,8 @@ async fn export_google_bytes(
     let res = http()
         .get(format!(
             "{FILES_ENDPOINT}/{}/export?mimeType={}",
-            encode_uri_component(file_id),
-            encode_uri_component(mime_type)
+            percent_encode(file_id),
+            percent_encode(mime_type)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -1053,7 +1053,7 @@ pub async fn import_drive_file(
     let meta_res = http()
         .get(format!(
             "{FILES_ENDPOINT}/{}?fields=id,name,mimeType,webViewLink",
-            encode_uri_component(file_id)
+            percent_encode(file_id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -1136,7 +1136,7 @@ pub async fn import_drive_file(
     let dl_res = http()
         .get(format!(
             "{FILES_ENDPOINT}/{}?alt=media",
-            encode_uri_component(file_id)
+            percent_encode(file_id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()

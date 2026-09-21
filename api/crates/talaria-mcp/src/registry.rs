@@ -18,16 +18,18 @@
 // `assistant_owner_for(subject)`, which refuses a legacy shared-key caller and
 // never through the bare model map, whose string key reads as proven.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model, subject_proven};
+use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use talaria_gateway::provider::http;
+use talaria_mcp_oauth::has_oauth_tokens;
 use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_secretbox::SecretBox;
+use talaria_users::{assistant_owner_for, personal_assistant_owners};
 
 /// The protocol revision Talaria speaks at the MCP handshake — one revision
 /// for both directions of the conversation (what our dispatchers answer and
@@ -974,19 +976,6 @@ pub async fn get_user_credentials(
 
 // ── Effective resolution (the gateway's brain) ──────────────────────────────
 
-async fn assistant_owner_for(
-    pg: &PgPool,
-    subject: &AgentSubject,
-) -> Result<Option<String>, sqlx::Error> {
-    if !subject_proven(subject) {
-        return Ok(None);
-    }
-    Ok(personal_assistant_owners(pg)
-        .await?
-        .get(subject_model(subject))
-        .cloned())
-}
-
 pub struct EffectiveMcp {
     pub server: McpServer,
     /// None = all tools; otherwise the enforced allowlist.
@@ -1367,32 +1356,8 @@ async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), Strin
 // on its own: the credential is never rendered, only a gateway URL, and the
 // gateway re-derives access per request through `effective_mcp_for`.
 
-async fn has_oauth_tokens(
-    pg: &PgPool,
-    server_id: &str,
-    subject: &str,
-) -> Result<bool, sqlx::Error> {
-    let row: Option<(i32,)> = sqlx::query_as(
-        "select 1 from mcp_oauth_tokens where server_id::text = $1 and subject = $2",
-    )
-    .bind(server_id)
-    .bind(subject)
-    .fetch_optional(pg)
-    .await?;
-    Ok(row.is_some())
-}
-
 // (Does this server have per-user credentials stored? — the pub
 // `has_user_credentials` earlier in this file is that same read.)
-
-async fn personal_assistant_owners(pg: &PgPool) -> Result<HashMap<String, String>, sqlx::Error> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "select model, owner_user_id::text from agent_defs where owner_user_id is not null",
-    )
-    .fetch_all(pg)
-    .await?;
-    Ok(rows.into_iter().collect())
-}
 
 #[derive(Debug, Clone)]
 pub struct AgentServer {

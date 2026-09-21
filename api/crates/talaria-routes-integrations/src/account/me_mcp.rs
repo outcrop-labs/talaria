@@ -15,24 +15,16 @@ use talaria_api_facades::mcp::registry::{
     has_user_credentials, list_mcp_servers, set_user_credentials,
 };
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{
-    as_object, parse, record_msg, string_msg, too_big_msg, uuid_member, zod_type_name,
-};
-use talaria_error::{house_error, thrown_internal_error};
-use talaria_session::{actor_of, require_user};
+use talaria_body::{parse, record_msg, string_msg, too_big_msg, uuid_member, zod_type_name};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_user, secretbox_or_500};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let servers = match list_mcp_servers(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[me/mcp] registry read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[me/mcp] registry read failed", e)),
     };
     let mut out = Vec::new();
     for s in servers
@@ -42,18 +34,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         let connected = if s.oauth_enabled {
             match has_oauth_tokens(&state.pg, &s.id, &user.id).await {
                 Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("[me/mcp] oauth read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[me/mcp] oauth read failed", e)),
             }
         } else {
             match has_user_credentials(&state.pg, &s.id, &user.id).await {
                 Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("[me/mcp] credentials read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[me/mcp] credentials read failed", e)),
             }
         };
         out.push(json!({
@@ -66,65 +52,62 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             "connected": connected,
         }));
     }
-    Json(json!({ "servers": out })).into_response()
+    Ok(Json(json!({ "servers": out })).into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let server_id = match uuid_member(obj, "serverId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // headers — a string→string record (values ≤4000) or null to disconnect;
     // the values are the user's own credentials for the server.
     let creds: Option<serde_json::Map<String, Value>> = match obj.get("headers") {
         Some(Value::Null) => None,
-        None => return house_error(StatusCode::BAD_REQUEST, &string_msg("undefined")),
+        None => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &string_msg("undefined"),
+            ));
+        }
         Some(Value::Object(m)) => {
             for v in m.values() {
                 let Some(s) = v.as_str() else {
-                    return house_error(StatusCode::BAD_REQUEST, &string_msg(zod_type_name(v)));
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        &string_msg(zod_type_name(v)),
+                    ));
                 };
                 if talaria_body::utf16_len(s) > 4000 {
-                    return house_error(StatusCode::BAD_REQUEST, &too_big_msg(4000));
+                    return Ok(house_error(StatusCode::BAD_REQUEST, &too_big_msg(4000)));
                 }
             }
             Some(m.clone())
         }
         Some(other) => {
-            return house_error(StatusCode::BAD_REQUEST, &record_msg(zod_type_name(other)));
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &record_msg(zod_type_name(other)),
+            ));
         }
     };
 
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[me/mcp] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[me/mcp] secretbox unavailable").await?;
     if let Err(e) = set_user_credentials(&state.pg, &sb, &server_id, &user.id, creds.as_ref()).await
     {
-        tracing::error!("[me/mcp] credential store failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[me/mcp] credential store failed", e));
     }
     if creds.is_none()
         && let Err(e) = drop_oauth_tokens(&state.pg, &server_id, &user.id).await
     {
-        tracing::error!("[me/mcp] oauth drop failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[me/mcp] oauth drop failed", e));
     }
     log_audit(
         &state.pg,
@@ -151,5 +134,5 @@ pub async fn put(
         // …then the live cutover.
         roll_agent_for_user(&pg, &sb_, &user_id).await;
     });
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

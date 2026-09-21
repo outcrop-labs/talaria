@@ -186,6 +186,134 @@ const RULES = [
       'you need a sixth entry is a conversation for the PR, not a line in this file.',
     ],
   },
+  {
+    id: 'ts-event-source-outside-the-door',
+    pattern: /new EventSource\(/,
+    allow: ['ui/src/lib/sse.ts'], // the one door
+    what: 'an EventSource opened outside the one SSE door',
+    fix: [
+      'Use `openStream(url, (data) => { … })` from `@/lib/sse` — it returns the',
+      'unsubscribe, so the effect teardown that used to say `es.close()` says `return',
+      'openStream(…)`.',
+      '',
+      'WHY: four surfaces each opened their own stream and each decided differently what',
+      'a frame that does not parse means — two swallow it, one lets JSON.parse throw',
+      'inside the listener (an unhandled error, stream still open), one returns early.',
+      'The door hands over the RAW data and lets each caller parse, because that judgment',
+      'is per-surface; what it owns is the connection and its teardown.',
+    ],
+  },
+  {
+    id: 'ts-maybe-getter-copy',
+    pattern: /type MaybeGetter</,
+    allow: ['ui/src/lib/reactive-arg.ts'], // the one declaration
+    what: 'a local `MaybeGetter` instead of the shared one',
+    fix: [
+      "Import it: `import { resolve, type MaybeGetter } from '@/lib/reactive-arg'`.",
+      '',
+      'WHY: sixteen files declared this type and then re-implemented the two-line',
+      'resolution beside it (and two spelled the resolution differently again,',
+      '`resolveModel` and `resolveValue`). A hook that takes `MaybeGetter<T>` and forgets',
+      'to accept the eager form is a papercut at every call site; one declaration means',
+      'one answer.',
+    ],
+  },
+  {
+    id: 'rust-hand-wrapped-gate',
+    lang: 'rust',
+    // The gate helper answers `Result<_, Response>`; a handler that unwraps it
+    // by hand is a handler that has not taken the handler shape.
+    pattern: /Err\((?:gate|resp)\)\s*=>\s*return (?:gate|resp),/,
+    what: 'a gate result unwrapped by hand instead of with `?`',
+    fix: [
+      'Handlers answer `Result<Response, Response>` (axum implements `Handler` for any',
+      '`R: IntoResponse`, and `Result<Response, Response>` is one), so the gate propagates:',
+      '',
+      '    let user = require_user(&state, &headers).await?;',
+      '',
+      'Every guard — `require_user`, `require_perm`, `require_admin`, `require_view`,',
+      '`agent_caller` — already returns `Result<_, Response>`. ~360 call sites spelled the',
+      'match out by hand, which is why the refusal envelope drifted between them.',
+    ],
+  },
+  {
+    id: 'rust-secretbox-unwrap',
+    lang: 'rust',
+    // The house unwrap: the secretbox or the logged 500. `state.secretbox()`
+    // is the one call every key-touching route makes; a route that spells the
+    // match out again is route 27. (Routes whose refusal is their OWN — a 400,
+    // a page, a `catch(e)` — keep their own three lines and are not matched.)
+    pattern: /let sb = match state\.secretbox\(\)\.await \{[\s\S]{0,80}?Err\(e\) => return (?:Ok\()?internal\(/,
+    what: 'the secretbox unwrapped by hand instead of through `secretbox_or_500`',
+    fix: [
+      'Write `let sb = secretbox_or_500(&state, "<context>").await?;` — `talaria-session`',
+      "owns the one conversion (it is the layer that may name `AppState` AND answer a",
+      '`Response`; `talaria-error` cannot, because `AppState` depends on it).',
+      '',
+      'A route whose failure answer is its OWN — a 400 with the route\'s sentence, an OAuth',
+      'callback page, a `catch(e)` that flattens to an operator message — keeps its own',
+      'match; the rule only matches the house 500.',
+    ],
+  },
+  {
+    id: 'rust-as-object-unwrap',
+    lang: 'rust',
+    // The hand-wrapped 400 for a non-object body.
+    pattern: /match as_object\(&/,
+    allow: ['api/crates/talaria-error/src/lib.rs'], // object_or_400 IS the conversion
+    what: 'the non-object-body 400 unwrapped by hand',
+    fix: [
+      'Write `let obj = object_or_400(&parsed)?;` — `talaria-error` owns the one conversion',
+      "from `talaria_body`'s message to the 400 that carries it. ~194 route files spelled the",
+      'match out by hand.',
+      '',
+      'Keep `talaria_body` pure: it answers the message and knows nothing about HTTP, which',
+      'is why the conversion lives beside the envelope it produces.',
+    ],
+  },
+  {
+    id: 'rust-trap-block',
+    lang: 'rust',
+    // The hand-written pair, in every spelling it grew in: `return
+    // thrown_internal_error();`, a bare tail expression, `Err(…)`, `Some(…)`,
+    // the fully-qualified path. All of them were one concept written out ~860
+    // times; `internal(context, e)` is that concept, once.
+    pattern:
+      /tracing::error!\([^;\n]*\);\s*\n\s*(?:return )?(?:Err\(|Some\()?(?:talaria_error::)?thrown_internal_error\(\)/,
+    allow: ['api/crates/talaria-error/src/lib.rs'], // the envelope defines it
+    what: 'a hand-written "log then answer the house 500" pair',
+    fix: [
+      'Write `return talaria_error::internal("<context>", e)` (or `Err(internal(…))`,',
+      '`Some(internal(…))`, `internal(…)` as a tail expression) — `internal` IS that pair,',
+      'defined once in api/crates/talaria-error/src/lib.rs: it logs `"{context}: {e}"` and',
+      'returns the same byte-exact `thrown_internal_error()` response.',
+      '',
+      'WHY THIS RULE: the pair was written out by hand at ~860 call sites, and because every',
+      'site re-made the decision, about a quarter of them re-made it as "no log at all" — a',
+      '500 with nothing in the log and no way to tell which read failed. One home, one',
+      'decision.',
+    ],
+  },
+  {
+    id: 'rust-thrown-internal-error-outside-its-envelope',
+    lang: 'rust',
+    // The umbrella behind the rule above: `thrown_internal_error` is the house
+    // 500's BODY, and the only code that should reach for it directly is the
+    // one function that answers it. Anywhere else it is either a hand-written
+    // pair (caught above, with the tailored message) or a 500 nobody logged.
+    pattern: /thrown_internal_error\(/,
+    allow: ['api/crates/talaria-error/src/lib.rs'],
+    what: 'a direct call to the house 500 envelope from outside talaria-error',
+    fix: [
+      'Use `talaria_error::internal("<context>", e)` — it logs and answers the house 500 in',
+      'one call. If the failure has no error value to log (a discarded `.is_err()`, an absent',
+      'config), pass the reason as the second argument: those sites keep the sentence they',
+      'used to log, and gain the log line they did not have.',
+      '',
+      'The envelope itself stays in api/crates/talaria-error/src/lib.rs because its bytes are',
+      'a client contract; no other file needs to name it.',
+    ],
+  },
 ]
 
 /** Legal in named files, in a known quantity, and forbidden everywhere else.
@@ -317,7 +445,7 @@ const CENSUS = [
 
 // ── Machinery ────────────────────────────────────────────────────────────────
 
-function walk(dir, out = []) {
+function walk(dir, out = [], exts = EXTS) {
   let entries
   try {
     entries = readdirSync(dir)
@@ -327,8 +455,8 @@ function walk(dir, out = []) {
   for (const name of entries) {
     const full = join(dir, name)
     if (statSync(full).isDirectory()) {
-      if (!SKIP_DIRS.has(name)) walk(full, out)
-    } else if (EXTS.some((e) => name.endsWith(e)) && !SKIP_FILES.has(name)) {
+      if (!SKIP_DIRS.has(name)) walk(full, out, exts)
+    } else if (exts.some((e) => name.endsWith(e)) && !SKIP_FILES.has(name)) {
       out.push(full)
     }
   }
@@ -537,6 +665,111 @@ function scanPopoverEngines(src) {
   return [{ line: hits[0].line, text: `panel + own document-level listener (${hits[0].text})` }]
 }
 
+// ─ Duplicate function bodies ────────────────────────────────────────────────
+//
+// THE LESSON THIS ENCODES. Commit 9d4ed398 collapsed 47 copies of the epoch
+// helper `now_ms` onto one home in talaria-agent-auth. Seven byte-identical
+// copies grew back within the week, in crates added after the collapse, and
+// nothing failed — because nothing was watching. A dedupe that is not
+// accompanied by a check that FAILS on the next copy is a chore, not a fix:
+// the tree drifts back to where it was, one plausible-looking local helper at
+// a time, and the next reader re-does the work.
+//
+// HOW IT JUDGES. A function is a candidate when its body, whitespace
+// normalized, is long enough to be more than an accessor or a one-line
+// delegate (120 chars of Rust, 100 of TS), and the match is by name AND body,
+// so two same-named functions that do different things are not a cluster.
+// Whole bodies only: this deliberately does not look inside a function for a
+// repeated block, which is where a rule like this starts producing arguments
+// instead of fixable hits.
+//
+// TEST MODULES ARE OUT OF SCOPE BY CONSTRUCTION. Per-crate `#[cfg(test)]`
+// fixtures are near-identical on purpose (each crate builds its own tiny
+// world), and including them buries the real clusters under hundreds of
+// false positives. The ranges are precomputed by brace-matching the module
+// body so a `fn` inside one never reaches the report.
+//
+// WHY AN ALLOW LIST AND NOT A COUNT. Some pairs are genuinely two answers to
+// different questions that happen to coincide today (a `role == "admin"`
+// gate beside a `role != "member"` one). Those need a sentence, not a
+// pattern: `allow` entries carry `paths` (the exact set, order-insensitive)
+// and a `why`. Each one is checked for staleness — the moment its paths stop
+// forming a cluster, the entry fails and asks to be deleted, which is the
+// signal that a wave finished its share of the worklist.
+
+/** The body text between the brace at/after `start` and its match. Rust and
+ *  TS format strings keep `{}` balanced, so depth counting survives the
+ *  common case; a lone brace inside a string is rare enough to accept. */
+function braceBody(src, start) {
+  const open = src.indexOf('{', start)
+  if (open === -1) return null
+  let depth = 0
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]
+    if (c === '{') depth++
+    else if (c === '}' && --depth === 0) return [open + 1, i]
+  }
+  return null
+}
+
+/** Ranges of `#[cfg(test)] mod … { … }` bodies, so test fixtures stay out. */
+function cfgTestRanges(src) {
+  const ranges = []
+  const re = /#\[cfg\(test\)\]/g
+  let m
+  while ((m = re.exec(src)) !== null) {
+    if (!/\bmod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/.test(src.slice(m.index, m.index + 200))) continue
+    const body = braceBody(src, m.index)
+    if (body) ranges.push(body)
+  }
+  return ranges
+}
+
+const RUST_FN = /^(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(/gm
+const TS_FNS = [
+  /(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\(/g,
+  /(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]{0,120})?=\s*(?:async\s*)?\([^)]*\)\s*(?::[^=]{0,120})?=>\s*\{/g,
+]
+
+function duplicateCandidates(src, kind, minLen) {
+  const out = []
+  const pats = kind === 'rust' ? [RUST_FN] : TS_FNS
+  const skip = kind === 'rust' ? cfgTestRanges(src) : []
+  for (const re of pats) {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(src)) !== null) {
+      const body = braceBody(src, m.index)
+      if (!body) continue
+      if (skip.some(([s, e]) => m.index >= s && m.index < e)) continue
+      const normalized = src.slice(body[0], body[1]).replace(/\s+/g, ' ').trim()
+      if (normalized.length < minLen) continue
+      out.push({ name: m[1], normalized, line: lineOf(src, m.index) })
+    }
+  }
+  return out
+}
+
+/** Group candidates by name+body; return the clusters with ≥2 members. */
+function duplicateClusters(entries) {
+  const byKey = new Map()
+  for (const e of entries) {
+    const key = e.name + '\u0000' + e.normalized
+    if (!byKey.has(key)) byKey.set(key, [])
+    byKey.get(key).push(e)
+  }
+  const clusters = []
+  for (const members of byKey.values()) {
+    if (members.length < 2) continue
+    clusters.push({
+      name: members[0].name,
+      paths: [...new Set(members.map((m) => m.path))].sort(),
+      members,
+    })
+  }
+  return clusters
+}
+
 // ── Run ──────────────────────────────────────────────────────────────────────
 
 const failures = []
@@ -546,10 +779,25 @@ const files = SOURCE_DIRS.flatMap((d) => walk(join(ROOT, d)))
 const sources = new Map() // repo-relative path -> comment-stripped text
 for (const f of files) sources.set(relative(ROOT, f).split(sep).join('/'), stripComments(readFileSync(f, 'utf8')))
 
+/** The Rust tree, kept as a SECOND map rather than folded into `sources`
+ *  because every TS rule above is written against the TS spelling of its
+ *  subject and would go looking in the api crate for `fetch(`. Only the
+ *  language-agnostic rules (duplicate bodies) read both. */
+const RUST_DIRS = ['api/crates']
+const RUST_EXTS = ['.rs']
+const rustSources = new Map() // repo-relative path -> comment-stripped text
+for (const f of RUST_DIRS.flatMap((d) => walk(join(ROOT, d), [], RUST_EXTS))) {
+  rustSources.set(relative(ROOT, f).split(sep).join('/'), stripComments(readFileSync(f, 'utf8')))
+}
+
 // Rules: forbidden outside `allow`.
 for (const rule of RULES) {
   const found = []
-  for (const [path, src] of sources) {
+  // A rule whose subject lives in the api crate reads `rustSources`; every
+  // other rule reads the TS tree. Without this the Rust rules below would scan
+  // the SPA for `tracing::error!` and report "all clean" over nothing.
+  const scanned = rule.lang === 'rust' ? rustSources : sources
+  for (const [path, src] of scanned) {
     if (rule.allow?.includes(path)) continue
     const hits = rule.scan ? rule.scan(src) : matches(src, rule.pattern)
     for (const h of hits) found.push({ path, ...h })
@@ -1318,6 +1566,147 @@ for (const rule of CENSUS) {
         'PDF inline, everything else attachment) and nosniff on every response. If a rename or',
         'refactor changed the spelling, update the two patterns in check-invariants.mjs — do',
         'not widen them to make a real regression pass.',
+      ],
+      found: [],
+    })
+  }
+}
+
+/** Clusters that are deliberately two answers to different questions, kept
+ *  side by side. `paths` is the exact set of files (order-insensitive) and
+ *  `why` states the reason; an entry whose paths stop forming a cluster fails
+ *  as stale and asks to be deleted.
+ *
+ *  THIS LIST MUST SHRINK TO (NEARLY) EMPTY. It was seeded, not earned: every
+ *  entry below is a real duplicate with a named wave that collapses it, and
+ *  the wave deletes its entry in the same commit that lands the collapse. The
+ *  stale check is what makes that mechanical — an entry left behind after the
+ *  work is done fails the next `bun run check`, so the list cannot rot into a
+ *  standing amnesty. Read the `why` as a to-do list, not as an exemption. */
+const DUPLICATE_BODY_ALLOW = [
+]
+
+// Duplicate function bodies: one home per concept, across both languages.
+{
+  const tsEntries = []
+  for (const [path, src] of sources) {
+    if (path.endsWith('.test.ts')) continue
+    for (const c of duplicateCandidates(src, 'ts', 100)) tsEntries.push({ ...c, path })
+  }
+  const rustEntries = []
+  for (const [path, src] of rustSources) {
+    for (const c of duplicateCandidates(src, 'rust', 120)) rustEntries.push({ ...c, path })
+  }
+
+  const tsClusters = duplicateClusters(tsEntries)
+  const rustClusters = duplicateClusters(rustEntries)
+  notes.push(
+    `duplicate bodies: ${rustEntries.length} rust fns / ${rustClusters.length} clusters, ` +
+      `${tsEntries.length} ts fns / ${tsClusters.length} clusters`,
+  )
+
+  const covered = new Set()
+  // An entry names BOTH the function and its file set: the same two files can
+  // hold two different duplicated functions (registry.rs and users.rs do), and
+  // a path-only key would let one entry silently exempt the other's cluster —
+  // an exemption wider than the argument that justified it. The name is part
+  // of the claim, so an entry dies exactly when its own cluster does.
+  const keyOf = (name, paths) => name + '\u0000' + paths.join('\u0000')
+  const allowFor = (cluster) => {
+    const hit = DUPLICATE_BODY_ALLOW.find(
+      (a) =>
+        a.name === cluster.name &&
+        keyOf(a.name, [...a.paths].sort()) === keyOf(cluster.name, cluster.paths),
+    )
+    if (hit) covered.add(keyOf(hit.name, [...hit.paths].sort()))
+    return hit
+  }
+
+  const report = (id, clusters) => {
+    const found = []
+    for (const c of clusters) {
+      const allow = allowFor(c)
+      if (allow) continue
+      for (const m of c.members) found.push({ path: m.path, line: m.line, text: `fn ${m.name}(…)` })
+    }
+    if (!found.length) return
+    failures.push({
+      id,
+      what: 'the same function body written out in more than one place',
+      fix: [
+        'Pick the crate or module that already owns the concept, make it `pub`, and import it',
+        'everywhere else. A copy that is not deleted is a copy that drifts: the last sweep of',
+        'this kind collapsed 47 `now_ms` copies and seven grew back within the week, because',
+        'nothing failed when they did.',
+        '',
+        'If the two bodies coincide today but answer genuinely different questions, add a',
+        'DUPLICATE_BODY_ALLOW entry in scripts/check-invariants.mjs naming the function, both',
+        'paths and a `why` that states the difference — that is the argument to have in the PR.',
+        'Do not widen the normalization to make a real duplicate pass.',
+      ],
+      found,
+    })
+  }
+  report('duplicate-fn-body-rust', rustClusters)
+  report('duplicate-fn-body-ts', tsClusters)
+
+  for (const allow of DUPLICATE_BODY_ALLOW) {
+    if (!covered.has(keyOf(allow.name, [...allow.paths].sort()))) {
+      failures.push({
+        id: 'duplicate-body-allow-stale',
+        what: `a DUPLICATE_BODY_ALLOW entry no longer matches a duplicate cluster: ${allow.name} in ${allow.paths.join(', ')}`,
+        fix: [
+          'The named function is no longer the same body in every listed path — most likely',
+          'because the wave that named it did its work. Delete the allow entry from',
+          'scripts/check-invariants.mjs: an exemption held open for a cluster that no longer',
+          'exists is held open for the next copy to walk through.',
+        ],
+        found: [],
+      })
+    }
+  }
+}
+
+// INSTANCE IDENTITY, PINNED ACROSS THE LANGUAGE LINE.
+//
+// The app-database's container name is composed twice: the resident tier names
+// it when it attaches to an app's Postgres (ui/src/server/app-db.ts), and the
+// CLI names it again when it dumps every app DB for a backup
+// (cli/src/cmd/backup.ts). They agree today by convention — "talaria-appdb-
+// <instance>-<slug>", the instance being the worktree/devbox name with
+// `talaria` as the fallback — and a drift between them would be discovered on
+// the one afternoon somebody needs the dump, as a container that is not there.
+//
+// A pin, not an import: one end is TypeScript with `process.env` and the other
+// is TypeScript with a passed-in env record, so the shared thing is the SHAPE
+// (the prefix, the two variables, the fallback), which is what this reads.
+{
+  const ID_SOURCES = [
+    ['ui/src/server/app-db.ts', 'process.env.TALARIA_WORKTREE'],
+    ['cli/src/cmd/backup.ts', 'env.TALARIA_WORKTREE'],
+  ]
+  const problems = []
+  for (const [path, envPrefix] of ID_SOURCES) {
+    const src = sources.get(path) ?? readFileSync(join(ROOT, path), 'utf8')
+    if (!/TALARIA_DEVBOX/.test(src)) problems.push(`${path}: no TALARIA_DEVBOX in the instance id`)
+    if (!/TALARIA_WORKTREE/.test(src)) problems.push(`${path}: no TALARIA_WORKTREE in the instance id`)
+    if (!envPrefix.split('.').every((part) => src.includes(part))) {
+      problems.push(`${path}: expected the instance id to read ${envPrefix}`)
+    }
+    if (!/'talaria'/.test(src)) problems.push(`${path}: expected 'talaria' as the instance id fallback`)
+    if (!/talaria-appdb-\$\{instanceId\(/.test(src)) {
+      problems.push(`${path}: expected the container name to be \`talaria-appdb-\${instanceId(…)}-<slug>\``)
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'app-db-container-name-drift',
+      what: 'the app-DB container name is composed differently on the two sides that spell it',
+      fix: [
+        'Both ends must compose `talaria-appdb-<instance>-<slug>`, where <instance> is',
+        'TALARIA_WORKTREE || TALARIA_DEVBOX || "talaria". If one end moved or was renamed,',
+        'fix the code rather than this pin — the backup looks the container up by this name.',
+        ...problems.map((p) => `  ${p}`),
       ],
       found: [],
     })

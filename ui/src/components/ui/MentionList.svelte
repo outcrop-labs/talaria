@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createListNav } from '@/lib/list-nav'
   import { cn } from '@/lib/cn'
   import { fade, listStagger, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
@@ -17,25 +18,17 @@
   export function update(next: Mentionable[], cmd: (item: Mentionable) => void) {
     items = next
     command = cmd
-    active = 0 // new result set → selection back to the top
+    nav.reset() // new result set → selection back to the top
   }
 
-  export function onKeyDown(e: KeyboardEvent): boolean {
-    if (e.key === 'ArrowDown') {
-      active = (active + 1) % Math.max(items.length, 1)
-      return true
-    }
-    if (e.key === 'ArrowUp') {
-      active = (active - 1 + items.length) % Math.max(items.length, 1)
-      return true
-    }
-    if (e.key === 'Enter' || e.key === 'Tab') {
-      const item = items[active]
-      if (item) command(item)
-      return true
-    }
-    return false
-  }
+  const nav = createListNav<Mentionable>({
+    items: () => items,
+    active: () => active,
+    setActive: (i) => (active = i),
+    choose: (item) => command(item),
+  })
+
+  export const onKeyDown = (e: KeyboardEvent): boolean => nav.onKeyDown(e)
 
   // Keep the active row in view while arrowing through the list.
   $effect(() => {

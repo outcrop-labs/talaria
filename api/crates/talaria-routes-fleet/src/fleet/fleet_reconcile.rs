@@ -8,20 +8,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::fleet::reconcile::reconcile_fleet;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_error::{house_error, thrown_internal_error};
-use talaria_session::{actor_of, require_admin};
+use talaria_error::house_error;
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(_) => return thrown_internal_error(),
-    };
-    match reconcile_fleet(&state.pg, &sb).await {
+pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
+    Ok(match reconcile_fleet(&state.pg, &sb).await {
         Ok(result) => {
             let actor = actor_of(&user);
             let pg = state.pg.clone();
@@ -47,5 +41,5 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
             StatusCode::INTERNAL_SERVER_ERROR,
             "reconcile failed — see server logs",
         ),
-    }
+    })
 }

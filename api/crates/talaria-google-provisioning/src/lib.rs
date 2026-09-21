@@ -19,8 +19,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use talaria_body::percent_encode;
 use talaria_gateway::provider::http;
-use talaria_google_client::{email_domain_of, encode_uri_component};
+use talaria_google_client::email_domain_of;
 use talaria_google_connections::TokenError;
 use talaria_google_org::{
     OrgTargets, OrgTargetsPatch, get_org_access_token, get_org_connection_status,
@@ -208,7 +209,7 @@ async fn calendar_exists(token: &str, id: &str) -> Result<bool, String> {
     let res = http()
         .get(format!(
             "{CAL_BASE}/calendars/{}?fields=id",
-            encode_uri_component(id)
+            percent_encode(id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -221,7 +222,7 @@ async fn calendar_shared_with_domain(token: &str, id: &str, domain: &str) -> Res
     let res = http()
         .get(format!(
             "{CAL_BASE}/calendars/{}/acl?fields=items(scope)",
-            encode_uri_component(id)
+            percent_encode(id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -255,10 +256,7 @@ async fn calendar_shared_with_domain(token: &str, id: &str, domain: &str) -> Res
 
 async fn share_calendar_with_domain(token: &str, id: &str, domain: &str) -> Result<(), CallFail> {
     let res = http()
-        .post(format!(
-            "{CAL_BASE}/calendars/{}/acl",
-            encode_uri_component(id)
-        ))
+        .post(format!("{CAL_BASE}/calendars/{}/acl", percent_encode(id)))
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(
@@ -366,7 +364,7 @@ async fn shared_drive_exists(token: &str, id: &str) -> Result<bool, String> {
     let res = http()
         .get(format!(
             "{DRIVE_BASE}/drives/{}?supportsAllDrives=true&fields=id",
-            encode_uri_component(id)
+            percent_encode(id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -379,7 +377,7 @@ async fn drive_shared_with_domain(token: &str, id: &str) -> Result<bool, String>
     let res = http()
         .get(format!(
             "{DRIVE_BASE}/drives/{}/permissions?supportsAllDrives=true&fields=permissions(type)",
-            encode_uri_component(id)
+            percent_encode(id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .send()
@@ -406,7 +404,7 @@ async fn share_drive_with_domain(token: &str, id: &str) -> Result<(), CallFail> 
     let res = http()
         .post(format!(
             "{DRIVE_BASE}/drives/{}/permissions?supportsAllDrives=true",
-            encode_uri_component(id)
+            percent_encode(id)
         ))
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")

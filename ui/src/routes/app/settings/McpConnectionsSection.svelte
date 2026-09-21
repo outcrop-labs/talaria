@@ -7,9 +7,9 @@
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import { errorMessage, getList, putJson } from '@/lib/fetch-json'
+  import { getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { composeHeader, headerFields, type HeaderDecl, type HeaderField } from '@/routes/app/mcp'
 
   /** Per-user MCP connected accounts: servers the org registered in per-user
@@ -69,7 +69,7 @@
       await putJson<{ ok: true }>('/api/me/mcp', { serverId, headers })
     } catch (e) {
       // Leave the form open with what was typed — a failed connect is retryable.
-      pushToast({ title: 'Could not save that connection', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not save that connection', e)
       return
     }
     connecting = null

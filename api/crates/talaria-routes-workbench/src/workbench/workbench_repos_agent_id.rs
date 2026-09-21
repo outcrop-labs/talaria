@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_body::{as_object, parse, string_array_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{parse, string_array_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as gh;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -29,12 +29,10 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
     if !agent_exists(&state.pg, &agent_id).await {
-        return house_error(StatusCode::NOT_FOUND, "unknown agent");
+        return Ok(house_error(StatusCode::NOT_FOUND, "unknown agent"));
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let available = gh::list_reachable_repos(&state.pg, &sb).await;
@@ -50,13 +48,13 @@ pub async fn get(
             json!(gh::list_branches(&state.pg, &sb, &rule.repo).await),
         );
     }
-    Json(json!({
+    Ok(Json(json!({
         "available": available,
         "granted": granted,
         "rules": rules,
         "branches": branches,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
@@ -64,24 +62,19 @@ pub async fn put(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
     body: Bytes,
-) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Required array (min 0 — an empty PUT clears the grants), elements ≤200,
     // ≤100 items. Validation runs before the agent check, the agent check
     // before the pool filter.
     let repos = match string_array_member(obj, "repos", 0, 200, 0, 100) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if !agent_exists(&state.pg, &agent_id).await {
-        return house_error(StatusCode::NOT_FOUND, "unknown agent");
+        return Ok(house_error(StatusCode::NOT_FOUND, "unknown agent"));
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let pool = gh::list_reachable_repos(&state.pg, &sb).await;
@@ -89,8 +82,7 @@ pub async fn put(
     // since the UI loaded isn't a user error.
     let repos: Vec<String> = repos.into_iter().filter(|r| pool.contains(r)).collect();
     if let Err(e) = gh::set_granted_repos(&state.pg, &agent_id, &repos).await {
-        tracing::error!("[workbench/repos] grant write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[workbench/repos] grant write failed", e));
     }
     // Rules ride the same PUT, optional: an array of {repo, baseBranch?,
     // pushMode?, branchPrefix?}. Only rules for STILL-GRANTED repos are
@@ -99,15 +91,23 @@ pub async fn put(
     if let Some(v) = obj.get("rules") {
         let arr = match v.as_array() {
             Some(a) => a,
-            None => return house_error(StatusCode::BAD_REQUEST, "rules must be an array"),
+            None => {
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "rules must be an array",
+                ));
+            }
         };
         for el in arr {
             let Some(entry) = el.as_object() else {
-                return house_error(StatusCode::BAD_REQUEST, "rules entries must be objects");
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "rules entries must be objects",
+                ));
             };
             let repo = match talaria_body::string_member(entry, "repo", 3, 200) {
                 Ok(r) => r,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             if !repos.contains(&repo) {
                 continue;
@@ -121,7 +121,7 @@ pub async fn put(
                 push_mode: {
                     match talaria_body::enum_member(entry, "pushMode", &["branches_only", "free"]) {
                         Ok(m) => m.to_string(),
-                        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
                     }
                 },
                 branch_prefix: talaria_body::optional_max_string_member(entry, "branchPrefix", 100)
@@ -130,10 +130,9 @@ pub async fn put(
                     .filter(|p| !p.is_empty()),
             };
             if let Err(e) = gh::set_repo_rule(&state.pg, &agent_id, &rule).await {
-                tracing::error!("[workbench/repos] rule write failed: {e}");
-                return thrown_internal_error();
+                return Ok(internal("[workbench/repos] rule write failed", e));
             }
         }
     }
-    Json(json!({ "granted": repos })).into_response()
+    Ok(Json(json!({ "granted": repos })).into_response())
 }

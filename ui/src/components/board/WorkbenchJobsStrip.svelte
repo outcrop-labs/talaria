@@ -2,10 +2,10 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { errorMessage, getList, putJson } from '@/lib/fetch-json'
+  import { getList, putJson } from '@/lib/fetch-json'
   import { cn } from '@/lib/cn'
   import { listStagger, slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
 
   interface WbJob {
     id: string
@@ -46,11 +46,7 @@
     try {
       await putJson('/api/workbench/jobs', { jobId, action })
     } catch (e) {
-      pushToast({
-        title: action === 'approve' ? 'Could not approve the plan' : action === 'reject' ? 'Could not reject the plan' : 'Could not merge to testing',
-        body: errorMessage(e),
-        tone: 'danger',
-      })
+      toastError(action === 'approve' ? 'Could not approve the plan' : action === 'reject' ? 'Could not reject the plan' : 'Could not merge to testing', e)
     }
     await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
   }

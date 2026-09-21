@@ -11,8 +11,8 @@
   import { listQuery } from '@/components/ui/query-state'
   import Panel from '@/components/ui/Panel.svelte'
   import { useDeniedViews, useSession } from '@/lib/session'
-  import { errorMessage, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import AssistantSection from '@/components/assistant/AssistantSection.svelte'
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
@@ -95,7 +95,7 @@
       await qc.invalidateQueries({ queryKey: ['users'] })
       savedFlash.flash()
     } catch (e) {
-      pushToast({ title: 'Could not save your profile', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not save your profile', e)
     } finally {
       busy = false
     }

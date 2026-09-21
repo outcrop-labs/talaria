@@ -14,7 +14,7 @@
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_agent_auth::now_ms;
 use talaria_settings::{get_setting, set_setting};
 
 const KEY: &str = "model_capabilities";
@@ -81,13 +81,6 @@ pub fn outranks(next: &str, prev: Option<&str>) -> bool {
 /// not. An unparseable `at` counts as expired rather than eternal — dropping a
 /// re-derivable fact costs one re-discovery.
 const LEARNED_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// ms since the epoch for a stored ISO string, None when unparseable — the
 /// parse accepts exactly the ISO shape the house formatter writes (its
@@ -196,7 +189,7 @@ fn entry_of<'a>(
 /// newer build may know more than we do).
 pub async fn get_capabilities(pg: &PgPool, key: &str) -> HashMap<String, CapabilityFact> {
     let all = get_setting(pg, KEY, serde_json::json!({})).await;
-    let now = now_ms();
+    let now = now_ms() as u64;
     let mut out = HashMap::new();
     if let Some(entry) = entry_of(&all, key) {
         for (cap, raw) in entry {
@@ -245,7 +238,7 @@ pub async fn merge_capabilities(
     }
     let _guard = write_lock().lock().await;
     let mut all = get_setting(pg, KEY, serde_json::json!({})).await;
-    let now = now_ms();
+    let now = now_ms() as u64;
     let mut written = 0;
     for (key, facts) in batch {
         // Clone the entry, merge into it, put it back — unknown capability ids

@@ -127,8 +127,9 @@ pub fn default_image_ref() -> String {
 
 /// How long the old slot keeps serving after cutover so in-flight requests
 /// drain — the SAME knob the fleet's agent rolls use (one drain policy per
-/// host; two policies would let the app and its agents disagree about what
-/// a graceful stop means).
+/// host; two policies would let the app and its agents disagree about what a
+/// graceful stop means), which is why this is the home: the update crates and
+/// the fleet reconciler all read it from here.
 pub fn roll_drain_ms() -> u64 {
     std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
         .ok()

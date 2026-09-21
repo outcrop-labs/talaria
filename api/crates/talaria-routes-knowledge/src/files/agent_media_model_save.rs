@@ -22,9 +22,9 @@ use talaria_artifacts::{
     save_artifact,
 };
 use talaria_body::{
-    as_object, optional_uuid_member, parse, string_member, string_msg, too_big_msg, zod_type_name,
+    optional_uuid_member, parse, string_member, string_msg, too_big_msg, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_uploads::save_upload;
@@ -55,7 +55,7 @@ pub async fn post(
     headers: HeaderMap,
     Path(model): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let actor: String;
     // Two answers again, same split as the artifacts POST: the PA-only
     // resolve decides VISIBILITY (private-to-owner vs team-org), the
@@ -64,14 +64,14 @@ pub async fn post(
     let responsible: Option<String>;
     let mut agent_actor = false;
     match agent_caller(&state.pg, &headers).await {
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
         Ok(Some(caller)) => {
             agent_actor = true;
             if caller.model != model {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     "agents can only save from their own workspace",
-                );
+                ));
             }
             actor = caller.model.clone();
             // A personal assistant saves media FOR ITS OWNER — owned +
@@ -84,10 +84,7 @@ pub async fn post(
             .await
             {
                 Ok(o) => o,
-                Err(e) => {
-                    tracing::error!("[agent-media] owner lookup failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[agent-media] owner lookup failed", e)),
             };
             responsible = match talaria_attribution::responsible_user_for(
                 &state.pg,
@@ -97,26 +94,17 @@ pub async fn post(
             .await
             {
                 Ok(o) => o,
-                Err(e) => {
-                    tracing::error!("[agent-media] responsible-user lookup failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[agent-media] responsible-user lookup failed", e)),
             };
         }
         Ok(None) => {
-            let user = match require_user(&state, &headers).await {
-                Ok(u) => u,
-                Err(gate) => return gate,
-            };
+            let user = require_user(&state, &headers).await?;
             let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
                 Ok(g) => g,
-                Err(e) => {
-                    tracing::error!("[agent-media] gate read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[agent-media] gate read failed", e)),
             };
             if !gate(&model) {
-                return house_error(StatusCode::FORBIDDEN, "forbidden");
+                return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
             }
             actor = user
                 .email
@@ -129,25 +117,22 @@ pub async fn post(
     }
 
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let path = match string_member(obj, "path", 1, 1000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let title = match trimmed_optional(obj, "title", 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let mut folder_id = match optional_uuid_member(obj, "folderId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let folder = match trimmed_optional(obj, "folder", 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let media = match read_agent_image(&state.pg, &model, &path).await {
@@ -155,7 +140,7 @@ pub async fn post(
         Err(media) => {
             let status =
                 StatusCode::from_u16(media.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            return house_error(status, media.error);
+            return Ok(house_error(status, media.error));
         }
     };
 
@@ -168,19 +153,13 @@ pub async fn post(
             Ok(folders) => folders
                 .into_iter()
                 .find(|f| f.name.to_lowercase() == want.to_lowercase()),
-            Err(e) => {
-                tracing::error!("[agent-media] folder list failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent-media] folder list failed", e)),
         };
         folder_id = match existing {
             Some(f) => Some(f.id),
             None => match create_folder(&state.pg, want, None, &actor, None, Some("org")).await {
                 Ok(f) => Some(f.id),
-                Err(e) => {
-                    tracing::error!("[agent-media] folder create failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[agent-media] folder create failed", e)),
             },
         };
     }
@@ -203,10 +182,7 @@ pub async fn post(
     {
         Ok(u) => u,
         // a failed save carries to the framework's own 500.
-        Err(e) => {
-            tracing::error!("[agent-media] upload save failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent-media] upload save failed", e)),
     };
     let title = match title.filter(|t| !t.is_empty()) {
         Some(t) => t,
@@ -223,10 +199,7 @@ pub async fn post(
     .await
     {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[agent-media] artifact create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent-media] artifact create failed", e)),
     };
     // ORG-agent media is for the TEAM (a private no-owner artifact would be
     // invisible to humans) — keyed on the PA-only resolve, NOT the ladder:
@@ -252,10 +225,7 @@ pub async fn post(
     .await
     {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[agent-media] artifact save failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent-media] artifact save failed", e)),
     };
-    Json(json!({ "artifact": saved.unwrap_or(created) })).into_response()
+    Ok(Json(json!({ "artifact": saved.unwrap_or(created) })).into_response())
 }

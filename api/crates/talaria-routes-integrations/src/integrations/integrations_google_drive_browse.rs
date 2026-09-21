@@ -30,20 +30,24 @@ fn parse_drive_key(d: &str) -> Option<(&str, &str, &str)> {
     }
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let qp = query_pairs(uri.query());
     let Some(d) = qp.get("d").cloned() else {
-        return talaria_error::house_error(axum::http::StatusCode::BAD_REQUEST, "missing drive");
+        return Ok(talaria_error::house_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "missing drive",
+        ));
     };
     let Some((connection, kind, drive_id)) = parse_drive_key(&d) else {
-        return talaria_error::house_error(
+        return Ok(talaria_error::house_error(
             axum::http::StatusCode::BAD_REQUEST,
             "malformed drive key",
-        );
+        ));
     };
     let parent = qp.get("parent").cloned().filter(|p| !p.is_empty());
     let q = qp.get("q").cloned().filter(|q| !q.is_empty());
@@ -77,11 +81,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     let token = match token {
         Ok(t) => t,
-        Err(e) => return google_fail_with(e, "Drive", "drive_error"),
+        Err(e) => return Ok(google_fail_with(e, "Drive", "drive_error")),
     };
 
     // None browses a personal My Drive; the shared-drive id browses it.
     let shared_drive_id = (kind == "shared").then_some(drive_id);
+    Ok(
     match browse_drive_with_token(
         &token,
         parent.as_deref(),
@@ -95,5 +100,5 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     {
         Ok(page) => Json(json!({ "files": page.files, "nextPageToken": page.next_page_token, "path": page.path })).into_response(),
         Err(e) => google_fail_with(e, "Drive", "drive_error"),
-    }
+    })
 }

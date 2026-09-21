@@ -119,98 +119,10 @@ export const NOTIFY_CLASSES: ReadonlyArray<{
 
 export type NotifyPrefs = Record<NotifyClass, NotifyRoute>
 
-export function isNotifyRoute(v: unknown): v is NotifyRoute {
-  return v === 'in_app' || v === 'email' || v === 'both'
-}
-export function isNotifyClass(v: unknown): v is NotifyClass {
-  return typeof v === 'string' && NOTIFY_CLASSES.some((c) => c.id === v)
-}
-
-/** `kind` (what the writer called it) → the class a user has an opinion about.
- *  Kinds are free-form strings at ~10 call sites and predate this table; the
- *  map is how they stay free-form without every new one inventing a setting. */
-const KIND_CLASS: Readonly<Record<string, NotifyClass>> = {
-  // Someone pointed at you on purpose.
-  mention: 'mention',
-  'kb-comment': 'mention',
-  'task-assigned': 'mention',
-  'plan-share': 'mention',
-  'research-share': 'mention',
-  // Addressed to you, in a thread of your own.
-  dm: 'dm',
-  'agent-outreach': 'dm',
-  'agent-reply': 'dm',
-  // Blocked on a human.
-  'agent-problem': 'agent_blocked',
-  'workbench-repo-request': 'agent_blocked',
-  // Outcomes.
-  research: 'work_complete',
-  'task-status': 'work_complete',
-  board_access: 'work_complete',
-  // `judge_escalation` (server/judge.ts) and `gap_reported` (server/gaps.ts)
-  // are NOT in this table on purpose: their writers name the CLASS as the kind,
-  // which `notifyClassOf` accepts directly. A kind that is already the class it
-  // belongs to has nothing to map.
-}
-
-/** The class a notification belongs to. Every class id is also accepted as a
- *  kind, so a new writer can name the class directly and skip the table.
- *
- *  An UNRECOGNIZED kind lands in `work_complete` — the quiet bucket — on
- *  purpose: a notification kind added by someone who never opened this file
- *  must not start mailing the whole org because it fell through a default. */
-export function notifyClassOf(kind: string): NotifyClass {
-  return KIND_CLASS[kind] ?? (isNotifyClass(kind) ? kind : 'work_complete')
-}
-
-/** Fill a stored (partial, possibly hand-edited) prefs blob out to the full
- *  table, dropping anything that isn't a route we understand. */
-export function resolveNotifyPrefs(stored: unknown): NotifyPrefs {
-  const raw = (stored ?? {}) as Record<string, unknown>
-  return Object.fromEntries(
-    NOTIFY_CLASSES.map((c) => [c.id, isNotifyRoute(raw[c.id]) ? raw[c.id] : c.fallback]),
-  ) as NotifyPrefs
-}
-
-// ── The daily digest switch ──────────────────────────────────────────────────
-//
-// The digest is not a notification CLASS — it is one mail that SUMMARISES the
-// queues, so it has no `in_app` reading and does not belong in the table above.
-// It rides in the same `notify_prefs` jsonb blob under one reserved key, which
-// is why that key is declared here and not spelled as a string literal in the
-// three places that touch it (the settings panel, the API, server/digest.ts).
-
-/** The reserved key inside `users.notify_prefs`. Reserved: it can never be a
- *  class id, because a class id is also accepted as a notification kind and
- *  "digest" is not an event anything writes. */
-export const DIGEST_PREF_KEY = 'digest'
-
+/** The digest switch's own type. The reserved `notify_prefs` key it lives
+ *  under (`"digest"`) is the Rust api's now — `talaria-notify` owns the
+ *  vocabulary and the derived answer; the client renders what it is served. */
 export type DigestPref = 'on' | 'off'
-
-/** The EXPLICIT choice, or null when the person has never touched the switch.
- *  The distinction matters — see `digestEnabled`. */
-export function storedDigestPref(stored: unknown): DigestPref | null {
-  const v = ((stored ?? {}) as Record<string, unknown>)[DIGEST_PREF_KEY]
-  return v === 'on' || v === 'off' ? v : null
-}
-
-/** Does this person get the daily digest?
- *
- *  ONE definition, because two would be a lie on screen: the switch in Settings
- *  shows the answer this function gives, and the job sends on the answer this
- *  function gives. If they could disagree, a person who reads "Daily digest —
- *  On" and receives nothing has no way to find out which half is wrong.
- *
- *  An explicit choice wins outright, in both directions. With no explicit
- *  choice it is DERIVED, in the direction that cannot spam: someone who has
- *  routed every class to in-app has said as loudly as this app lets them "do
- *  not email me", so they are not mailed a digest either. */
-export function digestEnabled(stored: unknown): boolean {
-  const explicit = storedDigestPref(stored)
-  if (explicit) return explicit === 'on'
-  const table = resolveNotifyPrefs(stored)
-  return NOTIFY_CLASSES.some((c) => table[c.id] !== 'in_app')
-}
 
 export interface NotifySettings {
   prefs: NotifyPrefs

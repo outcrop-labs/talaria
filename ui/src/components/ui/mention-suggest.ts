@@ -1,3 +1,4 @@
+import { placeMenu } from '@/lib/menu-position'
 import { flushSync, mount, unmount } from 'svelte'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
@@ -10,7 +11,6 @@ import type { Mentionable } from '@/components/chat/mentions.svelte'
 // the old textarea composers' mention menu. Picks insert PLAIN TEXT "@token "
 // (the exact grammar the server notifies on and the Markdown renderer
 // highlights) — no special node, so the markdown round-trip is untouched.
-// Modeled on slash-commands.ts.
 
 function filterMentions(items: Mentionable[], query: string): Mentionable[] {
   const q = query.trim().toLowerCase()
@@ -24,17 +24,7 @@ interface MenuHandle {
   onKeyDown: (e: KeyboardEvent) => boolean
 }
 
-function place(el: HTMLElement, rect: DOMRect) {
-  const margin = 6
-  el.style.left = `${rect.left}px`
-  const below = rect.bottom + margin
-  const wouldOverflow = below + el.offsetHeight > window.innerHeight
-  if (wouldOverflow && rect.top - margin - el.offsetHeight > 0) {
-    el.style.top = `${rect.top - margin - el.offsetHeight}px`
-  } else {
-    el.style.top = `${below}px`
-  }
-}
+
 
 function buildSuggestion(items: () => Mentionable[]): Omit<SuggestionOptions<Mentionable>, 'editor'> {
   return {
@@ -66,10 +56,10 @@ function buildSuggestion(items: () => Mentionable[]): Omit<SuggestionOptions<Men
           menu = mount(MentionList, { target: popup }) as unknown as MenuHandle
           menu.update(props.items, (item: Mentionable) => props.command(item))
         }
-        // Render synchronously so place() can measure the popup's height.
+        // Render synchronously so placeMenu() can measure the popup's height.
         flushSync()
         const rect = props.clientRect?.()
-        if (popup && rect) place(popup, rect)
+        if (popup && rect) placeMenu(popup, rect)
       }
       return {
         onStart: ensure,

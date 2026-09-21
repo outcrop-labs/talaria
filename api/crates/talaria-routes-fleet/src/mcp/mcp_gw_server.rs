@@ -17,7 +17,8 @@ use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
 use talaria_api_facades::mcp::jsonrpc::rpc_error;
 use talaria_api_facades::mcp::registry::{effective_mcp_for, parse_mcp_response};
-use talaria_error::{house_error, thrown_internal_error, upstream_error_message};
+use talaria_error::{house_error, internal, upstream_error_message};
+use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
 use talaria_workspace_secrets::spend_handles_in_tool_call;
 
@@ -63,11 +64,8 @@ pub async fn post(
     Path(server_name): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     // Pass the CALLER, never `caller.model`. `subject_model`/`subject_proven`
     // read a bare string as PROVEN, so downgrading to the name here throws
     // away `legacy` — and this route is where that matters most: it resolves
@@ -76,22 +74,16 @@ pub async fn post(
     // unthreaded callee genuinely needs the string.
     let subject = AgentSubject::Caller(caller.clone());
     let name = caller.model.clone();
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp/gw] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[mcp/gw] secretbox unavailable").await?;
     let eff = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[mcp/gw] effective resolution failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp/gw] effective resolution failed", e)),
     };
     let Some(mut eff) = eff else {
-        return house_error(StatusCode::FORBIDDEN, "no access to this MCP server");
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "no access to this MCP server",
+        ));
     };
 
     let mut body_text = String::from_utf8_lossy(&body).into_owned();
@@ -101,7 +93,7 @@ pub async fn post(
     // The call gate: reject disallowed tools before the upstream ever
     // hears about them.
     if let Some(resp) = gate(rpc.as_ref(), eff.tools.as_ref()) {
-        return resp;
+        return Ok(resp);
     }
 
     // THE BOUNDARY THAT SPENDS A CREDENTIAL. An agent holds
@@ -119,10 +111,7 @@ pub async fn post(
     if let Some(rpc_mut) = rpc.as_mut() {
         let spend = match spend_handles_in_tool_call(&state.pg, &sb, rpc_mut, &name).await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[mcp/gw] spend boundary failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[mcp/gw] spend boundary failed", e)),
         };
         let tool = called_tool(Some(rpc_mut));
         for u in &spend.used {
@@ -161,10 +150,10 @@ pub async fn post(
             eff.tools.as_deref(),
         )
         .await;
-        return match out {
+        return Ok(match out {
             None => (status, Body::empty()).into_response(),
             Some(out) => (status, Json(out)).into_response(),
-        };
+        });
     }
 
     // Package servers (npm/pypi/oci from the marketplace): stdio packages
@@ -183,7 +172,7 @@ pub async fn post(
             let url =
                 match talaria_api_facades::mcp::pkg::ensure_http(&sb, &eff.server, &spec).await {
                     Ok(u) => u,
-                    Err(e) => return house_error(StatusCode::BAD_GATEWAY, &e),
+                    Err(e) => return Ok(house_error(StatusCode::BAD_GATEWAY, &e)),
                 };
             eff.server = talaria_api_facades::mcp::registry::McpServer {
                 url,
@@ -191,27 +180,29 @@ pub async fn post(
             };
         } else {
             let rpc_body = rpc.clone().unwrap_or_else(|| json!({}));
-            return match talaria_api_facades::mcp::pkg::pkg_call(
-                &state.pg,
-                &sb,
-                &eff.server,
-                &spec,
-                &rpc_body,
-            )
-            .await
-            {
-                Ok((status, out)) if out.is_null() => (
-                    StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
-                    Body::empty(),
+            return Ok(
+                match talaria_api_facades::mcp::pkg::pkg_call(
+                    &state.pg,
+                    &sb,
+                    &eff.server,
+                    &spec,
+                    &rpc_body,
                 )
-                    .into_response(),
-                Ok((status, out)) => (
-                    StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
-                    Json(out),
-                )
-                    .into_response(),
-                Err(e) => house_error(StatusCode::BAD_GATEWAY, &e),
-            };
+                .await
+                {
+                    Ok((status, out)) if out.is_null() => (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                        Body::empty(),
+                    )
+                        .into_response(),
+                    Ok((status, out)) => (
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                        Json(out),
+                    )
+                        .into_response(),
+                    Err(e) => house_error(StatusCode::BAD_GATEWAY, &e),
+                },
+            );
         }
     }
 
@@ -220,12 +211,12 @@ pub async fn post(
     // never-port surface). `app-*` servers live there, not here; a direct
     // hit answers the boundary sentence instead of pretending to dispatch.
     if let Some(app_slug) = &eff.server.app_slug {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_GATEWAY,
             &format!(
                 "app \"{app_slug}\" dispatches in-process through the app runtime, which stays TS by rule 10 (docs/RUST-MIGRATION.md)"
             ),
-        );
+        ));
     }
 
     // The builtin toolkit is a child of THIS process, spawned on demand —
@@ -253,10 +244,10 @@ pub async fn post(
             .await
             .is_err()
     {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_GATEWAY,
             "upstream URL refused (not a reachable external address)",
-        );
+        ));
     }
 
     // Header assembly order: content-type, accept,
@@ -305,10 +296,10 @@ pub async fn post(
                 "unreachable",
                 &e.to_string(),
             );
-            return house_error(StatusCode::BAD_GATEWAY, "upstream unreachable");
+            return Ok(house_error(StatusCode::BAD_GATEWAY, "upstream unreachable"));
         }
     };
-    relay(upstream, rpc.as_ref(), eff.tools.as_deref(), &server_name).await
+    Ok(relay(upstream, rpc.as_ref(), eff.tools.as_deref(), &server_name).await)
 }
 
 /// GET — the streamable-HTTP notification stream (server → client): plain
@@ -317,33 +308,24 @@ pub async fn get(
     State(state): State<AppState>,
     Path(server_name): Path<String>,
     headers: HeaderMap,
-) -> Response {
-    let caller = match require_agent(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, &headers).await?;
     // Same rule as POST: the caller carries the proof, the string does not.
     let subject = AgentSubject::Caller(caller);
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp/gw] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[mcp/gw] secretbox unavailable").await?;
     let eff = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[mcp/gw] effective resolution failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp/gw] effective resolution failed", e)),
     };
     let Some(mut eff) = eff else {
-        return house_error(StatusCode::FORBIDDEN, "no access to this MCP server");
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "no access to this MCP server",
+        ));
     };
     // App servers have no notification stream — decline politely.
     if eff.server.app_slug.is_some() {
-        return (StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response();
+        return Ok((StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response());
     }
     // A stdio package has no notification stream either; an oci-http one
     // relays to its container's resolved URL.
@@ -357,14 +339,14 @@ pub async fn get(
             let url =
                 match talaria_api_facades::mcp::pkg::ensure_http(&sb, &eff.server, &spec).await {
                     Ok(u) => u,
-                    Err(e) => return house_error(StatusCode::BAD_GATEWAY, &e),
+                    Err(e) => return Ok(house_error(StatusCode::BAD_GATEWAY, &e)),
                 };
             eff.server = talaria_api_facades::mcp::registry::McpServer {
                 url,
                 ..eff.server.clone()
             };
         } else {
-            return (StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response();
+            return Ok((StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response());
         }
     }
     // Same heal as POST: the builtin child may not be up when the client
@@ -381,10 +363,10 @@ pub async fn get(
             .await
             .is_err()
     {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_GATEWAY,
             "upstream URL refused (not a reachable external address)",
-        );
+        ));
     }
     let hdr = |name: &'static str| {
         headers
@@ -415,7 +397,7 @@ pub async fn get(
                 "unreachable",
                 &e.to_string(),
             );
-            return house_error(StatusCode::BAD_GATEWAY, "upstream unreachable");
+            return Ok(house_error(StatusCode::BAD_GATEWAY, "upstream unreachable"));
         }
     };
     // A failed notification-stream hop relays the same way as POST: fixed
@@ -424,10 +406,10 @@ pub async fn get(
     if !(200..300).contains(&status) {
         let text = upstream.text().await.unwrap_or_default();
         talaria_error::log_upstream_error(&format!("mcp-gw-get:{server_name}"), status, &text);
-        return house_error(
+        return Ok(house_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
             &upstream_error_message(status),
-        );
+        ));
     }
     let ct = upstream
         .headers()
@@ -435,11 +417,11 @@ pub async fn get(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("text/event-stream")
         .to_string();
-    Response::builder()
+    Ok(Response::builder()
         .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
         .header(header::CONTENT_TYPE, ct)
         .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|_| thrown_internal_error())
+        .unwrap_or_else(|e| internal("[fleet] response build failed", e)))
 }
 
 async fn relay(
@@ -493,11 +475,11 @@ async fn relay(
         let out = filter_bodies(&text, allowed, &content_type);
         return builder
             .body(Body::from(out))
-            .unwrap_or_else(|_| thrown_internal_error());
+            .unwrap_or_else(|e| internal("[fleet] response build failed", e));
     }
     builder
         .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|_| thrown_internal_error())
+        .unwrap_or_else(|e| internal("[fleet] response build failed", e))
 }
 
 /// The tools/list filter over JSON or SSE-framed text: `data:` lines are

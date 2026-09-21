@@ -25,24 +25,24 @@ pub async fn post(
     // the gate first and folds it into the `no file` answer every read
     // failure takes.
     multipart: Result<Multipart, axum::extract::multipart::MultipartRejection>,
-) -> Response {
-    let user = match require_perm(&state, &headers, "files.upload").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "files.upload").await?;
     let multipart = match multipart {
         Ok(m) => m,
-        Err(_) => return house_error(StatusCode::BAD_REQUEST, "no file"),
+        Err(_) => return Ok(house_error(StatusCode::BAD_REQUEST, "no file")),
     };
     let read = read_upload_form(&headers, multipart).await;
     let (filename, mime, bytes) = match read {
         FormRead::TooLarge => {
-            return house_error(StatusCode::PAYLOAD_TOO_LARGE, "file too large (max 25 MB)");
+            return Ok(house_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file too large (max 25 MB)",
+            ));
         }
         // Malformed and NoFile both answer `no file` — the distinction is for
         // the log line, not the wire.
         FormRead::Malformed | FormRead::NoFile => {
-            return house_error(StatusCode::BAD_REQUEST, "no file");
+            return Ok(house_error(StatusCode::BAD_REQUEST, "no file"));
         }
         FormRead::File(name, mime, bytes) => (name, mime, bytes),
     };
@@ -57,15 +57,17 @@ pub async fn post(
         mime
     };
     let sb = state.secretbox().await.unwrap_or_default();
-    match save_upload(&state.pg, &sb, &filename, &mime, &bytes, Some(&user.id)).await {
-        // The attachment object itself, not wrapped.
-        Ok(att) => Json(att).into_response(),
-        // Storage faults and row faults are the server's, not the request's:
-        // a blob that cannot be written or recorded is a 500, never a 400
-        // blaming a body that was fine.
-        Err(msg) => {
-            tracing::error!("[uploads] save failed: {msg}");
-            house_error(StatusCode::INTERNAL_SERVER_ERROR, "upload failed")
-        }
-    }
+    Ok(
+        match save_upload(&state.pg, &sb, &filename, &mime, &bytes, Some(&user.id)).await {
+            // The attachment object itself, not wrapped.
+            Ok(att) => Json(att).into_response(),
+            // Storage faults and row faults are the server's, not the request's:
+            // a blob that cannot be written or recorded is a 500, never a 400
+            // blaming a body that was fine.
+            Err(msg) => {
+                tracing::error!("[uploads] save failed: {msg}");
+                house_error(StatusCode::INTERNAL_SERVER_ERROR, "upload failed")
+            }
+        },
+    )
 }
