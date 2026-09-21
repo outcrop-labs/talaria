@@ -126,11 +126,6 @@ export type InboxCommandEvent =
   | { type: 'done'; conversationId: string; entry: InboxTimelineEntry; result?: FocusCommandResponse }
   | { type: 'error'; message: string }
 
-export interface RawFocusItem extends FocusItem {
-  bucket: number
-  sourceFingerprint: string
-}
-
 export interface FocusCounts {
   total: number
   approvals: number

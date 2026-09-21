@@ -6,15 +6,11 @@
 //   if (gate instanceof Response) return gate
 //   const user = gate
 //
-// requirePerm (permission catalog) lives in ./permissions and follows the
-// same contract. parseBody standardizes zod validation + the 400 shape;
-// actorOf standardizes audit-actor derivation.
 import { json } from '@/server/http'
 import type { z } from 'zod'
 import { getSessionUser, type SessionUser } from './auth/session'
 import { deniedViews } from './users'
 
-export { requirePerm } from './permissions'
 export type { SessionUser }
 
 /** Signed-in user or 401. */

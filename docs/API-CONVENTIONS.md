@@ -28,7 +28,7 @@ Every session route opens with exactly one of these; each returns the user or a 
 ```ts
 const user = await requireUser(request)         // signed-in
 const user = await requireAdmin(request)        // role admin
-const user = await requirePerm(request, 'agents.manage')  // permission catalog
+const user = await requirePerm(request, 'agents.manage')  // permission catalog (Rust: require_perm)
 const user = await requireView(request, '/observability') // admin OR granted the view
 if (user instanceof Response) return user
 ```
