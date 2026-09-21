@@ -1,7 +1,11 @@
 # Talaria — prebuilt-image override. Layer ON TOP of the base file:
 #
-#   docker compose -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
-#   docker compose -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
+#   docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
+#   docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
+#
+# (The sidecar plane comes FIRST, as in every other stack invocation — see
+# docker/sidecars.compose.yml. An operator driving the COMPOSE_FILE env
+# instead has to spell the same three files, colon-separated.)
 #
 # WHY AN OVERRIDE AND NOT AN EDIT TO docker/compose.yml. The base file's
 # contract is "a checkout builds the image it runs", and that path stays

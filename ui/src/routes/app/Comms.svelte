@@ -10,7 +10,7 @@
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
   import { alert, confirm, prompt } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { openCopyItems, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Rail from '@/components/app/Rail.svelte'
   import RailRow from '@/components/app/RailRow.svelte'
@@ -241,8 +241,7 @@
   }
 
   const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
-    { label: 'Open', onSelect: () => setSel({ t: 'channel', id: c.id }) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/comms/channel/${c.id}`) },
+    ...openCopyItems(`/comms/channel/${c.id}`, () => setSel({ t: 'channel', id: c.id })),
     { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
   ]
 
@@ -472,8 +471,7 @@
                   class="contents"
                   oncontextmenu={(e) =>
                     menu.openMenu(e, [
-                      { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
-                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms/agent/${a.id}/${c.id}`) },
+                      ...openCopyItems(`/comms/agent/${a.id}/${c.id}`, () => setSel({ t: 'agent', model: a.id, conversationId: c.id })),
                       // Clear the pill without opening: an absent seq tells the
                       // server "the thread's latest", so this needs no load —
                       // and that whole-thread read clears the bell rows too.

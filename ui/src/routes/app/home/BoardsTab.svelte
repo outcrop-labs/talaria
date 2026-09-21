@@ -8,7 +8,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, openCopyItems, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { cn } from '@/lib/cn'
   import ActivityList from './ActivityList.svelte'
@@ -90,8 +90,7 @@
               onclick={() => void navigate('/boards/:boardId/:taskId', { params: { boardId: w.boardId, taskId: w.id } })}
               oncontextmenu={(e) =>
                 menu.openMenu(e, [
-                  { label: 'Open', onSelect: () => void navigate('/boards/:boardId/:taskId', { params: { boardId: w.boardId, taskId: w.id } }) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/boards/${w.boardId}/${w.id}`) },
+                  ...openCopyItems(`/boards/${w.boardId}/${w.id}`, () => void navigate('/boards/:boardId/:taskId', { params: { boardId: w.boardId, taskId: w.id } })),
                   ...(w.ticketRef
                     ? ([
                         { label: 'Copy ticket ref', onSelect: () => void navigator.clipboard.writeText(w.ticketRef!) },

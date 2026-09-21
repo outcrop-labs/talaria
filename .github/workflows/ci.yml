@@ -112,17 +112,21 @@
 #   longer exists passes forever.
 #
 # NOTES FOR WHOEVER TOUCHES THIS NEXT
-#   - The Bun version is pinned HERE and in the root package.json's
-#     `packageManager` field. Move the two together.
-#   - The Rust version is pinned in THREE places that must move together:
-#     api/rust-toolchain.toml (the source of truth — cargo honors it
-#     everywhere), the api job's dtolnay action ref below (installs the
-#     toolchain + components before cargo first runs), and the rustup line
-#     in docker/devbox.Dockerfile. sqlx 0.9's MSRV is the floor; pinning
-#     rather than tracking stable is what keeps devbox/CI/host one toolchain.
-#   - Node 22 is a hard floor, not a preference: vite 7 declares
-#     `^20.19.0 || >=22.12.0`. If you add a .nvmrc at the repo root, switch this
-#     to `node-version-file:` so there is one source of truth.
+#   - The Bun, Node and Rust versions are pinned ONCE, in
+#     `.github/actions/setup-runtime/action.yml` — which is why
+#     `.github/actions/**` is in every `surface` list below. Move them THERE,
+#     and also:
+#       - Bun's other home is the root package.json's `packageManager` field.
+#       - Rust's other homes are api/rust-toolchain.toml and
+#         desktop/src-tauri/rust-toolchain.toml (the source of truth — cargo
+#         honors them everywhere) and the rustup line in
+#         docker/devbox.Dockerfile. sqlx 0.9's MSRV is the floor; pinning
+#         rather than tracking stable is what keeps devbox/CI/host one
+#         toolchain.
+#       - Node 22 is a hard floor, not a preference: vite 7 declares
+#         `^20.19.0 || >=22.12.0`. If you add a .nvmrc at the repo root, switch
+#         the action's node step to `node-version-file:` so there is one source
+#         of truth.
 #   - `bun install --frozen-lockfile` makes bun.lock authoritative: a drifting
 #     ui/package.json fails here instead of silently resolving to something
 #     else. package-lock.json is ALSO committed, for the npm holdouts during
@@ -259,14 +263,15 @@ jobs:
             echo "  $name: $on"
           }
 
-          # The workflow file is in EVERY list on purpose: an edit here changes
-          # what these jobs are, so the run that carries it should exercise all
-          # of them.
-          surface ui      'ui/*' 'apps/*' '.github/workflows/ci.yml'
-          surface mcp     'mcp/*' '.github/workflows/ci.yml'
-          surface cli     'cli/*' '.github/workflows/ci.yml'
-          surface api     'api/*' '.github/workflows/ci.yml'
-          surface desktop 'desktop/*' '.github/workflows/ci.yml'
+          # The workflow file and the composite action every job installs
+          # through are in EVERY list on purpose: an edit to either changes
+          # what these jobs are, so the run that carries it should exercise
+          # all of them.
+          surface ui      'ui/*' 'apps/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface mcp     'mcp/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface cli     'cli/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface api     'api/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface desktop 'desktop/*' '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
@@ -283,10 +288,12 @@ jobs:
           # tag) when release.yml drives this file.
           ref: ${{ inputs.ref || github.ref }}
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-runtime
         with:
-          bun-version: '1.4.0'
-          # No dependency cache on purpose — there is nothing to install.
+          # Bun only: this job installs nothing, and neither toolchain below
+          # is used here.
+          node: ''
+          rust: ''
 
       # Reads ui/src and mcp/src. Every failure names the file, the line, and
       # the thing to write instead; if you think a match is a false positive,
@@ -313,22 +320,13 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      # See "WHY BUN *AND* NODE" in the header: bun installs and drives, node
-      # executes the toolchain shebangs.
-      - uses: oven-sh/setup-bun@v2
+      # Bun installs and drives, Node executes the toolchain shebangs (see
+      # "WHY BUN *AND* NODE" in the header); no Rust in this job. The install's
+      # `--frozen-lockfile` makes bun.lock authoritative.
+      - uses: ./.github/actions/setup-runtime
         with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-          # No `cache:` on purpose — bun owns the install; npm has nothing
-          # installed and nothing to cache.
-
-      # `--frozen-lockfile` so bun.lock is authoritative and a drifting
-      # package.json fails here instead of silently resolving to something else.
-      - name: Install
-        run: bun install --frozen-lockfile
+          rust: ''
+          install-dir: ui
 
       # TESTS FIRST, and the order is a decision rather than a coin toss. The
       # unit suite runs in seconds and its failures name a behavior ("the runner
@@ -370,16 +368,10 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-runtime
         with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-
-      - name: Install
-        run: bun install --frozen-lockfile
+          rust: ''
+          install-dir: mcp
 
       - name: Typecheck
         run: bun run typecheck
@@ -415,16 +407,10 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-runtime
         with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-
-      - name: Install
-        run: bun install --frozen-lockfile
+          rust: ''
+          install-dir: cli
 
       - name: Typecheck
         run: bun run typecheck
@@ -466,14 +452,16 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      # 1.97.1, not stable, for the reason the header's NOTES give: the crate
-      # pins it in rust-toolchain.toml and devboxes install the same one, so
-      # CI must not drift ahead of the environments the port runs in. The
-      # action ref also installs the components; the toolchain pin itself is
+      # Rust only: the pinned toolchain (not stable), for the reason the
+      # header's NOTES give — the crate pins it in rust-toolchain.toml and
+      # devboxes install the same one, so CI must not drift ahead of the
+      # environments the port runs in. The action installs rustfmt + clippy,
+      # which the fmt/clippy gates below need; the toolchain pin itself is
       # honored by rustup from the checked-out rust-toolchain.toml.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: ./.github/actions/setup-runtime
         with:
-          components: rustfmt, clippy
+          bun: ''
+          node: ''
 
       # The ONE actions/cache use in this file (see the header's amended "no
       # cache" note): cargo's cold build of the dependency tree is minutes on
@@ -523,11 +511,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      # Same pin, same reason as the api job: desktop/src-tauri/rust-toolchain.toml
-      # pins 1.97.1 and devboxes install the same one.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      # Rust (+ rustfmt/clippy) and Bun + Node, then the frozen desktop install —
+      # desktop/src-tauri/rust-toolchain.toml pins the same toolchain and
+      # devboxes install the same one.
+      - uses: ./.github/actions/setup-runtime
         with:
-          components: rustfmt, clippy
+          install-dir: desktop
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -541,20 +530,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev
-
-      # See "WHY BUN *AND* NODE" in the header: bun installs and drives, node
-      # executes the toolchain shebangs (svelte-check here).
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-
-      - name: Install
-        working-directory: desktop
-        run: bun install --frozen-lockfile
 
       - name: Format
         working-directory: desktop/src-tauri

@@ -17,6 +17,10 @@
 // plain node environment, which has no Svelte plugin and cannot load
 // `@tanstack/svelte-query`.
 import type { ChipTone } from '@/components/ui/chip'
+// The ONE value import here, and it is safe for the reason the header gives:
+// `@/lib/format` imports nothing at all, so it drags no driver, no database and
+// no harness runner into the browser — only the shared spellings.
+import { formatUsd } from '@/lib/format'
 import type { Capability } from '@/server/harness/capability'
 // The wire types, straight from the module that shapes them: `fitness-wire`
 // holds the contract the Rust twin serves (RUST-MIGRATION.md, R21).
@@ -58,8 +62,9 @@ import type {
  *  whole point of the header above: a value import from the sweep engine drags
  *  the driver — and with it the database, the harness runner and the guard
  *  registry — into the browser bundle. The Models route stopped loading the
- *  moment one appeared. Every other import in this file is `import type` for
- *  that reason.
+ *  moment one appeared. Every import of the sweep engine in this file is
+ *  `import type` for that reason; the lone value import, `@/lib/format`, pulls
+ *  in nothing of its own.
  *
  *  The authority is the Rust twin (`api/src/fitness/evals.rs`), which pins the
  *  value in its own tests; this copy is what the modal opens with. */
@@ -494,14 +499,14 @@ export function speedTitle(s: SpeedReading | null): string {
     .join('\n')
 }
 
-/** Dollars at a scale a fitness run actually costs. A run is often cents, and
- *  "$0.00" for a real four-cent spend is the kind of rounding that makes an
- *  admin distrust every other number on the page. */
+/** Dollars at a scale a fitness run actually costs. The spelling is shared
+ *  (`formatUsd` in `@/lib/format`); the model surfaces take its
+ *  `unpricedAsWord` variant, where an unpriced model reads as a word and a
+ *  sub-cent spend floors at "<$0.01" rather than printing four decimals. Kept
+ *  as its own exported name because three panels and this module's test import
+ *  it that way — and the flag is why it cannot be a plain alias. */
 export function usd(n: number | null): string {
-  if (n === null) return 'unpriced'
-  if (n === 0) return '$0'
-  if (n < 0.01) return '<$0.01'
-  return `$${n.toFixed(2)}`
+  return formatUsd(n, { unpricedAsWord: true })
 }
 
 export const TIER_META: Record<TierId, { label: string; blurb: string }> = {

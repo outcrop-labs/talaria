@@ -10,6 +10,7 @@
 <script lang="ts">
   import { p } from '@/router'
   import { slide } from '@/lib/motion'
+  import { readText, writeText } from '@/lib/persist'
   import { useSession } from '@/lib/session'
   import { useSecretHealth } from '@/lib/secrets'
 
@@ -24,7 +25,7 @@
   // Read after mount: the server has no localStorage, and rendering the banner
   // on the server only to remove it on hydration is a visible flash.
   $effect(() => {
-    dismissed = localStorage.getItem(DISMISS_KEY)
+    dismissed = readText(DISMISS_KEY)
   })
 
   const data = $derived(health.data)
@@ -37,7 +38,7 @@
 
   const dismiss = () => {
     if (situation === null) return
-    localStorage.setItem(DISMISS_KEY, situation)
+    writeText(DISMISS_KEY, situation)
     dismissed = situation
   }
 </script>

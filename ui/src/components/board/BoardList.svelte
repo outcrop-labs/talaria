@@ -6,7 +6,6 @@
   import RunDetailModal from './RunDetailModal.svelte'
   import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
   import { archiveTask, prefetchTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards.svelte'
   import { assigneeInfo, userAssignee } from '@/lib/assignees'
@@ -28,6 +27,7 @@
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import SortHeader from '@/components/ui/SortHeader.svelte'
   import { cn } from '@/lib/cn'
   import { warmRoute } from '@/lib/warm-route'
   import { fade, listStagger, QUICK } from '@/lib/motion'
@@ -408,19 +408,14 @@
               </th>
               {#each cols as c (c.key)}
                 <th class={cn('px-3 py-2 font-medium', c.align === 'right' ? 'text-right' : 'text-left')}>
-                  <button
+                  <SortHeader
+                    active={sort.key === c.key}
+                    dir={sort.dir}
+                    class={cn('inline-flex', c.align === 'right' && 'flex-row-reverse')}
                     onclick={() => onSort(c.key)}
-                    class={cn(
-                      'inline-flex items-center gap-1 uppercase tracking-[0.08em] transition-colors hover:text-fg',
-                      sort.key === c.key ? 'text-fg' : 'text-ink-dim',
-                      c.align === 'right' && 'flex-row-reverse',
-                    )}
                   >
                     {c.label}
-                    {#if sort.key === c.key}
-                      {#if sort.dir === 'asc'}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
-                    {/if}
-                  </button>
+                  </SortHeader>
                 </th>
               {/each}
               <th class="w-8 py-1 pr-2 text-right">

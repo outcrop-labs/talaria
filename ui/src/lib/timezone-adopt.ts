@@ -10,20 +10,14 @@
 // adoption re-runs, and its guard (`timezone === null`) is already false by
 // then — the PUT is idempotent, not a loop.
 
+import { readFlag, writeFlag } from '@/lib/persist'
+
 const key = (userId: string) => `talaria.tz.adopted.${userId}`
 
 export function hasAdopted(userId: string): boolean {
-  try {
-    return localStorage.getItem(key(userId)) === '1'
-  } catch {
-    return false
-  }
+  return readFlag(key(userId))
 }
 
 export function markTimezoneAdopted(userId: string): void {
-  try {
-    localStorage.setItem(key(userId), '1')
-  } catch {
-    // Private window / storage disabled — see the header.
-  }
+  writeFlag(key(userId), true)
 }

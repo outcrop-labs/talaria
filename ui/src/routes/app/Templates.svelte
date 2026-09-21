@@ -11,7 +11,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
   import { fly, staggerIn } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { claimViewTitle } from '@/lib/view-title.svelte'
@@ -135,8 +135,7 @@
           notice={read.notice}
           onRowMenu={(e: MouseEvent, t: Template) =>
             menu.openMenu(e, [
-              { label: 'Open', onSelect: () => select(t.id) },
-              { label: 'Copy link', onSelect: () => copyAppLink(`/templates/${t.kind}?t=${t.id}`) },
+              ...openCopyItems(`/templates/${t.kind}?t=${t.id}`, () => select(t.id)),
               'sep',
               { label: 'Delete', danger: true, onSelect: () => void remove(t) },
             ])}

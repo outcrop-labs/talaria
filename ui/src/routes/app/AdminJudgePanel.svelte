@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -45,24 +45,20 @@
     title="QA judge"
     info="When an agent hands a ticket to quality review, a judge model reviews the reported work and posts a verdict (pass / revise / escalate) with specific issues. Enforcing: bad submissions never sit in QA. Revise verdicts bounce straight back to the agent with the issues (capped, then a human takes over). Advisory: verdicts only, the human decides. Pick a strong model for the sharpest review."
   />
-  {#if query.isPending}
-    <!-- The checkbox and model select seed from the query — hold the whole
-         control row so nothing renders unchecked and then flips. -->
-    <div class="flex flex-wrap items-center gap-3">
-      <Skeleton class="h-4 w-4" />
-      <Skeleton class="h-3 w-52 rounded-full" />
-      <Skeleton class="h-8 w-64" />
-    </div>
-  {:else if !data}
-    <!-- The controls seed from the response, so a failed read renders the
-         judge as OFF — and the first click would then save it off for real. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load the judge configuration"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load the judge configuration" errorVariant="compact">
+    {#snippet skeleton()}
+      <!-- The checkbox and model select seed from the query — hold the whole
+           control row so nothing renders unchecked and then flips. -->
+      <div class="flex flex-wrap items-center gap-3">
+        <Skeleton class="h-4 w-4" />
+        <Skeleton class="h-3 w-52 rounded-full" />
+        <Skeleton class="h-8 w-64" />
+      </div>
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- The controls seed from the response, so a failed read must never render
+         them: it would show the judge as OFF, and the first click would then
+         save it off for real. QueryState's error branch holds that. -->
     <div class="flex flex-wrap items-center gap-3">
       <Checkbox
         class="gap-2 text-sm text-fg"
@@ -88,6 +84,7 @@
       </div>
       {#if savedFlash.saved}<span class="text-xs text-success">Saved</span>{/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
   <p class="mt-3 text-[11px] text-muted">Per-board override lives on each board (enforcing / advisory / off); boards on "inherit" follow this stance.</p>
 </Panel>

@@ -8,8 +8,9 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, waitFor } from '../compose'
+import { compose, stackComposeFiles, waitFor } from '../compose'
 import { envValue } from '../envfile'
+import { PG_CONTAINER } from '../containers'
 import { NAME_RE, portTaken } from '../paths'
 
 /** The shared port slot: first c in 1..89 with app/pg/redis (53xx/56xx/65xx)
@@ -44,7 +45,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   if (!existsSync(join(root, 'ui/.env'))) {
     ctx.log.die('run `bun talaria setup` in the main checkout first (need ui/.env)')
   }
-  const mainPgc = ctx.env.TALARIA_PG_CONTAINER ?? 'talaria-postgres-dev'
+  const mainPgc = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
   try {
     await ctx.exec('docker', ['inspect', mainPgc])
   } catch {
@@ -75,7 +76,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   // bug; its own header says the worktree owns "its own Postgres + Redis").
   // The worktree app reaches main's sidecars via the TALARIA_*_URL lines that
   // ride in ui/.env below.
-  if ((await compose(ctx, { files: [join(root, 'docker/dev-compose.yml')], project }, ['up', '-d', 'postgres', 'redis'])) !== 0) {
+  if ((await compose(ctx, { files: stackComposeFiles(root, 'docker/dev-compose.yml'), project }, ['up', '-d', 'postgres', 'redis'])) !== 0) {
     ctx.log.die('worktree infra failed to start')
   }
   await waitFor(

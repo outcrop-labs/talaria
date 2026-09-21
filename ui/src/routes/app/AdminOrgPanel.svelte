@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
@@ -49,30 +49,26 @@
     this team, and saving here rolls running agents (a fresh container comes up and traffic cuts over only once
     it's healthy), so your agents speak the new identity without interrupting anyone's conversation.
   </p>
-  {#if query.isPending}
-    <!-- Hold the form's footprint until settings land, so the fields never
-         render blank and then fill in. -->
-    <div class="space-y-3">
-      <div>
-        <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" />
-        <Skeleton class="h-9 w-full max-w-xs" />
+  <QueryState query={query} errorTitle="Could not load your organization" errorVariant="compact">
+    {#snippet skeleton()}
+      <!-- Hold the form's footprint until settings land, so the fields never
+           render blank and then fill in. -->
+      <div class="space-y-3">
+        <div>
+          <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" />
+          <Skeleton class="h-9 w-full max-w-xs" />
+        </div>
+        <div>
+          <Skeleton class="mb-1.5 h-2.5 w-40 rounded-full" />
+          <Skeleton class="h-14 w-full" />
+        </div>
       </div>
-      <div>
-        <Skeleton class="mb-1.5 h-2.5 w-40 rounded-full" />
-        <Skeleton class="h-14 w-full" />
-      </div>
-    </div>
-  {:else if !data}
-    <!-- A failed read used to render the identity form BLANK. Typing one word
-         into it made it dirty, and Save then wrote an empty business name and
-         description over the real ones — and rolled the whole fleet onto them. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load your organization"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- QueryState's error branch holds a failed read: the identity form used
+         to render BLANK there. Typing one word into it made it dirty, and Save
+         then wrote an empty business name and description over the real ones —
+         and rolled the whole fleet onto them. -->
     <div class="space-y-3">
       <div>
         <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Business name</label>
@@ -96,5 +92,6 @@
         </Button>
       </div>
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

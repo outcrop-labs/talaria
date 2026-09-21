@@ -19,7 +19,7 @@
   import LabelPicker from '@/components/board/LabelPicker.svelte'
   import ChannelView from '@/components/chat/ChannelView.svelte'
   import { useAgents } from '@/lib/agents'
-  import { formatCost, formatTokens } from '@/lib/cost.svelte'
+  import { fmtDuration, formatTokens, formatUsd } from '@/lib/format'
   import { useSession } from '@/lib/session'
   import {
     addDependency,
@@ -225,16 +225,6 @@
   // parent; a child shows its parent with a promote control.
   const parentTask = $derived(t?.parentId ? boardTasks.find((bt) => bt.id === t.parentId) : undefined)
   const subTasks = $derived(t ? boardTasks.filter((bt) => bt.parentId === t.id) : [])
-
-  /** Accumulated agent time → compact "2h 15m" / "45m" / "30s" / "—". */
-  function formatDuration(seconds: number): string {
-    if (!seconds) return '—'
-    const h = Math.floor(seconds / 3600)
-    const m = Math.floor((seconds % 3600) / 60)
-    if (h) return m ? `${h}h ${m}m` : `${h}h`
-    if (m) return `${m}m`
-    return `${seconds}s`
-  }
 </script>
 
 <!-- The one Modal primitive (fixed height + unpadded): the ticket detail is
@@ -534,7 +524,7 @@
           </div>
           <div class="grid grid-cols-2 gap-2">
             <Prop label="Time spent">
-              <div class="flex h-9 items-center text-sm text-fg">{formatDuration(t.timeSpentSeconds)}</div>
+              <div class="flex h-9 items-center text-sm text-fg">{fmtDuration(t.timeSpentSeconds)}</div>
             </Prop>
           </div>
           <!-- Agent-reported token spend (MCP log_usage) — priced like the ledger. -->
@@ -543,13 +533,13 @@
               <div class="space-y-1 text-sm text-fg">
                 <div>
                   {formatTokens(data!.usage.promptTokens + data!.usage.completionTokens)}
-                  {#if data!.usage.cost > 0}<span class="text-muted"> · {formatCost(data!.usage.cost)}</span>{/if}
+                  {#if data!.usage.cost > 0}<span class="text-muted"> · {formatUsd(data!.usage.cost)}</span>{/if}
                   {#if data!.usage.unpricedTokens > 0}<span class="text-muted"> · partly unpriced</span>{/if}
                 </div>
                 {#each data!.usage.perModel as m (m.llmModel ?? '?')}
                   <div class="truncate text-xs text-muted">
                     {m.llmModel ?? 'unattributed'} · {formatTokens(m.tokens)}
-                    {m.cost !== null && m.cost > 0 ? ` · ${formatCost(m.cost)}` : ''}
+                    {m.cost !== null && m.cost > 0 ? ` · ${formatUsd(m.cost)}` : ''}
                   </div>
                 {/each}
               </div>

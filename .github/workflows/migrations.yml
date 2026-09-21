@@ -44,6 +44,7 @@ on:
       - 'ui/scripts/migrate-file.ts'
       - 'ui/package.json'
       - '.github/workflows/migrations.yml'
+      - '.github/actions/**'
   push:
     branches: [main, rc, testing]
     paths:
@@ -52,6 +53,7 @@ on:
       - 'ui/scripts/migrate-file.ts'
       - 'ui/package.json'
       - '.github/workflows/migrations.yml'
+      - '.github/actions/**'
 
 concurrency:
   group: migrations-${{ github.ref }}
@@ -62,11 +64,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-runtime
         with:
-          bun-version: '1.4.0'
+          # Bun only; the ui install is the workspace the replay runs in.
+          node: ''
+          rust: ''
+          install-dir: ui
 
       - name: Start scratch postgres 16
         run: |
@@ -78,10 +83,6 @@ jobs:
             sleep 1
           done
           echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1
-
-      - name: Install
-        working-directory: ui
-        run: bun install --frozen-lockfile
 
       - name: Replay the full migration array
         working-directory: ui

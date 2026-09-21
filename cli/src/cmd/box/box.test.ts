@@ -348,11 +348,19 @@ describe('box compose spec', () => {
     const { root, box } = makeBox('demo')
     const ctx = fakeCtx()
     ctx.root = root
-    expect(boxComposeSpec(ctx, 'demo').files).toHaveLength(1)
+    // The shared sidecar plane FIRST, then this box's template — the order the
+    // merge depends on (see SIDECARS_COMPOSE).
+    expect(boxComposeSpec(ctx, 'demo').files).toEqual([
+      join(root, 'docker/sidecars.compose.yml'),
+      join(root, 'docker/devbox.compose.yml'),
+    ])
     writeFileSync(join(box, 'compose.override.yml'), 'services: {}\n')
     const spec = boxComposeSpec(ctx, 'demo')
-    expect(spec.files).toHaveLength(2)
-    expect(spec.files[1]).toBe(join(box, 'compose.override.yml'))
+    expect(spec.files).toEqual([
+      join(root, 'docker/sidecars.compose.yml'),
+      join(root, 'docker/devbox.compose.yml'),
+      join(box, 'compose.override.yml'),
+    ])
     expect(spec.project).toBe('devbox-demo')
     expect(spec.envFile).toBe(join(box, 'compose.env'))
   })
