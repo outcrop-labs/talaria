@@ -11,8 +11,7 @@
     setBoardJudgeMode,
     type Board,
   } from '@/lib/boards.svelte'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import TemplatesSection from './TemplatesSection.svelte'
 
   // The General tab of BoardSettingsModal.svelte (module-private there in
@@ -48,7 +47,7 @@
     } catch (e) {
       // Rename rejects now; the field would otherwise snap back on refetch
       // with no sentence, which is the silent failure this sweep removes.
-      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Rename failed', e)
       return
     }
     void refreshBoards()
@@ -76,7 +75,7 @@
         try {
           await setBoardJudgeMode(board.id, e.currentTarget.value as 'inherit' | 'off' | 'advisory' | 'enforcing')
         } catch (err) {
-          pushToast({ title: 'Could not change judge mode', body: errorMessage(err), tone: 'danger' })
+          toastError('Could not change judge mode', err)
           return
         }
         void refreshBoards()
@@ -116,7 +115,7 @@
           try {
             await archiveBoard(board.id, !archived)
           } catch (e) {
-            pushToast({ title: archived ? 'Could not restore board' : 'Could not archive board', body: errorMessage(e), tone: 'danger' })
+            toastError(archived ? 'Could not restore board' : 'Could not archive board', e)
             return
           }
           void refreshBoards()
@@ -147,7 +146,7 @@
                 try {
                   await deleteBoard(board.id)
                 } catch (e) {
-                  pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+                  toastError('Delete failed', e)
                   return
                 }
                 void refreshBoards()

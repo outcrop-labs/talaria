@@ -8,8 +8,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { errorMessage, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import { useAdminSettings } from './admin'
 
   const qc = useQueryClient()
@@ -24,7 +24,7 @@
       await putJson<{ ok: true }>('/api/admin/settings', { auditRetentionDays: n })
     } catch (e) {
       // Leave the typed value in place so the failed edit is retryable.
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     days = ''
@@ -76,7 +76,7 @@
         },
       })
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     win = orgTokens = orgUsd = perTokens = perUsd = null
@@ -95,7 +95,7 @@
     try {
       await putJson<{ ok: true }>('/api/admin/settings', { cronMinIntervalMinutes: n })
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     floor = null

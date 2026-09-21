@@ -7,7 +7,7 @@
   import { alert } from '@/components/ui/confirm.svelte'
   import { fade } from '@/lib/motion'
   import { delJson, errorMessage, getJson, postJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useResearchMembers } from '@/lib/research'
 
@@ -46,11 +46,11 @@
     delJson(`/api/research/${runId}/members`, { userId })
       // Fire-and-forget from a hover chip in the run header — a toast is the
       // only surface this row has for a failed leave/remove.
-      .catch((e) => pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }))
+      .catch((e) => toastError('Remove failed', e))
       .then(refresh)
   const removeTeam = (teamId: string) =>
     delJson(`/api/research/${runId}/teams`, { teamId })
-      .catch((e) => pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }))
+      .catch((e) => toastError('Remove failed', e))
       .then(refresh)
 </script>
 

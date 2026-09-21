@@ -9,11 +9,11 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
-  import { errorMessage, getList, postJson } from '@/lib/fetch-json'
+  import { getList, postJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import InternalEditorModal from './InternalEditorModal.svelte'
 
   interface Version {
@@ -42,7 +42,7 @@
       await qc.invalidateQueries({ queryKey: ['agent-versions', def.id] })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
     } catch (e) {
-      pushToast({ title: 'Revert failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Revert failed', e)
     } finally {
       busy = null
     }

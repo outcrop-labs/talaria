@@ -14,8 +14,7 @@
   import { downloadFile } from '@/lib/download-file'
   import { fade, listStagger } from '@/lib/motion'
   import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, updateFolder, type Artifact } from '@/lib/artifacts'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { moveDriveFile, renameDriveFile, trashDriveFile } from '@/lib/google-drive'
   import ArtifactsRow from './ArtifactsRow.svelte'
   import ArtifactsTile from './ArtifactsTile.svelte'
@@ -251,7 +250,7 @@
       try {
         await moveDriveFile(key, id, target, from)
       } catch (e) {
-        pushToast({ title: 'Move failed', body: errorMessage(e), tone: 'danger' })
+        toastError('Move failed', e)
         break
       }
     }
@@ -269,7 +268,7 @@
     try {
       await renameDriveFile(r.drive.driveKey, r.id, name.trim())
     } catch (e) {
-      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Rename failed', e)
       return
     }
     onDriveChange()
@@ -283,7 +282,7 @@
     try {
       for (const row of rows) await trashDriveFile(row.drive!.driveKey, row.id)
     } catch (e) {
-      pushToast({ title: 'Trash failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Trash failed', e)
     }
     clear()
     onDriveChange()
@@ -294,7 +293,7 @@
       if (r.type === 'folder') await duplicateFolder(r.id)
       else await duplicateArtifact(r.id)
     } catch (e) {
-      pushToast({ title: 'Could not duplicate', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not duplicate', e)
       return
     }
     await onRefresh()
@@ -456,14 +455,14 @@
       try {
         await deleteFolder(r.id)
       } catch (e) {
-        pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+        toastError('Delete failed', e)
       }
     } else {
       if (!(await confirm({ title: 'Delete file', message: `Delete "${r.name}"?`, confirmLabel: 'Delete', danger: true }))) return
       try {
         await deleteArtifact(r.id)
       } catch (e) {
-        pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+        toastError('Delete failed', e)
         await onRefresh()
         return
       }
@@ -488,7 +487,7 @@
       }
     } catch (e) {
       // Stops at the first refusal — earlier deletes stands, later ones don't.
-      pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Delete failed', e)
     }
     clear()
     await onRefresh()
@@ -500,7 +499,7 @@
     try {
       await updateFolder(r.id, { name: name.trim() })
     } catch (e) {
-      pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Rename failed', e)
       return
     }
     await onRefresh()
@@ -537,7 +536,7 @@
       const slug = r.artifact?.publicSlug
       if (slug) items.push({ label: 'Copy public link', onSelect: () => copyAppLink(`/a/${slug}`) })
       const href = downloadHref(r.artifact)
-      if (href) items.push({ label: 'Download', onSelect: () => void downloadFile(href, r.artifact?.title ?? 'download').catch((e) => pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' })) })
+      if (href) items.push({ label: 'Download', onSelect: () => void downloadFile(href, r.artifact?.title ?? 'download').catch((e) => toastError('Could not download', e)) })
     }
     if (canOrganize) {
       items.push('sep')
@@ -788,7 +787,7 @@
             void downloadFile(
               downloadHref(selectedRows[0]!.artifact)!,
               selectedRows[0]!.artifact?.title ?? 'download',
-            ).catch((e) => pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' }))}
+            ).catch((e) => toastError('Could not download', e))}
         >
           Download
         </button>

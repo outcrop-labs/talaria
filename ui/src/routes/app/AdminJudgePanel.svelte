@@ -8,8 +8,8 @@
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { getJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
 
   // The automated QA judge — an advisory reliability gate. When a ticket hits
   // quality_review, a judge model reviews the agent's work and posts a verdict.
@@ -31,7 +31,7 @@
     try {
       await putJson<{ config: JudgeData['config'] }>('/api/admin/judge', body)
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['judge-config'] })

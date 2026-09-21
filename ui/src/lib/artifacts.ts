@@ -1,11 +1,10 @@
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
 import { delJson, getJsonOr404, getList, postJson, putJson } from '@/lib/fetch-json'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export type ArtifactKind = 'doc' | 'sheet' | 'microsite' | 'file' | 'run-transcript'
 

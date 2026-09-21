@@ -6,7 +6,7 @@
 // keep one import.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { errorMessage, getJson, patchJson, putJson } from '@/lib/fetch-json'
-import { pushToast } from '@/lib/toast.svelte'
+import { toastError } from '@/lib/toast.svelte'
 import type { DigestPref, NotifyDelivery, NotifyPrefs, NotifySettings, Notification } from './notify-classes'
 
 export * from './notify-classes'
@@ -46,7 +46,7 @@ export function useMarkNotificationsRead() {
     } catch (e) {
       // Call sites fire this with `void` — without a catch a failed
       // mark-read is an unhandled rejection, and the badge quietly lies.
-      pushToast({ title: 'Mark as read failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Mark as read failed', e)
     }
     await qc.invalidateQueries({ queryKey: ['notifications'] })
     await qc.invalidateQueries({ queryKey: ['home'] })

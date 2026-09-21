@@ -8,14 +8,13 @@
 // This file imports the svelte-query runtime, so it stays OUT of the node
 // vitest suite (unknown .svelte extension in node's module loader). The pure
 // rules the view derives from live in workchain-rules.ts with the tests.
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
 import { delJson, getList, patchJson, postJson } from '@/lib/fetch-json'
 import type { Effort, TaskStatus } from '@/lib/task-const'
 
 /** A reactive argument: pass a plain value, or a getter for values that
  *  change over a component's life (route params). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 /** The derived step state — assigned by the api from the chain's read
  *  (api/src/workchains.rs): the first non-archived step whose task is not

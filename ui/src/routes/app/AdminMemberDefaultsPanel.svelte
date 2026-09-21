@@ -2,8 +2,8 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import { errorMessage, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import AdminPermChip from './AdminPermChip.svelte'
   import { permGroups, type PermsData } from './admin'
 
@@ -16,7 +16,7 @@
     try {
       await putJson<{ ok: true }>('/api/admin/permissions', { orgDefault: { perm, enabled } })
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['admin-permissions'] })

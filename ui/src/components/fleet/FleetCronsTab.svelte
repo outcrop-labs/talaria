@@ -8,7 +8,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { listStagger, slide } from '@/lib/motion'
   import { type CronJob } from './agent-crons'
   import CronForm from './CronForm.svelte'
@@ -78,7 +78,7 @@
     } catch (e) {
       // Row actions are fire-and-forget here (CronRow doesn't render an error
       // slot in the fleet tab) — a toast is where a failed one gets said.
-      pushToast({ title: `${action.charAt(0).toUpperCase()}${action.slice(1)} failed`, body: errorMessage(e), tone: 'danger' })
+      toastError(`${action.charAt(0).toUpperCase()}${action.slice(1)} failed`, e)
     }
     await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
   }
@@ -89,7 +89,7 @@
       await putJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, patch)
     } catch (e) {
       saved = false
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
     }
     await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
     return saved

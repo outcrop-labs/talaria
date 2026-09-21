@@ -2,6 +2,7 @@
 // via /api/boards/:id/statuses (defaults + the system Blocked column when the
 // board never customized). Helpers keep label/color lookups safe for custom
 // keys and legacy constants alike.
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
 import { delJson, getList, postJson, putJson } from '@/lib/fetch-json'
 import { STATUS_LABEL } from './task-const'
@@ -27,8 +28,6 @@ export interface BoardStatus {
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export function useBoardStatuses(boardId: MaybeGetter<string | null>) {
   return createQuery(() => {

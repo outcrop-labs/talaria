@@ -1552,21 +1552,6 @@ for (const rule of CENSUS) {
  *  work is done fails the next `bun run check`, so the list cannot rot into a
  *  standing amnesty. Read the `why` as a to-do list, not as an exemption. */
 const DUPLICATE_BODY_ALLOW = [
-  {
-    name: 'onKeyDown',
-    paths: ['ui/src/components/chat/EmojiList.svelte', 'ui/src/components/ui/MentionList.svelte'],
-    why: 'onKeyDown — one arrow-key list-navigation helper for the two suggestion menus (W4).',
-  },
-  {
-    name: 'onDocMousedown',
-    paths: ['ui/src/components/ui/DropdownMenu.svelte', 'ui/src/components/ui/Popover.svelte'],
-    why: 'onDocMousedown — one outside-pointer action for the two shells (W4).',
-  },
-  {
-    name: 'place',
-    paths: ['ui/src/components/ui/mention-suggest.ts', 'ui/src/components/ui/slash-commands.ts'],
-    why: 'place — one floating-menu placement helper for the two suggesters (W4).',
-  },
 ]
 
 // Duplicate function bodies: one home per concept, across both languages.

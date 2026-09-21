@@ -21,7 +21,7 @@
   import { cn } from '@/lib/cn'
   import { downloadFile } from '@/lib/download-file'
   import { errorMessage, postJsonOr } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
@@ -76,7 +76,7 @@
     } catch (e) {
       // dirty stays true: the editor's content is not saved, and must not
       // read as saved.
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
     } finally {
       saving = false
     }
@@ -150,7 +150,7 @@
         try {
           await deleteArtifact(id)
         } catch (e) {
-          pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+          toastError('Delete failed', e)
           return
         }
         await qc.invalidateQueries({ queryKey: ['artifacts'] })
@@ -345,7 +345,7 @@
                   size="sm"
                   onclick={() =>
                     void downloadFile(`/api/uploads/${artifact.storageRef}`, artifact.title).catch((e) =>
-                      pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' }),
+                      toastError('Could not download', e),
                     )}
                 >
                   Download

@@ -14,7 +14,7 @@
   import { errorMessage, getList, postJson } from '@/lib/fetch-json'
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { p } from '@/router'
 
   type ProbeState = 'ok' | 'auth' | 'unreachable' | 'error'
@@ -67,7 +67,7 @@
       url = ''
       await qc.invalidateQueries({ queryKey: ['mcp-agents'] })
     } catch (e) {
-      pushToast({ title: 'MCP change failed', body: errorMessage(e), tone: 'danger' })
+      toastError('MCP change failed', e)
     } finally {
       busy = false
     }

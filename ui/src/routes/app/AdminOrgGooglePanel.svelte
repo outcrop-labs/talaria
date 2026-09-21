@@ -11,7 +11,7 @@
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
 
@@ -46,7 +46,7 @@
     try {
       await delJson<{ ok: true }>('/api/integrations/google/org')
     } catch (e) {
-      pushToast({ title: 'Disconnect failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Disconnect failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['org-google'] })

@@ -2,8 +2,8 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
-  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { getJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import CategoryDetail from '@/components/models/CategoryDetail.svelte'
   import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
 
@@ -130,7 +130,7 @@
         slot.kind === 'role' ? { role: slot.row.role, ...patch } : { id: slot.row.id, ...patch },
       )
     } catch (e) {
-      pushToast({ title: 'Could not save that slot', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not save that slot', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['model-roles'] })

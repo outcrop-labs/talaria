@@ -4,10 +4,9 @@
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { cn } from '@/lib/cn'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { createFolder, useFolders } from '@/lib/artifacts'
   import { browseDrivePage, createDriveFolder } from '@/lib/google-drive'
-  import { errorMessage } from '@/lib/fetch-json'
   import { ancestry, type Drag } from './artifacts'
 
   // The move dialog — a folder browser, not a dropdown. Navigate in (click a
@@ -121,7 +120,7 @@
       newName = ''
       if (!blocked.has(folder.id)) standing = folder.id
     } catch (e) {
-      pushToast({ title: 'Could not create the folder', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not create the folder', e)
     }
   }
 

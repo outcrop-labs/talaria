@@ -23,8 +23,7 @@
   import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
 import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { cn } from '@/lib/cn'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import {
@@ -237,7 +236,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
       driveMoreRows = [...driveMoreRows, ...page.files.map((e) => driveRow(e, driveKey, rosterEntry?.writable ?? false, rosterEntry?.email ?? rosterEntry?.name ?? ''))]
       driveMoreToken = page.nextPageToken
     } catch (e) {
-      pushToast({ title: 'Could not load more', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not load more', e)
     }
   }
   const driveRows = $derived.by(() => {
@@ -420,7 +419,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
       artifact = await createArtifact({ kind, title: 'Untitled' })
       if (folderId) await saveArtifact(artifact.id, { folderId })
     } catch (e) {
-      pushToast({ title: 'Could not create', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not create', e)
       return
     }
     await refresh()
@@ -430,7 +429,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
     try {
       await createFolder('New folder', folderId)
     } catch (e) {
-      pushToast({ title: 'Could not create the folder', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not create the folder', e)
       return
     }
     await refresh()
@@ -458,7 +457,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
       for (const id of drag.artifacts) await saveArtifact(id, { folderId: target })
       for (const id of drag.folders) await updateFolder(id, { parentId: target })
     } catch (e) {
-      pushToast({ title: 'Move failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Move failed', e)
     }
     await refresh()
   }
@@ -489,7 +488,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
           if (copy.parentId !== target) await updateFolder(copy.id, { parentId: target })
         }
       } catch (e) {
-        pushToast({ title: 'Paste failed', body: errorMessage(e), tone: 'danger' })
+        toastError('Paste failed', e)
       }
       await refresh()
     }
@@ -792,7 +791,7 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
           if (shareTarget.kind === 'artifacts') await saveArtifact(shareTarget.id, patch)
           else await updateFolder(shareTarget.id, patch)
         } catch (e) {
-          pushToast({ title: 'Could not save sharing', body: errorMessage(e), tone: 'danger' })
+          toastError('Could not save sharing', e)
           return
         }
         await refresh()

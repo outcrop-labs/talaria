@@ -14,8 +14,7 @@
   import { useAgents } from '@/lib/agents'
   import { useTeams } from '@/lib/teams'
   import { createBoard, setBoardAgents, shareBoard } from '@/lib/boards.svelte'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
 
   type Invite = { email: string; role: 'editor' | 'viewer' }
 
@@ -71,7 +70,7 @@
       close()
       void navigate('/boards/:boardId', { params: { boardId: board.id } })
     } catch (e) {
-      pushToast({ title: 'Could not create the board', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not create the board', e)
     } finally {
       busy = false
     }

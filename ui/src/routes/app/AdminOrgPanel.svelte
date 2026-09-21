@@ -8,8 +8,8 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { errorMessage, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import { useAdminSettings } from './admin'
 
   // App-wide settings (grows over time). Audit retention is the first.
@@ -32,7 +32,7 @@
     } catch (e) {
       // Keep the edited identity in the form — flashing "Saved" over a failed
       // PUT would pretend the fleet just rolled onto it.
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     name = null

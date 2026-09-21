@@ -3,8 +3,8 @@
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { getJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
 
   /** Per-repo git flow — every reachable repo is a row; blank fields mean the
    *  defaults, so there is no separate "add" ceremony to learn. */
@@ -30,7 +30,7 @@
         testingBranch: patch.testingBranch !== undefined ? patch.testingBranch : (cur?.testingBranch ?? null),
       })
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     savedFlash.flash()

@@ -5,8 +5,8 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { errorMessage, getJson, patchJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { getJson, patchJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import { slide } from '@/lib/motion'
   import { p } from '@/router'
 
@@ -69,7 +69,7 @@
       envDeletes[repo] = []
       newEnvRow[repo] = { key: '', value: '' }
     } catch (e) {
-      pushToast({ title: 'Env save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Env save failed', e)
     }
     await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
   }
@@ -89,7 +89,7 @@
     } catch (e) {
       // Fire-and-forget from this panel: the toast is the only place a failed
       // write can be said, and the refresh below restores the truth.
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
     }
     await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
   }

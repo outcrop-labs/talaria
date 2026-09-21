@@ -14,10 +14,9 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { navigate } from '@/router'
-  import { errorMessage } from '@/lib/fetch-json'
   import { fade, slide } from '@/lib/motion'
   import { isUnder } from '@/lib/route-tabs'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import {
     readKnowledgeSelection,
     restorableKnowledgeSelection,
@@ -185,7 +184,7 @@
   // they used to resolve the `{ error }` body as the record) would surface
   // as an unhandled rejection instead of a sentence. The toast is the honest
   // minimum; the tree/list behind it stays as it was.
-  const kbFailure = (what: string) => (e: unknown) => pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
+  const kbFailure = (what: string) => (e: unknown) => toastError(`${what} failed`, e)
   const guarded = <A extends unknown[]>(what: string, fn: (...args: A) => Promise<unknown>) =>
     (...args: A) => fn(...args).catch(kbFailure(what))
 

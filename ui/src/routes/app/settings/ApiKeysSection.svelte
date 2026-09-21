@@ -11,7 +11,7 @@
   import { delJson, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { fade, slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
 
   interface ApiKey {
     id: string
@@ -79,7 +79,7 @@
         rateLimitPerMinute: num(draft.rpm),
       })
     } catch (e) {
-      pushToast({ title: 'Could not save limits', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not save limits', e)
       return
     }
     limitsFor = null
@@ -104,7 +104,7 @@
       await delJson(`/api/keys/${id}`)
     } catch (e) {
       // Row button; the err line belongs to the mint form below.
-      pushToast({ title: 'Revoke failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Revoke failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['api-keys'] })

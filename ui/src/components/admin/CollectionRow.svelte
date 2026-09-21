@@ -11,8 +11,8 @@
   import { useAgents } from '@/lib/agents'
   import { useUsers } from '@/lib/users'
   import { useTeams } from '@/lib/teams'
-  import { delJson, errorMessage, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { delJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import type { Binding, RagCollection } from './retrieval'
 
   let {
@@ -44,7 +44,7 @@
     try {
       await putJson(`/api/rag/collections/${col.id}`, { bindings })
     } catch (e) {
-      pushToast({ title: 'Save bindings failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save bindings failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
@@ -54,7 +54,7 @@
     try {
       await delJson(`/api/rag/collections/${col.id}`)
     } catch (e) {
-      pushToast({ title: 'Delete collection failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Delete collection failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
@@ -71,7 +71,7 @@
         await putJson('/api/admin/rag', { spaceBrain: { spaceId, collectionId: null } })
       }
     } catch (e) {
-      pushToast({ title: 'Save spaces failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save spaces failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })

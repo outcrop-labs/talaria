@@ -9,7 +9,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { listStagger, slide } from '@/lib/motion'
@@ -98,7 +98,7 @@
       await delJson(`/api/fleet/agents/${agentId}/secrets?name=${encodeURIComponent(n)}`)
     } catch (e) {
       // Fire-and-forget from a row button; the err line belongs to the form.
-      pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Remove failed', e)
     }
     await qc.invalidateQueries({ queryKey: key() })
   }
