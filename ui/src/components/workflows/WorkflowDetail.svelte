@@ -13,7 +13,8 @@
   import { listQuery } from '@/components/ui/query-state'
   import { slide } from '@/lib/motion'
   import { useBoards } from '@/lib/boards.svelte'
-  import { updateWorkflow, useSkillLibrary, type TaskWorkflow } from '@/lib/workflows'
+  import { useSkills } from '@/lib/skills'
+  import { updateWorkflow, type TaskWorkflow } from '@/lib/workflows'
   import TokenInput from './TokenInput.svelte'
 
   let { workflow, onChanged, onDelete }: { workflow: TaskWorkflow; onChanged: () => void; onDelete: () => void } = $props()
@@ -23,7 +24,7 @@
   // `known` below and gets drawn as "Bound but not in the library" — a warning
   // chip offering to unbind a skill that is perfectly fine.
   const boardsList = listQuery(useBoards(), { title: 'Could not load your boards', variant: 'inline' })
-  const libraryList = listQuery(useSkillLibrary(), { title: 'Could not load the skill library', variant: 'inline' })
+  const libraryList = listQuery(useSkills(), { title: 'Could not load the skill library', variant: 'inline' })
   const boards = $derived(boardsList.rows)
   const rawSkillOwners = $derived(libraryList.rows)
   // Platform plumbing skills aren't bindable flow content — hide them here too.

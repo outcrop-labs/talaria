@@ -5,7 +5,8 @@
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
-  import { copySkillTo, deleteSkillReq, moveSkillTo, renameSkill, type SkillLibraryOwner } from '@/lib/workflows'
+  import { SKILLS_KEY, deleteSkill, renameSkill, type SkillOwner } from '@/lib/skills'
+  import { copySkillTo, moveSkillTo } from '@/lib/workflows'
 
   let {
     owner,
@@ -17,14 +18,14 @@
   }: {
     owner: string
     skill: { name: string; description: string; platform?: boolean }
-    owners: SkillLibraryOwner[]
+    owners: SkillOwner[]
     sharedBadge?: boolean
     canEdit: boolean
     onOpen: () => void
   } = $props()
 
   const qc = useQueryClient()
-  const refresh = () => qc.invalidateQueries({ queryKey: ['skill-library'] })
+  const refresh = () => qc.invalidateQueries({ queryKey: SKILLS_KEY })
   const editableTargets = $derived(owners.filter((o) => o.canEdit && o.owner !== owner))
   const fail = (e: unknown) => void confirm({ title: 'That didn’t work', message: (e as Error).message, confirmLabel: 'OK' })
 
@@ -36,7 +37,7 @@
   }
   const doDelete = async () => {
     if (!(await confirm({ title: 'Delete skill', message: `Delete "${skill.name}"? Workflows bound to it will flag it as missing.`, confirmLabel: 'Delete', danger: true }))) return
-    await deleteSkillReq(owner, skill.name).then(refresh).catch(fail)
+    await deleteSkill(owner, skill.name).then(refresh).catch(fail)
   }
 </script>
 

@@ -25,7 +25,10 @@ export interface SkillSummary {
 }
 
 export interface SkillOwner {
-  owner: string
+  owner: string // 'shared' or an agent slug
+  label: string
+  /** The agent's model id (absent for the shared root). */
+  model?: string
   skills: SkillSummary[]
   canEdit?: boolean
 }
