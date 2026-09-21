@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StaleBoardNotice from '@/components/board/StaleBoardNotice.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ticketMenuEntries } from '@/components/board/ticket-menu'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
@@ -132,22 +133,7 @@
   <div class="flex h-full flex-col">
     <!-- Stale columns/labels beat no board at all — but say which read is old.
         Labels only tint the pills, so their failure never takes the board. -->
-    {#if statusesQuery.isError || labelsQuery.isError}
-      <QueryError
-        variant="inline"
-        class="border-b border-line-subtle px-4 py-2"
-        title={statusesQuery.isError
-          ? 'Columns may be out of date'
-          : labelsQuery.data === undefined
-            ? 'Could not load labels, so the pills below show names without their colours'
-            : 'Labels may be out of date'}
-        error={statusesQuery.isError ? statusesQuery.error : labelsQuery.error}
-        onRetry={() => {
-          if (statusesQuery.isError) void statusesQuery.refetch()
-          if (labelsQuery.isError) void labelsQuery.refetch()
-        }}
-      />
-    {/if}
+    <StaleBoardNotice statuses={statusesQuery} labels={labelsQuery} word="Columns" />
     <div class="flex min-h-0 flex-1 gap-3 overflow-x-auto p-4">
       {#each columns as col (col.key)}
         {@const colTasks = tasks.filter((t) => t.status === col.key)}
