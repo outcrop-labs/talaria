@@ -83,7 +83,15 @@ jobs:
   package:
     name: build + push the api package
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was sized against a build that never happened: cargo-chef's skeleton
+    # compiled in 3-6 seconds, so the job's real cost (the cook layer) was all
+    # it ever measured. With the stub gate in api/package.Dockerfile the build
+    # stage does the actual release compile of the workspace — 09-21's first
+    # honest run reached `Compiling talaria-api v0.1.0` at 1,470s and this
+    # limit cancelled it 30s later, so nothing published. 60 leaves room for
+    # that plus the static musl link, the gate, and a cold cook (~8min when
+    # the registry cache misses) without being a number nobody can reason about.
+    timeout-minutes: 60
     permissions:
       packages: write # the GHCR push
     concurrency:
