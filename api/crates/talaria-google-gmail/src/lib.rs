@@ -254,7 +254,6 @@ pub async fn organize_emails_with_token(
     Ok(ids.len())
 }
 
-/// labelId → name, one labels read for however many ids are asked about.
 async fn label_name_map(
     token: &str,
     label_ids: &[String],

@@ -19,9 +19,6 @@ use talaria_research::{
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-/// Keep the report artifact's grants in step with run membership: a member
-/// of the run is an editor of the report it produced, from the moment the
-/// report exists (completion grants the members a report that lands later).
 async fn sync_report_grant(
     state: &AppState,
     run_id: &str,

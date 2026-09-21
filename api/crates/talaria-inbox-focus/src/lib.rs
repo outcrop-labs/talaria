@@ -70,6 +70,7 @@ use talaria_tasks_types::{TaskDeps, TaskError};
 
 use futures_util::future::BoxFuture;
 use std::sync::OnceLock;
+use talaria_agent_auth::now_ms;
 use talaria_tasks_types::Task;
 
 pub static GET_TASK: OnceLock<
@@ -126,13 +127,6 @@ impl std::fmt::Display for FocusError {
             FocusError::Throw(m) => write!(f, "{m}"),
         }
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn token_hash(token: &str) -> String {
@@ -220,10 +214,6 @@ pub async fn request_focus_command(
     Ok(validate_command_object(&value, &allowed))
 }
 
-/// A detached conversational reply. `max` is applied to the
-/// finished text rather than to the stream: truncating at the end produces
-/// the same cap, and a guarded or repaired reply is what gets persisted.
-/// `value.slice(0, max) || null` — an empty reply is None.
 async fn reply_turn(
     state: &AppState,
     model: &str,
@@ -475,10 +465,6 @@ fn spawn_claim_and_generate_brief(
     });
 }
 
-/// The persistence half. A null brief leaves the previous row untouched: the
-/// claim row already recorded the attempt, so a bad model costs one retry
-/// window rather than an overwritten card. Every failure is swallowed here —
-/// nothing waits on this task, so no caller ever sees them.
 async fn generate_brief(
     state: &AppState,
     user_id: &str,
@@ -887,10 +873,6 @@ fn number_of(v: Option<&Value>) -> i64 {
     }
 }
 
-/// The only reversible focus action is a mark-read, and only within the undo
-/// window, and only when the source still sits exactly where the decision
-/// left it (the read-at / cursor guards make a race a no-op rather than a
-/// wrong restore).
 async fn undo_decision(
     pg: &PgPool,
     user: &SessionUser,
@@ -1103,10 +1085,6 @@ struct ConfirmedProposal {
     delegate_model: Option<String>,
 }
 
-/// The one-way door. A token that matches flips the row to confirmed and
-/// strips the cipher; anything else is a miss, and a miss that means the
-/// source moved FAILS the pending confirmation so the card stops offering
-/// it.
 async fn consume_confirmation(
     pg: &PgPool,
     user: &SessionUser,
@@ -1380,10 +1358,6 @@ async fn command_decision(
     }))
 }
 
-/// An idempotency answer for a decision already made: completed (with its
-/// undo window), failed (with its recorded error), or a confirmed row whose
-/// outcome never landed (the stale sentence). A decision still in flight
-/// answers null — the caller proceeds as a first run.
 async fn replay_decision(
     pg: &PgPool,
     user: &SessionUser,
@@ -1482,9 +1456,6 @@ async fn complete_decision(
     Ok(())
 }
 
-/// A command proposal that cannot proceed fails ON ITS OWN ROW (the
-/// assistant proposed it; the card should say so), and the decisionId rides
-/// along only when a row was actually updated.
 async fn fail_command_proposal(
     pg: &PgPool,
     user: &SessionUser,
@@ -1587,8 +1558,6 @@ async fn execute_action(
     }
 }
 
-/// The shared early exit: the proposal fails on its own row (when there is
-/// one) and the caller reads status + message.
 async fn finish_early(
     pg: &PgPool,
     existing_decision_id: Option<&str>,
@@ -2170,9 +2139,6 @@ pub async fn run_focus_action(
     .await
 }
 
-/// A delegate must be an enabled agent the owner (or the org) actually has,
-/// and the tier must be one it declares; the routed id comes back for the
-/// ledger.
 async fn valid_delegate(
     pg: &PgPool,
     user_id: &str,

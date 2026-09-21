@@ -65,8 +65,6 @@ fn role_specs() -> Vec<Value> {
         .collect()
 }
 
-/// Every role keyed in MODEL_ROLES order, absent/null preference both
-/// spelled null.
 async fn efforts_panel(pg: &PgPool) -> serde_json::Map<String, Value> {
     let prefs = get_effort_prefs(pg).await;
     let mut out = Map::new();
@@ -246,8 +244,6 @@ pub async fn put(
     finish(&state).await
 }
 
-/// The PUT's answering body: fresh assignments, fresh advisory issues (the
-/// one this PUT may have just created rides along), fresh effort prefs.
 async fn finish(state: &AppState) -> Response {
     let issues: Vec<Value> = role_assignment_issues(&state.pg)
         .await

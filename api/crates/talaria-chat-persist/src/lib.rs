@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use talaria_agent_auth::now_ms;
 use talaria_body::utf16_len;
 use talaria_conversations::{
     active_streaming_assistant, content_js_length, insert_streaming_assistant,
@@ -82,14 +83,6 @@ fn auto_sync_should_start(
     plan.is_some()
         && !in_flight
         && doc_updated_ms.is_none_or(|ms| now_ms - ms > AUTO_SYNC_RECENT_MS)
-}
-
-/// Wall-clock epoch millis, the house pattern (no chrono in this crate).
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// The detached auto-sync kick, for a turn that just completed. Called on
@@ -229,9 +222,7 @@ const RESUME_BACKOFF: Duration = Duration::from_secs(15);
 /// carries a reason and must not be retried.
 #[derive(Debug, Clone, Copy)]
 enum TurnDeath {
-    /// No frame for `stream_idle()` — the agent's gateway stopped talking.
     Idle,
-    /// The connection reset mid-stream.
     Reset,
 }
 
@@ -289,11 +280,6 @@ async fn guarded_drive(
     CONTINUING.lock().unwrap().remove(conversation_id);
 }
 
-/// `resume`, when set, re-drives a turn whose stream died mid-flight: the
-/// named row is RESURRECTED (back to streaming, cleared) instead of a fresh
-/// row being inserted, and is excluded from the history the re-drive sends —
-/// the agent re-hears the conversation as it stood when the attempt began,
-/// not its own death notice.
 async fn continue_inner(
     state: &AppState,
     conversation_id: &str,

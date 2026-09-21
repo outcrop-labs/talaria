@@ -199,9 +199,6 @@ fn parse_docker_size(s: &str) -> Option<i64> {
     Some((n * mult as f64) as i64)
 }
 
-/// The transcript retention knob: days from app_settings.observability.
-/// Absent setting, absent key, or a non-numeric value → the 7-day default;
-/// null or 0 → keep forever (the deployments that asked for it).
 async fn transcript_retention_days(pg: &PgPool) -> Option<i64> {
     let days: Option<i64> = sqlx::query_scalar(
         "select value ->> 'transcriptRetentionDays' from app_settings where key = 'observability'",

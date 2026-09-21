@@ -478,14 +478,6 @@ pub fn legacy_usage() -> Vec<LegacySighting> {
     out
 }
 
-/// Wall-clock epoch millis, for the sighting timestamps.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// Epoch millis as `YYYY-MM-DDTHH:MM:SS.sssZ`, always UTC — the spelling
 /// every stored `at` uses. Civil-from-days (Hinnant's algorithm) — no clock
 /// crate in this house.
@@ -664,6 +656,18 @@ pub fn legacy_migration_warning(s: &LegacyMigrationStatus) -> Option<String> {
         s.agents.len() - s.pending.len(),
         s.agents.len()
     ))
+}
+
+/// Wall-clock epoch milliseconds. THE one definition — 55 copies of this
+/// four-line body were pasted across the tree before it moved here (the
+/// epoch helpers already lived in this crate). `unwrap_or(0)`: a clock
+/// before the epoch is unreadable, and 0 is the "no time" every caller
+/// already treats as absent.
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

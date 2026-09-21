@@ -163,9 +163,6 @@ fn cache_cell() -> &'static Mutex<Option<Cache>> {
     CELL.get_or_init(|| Mutex::new(None))
 }
 
-/// The public catalog, 6h-fresh, STALE ON FAILURE: an unreachable OpenRouter
-/// must not blank every label in the product, so a failed fetch serves the
-/// last good answer (or None before the first success).
 async fn catalog() -> Option<Catalog> {
     const TTL_MS: u64 = 6 * 60 * 60_000;
     if let Ok(cell) = cache_cell().lock()

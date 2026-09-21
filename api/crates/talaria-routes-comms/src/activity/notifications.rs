@@ -97,10 +97,6 @@ fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPat
     })
 }
 
-/// deliveryOrOff: the switch read that must not fail the read it rides on —
-/// GET here answers "what is in your inbox", and the honest answer for a
-/// switch that defaults to off is off. get_notify_delivery already falls
-/// back on a failed settings read, so this is infallible by construction.
 async fn delivery_or_off(pg: &sqlx::PgPool) -> bool {
     get_notify_delivery(pg).await
 }

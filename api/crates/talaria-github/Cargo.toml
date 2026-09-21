@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-gateway = { path = "../talaria-gateway" }
 talaria-body = { path = "../talaria-body" }
 talaria-secretbox = { path = "../talaria-secretbox" }

@@ -77,17 +77,9 @@ pub enum LeaseRenewal {
 
 #[derive(Debug, Clone)]
 pub enum LeaseClaim {
-    Claimed {
-        token: String,
-    },
-    /// Another instance is stepping this run right now. Not an error.
+    Claimed { token: String },
     Busy,
-    /// Redis could not be asked, so this process cannot know whether it is
-    /// alone. LEAVE THE ROW ALONE: do not step it, and above all do not mark
-    /// it failed. The checkpoint is durable and a later sweep will claim it.
-    Blocked {
-        error: String,
-    },
+    Blocked { error: String },
 }
 
 pub trait RunLease: Send + Sync {
@@ -220,9 +212,6 @@ pub enum PauseOutcome {
         approval_key: String,
         announced: usize,
     },
-    /// The park did not land, and every reason is a normal one: another
-    /// instance owns the run now, somebody cancelled it, the row is gone. The
-    /// question is simply not asked; nothing is half-parked.
     Refused {
         reason: WriteFailure,
         state: Option<RunState>,
@@ -378,24 +367,15 @@ pub async fn enqueue(
 pub enum DriveStop {
     Done,
     Error,
-    /// Parked on a human decision.
     Awaiting,
-    /// A `retry` result: scheduled, nobody bothered, no attempt consumed.
     Deferred,
     Cancelled,
-    /// Another instance owns it now. Clean.
     LeaseLost,
-    /// Somebody else is driving it, or a deferral has not elapsed. Clean.
     Busy,
-    /// Redis could not be asked whether this driver would be alone, so the row
-    /// was left ALONE — not driven, and above all not failed.
     Blocked,
     Missing,
-    /// Nothing in THIS process knows this kind. Not a failure of the run.
     NoDefinition,
-    /// Reclaimed more times than the definition allows; filed as an error.
     Exhausted,
-    /// The row is in a state no driver advances (`awaiting`, or terminal).
     NotRunnable,
 }
 
@@ -429,7 +409,6 @@ impl DriveResult {
 #[derive(Debug, Clone, Copy)]
 enum StepInterrupt {
     Deadline,
-    /// The renewal loop lost the lease while the step was in flight.
     LeaseLost,
 }
 
@@ -732,9 +711,6 @@ struct ProgressLog {
     phase: Mutex<String>,
 }
 
-/// Flush the pending phase lines in order, persist-then-publish each. A line
-/// whose write is refused is dropped quietly: the boundary check reports why,
-/// and a log line does not get to shout about it.
 async fn flush_progress(
     progress: &ProgressLog,
     run_id: &str,
@@ -1105,8 +1081,6 @@ async fn drive_loop(
     }
 }
 
-/// Resolves when the drive's abort flips true (immediately if it already was).
-/// Subscribe-first so a flip between the check and the await is still seen.
 async fn abort_fires(tx: &watch::Sender<bool>) {
     let mut rx = tx.subscribe();
     if *rx.borrow() {

@@ -193,32 +193,19 @@ pub enum ProbeOutcome {
         verdict: ProbeVerdict,
         trials: Vec<Trial>,
     },
-    /// Nothing to measure here (no vision advertised, no context window known, a
-    /// fleet candidate whose tool loop is not ours to drive). Not a failure and
-    /// not a fact — `reason` is the sentence the admin reads instead of a cell.
-    Skipped { reason: String, trials: Vec<Trial> },
-    /// WE ALREADY MEASURED THIS, so no call was made and the standing fact is
-    /// reported instead.
-    ///
-    /// DELIBERATELY NOT `skipped`, and the difference is the whole point of the
-    /// kind. A skip means NO FACT EXISTS — the channel could not be opened, and
-    /// an admin reading it should conclude nothing. This means a fact exists, we
-    /// wrote it, and it still stands; the verdict below is that fact, with the
-    /// date it was measured. Folding the two together would make a probed
-    /// capability read as unmeasured the moment we stopped re-paying for it.
-    ///
-    /// WHY IT IS SAFE TO REUSE THE ANSWER. A probe fact is a property of an
-    /// `endpoint:model`, `probe_keys` refuses to write when the id is ambiguous,
-    /// and a re-pointed model id is exactly what "Forget recorded capabilities"
-    /// is for. Nothing else about a deployment can change what a past measurement
-    /// established.
+    Skipped {
+        reason: String,
+        trials: Vec<Trial>,
+    },
     Known {
         verdict: ProbeVerdict,
         at: String,
         trials: Vec<Trial>,
     },
-    /// The deployment failed, not the model. Writes nothing, by rule 2.
-    Errored { reason: String, trials: Vec<Trial> },
+    Errored {
+        reason: String,
+        trials: Vec<Trial>,
+    },
 }
 
 /// One model call, normalized — the unit every scorer in this file takes, which
@@ -1649,13 +1636,6 @@ struct PoolEndpoint {
     price: Option<TokPrice>,
 }
 
-/// Every endpoint that could serve this model, for the window and the price.
-/// Deliberately the same derivation the runner uses for capability keys.
-///
-/// `routing_for`'s endpoint rows do not carry the price columns — `LlmEndpoint`
-/// deliberately omits them — so the price half is read here in one query over
-/// the routed names, coalescing in order (`model_prices[upstream] ??
-/// auto_prices[upstream] ?? the column`).
 async fn endpoints_for(pg: &PgPool, model: &str) -> Vec<PoolEndpoint> {
     // `.catch(() => null)` then "no route, no endpoints" — a routing read that
     // fails is a deployment fact, not a probe failure, and it prices nothing.
@@ -1698,21 +1678,6 @@ async fn endpoints_for(pg: &PgPool, model: &str) -> Vec<PoolEndpoint> {
         .collect()
 }
 
-/// THE SMALLEST advertised window in the pool, not the largest. A bare model id
-/// can land on any member, so a claim has to hold for the worst of them.
-///
-/// THE MODEL'S OWN NUMBER FIRST, and this is the fix for a probe that used to
-/// skip on models the provider describes in full. `llm_endpoints.context_length`
-/// is ONE integer per endpoint — a single number for an OpenRouter row serving
-/// four hundred models with windows from 4k to 1M. It is written only by
-/// `fleet-federate`, and `ensure_endpoint`'s `on conflict do update` does not
-/// refresh it, so on a normal install it is null and the long-context probe
-/// skipped with "nothing advertises a context window for this model" about
-/// models whose catalog entry says 1,048,576.
-///
-/// The endpoint row stays as the FALLBACK rather than being deleted: a federated
-/// fleet writes it and publishes no catalog, so for those deployments it is the
-/// only number there is.
 async fn smallest_window(pg: &PgPool, model: &str) -> Option<f64> {
     if let Some(advertised) = advertised_window(pg, model).await {
         return Some(advertised);
@@ -1756,14 +1721,6 @@ async fn price_for(pg: &PgPool, model: &str) -> Option<TokPrice> {
     )
 }
 
-/// A cited page, as text. Never fails, never blocks for long, and answers None
-/// for anything that is not a plainly readable 2xx — every one of which makes
-/// the trial inconclusive rather than failed. The URL is MODEL-SUPPLIED (it
-/// rides in a probe reply), so this goes through `safe_fetch` like every other
-/// agent-influenced fetch — a citation pointing at the metadata service or an
-/// internal host is refused, not fetched. A refusal is indistinguishable from
-/// an unreachable page: the trial reads inconclusive, which is the honest
-/// verdict for a citation we would not follow in production either.
 async fn fetch_cited_page(url: String) -> Option<String> {
     match safe_fetch(
         &url,
@@ -2740,9 +2697,6 @@ pub fn tool_call_problem(
     }
 }
 
-/// The two graded observations one search reply produces: the date (checkable
-/// against our own clock, and the ONLY thing allowed to write `search: false`)
-/// and the citation (checkable only if the host lets us read the page).
 async fn search_trials(name: &str, a: &Attempt, deps: &ProbeDeps) -> Vec<Trial> {
     let raw = bounded(&a.raw);
     let malformed = vec![Trial {

@@ -92,10 +92,7 @@ pub enum FitnessBand {
     Ready,
     Workable,
     Unfit,
-    /// Never tested — the honest default for a model nobody has swept.
     Untested,
-    /// No sweep binds this model to a capability key, so nothing about it can
-    /// be said.
     Unbound,
 }
 
@@ -610,42 +607,19 @@ fn worst_band(bands: impl IntoIterator<Item = FitnessBand>, fallback: FitnessBan
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReasonKind {
-    /// A required capability is recorded FALSE. The unfit case audit 1.6 is
-    /// about.
     MissingCapability,
-    /// A required capability was never measured. Caps at `workable`; run
-    /// tier 1.
     UnmeasuredCapability,
     Contract,
-    /// Contract only holds after the repair turn — the 40/95 model, usable
-    /// BECAUSE of the repair path, and the UI must say so rather than print one
-    /// rate.
     RepairCarried,
     Task,
     Safety,
-    /// The sweep ran with the guard off, so every guard rate is zero and
-    /// zero-because-off must not read as zero-because-clean. Caps at `workable`.
     GuardOff,
-    /// The harness declares no fixtures: invisible to tier 2, not passing.
     NoFixtures,
-    /// Bound and fixtured, but this sweep did not run it (`only:`, or stopped).
     NotSwept,
-    /// THE SWEEP DECLINED TO RUN IT AGAINST THIS CANDIDATE, because the harness
-    /// declares a request the candidate's transport is documented to refuse — a
-    /// tool-loop harness against an org-gateway model. Distinct from `not-swept`
-    /// ("nobody has run this yet", fixable by pressing Test) because pressing
-    /// Test again changes nothing: what has to change is the deployment. Caps at
-    /// `untested`, exactly like the other two, because a skip is emphatically not
-    /// a pass. See `harness_skip_reason` in evals.rs.
     NotRunnable,
-    /// A required capability the MODEL lacks and a registered TOOL supplies.
-    /// Band `ready` — it is a fact worth stating, never a demerit.
     SuppliedCapability,
-    /// Nothing answered — a refused floor or a dead gateway, not a bad model.
     NoAnswer,
-    /// No harness reaches this slot at all.
     NoHarness,
-    /// A bound harness has no verdict, so the slot cannot be called ready.
     PartialCoverage,
 }
 

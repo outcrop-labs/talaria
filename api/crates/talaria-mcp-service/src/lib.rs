@@ -57,8 +57,6 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Is the toolkit answering? 401/400 count as alive (unauthenticated, not
-/// dead); a 404 or anything 5xx does not.
 async fn reachable() -> bool {
     let url = format!("http://127.0.0.1:{}/mcp", mcp_port());
     let Ok(client) = reqwest::Client::builder()
@@ -83,12 +81,6 @@ fn js_runtime() -> String {
     std::env::var("TALARIA_JS_RUNTIME").unwrap_or_else(|_| "node".into())
 }
 
-/// The spawn itself, already past the guards. The debounce stamps HERE, only
-/// once the entry exists — a missing dist must not consume the 10s window, or
-/// the not-built error would print once and then never again.
-/// stderr is piped through to the log (the child's own diagnostics are the
-/// only place its failures speak), and an exit is logged as the respawn
-/// promise it is.
 async fn spawn_child() {
     let entry = mcp_service_entry();
     if !entry.exists() {

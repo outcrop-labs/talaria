@@ -21,20 +21,13 @@ pub struct Config {
 pub struct SecretRoot {
     material: String,
     source: RootSource,
-    /// The env NAME (or file path) the material came from — rootSource()'s
-    /// `name`, which the admin secrets inventory reports so an operator knows
-    /// which variable to fix. Provenance only, never the material.
     name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootSource {
-    /// TALARIA_SECRET_KEY — the dedicated, stable root. The only safe one.
     SecretKey,
-    /// TALARIA_SECRET_KEY_FILE contents (read + trimmed).
     SecretKeyFile,
-    /// AUTH_SECRET doing double duty. Works, but AUTH_SECRET's own docs call
-    /// it safe to rotate — warn at boot.
     AuthSecretFallback,
 }
 

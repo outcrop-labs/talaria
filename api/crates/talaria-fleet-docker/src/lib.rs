@@ -119,10 +119,6 @@ fn compose_args(extra: &[&str]) -> Vec<String> {
     args
 }
 
-/// The fleet joins an EXTERNAL network (shared with app/bridge/MCP
-/// containers), which compose declares but never creates. Create it here when
-/// missing so a fresh install works without any setup script. Idempotent,
-/// race-safe.
 async fn ensure_fleet_network() -> Result<(), String> {
     let name = talaria_fleet_layout::fleet_network_name().await;
     let name = name.as_str();
@@ -329,9 +325,6 @@ pub async fn update_container_memory(
     .map(|_| ())
 }
 
-/// One lifecycle verb against the department's ACTIVE slot's compose service
-/// (fleet_stop / fleet_restart / fleet_remove). All three answer with
-/// compose's stderr trimmed.
 async fn compose_verb(
     pg: &PgPool,
     department: &str,

@@ -9,6 +9,7 @@
 use sqlx::PgPool;
 use std::time::Duration;
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms;
 use talaria_settings::{get_setting, set_setting};
 
 const ID_KEY: &str = "instance_id";
@@ -262,13 +263,6 @@ pub async fn verify_instance_domain(pg: &PgPool) -> VerifyResult {
             domain.domain
         )),
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

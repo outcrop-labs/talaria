@@ -974,10 +974,6 @@ pub async fn get_user_credentials(
 
 // ── Effective resolution (the gateway's brain) ──────────────────────────────
 
-/// The human an AGENT CALLER may act for — its owner when it is a personal
-/// assistant, None otherwise. A legacy caller
-/// gets None: identified, but not proven to BE that assistant — and this
-/// resolution hands out that human's connected account.
 async fn assistant_owner_for(
     pg: &PgPool,
     subject: &AgentSubject,
@@ -1371,7 +1367,6 @@ async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), Strin
 // on its own: the credential is never rendered, only a gateway URL, and the
 // gateway re-derives access per request through `effective_mcp_for`.
 
-/// Does this server have OAuth tokens for a subject ('org' or a user id)?
 async fn has_oauth_tokens(
     pg: &PgPool,
     server_id: &str,
@@ -1390,9 +1385,6 @@ async fn has_oauth_tokens(
 // (Does this server have per-user credentials stored? — the pub
 // `has_user_credentials` earlier in this file is that same read.)
 
-/// model → owner_user_id for every PERSONAL assistant. The render passes a
-/// bare model string — proven by construction there — so the owner map is
-/// the whole lookup.
 async fn personal_assistant_owners(pg: &PgPool) -> Result<HashMap<String, String>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "select model, owner_user_id::text from agent_defs where owner_user_id is not null",

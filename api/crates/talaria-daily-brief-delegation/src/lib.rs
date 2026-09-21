@@ -389,9 +389,7 @@ pub async fn revoke_reply(
 pub enum DraftOutcome {
     Sent,
     Rejected,
-    /// They have said something since the draft was written.
     Stale(&'static str),
-    /// Not found — or not the caller's; indistinguishable on purpose.
     Gone,
 }
 

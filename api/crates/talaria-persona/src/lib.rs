@@ -226,10 +226,6 @@ fn inflight() -> &'static tokio::sync::Mutex<()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-/// THIS NEVER FAILS. Resolving a persona is a lookup that makes a run BETTER,
-/// not a precondition for one; a database blip must not turn a working harness
-/// into a failure. A failed read is an empty index — exactly the state a
-/// fresh self-host is in anyway.
 async fn load(pg: &PgPool) -> Snapshot {
     let rows: Result<Vec<(String, serde_json::Value)>, _> = sqlx::query_as(
         "select d.model as agent, v.config as config \

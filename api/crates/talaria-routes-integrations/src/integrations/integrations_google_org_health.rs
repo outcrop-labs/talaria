@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::api_health::probe_org_google_apis;
 use talaria_api_facades::google::errors::google_fail;
 use talaria_session::require_admin;
@@ -32,12 +33,4 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .into_response(),
         Err(e) => google_fail(e, "APIs"),
     }
-}
-
-/// Epoch-ms clock — the one time the probe reads.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

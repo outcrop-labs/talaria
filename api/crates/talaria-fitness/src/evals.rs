@@ -59,6 +59,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use talaria_agent_auth::now_ms;
 use talaria_capability_reach::{self, DbReach, ReachDeps, Supplier};
 use talaria_fitness_toolbox::credential_tools::CredentialSandbox;
 use talaria_fitness_toolbox::dry_run::{
@@ -554,9 +555,6 @@ pub fn idle_status() -> EvalSweepStatus {
     }
 }
 
-/// One candidate's checkpoint: its own row, then the two older shapes. The
-/// fallbacks are read-only and exist so a sweep that was in flight when the
-/// storage changed still resumes rather than re-buying its cases.
 async fn read_run(pg: &sqlx::PgPool, model: &str) -> EvalSweepStatus {
     let parse = |v: Value| serde_json::from_value::<EvalSweepStatus>(v).ok();
     if let Some(own) = parse(get_setting(pg, &run_key(model), Value::Null).await) {
@@ -651,13 +649,6 @@ pub fn real_deps(state: &AppState) -> EvalDeps {
         },
         now: Arc::new(now_ms),
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// UTC, milliseconds, trailing Z — the wire spelling, so every status row
@@ -868,8 +859,6 @@ fn retries_for(score: &EvalCaseScore) -> usize {
     }
 }
 
-/// A wait a Stop can interrupt. A sweep that ignored the button for twenty
-/// seconds of backoff would be the Stop bug again in a smaller costume.
 async fn backoff(ms: u64, stopped: &StopPred) {
     let until = now_ms() + ms as i64;
     while now_ms() < until {
@@ -979,13 +968,6 @@ impl Valve {
 /// parked lanes are not a spin loop.
 const PARK_MS: u64 = 250;
 
-/// Run `items` through `worker`, `valve.width()` at a time, stopping early
-/// when `stop` says so. Order of COMPLETION is not order of submission, which
-/// is fine: the resume ledger is a set of case keys and every rate is
-/// computed over the whole list.
-///
-/// Lanes are TASKS, parked below the width — see `Valve` for why that has to
-/// be live rather than a lane count fixed at spawn time.
 async fn pool(
     items: Vec<&'static EvalCase>,
     valve: &Arc<Valve>,
@@ -1499,7 +1481,6 @@ struct CaseRun {
     completion_tokens: i64,
     estimated: bool,
     timed_out: bool,
-    /// EVERY UPSTREAM CALL THIS CASE MADE, in order.
     upstream: Vec<UpstreamAttempt>,
 }
 
@@ -1527,11 +1508,7 @@ fn settle_open(calls: &[UpstreamAttempt], started_at: i64, now: i64) -> Vec<Upst
 /// total kill is a case that was still working when our turn budget ran out.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum FiredClock {
-    /// No upstream call settled inside the idle allowance: a request hung, or
-    /// the loop stalled between calls.
     Idle,
-    /// The case was still working — calls settling — when the total backstop
-    /// arrived.
     Total,
 }
 
@@ -1832,19 +1809,12 @@ const STOP_POLL_MS: u64 = 500;
 /// as one pressed against this one.
 const STOP_WATCH_MS: u64 = 1_000;
 
-/// The three sandbox surfaces a dry run can run against, narrowed to what the
-/// sweep and the loop both need. The loop cares about `tools` and `dispatch`
-/// (the `DispatchSandbox` impl); the sweep's fixtures additionally read the
-/// call log and the world, and the archive reads the same log with results.
 // Boxing the big variant would ripple through every construction site for no
 // behavioral gain; the enum is built once per case.
 #[allow(clippy::large_enum_variant)]
 enum CaseSurface {
-    /// Talaria's own toolkit over an in-memory world.
     Toolkit(Sandbox),
-    /// A coding harness: files and a test runner.
     Files(WorkbenchSandbox),
-    /// A credential surface: a shell and outbound HTTP.
     Credentials(CredentialSandbox),
 }
 
@@ -1952,10 +1922,7 @@ fn sweep_harness_deps(
 enum CaseOutcome {
     Done(Result<talaria_harness::run::HarnessResult, String>),
     Stopped,
-    /// `idle` names which clock fired — the sentence and the score read it.
-    TimedOut {
-        idle: bool,
-    },
+    TimedOut { idle: bool },
 }
 
 /// One fixture, replayed once against the candidate. None means the case was
@@ -3600,27 +3567,13 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct World {
-        /// Replies per model call, in order; the last one repeats.
         replies: Vec<Reply>,
         guard_mode: Option<GuardMode>,
-        /// Does the candidate's transport run the model's own tool loop?
-        /// Defaults to true (a fleet persona) — the answer that changes
-        /// nothing.
         own_tools: bool,
-        /// Can it be handed tool DEFINITIONS instead — the gateway's answer,
-        /// and what lets the sweep supply the loop itself and dry-run.
         tool_defs: bool,
-        /// Called with the 1-based call number, before the reply is handed
-        /// back.
         on_call: Option<Arc<dyn Fn(usize) + Send + Sync>>,
-        /// Capabilities the model is MEASURED unable to run (the floor edge).
         missing: Vec<String>,
-        /// Answer the capability sheet with a measured `search: false` — the
-        /// fact a probe writes. The floor consults the sheet when it refuses,
-        /// so the floor-refusal test has to put the fact there rather than
-        /// merely name the capability missing.
         capability_false: bool,
-        /// Settle this many ms late, so overlap is observable at all.
         sleep_ms: u64,
     }
 
@@ -3985,7 +3938,6 @@ mod tests {
         AppState::new(talaria_db::pool(&cfg), cfg)
     }
 
-    /// The caller holds ONE_SWEEP_AT_A_TIME for the whole test.
     async fn sweep(b: &Bench, model: &str) -> EvalSweep {
         sweep_with(b, model, |_| {}).await
     }

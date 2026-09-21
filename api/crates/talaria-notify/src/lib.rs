@@ -18,6 +18,7 @@ use futures_util::future::BoxFuture;
 use serde_json::Value;
 use sqlx::PgPool;
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_realtime::{RealtimeDeps, UserEvent, publish_user};
 use talaria_settings::{get_setting, set_setting};
 
@@ -414,10 +415,6 @@ pub async fn add_notification(
     Ok(())
 }
 
-/// The raw notify_prefs blob, None on any read failure — prefsBlob's
-/// forgiving-by-design corner: a preference is a modifier with a perfectly
-/// good default, and the inbox must not 500 over the column that only
-/// decides where mail goes.
 async fn prefs_blob(pg: &PgPool, user_id: &str) -> Option<Value> {
     match sqlx::query_scalar::<_, Value>("select notify_prefs from users where id = $1::uuid")
         .bind(user_id)
@@ -526,18 +523,6 @@ pub async fn set_notify_delivery(pg: &PgPool, email_enabled: bool) -> Result<(),
 // the one after it — and one small settings read per mail is nothing next to
 // an SMTP round trip.
 
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// The switch read that can FAIL. get_setting (above) swallows a broken read
-/// into its fallback — exactly right for the settings panel, exactly wrong
-/// here, where "off because the read broke" and "off because an admin said
-/// so" must never be confused: the first keeps the queue, the second
-/// discards it. Err is the unreadable switch.
 async fn read_delivery_switch(pg: &PgPool) -> Result<bool, sqlx::Error> {
     let stored: Option<Value> = sqlx::query_scalar("select value from app_settings where key = $1")
         .bind(DELIVERY_KEY)
@@ -723,13 +708,7 @@ struct QueuedMail {
     body: Option<String>,
     href: Option<String>,
     queued_at: i64,
-    /// The notification row this mail duplicates, when — and ONLY when — the
-    /// row is to be filed read once the mail is actually accepted by a
-    /// provider. None for `both`, where the in-app copy is wanted unread
-    /// either way. An id and not a boolean because the read-mark happens
-    /// AFTER delivery, in the drain, not at insert time.
     mark_read_id: Option<String>,
-    /// How many times a transport has already refused this one.
     attempts: u32,
 }
 
@@ -739,11 +718,8 @@ struct OutboxState {
     discarded: usize,
     sent: usize,
     failed: usize,
-    /// Retried to the limit and given up on. Distinct from `failed`, which
-    /// counts ATTEMPTS: one abandoned mail is MAX_SEND_ATTEMPTS failures.
     abandoned: usize,
     consecutive_failures: u32,
-    /// Epoch ms before which the drain does not attempt a send.
     paused_until: i64,
 }
 
@@ -753,9 +729,6 @@ struct OutboxState {
 /// a drain is mid-send. The tokio mutex below it is the serial consumer.
 pub struct Outbox {
     state: Mutex<OutboxState>,
-    /// One drain at a time. A concurrent caller waits for the in-flight pass
-    /// to finish and then finds whatever is left — the invariant that matters
-    /// is never two drains sending at once.
     serial: tokio::sync::Mutex<()>,
 }
 
@@ -803,7 +776,6 @@ impl Outbox {
         });
     }
 
-    /// Send what is queued, within a time budget. See `drain_notification_mail`.
     async fn drain(&self, deps: &DrainDeps, budget_ms: i64) -> MailDrainResult {
         let _serial = self.serial.lock().await;
         let mut result = {
@@ -1149,8 +1121,6 @@ pub async fn instance_base_url(pg: &PgPool) -> Option<String> {
     Some(format!("https://{domain}"))
 }
 
-/// Absolute URL for an in-app path, or None when this deployment has no
-/// verified domain to build one from.
 async fn app_url(pg: &PgPool, path: &str) -> Option<String> {
     let slash = if path.starts_with('/') { "" } else { "/" };
     instance_base_url(pg)
@@ -1239,18 +1209,6 @@ fn notification_email_parts(
     }
 }
 
-/// Send one notification as mail. Resolves the recipient, builds the deep
-/// link, and REPORTS every reason it couldn't — a person who turned email on
-/// and hears nothing must be able to find out why from the server log.
-/// Never fails: a send is the last thing that should be able to take down the
-/// loop draining the queue.
-///
-/// A recipient with no address is `ok` without `delivered`. It is not a
-/// delivery failure and must not count toward the breaker: no number of
-/// address-less users means the mail server is broken. `blocked` is the third
-/// outcome and it is neither — the instance switch went off, and the drain
-/// stops on it rather than counting it, because "sent" must never name a mail
-/// that was refused at the gate.
 async fn send_notification_email(
     pg: &PgPool,
     sb: &talaria_secretbox::SecretBox,
@@ -1343,12 +1301,6 @@ async fn send_notification_email(
     }
 }
 
-/// The mail is out, so the row it duplicates can be filed read. Only ever
-/// called after a provider ACCEPTED the message — never for a mail that was
-/// queued, dropped, discarded, refused by the master switch, or sent to a
-/// user with no address. A notification whose email did not go out has to
-/// stay unread, because the inbox is then the only place the person will ever
-/// see it.
 async fn mark_read_on_delivery(pg: &PgPool, notification_id: &str) {
     if let Err(e) = sqlx::query(
         "update notifications set read_at = now() \
@@ -1940,9 +1892,7 @@ mod tests {
     /// Everything a drain test wants to steer or observe, behind Arc<Mutex>
     /// so the boxed futures in DrainDeps can reach it.
     struct FakeEdge {
-        /// The drain's top-of-pass switch read. Err = unreadable.
         delivery: StdMutex<Result<bool, String>>,
-        /// One per send attempt, in order; an empty list answers ok+delivered.
         outcomes: StdMutex<Vec<SendOneResult>>,
         marked_read: StdMutex<Vec<String>>,
         sent_kinds: StdMutex<Vec<String>>,

@@ -19,8 +19,6 @@ use talaria_state::AppState;
 
 use talaria_retrieval_http::HttpFetch;
 
-/// OpenRouter's key can come from the LLM endpoint the org already registered
-/// — the rerank config only needs its own key when none exists there.
 async fn openrouter_fallback_key(state: &AppState) -> Option<String> {
     let eps = list_endpoints(&state.pg).await.ok()?;
     let ep = eps
@@ -200,9 +198,6 @@ fn defaults_value() -> Value {
     json!({"provider": "off", "candidates": 30})
 }
 
-/// The stored row verbatim, defaults when absent. The column is jsonb, so
-/// the keys come back in Postgres's own canonical order (shortest key
-/// first), and that order flows straight onto the admin wire below.
 async fn stored_config(pg: &PgPool) -> Value {
     get_setting(pg, KEY, defaults_value()).await
 }
@@ -317,7 +312,6 @@ pub async fn rerank_config_public(pg: &PgPool) -> Value {
     public_of(stored_config(pg).await)
 }
 
-/// The shared JSON fetch: 15s budget, non-ok is `"{status}: {first 200 chars}"`.
 async fn json_fetch(
     http: &HttpFetch,
     method: &str,
@@ -551,8 +545,6 @@ fn align(scored: &[Scored], len: usize) -> Vec<f64> {
     scores
 }
 
-/// Unseal the configured key. Every failure here is None — never a panic,
-/// never a search failure.
 async fn open_key(state: &AppState, sealed: &str) -> Option<String> {
     state.secretbox().await.ok()?.open(sealed).ok()
 }
@@ -574,9 +566,6 @@ pub async fn rerank(
     Some(align(&scored, texts.len()))
 }
 
-/// The provider dispatch, factored from the config read so it is drivable
-/// against a stated config (and testable without a live app_settings row).
-/// Every failure inside is None, never an error.
 async fn rerank_dispatch(
     state: &AppState,
     http: &HttpFetch,
@@ -1099,10 +1088,6 @@ mod tests {
         );
     }
 
-    /// The rerank() body with the config read factored out, so tests drive
-    /// dispatch without a live app_settings row. It is the SAME match — the
-    /// test-only seam is the cfg parameter, and rerank() is its only other
-    /// caller in spirit: rerank() = read cfg → this.
     async fn dispatch_for_test(
         state: &AppState,
         http: &HttpFetch,

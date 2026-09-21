@@ -98,8 +98,6 @@ fn num(v: Option<&Value>) -> Option<f64> {
     }
 }
 
-/// One raw model block → a config target, ensuring its endpoint exists and
-/// lists the model.
 async fn target_of(pg: &PgPool, block: &Value) -> Result<Value, sqlx::Error> {
     let ep = endpoint_for(block);
     ensure_endpoint(
@@ -203,8 +201,6 @@ pub async fn federate_from_dir(pg: &PgPool, dir: &str, actor: &str) -> FederateR
     result
 }
 
-/// One roster entry; Err carries `${slug}: message`'s inner text. Ok(None) =
-/// the entry was skipped without an error line.
 async fn federate_one(
     pg: &PgPool,
     root: &std::path::Path,
@@ -360,8 +356,6 @@ async fn federate_one(
     }))
 }
 
-/// Copy what isn't there yet, never overwriting, ignoring everything that
-/// goes wrong. Iterative (a worklist), so no async recursion.
 async fn copy_dir_new(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     if !src.is_dir() {
         return Ok(());

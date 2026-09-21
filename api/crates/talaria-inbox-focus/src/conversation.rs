@@ -30,6 +30,7 @@ use crate::{
     reissue_focus_confirmation, run_focus_command, stream_reply, valid_response_model,
 };
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms;
 use talaria_conversations::{
     insert_streaming_assistant, insert_user_message, next_seq, touch_conversation, update_assistant,
 };
@@ -186,10 +187,6 @@ pub async fn archive_inbox_conversation(
     Ok(archived.is_some())
 }
 
-/// The instance a request may use: the requested one when it is the owner's
-/// live inbox conversation, else their most recently touched one. None when
-/// they have none — the READ path stops here (an empty page, no row created);
-/// the WRITE path (`resolve_inbox_conversation_for_write`) starts a fresh one.
 async fn owned_inbox_conversation_id(
     pg: &PgPool,
     user_id: &str,
@@ -232,22 +229,6 @@ async fn resolve_inbox_conversation_for_write(
     }
 }
 
-/// The model's history for ONE inbox conversation instance.
-///
-/// THE CONTEXT STRATEGY, in one place (the bounds live beside
-/// `limit_inbox_model_history`, which applies them): segmentation first — the
-/// owner picks the instance from the panel's chat picker, and starting a
-/// fresh one is how old context is shed. Within an instance: a turn window,
-/// and ATTACHMENTS EXPAND ONLY WHILE FRESH — full text for the last two user
-/// turns (the "keep asking about the doc I just attached" loop), a bare
-/// `[attached: …]` marker after that. Re-expanding every file on every turn
-/// forever was the single biggest silent bloat in this prompt: one 6k-char
-/// attachment rode along in full until it aged out of the turn window, on
-/// every command, answering questions that had nothing to do with it.
-///   · QUICK ACTIONS NEVER ENTER — decisions, proposals, confirmations and
-///     undos are timeline rows, not messages, so the noise the owner clicks
-///     through cannot become the model's context. That is a property of this
-///     loader reading `messages` only, and it is deliberate.
 async fn recent_inbox_history(
     pg: &PgPool,
     sb: &talaria_secretbox::SecretBox,
@@ -354,13 +335,6 @@ fn public_attachments(value: &Value) -> Value {
     Value::Array(out)
 }
 
-/// The effort the ANSWERING model may be asked for. Same rule as
-/// `valid_response_model`: the pick is checked against what the model's own
-/// metadata vouches for (`efforts_for_model` resolves the assistant persona
-/// to the model actually serving it), and a pick that fails the check is an
-/// error rather than a silent drop — the sender has a picker built on the same
-/// metadata, so a mismatch means one of the two is stale and both should say
-/// so. None (no pick) is always fine and means the model's default.
 async fn validated_effort(
     pg: &PgPool,
     model: Option<&str>,
@@ -383,10 +357,6 @@ async fn validated_effort(
     Ok(Some(effort.to_string()))
 }
 
-/// The persona-configured default for the answering model, held against its
-/// published levels — the same rule `/api/chat` applies when a chat sender
-/// made no pick. None for anything that is not a persona with a configured
-/// effort, and for a configured level the model no longer publishes.
 async fn default_effort_for(pg: &PgPool, model: Option<&str>) -> Option<String> {
     let model = model?;
     let configured = persona_configured_effort(pg, model).await?;
@@ -1047,10 +1017,6 @@ async fn timeline_rows(
     Ok((rows, has_more))
 }
 
-/// A decision row into its timeline record, reissuing a still-pending
-/// confirmation's token so the panel can act on an old proposal after a
-/// reload. `current_result` is the action result the route just produced
-/// (its token/expires win over the row's).
 async fn timeline_record_for_decision(
     state: &AppState,
     user: &SessionUser,
@@ -1133,13 +1099,6 @@ async fn timeline_record_for_decision(
         expires_at: expires_at.filter(|t| !t.is_empty()),
         undo_expires_at: undo_expires_at.filter(|t| !t.is_empty()),
     }))
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// One instance's timeline page. READ-ONLY: an owner with no instances yet

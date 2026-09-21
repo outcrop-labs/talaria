@@ -13,8 +13,6 @@ use talaria_session::require_view;
 use talaria_state::AppState;
 use talaria_teams::team_role;
 
-/// Read standing: any team member, or anyone granted Manage → Teams.
-/// Writes stay owner-gated on the mutation routes.
 pub(crate) async fn reader_gate(
     state: &AppState,
     headers: &HeaderMap,

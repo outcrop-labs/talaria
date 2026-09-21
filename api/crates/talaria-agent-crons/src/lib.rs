@@ -248,7 +248,6 @@ pub fn min_interval_minutes(schedule: &str) -> Option<f64> {
     Some(gap)
 }
 
-/// Refuse a schedule we can PROVE fires faster than the floor lets it.
 async fn assert_schedule_allowed(pg: &PgPool, schedule: &str) -> Result<(), String> {
     let Some(gap) = min_interval_minutes(schedule) else {
         return Ok(());

@@ -60,27 +60,14 @@ pub enum Seg {
 /// sentence it. `expected` matches zod's own word.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Issue {
-    /// The key was absent where the schema demanded a value.
     Missing,
-    /// `invalid_type` — wrong JSON type, or a null where the inner schema
-    /// (nullable not declared) wanted a value.
     InvalidType { expected: &'static str },
-    /// `invalid_value` — an enum non-member; `values` are the members,
-    /// pre-JSON-stringified, exactly as zod prints them.
     InvalidValue { values: Vec<String> },
-    /// `too_small` on a string's UTF-16 length.
     TooSmall(u64),
-    /// `too_big` on a string's UTF-16 length.
     TooBig(u64),
-    /// `too_small` on a number's bound — the sentence says "number", not
-    /// "string", so it cannot ride `TooSmall`.
     NumTooSmall(f64),
-    /// `too_big` on a number's bound.
     NumTooBig(f64),
-    /// `too_big` on an array's length.
     ArrayTooBig(u64),
-    /// The default branch — zod's own message, passed through verbatim (the
-    /// union failure's "Invalid input" arrives here).
     Message(String),
 }
 
@@ -101,51 +88,27 @@ impl Field {
 /// The schema algebra, closed over what the JSON harness defs declare.
 #[derive(Debug, Clone)]
 pub enum Schema {
-    /// `z.unknown()` — anything, passed through.
     Unknown,
-    /// `z.string()`, optionally trimmed and bounded by UTF-16 length.
     Str {
         trim: bool,
         min: Option<u64>,
         max: Option<u64>,
     },
-    /// `z.number()`.
     Num,
-    /// `z.number().min(min).max(max)` — the bounded number, parallel to
-    /// `Num` (a separate variant rather than fields on it: every existing
-    /// `Schema::Num` site is an unbounded number and stays untouched).
-    BoundedNum { min: f64, max: f64 },
-    /// `z.boolean()`.
+    BoundedNum {
+        min: f64,
+        max: f64,
+    },
     Bool,
-    /// `z.enum([...])`.
     Enum(Vec<String>),
-    /// `z.array(...)`.
     Array(Box<Schema>),
-    /// `z.array(...).max(max)` — the length-capped array, parallel to
-    /// `Array` for the same reason `BoundedNum` is parallel to `Num`.
     ArrayMax(Box<Schema>, u64),
-    /// `z.string().datetime()` — ISO 8601 in zod's exact dialect: `T`
-    /// separator, UTC `Z` suffix only (no offsets), calendar-valid. Every
-    /// other spelling — date-only, a space for the `T`, a `+01:00` offset,
-    /// a missing `Z` — is the same one issue.
     DateTime,
-    /// `z.object({...})` — closed on read (unknown keys strip), like zod's
-    /// default object.
     Object(Vec<Field>),
-    /// `z.record(z.string(), ...)` — an open string-keyed map. Note zod's
-    /// root-mismatch word for this shape is `record`, not `object`.
     Record(Box<Schema>),
-    /// `z.union([...])` — first branch that validates cleanly wins; every
-    /// branch failing is the one "Invalid input" issue.
     Union(Vec<Schema>),
-    /// `.nullable()` — null passes; anything else validates against the inner
-    /// schema.
     Nullable(Box<Schema>),
-    /// `.optional()` — an absent key passes (and stays absent in the
-    /// output); a present value validates against the inner schema.
     Optional(Box<Schema>),
-    /// `.default(v)` — an absent key passes and the output carries `v`; a
-    /// present value validates against the inner schema.
     Defaulted(Box<Schema>, Value),
 }
 

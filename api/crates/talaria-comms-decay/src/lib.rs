@@ -60,13 +60,8 @@ fn clip(s: &str, max: usize) -> String {
 /// having archived NOTHING.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistillOutcome {
-    /// Distilled (or empty and nothing to distill), indexed, and archived.
     Archived,
-    /// No Distiller model and no muse for the owner — nothing can summarize
-    /// it, so it is left exactly where it was for a sweep that has one.
     NoModel,
-    /// The model answered with nothing. Left unarchived on purpose:
-    /// archiving on a failed distillation is how the substance is lost.
     EmptyDistillation,
 }
 
@@ -140,7 +135,6 @@ pub fn real_decay_deps(state: &AppState) -> DecayDeps {
     }
 }
 
-/// Distill one idle agent DM into the activity brain, then archive it.
 async fn distill_conversation(state: &AppState, conv: IdleConv) -> Result<DistillOutcome, String> {
     let msgs: Vec<(String, String)> = sqlx::query_as(
         "select role, content from messages \
@@ -278,8 +272,6 @@ pub struct DecaySweepResult {
     pub failed: usize,
 }
 
-/// The accounting loop, split from the query so the invariants can be pinned
-/// without a database.
 async fn run_sweep(idle: Vec<IdleConv>, distill: &DistillFn) -> DecaySweepResult {
     let mut result = DecaySweepResult {
         considered: idle.len(),

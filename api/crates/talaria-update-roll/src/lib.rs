@@ -33,6 +33,7 @@ use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms;
 use talaria_fleet_docker::docker;
 use talaria_runs_lease::{AcquireResult, RedisLeases, keep_lease_alive, lease_key};
 use talaria_update_docker::{
@@ -97,13 +98,6 @@ fn stale_close_due(age_ms: i64, retired_is_self: bool) -> bool {
     age_ms > STALE_RUN_MS && !retired_is_self
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 pub fn now_iso() -> String {
     epoch_ms_to_iso(now_ms())
 }
@@ -166,8 +160,6 @@ fn other(slot: Slot) -> Slot {
     }
 }
 
-/// The digest-pinned image reference a slot container runs
-/// (`Config.Image`), if the container exists.
 async fn slot_image_ref(slot: Slot) -> Option<String> {
     let (out, _) = docker(
         &["inspect", "-f", "{{.Config.Image}}", &slot_container(slot)],
@@ -536,13 +528,6 @@ pub async fn reconcile_boot(pg: &PgPool) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// The wrong-close heal. The 60-minute stale-close used to fire on live
-/// adoption holds (see [`stale_close_due`] — the exemption is new), leaving
-/// runs marked failed while their containers finished the handover anyway;
-/// the canary's row had to be healed by hand. When THIS container is the
-/// digest the failed run rolled to, nothing retired is running, and the
-/// edge answers along the world's path, the truth is done — land it, the
-/// same landing the green reconcile would have made.
 async fn heal_wrongly_closed_run(
     pg: &PgPool,
     state: &UpdateState,
@@ -602,9 +587,6 @@ async fn heal_wrongly_closed_run(
     ))
 }
 
-/// GET /api/healthz through the edge container, on the internal network —
-/// green proving itself along the exact path the world will dial, not just
-/// its own loopback.
 async fn verify_through_edge() -> bool {
     let host = format!(
         "http://{}/api/healthz",

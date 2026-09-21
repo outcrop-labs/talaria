@@ -66,7 +66,6 @@ pub struct DraftTemplateCtx<'a> {
     pub template_id: Option<&'a str>,
 }
 
-/// The ticket template as the model is told about it, or nothing.
 async fn template_block(
     pg: &sqlx::PgPool,
     agent_model: &str,
@@ -87,12 +86,6 @@ async fn template_block(
         .map(|t| template_prompt(t, "ticket descriptions")))
 }
 
-/// Draft ticket proposals from a transcript. Shared by the channel Plan
-/// button and the first-class Plan surface.
-///
-/// The early-out sits ahead of the harness on purpose: a conversation with
-/// nothing in it has no tickets in it, and this is what stops the Plan button
-/// spending a model call and a harness_runs row to discover that.
 async fn plan_from_transcript(
     state: &AppState,
     transcript: &str,
@@ -193,9 +186,7 @@ impl DraftSource {
 
 /// The optional context a draft carries.
 struct PlanOpts<'a> {
-    /// The plan's living document — the authoritative source when present.
     plan_doc: Option<&'a str>,
-    /// The resolved ticket template — descriptions must follow its skeleton.
     template_prompt: Option<String>,
 }
 

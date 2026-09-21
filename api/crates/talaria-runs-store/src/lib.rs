@@ -33,14 +33,9 @@ use talaria_runs_define::{DecisionAnswer, RunDecision, RunRow, RunState, is_term
 /// clean handover gets logged as an error.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WriteFailure {
-    /// Another instance owns this run now. A CLEAN STOP, not a fault.
     LeaseLost { state: RunState },
-    /// Somebody cancelled it while the step was running. Honor it.
     Cancelled,
-    /// The row is gone (the owner's account was deleted mid-run, say).
     Missing,
-    /// The row is no longer `running` and not cancelled — another driver
-    /// parked or finished it. Also a clean stop.
     State { state: RunState },
 }
 
@@ -51,10 +46,6 @@ pub type WriteOutcome = Result<(), WriteFailure>;
 /// sweep will find it again.
 #[derive(Debug, Clone)]
 pub enum ClaimOutcome {
-    /// This run is ours. `reclaimed` = it was RECLAIMED from a driver that
-    /// stopped renewing — a crash, a deploy, or a container paused past its
-    /// lease — and `attempt` has already been incremented on the row. Boxed:
-    /// the row is 20-odd fields and would dwarf the empty arms of this enum.
     Claimed {
         run: Box<RunRow>,
         reclaimed: bool,
@@ -73,18 +64,8 @@ pub enum ClaimOutcome {
 pub enum AnswerOutcome {
     Answered(Box<RunRow>),
     Missing,
-    /// Not `awaiting` — either it never was, or a second answer of the same
-    /// question won the race (somebody answered it, which is what they
-    /// wanted).
-    NotAwaiting {
-        state: Option<RunState>,
-    },
-    /// The answer names a question this run is not parked on — a stale tab,
-    /// the run having since been re-parked on a DIFFERENT question. Two
-    /// people, two devices, one run: this is not hypothetical.
-    StaleKey {
-        state: RunState,
-    },
+    NotAwaiting { state: Option<RunState> },
+    StaleKey { state: RunState },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,10 +290,6 @@ pub fn hydrate(row: &PgRow) -> Result<RunRow, sqlx::Error> {
     })
 }
 
-/// Explain a compare-and-set that matched nothing. Costs one extra read, and
-/// only on the path where something already went sideways — the alternative is
-/// a driver that logs 'write failed' for a clean handover, a cancellation and
-/// a deleted row alike, which is the exact silence this project is eliminating.
 async fn why(pg: &PgPool, id: &str, token: &str) -> WriteFailure {
     match get_pg(pg, id).await {
         Ok(None) => WriteFailure::Missing,
@@ -362,10 +339,6 @@ impl PgRunStore {
     }
 }
 
-/// One compare-and-set write: run the statement, and if it matched nothing,
-/// explain WHY it did not land. Every write shares this shape; the macro keeps
-/// the predicate (in the SQL) and the explanation (in `why`) reading as one
-/// decision instead of two that can drift.
 macro_rules! cas_write {
     ($pg:expr, $id:expr, $token:expr, $sql:expr, $($bind:expr),* $(,)?) => {{
         let rows = sqlx::query($sql)$(.bind($bind))*.fetch_all($pg).await?;

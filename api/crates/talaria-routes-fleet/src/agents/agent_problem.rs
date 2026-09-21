@@ -53,16 +53,6 @@ use talaria_teams::create_team;
 const HELPDESK: &str = "Helpdesk";
 const TALARIA: &str = "Talaria";
 
-/// The workspace Helpdesk — "Talaria > Helpdesk", org-wide. Tickets agents
-/// file about their own gaps land on ONE board the whole workspace can open,
-/// not a private board owned by whichever admin happened to be earliest.
-///
-/// Every call runs the full idempotent ensure: claim the board for the
-/// workspace (org_wide + under the Talaria team, so the nav groups it under
-/// "Talaria"), join everyone who exists, and keep it open to every agent.
-/// That last part is also the UPGRADE path — a Helpdesk board created by the
-/// old code is found by name and claimed rather than left personal.
-/// Any failure inside reads as "no board".
 async fn helpdesk_board(pg: &sqlx::PgPool) -> Option<String> {
     let admin: Option<(String,)> = sqlx::query_as(
         "select id::text from users order by (role = 'admin') desc, created_at asc limit 1",

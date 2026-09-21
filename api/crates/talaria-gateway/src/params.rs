@@ -25,14 +25,8 @@ use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+pub use talaria_agent_auth::now_ms;
 
 // ── ISO-8601 ↔ epoch ms ──────────────────────────────────────────────────────
 // JS Date.parse/toISOString on exactly the shape we store (always Z, always

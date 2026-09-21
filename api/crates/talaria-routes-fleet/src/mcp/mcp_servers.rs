@@ -601,7 +601,6 @@ pub async fn post(
     Json(json!({ "server": wire })).into_response()
 }
 
-/// Create, sniff the auth shape, re-read when the sniff flipped OAuth on.
 async fn create_and_sniff(
     pg: &PgPool,
     input: &NewServer<'_>,

@@ -8,6 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::pending_actions::decide_action;
 use talaria_body::{as_object, enum_member, parse};
 use talaria_error::{house_error, house_error_msg, thrown_internal_error};
@@ -71,12 +72,4 @@ pub async fn post(
         ),
         status => Json(json!({ "status": status })).into_response(),
     }
-}
-
-/// Epoch-ms clock — the one time a decision executes under.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

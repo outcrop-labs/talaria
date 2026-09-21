@@ -40,16 +40,9 @@ pub struct HealthInput<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Suspicion {
-    /// Every model that ran it came back wrong. Read the fixture first.
     Ours,
-    /// More than half, but not all. Could be a hard task, could be a fixture
-    /// that only the strongest model satisfies — worth a look either way.
     Shared,
-    /// One model of several. That is what a fitness suite is FOR.
     Model,
-    /// Fewer than two models have run it, so nothing can be concluded. Said out
-    /// loud rather than defaulting to 'model', because "no evidence" and "the
-    /// model's fault" are the two readings this whole file exists to separate.
     Unknown,
 }
 

@@ -21,6 +21,7 @@ use crate::sources::{
     EFFECTIVE_DOC_SELECT, KbDocSync, TicketSrc, index_activity, index_personal, index_ticket,
     kb_doc_of, sync_kb_doc,
 };
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_runs_define::RunState;
 use talaria_runs_store::{KindRunView, latest_run_of_kind};
 
@@ -162,13 +163,6 @@ pub async fn backfill_status(pg: &PgPool) -> BackfillStatus {
 /// The app_settings key holding the last sweep's high-water mark.
 const SWEEP_KEY: &str = "rag_sweep_watermark";
 const SWEEP_INTERVAL_MS: i64 = 15 * 60_000;
-
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// `Option<String>` → JSON string-or-null, preserving the key when absent —
 /// the payload feeds the content hash, so key presence must be stable.

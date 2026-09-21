@@ -20,9 +20,6 @@ use talaria_state::AppState;
 
 const CONFIG_KEY: &str = "guardrails_config";
 
-/// Defaults-under-stored for the WIRE: the five schema keys in fixed order,
-/// each falling to its default when the stored object lacks it. Values pass
-/// through verbatim (a stored `minConfidence: 1` reads back as 1, not 1.0).
 async fn config_for_wire(pg: &sqlx::PgPool) -> Value {
     let stored = get_setting(pg, CONFIG_KEY, serde_json::json!({})).await;
     let mut out = serde_json::Map::new();

@@ -30,8 +30,6 @@ pub(crate) struct Toolkit {
     tools: Option<Vec<String>>,
 }
 
-/// The validated body — every field Option<"present"> so the same run serves
-/// POST (name required) and the PUT patch (everything optional).
 pub(crate) struct WorkflowBody {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -41,9 +39,6 @@ pub(crate) struct WorkflowBody {
     pub enabled: Option<bool>,
 }
 
-/// The POST body, checks in schema order: name, description, match
-/// (labels → boards → keywords), skills, toolkits, enabled. Unknown keys
-/// are stripped at every level — the schema objects are not strict.
 pub(crate) fn validate_workflow_body(
     obj: &serde_json::Map<String, Value>,
     post: bool,
@@ -102,9 +97,6 @@ pub(crate) fn validate_workflow_body(
     })
 }
 
-/// The stored jsonb for a PRESENT match: only facets that were PRESENT
-/// (absent optionals are dropped, never nulled). None in, None out, so the
-/// PUT patch leaves absent fields untouched; POST substitutes {} / [].
 pub(crate) fn match_json(r: &Option<MatchRules>) -> Option<Value> {
     let r = r.as_ref()?;
     let mut m = serde_json::Map::new();

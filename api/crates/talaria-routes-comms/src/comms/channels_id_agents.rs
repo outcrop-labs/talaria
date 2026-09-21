@@ -89,7 +89,6 @@ pub async fn delete(
     Json(json!({ "ok": true })).into_response()
 }
 
-/// Any role at all (member or owner) admits the call.
 async fn member_gate(state: &AppState, user_id: &str, id: &str) -> bool {
     match channel_role(&state.pg, user_id, id).await {
         Ok(r) => r.is_some(),

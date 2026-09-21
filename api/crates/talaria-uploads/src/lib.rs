@@ -284,11 +284,9 @@ pub const ROUTE_BODY_LIMIT: usize = MAX_BYTES + 2 * FORM_ENVELOPE_BYTES;
 /// later one. Both failure reasons map to the same 400 (`no file`) at the
 /// route, so Malformed and NoFile stay distinct only for the log line.
 pub enum FormRead {
-    /// (filename, mime, bytes) of the first `file` part.
     File(String, String, Vec<u8>),
     TooLarge,
     Malformed,
-    /// No `file` part, or the first one is a plain text field.
     NoFile,
 }
 
@@ -709,15 +707,12 @@ impl JobStatus {
         serde_json::Value::Object(f)
     }
 
-    async fn save(&self, pg: &PgPool, key: &str) {
-        let _ = talaria_gateway::settings::set_setting(pg, key, &self.to_json()).await;
+    fn now_ms() -> i64 {
+        talaria_agent_auth::now_ms()
     }
 
-    fn now_ms() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+    async fn save(&self, pg: &PgPool, key: &str) {
+        let _ = talaria_gateway::settings::set_setting(pg, key, &self.to_json()).await;
     }
 }
 

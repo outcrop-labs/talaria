@@ -25,7 +25,6 @@ struct ArtifactTarget {
     target_id: String,
 }
 
-/// The artifact's outgoing links.
 async fn targets_for_artifact(pg: &PgPool, artifact_id: &str) -> Vec<ArtifactTarget> {
     // Fire-and-forget callers only: a failed read is no links, which routes
     // like an unlinked artifact rather than failing the re-placement.
@@ -44,9 +43,6 @@ async fn targets_for_artifact(pg: &PgPool, artifact_id: &str) -> Vec<ArtifactTar
     .collect()
 }
 
-/// Keep the activity brain current on a plan document (ACL: the plan's
-/// owner). Respects the artifact's routing — 'none'/explicit-brain docs
-/// stay out of the activity brain (this module owns those placements).
 async fn index_plan_doc(
     pg: &PgPool,
     qd: &QdrantDeps,

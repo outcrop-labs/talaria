@@ -18,9 +18,6 @@ use talaria_retrieval_embed::EmbedDeps;
 use talaria_retrieval_index::{DocAcl, IndexDoc, index_document, unindex_document};
 use talaria_retrieval_qdrant::{QdrantDeps, delete_by_filter};
 
-/// The auto collection of a kind ('activity' | 'org-kb'), ensuring the auto
-/// pair exists on a miss (first-ever write after boot, or the health sweep is
-/// late) and re-reading. None when it still doesn't exist — the caller skips.
 async fn auto_collection_id(
     pg: &PgPool,
     qd: &QdrantDeps,
@@ -213,8 +210,6 @@ pub const EFFECTIVE_DOC_SELECT: &str = r#"
          case when d.perms_inherited then coalesce(s.visibility, d.visibility) else d.visibility end as visibility
   from kb_docs d left join kb_spaces s on s.id = d.space_id"#;
 
-/// The custom collection a KB space feeds (curation: bind a space to a brain
-/// on Admin → Retrieval), if any.
 async fn space_brain(pg: &PgPool, space_id: Option<&str>) -> Result<Option<String>, sqlx::Error> {
     let Some(sid) = space_id else { return Ok(None) };
     sqlx::query_scalar::<_, String>(

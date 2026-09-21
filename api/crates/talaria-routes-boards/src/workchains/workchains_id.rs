@@ -28,8 +28,6 @@ use talaria_realtime_watch::{BoardEvent, RealtimeDeps, publish_board};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-/// The workchain's board, in one read — the gate every handler below needs
-/// before it may look at anything else.
 async fn chain_board(state: &AppState, id: &str, action: &str) -> Result<Option<String>, Response> {
     let board: Option<(Option<String>,)> =
         match sqlx::query_as("select board_id::text from task_workchains where id = $1::uuid")
@@ -46,8 +44,6 @@ async fn chain_board(state: &AppState, id: &str, action: &str) -> Result<Option<
     Ok(board.and_then(|(b,)| b))
 }
 
-/// The write gate: owner or editor — the same predicate the board's other
-/// configuration writes use.
 async fn write_gate(
     state: &AppState,
     user_id: &str,
@@ -180,9 +176,6 @@ pub async fn patch(
     Json(json!({ "ok": true })).into_response()
 }
 
-/// Rewrite the chain's step order in one transaction: every named task must
-/// already be a step of THIS chain, and the chain's updated_at moves with
-/// the change.
 async fn reorder_steps(
     state: &AppState,
     chain_id: &str,

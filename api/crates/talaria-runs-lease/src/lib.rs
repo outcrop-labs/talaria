@@ -231,22 +231,12 @@ pub struct LeaseToken {
 
 pub enum AcquireResult {
     Acquired(LeaseToken),
-    /// Someone holds it — possibly us, from earlier. Ask `lease_holder` if the
-    /// distinction matters; it costs a round trip, which is why it is not
-    /// folded in here.
     Held,
-    /// Redis could not be asked. NOT a failure of the leased work — the caller
-    /// decides whether that means skip (scheduler) or defer (runs); it never
-    /// means "mark it broken".
     Unavailable(String),
 }
 
 pub enum LeaseResult {
     Ok,
-    /// The compare-and-set found a different value (or none): the lease
-    /// expired and may already belong to someone else. For a job that means
-    /// the run overran its TTL; for a run it means another instance has
-    /// reclaimed the row and THIS process must stop writing to it.
     Lost,
     Unavailable(String),
 }
@@ -461,16 +451,8 @@ pub fn run_lease_key(run_id: &str) -> String {
 }
 
 pub enum RunClaim {
-    /// This process may step the run. Release it when the step ends — on
-    /// EVERY path, including the failing ones — or the run sits idle until
-    /// the TTL lapses.
     Claimed(LeaseToken),
-    /// Another instance is stepping this run right now. Not an error and not
-    /// a reason to touch the row: come back later, or move on to another run.
     Busy,
-    /// Redis could not be asked, so this process cannot know whether it is
-    /// alone. LEAVE THE ROW ALONE — do not step it, and above all do not mark
-    /// it failed. The checkpoint is durable and a later sweep will claim it.
     Blocked(String),
 }
 

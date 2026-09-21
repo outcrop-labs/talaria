@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+use talaria_agent_auth::now_ms;
 use talaria_boards::board_visibility_sql;
 use talaria_brain_health::fleet_brain_health;
 use talaria_fleet_agents::list_agents;
@@ -57,13 +58,6 @@ pub struct Alert {
 /// budget, so ten drains' worth of waiting is not a backlog moving slowly — it
 /// is a backlog not moving.
 const OUTBOX_STALE_MS: i64 = 5 * 60_000;
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 // Polled by /alerts (60s) and Home (30s): a short cache keeps repeat loads
 // instant, and the probes below run in PARALLEL — serially they added up to
@@ -569,9 +563,6 @@ fn leak(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }
 
-/// The fleet MCP probe: POST like a tool client, 2.5s budget. Up means 401
-/// (auth required — the service is ALIVE) or any 2xx. Everything else,
-/// including a timeout, reads as down.
 async fn probe_mcp() -> bool {
     let url = format!("http://127.0.0.1:{}/mcp", mcp_port());
     let client = reqwest::Client::new();

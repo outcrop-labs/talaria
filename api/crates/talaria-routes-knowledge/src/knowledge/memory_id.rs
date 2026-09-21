@@ -14,8 +14,6 @@ use talaria_personal_agent::owns_agent;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-/// The gate both verbs share: an agent's memory is its owner's (or admin's)
-/// business — a personal assistant's memory is dense private context.
 async fn allowed(state: &AppState, user_id: &str, role: &str, def_id: &str) -> bool {
     role == "admin" || owns_agent(&state.pg, user_id, None, Some(def_id)).await
 }

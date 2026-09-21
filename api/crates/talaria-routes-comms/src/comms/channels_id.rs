@@ -188,7 +188,6 @@ pub async fn delete(
     Json(json!({ "ok": true })).into_response()
 }
 
-/// The PUT/DELETE gate: role must read exactly 'owner'.
 async fn owner_gate(state: &AppState, user_id: &str, id: &str) -> bool {
     match channel_role(&state.pg, user_id, id).await {
         Ok(Some(role)) => role == "owner",

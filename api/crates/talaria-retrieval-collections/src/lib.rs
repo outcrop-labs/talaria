@@ -381,7 +381,6 @@ pub async fn ensure_personal_collection(
     Ok(col)
 }
 
-/// Add a single access binding without disturbing the others.
 async fn add_binding(
     pg: &PgPool,
     collection_id: &str,
@@ -444,11 +443,6 @@ pub async fn set_bindings(
     Ok(())
 }
 
-/// Resolve a principal against the directories. The fleet key authenticates
-/// the FLEET, not an identity: x-agent-name is self-declared, so a name that
-/// isn't a registered agent must resolve to nothing at all. Same for a user
-/// id that isn't a user. Returns the sentinels the access query compares
-/// against — '' meaning "unresolved", which no binding can match.
 async fn resolve_principal(
     pg: &PgPool,
     user_id: Option<&str>,

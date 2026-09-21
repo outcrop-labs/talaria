@@ -731,7 +731,6 @@ pub enum ClearError {
     Db(#[from] sqlx::Error),
 }
 
-/// The store arms' one shape: literal SQL, string binds, "did a row change".
 async fn run_clear(pg: &PgPool, sql: &'static str, binds: &[&str]) -> Result<bool, sqlx::Error> {
     let mut q = sqlx::query(sql);
     for b in binds {
@@ -824,9 +823,6 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
     }
 }
 
-/// The `setting:` arm — null the leaf, not delete the key: several of these
-/// configs read the key's presence and a missing key would fall back to a
-/// DEFAULT rather than to "unset". Read-modify-write under a row lock.
 async fn clear_setting_leaf(pg: &PgPool, key: &str, dotted: &str) -> Result<bool, ClearError> {
     if key.is_empty() {
         return Err(ClearError::Unknown);

@@ -49,10 +49,6 @@ pub struct PlanDraft {
     pub created_at: String,
 }
 
-/// The row both reads reduce to. `active`
-/// picks the join: the latest draft ANY state (the review's way back), or the
-/// latest whose run is still live (the single-flight check — inner join, so a
-/// draft whose run row is gone does not block a new one).
 async fn draft_for(
     pg: &PgPool,
     conversation_id: &str,

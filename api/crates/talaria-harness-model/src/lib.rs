@@ -170,8 +170,6 @@ struct Chain<'a, E: ResolveEdges + ?Sized> {
     edges: &'a E,
     spec: &'a ModelSpec<'a>,
     catalog: OnceCell<Vec<GatewayModel>>,
-    /// None until first needed; computed once, then shared by every gated
-    /// step (and by first-routable's allowed()).
     gate: OnceCell<Gate>,
 }
 
@@ -247,11 +245,6 @@ impl<'a, E: ResolveEdges + ?Sized> Chain<'a, E> {
         })
     }
 
-    /// Does this model id land on an endpoint right now? RESOLVES — and so
-    /// advances the round-robin cursor — deliberately: this is the same call
-    /// live traffic makes. (Conversely 'pin' and 'role'/'utility' are validated INSIDE
-    /// platform_agent_model/resolve_role_model, their documented contract, and
-    /// are not re-checked here for the same cursor reason.)
     async fn routes(&self, model: &str) -> Result<bool, sqlx::Error> {
         self.edges.routes(model).await
     }

@@ -18,17 +18,9 @@
 /// with it; this is the Rust engine's, with `image` the one mode that rolls.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InstallMode {
-    /// A published image (TALARIA_INSTALL=image). The updater's domain:
-    /// rolls are digest pulls of a new image and a slot cutover.
     Image,
-    /// A git checkout under `bun server-entry.ts`. The git-updater's
-    /// domain; the container engine has nothing to say here.
     Checkout,
-    /// Vite dev, or anything else unstamped. Reloads on file change;
-    /// pulling an update under it would be chaos for no gain.
     Dev,
-    /// TALARIA_UPDATER=off — the kill switch deployments that supervise
-    /// the process themselves have always had.
     Off,
 }
 

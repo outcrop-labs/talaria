@@ -175,8 +175,6 @@ struct RegistrySession {
 }
 
 impl RegistrySession {
-    /// Open the session: learn the challenge, fetch a token if there is
-    /// one. `Err` sentences are for the panel — human, not protocol.
     async fn open(image: &ImageRef) -> Result<Self, String> {
         let registry = &image.registry;
         let client = reqwest::Client::builder()

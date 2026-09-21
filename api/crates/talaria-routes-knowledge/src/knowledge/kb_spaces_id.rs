@@ -27,8 +27,6 @@ use talaria_state::AppState;
 
 use super::kb_spaces::guarded_of;
 
-/// The grant list on the wire — principalType, principalId, role, in that
-/// order.
 pub(crate) fn editors_json(grants: &[EditorGrant]) -> Vec<Value> {
     grants
         .iter()
@@ -42,10 +40,6 @@ pub(crate) fn editors_json(grants: &[EditorGrant]) -> Vec<Value> {
         .collect()
 }
 
-/// editors: an array capped at 200 — elements validate BEFORE the array-length
-/// check (the same issue order the rag bindings are pinned on). Each Editor:
-/// enum principalType, min-1/max-200 principalId, role enum defaulting
-/// 'viewer'.
 pub(crate) fn parse_editors(v: Option<&Value>) -> Result<Option<Vec<EditorGrant>>, String> {
     let Some(v) = v else {
         return Ok(None); // absent — no editors change requested

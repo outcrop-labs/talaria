@@ -44,6 +44,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
 use talaria_approvals::{
     ApprovalCensus, ApprovalDeps, ApprovalKind, Disclosure, PendingApproval, approval_census,
@@ -799,14 +800,6 @@ pub fn register_digest_job(deps: DigestDeps) {
     talaria_scheduler::register_job(digest_job_spec(deps));
 }
 
-/// The wall clock, stamped once per tick by each job closure.
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 // ── Approval announcement, nag and escalation ────────────────────────────────
 //
 // THREE STAGES, ONE AUDIENCE RULE
@@ -951,12 +944,6 @@ fn age_minutes(iso: &str, now_ms: i64) -> Option<f64> {
     iso_to_epoch_ms(iso).map(|ms| (now_ms - ms) as f64 / 60_000.0)
 }
 
-/// Fan one message out to a set of people, once each. Notifications route
-/// themselves (in-app / email / both) through each person's own preferences —
-/// this job does not decide delivery, it decides that there IS something to
-/// deliver. The kind is `approval_pending`, which is the class a user has
-/// already tuned under "Approvals waiting on you"; an escalation is not a new
-/// category of thing, it is the same approval, louder and later.
 async fn tell(
     deps: &NotifyDeps,
     user_ids: &[String],

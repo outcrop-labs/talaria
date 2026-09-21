@@ -25,13 +25,10 @@ use talaria_state::AppState;
 #[serde(rename_all = "camelCase")]
 struct AgentHireView {
     id: String,
-    /// displayName ?? slug ?? 'the new agent' — the sentence the roster shows
-    /// while the real fields are still the modal's promise.
     name: String,
     slug: String,
     department: String,
     start: bool,
-    /// The run's state, spelled as the runs table does.
     state: String,
     phase: String,
     error: Option<String>,

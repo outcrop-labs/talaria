@@ -208,18 +208,6 @@ fn obj(v: Value) -> serde_json::Map<String, Value> {
     }
 }
 
-/// Index one page. Every write goes through the SAME indexer an ordinary save
-/// runs, which is what makes a re-entered page free: the content hash makes an
-/// unchanged document a no-op.
-///
-/// `signal` is honored BEFORE every outward call, not merely awaited on. A
-/// step the driver abandoned (deadline, lost lease) keeps running — nothing
-/// can stop code that ignores its signal — and a page that went on embedding
-/// after another instance took the run is the doubled side effect this
-/// runtime exists to prevent.
-///
-/// The SELECTs themselves propagate failures; every INDEX call is `let _ =` —
-/// one bad document must not cost a page.
 async fn index_page(
     pg: &PgPool,
     qd: &QdrantDeps,
@@ -1189,17 +1177,6 @@ pub fn reindex_run() -> &'static Arc<RunDefinition> {
 
 // ── Starting one ─────────────────────────────────────────────────────────────
 
-/// ONE RUN PER THING, which is rule 6 of the at-least-once checklist:
-/// `enqueue` deduplicates nothing above the row, so a caller that retries its
-/// own POST — or an admin who presses the button twice — would otherwise
-/// start a SECOND backfill doing identical work against the same collections.
-///
-/// The check and the insert are two statements, so two presses landing in the
-/// same millisecond on two instances can still both pass. Named rather than
-/// hidden: the residual window is one round trip wide, both runs index the
-/// same content-hash-idempotent documents, and closing it properly wants a
-/// unique partial index on (kind) for the non-terminal states — a migration,
-/// which is not this workflow's to write.
 async fn start_once(
     state: &AppState,
     kind: &str,

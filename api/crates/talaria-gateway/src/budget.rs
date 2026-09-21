@@ -8,14 +8,8 @@ use serde_json::Value;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+use talaria_agent_auth::now_ms;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct BudgetLimits {

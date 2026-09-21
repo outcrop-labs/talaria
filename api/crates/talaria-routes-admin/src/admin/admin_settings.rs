@@ -52,15 +52,11 @@ async fn audit_retention_days(pg: &sqlx::PgPool) -> i64 {
 /// silent skip.
 struct PutBody {
     audit_retention_days: Option<i64>,
-    /// an org of {} still runs (a no-op write, a roll, an audit with an
-    /// empty after), so presence is tracked apart from the fields.
     org_present: bool,
     org_name: Option<String>,
     org_about: Option<String>,
     member_models: Option<Vec<String>>,
     llm_budgets: Option<Value>,
-    /// The audit's after echoes the PARSED body — agents null entries still
-    /// in — while `llm_budgets` is the null-filtered shape that gets stored.
     llm_budgets_after: Option<Value>,
     cron_min_interval_minutes: Option<i64>,
 }

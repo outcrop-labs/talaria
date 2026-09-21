@@ -26,6 +26,7 @@ use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
+use talaria_agent_auth::now_ms;
 use talaria_runs_define::Authority;
 
 pub static AUDIENCE: OnceLock<
@@ -93,13 +94,6 @@ pub fn slug(v: &str) -> String {
 /// work. Same shape reported again — from any agent — lands on the same row.
 fn signature_of(board_id: Option<&str>, kind: &str) -> String {
     format!("{}|{}", board_id.unwrap_or("any"), slug(kind))
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Remember that this agent was just refused a ticket.
@@ -311,14 +305,6 @@ pub mod report_gap {
     }
 }
 
-/// Tell the admins a NEW kind of gap exists — and tell only the ones who can
-/// see the work it quotes what it actually SAYS. WHO, and how much, is
-/// `audience_for`; this function does not re-decide the authority, it is
-/// handed one and asks the resolver, which is the whole point.
-///
-/// Never throws: an agent reported a gap honestly and the row is already
-/// written. Losing the notification is a bad day; losing the row — or failing
-/// the agent's POST — would teach the fleet that honesty costs it something.
 async fn announce_gap(deps: &NotifyDeps, input: announce_gap::GapAnnounce<'_>) {
     use announce_gap::GapAnnounce;
     let GapAnnounce {

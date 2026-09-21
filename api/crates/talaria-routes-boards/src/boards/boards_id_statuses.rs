@@ -46,17 +46,6 @@ async fn edit_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
     }
 }
 
-/// Cross-validation the per-field schemas cannot see. An agent-start column
-/// is the queue agents pick work UP from, so it cannot also be a HUMAN GATE:
-/// `review` + agentStart is a loop (the agent's own hand-off drops the ticket
-/// straight back into its pickup queue), and `done` + agentStart turns
-/// CLOSING a ticket into a dispatch (the move to done fires updateTask's
-/// re-dispatch branch and starts a live work session on the ticket a person
-/// just signed off). Either way it hands an agent a legitimate-looking write
-/// into a column the assignment gate would otherwise refuse. Either flag may
-/// arrive alone, on top of whatever the column already is, so the check runs
-/// against the EFFECTIVE post-patch column. `status_key` None = a create,
-/// which inherits createStatus's defaults.
 async fn human_gate_conflict(
     state: &AppState,
     board_id: &str,

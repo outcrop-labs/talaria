@@ -292,40 +292,11 @@ pub struct RunWireEvent {
     rename_all_fields = "camelCase"
 )]
 pub enum UserEvent {
-    Run {
-        run_id: String,
-        state: RunState,
-    },
-    /// The bell's signal: a notification row landed for this person.
-    Notification {
-        notification_id: String,
-    },
-    /// Something was appended to the person's daily brief.
-    ///
-    /// ID-SHAPED LIKE EVERY OTHER EVENT HERE, and on this topic that is not a
-    /// formality: the brief is the densest private thing in the product — one
-    /// person's approvals, blocked work and unread DMs on a single page — so
-    /// an event carrying so much as a title would make the fan-out a second
-    /// read path with no ACL on it. `seq` is the append cursor, which is all
-    /// a client needs to decide whether the page it is holding is behind.
-    Brief {
-        brief_id: String,
-        seq: i64,
-    },
-    /// A message landed in a channel the person is in. The room's own SSE
-    /// already carries it to whoever has the room OPEN; this one is for the
-    /// rail — a badge on a room nobody has opened moves the moment the
-    /// message lands, not on the next poll.
-    Channel {
-        channel_id: String,
-    },
-    /// A turn landed in a conversation the person can read — their agent
-    /// thread, or a plan they own or share. Drives the thread's unread pill
-    /// from anywhere in the app, so a reply that lands while its owner is
-    /// elsewhere rings the rail without ringing anything else.
-    Conversation {
-        conversation_id: String,
-    },
+    Run { run_id: String, state: RunState },
+    Notification { notification_id: String },
+    Brief { brief_id: String, seq: i64 },
+    Channel { channel_id: String },
+    Conversation { conversation_id: String },
 }
 
 /// Publish a run transition to `run:<id>`.
@@ -471,10 +442,6 @@ fn sse_response(rx: mpsc::Receiver<String>) -> Response {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunWatchVerdict {
     Ok,
-    /// The run is not there. The ROUTE answers this exactly like `NotAudience`
-    /// (403, no body difference) — 404-vs-403 on a guessable id is an
-    /// existence oracle, and the board and channel event routes already
-    /// collapse the two.
     Missing,
     NotAudience,
     UnknownSubject,

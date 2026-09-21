@@ -268,8 +268,6 @@ pub struct ResolveContext<'a> {
     pub board_id: Option<&'a str>,
 }
 
-/// One row narrowed to the requested kind — the chain's shared
-/// "dead or wrong-kind reference falls through" step.
 async fn template_of_kind(
     pg: &PgPool,
     id: &str,

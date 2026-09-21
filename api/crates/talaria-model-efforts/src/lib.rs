@@ -171,9 +171,6 @@ pub fn reset_efforts_backfill() {
     inflight().lock().unwrap().clear();
 }
 
-/// Run (or join) one endpoint's refresh. The throttle is re-checked INSIDE the
-/// per-endpoint guard: whoever stamps first runs, and callers that queued on
-/// the guard see the fresh stamp and stand down.
 async fn refresh_throttled(state: &AppState, ep: &LlmEndpoint) {
     let guard = {
         let mut map = inflight().lock().unwrap();

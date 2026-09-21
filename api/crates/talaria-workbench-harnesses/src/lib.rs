@@ -81,12 +81,8 @@ impl<'de> serde::Deserialize<'de> for HarnessAuth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpConfigFormat {
-    /// .mcp.json-style (Claude Code).
     ClaudeJson,
-    /// opencode config.
     OpencodeJson,
-    /// The app-shipped harness's own renderer — unreachable from builtin/custom
-    /// layers (functions can't ride JSON); modeled so the DB shape round-trips.
     Custom,
 }
 

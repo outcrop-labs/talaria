@@ -189,11 +189,6 @@ type GoogleActionRow = (
     i64,
 );
 
-/// `google_pending_actions` held for a person: an agent drafted something that
-/// leaves the building. Org actions are an admin's; a personal one is the
-/// owner's ALONE — the route refuses an admin outright, and an admin is not
-/// entitled to the subject line of somebody's mailbox by virtue of being an
-/// admin, because they cannot action it either.
 async fn google_action_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
     let rows: Vec<GoogleActionRow> = sqlx::query_as(
         "select id::text, kind, summary, agent_model, owner_user_id::text, is_org, \
@@ -277,11 +272,6 @@ type WorkbenchPlanRow = (
     Option<String>,
 );
 
-/// `workbench_jobs` parked on a plan: an agent is stopped dead behind this one
-/// and heavy plans are rare, so loud is correct. The route requires board
-/// editors on the job's ticket; a job with NO ticket is therefore decidable by
-/// NOBODY — which is a real stall to report, not a reason to hand an agent's
-/// plan to every admin in the workspace.
 async fn workbench_plan_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
     let rows: Vec<WorkbenchPlanRow> = sqlx::query_as(
         "select j.id::text, j.agent_model, j.repo, j.effort, j.plan, j.task_id::text, \
@@ -490,17 +480,6 @@ type BoardAccessRow = (
     i64,
 );
 
-/// Open board-access requests: a personal assistant met a board its owner
-/// cannot see, and the one-step grant is not available to it for exactly that
-/// reason — the request is the path around that hole.
-///
-/// The authority is the board's EDITORS because the decision route enforces
-/// `can_edit`: they are the same people who could have typed the model into
-/// the policy by hand, and the approve verb is only a shorter spelling of
-/// that. `owner_user_ids` is empty BY CONSTRUCTION, not by omission: the one
-/// person named on the request is the agent's owner, who cannot see the board
-/// and so is never a subset of the authority — naming them would be the
-/// widening this file exists to prevent.
 async fn board_access_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
     let rows: Vec<BoardAccessRow> = sqlx::query_as(
         "select r.id::text, r.board_id::text, r.agent_model, d.display_name, b.name, \
@@ -660,11 +639,6 @@ pub fn run_decision_approval(
     })
 }
 
-/// The fifth reader: every `awaiting` run with a question on it. The set is
-/// bounded by the number of decisions humans currently owe, so this is a small
-/// read however large the run history gets — and it selects the SAME whole-row
-/// shape the store does, because `audience(run)` is the run definition's own
-/// code and a subset would be a `RunRow` with holes in it.
 async fn run_decision_approvals(
     pg: &PgPool,
     definition_for: &DefinitionForFn,
@@ -758,10 +732,6 @@ fn dedup(ids: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// Every admin in the workspace. NOT exported: an admin list is an INGREDIENT
-/// of an audience, never an audience — the disclosure resolver is the only
-/// thing that may ask the question, which is the invariant the three
-/// hand-rolled copies leaked through.
 async fn admin_user_ids(pg: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as("select id::text from users where role = 'admin'")
         .fetch_all(pg)
@@ -769,14 +739,6 @@ async fn admin_user_ids(pg: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// The EDITORS of each of these boards — `canEdit(boardRole(user, board))`
-/// expressed as a set instead of a predicate, because the resolver needs the
-/// whole membership rather than one yes/no.
-///
-/// Same two sources `board_role` unions: an explicit share of owner/editor
-/// rank, and membership of the board's team (which `board_role` maps to owner
-/// for a team owner and editor for everyone else — so every team member is at
-/// least an editor). Viewers are excluded because the routes exclude them.
 async fn board_editors(
     pg: &PgPool,
     board_ids: &[String],
@@ -1016,9 +978,6 @@ pub fn may_decide_content(who: &Disclosure, user_id: &str) -> bool {
 
 const ANNOUNCE_STATE_KEY: &str = "approval_announce_state";
 
-/// The stored marks: approval key → when it was announced. Read through the
-/// forgiving settings read (a missing or malformed row is "nothing announced"),
-/// which is the only read here — the WRITES merge, see `mark_announced`.
 async fn announce_state(pg: &PgPool) -> HashMap<String, String> {
     let stored = talaria_gateway::settings::get_setting(pg, ANNOUNCE_STATE_KEY, Value::Null).await;
     stored
@@ -1032,18 +991,6 @@ async fn announce_state(pg: &PgPool) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Record marks WITHOUT reading the blob first, because the read-then-write
-/// the rest of the settings plane uses is exactly what would break the
-/// exactly-once promise.
-///
-/// The two announce paths OVERLAP IN TIME by design: `announce_approval` fires
-/// from the request that raised the approval, and the sweep's pass is seconds
-/// long — a whole-blob write at the end of that pass would write a map read
-/// BEFORE the request marked its key, erasing the fresh mark, and the next tick
-/// would announce the same approval twice. So marks are merged in the database
-/// instead: `||` on jsonb is a union and the statement is one row update, so
-/// both writers survive whatever the order. Nothing is read first, so there is
-/// no window to lose.
 async fn mark_announced(pg: &PgPool, marks: &HashMap<String, String>) -> Result<(), sqlx::Error> {
     if marks.is_empty() {
         return Ok(());
@@ -1068,17 +1015,6 @@ async fn mark_announced(pg: &PgPool, marks: &HashMap<String, String>) -> Result<
     Ok(())
 }
 
-/// Forget marks for approvals that are no longer pending, so a
-/// decided-and-recreated id cannot inherit a stale "already announced".
-///
-/// Same merge-safe statement shape, same reason — but `live_keys` comes from a
-/// census taken at a moment in the past, and an approval raised SINCE that
-/// moment is not in it. Deleting its mark because it "isn't live" is the
-/// double-notify by another route, so a mark written at or after
-/// `census_taken_at` is kept regardless: the census could not have seen what it
-/// refers to. ISO-8601 UTC strings compare lexicographically in the order they
-/// compare chronologically, and comparing as text rather than casting means a
-/// hand-edited value cannot make this statement throw.
 async fn prune_announced(
     pg: &PgPool,
     live_keys: &[String],

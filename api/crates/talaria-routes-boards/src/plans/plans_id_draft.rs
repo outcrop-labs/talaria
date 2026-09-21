@@ -33,9 +33,6 @@ use talaria_routes_comms::comms::channels_id_plan::{validate_save_body, validate
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-/// Drafting is a PLANS surface: the general access predicates admit research
-/// conversations now, but a research discussion is not a plan. One read says
-/// whether this id is one of the kinds that have always drafted here.
 async fn draftable_conversation(pg: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
     let row: Option<(bool,)> =
         sqlx::query_as("select kind in ('chat', 'plan') from conversations where id = $1::uuid")

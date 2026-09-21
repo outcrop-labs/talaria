@@ -22,6 +22,7 @@ use axum::response::{IntoResponse, Response};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::update::adopt::{AdoptStage, adopt};
 use talaria_api_facades::update::docker::container_running;
 use talaria_api_facades::update::layout::{edge_container_in, update_project};
@@ -71,9 +72,6 @@ enum Caller {
     Rejected(Response),
 }
 
-/// The gate: admin session first (the common case, cheapest honest
-/// check), machine key second. `machine_ok` narrows what the key may do —
-/// call it with false for the admin-only verbs.
 async fn caller(state: &AppState, headers: &HeaderMap, pg: &PgPool, machine_ok: bool) -> Caller {
     match require_admin(state, headers).await {
         Ok(user) => Caller::Admin(user),
@@ -87,8 +85,6 @@ async fn caller(state: &AppState, headers: &HeaderMap, pg: &PgPool, machine_ok: 
     }
 }
 
-/// Does the request carry the machine key, and does it hash to the stored
-/// one? No header or no stored hash is simply false — the caller sentences.
 async fn machine_key_matches(headers: &HeaderMap, pg: &PgPool) -> bool {
     let Some(presented) = headers
         .get(MACHINE_KEY_HEADER)
@@ -156,13 +152,6 @@ fn slot_name(slot: talaria_api_facades::fleet::docker::Slot) -> &'static str {
     }
 }
 
-/// The adoption's live stage, for whoever is polling (the panel's kicked
-/// state, talaria-infra's migration script). Derived, never stored: a run
-/// holding at `cutting-over` with a retired container still RUNNING is a
-/// fresh-port adoption waiting for the proxy to repoint; one whose retired
-/// container is gone is landing. `edge-pending` when the edge container is
-/// not up (pulling, or down after a failed start — re-POST adopt retries).
-/// Null everywhere else (nothing adopting).
 async fn adoption_stage(row: &UpdateState) -> serde_json::Value {
     let Some(port) = row.edge_port.as_deref() else {
         return serde_json::Value::Null;
@@ -231,8 +220,6 @@ pub async fn post(
     }
 }
 
-/// Resolve the tracked tag and record what was available. Errors carry the
-/// registry's sentence to the panel verbatim.
 async fn check(pg: &PgPool, actor: &str) -> Response {
     let at = talaria_agent_auth::epoch_ms_to_iso(now_ms());
     match resolve_latest().await {
@@ -287,9 +274,6 @@ async fn check(pg: &PgPool, actor: &str) -> Response {
     }
 }
 
-/// Apply now: resolve fresh (a stale check pins an old digest), gate, and
-/// hand the choreography to a detached task — the roll's last act stops
-/// this container, and the response must be gone long before that.
 async fn apply(state: &AppState, actor: &str) -> Response {
     let row = load(&state.pg).await;
     if let Err(sentence) = acting_gate(&row, install_mode()) {
@@ -336,8 +320,6 @@ async fn apply(state: &AppState, actor: &str) -> Response {
     Json(serde_json::json!({ "started": true, "to": pin })).into_response()
 }
 
-/// Roll back to the other slot. Same detached-task shape: the rollback's
-/// last act stops THIS container too.
 async fn do_rollback(state: &AppState, actor: &str) -> Response {
     let row = load(&state.pg).await;
     if let Err(sentence) = acting_gate(&row, install_mode()) {
@@ -382,10 +364,6 @@ async fn do_rollback(state: &AppState, actor: &str) -> Response {
     Json(serde_json::json!({ "started": true })).into_response()
 }
 
-/// The handover. The FIRST call is long (a pull can run 15 minutes) — it
-/// runs detached and the caller polls GET's `adoption`. A call on an
-/// already-migrated install is the RESUME: fast, synchronous, and the
-/// fresh-port protocol's finish — it must arrive through the edge.
 async fn do_adopt(
     state: &AppState,
     actor: &str,
@@ -444,7 +422,6 @@ async fn do_adopt(
     Json(serde_json::json!({ "started": true })).into_response()
 }
 
-/// Mint the machine key. The plaintext rides this one response and no row.
 async fn mint(pg: &PgPool, actor: &str) -> Response {
     let key = mint_key();
     let stored = key_hash(&key);
@@ -519,13 +496,6 @@ pub async fn put(
     )
     .await;
     Json(serde_json::json!({ "autoUpdate": enabled })).into_response()
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -153,8 +153,6 @@ pub async fn materialize_agent_secrets(
     Ok(true)
 }
 
-/// Write mode 0600: create-mode only applies to new files, so an existing
-/// file is chmod'd explicitly.
 async fn write_0600(path: &Path, content: &str) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::OpenOptions::new()

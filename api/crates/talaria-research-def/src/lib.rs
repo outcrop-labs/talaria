@@ -213,9 +213,7 @@ pub fn research_modes() -> Vec<(&'static str, &'static str)> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchVia {
-    /// The model searches as part of answering.
     Native,
-    /// Our harness drives a search tool and hands it the results.
     Tool,
 }
 
@@ -382,11 +380,6 @@ pub struct ResearchInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResearchStage {
-    /// The cheap FIRST step of a brief or an expedition: judge the ask, say it
-    /// back, and — only when it is vague and the run has a discussion — park on
-    /// the person's answer. Recon never scopes, and neither does a mid-run
-    /// retry: this stage exists to spend one small call before the run commits
-    /// searches to a guess, not to re-litigate an ask that already has findings.
     Scope,
     Plan,
     Search,
@@ -711,15 +704,6 @@ pub struct ResearchRunDeps {
 
 // ── The real model edges ─────────────────────────────────────────────────────
 
-/// One search query → the search model's cited answer + its source list.
-///
-/// THE TRANSPORT IS THE PLAN'S, and this is the half of the capability rule the
-/// run used to break. A supplier set means `tool_search_transport` — the model
-/// drives our checked search tool and the sources come off the tool's results —
-/// and no supplier means the sonar-native transport that reads the provider's
-/// own `search_results`/`citations` annotations. The capability floor is the
-/// harness's (`requires: ['search']`, refuse below), so a model KNOWN not to
-/// search fails loudly here instead of answering fluently from training data.
 async fn search_stage(state: &AppState, args: SearchArgs) -> Result<SearchHit, String> {
     let sink: SearchSink = Arc::new(std::sync::Mutex::new(Vec::new()));
     let transport = match &args.supplier {
@@ -773,13 +757,6 @@ async fn search_stage(state: &AppState, args: SearchArgs) -> Result<SearchHit, S
     Ok(SearchHit { content, sources })
 }
 
-/// The scope call: is this ask answerable as written? None — never Err — is
-/// the "no verdict" answer every failure mode collapses to, because the
-/// cheapest step in the run must also be the most dispensable one: a scoper
-/// that cannot answer costs the run its clarifying question, and that is the
-/// behavior research had before the scoper existed. Same ledger line as the
-/// planner so the one model that scopes a run is findable next to the one
-/// that plans it.
 async fn scope_stage(state: &AppState, args: ScopeArgs) -> Option<ScopeVerdict> {
     let input = serde_json::to_value(ScopeInput {
         question: args.question.clone(),
@@ -808,15 +785,6 @@ async fn scope_stage(state: &AppState, args: ScopeArgs) -> Option<ScopeVerdict> 
     run.value.and_then(|v| serde_json::from_value(v).ok())
 }
 
-/// This round's search queries, or an empty list when the persona says the
-/// question is saturated. Never fails.
-///
-/// THE LINE-BASED SALVAGE, which used to live inside the extractor. On a small
-/// model a numbered list is likelier than a JSON array. The tolerance is kept:
-/// the harness records the contract failure on its `harness_runs` row, and the
-/// salvage runs afterwards, here, where it is visible. It runs ONLY on a reply
-/// the guard found nothing in — flagged content never re-enters a model's
-/// context, and a salvage path must not quietly route around that rule.
 async fn plan_stage(state: &AppState, args: PlanQueriesArgs) -> Vec<String> {
     let input = json!({
         "question": args.question,
@@ -864,13 +832,6 @@ async fn plan_stage(state: &AppState, args: PlanQueriesArgs) -> Vec<String> {
     Vec::new()
 }
 
-/// The persona writes the document against the global registry.
-///
-/// THE GROUNDING PASS IS INSIDE THIS CALL: `search_failed` and the findings
-/// are on the INPUT because `synthesis_harness` declares `ground` — the search
-/// hits are this turn's tool results, so `ungrounded_ref` — the definitive
-/// research failure mode — runs on the report, from the runner, with one
-/// findings row per fabricated link.
 async fn synthesis_stage(state: &AppState, args: SynthesizeArgs) -> Result<SynthOutcome, String> {
     let input = serde_json::to_value(SynthesisInput {
         question: args.question,
@@ -1954,17 +1915,6 @@ async fn advance(
     }
 }
 
-/// Put the run's failure on the DOMAIN record too, then let it fail.
-///
-/// Not a second source of truth for whether the run is alive — the domain
-/// module projects that from the `runs` row — but `research_runs.status` is
-/// what /api/research's duplicate-question check reads in raw SQL, and a
-/// question whose last run failed must be askable again.
-///
-/// NOT ON AN ABANDONED STEP. An aborted step is this driver being taken off
-/// the run — by a lost lease or a deploy — and the run is very probably about
-/// to be resumed by somebody else. Writing `error` there would put a failure
-/// on the record of a run that is still working.
 async fn mirror_failure(ctx: &RunStepContext, deps: &ResearchRunDeps, message: &str) {
     if ctx.signal.is_aborted() {
         return;
@@ -1995,10 +1945,6 @@ async fn research_step(ctx: RunStepContext, deps: &ResearchRunDeps) -> Result<St
     }
 }
 
-/// The first step: write the domain row if it is missing, resolve the search
-/// model and the depth budget. NO billed call. Split from `advance` because it
-/// is the one step that takes no checkpoint — and the one whose failures
-/// mirror to the domain row like any other.
 async fn begin(
     ctx: &RunStepContext,
     deps: &ResearchRunDeps,
@@ -2166,57 +2112,30 @@ mod tests {
 
     #[derive(Default)]
     struct World {
-        /// Every query actually sent to a search model, in order. Its LENGTH
-        /// is the bill: one entry is one paid sonar call.
         searched: Vec<String>,
-        /// The supplier each search call was handed — the plan's path, threaded
-        /// through the checkpoint. None entries are native searches.
         suppliers: Vec<Option<Supplier>>,
-        /// How many scope calls were made. ONE per run is the contract: Recon
-        /// never scopes, and neither does a mid-run retry.
         scoped: u32,
-        /// Agent turns posted into the discussion, (marker, body) — the scope
-        /// read, the clarifying questions, the ack, the report-ready turn.
         posted: Vec<(String, String)>,
-        /// The scope note each planning call was handed, one per round.
         planned_notes: Vec<Option<String>>,
         planned: u32,
         synthesized: u32,
-        /// Artifacts created. More than one is the failure this file exists to
-        /// make impossible.
         created: Vec<String>,
-        /// Bodies written, (artifact id, body).
         written: Vec<(String, String)>,
-        /// The org flag each report write was handed — one entry per run.
         report_org: Vec<bool>,
-        /// How many times the member-grant list was fetched. An org run never
-        /// fetches it; a personal run does.
         member_fetches: u32,
-        /// What the org_run edge answers — seeded from the spec, so the fake
-        /// stays one thing.
         org_answer: bool,
         indexed: u32,
         notified: u32,
         finished: Vec<(String, Value)>,
         failed: Vec<String>,
         sources_saved: Vec<Vec<ResearchSource>>,
-        /// A follow-up's parent sources, seeded into the registry at `begin`.
         parent_sources: Vec<ResearchSource>,
-        /// The artifact_links row, which is what makes a created artifact
-        /// findable by the next entry.
         link: Option<String>,
         row_exists: bool,
-        /// The run's discussion. None = ownerless run / old row.
         conversation: Option<String>,
-        /// Markers already posted — what makes the post fake idempotent the
-        /// way `post_agent_turn` is, so the re-entry tests exercise the real
-        /// contract rather than the fake's.
         posted_markers: HashSet<String>,
-        /// Queries whose search should throw, by query text.
         dead_queries: HashSet<String>,
         all_searches_dead: bool,
-        /// With all_searches_dead: how many searches stay dead before the
-        /// outage passes. None = dead for the whole run.
         revive_after: Option<u32>,
         artifact_seq: u32,
     }
@@ -2227,16 +2146,10 @@ mod tests {
         plan_supplier: Option<Supplier>,
         empty_plan: bool,
         synthesize_error: Option<String>,
-        /// What the row would say: an org agent started this run.
         org_run: bool,
-        /// Fired inside the search fake before it errs — the lost-lease case.
         abort_tx: Option<tokio::sync::watch::Sender<bool>>,
-        /// The scoper's verdict: crisp (with a read, no questions) or vague
-        /// (a read plus two questions).
         scope_vague: bool,
-        /// The scoper returns nothing — the Null policy's arm.
         scope_none: bool,
-        /// Whether the run has a discussion to post into.
         has_conversation: bool,
     }
 
@@ -2621,14 +2534,9 @@ mod tests {
         steps: u32,
         result: Option<Value>,
         error: Option<String>,
-        /// The park, when the run ended parked — the scope question as the
-        /// approvals census and the awaiting panel would read it.
         parked: Option<DecisionRequest>,
     }
 
-    /// The driver's loop, honestly: persist the checkpoint, then the next step.
-    /// An `answer` is delivered the way the real driver delivers one — only
-    /// once a park has been seen, on the entry after it.
     async fn drive_run_with(
         deps: &ResearchRunDeps,
         input: &ResearchInput,

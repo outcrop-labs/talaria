@@ -11,7 +11,7 @@
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use talaria_agent_writes::{WriteAuthor, guard_agent_fields};
 use talaria_boards::{board_allows_agent, board_info, board_role};
@@ -31,13 +31,6 @@ pub use talaria_tasks_types::{
     Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
     human_assignee_ids, is_human_assignee, json_strings,
 };
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 // ── The row and its select ───────────────────────────────────────────────────
 
@@ -251,9 +244,6 @@ struct TaskNotification {
     href: Option<String>,
 }
 
-/// File a notification for each user, deduped, never the actor. One
-/// person's failed row never costs the rest theirs — logged here, never
-/// propagated.
 async fn notify_task_users(
     notify: &NotifyDeps,
     user_ids: &[String],
@@ -297,18 +287,6 @@ async fn notify_task_users(
     }
 }
 
-/// Everyone who may be TOLD about an event on this ticket — the people
-/// watching it and the humans assigned to it, each confirmed against the
-/// board AS IT STANDS NOW.
-///
-/// ASKED AT FAN-OUT TIME, NOT TRUSTED FROM THE WRITE. Both halves are
-/// validated when they are written (`invalid_assignee` on the ticket write
-/// routes, `add_watcher` below) and neither check survives the day after:
-/// unsharing a board deletes the membership row and touches nothing else, so
-/// the stored assignee/watcher strings keep naming people who now get a 403
-/// from the link they would be mailed. `maybe_dispatch_ticket` already works
-/// this way for the AGENT audience (it re-asks `agent_ticket_refusal`); this
-/// is the same rule for the human one.
 async fn ticket_audience(
     pg: &PgPool,
     task_id: &str,
@@ -674,20 +652,10 @@ fn warn_board_config(board_id: &str, line: &str) {
     tracing::warn!("[tasks] {line}");
 }
 
-/// Board name for a diagnostic, falling back to the id. Error paths only.
 async fn board_label(pg: &PgPool, board_id: &str) -> Result<String, sqlx::Error> {
     Ok(board_info(pg, board_id).await?.label)
 }
 
-/// Where an agent's terminal move actually lands.
-///
-/// THE COERCION MUST NOT INVENT A DESTINATION. The destination is CHECKED,
-/// not assumed: a real review-category column, not a done column, not an
-/// agent-start pickup queue — all three hold by construction because
-/// `review_key` is picked from `placeable` inside statusMeta. A non-None
-/// `review_key` IS the answer. When there isn't one the write is REFUSED,
-/// and the refusal names the board and the fix — a board an admin has to
-/// correct must not read as an agent that misbehaved.
 async fn handoff_target(pg: &PgPool, cur: &Task, meta: &StatusMeta) -> TaskResult<String> {
     if let Some(key) = &meta.review_key {
         return Ok(key.clone());
@@ -746,13 +714,6 @@ fn pick<T: Clone>(v: &Option<Option<T>>, fallback: Option<T>) -> Option<T> {
     }
 }
 
-/// The patch an agent is actually allowed to apply: assignment, planning
-/// and archival stripped; terminal moves redirected to the board's review
-/// catch. Throws (as TaskError) where a
-/// weaker form would be a lie — assigning, reopening, taking work back out
-/// of review — instead of quietly doing something else. The clauses below
-/// are the whole invariant: a person assigns, a person signs off, a person
-/// unblocks, and what a person signed off on stays put.
 async fn agent_safe_patch(
     pg: &PgPool,
     cur: &Task,
@@ -1413,11 +1374,6 @@ async fn thread_head(pg: &PgPool, task_id: &str) -> Result<Option<ThreadHead>, s
     .await
 }
 
-/// The human who holds a task's discussion room: the creator by email, else
-/// the first human assignee, else any board member — a room needs someone
-/// to own the row, and reading it is board-membership-shaped anyway.
-/// One ladder, one truth: the room's ensure walks it, the way the
-/// migration did.
 async fn task_thread_owner(pg: &PgPool, head: &ThreadHead) -> Result<Option<String>, sqlx::Error> {
     if let Some(id) = author_user_id(pg, &head.created_by).await? {
         return Ok(Some(id));
@@ -1597,24 +1553,6 @@ pub async fn list_comments(pg: &PgPool, task_id: &str) -> Result<Vec<TaskComment
     Ok(rows.into_iter().map(comment_of).collect())
 }
 
-/// THE comment write — now a post into the task's ROOM, through the same
-/// `insert_channel_message` every channel post uses. The guard on
-/// agent-authored comments lives inside that insert, which is what makes
-/// this door safe to share: `mcp comment` reaches here as a tool ARGUMENT —
-/// model output that never touched a harness — and the workbench posts an
-/// agent's plan comment through here too. A guard at the insert is a guard
-/// every caller has. See agent-writes.rs for why a credential is redacted
-/// rather than blocked.
-///
-/// The author discriminator is the same rule it always was: a resolvable
-/// author (email or name — the same rule the migration resolves legacy rows
-/// by) posts as a user; anything else (an agent model string, the shape
-/// every MCP `comment` call sends) posts as an agent.
-/// Resolve a legacy author string to a users row. The routes write
-/// `email.or(name)` — and rows written before this code ran carry whatever
-/// casing that day's session had — so the match is email-then-name,
-/// case-blind. An agent model string matches neither and falls to None,
-/// which is exactly the discriminator add_comment needs.
 async fn author_user_id(pg: &PgPool, author: &str) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "select id::text from users \
@@ -1718,9 +1656,6 @@ pub async fn add_comment(
 // Kept-but-dormant means restoring board access restores what they asked
 // for, and `remove_watcher` is still the way to end it for good.
 
-/// Stored watcher strings → the accounts they name. Email match, case- and
-/// whitespace-insensitive; a string that is not an email, or that names
-/// nobody with an account here, is simply absent from the map.
 async fn watcher_accounts(
     pg: &PgPool,
     watchers: &[String],
@@ -1761,15 +1696,6 @@ struct ResolvedWatcher {
     user_id: String,
 }
 
-/// The watchers of a ticket who can still SEE the ticket, in stored order.
-///
-/// Membership is asked through `board_role` one watcher at a time rather
-/// than joined in SQL on purpose: `board_role` is the definition of "may
-/// this person see this board" and it already covers the two ways of
-/// holding one (a board_members row, or a team that owns the board). A join
-/// here would be a third hand-written copy of that rule, which is the shape
-/// this codebase keeps paying for. Tickets carry a handful of watchers;
-/// this is not a hot path.
 async fn resolve_watchers(
     pg: &PgPool,
     task_id: &str,
@@ -2156,13 +2082,6 @@ pub async fn list_dependencies(
     ))
 }
 
-/// Adding `task → depends_on` closes a cycle iff `depends_on` already
-/// reaches `task` through the existing edges. Self-edges are the length-1
-/// case and were the ONLY case this guarded, so an agent could write X
-/// blocked-by Y and then Y blocked-by X — a dependency graph no ticket in it
-/// can ever satisfy, with nothing in the product able to tell the operator
-/// why nothing unblocks. One recursive walk, on the write, is the cheap
-/// place to say no.
 async fn would_cycle(pg: &PgPool, task_id: &str, depends_on_id: &str) -> Result<bool, sqlx::Error> {
     if task_id == depends_on_id {
         return Ok(true);

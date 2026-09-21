@@ -70,10 +70,6 @@ pub struct GuardedAgentWrite {
     pub redacted: bool,
 }
 
-/// Does this author string name a fleet agent? One indexed lookup on a small
-/// table, no `enabled` filter (see the header). A query error reads as "not
-/// an agent", so a database hiccup fails open
-/// at the human door rather than throwing out of a comment.
 async fn is_agent(pg: &PgPool, name: &str) -> bool {
     sqlx::query_as::<_, (i32,)>("select 1 from agent_defs where model = $1 limit 1")
         .bind(name)

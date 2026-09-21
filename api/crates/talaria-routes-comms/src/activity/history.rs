@@ -92,8 +92,6 @@ struct ContentBody {
     content: String,
 }
 
-/// The live item's read model, applied to its history. Fail closed: every
-/// miss and every error below reads as no.
 async fn can_read_snapshot_history(
     state: &AppState,
     kind: &str,

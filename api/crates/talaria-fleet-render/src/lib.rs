@@ -255,8 +255,6 @@ pub async fn read_chassis() -> Result<Chassis, String> {
 // Anything else means any local account (or any workbench agent with a shell)
 // can impersonate the whole fleet, and re-rendering wouldn't fix it.
 
-/// Best-effort lock-down: file 0600, parent dir 0700. A filesystem that
-/// refuses chmod still gets the render.
 async fn lock_down_fleet_env(env_path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(meta) = tokio::fs::metadata(env_path).await {
@@ -273,8 +271,6 @@ async fn lock_down_fleet_env(env_path: &Path) {
     }
 }
 
-/// Write the fleet .env at 0600 (create-mode applies only to new files, so the
-/// chmod after is what fixes an existing world-readable one), parent 0700.
 async fn write_fleet_env(env_path: &Path, content: &str) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::OpenOptions::new()
@@ -432,8 +428,6 @@ pub async fn ensure_agent_env_keys(
 // via the skills UI is never clobbered. fleet/ itself is gitignored; this is
 // how canonical skills like talaria-toolkit reach every install.
 
-/// Content hash of a skill dir: sorted relative paths + file bytes, dotfiles
-/// excluded. (Names sort in byte order; skill dir names are ASCII.)
 async fn skill_dir_hash(root: &Path) -> Result<String, String> {
     async fn walk(dir: &Path, rel: &str, h: &mut Sha256) -> Result<(), String> {
         let mut names: Vec<String> = Vec::new();
@@ -479,7 +473,6 @@ async fn skill_dir_hash(root: &Path) -> Result<String, String> {
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Recursive dir copy (file modes ride tokio's copy).
 async fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dest)
         .await
@@ -509,8 +502,6 @@ async fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// One seed through the decision tree. The caller logs a failure and moves on
-/// — one broken skill dir never blocks the rest of the render.
 async fn seed_one(
     name: &str,
     src: &Path,
@@ -605,12 +596,6 @@ pub async fn seed_shared_skills() -> Result<(), String> {
     Ok(())
 }
 
-/// Seed the talaria-events Hermes plugin into the fleet tree — the plugin
-/// that reports tool-call args and RESULTS to the platform (the one datum no
-/// other wire carries). Embedded in the binary, written only on change, and
-/// mounted read-only into every agent at /opt/data/plugins/talaria-events
-/// (Hermes' user-plugin root). The compose bind source must exist before
-/// any up — the #369 symlink lesson.
 async fn seed_events_plugin() -> Result<(), String> {
     let dir = talaria_fleet_layout::fleet_dir()
         .join("plugins")
@@ -825,10 +810,6 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
 /// installation can reach.
 const GITCONFIG: &str = "[credential]\n\thelper = /usr/local/bin/git-credential-talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n";
 
-/// Best-effort executable bit for the credential helper. (The write's
-/// create-mode only stamps newly created files; this also repairs a helper
-/// that lost its bit — a non-executable helper IS a silent no-op, the exact
-/// failure the portability block above exists to prevent.)
 async fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o755);
@@ -1760,10 +1741,6 @@ fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     })
 }
 
-/// The fleet manifest Talaria reads to reach agents directly: every enabled
-/// agent's persona gateway URL (host + its published port) + HERMES key, plus
-/// one entry per model tier (`<base>-<alias>`). No bridge — the app calls each
-/// URL itself. Written to fleet/fleet.json.
 async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<(), String> {
     type DefRow = (
         String,

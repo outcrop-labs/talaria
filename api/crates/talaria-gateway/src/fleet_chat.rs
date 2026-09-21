@@ -230,21 +230,12 @@ pub enum AgentStreamEvent {
         id: Option<String>,
         name: String,
         label: String,
-        /// 'running' | 'completed' — a later frame for the same call flips it.
         status: Option<String>,
     },
     Usage {
         prompt_tokens: i64,
         completion_tokens: i64,
     },
-    /// The agent gateway's failure contract: a 200-SSE body whose final chunk
-    /// carries `finish_reason: "error"` with a top-level `error: {message}`
-    /// (and a `hermes: {failed: true}` block) — the provider call died inside
-    /// the container and this frame is the only place the reason exists. The
-    /// frame parses to no content, so a parser that ignores it reads a failed
-    /// turn as an EMPTY COMPLETE one, and the chat chain re-fires it forever
-    /// (prior_messages sees through empty rows, so the user's message reads as
-    /// forever-unanswered). Consumers surface the text and stop the turn.
     Error {
         message: String,
     },

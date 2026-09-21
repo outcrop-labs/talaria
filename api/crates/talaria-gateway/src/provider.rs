@@ -228,9 +228,6 @@ fn now_ms() -> u64 {
 
 struct UsPoolCache {
     at: u64,
-    /// When the last fetch attempt FAILED — while OpenRouter is unreachable
-    /// the retry cadence backs off to one per minute instead of hanging a
-    /// 10s fetch on every completion.
     failed_at: Option<u64>,
     slugs: Vec<String>,
 }
@@ -621,9 +618,6 @@ fn to_catalog_model(raw: &serde_json::Value, gemini: bool) -> Option<CatalogMode
     })
 }
 
-/// Perplexity has no /models API — its DOCS are the catalog. The models index
-/// (Mintlify serves it as markdown) links one card per model, and each card's
-/// slug IS the API model id. Still live-fetched — no maintained list.
 async fn perplexity_models() -> Result<Vec<String>, String> {
     let r = http()
         .get("https://docs.perplexity.ai/docs/sonar/models.md")
@@ -697,8 +691,6 @@ fn localhost_spelling(base: &str) -> Option<String> {
     Some(format!("{}://localhost{port}{path}", m[1].to_lowercase()))
 }
 
-/// Fetch with the dev-mode localhost fallback (see `localhost_spelling`).
-/// Err carries the transport error string; the caller maps !ok to its own.
 async fn fetch_models(
     base: &str,
     headers: &[(String, String)],

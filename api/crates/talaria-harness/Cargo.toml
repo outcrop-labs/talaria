@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

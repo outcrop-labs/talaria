@@ -21,7 +21,6 @@ use talaria_error::{house_error, thrown_internal_error};
 use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
-/// The Guarded view of a space row — what every kb_perms predicate takes.
 pub(crate) fn guarded_of(
     space: &talaria_api_facades::kb::KbSpace,
 ) -> talaria_api_facades::kb::perms::Guarded {

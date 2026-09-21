@@ -205,7 +205,6 @@ pub struct CostPerModel {
     llm_model: Option<String>,
     endpoint_class: Option<String>,
     tokens: i64,
-    /// Null when every row for the model is unpriced — shown, never silent $0.
     cost: Option<serde_json::Number>,
 }
 
@@ -218,7 +217,6 @@ pub struct CostPerAgent {
     generations: i32,
     last_used: Option<String>,
     cost: serde_json::Number,
-    /// 0..1 of this agent's attributed tokens served locally.
     local_share: Option<serde_json::Number>,
 }
 
@@ -652,10 +650,6 @@ pub async fn classify_agent(
     Ok(value)
 }
 
-/// The serving endpoint as the GATEWAY would pick it, narrowed to what we can
-/// honestly claim. `configured` is the agent's stored spec — the only thing
-/// left to go on for a model the gateway doesn't serve (a tier still pointed
-/// at a legacy upstream).
 async fn classify_model(
     pg: &PgPool,
     model: &str,

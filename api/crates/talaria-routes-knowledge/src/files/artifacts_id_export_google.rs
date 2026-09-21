@@ -12,6 +12,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, agent_caller, refuse_legacy};
 use talaria_api_facades::google::agent::resolve_agent_google;
 use talaria_api_facades::google::connections::get_connection_status;
@@ -236,13 +237,4 @@ pub async fn post(
         return export_failed(ExportError::Failed(format!("export record: {e}")));
     }
     Json(json!({ "file": file })).into_response()
-}
-
-/// The one clock this route reads. Centralized so tests could pin it if
-/// this route ever grows one.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

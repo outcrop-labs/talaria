@@ -1889,8 +1889,6 @@ mod tests {
         (result, r)
     }
 
-    /// What the adapter does, minus the deadline plumbing: run, then gate the
-    /// value on the allowlist derived from the SAME function `render` used.
     async fn command_turn(
         input: &FocusCommandInput,
         w: World,

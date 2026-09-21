@@ -19,6 +19,7 @@ use std::time::Duration;
 use serde_json::Value;
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms;
 use talaria_gateway::settings::{get_setting, set_setting};
 use talaria_secretbox::SecretBox;
 use talaria_users::{
@@ -246,13 +247,6 @@ pub async fn install_app_from_git(
         .await
         .map_err(|e| e.to_string())?;
     Ok(derived.to_string())
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// Remove an app's codebase, its Postgres container, build artifacts, and

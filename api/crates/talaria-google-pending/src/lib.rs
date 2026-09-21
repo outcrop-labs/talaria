@@ -146,11 +146,6 @@ pub async fn queue_action(
     })
 }
 
-/// The still-pending gmail_send row this draft duplicates, if any — matched
-/// by principal (a personal draft for one owner is never the same ask as an
-/// org draft) and by the `gmail_signature` of both payloads. Absent for any
-/// other kind: calendar has no signature yet, and a kind joins the dedupe by
-/// writing its own.
 async fn find_same_pending_draft(
     pg: &PgPool,
     input: &QueueAction<'_>,
@@ -585,7 +580,6 @@ pub async fn decide_action(
 
 // ── Org agent addressing (the send-path half) ─────────────────────────────────
 
-/// The agent's slug + stored alias override.
 async fn agent_address_identity(
     pg: &PgPool,
     model: &str,
@@ -598,11 +592,6 @@ async fn agent_address_identity(
     Ok(row)
 }
 
-/// The From address an org agent sends as: its alias override, else its
-/// derived plus-address of the org account (get_org_email — plus-addresses
-/// hang off the org account, so no connection means no derived addresses; an
-/// override still wins). null when neither resolves — the caller falls back
-/// to the org sendAs target.
 async fn org_agent_from_address(
     pg: &PgPool,
     agent_model: &str,

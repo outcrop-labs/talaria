@@ -43,7 +43,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::future::BoxFuture;
 use regex::Regex;
@@ -52,6 +51,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_harness::run::{RunContext, RunLedger, run_harness};
 use talaria_harness::transport::LedgerSource;
 use talaria_harness_defs::defs::work_session::{
@@ -196,8 +196,6 @@ enum TurnKind {
     rename_all_fields = "camelCase"
 )]
 enum WorkSessionCheckpoint {
-    /// A turn is owed. Nothing has been sent for `turn` yet — or, after a
-    /// reclaim, something may have been and we will never know.
     Send {
         turn: i64,
         stage_attempt: i64,
@@ -205,16 +203,12 @@ enum WorkSessionCheckpoint {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         not_before: Option<i64>,
     },
-    /// A reply is persisted and has not reached the ticket yet. `reply: None`
-    /// is the retired turn — the model call may or may not have happened.
     Record {
         turn: i64,
         stage_attempt: i64,
         said: TurnKind,
         reply: Option<TurnReply>,
     },
-    /// The session is over and the run must be filed as an error, but the
-    /// ticket has not been told yet.
     Failed {
         turn: i64,
         stage_attempt: i64,
@@ -355,13 +349,6 @@ pub struct WorkSessionDeps {
     pub now: NowFn,
 }
 
-fn wall_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// The real edges. `state` carries the pool every dep reads and the harness
 /// assembly the turn runs through.
 pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
@@ -413,7 +400,6 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
     }
 }
 
-/// Authority + "still in play" + the live ticket, in one read.
 async fn real_session_state(
     pg: PgPool,
     task_id: String,
@@ -510,21 +496,6 @@ async fn add_skill_dir_names(root: &std::path::Path, names: &mut HashSet<String>
     }
 }
 
-/// ONE TURN = ONE HARNESS RUN, through the work-session harness with the
-/// agent's own model.
-///
-/// THE LEDGER LINE IS THE ONE THING ONLY THIS CALL CAN SAY. The ledger row
-/// writes `task_id`, and a ticket's cost is summed by that column alone — so
-/// without `task_id` here a session's spend lands in the ledger and never in
-/// the number the ticket's owner reads. `source` stays 'chat' deliberately:
-/// 'ticket' rows are agent-SELF-REPORTED through MCP `log_usage`, and this
-/// turn is metered by Talaria on its own request path.
-///
-/// ABORT, FROM OUTSIDE. The harness runner takes no signal, so the driver
-/// enforces the outcome from outside — it races the step against the step
-/// budget and the lease, and DROPPING the step future cancels the request
-/// underneath it. Either way the turn never completes without checkpointing,
-/// and the next entry retires it by `stage_attempt`.
 async fn real_turn(
     state: AppState,
     agent_model: String,
@@ -612,12 +583,6 @@ pub fn scrub_secrets(text: &str) -> String {
     SHAPES.replace_all(text, "[redacted:key]").into_owned()
 }
 
-/// Append this turn's prompt + stream tail to the run's transcript artifact.
-/// The artifact is created once per run (title carries the run id — a unique
-/// key, so the per-turn lookup is the idempotency) and attached to the task;
-/// turn numbers derive from the headers already in the body, so the dep
-/// closure's signature never had to learn them. Bounded: 16K of prompt,
-/// 256K of stream, both UTF-16-clamped on char boundaries.
 async fn capture_turn_transcript(
     state: &AppState,
     run_id: &str,
@@ -731,21 +696,6 @@ fn noted(line: &str, checks: &[String]) -> String {
     format!("[guard: {}] {line}", ids.join(", "))
 }
 
-/// Write one line of the session's trail.
-///
-/// A LOST LINE MUST NOT DESTROY THE SESSION. The trail is the RECORD of the
-/// work, not the work: a database blip while writing "session turn 4" is not
-/// a reason to abandon a ticket an agent is halfway through, and under the
-/// runtime a throw here would do exactly that — the step fails, the run is
-/// filed as an error, and the eleven remaining turns never happen. So a
-/// failed write is loud in the log and invisible to the step.
-///
-/// `dedupe` is the at-least-once guard, and it is asked for ONLY on the path
-/// where it can be true: a driver died between this write landing and the
-/// checkpoint that records it, so the step is re-entered and would say the
-/// same thing twice. Every line this file writes names its turn number or
-/// its reason, so an exact (actor, type='dispatch', description) match on
-/// the ticket's recent history is that line and not a coincidence.
 async fn say(
     d: &WorkSessionDeps,
     pg: &PgPool,
@@ -788,12 +738,6 @@ async fn say(
 
 // ── The prompts ──────────────────────────────────────────────────────────────
 
-/// The workflow block, and the gap signal that rides with it.
-///
-/// Workflows name SKILLS — the agent loads the flow content from the skill
-/// mounts it already reads; flow prose is never pasted into the prompt.
-/// Skills the target agent can't see are flagged, not silently named (the
-/// future gap loop starts from exactly this signal).
 async fn workflow_context(
     d: &WorkSessionDeps,
     pg: &PgPool,
@@ -915,10 +859,6 @@ fn kits_line(toolkits: &Value) -> String {
     }
 }
 
-/// The dispatch brief — turn one, and the only turn whose prompt describes
-/// the ticket rather than pointing at it. The TEMPLATE is the harness's
-/// `dispatch_prompt`; this side supplies what only the session knows: the
-/// board hint, the workflow block, and step 2's status instruction.
 async fn dispatch_prompt(
     d: &WorkSessionDeps,
     pg: &PgPool,
@@ -994,9 +934,6 @@ async fn dispatch_prompt(
     ))
 }
 
-/// The personalized step 5: one line per granted repo stating ITS base and
-/// prefix law, closing with the merge rule that never varies. Collapses to
-/// None when there are no grants, so the caller uses the standing default.
 async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
     let rules = talaria_github::repo_rules(pg, agent_id).await;
     if rules.is_empty() {

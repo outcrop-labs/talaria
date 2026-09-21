@@ -283,8 +283,6 @@ struct ValidatedPatch {
     endpoint: EndpointPatch,
     models: Option<Vec<String>>,
     force: bool,
-    /// Whether the patch rotates the stored key (drives the audit's
-    /// apiKeyRotated).
     rotates_key: bool,
 }
 

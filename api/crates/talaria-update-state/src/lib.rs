@@ -42,19 +42,11 @@ pub struct Pin {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunState {
-    /// Digest resolved, `docker pull` under way.
     Pulling,
-    /// The incoming slot is up and gating on health.
     Starting,
-    /// Green is healthy and aliased; blue recorded this and stopped itself.
-    /// GREEN's boot reconcile is the only writer that moves it to done.
     CuttingOver,
-    /// Green booted, verified itself through the edge, and owns the run.
     Done,
-    /// A step refused (unhealthy replacement, pull failure…). The old
-    /// container kept serving; the sentence is the run's error.
     Failed,
-    /// An admin rolled back to the previous slot.
     RolledBack,
 }
 
