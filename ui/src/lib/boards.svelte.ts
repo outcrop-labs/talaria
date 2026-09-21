@@ -1,3 +1,4 @@
+import { openStream } from '@/lib/sse'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, getJson, getJsonOr404, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
@@ -13,8 +14,7 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
   $effect(() => {
     const id = resolve(boardId)
     if (!id) return
-    const es = new EventSource(`/api/boards/${id}/events`)
-    es.onmessage = () => {
+    return openStream(`/api/boards/${id}/events`, () => {
       // Refresh the board (cards) live. We deliberately do NOT refetch an open
       // ticket here — that would thrash its editors mid-edit; the detail refetches
       // on the viewer's own actions. Workchain writes ride the SAME generic
@@ -22,8 +22,7 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
       // chains invalidate here too — the workchains lens stays live.
       void qc.invalidateQueries({ queryKey: ['board-tasks', id] })
       void qc.invalidateQueries({ queryKey: ['board-workchains', id] })
-    }
-    return () => es.close()
+    })
   })
 }
 

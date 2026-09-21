@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { openStream } from '@/lib/sse'
   import { useQueryClient } from '@tanstack/svelte-query'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { getStream } from '@/lib/fetch-json'
@@ -25,11 +26,10 @@
 
   // ── Run state: phases and the end. ────────────────────────────────────────
   $effect(() => {
-    const es = new EventSource(`/api/runs/${runId}/events`)
-    es.onmessage = (e) => {
+    return openStream(`/api/runs/${runId}/events`, (data) => {
       let ev: { state?: string; phase?: string }
       try {
-        ev = JSON.parse(e.data) as { state?: string; phase?: string }
+        ev = JSON.parse(data) as { state?: string; phase?: string }
       } catch {
         return
       }
@@ -40,8 +40,7 @@
         ended = true
         onEnded()
       }
-    }
-    return () => es.close()
+    })
   })
 
   // ── The work terminal: replay + live frames of the agent's stream. ───────

@@ -1,4 +1,5 @@
 // Group-chat client: queries + mutations + live SSE refresh.
+import { openStream } from '@/lib/sse'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, getJson, patchJson, postJson, putJson } from '@/lib/fetch-json'
@@ -114,14 +115,12 @@ export function useChannelEvents(id: MaybeGetter<string | null>, onMessage?: () 
   $effect(() => {
     const cid = resolve(id)
     if (!cid) return
-    const es = new EventSource(`/api/channels/${cid}/events`)
-    es.onmessage = (e) => {
-      const ev = JSON.parse(e.data as string) as { type: 'message' | 'channel' }
+    return openStream(`/api/channels/${cid}/events`, (data) => {
+      const ev = JSON.parse(data) as { type: 'message' | 'channel' }
       if (ev.type === 'message') onMessage?.()
       void qc.invalidateQueries({ queryKey: ev.type === 'message' ? ['channel-messages', cid] : ['channel', cid] })
       if (ev.type === 'channel') void qc.invalidateQueries({ queryKey: ['channels'] })
-    }
-    return () => es.close()
+    })
   })
 }
 

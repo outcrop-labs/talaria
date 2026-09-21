@@ -187,6 +187,38 @@ const RULES = [
     ],
   },
   {
+    id: 'ts-event-source-outside-the-door',
+    pattern: /new EventSource\(/,
+    allow: ['ui/src/lib/sse.ts'], // the one door
+    what: 'an EventSource opened outside the one SSE door',
+    fix: [
+      'Use `openStream(url, (data) => { … })` from `@/lib/sse` — it returns the',
+      'unsubscribe, so the effect teardown that used to say `es.close()` says `return',
+      'openStream(…)`.',
+      '',
+      'WHY: four surfaces each opened their own stream and each decided differently what',
+      'a frame that does not parse means — two swallow it, one lets JSON.parse throw',
+      'inside the listener (an unhandled error, stream still open), one returns early.',
+      'The door hands over the RAW data and lets each caller parse, because that judgment',
+      'is per-surface; what it owns is the connection and its teardown.',
+    ],
+  },
+  {
+    id: 'ts-maybe-getter-copy',
+    pattern: /type MaybeGetter</,
+    allow: ['ui/src/lib/reactive-arg.ts'], // the one declaration
+    what: 'a local `MaybeGetter` instead of the shared one',
+    fix: [
+      "Import it: `import { resolve, type MaybeGetter } from '@/lib/reactive-arg'`.",
+      '',
+      'WHY: sixteen files declared this type and then re-implemented the two-line',
+      'resolution beside it (and two spelled the resolution differently again,',
+      '`resolveModel` and `resolveValue`). A hook that takes `MaybeGetter<T>` and forgets',
+      'to accept the eager form is a papercut at every call site; one declaration means',
+      'one answer.',
+    ],
+  },
+  {
     id: 'rust-hand-wrapped-gate',
     lang: 'rust',
     // The gate helper answers `Result<_, Response>`; a handler that unwraps it
