@@ -1218,10 +1218,6 @@ fn clamp_label(label: &str) -> String {
     talaria_body::truncate_utf16(label, 2_000).to_string()
 }
 
-/// The ledger row for a persona turn. It meters because nothing else will:
-/// a harness turn on a persona writes no chat, channel or ticket row, so
-/// this is the only place the spend can enter. The result is discarded — a
-/// ledger hiccup never fails a turn that succeeded.
 async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &PersonaTurn) {
     let led = ledger_of(req);
     let counts = match turn.usage {
@@ -1251,10 +1247,6 @@ async fn meter_persona_turn(pg: &sqlx::PgPool, req: &TransportRequest, turn: &Pe
     .await;
 }
 
-/// Streaming completion against a FLEET PERSONA's own gateway.
-/// The persona runs a tool loop we do not control, so this transport collects
-/// the tool names the stream reports and nothing more — which is precisely
-/// what the guard pass is told about it later.
 async fn persona_turn(
     state: &AppState,
     req: &TransportRequest,

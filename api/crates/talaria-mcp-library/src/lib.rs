@@ -561,7 +561,6 @@ pub struct Library {
     well_known_cache: Mutex<PublisherShelf>,
     publisher_cache: Mutex<PublisherShelf>,
     featured: Mutex<Option<(i64, Arc<Vec<LibraryServer>>)>>,
-    /// The single-flight. Held across a whole fan-out — that is its job.
     flight: tokio::sync::Mutex<()>,
 }
 
@@ -604,9 +603,6 @@ impl Library {
         (self.edge)(&req).await
     }
 
-    /// One registry page. Non-OK statuses error as `registry <status>`; a
-    /// bad body errors too — resolvePublisher treats both as "registry
-    /// hiccup, try the fallbacks".
     async fn registry_page(&self, params: &[(&str, &str)]) -> Result<Vec<Value>, String> {
         let mut url = reqwest::Url::parse(REGISTRY_URL).map_err(|e| e.to_string())?;
         {
@@ -627,8 +623,6 @@ impl Library {
             .unwrap_or_default())
     }
 
-    /// The /.well-known/mcp.json convention on the publisher's domain. Cached
-    /// an hour, misses included — a domain without one stays cheap.
     async fn well_known_server(&self, domain: &str) -> Option<Arc<LibraryServer>> {
         if let Some((at, hit)) = self
             .well_known_cache
@@ -702,15 +696,6 @@ impl Library {
         })
     }
 
-    /// One publisher, best source wins: registry → well-known → documented.
-    /// Resolved at most once an hour per domain, and the featured refresh warms
-    /// every FEATURED_DOMAIN — so a brand-shaped search ("git", "stripe") pins
-    /// its publisher from cache instead of re-resolving it live.
-    ///
-    /// Takes an owned domain on purpose: an async fn borrowing its argument
-    /// makes the pool's `.map` closure higher-ranked over that lifetime, and
-    /// the spawned refresh then fails the 'static check with rustc's
-    /// "FnOnce is not general enough".
     async fn resolve_publisher(&self, domain: String) -> Option<Arc<LibraryServer>> {
         let domain = &*domain;
         if let Some((at, hit)) = self
@@ -754,9 +739,6 @@ impl Library {
         server
     }
 
-    /// Resolve the featured shelf from live sources and cache the result.
-    /// Never fails for per-domain failures — a publisher that cannot be
-    /// resolved just drops off the shelf until it can be.
     async fn refresh_featured(&self) -> Arc<Vec<LibraryServer>> {
         // Owned `String` items into the pool, on purpose: any reference
         // crossing the `.map` closure boundary makes the closure
@@ -1006,8 +988,6 @@ mod tests {
         registry_max_in_flight: usize,
         registry: RegistryFn,
         well_known: WellKnownFn,
-        /// When set, every fetch parks here until released — for proving a
-        /// caller did NOT wait for the network.
         gate: Option<Vec<tokio::sync::oneshot::Sender<()>>>,
     }
 

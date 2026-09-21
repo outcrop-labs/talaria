@@ -78,9 +78,6 @@ fn in_image() -> bool {
         || std::env::var("TALARIA_RUNTIME").ok().as_deref() == Some("prod-server")
 }
 
-/// The network an oci-http container joins when this api is in-image (the
-/// api's own, by inspection of $HOSTNAME — same discovery app-db uses), or
-/// None on the host (loopback publish instead).
 async fn api_network() -> Option<String> {
     if !in_image() {
         return None;
@@ -177,8 +174,6 @@ impl PkgSpec {
     }
 }
 
-/// The sealed-at-rest credential document: env values plus filled run-arg
-/// values, one SecretBox blob (`tokens_enc` pattern). `{env: {NAME: value},
 // args: {"<runArg index>": "value"}}`.
 #[derive(Default)]
 pub struct SealedDoc {
@@ -230,8 +225,6 @@ impl SealedDoc {
 
 // ── the argv builder (pure; the tests drive it directly) ────────────────────
 
-/// The chassis-matched DNS pins — same resolvers preflight probes with, read
-/// from the same place the renderer writes them.
 async fn pinned_dns() -> Vec<String> {
     let text = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
@@ -404,9 +397,6 @@ struct PkgChild {
     stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
     pending: Arc<tokio::sync::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
     next_id: std::sync::atomic::AtomicU64,
-    /// The server's initialize reply — stdio servers reject a second
-    /// handshake, so the pump owns the one handshake per container
-    /// lifetime and answers gateway initializes from this cache.
     initialize: tokio::sync::RwLock<Option<Value>>,
 }
 
@@ -436,9 +426,6 @@ fn rpc_error(code: i64, message: &str, id: Value) -> Value {
     })
 }
 
-/// Spawn the `docker run -i` child and own the handshake. The stdout reader
-/// owns the child's lifetime: EOF fails every pending call and evicts the
-/// registry entry, so the next call respawns (debounced).
 async fn spawn_stdio_child(
     server_name: &str,
     spec: &PkgSpec,
@@ -576,8 +563,6 @@ async fn spawn_stdio_child(
     Ok(kid)
 }
 
-/// One request/response through a live child: rewrite the id, park a
-/// oneshot, await the reader's answer, restore the caller's id.
 async fn raw_request(
     kid: &Arc<PkgChild>,
     timeout_secs: i64,
@@ -618,8 +603,6 @@ async fn raw_request(
     Ok(answer)
 }
 
-/// The row's CURRENT package document — the install's background pull may
-/// have landed (digest, ready state) since the caller's row was read.
 async fn fresh_spec(pg: &PgPool, server_id: &str) -> Result<Option<PkgSpec>, String> {
     let row: Option<(Option<Value>,)> =
         sqlx::query_as("select package from mcp_servers where id::text = $1")
@@ -630,8 +613,6 @@ async fn fresh_spec(pg: &PgPool, server_id: &str) -> Result<Option<PkgSpec>, Str
     Ok(row.and_then(|(p,)| p).as_ref().and_then(PkgSpec::of))
 }
 
-/// Ensure the package's child exists (spawn if missing, debounced) and hand
-/// back the live handle. Waits out an in-flight image pull first.
 async fn ensure_child(
     pg: &PgPool,
     sb: &SecretBox,

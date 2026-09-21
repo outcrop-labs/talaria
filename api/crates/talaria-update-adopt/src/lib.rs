@@ -60,12 +60,7 @@ const LOG: &str = "[update]";
 /// script's cue for what to do next.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AdoptStage {
-    /// Green and the edge are up on a port nobody else held; blue still
-    /// serves its own. Repoint the proxy, then call adopt AGAIN — the call
-    /// must arrive through the edge, which is the proof the proxy moved.
     EdgeReady { edge_port: String },
-    /// Traffic is green's through the edge; blue is stopped or stopping and
-    /// the run has landed.
     Cutover { edge_port: String },
 }
 
@@ -190,18 +185,6 @@ fn group_adds_of(doc: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Arm the host-side helper: a detached container of the RUNNING app image
-/// (definitionally local, docker-cli and compose baked in — the same
-/// premise every verb here stands on), the sock and the update dir mounted
-/// same-path, polling blue's state every second. The inherit path's only
-/// way to raise the edge after its own container dies — nothing inside
-/// blue outlives blue.
-///
-/// The sock is 0660 root:docker and the app image runs as its own non-root
-/// user — the very reason the slot compose renders `group_add`. The helper
-/// needs the same gids or it is blind: every docker call denied from the
-/// first inspect on (verified on a live host: no `--group-add`, the daemon
-/// is unreachable; with it, it answers).
 async fn arm_edge_boot(image: &str, retired: &str, group_add: &[String]) -> Result<(), String> {
     let _ = remove_container(&edge_boot_container()).await; // a stale armer blocks the name
     let script = edge_boot_script(retired, &compose_file(), &update_project());
@@ -451,14 +434,6 @@ pub async fn adopt(
     }
 }
 
-/// The second-and-later calls: `migrated` is already true. Takes NO lock,
-/// deliberately: the roll lock's holder is the FIRST call's process (blue,
-/// alive and renewing on the fresh-port path — precisely so nothing else
-/// moves containers mid-handover), the run-in-flight gate already bars
-/// every other actor from touching anything, and the resume's whole job is
-/// to finish exactly that run. Idempotent by construction: called on blue
-/// it answers the hold again, called on green it stops a possibly-stopped
-/// container and reconciles.
 async fn resume(pg: &PgPool, state: &UpdateState) -> Result<AdoptStage, String> {
     let port = state.edge_port.clone().ok_or(
         "the state row is migrated but records no edge port — a broken adoption; inspect the update dir by hand",

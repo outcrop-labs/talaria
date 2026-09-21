@@ -335,11 +335,6 @@ struct Task {
     band: EvalBand,
     input: WorkbenchTaskInput,
     oracle: Oracle,
-    /// The file a correct fix has to change. Unread by the fixtures — the
-    /// oracle's verdict subsumes it — but kept because the CONSISTENCY TEST
-    /// leans on it: the pristine file must fail the oracle and a correct fix
-    /// to exactly this path must pass it, which is what makes the field true
-    /// rather than decorative.
     fix_in: &'static str,
 }
 

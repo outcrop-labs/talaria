@@ -19,6 +19,7 @@ use std::time::Duration;
 use serde_json::{Map as JsonMap, Value};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms;
 use talaria_scheduler::{JobName, JobSpec};
 
 /// 6h between successful refreshes, owned by the scheduler so an instance
@@ -63,13 +64,6 @@ struct AutoPrice {
 
 fn round4(x: f64) -> f64 {
     (x * PRICE_SCALE).round() / PRICE_SCALE
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// "anthropic/claude-opus-4.8" → "anthropic/claude-opus-4-8". Leading "~"
@@ -127,10 +121,7 @@ struct SuffixEntry {
 }
 
 struct Catalog {
-    /// Keyed by the FULL normalized id ("anthropic/claude-opus-4-8") — for
-    /// vendor-prefixed model ids (OpenRouter-style endpoints).
     by_id: HashMap<String, TokPrice>,
-    /// Keyed by the normalized suffix ("claude-opus-4-8") — for bare ids.
     by_suffix: HashMap<String, Vec<SuffixEntry>>,
 }
 
@@ -224,8 +215,6 @@ fn price_for(catalog: &Catalog, provider: &str, model: &str) -> Option<TokPrice>
     None
 }
 
-/// Fetch and fold OpenRouter's public catalog. Errors are strings because the
-/// scheduler's contract carries text (the job's error line).
 async fn fetch_catalog() -> Result<Catalog, String> {
     let fetch = async {
         let resp = talaria_gateway::provider::http()
@@ -257,13 +246,6 @@ pub struct RefreshCounts {
     pub endpoints: usize,
 }
 
-/// Refresh auto_prices for every cloud endpoint. The
-/// second model set (usage-attributed) is what keeps costing honest: tier
-/// routing and aliases send usage to models nobody registered, and those rows
-/// must price too. Keys are the EXACT strings usage carries, so the costing
-/// join hits directly. Every cloud endpoint gets its write, priced or not —
-/// an emptied catalog should clear stale
-/// prices.
 async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
     let catalog = fetch_catalog().await?;
     let endpoints: Vec<(String, String, String, Value)> = sqlx::query_as(
@@ -354,13 +336,6 @@ fn gate_open(s: &Stamps, now: i64, min_gap_ms: i64) -> bool {
     now - s.last_refresh >= min_gap_ms && now - s.last_attempt >= RETRY_INTERVAL_MS
 }
 
-/// The single-flight every caller goes through, so the catalog
-/// is never fetched twice at once. `min_gap_ms`: Some for the fire-and-forget
-/// callers (checked INSIDE the flight lock, so a caller that queued behind a
-/// finished pass doesn't fetch again); None for the scheduled job, whose
-/// cadence is the scheduler's, not this gate's. Returns Err when the refresh
-/// failed — the scheduler records that; the two fire-and-forget callers below
-/// swallow on purpose, because for them the next pass is the retry.
 async fn refresh_once(
     pg: &PgPool,
     min_gap_ms: Option<i64>,

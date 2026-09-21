@@ -67,9 +67,6 @@ pub async fn set_timezone(pg: &PgPool, user_id: &str, tz: Option<&str>) -> Resul
     Ok(())
 }
 
-/// The endpoint rows the catalog reads, in query order (local first,
-/// then name asc — first-seen order is what a pooled bare id's endpoint list
-/// preserves).
 async fn endpoint_models(pg: &PgPool) -> Result<Vec<EndpointModels>, sqlx::Error> {
     // `models` is a jsonb column: sqlx maps Vec<String> to text[], so the
     // decode goes through Json<Vec<String>>.

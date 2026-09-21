@@ -27,8 +27,6 @@ pub async fn has_password_accounts(pg: &PgPool) -> Result<bool, sqlx::Error> {
     Ok(ok)
 }
 
-/// The dummy burn for an unknown email — same cost as a real verify, on the
-/// blocking pool like one.
 async fn burn_dummy(password: &str) {
     let p = password.to_string();
     let _ = tokio::task::spawn_blocking(move || verify_password_hash(&p, dummy_hash())).await;

@@ -45,17 +45,10 @@ pub fn focus_action(
 /// edit there to become auto-executable rather than inheriting it by omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusProposalSource {
-    /// A person clicked a button on the card, or Retry on a past decision.
     Human,
-    /// `deterministic_proposal`'s regexes matched the owner's instruction and
-    /// this is the action they matched.
     Deterministic,
-    /// A model selected this action from the item's full list (the widened
-    /// surface) — nothing deterministic authorized it.
     Widened,
-    /// The delegate seat's proposal carried the turn.
     Delegate,
-    /// A proposal row this build cannot read a source off. Needs the click.
     Unattributed,
 }
 

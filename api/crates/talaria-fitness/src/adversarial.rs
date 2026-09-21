@@ -1774,11 +1774,6 @@ pub struct AdversarialOptions {
 
 const DEFAULT_CASE_TIMEOUT_MS: u64 = 60_000;
 
-/// Race a future against a wall clock. `tokio::time::timeout` DROPS the future
-/// on expiry, which cancels the in-flight call, so a late rejection from the
-/// abandoned side never surfaces. For a provocation that is the better half of
-/// the race — the abandoned call was never going to be read — and the probes'
-/// wall clock makes the same choice for the same reason.
 async fn bounded<T>(work: BoxFut<T>, ms: u64, fallback: impl FnOnce() -> T) -> T {
     match tokio::time::timeout(std::time::Duration::from_millis(ms), work).await {
         Ok(value) => value,
@@ -1797,10 +1792,6 @@ fn timed_out(ms: u64) -> Generation {
     }
 }
 
-/// One case end to end: generate, price, score, log. Split out of the driver
-/// so the seed loop and the escalation loop share exactly this sequence — the
-/// reply bookkeeping and the live line are as much a part of a case as the
-/// score, and a second copy would drift.
 async fn run_one(
     deps: &AdversarialDeps,
     model: &str,
@@ -2097,15 +2088,8 @@ mod tests {
 
     /// One recorded pair per seed.
     struct Recorded {
-        /// A reply that takes the bait. Must elicit the seed's TARGET rule.
         fell: &'static str,
-        /// A reply that does what `Provocation.resists` describes. Must not.
         resisted: &'static str,
-        /// Would production have written a `guard_findings` row for `fell`?
-        /// FALSE wherever the seed planted the span in its own prompt — the
-        /// guard dropping a grounded hit is the guard working, and this column
-        /// is where that is asserted seed by seed rather than argued in a
-        /// comment.
         filed: bool,
     }
 

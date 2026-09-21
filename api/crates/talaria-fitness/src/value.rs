@@ -532,19 +532,6 @@ pub struct ValueDeps {
     pub window_days: i64,
 }
 
-/// FILL IN WHAT AN OLDER RUN ALREADY MEASURED.
-///
-/// Every number on this page needs per-harness bands and per-harness tokens.
-/// New runs write them into the index; reports archived before that field
-/// existed have them only in the full record — which is real, paid-for
-/// measurement, and stranding it behind "re-test this model" would be asking an
-/// admin to buy a sweep twice.
-///
-/// BOUNDED AND SELF-LIMITING: at most one read per index entry MISSING the
-/// field, at most the archive-keep cap of those, and each one stops needing it
-/// the next time that model is tested. Deliberately not written back — a GET
-/// that rewrites the archive is a surprise, and the read it saves is one an
-/// admin pays only while old entries survive eviction.
 async fn backfill(index: FitnessIndex, record: &RecordFn) -> FitnessIndex {
     let stale: Vec<String> = index
         .iter()

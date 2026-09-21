@@ -1090,7 +1090,6 @@ fn msg_wire(
     }
 }
 
-/// Bolt reaction rollups + thread rollups onto a fetched page of messages.
 async fn decorate_messages(
     pg: &PgPool,
     messages: &mut [ChannelMessageWire],
@@ -1145,14 +1144,6 @@ async fn decorate_messages(
     Ok(())
 }
 
-/// A 'streaming' row whose writer died (a deploy mid-turn kills the bare
-/// spawned reply task — nothing closes it) would render as an agent replying
-/// forever. The chat plane repairs its own orphans on read (messages.rs's
-/// 15-minute rule); channels answer on the WIRE instead: a streaming row
-/// whose `edited_at` (the flush stamp) is more than fifteen minutes quiet gets
-/// its status flipped to 'error' in the row AND in what this read returns.
-/// Silence, not age — a live hour-long turn flushes every 400ms and never
-/// trips it.
 async fn repair_dead_streams(pg: &PgPool, messages: &mut [ChannelMessageWire]) {
     for m in messages.iter_mut() {
         if m.status != "streaming" {

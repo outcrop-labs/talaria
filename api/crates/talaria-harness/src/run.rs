@@ -49,6 +49,7 @@ use super::transport::{
     LedgerAttribution, LedgerSource, TransportKind, TransportReply, TransportRequest,
     dispatch_transport, tool_wire_message,
 };
+use talaria_agent_auth::now_ms;
 use talaria_capability::{CapabilityFact, capability_key, get_capabilities, missing_capabilities};
 use talaria_capability_reach::{Reach, reach_for_keys};
 use talaria_effort_prefs::{agent_slot, role_slot, slot_effort_for_model};
@@ -360,13 +361,6 @@ pub fn real_deps(state: &AppState) -> HarnessDeps {
         },
         now: Arc::new(now_ms),
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// THE CAPABILITY KEYS A ROUTED MODEL ANSWERS FOR — one per endpoint that
@@ -723,9 +717,6 @@ struct Core {
     error: Option<String>,
 }
 
-/// Every exit writes a harness_runs row, including the ones that never reach
-/// a model. A harness that resolves nothing, or refuses on a capability, is
-/// exactly the thing the fitness UI has to be able to see.
 async fn finish(
     deps: &HarnessDeps,
     def_id: &str,
@@ -765,12 +756,6 @@ async fn finish(
     }
 }
 
-/// THE FAILURE POLICY ON A RETURN PATH. `run_harness` returns rather than
-/// throws for every failure that happens BEFORE or DURING the call, so
-/// `OnFailure::Throw` covers the contract failure and everything before it —
-/// and ONLY Throw widens: the other three policies describe what a caller
-/// gets when a model ANSWERED and the answer was unusable (`answered` is how
-/// a caller asks for either deliberately).
 async fn fail(
     deps: &HarnessDeps,
     def: &HarnessDefinition,

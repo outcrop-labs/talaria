@@ -27,14 +27,7 @@ struct RealEdges {
     publish: PublishFn,
     definition_for: DefinitionForFn,
     now: NowFn,
-    /// Who may be told about a parked question — the one resolver, wrapped to
-    /// the edge shape the pause wants. Its errors already resolve to nobody
-    /// inside `audience_for`; this wrapper only moves the pool into the future.
     audience_for: AudienceForFn,
-    /// The announcer `pause` rides after the park: approve through the same
-    /// `announce_approval` the raiser calls, so a question is announced exactly
-    /// once from whichever path reached it first. It answers 0 on every
-    /// internal failure and leaves the key unmarked for the sweep.
     announce: AnnounceFn,
 }
 

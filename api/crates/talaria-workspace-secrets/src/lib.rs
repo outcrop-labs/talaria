@@ -23,15 +23,9 @@ use sqlx::PgPool;
 use sqlx::Row;
 
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_secretbox::SecretBox;
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// How long an unspent relay lives. An hour is long enough for a queued turn
 /// and short enough that a changed mind costs nothing; anything that needs to
@@ -1282,9 +1276,6 @@ pub async fn create_secret_folder(
     })
 }
 
-/// A folder is yours if you own it — or, for a WORKSPACE folder (owner null),
-/// if you administer the workspace. Requiring an owner match on those would
-/// make them permanently unmanageable.
 async fn owns_folder(pg: &PgPool, id: &str, user_id: &str, is_admin: bool) -> Result<bool, String> {
     let rows = sqlx::query(
         "select owner_user_id::text as owner_user_id from secret_folders where id = $1::uuid",

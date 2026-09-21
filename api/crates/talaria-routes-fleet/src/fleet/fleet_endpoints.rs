@@ -185,8 +185,6 @@ fn nullish_key_env(
     }
 }
 
-/// A record keyed by model (≤ key_max) → { in?: nonneg, out?: nonneg }.
-/// (shared with the PUT patch in fleet_endpoints_id.rs)
 pub(crate) fn price_record(v: &Value, key_max: usize) -> Result<Value, String> {
     let map = v
         .as_object()

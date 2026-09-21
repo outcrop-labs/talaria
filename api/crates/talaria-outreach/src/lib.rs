@@ -441,8 +441,6 @@ pub async fn sweep_outreach(deps: &OutreachDeps) -> Result<SweepResult, String> 
     Ok(result)
 }
 
-/// The signals + rules for one agent's check-in, sent through its own persona
-/// gateway so any action it takes uses its normal, governed MCP tools.
 async fn check_in_turn(state: &AppState, model: &str) -> Result<String, String> {
     // Signals: the agent's own assigned work with staleness, anything it sent
     // to quality review that's still waiting, and its recent outreach (so it

@@ -614,9 +614,7 @@ pub async fn complete_google_org_connect(
 /// lands; the org flavor adds the admin gate.
 #[derive(Clone, Copy)]
 pub enum ConnectFlavor {
-    /// The tokens are the signed-in user's own.
     Personal,
-    /// The tokens are the shared org account's (admin-only).
     Org,
 }
 

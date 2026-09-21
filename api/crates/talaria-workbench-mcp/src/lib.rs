@@ -34,6 +34,7 @@ use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model};
 use talaria_approvals::{ApprovalDeps, announce_approval};
 use talaria_artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
@@ -71,13 +72,6 @@ impl WorkbenchDeps {
     pub fn task_deps(&self) -> TaskDeps {
         TaskDeps::from_route(self.pg.clone(), self.redis.clone())
     }
-}
-
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 async fn sync_agent_budget(pg: &PgPool, department: &str, agent_id: &str) {
@@ -195,7 +189,6 @@ pub fn slugify(v: &str) -> String {
     truncate_utf16(collapsed.trim_matches('-'), 40).to_string()
 }
 
-/// Ticket ref + title (refs are computed: board prefix + ticket_no).
 async fn ticket_ref_of(pg: &PgPool, task_id: &str) -> Option<(Option<String>, String)> {
     let row: Option<(Option<String>, String)> = sqlx::query_as(
         "select case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end, \
@@ -349,10 +342,6 @@ pub enum WorkbenchActor {
     Agent(AgentSubject),
 }
 
-/// The agent behind a WorkbenchActor, or None for a genuine human.
-/// Deliberately not `agent_by_model` — that filters on `enabled`, and a
-/// disabled agent's writes must not fall through the gate by being read as a
-/// person's.
 async fn agent_behind(pg: &PgPool, by: &WorkbenchActor) -> Option<AgentSubject> {
     match by {
         WorkbenchActor::Agent(subject) => Some(subject.clone()),
@@ -401,17 +390,6 @@ pub async fn log_ticket(
         .is_ok()
 }
 
-/// THE GATE — for a caller-supplied taskId AND for every workbench audit line
-/// (`log_ticket` calls this; nothing else may). Verbs here take the ticket
-/// from the agent, and everything downstream either DISCLOSES it (the ticket
-/// ref and title ride into the branch name and, at finish_job, into a public
-/// PR title and body) or WRITES to it (a plan comment authored as the agent,
-/// the plan artifact chip on the ticket, workbench audit lines).
-///
-/// Both rules are `agent_ticket_refusal`, IMPORTED — ONE predicate answers
-/// policy AND ticket state, so this door cannot ask half the question.
-/// Unknown and not-allowed refuse with the SAME message: a distinct "no such
-/// ticket" would turn this verb into a ticket enumeration oracle.
 async fn authorize_ticket(
     pg: &PgPool,
     task_id: &str,
@@ -443,14 +421,6 @@ async fn authorize_ticket(
     Ok(())
 }
 
-/// THE ONLY way a verb gets a ticket out of its OWN arguments — parsing and
-/// the gate are one step, and `args.taskId` is read here and nowhere else in
-/// this file. A verb cannot hold an agent-supplied taskId it has not gated:
-/// the ungated read is not a thing you can write, rather than a thing you
-/// must remember not to write.
-///
-/// Absent/blank taskId is `Ok(None)`: omitting the ticket is legal on both
-/// verbs that take one, and only a NAMED ticket is a claim to be checked.
 async fn ticket_arg(
     pg: &PgPool,
     subject: &AgentSubject,
@@ -468,10 +438,6 @@ async fn ticket_arg(
     Ok(Some(task_id))
 }
 
-/// Board policy alone, for the DISCLOSURE point (finish_job): may this agent
-/// still see this ticket? Deliberately NOT the closed check — a person
-/// closing the ticket while the job ran should not cost the PR its ticket
-/// link.
 async fn ticket_still_ours(pg: &PgPool, subject: &AgentSubject, task_id: &str) -> bool {
     let Ok(Some(task)) = get_task(pg, task_id).await else {
         return false;
@@ -1496,9 +1462,6 @@ fn composed_job_branch(
     }
 }
 
-/// The live read behind `composed_job_branch`: the agent's grant rule for
-/// this repo, or no prefix when there is no rule (the default posture allows
-/// any branch but the base, and `talaria/…` is never the base).
 async fn job_branch_name(
     pg: &PgPool,
     agent_id: &str,
@@ -1636,12 +1599,6 @@ pub async fn dispatch_workbench_mcp(
     dispatch_jsonrpc(rpc, tools, "talaria-workbench", call).await
 }
 
-/// The workbench's OWN tool calls, onto the agent's live run's watch stream —
-/// a `wtool` frame with the args and the outcome. These are the moments the
-/// run-detail modal most wants verbatim (start_job carries the plan;
-/// finish_job the summary), they are platform-side by construction so their
-/// fidelity is total, and nothing else was recording them beyond an activity
-/// line. Fire-and-forget: a logging failure never fails the call it logs.
 async fn log_wtool_line(
     deps: &WorkbenchDeps,
     agent: &AgentSubject,

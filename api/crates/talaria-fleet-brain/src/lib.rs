@@ -195,10 +195,6 @@ struct EnsuredKey {
     rotated: bool,
 }
 
-/// Keep the current key if it's a live key of that name; otherwise mint a
-/// fresh one (revoking any stale rows) under an admin owner. Returns the
-/// plaintext secret to write into the fleet .env, or None if there's no user
-/// to own it yet (nothing to own the key — try again next render).
 async fn ensure_gateway_key(
     pg: &PgPool,
     name: &str,
@@ -248,10 +244,6 @@ async fn ensure_gateway_key(
     }))
 }
 
-/// First gateway-resolvable model — a sane default LLM_MODEL so
-/// freshly-added endpoints light up the fleet without hand-editing. None if
-/// nothing is configured (the same local-first pick the routing half's
-/// fallback makes).
 async fn default_gateway_model(pg: &PgPool) -> Option<String> {
     gateway_model_set(pg).await.fallback
 }

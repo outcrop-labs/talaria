@@ -69,11 +69,6 @@ fn is_docker_bare(base: &str) -> bool {
     !host.is_empty() && !host.contains('.') && host != "localhost" && port_ok
 }
 
-/// Fetch against TEI with the hostname fallback, remembering the winner.
-/// On success the attempted base becomes sticky; on failure a docker-bare
-/// base retries the loopback publishing (and THAT becomes sticky when it
-/// answers); anything else FORGETS the base that stopped answering — a sticky
-/// base that no longer resolves is worse than paying the probe again.
 async fn embed_fetch(
     deps: &EmbedDeps,
     timeout_ms: u64,

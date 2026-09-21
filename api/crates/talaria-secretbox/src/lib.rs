@@ -74,9 +74,6 @@ pub struct SecretBox {
     kek: Option<Key>,
     deks: HashMap<u32, Key>,
     active: Option<u32>,
-    /// Why there is no usable key, if there isn't. Recorded, not thrown —
-    /// models listing doesn't need a key; the diagnosis belongs to the
-    /// operation that does.
     failure: Option<String>,
 }
 

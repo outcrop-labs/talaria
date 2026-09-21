@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::calendar::{
     CalendarError, CreateEventInput, create_event, list_upcoming_events,
 };
@@ -98,12 +99,4 @@ impl EventDraft {
             attendees: self.attendees.clone(),
         }
     }
-}
-
-/// Epoch-ms clock — the one time the calendar surface reads.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

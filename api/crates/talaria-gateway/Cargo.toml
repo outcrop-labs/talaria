@@ -19,7 +19,6 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-body = { path = "../talaria-body" }
-talaria-error = { path = "../talaria-error" }
 talaria-fleet-layout = { path = "../talaria-fleet-layout" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 talaria-settings = { path = "../talaria-settings" }

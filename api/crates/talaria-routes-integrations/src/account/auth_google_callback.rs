@@ -205,9 +205,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     finish_login(&state, &headers, &row, PROVIDER).await
 }
 
-/// Mint the session and land on the cockpit — the callback's one success
-/// shape (session cookie on, one-shot state cookie off), shared by the claim
-/// and the doors paths.
 async fn finish_login(
     state: &AppState,
     headers: &HeaderMap,

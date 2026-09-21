@@ -98,9 +98,6 @@ fn is_disabled(status: u16, body: &Value) -> bool {
     })
 }
 
-/// Probe one service with an already-resolved org token. A transport-level
-/// failure is an `Err` — it fails the whole health call rather than reporting
-/// one service as red.
 async fn probe(entry: &LibraryEntry, token: &str) -> Result<GoogleApiHealth, String> {
     let res = http()
         .get(entry.probe_url)

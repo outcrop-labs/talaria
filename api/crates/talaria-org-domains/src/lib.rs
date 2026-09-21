@@ -161,9 +161,6 @@ fn resolver() -> &'static TokioResolver {
     })
 }
 
-/// All TXT strings for one host, or an empty vec on any lookup failure. Each
-/// TXT record may hold several character-strings; they are joined into one
-/// string per record before comparing.
 async fn resolve_txt(host: &str) -> Vec<String> {
     let name = match host.parse::<hickory_resolver::proto::rr::Name>() {
         Ok(n) => n,

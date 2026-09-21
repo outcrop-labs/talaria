@@ -100,7 +100,6 @@ impl From<String> for CallFail {
     }
 }
 
-/// A Google error message, or a stand-in for a body with none.
 async fn err_text(res: reqwest::Response) -> String {
     let status = res.status().as_u16();
     let body: Value = res.json().await.unwrap_or(Value::Null);
@@ -152,9 +151,6 @@ enum Preflight {
     Fail(ProvisionResult),
 }
 
-/// Connected org account + the scope a container needs, or the outcome saying
-/// why not. Checking the STORED scope first turns Google's opaque 403 into
-/// "reconnect" — the fix an admin can actually act on.
 async fn preflight(
     pg: &PgPool,
     sb: &SecretBox,
@@ -208,8 +204,6 @@ async fn preflight(
 
 // ── Calendar ─────────────────────────────────────────────────────────────────
 
-/// A calendar id that still exists. A calendar deleted in Google (an admin
-/// cleaning up) must be recreated, not trusted forever.
 async fn calendar_exists(token: &str, id: &str) -> Result<bool, String> {
     let res = http()
         .get(format!(
@@ -223,7 +217,6 @@ async fn calendar_exists(token: &str, id: &str) -> Result<bool, String> {
     Ok(res.status().is_success())
 }
 
-/// True when a domain-wide rule for `domain` is already on the calendar.
 async fn calendar_shared_with_domain(token: &str, id: &str, domain: &str) -> Result<bool, String> {
     let res = http()
         .get(format!(
@@ -382,7 +375,6 @@ async fn shared_drive_exists(token: &str, id: &str) -> Result<bool, String> {
     Ok(res.status().is_success())
 }
 
-/// True when a domain-wide permission is already on the drive.
 async fn drive_shared_with_domain(token: &str, id: &str) -> Result<bool, String> {
     let res = http()
         .get(format!(

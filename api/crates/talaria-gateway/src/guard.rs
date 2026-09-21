@@ -816,17 +816,7 @@ struct RuleDef {
     severity: &'static str,
     default_on: bool,
     groundable: Option<Groundable>,
-    /// Runs over plain text with no tool record —
-    /// the rules `guard_text` may use. The tool-record rules (zero_tool_claim,
-    /// ungrounded_ref, fabricated_outage) have nothing to be true AGAINST on
-    /// that path: an MCP comment claiming "I opened the PR" is backed by a
-    /// tool that ran in a different process, so running them would flag
-    /// honest work. Rules that need what we cannot supply are skipped rather
-    /// than guessed.
     gate_safe: bool,
-    /// Which halves of `Available` this rule's truth depends on. Empty for
-    /// every rule but the two tool-record ones; `zero_tool_claim` needs
-    /// neither because an empty record is its answer, not missing data.
     needs: &'static [Need],
 }
 

@@ -23,9 +23,6 @@ fn method_not_allowed(allow: &'static str) -> Response {
     res
 }
 
-/// app.ts's API 404: `/api` and everything under `/api/` answer the JSON
-/// sentence; anything else is not this server's to describe (the SPA shell is
-/// a TS-side concern until cutover).
 async fn api_not_found(uri: Uri) -> Response {
     let path = uri.path();
     if path == "/api" || path.starts_with("/api/") {

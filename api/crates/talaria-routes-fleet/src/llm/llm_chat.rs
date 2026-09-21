@@ -534,25 +534,16 @@ enum MeterMode {
 /// scans the pending tail; settle books, it does not scan.
 struct MeteredStream {
     inner: Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send>>,
-    /// Partial line BYTES across chunk boundaries — buffering bytes (not
-    /// lossy-decoded text) keeps a multibyte character split across chunks
-    /// from degrading into U+FFFD.
     buf: Vec<u8>,
     content: String,
     usage: Option<Value>,
     settled: bool,
     ledger: Ledger,
     mode: MeterMode,
-    /// [DONE] was seen and is being withheld until the guard has spoken.
     saw_done: bool,
-    /// Re-emitted line bytes (annotate mode) and the caveat/[DONE] tail —
-    /// drained before the upstream is polled again.
     out: VecDeque<Bytes>,
-    /// The guard future, armed only at a clean annotate-mode end with content.
     guard: Option<GuardFut>,
-    /// Upstream returned None — the flush path has run.
     ended: bool,
-    /// Upstream errored mid-stream — neither flush nor cancel runs a guard.
     errored: bool,
     guard_spec: GuardSpec,
 }

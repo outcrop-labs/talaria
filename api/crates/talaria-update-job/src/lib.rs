@@ -29,6 +29,7 @@ use std::sync::Arc;
 use talaria_scheduler::{JobName, JobSpec};
 use talaria_state::AppState;
 
+use talaria_agent_auth::now_ms;
 use talaria_update_mode::{InstallMode, install_mode};
 use talaria_update_registry::resolve_latest;
 use talaria_update_roll::{reconcile_boot, roll, run_in_flight, tidy};
@@ -179,13 +180,6 @@ pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
             })
         }),
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 /// The minute hand: reconcile, nothing else. reconcile_boot self-gates —

@@ -44,10 +44,6 @@ fn members_json(members: &[talaria_conversations::PlanMember]) -> Vec<Value> {
         .collect()
 }
 
-/// Keep the plan doc's editor grants in step with membership. A db failure
-/// here is the route's 500, not a silent skip — a share that granted the row
-/// but not the doc leaves the new collaborator able to see the plan and
-/// unable to open its document.
 async fn sync_doc_grant(
     pg: &sqlx::PgPool,
     plan_id: &str,

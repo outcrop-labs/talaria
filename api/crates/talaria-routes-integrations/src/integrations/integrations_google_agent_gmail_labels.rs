@@ -12,6 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::resolve_agent_google;
 use talaria_api_facades::google::errors::google_fail;
@@ -78,12 +79,4 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         Ok(label) => Json(json!({ "label": label })).into_response(),
         Err(e) => google_fail(e, "Gmail"),
     }
-}
-
-/// Epoch-ms clock — the one time the agent mailbox reads.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

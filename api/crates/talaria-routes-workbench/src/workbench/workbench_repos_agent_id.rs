@@ -16,7 +16,6 @@ use talaria_github as gh;
 use talaria_session::require_perm;
 use talaria_state::AppState;
 
-/// A non-uuid id folds into "no such agent", never a 500.
 async fn agent_exists(pg: &sqlx::PgPool, id: &str) -> bool {
     sqlx::query_scalar::<_, i32>("select 1 from agent_defs where id = $1::uuid")
         .bind(id)

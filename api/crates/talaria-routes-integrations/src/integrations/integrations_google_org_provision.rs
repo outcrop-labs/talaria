@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::org::{get_org_connection_status, get_org_email};
 use talaria_api_facades::google::pending_actions::agent_from_address;
 use talaria_api_facades::google::provisioning::{provision_workspace, provisioning_readiness};
@@ -149,12 +150,4 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
             thrown_internal_error()
         }
     }
-}
-
-/// Epoch-ms clock — the one time provisioning reads.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

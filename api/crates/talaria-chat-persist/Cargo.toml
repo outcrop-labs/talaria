@@ -18,7 +18,6 @@ talaria-conversations = { path = "../talaria-conversations" }
 talaria-fleet-agents = { path = "../talaria-fleet-agents" }
 talaria-fleet-layout = { path = "../talaria-fleet-layout" }
 talaria-gateway = { path = "../talaria-gateway" }
-talaria-model-access = { path = "../talaria-model-access" }
 talaria-notify = { path = "../talaria-notify" }
 talaria-plan-doc = { path = "../talaria-plan-doc" }
 talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }

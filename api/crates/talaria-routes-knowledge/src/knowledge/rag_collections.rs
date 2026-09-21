@@ -23,12 +23,6 @@ use talaria_error::{house_error, thrown_internal_error};
 use talaria_session::{actor_of, require_admin, require_user};
 use talaria_state::AppState;
 
-/// `timestamptz::text` ("2026-08-29 04:49:51.123456+00") → the ISO-milliseconds
-/// string on the wire ("…T04:49:51.123Z"). The fold runs through epoch
-/// millis, so the microseconds the text carries land on the same millisecond.
-/// An unparseable string passes through — the column renders one fixed
-/// format; anything else means the row was hand-edited, and the honest answer
-/// is what is actually stored.
 pub(crate) fn pg_text_to_iso(s: &str) -> String {
     // `%#z` not `%:z`: Postgres prints the offset hour-only when its minutes
     // are zero (`+00`) and `+HH:MM` otherwise; the flag admits both shapes.
@@ -37,9 +31,6 @@ pub(crate) fn pg_text_to_iso(s: &str) -> String {
         .unwrap_or_else(|_| s.to_string())
 }
 
-/// The row on the wire — key order included, it is part of the contract. No
-/// `bindings` key: this is the bare row (what the POST returns); the GET
-/// attaches bindings itself, see below.
 pub(crate) fn row_json(col: &RagCollection) -> Value {
     json!({
         "id": col.id,
@@ -54,10 +45,6 @@ pub(crate) fn row_json(col: &RagCollection) -> Value {
     })
 }
 
-/// bindings: an array capped at 200 — elements validate BEFORE the
-/// array-length check (the same issue order the workflows arrays are pinned
-/// on). Unknown keys inside an element strip silently; a nullish principalId
-/// and an absent one are the same value on the wire and in the table.
 pub(crate) fn parse_bindings(v: Option<&Value>) -> Result<Option<Vec<AccessBinding>>, String> {
     let Some(v) = v else {
         return Ok(None); // absent — bindings are optional

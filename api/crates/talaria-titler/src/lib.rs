@@ -203,8 +203,6 @@ pub async fn sweep_titles(state: &AppState) -> u32 {
     spent
 }
 
-/// The sweep's per-conversation naming call; false = keep stopping the batch
-/// (the model is down), true = named or nothing to do.
 async fn retitle_conversation_any_length(
     state: &AppState,
     conversation_id: &str,

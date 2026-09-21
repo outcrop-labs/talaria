@@ -2219,9 +2219,6 @@ pub fn index_entry_of(parts: IndexEntryParts<'_>) -> FitnessIndexEntry {
     }
 }
 
-/// The budget a sweep leaves behind, in one place. A failure to write is
-/// swallowed: the next sweep re-derives the budget from its own run, and a
-/// failed archive write must not void a run the org already paid for.
 async fn record_budget(harnesses: &[crate::evals::HarnessScore], deps: &SurfaceDeps) {
     if harnesses.is_empty() {
         return;
@@ -2357,8 +2354,6 @@ fn status_lock() -> &'static tokio::sync::Mutex<()> {
     &LOCK
 }
 
-/// One run's status into the map. Errors are swallowed inside — a status the
-/// run could not persist must not void the run.
 async fn write_run_status(status: &FitnessRunStatus, deps: &SurfaceDeps) {
     let Some(model) = status.model.clone() else {
         return;
@@ -2376,11 +2371,6 @@ async fn write_run_status(status: &FitnessRunStatus, deps: &SurfaceDeps) {
     }
 }
 
-/// EVERY WRITE IS ALSO A HEARTBEAT. Threading it through the one helper the
-/// run already uses means a new phase, a finish and an error all refresh it
-/// without any caller remembering to — and a second mechanism for "is this
-/// alive" is a second set of stuck-state bugs, which is the note this file
-/// already makes about progress counters.
 async fn write_status(status: FitnessRunStatus, deps: &SurfaceDeps) {
     let mut s = status;
     s.heartbeat_at = Some((deps.now_iso)());
@@ -2410,9 +2400,6 @@ async fn set_phase(
     .await;
 }
 
-/// Both halves of "was this run asked to stop": the in-process flag for a run
-/// this instance holds, and the persisted request for everything else.
-/// Checked between tiers, which is where `run_fitness` honors a stop.
 async fn stopped(model: &str, deps: &SurfaceDeps) -> bool {
     if runs_map()
         .lock()
@@ -2832,11 +2819,6 @@ fn sweep_state_str(state: &crate::evals::EvalSweepState) -> String {
 
 // ── Payloads ─────────────────────────────────────────────────────────────────
 
-/// Merge one run's persisted status with its tier-2 case counter. The counter
-/// belongs to tier 2 and is READ from it, never mirrored — two progress
-/// counters for one run is how they come to disagree.
-/// The runs blob AS STORED, key order intact — `fitness_runs` explains why the
-/// wire rows are built from this and not from the typed read.
 async fn read_runs_raw(deps: &SurfaceDeps) -> Result<serde_json::Map<String, Value>, String> {
     let raw = ((deps.read_setting)(RUNS_KEY.to_string(), serde_json::json!({}))).await?;
     let mut out = raw.as_object().cloned().unwrap_or_default();
@@ -3251,10 +3233,6 @@ pub struct TranscriptView {
     pub cases: Vec<crate::transcripts::Transcript>,
 }
 
-/// THE HEALTH FOLD, in one place: every record the index still keeps, read and
-/// upgraded exactly as the wire serves it. The health view calls it per open;
-/// `stamp_health_band` calls it whenever the archive changes — the same
-/// archive, so the chip and the tab can never disagree about the number.
 async fn health_summary(deps: &SurfaceDeps) -> Result<crate::health::HealthSummary, String> {
     let index = read_index(deps).await?;
     let mut records: Vec<FitnessRecord> = Vec::new();
@@ -3277,10 +3255,6 @@ async fn health_summary(deps: &SurfaceDeps) -> Result<crate::health::HealthSumma
     Ok(crate::health::summarize(&runs))
 }
 
-/// Stamp the cached band after the archive changed. BEST EFFORT BY DESIGN:
-/// every caller has already done its durable work, so a band that could not be
-/// stamped is a chip one archive-write stale, rewritten by the next one —
-/// never a reason to fail the action that caused it.
 async fn stamp_health_band(deps: &SurfaceDeps) {
     let Ok(summary) = health_summary(deps).await else {
         return;
@@ -3410,9 +3384,6 @@ pub async fn read_fitness(
     serde_json::to_value(&body).map_err(|e| e.to_string())
 }
 
-/// The default view, split out of `read_fitness` for the same reason as
-/// `read_fitness_detail`: it is the one branch a store test can drive
-/// end-to-end, without the live pool the transcripts branch beside it needs.
 async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
     let (models, index, runs_view, shape, band) = tokio::join!(
         model_rows(deps),
@@ -3455,8 +3426,6 @@ async fn matrix_view(deps: &SurfaceDeps) -> Result<MatrixView, String> {
     })
 }
 
-/// The detail view, split out of `read_fitness` only because it is the one
-/// branch with a live half to assemble.
 async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result<Value, String> {
     let Some(model) = query.model.as_deref() else {
         return Err("model is required".to_string());
@@ -3594,10 +3563,6 @@ async fn read_fitness_detail(query: &FitnessQuery, deps: &SurfaceDeps) -> Result
 /// route decides that, this only says which.
 #[derive(Debug)]
 pub enum StartOutcome {
-    /// Either this candidate is already running — the second press of Start
-    /// means "show me the run", not "start a second one", the same call the
-    /// tier-2 sweep makes for itself — or every slot is taken. `refusal` tells
-    /// the two apart so the route can say which.
     Busy {
         refusal: RunRefusal,
         status: Value,
@@ -4382,9 +4347,6 @@ mod tests {
         }
     }
 
-    /// Release the run slots a test claimed, on the real signal: the map is
-    /// module state shared by every test in this file, so one that leaks turns
-    /// the next test's `already-running` into `at-capacity`.
     async fn drain_runs() {
         for _ in 0..2_000 {
             if running_models().is_empty() {

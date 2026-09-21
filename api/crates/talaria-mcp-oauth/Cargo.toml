@@ -9,12 +9,11 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 talaria-mcp-jsonrpc = { path = "../talaria-mcp-jsonrpc" }
-talaria-mcp-icons = { path = "../talaria-mcp-icons" }
 talaria-safe-fetch = { path = "../talaria-safe-fetch" }
-talaria-scheduler = { path = "../talaria-scheduler" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 futures-util = "0.3"

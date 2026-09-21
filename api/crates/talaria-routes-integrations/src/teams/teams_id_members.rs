@@ -27,7 +27,6 @@ fn uuid_gate(id: &str, action: &str) -> Option<Response> {
     Some(thrown_internal_error())
 }
 
-/// The owner gate: PATCH/DELETE-grade (None = proceed).
 async fn owner_gate(
     state: &AppState,
     user_id: &str,

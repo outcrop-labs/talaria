@@ -20,8 +20,6 @@ const B: &str = r"(?-u:\b)";
 struct Pattern {
     label: &'static str,
     re: &'static str,
-    /// Some patterns redact a WIDER span than they seal (the PEM block). The
-    /// sealer uses this in place of `re` when present.
     redact: Option<&'static str>,
 }
 
@@ -148,7 +146,6 @@ pub struct SealedSecret {
 /// One request's substitutions.
 #[derive(Debug, Default)]
 pub struct SecretVault {
-    /// handle -> the real value. The only place it exists outside the caller.
     values: HashMap<String, String>,
     /// What was sealed, for the audit line. Labels only.
     pub sealed: Vec<SealedSecret>,

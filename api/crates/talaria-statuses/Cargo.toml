@@ -12,7 +12,6 @@ workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-boards = { path = "../talaria-boards" }
 talaria-realtime = { path = "../talaria-realtime" }
 talaria-tasks-types = { path = "../talaria-tasks-types" }

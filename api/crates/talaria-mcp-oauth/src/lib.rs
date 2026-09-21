@@ -25,12 +25,12 @@
 // declaration order would rewrite stored rows for nothing.
 
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms;
 use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_secretbox::SecretBox;
@@ -127,18 +127,10 @@ fn random_b64url(n: usize) -> Result<String, String> {
     Ok(b64url(&buf))
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-/// One safe_fetch POST of a JSON body.
 async fn post_json(
     url: &str,
     body: &Value,
@@ -352,7 +344,6 @@ pub async fn discover_oauth(server_url: &str) -> Option<Value> {
     run.await
 }
 
-/// Read the stored config, or None when the row has none.
 async fn stored_oauth(pg: &PgPool, server_id: &str) -> Result<Option<Value>, sqlx::Error> {
     let row: Option<(Option<Value>,)> =
         sqlx::query_as("select oauth from mcp_servers where id::text = $1")

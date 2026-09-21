@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 talaria-boards = { path = "../talaria-boards" }

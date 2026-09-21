@@ -17,8 +17,6 @@ redis = { version = "1", default-features = false, features = ["tokio-comp", "co
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
-talaria-boards = { path = "../talaria-boards" }
 talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-users = { path = "../talaria-users" }
 tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
 tracing = "0.1"

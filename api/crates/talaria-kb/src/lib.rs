@@ -667,9 +667,6 @@ pub async fn save_doc(
     Ok(next)
 }
 
-/// Sync a doc into RAG using its EFFECTIVE visibility (inherited from the
-/// folder when applicable) — so an inherited-private doc never lands in the
-/// org brain.
 async fn sync_doc_effective(
     pg: &PgPool,
     qd: &QdrantDeps,

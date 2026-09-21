@@ -85,10 +85,8 @@ struct HireBody {
     slug: String,
     department: String,
     display_name: String,
-    /// Raw (≤80, nullish) — the trim-or-null runs when the run input is built.
     role: Option<String>,
     template_id: Option<String>,
-    /// Raw (≤200k, optional) — same trim-or-null.
     soul: Option<String>,
     skills: Vec<SkillSeed>,
     start: bool,

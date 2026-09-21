@@ -329,16 +329,6 @@ async fn send_via_resend(cfg: &EmailConfig, sb: &SecretBox, input: &EmailInput) 
     SendOutcome::Sent
 }
 
-/// One transport per send, closed per send (a queue draining hundreds of
-/// mails would otherwise hold a socket per message). lettre's builder keeps
-/// reuse off and the transport's stream dies with it.
-///
-/// The `secure` flag: `false` is OPPORTUNISTIC STARTTLS — upgrade when the
-/// server offers it, proceed plaintext when it does not — and `true` is TLS
-/// from the first byte (implicit TLS, port 465). Note `Tls::Required`
-/// (lettre's starttls_relay) would be the WRONG arm for `secure:false`: it
-/// refuses to send to a server that never offers STARTTLS, which
-/// opportunistic mode deliberately does.
 async fn send_via_smtp(cfg: &EmailConfig, sb: &SecretBox, input: &EmailInput) -> SendOutcome {
     if cfg.smtp.host.is_empty() {
         return SendOutcome::Failed("SMTP host missing".into());

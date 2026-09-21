@@ -820,11 +820,8 @@ fn un_double_more_indented(s: &str) -> String {
 
 #[derive(PartialEq, Clone, Copy)]
 enum Mode {
-    /// plain and single-quoted
     Flow,
-    /// double-quoted (hard-chunks with `\` at 80)
     Quoted,
-    /// folded blocks (more-indented lines skip folding)
     Block,
 }
 

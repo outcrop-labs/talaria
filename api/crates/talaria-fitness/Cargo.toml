@@ -30,7 +30,6 @@ talaria-harness-model = { path = "../talaria-harness-model" }
 talaria-harness-schema = { path = "../talaria-harness-schema" }
 talaria-model-access = { path = "../talaria-model-access" }
 talaria-model-catalog = { path = "../talaria-model-catalog" }
-talaria-model-info = { path = "../talaria-model-info" }
 talaria-model-roles = { path = "../talaria-model-roles" }
 talaria-persona = { path = "../talaria-persona" }
 talaria-platform-agents = { path = "../talaria-platform-agents" }

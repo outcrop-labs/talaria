@@ -1919,11 +1919,7 @@ pub struct StreamRedactor {
     parts: Vec<String>,
     parts_len: usize,
     tail: String,
-    /// The character immediately before `tail`'s first byte, for the
-    /// card-separator rule at the seam.
     prev_char: Option<char>,
-    /// Absolute index of the BEGIN marker once seen; from there the buffer
-    /// only grows and nothing is relayed, so no further searching is needed.
     key_at: Option<usize>,
     redact: RedactFn,
 }

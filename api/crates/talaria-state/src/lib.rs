@@ -14,16 +14,7 @@ use tokio::sync::OnceCell;
 pub struct AppState {
     pub pg: PgPool,
     pub cfg: Arc<Config>,
-    /// Lazily-connected Redis. ConnectionManager reconnects on its own once
-    /// established; the OnceCell covers the FIRST connection, so the process
-    /// can boot while Redis is still coming up and healthz reports degraded
-    /// instead of the process dying.
     redis: Arc<OnceCell<ConnectionManager>>,
-    /// Lazily-loaded secretbox keys. Nothing in the models slice needs a key;
-    /// the chat relay unseals endpoint credentials through it. The RwLock
-    /// inside the cell is for ROTATION (admin.encryption): the whole key set
-    /// is swapped in one write after the re-encryption transaction commits —
-    /// a write a bare OnceCell cannot take.
     sb: Arc<OnceCell<RwLock<SecretBox>>>,
     started: Instant,
 }

@@ -7,14 +7,8 @@
 
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms;
 use talaria_gateway::registry::list_endpoints;
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BrainTarget {

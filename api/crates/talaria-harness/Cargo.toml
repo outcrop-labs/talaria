@@ -9,6 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
@@ -24,9 +25,7 @@ talaria-gateway = { path = "../talaria-gateway" }
 talaria-harness-json = { path = "../talaria-harness-json" }
 talaria-harness-json-schema = { path = "../talaria-harness-json-schema" }
 talaria-harness-model = { path = "../talaria-harness-model" }
-talaria-harness-prompt-rules = { path = "../talaria-harness-prompt-rules" }
 talaria-harness-schema = { path = "../talaria-harness-schema" }
-talaria-harness-text = { path = "../talaria-harness-text" }
 talaria-me = { path = "../talaria-me" }
 talaria-persona = { path = "../talaria-persona" }
 talaria-state = { path = "../talaria-state" }

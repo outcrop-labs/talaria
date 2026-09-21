@@ -418,11 +418,6 @@ fn hit_of(collection: &str, h: &talaria_retrieval_qdrant::SearchHit) -> Retrieva
     }
 }
 
-/// The channel + board ids a principal may see — used to ACL-filter the
-/// ambient activity index at the item level (a user must not retrieve a
-/// channel they're not in). Agents are scoped to the boards their policy
-/// allows. The pure SHOULD-array builders under this are separated out so
-/// the ACL shape is pinned by tests that need no database.
 async fn activity_scope(
     pg: &PgPool,
     user_id: Option<&str>,
@@ -501,8 +496,6 @@ fn agent_activity_should(boards: &[String]) -> Value {
     ] })
 }
 
-/// The human a principal retrieves AS: themselves, or — for a personal
-/// assistant — its owner. Org agents have no human identity.
 async fn effective_user_id(
     pg: &PgPool,
     user_id: Option<&str>,

@@ -13,10 +13,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-body = { path = "../talaria-body" }
 talaria-gateway = { path = "../talaria-gateway" }
-talaria-google-client = { path = "../talaria-google-client" }
 talaria-google-connections = { path = "../talaria-google-connections" }
 talaria-google-errors = { path = "../talaria-google-errors" }
 talaria-google-org = { path = "../talaria-google-org" }

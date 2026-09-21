@@ -68,6 +68,7 @@ use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, join_all};
 use tokio::task::JoinHandle;
 
+use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{epoch_ms_to_iso, iso_to_epoch_ms};
 use talaria_runs_lease as lease;
 use talaria_runs_lease::{
@@ -250,16 +251,8 @@ struct JobCell {
 struct RegisteredJob {
     spec: JobSpec,
     cell: Arc<Mutex<JobCell>>,
-    /// The timer task: sleeps the first-run delay, then loops tick-then-sleep.
-    /// Aborted on stop — that is what stops new runs being STARTED.
     task: Option<JoinHandle<()>>,
-    /// The most recent in-flight attempt, if one is running. NOT aborted on
-    /// stop — in-flight work is waited for, the way a redeploy should. The
-    /// overlap guard means at most one attempt per job runs at a time in this
-    /// process, so "the most recent" is also "the only".
     in_flight: Option<JoinHandle<()>>,
-    /// How this job's lease gets renewed while it runs. None until armed, and
-    /// None forever for a `per_instance` job (there is no lease to renew).
     heartbeat: Option<HeartbeatFactory>,
 }
 
@@ -283,13 +276,6 @@ static CTL: LazyLock<Mutex<Ctl>> = LazyLock::new(|| {
         conn: None,
     })
 });
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// Tolerant of poisoning on purpose: these cells are only ever locked for
 /// plain assignments, so poisoning means somebody else's panic — and hiding
@@ -357,11 +343,6 @@ fn job_lease_key(name: JobName) -> String {
     lease_key(SCHED_LEASE_NS, name.as_str())
 }
 
-/// Who is holding a lease we failed to take — for the log line only. "This
-/// instance" means we already ran this interval and the key is cooling down;
-/// that reading is true ONLY because of this file's demote-on-completion
-/// policy — which is why the sentence is written here and the primitive
-/// answers with a bare self/other.
 async fn job_lease_holder(backend: &mut dyn LeaseBackend, name: JobName) -> Option<String> {
     match lease::lease_holder(backend, &job_lease_key(name)).await? {
         LeaseHolder::SelfHeld => Some("this instance already ran it this interval".into()),
@@ -394,9 +375,6 @@ fn panic_text(panic: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Run one tick of a job. TOTAL: it resolves whatever happens, so a timer can
-/// never leave a dangling task behind, and a failing job never stops its own
-/// schedule. Nothing is swallowed — every branch that gives up says why.
 async fn run_attempt(spec: &JobSpec, cell: Arc<Mutex<JobCell>>, ctx: AttemptCtx<'_>) {
     let name = spec.name.as_str();
 

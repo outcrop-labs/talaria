@@ -259,9 +259,6 @@ type HeadRow = (
     bool,
 );
 
-/// Read the chain the task is a step of — its id, name, creator and paused
-/// flag — or None when the task belongs to no chain (the common case; most
-/// writes are ordinary tickets and cost one indexed lookup).
 async fn chain_of(pg: &PgPool, task_id: &str) -> Result<Option<HeadRow>, sqlx::Error> {
     let row: Option<HeadRow> = sqlx::query_as(
         "select t.id::text, t.status, t.assignees, t.title, \
@@ -280,10 +277,6 @@ async fn chain_of(pg: &PgPool, task_id: &str) -> Result<Option<HeadRow>, sqlx::E
     Ok(row)
 }
 
-/// The chain's head, derived the same way list_workchains derives it: the
-/// first step, in position order, whose task is not archived and not
-/// terminal. None when the chain has no live work left. Returns the head's
-/// task id, status and assignees (the engine's whole decision input).
 async fn head_of(
     pg: &PgPool,
     meta: &StatusMeta,

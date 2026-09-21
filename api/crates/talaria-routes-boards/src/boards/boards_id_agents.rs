@@ -184,12 +184,6 @@ pub async fn put(
 // `set_board_agent_config`, whose delete-all-then-insert would race a
 // concurrent editor's save.
 
-/// The caller behind a self-service verb: a PROVEN personal assistant, its
-/// owner's user id, and the audit actor in acting_user's "<model> (for
-/// <owner>)" shape so the audit stream cannot tell a proxied write from a
-/// session one apart by formatting. Every refusal says what to do instead —
-/// a bare 403 here reads as a broken integration, not a migration step
-/// (same posture as `refuse_legacy`).
 async fn self_service_actor(
     state: &AppState,
     headers: &HeaderMap,
@@ -238,10 +232,6 @@ async fn self_service_actor(
     Ok((caller, owner, actor))
 }
 
-/// Shared tail of both self verbs: the audited single-row write and the
-/// fresh-config answer. `before` is read by the caller (POST needs it before
-/// its gate anyway); the audit row is the same shape as the editor PUT's so
-/// the stream stays one action per policy mutation, actor telling them apart.
 async fn self_write(
     state: &AppState,
     id: &str,

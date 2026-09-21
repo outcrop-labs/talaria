@@ -276,11 +276,6 @@ use std::sync::LazyLock;
 static SKILL_NAME_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new("^[a-z0-9][a-z0-9._-]*$").unwrap());
 
-/// One skill owner's name set, name-only: the shared root first, then every
-/// enabled agent. The routing map asks only "who carries this skill", so
-/// the SKILL.md summaries, the platform set, and the queued regeneration
-/// pipeline are deliberately not read — a name-only dir listing answers it
-/// without firing the summarizer.
 async fn skill_owners(pg: &PgPool) -> Result<Vec<(String, String, HashSet<String>)>, sqlx::Error> {
     let fleet = talaria_gateway::provider::fleet_dir();
     let defs: Vec<(String, String)> =

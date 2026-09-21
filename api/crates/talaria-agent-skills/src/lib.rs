@@ -115,10 +115,7 @@ struct OwnerInfo {
     owner: String,
     label: String,
     root: PathBuf,
-    /// 'shared' | 'imported' | 'created'.
     source: String,
-    /// The agent's model id (absent for the shared root) — what
-    /// user_agent_access grants reference.
     model: Option<String>,
 }
 
@@ -148,8 +145,6 @@ async fn owners(pg: &PgPool) -> Result<Vec<OwnerInfo>, sqlx::Error> {
     Ok(out)
 }
 
-/// The owner table including roots — the richer lookup the read/mutation
-/// surface needs. Unknown owner is an error.
 async fn owner_info(pg: &PgPool, owner: &str) -> Result<OwnerInfo, String> {
     owners(pg)
         .await
@@ -310,7 +305,6 @@ pub async fn list_all_skills(state: &AppState) -> Result<Vec<OwnerSkills>, sqlx:
     Ok(out)
 }
 
-/// A skill dir's non-dot files, SORTED — the order the wire promises.
 async fn visible_files(dir: &std::path::Path) -> Vec<String> {
     match tokio::fs::read_dir(dir).await {
         Ok(mut rd) => {
@@ -429,7 +423,6 @@ pub async fn copy_skill(
     Ok(())
 }
 
-/// A plain recursive copy: dirs, files, and nothing clever about links.
 async fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
     tokio::fs::create_dir_all(dst)
         .await

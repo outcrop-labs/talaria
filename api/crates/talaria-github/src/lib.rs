@@ -26,6 +26,7 @@ use rsa::sha2::Sha256;
 use rsa::signature::{SignatureEncoding, Signer};
 use sqlx::PgPool;
 
+use talaria_agent_auth::now_ms;
 use talaria_body::truncate_utf16;
 use talaria_gateway::provider::http;
 use talaria_gateway::settings::{get_setting, set_setting};
@@ -33,13 +34,6 @@ use talaria_secretbox::SecretBox;
 
 const KEY: &str = "github_config";
 const GH: &str = "https://api.github.com";
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// The whole config shape. Defaults merge per key — top-level over
 /// top-level, `app` keys over `app` keys — which is what the per-field
@@ -193,8 +187,6 @@ pub struct GithubConfigPatch<'a> {
     pub repo_creation_orgs: Option<&'a [&'a str]>,
 }
 
-/// One request builder for every GitHub call: the three fixed
-/// headers plus the bearer, any method, and a JSON body when there is one.
 async fn gh(
     path: &str,
     token: &str,
@@ -219,8 +211,6 @@ async fn gh(
     req.send().await.map_err(|e| format!("github request: {e}"))
 }
 
-/// `gh()` plus the ok-check and the error the workbench surfaces:
-/// `GitHub <METHOD> <path> → <status>: <first 200 chars>`.
 async fn gh_json(
     path: &str,
     token: &str,
@@ -457,7 +447,6 @@ pub async fn list_reachable_repos(pg: &PgPool, sb: &SecretBox) -> Vec<String> {
     out
 }
 
-/// Follow GitHub's `link` rel=next headers, at most 5 pages.
 async fn paged_repos(token: &str, first_path: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut path = first_path.to_string();

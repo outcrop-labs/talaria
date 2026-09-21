@@ -38,11 +38,8 @@ pub struct DriveFile {
 /// The route's three friendly failures; anything else is `Failed` with the
 /// sentence Google sent (the log's only consumer).
 pub enum ExportError {
-    /// No connection — the user hasn't connected Google.
     NotConnected,
-    /// media_for answered None — the artifact's kind has no Drive mapping.
     NotExportable,
-    /// The Drive call itself failed.
     Failed(String),
 }
 
@@ -87,12 +84,10 @@ fn sheet_to_csv(body: &str) -> String {
 
 struct MediaPart {
     content_type: String,
-    /// UTF-8 text body, OR base64-encoded bytes when `base64` is true.
     data: String,
     base64: bool,
 }
 
-/// How each artifact kind maps onto a Drive upload. None ⇒ not exportable.
 async fn media_for(pg: &PgPool, sb: &SecretBox, a: &Artifact) -> Option<(String, MediaPart)> {
     match a.kind.as_str() {
         "doc" => Some((
@@ -485,10 +480,6 @@ fn drive_entry_of(f: &serde_json::Value) -> DriveListEntry {
     }
 }
 
-/// Walk name/parents upward from a folder to its drive root — the breadcrumb
-/// builder. Stops at the root id, at a parentless row, or at depth 32 (a
-/// deeper pile than any real tree; the cap keeps a forged cycle from hanging
-/// the request). None (the root itself) walks to nothing.
 async fn drive_folder_path_with_token(
     token: &str,
     folder_id: Option<&str>,
@@ -989,7 +980,6 @@ pub struct ImportedContent {
     pub source_url: Option<String>,
 }
 
-/// Export a Google-native file to a text format (markdown, csv, …).
 async fn export_google_text(
     token: &str,
     file_id: &str,
@@ -1017,7 +1007,6 @@ async fn export_google_text(
         .map_err(|e| GoogleError::Failed(format!("drive export body: {e}")))
 }
 
-/// Export a Google-native file to a binary format (pdf).
 async fn export_google_bytes(
     token: &str,
     file_id: &str,

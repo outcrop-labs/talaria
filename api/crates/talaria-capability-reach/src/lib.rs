@@ -77,11 +77,7 @@ pub struct Reach {
 /// decoding; there is no outside thing to hand it.
 struct ToolReachRule {
     capability: &'static str,
-    /// Tool names that supply it, lowercased. Matched whole-word so
-    /// `search_knowledge` (Talaria's own RAG over the org's docs, not the
-    /// live web) cannot be mistaken for a web-search tool.
     names: &'static [&'static str],
-    /// Words in a tool's DESCRIPTION that corroborate a name match.
     hints: &'static [&'static str],
 }
 
@@ -395,10 +391,6 @@ const CHECK_MS: Duration = Duration::from_millis(4_000);
 // the reach probe and a live search can never disagree about where the engine
 // is, because there is one spelling.
 
-/// The question platform supply asks: is the
-/// org's web-search backend answering with results? ONE canary query through
-/// the real client (search.rs) — bounded here by CHECK_MS so a dead instance
-/// cannot stall the reach edge.
 async fn search_canary_ok(pg: &PgPool) -> bool {
     match tokio::time::timeout(
         CHECK_MS,

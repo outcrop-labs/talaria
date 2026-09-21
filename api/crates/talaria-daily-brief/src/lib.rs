@@ -46,6 +46,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_daily_brief_comms::{CommsLine, comms_lines};
 use talaria_daily_brief_config::{BriefConfig, brief_config, brief_window, zone_for};
 use talaria_daily_brief_focus::{
@@ -259,7 +260,6 @@ impl From<&talaria_session::SessionUser> for BriefUser {
     }
 }
 
-/// The stored timezone preference, null when unset.
 async fn get_timezone(pg: &PgPool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
     let tz: Option<(Option<String>,)> =
         sqlx::query_as("select timezone from users where id = $1::uuid")
@@ -424,14 +424,6 @@ fn comms_candidate(line: &CommsLine) -> NewEntry {
     }
 }
 
-/// Today's calendar, as brief entries.
-///
-/// OPTIONAL AND SAID SO. Most installs have no Google connection and the
-/// section simply does not appear; an install that HAS one and could not read
-/// it gets a keyed item entry saying that, because "your schedule is empty"
-/// and "I could not see your schedule" are different sentences and printing
-/// the first for the second is the exact failure the UI conventions call
-/// empty-≠-broken. `Ok(None)` here means "no connection, nothing to say".
 async fn calendar_entries(
     pg: &PgPool,
     sb: &talaria_secretbox::SecretBox,
@@ -700,14 +692,6 @@ async fn snapshot(
 
 // ── The single writer ────────────────────────────────────────────────────────
 
-/// Append rows. THE ONLY WRITE PATH INTO A BRIEF'S CONTENT.
-///
-/// Seq is claimed by `update ... returning`, not by `max(seq) + 1`, and the
-/// difference matters: two sweeps can overlap (a scheduler tick and a realtime
-/// nudge land together), and a read-then-write would hand both the same number.
-/// The row update is atomic, so the loser gets the next block. The unique index
-/// on (brief_id, seq) is the backstop that turns any remaining race into a
-/// failed insert rather than a duplicated line.
 async fn append_entries(
     deps: &BriefDeps,
     brief_id: &str,
@@ -808,16 +792,6 @@ async fn append_entries(
 /// day", which is the report this constant answers.
 const VERDICT_CARRY_DAYS: i32 = 30;
 
-/// The newest entry for each key across the user's PRIOR briefs, inside the
-/// carry window. The open and the sweep's add branch consult it so an item
-/// the owner crossed off on an earlier day is not re-added while its source
-/// stands still — the verdict is about the person's relationship to an
-/// unchanged source, and re-asking it every morning is the nag.
-///
-/// ORDERING IS (brief_date, seq), NOT seq alone: seq resets per brief, so a
-/// bare seq sort would compare Tuesday's 3 against Monday's 11 and hand back
-/// the wrong row. `distinct on` takes the leading sort key, so this is the
-/// latest word on each key.
 async fn prior_entries(
     pg: &PgPool,
     user_id: &str,
@@ -860,10 +834,6 @@ fn suppressed_by_prior(
     }
 }
 
-/// `prior_entries` with the failure logged rather than propagated: a read
-/// that cannot be made must not cost the person their document, and the safe
-/// direction is to SHOW the item — suppression hides, so only a verdict we
-/// actually read may do it.
 async fn prior_entries_lenient(
     pg: &PgPool,
     user_id: &str,
@@ -879,10 +849,6 @@ async fn prior_entries_lenient(
     }
 }
 
-/// The word an approval line closes with, read from the pending action's own
-/// decided status: APPROVED, REJECTED — or None when the row is gone, the
-/// read failed, or nobody recorded a decision, in which case the caller's
-/// generic DONE is the honest fallback.
 async fn decided_approval_label(pg: &PgPool, source_id: Option<&str>) -> Option<&'static str> {
     let id = source_id?;
     let status: Option<String> =
@@ -1351,12 +1317,6 @@ pub async fn sweep_brief(
     })
 }
 
-/// Ask the assistant to write replies for the conversations still waiting.
-///
-/// WHY DRAFTING NEEDS NO PERMISSION AND SENDING DOES. A draft is a suggestion
-/// sitting on the owner's own page; nothing has left the building, and they
-/// read it before anyone else does. `draft_reply` is what checks for a grant,
-/// and it is the only thing that can turn a draft into a sent message.
 async fn draft_pending(
     deps: &BriefDeps,
     user: &BriefUser,
@@ -1521,10 +1481,6 @@ pub async fn load_recent_row(
     load_recent_row_except(pg, user_id, at_ms, None).await
 }
 
-/// The same read, able to skip one brief by id. The mark's key-following
-/// fallback needs "the most recent document OTHER than today's" — with
-/// today's row in place the plain read answers today's again, and the prior
-/// day a carried verdict lives on would be unreachable.
 async fn load_recent_row_except(
     pg: &PgPool,
     user_id: &str,
@@ -1552,16 +1508,6 @@ async fn load_recent_row_except(
     Ok(row.map(BriefRow::from_row))
 }
 
-/// The read-side assembly shared by the today row and the recent-brief
-/// fallback: live comms state plus the fold. One function because the two
-/// callers must not drift — a fallback that forgot the comms controls would
-/// serve a read-only page for the same document depending on the clock.
-///
-/// `comms_lines` reads fresh because a draft's approvability and a grant's
-/// existence are present-tense facts — the log can only say what was true when
-/// it was written, and acting on that would offer to send a draft the owner
-/// already discarded. (comms_lines swallows its own failure and answers empty
-/// — a failure there costs the controls, never the document.)
 async fn document_view(
     pg: &PgPool,
     row: &BriefRow,
@@ -1591,11 +1537,6 @@ pub enum BriefRead {
     // request — the indirection is free where a fat enum value would pad
     // every BriefRead in flight.
     Document(Box<view::BriefViewWire>),
-    /// (which absence, next open ISO when knowable, the assistant) — every
-    /// absent literal carries `agent`, because the surface offers assistant
-    /// settings from the empty state too. The three kinds: 'pending' the hour
-    /// has not arrived; 'no-agent' nothing can write one; 'writing' it is
-    /// being written right now.
     Absent(&'static str, Option<String>, BriefAssistant),
 }
 
@@ -2025,17 +1966,6 @@ pub struct BriefDeps {
     pub realtime: RealtimeDeps,
     pub notify: NotifyDeps,
     pub now_ms: i64,
-}
-
-/// The wall clock, stamped ONCE PER TICK by the job closure. Constructing the
-/// deps with it would freeze the boot instant for the process's whole life —
-/// a scheduler armed at 09:00 and left for a week would open a week of briefs
-/// against Monday's clock.
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 pub async fn real_brief_deps(state: &AppState) -> Arc<BriefDeps> {

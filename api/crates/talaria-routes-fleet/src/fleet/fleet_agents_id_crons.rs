@@ -16,9 +16,6 @@ use talaria_personal_agent::owns_agent;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 
-/// The shared gate: admin via agents.manage, or the owner of a personal
-/// assistant. A permissions read that errors reads as NO — fail-closed is
-/// the family's posture.
 async fn gate(state: &AppState, user_id: &str, role: &str, id: &str) -> bool {
     match has_perm(&state.pg, user_id, role, "agents.manage").await {
         Ok(true) => true,

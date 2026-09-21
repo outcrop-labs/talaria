@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::connections::{RequireError, require_token};
 use talaria_api_facades::google::drive::browse_drive_with_token;
 use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
@@ -95,12 +96,4 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(page) => Json(json!({ "files": page.files, "nextPageToken": page.next_page_token, "path": page.path })).into_response(),
         Err(e) => google_fail_with(e, "Drive", "drive_error"),
     }
-}
-
-/// Epoch-ms clock — the one time the Drive surface reads.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
 }

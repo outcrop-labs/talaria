@@ -22,10 +22,6 @@ use talaria_tasks::{
     list_comments,
 };
 
-/// Who may READ this ticket's comments: a board member, or an agent the
-/// board's policy allows. Reading changes nothing, so it is the BOARD
-/// question only — an agent that can see the board can read the thread on a
-/// ticket that is closed or archived. Returns the reader's audit name.
 async fn comment_reader(
     state: &AppState,
     headers: &HeaderMap,
@@ -66,10 +62,6 @@ async fn comment_reader(
     }
 }
 
-/// Who may POST a comment. Posting is an ACT on the ticket, so an agent goes
-/// through agent_ticket_refusal with intent Comment — where the
-/// archived-board / archived-ticket question is decided once. A human needs
-/// only membership: commenting is the weakest act on a ticket.
 async fn comment_author(
     state: &AppState,
     headers: &HeaderMap,

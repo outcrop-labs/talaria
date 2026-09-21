@@ -45,11 +45,6 @@ pub struct PreflightResult {
     pub at: String,
 }
 
-/// One CLI probe: true only when the binary runs and
-/// exits zero. A timeout and a failure are the same answer to every caller
-/// here (the reach and DNS probes all degrade to "absent"),
-/// which is why this is its own helper and not fleet_docker's `docker` —
-/// that one reports output and stderr; these only ever report WHETHER.
 async fn exec_ok(bin: &str, args: &[&str], timeout: Duration) -> bool {
     let run = tokio::time::timeout(timeout, async {
         tokio::process::Command::new(bin)
@@ -86,17 +81,6 @@ fn target_of(base: &str) -> Result<String, String> {
     Ok(format!("{}:{port}", url.host_str().unwrap_or_default()))
 }
 
-/// THE REMEDY, in the syntax of whatever this host actually runs.
-///
-/// Deliberately not hardcoded to ufw: this ships to any distro, and a Fedora
-/// operator handed a `ufw` command reasonably concludes the diagnosis is wrong.
-/// Detection is by binary presence + service state, and the fallback names the
-/// PROPERTY to satisfy rather than a command, because an operator running a
-/// hand-rolled nftables ruleset knows their own syntax better than we do.
-///
-/// The durable answer is the last sentence: an app on the fleet network is
-/// container→container traffic, which Docker DOES manage, and no host firewall
-/// is in the path at all. `TALARIA_GATEWAY_SELF_URL` exists for exactly that.
 async fn firewall_remedy() -> String {
     let port = talaria_fleet_layout::app_port();
     let bridges = "172.16.0.0/12";
@@ -118,12 +102,6 @@ async fn firewall_remedy() -> String {
     )
 }
 
-/// One TCP connect from inside a container on the fleet network.
-///
-/// `nc -z` rather than an HTTP request on purpose: the question is whether the
-/// packets arrive at all. An HTTP 401 or 405 would prove reachability just as
-/// well as a 200, and conflating "refused" with "unauthorised" is how a firewall
-/// problem gets misread as a credentials problem.
 async fn reaches(network: &str, target: &str, timeout_sec: u64) -> bool {
     let Some((host, port)) = target.split_once(':') else {
         return false;
@@ -148,11 +126,6 @@ async fn reaches(network: &str, target: &str, timeout_sec: u64) -> bool {
     .await
 }
 
-/// THE RESOLVERS A RENDERED AGENT ACTUALLY USES — the chassis pins `dns:` per
-/// service (see its "External DNS" block for why docker's inherited upstream
-/// cannot be trusted), so the probe must carry the same config or it would test
-/// a path no agent takes. AGENT_DNS_1/_2 live in fleet/.env; the defaults are
-/// the chassis template's.
 async fn agent_dns() -> Vec<String> {
     let text = tokio::fs::read_to_string(talaria_fleet_layout::fleet_env())
         .await
@@ -174,12 +147,6 @@ fn dns_from_env_text(text: &str) -> Vec<String> {
     ]
 }
 
-/// Can a container on the fleet network resolve an EXTERNAL name? THE SECOND
-/// SILENT PATH: the browser toolset fetches its engine from npm on first use
-/// and every web tool resolves remote hosts, so agents without external DNS
-/// come up green and quietly lose their browser — which is exactly how the
-/// built-in browser shipped dead while every health check passed. Probed with
-/// the same explicit resolvers the chassis gives agents.
 async fn resolves_externally(network: &str, dns: &[String], timeout_sec: u64) -> bool {
     let (Some(primary), Some(secondary)) = (dns.first(), dns.get(1)) else {
         return false;

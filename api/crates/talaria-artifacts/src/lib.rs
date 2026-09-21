@@ -456,9 +456,6 @@ pub async fn delete_folder(pg: &PgPool, id: &str) -> Result<(), sqlx::Error> {
 //     trap (invisible to the people the tree was for).
 //   · Copies land beside their source, under a "Copy of" name.
 
-/// The first free `Copy of …` name in a folder — "(2)".."(9)", then the clock.
-/// A folder of the same name counts too: two "Copy of X" entries in one
-/// directory where one is a folder reads as a lie.
 async fn copy_name(
     conn: &mut sqlx::PgConnection,
     base: &str,
@@ -631,8 +628,6 @@ pub async fn duplicate_folder(
     }
 }
 
-/// The ownerless org-visible create shape — the one the agent cabinet path
-/// uses (the workspace's).
 async fn create_org_folder(
     pg: &PgPool,
     name: &str,
@@ -646,7 +641,6 @@ async fn create_org_folder(
     )
 }
 
-/// Find-or-create a folder by name under a parent (case-insensitive).
 async fn find_or_create_folder(
     pg: &PgPool,
     name: &str,
@@ -927,8 +921,6 @@ pub async fn record_google_export(
     Ok(())
 }
 
-/// Keep the KB mirror fresh when an already-official artifact's content
-/// changes (remirrorIfOfficial). Errors are the caller's .catch — swallowed.
 async fn remirror_if_official(pg: &PgPool, a: &Artifact, actor: &str) -> Result<(), sqlx::Error> {
     if a.official
         && let Some(kb_doc_id) = &a.kb_doc_id

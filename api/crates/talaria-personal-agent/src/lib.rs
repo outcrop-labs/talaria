@@ -426,11 +426,6 @@ fn wait_healthy_spawn(state: &AppState, department: &str) {
     });
 }
 
-/// Rename the slug (@handle). The department — container name + state volume —
-/// stays put, so the agent keeps its memory and workspace. Everything keyed by
-/// the model string follows: access grants, chat history, board/channel
-/// membership, usage attribution, the heartbeat registry. The old
-/// HERMES_KEY_<SLUG> line is left in the stack .env (harmless orphan).
 async fn rename_agent_slug(
     pg: &PgPool,
     def: &AgentDefRow,

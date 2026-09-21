@@ -140,9 +140,6 @@ pub fn mount_error(mount: &str) -> Option<String> {
 
 // ── Profiles ─────────────────────────────────────────────────────────────────
 
-/// The shipped default — a coding workbench for dev-leaning agents. Seeded
-/// once per process; admins tune it from the API afterwards (never
-/// re-clobbered — the insert is on-conflict-do-nothing).
 async fn ensure_seed(pg: &PgPool) -> Result<(), sqlx::Error> {
     use std::sync::atomic::{AtomicBool, Ordering};
     static SEEDED: AtomicBool = AtomicBool::new(false);

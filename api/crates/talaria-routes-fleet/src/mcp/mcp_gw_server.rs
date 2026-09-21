@@ -442,8 +442,6 @@ pub async fn get(
         .unwrap_or_else(|_| thrown_internal_error())
 }
 
-/// The POST relay tail: the HTTP-failure gate, then the tools/list filter
-/// (JSON or SSE-framed), else the verbatim stream.
 async fn relay(
     upstream: reqwest::Response,
     rpc: Option<&Value>,

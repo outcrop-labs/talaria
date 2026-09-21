@@ -45,6 +45,7 @@ use talaria_users::{list_users, personal_assistant_owners};
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_realtime::RealtimeDeps;
 
 pub static ROOM_COMMENT_FANOUT: OnceLock<
@@ -61,13 +62,6 @@ pub static ROOM_COMMENT_FANOUT: OnceLock<
             + Sync,
     >,
 > = OnceLock::new();
-
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 // ── Notification fan-out ─────────────────────────────────────────────────────
 
@@ -182,7 +176,6 @@ struct RoomNotify {
     href: String,
 }
 
-/// None = not a task room (the caller falls back to the channel shapes).
 async fn room_notify_shape(
     pg: &sqlx::PgPool,
     channel_id: &str,
@@ -265,15 +258,6 @@ pub fn mentioned_agents(content: &str, channel_agents: &[String]) -> Vec<AgentMe
 
 // ── The transcript ───────────────────────────────────────────────────────────
 
-/// The channel transcript as OpenAI-style history from one agent's point of
-/// view: its own turns are `assistant`, everyone else speaks as `user` with a
-/// "Name:" prefix so the agent can tell voices apart. Recent attachments ride
-/// along like they do in 1:1 chat: textual files contribute their contents,
-/// images become data-URL blocks a vision model can see (both scoped to the
-/// transcript tail — file bytes are re-read per reply).
-///
-/// Infallible: every per-file read inside swallows its own failure, so there
-/// is no error arm.
 async fn transcript_for(
     pg: &PgPool,
     sb: &SecretBox,
@@ -453,10 +437,6 @@ fn room_context(meta: &TicketMeta, assigned: bool) -> String {
     )
 }
 
-/// The room's tail before this message, one "Name: …" line per turn, oldest
-/// first — the relevance judge's context, the same shape `recent_turns`
-/// served the conversation door: a bare "yes" is only decidable against the
-/// question it answers.
 async fn recent_room_turns(pg: &PgPool, channel_id: &str, before_seq: i32) -> Vec<String> {
     const TAKE: i64 = 6;
     const CLIP: usize = 400;

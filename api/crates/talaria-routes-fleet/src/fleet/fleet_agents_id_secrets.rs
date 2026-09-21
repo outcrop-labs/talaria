@@ -17,8 +17,6 @@ use talaria_personal_agent::owns_agent;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 
-/// This family gates on the ROLE directly (not agents.manage): admins, or
-/// the owner of a personal assistant.
 async fn gate(state: &AppState, user_id: &str, role: &str, id: &str) -> bool {
     role == "admin" || owns_agent(&state.pg, user_id, None, Some(id)).await
 }
@@ -143,7 +141,6 @@ fn query_param(uri: &Uri, key: &str) -> Option<String> {
     })
 }
 
-/// Minimal percent-decoding for the fallback name — the browser-encoded
 // spellings (%20, %2F) plus '+'-as-space.
 fn percent_decode(v: &str) -> String {
     let bytes = v.as_bytes();

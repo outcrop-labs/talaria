@@ -19,8 +19,6 @@ use talaria_personal_agent::owns_agent;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 
-/// The family's gate (see fleet_agents_id_crons): admin via agents.manage, or
-/// the owner of a personal assistant.
 async fn gate(state: &AppState, user_id: &str, role: &str, id: &str) -> bool {
     match has_perm(&state.pg, user_id, role, "agents.manage").await {
         Ok(true) => true,

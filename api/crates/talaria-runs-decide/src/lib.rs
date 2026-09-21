@@ -162,14 +162,11 @@ pub enum PauseResult {
     Parked {
         approval_key: String,
         announced: usize,
-        /// Who could have been told, from the run's own declared authority.
         audience: Disclosure,
     },
-    /// The park did not land, and every reason is a normal one: another
-    /// instance owns the run now, somebody cancelled it, the row is gone. The
-    /// question is simply not asked; nothing is half-parked. The state rides
-    /// inside the reason.
-    Refused { reason: WriteFailure },
+    Refused {
+        reason: WriteFailure,
+    },
 }
 
 /// Park a run on a question and file it as an approval.
@@ -329,21 +326,6 @@ pub fn pause_fn(deps: PauseDeps) -> PauseFn {
 
 // ── decide ───────────────────────────────────────────────────────────────────
 
-/// THE `awaiting → queued` write, and the reason it is not exported.
-///
-/// This is the only statement in the system that takes a row out of `awaiting`.
-/// Exporting it would put two doors into one write — this one and `decide()`,
-/// which has the authority check — and two doors make the gate a convention: a
-/// route that imported the more obvious name would resume somebody else's run on
-/// the strength of a request body.
-///
-/// So: module-private, one caller, and `decide()` above it does the resolving
-/// and the asking. A future non-human answer path (a policy, a timeout rule —
-/// `DecisionAnswer.answered_by` is nullable for exactly those) does not get to
-/// reuse this door either; it needs its own entry point with its own explicit
-/// statement of what authorized it, because the alternative is that the one
-/// function enforcing "a person may decide this" acquires a way to be called
-/// with no person.
 async fn resume_answered(
     run_id: &str,
     answer: DecisionAnswer,
@@ -402,20 +384,10 @@ async fn resume_answered(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecideRefusal {
-    /// No such run.
     Missing,
-    /// Not parked on anything — already answered, cancelled, or still running.
-    /// Two people racing the same question is the common cause and it is not an
-    /// error worth showing: somebody answered it, which is what they wanted.
     NotAwaiting,
-    /// Answering a question the run is no longer parked on — a stale tab.
     StaleKey,
-    /// This person may not decide this run. Deliberately ONE reason for both
-    /// "you are not in the audience" and "nobody is": the caller returns 403
-    /// either way, and a route that distinguished them would tell a stranger
-    /// which runs exist and who can see them.
     Forbidden,
-    /// An option the step never offered.
     UnknownOption,
 }
 

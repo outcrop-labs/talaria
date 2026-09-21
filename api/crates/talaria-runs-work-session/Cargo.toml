@@ -26,11 +26,9 @@ talaria-github = { path = "../talaria-github" }
 talaria-harness = { path = "../talaria-harness" }
 talaria-harness-defs = { path = "../talaria-harness-defs" }
 talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-runs-run = { path = "../talaria-runs-run" }
 talaria-state = { path = "../talaria-state" }
 talaria-statuses = { path = "../talaria-statuses" }
 talaria-tasks = { path = "../talaria-tasks" }
-talaria-tasks-types = { path = "../talaria-tasks-types" }
 talaria-workflows = { path = "../talaria-workflows" }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 tracing = "0.1"

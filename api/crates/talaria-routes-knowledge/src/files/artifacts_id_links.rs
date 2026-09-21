@@ -30,8 +30,6 @@ fn parse_link_body(obj: &serde_json::Map<String, Value>) -> Result<LinkBody, Str
     })
 }
 
-/// The shared gate: user → artifact → can-read. Returns (user, artifact) or
-/// the ready response.
 async fn gate(
     state: &AppState,
     headers: &HeaderMap,

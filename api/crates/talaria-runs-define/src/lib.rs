@@ -53,16 +53,9 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "by", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Authority {
-    /// These users and nobody else — the one person whose mailbox it is.
     User { user_ids: Vec<String> },
-    /// Every admin. `on_board` narrows the CONTENT to the admins who can also
-    /// see that board; omitted or null = org-wide, every admin.
     Admin { on_board: Option<String> },
-    /// The board's EDITORS (`canEdit`). Admin is not a bypass: `boardRole` is
-    /// membership only.
     Board { board_id: String },
-    /// No route in the product can decide this. Resolves to nobody; the stall
-    /// is reported to the admins without the content.
     Nobody,
 }
 
@@ -195,25 +188,20 @@ pub struct RunDecision {
 /// the last two is the difference between bothering a person and not.
 #[derive(Debug, Clone)]
 pub enum StepResult {
-    /// Progress. The driver PERSISTS this checkpoint and then continues; a
-    /// step that returns `next` with the checkpoint it was given is a loop.
     Next {
         checkpoint: Value,
         phase: Option<String>,
     },
     Done {
-        /// Value::Null for "no result".
         result: Value,
     },
-    /// PAUSE. The run parks in `awaiting`, an approval is filed under
-    /// `approval_key`, and whoever `audience` names is told. Nothing burns
-    /// and nothing is lost while it waits.
-    Decide { question: DecisionRequest },
-    /// A SOFT pause: come back in `after`. Nobody is notified, no attempt is
-    /// consumed, the run stays `queued` — "the rate limit says wait", not
-    /// "something went wrong". Distinct from error so a throttled run never
-    /// burns its attempts on the throttle.
-    Retry { after: Duration, reason: String },
+    Decide {
+        question: DecisionRequest,
+    },
+    Retry {
+        after: Duration,
+        reason: String,
+    },
 }
 
 /// A step signals failure by returning `Err`, and the driver files the text

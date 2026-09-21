@@ -10,6 +10,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::drive::drive_roster;
 use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
 use talaria_session::require_user;
@@ -36,12 +37,4 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
         Err(e) => google_fail_with(e, "Drive", "drive_error"),
     }
-}
-
-/// Epoch-ms clock — the one time the Drive surface reads.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
 }

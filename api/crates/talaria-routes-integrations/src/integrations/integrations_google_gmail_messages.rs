@@ -7,6 +7,7 @@ use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::errors::google_fail;
 use talaria_api_facades::google::gmail::list_recent_messages;
 use talaria_api_facades::google::oauth::query_pairs;
@@ -29,12 +30,4 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(messages) => Json(json!({ "messages": messages })).into_response(),
         Err(e) => google_fail(e, "Gmail"),
     }
-}
-
-/// Epoch-ms clock — the one time the mailbox read carries.
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

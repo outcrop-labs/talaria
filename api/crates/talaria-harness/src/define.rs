@@ -430,12 +430,7 @@ pub enum Output {
     },
     Json {
         schema: Schema,
-        /// See `PreFn` — the envelope unwrap that runs between parse and
-        /// validation. `None` for every def whose answer is not packaged.
         preprocess: Option<PreFn>,
-        /// Repair turns the runner may spend on this harness. `None` is the
-        /// runner's default (one), spelled as a default so the def that needs
-        /// none can say `Some(0)` deliberately.
         repair: Option<u32>,
         verify: Option<VerifyFn>,
     },

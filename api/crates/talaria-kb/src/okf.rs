@@ -19,16 +19,10 @@ use serde_json::json;
 
 use crate::get_doc;
 use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_ms;
 use talaria_harness::run::{RunContext, run_harness};
 use talaria_harness_defs::defs::librarian::librarian_harness;
 use talaria_state::AppState;
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// JSON.stringify for the two frontmatter values that may carry quotes or
 /// newlines: a JSON string is a valid YAML scalar, and the escaping is

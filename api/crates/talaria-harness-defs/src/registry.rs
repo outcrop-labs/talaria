@@ -66,7 +66,6 @@ use talaria_harness::define::{EvalBand, HarnessDefinition};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HarnessSource {
     Builtin,
-    /// App-shipped, by slug — not constructed today; see the header.
     App(&'static str),
     Custom,
 }

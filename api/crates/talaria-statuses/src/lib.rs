@@ -415,7 +415,6 @@ pub fn status_category_sql(category: &str, legacy_keys: &[&str]) -> String {
     )
 }
 
-/// First customization COPIES the defaults into rows so edits are complete.
 async fn materialize(pg: &PgPool, board_id: &str) -> Result<(), sqlx::Error> {
     let existing: Option<(i32,)> =
         sqlx::query_as("select 1 from board_statuses where board_id = $1::uuid limit 1")
@@ -500,8 +499,6 @@ const AGENT_REQUIRED_CATEGORIES: &[&str] = &["review"];
 /// get what the owner asked for.
 pub const REVIEW_REQUIRED_FOR_AGENTS: &str = "this is the board’s last review column, and agents are allowed to work this board. An agent may never sign off its own work, so it hands a finished ticket to a review column for a person — with none, every hand-off is refused and an agent here can start work it can never finish. Keep one review column, or turn agents off for this board (board settings → agents), after which a review column is no longer required.";
 
-/// Does this board admit agents at all — the board's own policy, allow-all
-/// or an explicit allow-list.
 async fn board_permits_agents(pg: &PgPool, board_id: &str) -> Result<bool, sqlx::Error> {
     let cfg = get_board_agent_config(pg, board_id).await?;
     Ok(cfg.allow_all || !cfg.models.is_empty())

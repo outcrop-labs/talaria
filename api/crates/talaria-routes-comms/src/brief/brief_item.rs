@@ -23,7 +23,6 @@ use talaria_state::AppState;
 struct ItemBody {
     source_key: String,
     action: String,
-    /// tz: the tri-state a browser may or may not say.
     tz: Option<String>,
 }
 

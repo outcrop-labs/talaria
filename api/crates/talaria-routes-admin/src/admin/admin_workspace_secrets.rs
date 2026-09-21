@@ -89,7 +89,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     Json(json!({ "secrets": secrets, "folders": folders })).into_response()
 }
 
-/// The post-mutation listings every action ends with.
 async fn listing(pg: &sqlx::PgPool) -> Response {
     match list_secret_docs(pg).await {
         Ok(s) => Json(json!({ "secrets": s })).into_response(),

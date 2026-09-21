@@ -83,8 +83,6 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, id: &str) -> Respons
     Json(json!({ "members": members })).into_response()
 }
 
-/// The owner/editor-or-elevated gate the two writes share — an elevated
-/// assistant may share onto any board, but the identity is still its owner's.
 async fn write_gate(state: &AppState, user: &ActingUser, id: &str) -> Option<Response> {
     match board_role(&state.pg, &user.id, id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => None,

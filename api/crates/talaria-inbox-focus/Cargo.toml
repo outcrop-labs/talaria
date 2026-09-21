@@ -23,13 +23,8 @@ talaria-channel-replies = { path = "../talaria-channel-replies" }
 talaria-channels = { path = "../talaria-channels" }
 talaria-conversations = { path = "../talaria-conversations" }
 talaria-daily-brief = { path = "../talaria-daily-brief" }
-talaria-daily-brief-focus = { path = "../talaria-daily-brief-focus" }
 talaria-fleet-agents = { path = "../talaria-fleet-agents" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
 talaria-gateway = { path = "../talaria-gateway" }
-talaria-google-calendar = { path = "../talaria-google-calendar" }
-talaria-google-connections = { path = "../talaria-google-connections" }
-talaria-google-gmail = { path = "../talaria-google-gmail" }
 talaria-google-pending = { path = "../talaria-google-pending" }
 talaria-harness = { path = "../talaria-harness" }
 talaria-harness-defs = { path = "../talaria-harness-defs" }

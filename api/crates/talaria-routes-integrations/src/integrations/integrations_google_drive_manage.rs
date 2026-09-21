@@ -46,7 +46,6 @@ struct Ctx {
     actor: String,
 }
 
-/// The shared door: parse the body, resolve the token, gate org writes.
 async fn gate(
     state: &AppState,
     headers: &HeaderMap,

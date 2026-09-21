@@ -26,6 +26,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_agent_auth::{AgentSubject, agent_caller, epoch_ms_to_iso, refuse_legacy};
 use talaria_api_facades::runs::define::run_definition;
 use talaria_approvals::{ApprovalDeps, announce_approval};
@@ -38,13 +39,6 @@ use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{acting_user, require_user, unauthorized};
 use talaria_state::AppState;
 use talaria_users::assistant_owner_for;
-
-fn wall_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// THE ONLY spelling of the announce key outside approvals.rs — the census
 /// builds the same one, and a second derivation would announce one request
@@ -134,9 +128,6 @@ pub async fn get(
     Json(json!({ "requests": rows.iter().map(queue_wire).collect::<Vec<_>>() })).into_response()
 }
 
-/// The insert behind both file branches — the partial unique index
-/// (`one_open` on board+agent where status='open') is the dedup, and its
-/// rows_affected is the caller's whole answer.
 async fn insert_request(
     pg: &sqlx::PgPool,
     board_id: &str,
@@ -158,8 +149,6 @@ async fn insert_request(
     Ok(result.rows_affected())
 }
 
-/// Shared tail of both file branches: announce (fresh files only — the first
-/// one announced it, and the sweep is the floor), audit, answer.
 async fn filed(
     state: &AppState,
     id: &str,
@@ -195,10 +184,6 @@ async fn filed(
     Json(json!({ "ok": true, "alreadyPending": inserted == 0 })).into_response()
 }
 
-/// The audit actor for the agent branch — acting_user's "<model> (for
-/// <owner>)" shape, so the audit stream cannot tell a proxied file from a
-/// session one apart by formatting. Best-effort label; the owner id is the
-/// authority.
 async fn proxied_actor(pg: &sqlx::PgPool, model: &str, owner: &str) -> String {
     let label: Option<(String,)> =
         sqlx::query_as("select coalesce(email, name, id::text) from users where id = $1::uuid")
