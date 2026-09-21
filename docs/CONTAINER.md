@@ -1,11 +1,13 @@
 # Running Talaria as a container
 
-One app image, one compose file, one command:
+One app image, one stack, one command (the second `-f` is the shared sidecar
+plane — Postgres, Redis, Qdrant, embeddings, MinIO, SearXNG — defined once for
+every stack in `docker/sidecars.compose.yml`):
 
 ```bash
 git clone https://github.com/outcrop-labs/talaria && cd talaria
 DOCKER_GID=$(stat -c %g /var/run/docker.sock) \
-  docker compose -f docker/compose.yml up -d --build
+  docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --build
 ```
 
 The stack comes up with zero configuration: secrets the environment doesn't
@@ -135,8 +137,8 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=<your checkout>
-ExecStart=/usr/bin/docker compose -f docker/compose.yml up -d --wait
-ExecStop=/usr/bin/docker compose -f docker/compose.yml down
+ExecStart=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --wait
+ExecStop=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml down
 TimeoutStartSec=20min
 Restart=on-failure
 RestartSec=10s
@@ -177,14 +179,16 @@ compose view.
 | File | What |
 |---|---|
 | [`Dockerfile`](../Dockerfile) (repo root) | Multi-stage build: toolchain → pruned prod deps → a bun + docker-cli + git runtime. No config inside. |
-| [`docker/compose.yml`](../docker/compose.yml) | The instance: the app plus postgres, redis, qdrant, embeddings (TEI), minio, searxng. |
+| [`docker/compose.yml`](../docker/compose.yml) | The instance: the app, the SearXNG settings render, and the wiring (networks, state mounts, sidecar env) — the sidecars themselves are the shared plane below, layered in front of it. |
+| [`docker/sidecars.compose.yml`](../docker/sidecars.compose.yml) | The shared sidecar plane: postgres, redis, qdrant, embeddings (TEI), minio, searxng — images, healthchecks, data volumes and env defaults, defined once and layered in front of every stack (`docker/compose.yml`, `docker/dev-compose.yml`, a devbox). |
 | [`docker/entrypoint.sh`](../docker/entrypoint.sh) | Secrets bootstrap, fleet config seeds, dependency gate — the container's first boot. |
 | [`docker/await-deps.mjs`](../docker/await-deps.mjs) | Waits for postgres + redis before the server starts. |
 
 The app container is deliberately *not* the whole product. Talaria spawns
 agent containers through the host's docker daemon (the fleet), and its
 stateful sidecars are separate services — so the unit of deployment is this
-compose file, with the app image as its centerpiece.
+compose stack (the instance file plus the shared sidecar plane), with the app
+image as its centerpiece.
 
 ## The env-var contract
 
@@ -442,8 +446,8 @@ Running one is an override file layered on the base compose (the base stays
 checkout-build; this never edits it):
 
 ```bash
-docker compose -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
-docker compose -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
+docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
+docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
 ```
 
 Pin the channel in `docker/.env` (`TALARIA_CHANNEL=0.2.0-rc.1`; unset means
@@ -457,14 +461,16 @@ present. Updating is the same two commands again.
 The deploy wrappers honor docker's own `COMPOSE_FILE` env: export the layered
 file list and every wrapper (up/update/down/logs/status) drops its explicit
 `-f` so the env decides what runs — an explicit `-f` would beat it, which is
-exactly why the CLI steps aside. Registry mode changes two behaviors on
-purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
+exactly why the CLI steps aside. Because it steps aside entirely, the shared
+sidecar plane has to be IN that list (first): the wrappers' own `-f` pair is
+`docker/sidecars.compose.yml` then the base, and the env replaces both.
+Registry mode changes two behaviors on purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
 the api-package pull) and `up` runs WITHOUT `--build` — the override swaps
 the image but cannot remove the base's `build:` key, so a build would tag the
 checkout AS the registry ref.
 
 ```bash
-export COMPOSE_FILE=docker/compose.yml:docker/compose.registry.yml   # shell or profile
+export COMPOSE_FILE=docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml   # shell or profile
 bun talaria deploy update    # git pull --ff-only → compose pull → up -d
 ```
 

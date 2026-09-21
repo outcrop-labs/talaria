@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createRawSnippet, mount, unmount, type Component, type Snippet } from 'svelte'
-  import { createQuery } from '@tanstack/svelte-query'
   import { useHasPerm } from '@/lib/session'
   import { Globe, Lock, Building2, Bot, Users, X, Check, Copy } from '@lucide/svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -13,7 +12,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import { useUsers } from '@/lib/users'
   import { useAgents } from '@/lib/agents'
-  import { getList } from '@/lib/fetch-json'
+  import { useTeamsDirectory } from '@/lib/teams'
   import { useEditors, type EditPolicy, type GrantRole, type KbEditor, type PermKind, type Visibility } from '@/lib/kb'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
@@ -70,14 +69,7 @@
   // and no way to retry it. The picker beside it silently lost every person too.
   const usersList = listQuery(useUsers(), { title: 'Could not load people', variant: 'inline' })
   const agentsQuery = useAgents()
-  const teamsList = listQuery(
-    createQuery(() => ({
-      queryKey: ['teams-directory'],
-      queryFn: (): Promise<Array<{ id: string; name: string; memberCount: number }>> =>
-        getList('/api/teams/directory', 'teams'),
-    })),
-    { title: 'Could not load teams', variant: 'inline' },
-  )
+  const teamsList = listQuery(useTeamsDirectory(), { title: 'Could not load teams', variant: 'inline' })
   // Until both principal lists resolve, grants would render as raw ids and the
   // add picker would be empty — hold the list's shape instead.
   const principalsLoading = $derived(usersList.pending || agentsQuery.isLoading || teamsList.pending)

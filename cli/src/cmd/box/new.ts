@@ -7,12 +7,13 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf, ParsedArgs } from '../../cli'
-import { compose, waitFor } from '../../compose'
+import { EMBED_CONTAINER, SEARCH_CONTAINER } from '../../containers'
+import { compose, stackComposeFiles, waitFor } from '../../compose'
 import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
 import { renderSearxng } from '../../searxng'
 import { runSeed } from './seed'
-import { boxDir, boxState, checkName, COMPOSE_FILE, IMAGE, sharedTools, toolsExec } from './shared'
+import { boxDir, boxFleetNetwork, boxHost, boxProject, boxState, boxSvc, checkName, COMPOSE_FILE, IMAGE, sharedTools, toolsExec } from './shared'
 
 /** The per-box compose interpolation env (written 0600). Pure so the mount
  *  surface — BOX_TOOLS_DIR especially — is testable. */
@@ -64,12 +65,12 @@ TALARIA_S3_URL=http://minio:9000
 TALARIA_S3_BUCKET=${o.s3.bucket}
 TALARIA_S3_ACCESS_KEY=${o.s3.key}
 TALARIA_S3_SECRET_KEY=${o.s3.secret}
-TALARIA_EMBED_URL=http://talaria-embeddings-dev:80
-SEARXNG_URL=http://talaria-searxng-dev:8080
+TALARIA_EMBED_URL=http://${EMBED_CONTAINER}:80
+SEARXNG_URL=http://${SEARCH_CONTAINER}:8080
 TALARIA_MCP_GW_URL=http://devbox:5273/api/mcp/gw
 TALARIA_GATEWAY_SELF_URL=http://devbox:5273/api/llm/v1
 TALARIA_AGENT_DIAL=container
-TALARIA_FLEET_PROJECT=devbox-${o.name}-fleet
+TALARIA_FLEET_PROJECT=${boxFleetNetwork(o.name)}
 TALARIA_FLEET_DIR=${o.state}/fleet
 TALARIA_APPS_DIR=${o.state}/apps
 TALARIA_UPLOADS_DIR=${o.state}/uploads
@@ -163,7 +164,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   // The primary stack is the seed source, and hosts the shared stateless
   // services (embeddings, search) the box dials by container name.
   ctx.log.say('Primary dev stack (seed source + shared TEI/SearXNG)')
-  const devSpec = { files: [join(root, 'docker/dev-compose.yml')] }
+  const devSpec = { files: stackComposeFiles(root, 'docker/dev-compose.yml') }
   if ((await compose(ctx, devSpec, ['up', '-d', 'postgres'])) !== 0) {
     ctx.log.die("primary postgres won't start — it is the seed source")
   }
@@ -304,7 +305,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   ctx.log.ok(`compose.env written (app → 127.0.0.1:${appPort})`)
 
   ctx.log.say('Box stack (devbox + postgres + redis + qdrant + minio)')
-  if ((await compose(ctx, { files: [join(root, COMPOSE_FILE)], project: `devbox-${name}`, envFile: join(box, 'compose.env') }, ['up', '-d', '--quiet-pull'])) !== 0) {
+  if ((await compose(ctx, { files: stackComposeFiles(root, COMPOSE_FILE), project: boxProject(name), envFile: join(box, 'compose.env') }, ['up', '-d', '--quiet-pull'])) !== 0) {
     ctx.log.die('box stack failed to start')
   }
   const pgReady = await waitFor(
@@ -312,7 +313,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
     'box postgres',
     async () => {
       try {
-        await ctx.exec('docker', ['exec', `devbox-${name}-postgres`, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
+        await ctx.exec('docker', ['exec', boxSvc(name, 'postgres'), 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
         return true
       } catch {
         return false
@@ -326,7 +327,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
     'box redis',
     async () => {
       try {
-        await ctx.exec('docker', ['exec', `devbox-${name}-redis`, 'redis-cli', 'ping'])
+        await ctx.exec('docker', ['exec', boxSvc(name, 'redis'), 'redis-cli', 'ping'])
         return true
       } catch {
         return false
@@ -334,7 +335,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
     },
     20,
   )
-  ctx.log.ok(`stack up (project devbox-${name})`)
+  ctx.log.ok(`stack up (project ${boxProject(name)})`)
 
   ctx.log.say('Box ui/.env (own services, shared encryption root)')
   writeFileSync(join(hostRepo, 'ui/.env'), boxUiEnv(uiEnv, { name, state, s3 }))
@@ -363,7 +364,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
     try {
       await ctx.exec(
         'docker',
-        ['exec', `devbox-${name}`, 'sh', '-lc', 'cd ui && bun install --frozen-lockfile && cd ../mcp && bun install --frozen-lockfile && bun run build'],
+        ['exec', boxHost(name), 'sh', '-lc', 'cd ui && bun install --frozen-lockfile && cd ../mcp && bun install --frozen-lockfile && bun run build'],
         { cwd: hostRepo, timeoutMs: 600_000 },
       )
     } catch (e) {
@@ -378,8 +379,8 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
 BRANCH=${branch}
 BASE=${o.from ?? 'HEAD'}
 APP_PORT=${appPort}
-PROJECT=devbox-${name}
-FLEET_PROJECT=devbox-${name}-fleet
+PROJECT=${boxProject(name)}
+FLEET_PROJECT=${boxFleetNetwork(name)}
 CREATED=${ctx.now().toISOString()}
 `,
   )

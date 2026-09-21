@@ -2,6 +2,7 @@
 // (StoragePanel/TargetFields.svelte).
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
+import { formatBytes } from '@/lib/format'
 
 export interface TargetConfig {
   endpoint: string
@@ -34,4 +35,8 @@ export const useStorageAdmin = () =>
     refetchInterval: (q) => (q.state.data?.migrate?.running || q.state.data?.sync?.running ? 3_000 : false),
   }))
 
-export const fmtBytes = (n: number) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`)
+/** A byte count in the storage panel's convention: never below a KB (a 1-byte
+ *  object is not "0 B"), rounded up, and a GB tier because a bucket is not a
+ *  single upload. The spelling is shared — see `formatBytes` in `@/lib/format`;
+ *  StoragePanel imports it by this name, so the name stays. */
+export const fmtBytes = (n: number) => formatBytes(n, { ceilKb: true })

@@ -96,6 +96,7 @@ on:
     paths:
       - 'desktop/**'
       - '.github/workflows/desktop-package.yml'
+      - '.github/actions/**'
   workflow_dispatch:
     inputs:
       version:
@@ -231,9 +232,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      # Same pin as the ci.yml desktop job: desktop/src-tauri/rust-toolchain.toml
-      # pins 1.97.1 and devboxes install the same one.
-      - uses: dtolnay/rust-toolchain@1.97.1
+      # Rust + Bun + Node and the frozen desktop install, with the pins this
+      # repo runs on; desktop/src-tauri/rust-toolchain.toml pins the same
+      # toolchain and devboxes install the same one.
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
 
       # release-profile cargo build of the whole tauri tree — minutes cold,
       # and the one place in this file where a cache pays for itself.
@@ -249,18 +253,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev rpm
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-
-      - name: Install
-        working-directory: desktop
-        run: bun install --frozen-lockfile
 
       # The bundle targets come from tauri.linux.conf.json (tauri merges the
       # platform file automatically); --config adds the version on top. The
@@ -417,7 +409,9 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
 
       # universal-apple-darwin is a lipo of both, and tauri refuses the target
       # without both installed. The runner is arm64; the Intel slice is a
@@ -428,18 +422,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-
-      - name: Install
-        working-directory: desktop
-        run: bun install --frozen-lockfile
 
       - name: Build bundles
         working-directory: desktop
@@ -531,23 +513,13 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: ./.github/actions/setup-runtime
+        with:
+          install-dir: desktop
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.4.0'
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22.x'
-
-      - name: Install
-        working-directory: desktop
-        run: bun install --frozen-lockfile
 
       # NSIS is downloaded by the CLI on first use, and WiX for the msi (that is
       # what tauri.windows.conf.json's downloadBootstrapper is about, one level

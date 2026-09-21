@@ -7,8 +7,9 @@ import {
   urlB64ToUint8Array,
 } from './browser-notify'
 
-// localStorage isn't guaranteed under the node test environment; the module
-// reads it lazily inside functions, so a stub before each call is enough.
+// localStorage isn't guaranteed under the node test environment; the modules
+// read it lazily inside functions (through `window.localStorage`, see
+// lib/persist.ts), so a stub before each call is enough.
 const backing = new Map<string, string>()
 const localStorageStub = {
   getItem: (k: string) => backing.get(k) ?? null,
@@ -38,7 +39,7 @@ describe('shouldBrowserNotify (the one gate)', () => {
 describe('browserNotifyEnabled (grant AND pref)', () => {
   beforeEach(() => {
     backing.clear()
-    vi.stubGlobal('localStorage', localStorageStub)
+    vi.stubGlobal('window', { localStorage: localStorageStub })
   })
   afterEach(() => {
     vi.unstubAllGlobals()

@@ -1,5 +1,6 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import type { AgentModel } from '@/lib/agents'
+import { readText, writeText } from '@/lib/persist'
 
 // Remembers which agent you were last talking to on a surface, and lets links
 // elsewhere deep-link straight into a conversation with a specific agent via
@@ -39,7 +40,7 @@ export function useStickyAgent(surface: 'chat' | 'plan' | 'research', agents: Ma
     } catch {
       /* no window (SSR) */
     }
-    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null
+    const stored = readText(key)
     const known = (id: string | null) => !!id && list.some((a) => a.id === id)
     selected = (known(deepLink) && deepLink) || (known(stored) && stored) || list[0]!.id
     initialized = true
@@ -48,12 +49,7 @@ export function useStickyAgent(surface: 'chat' | 'plan' | 'research', agents: Ma
   const select = (id: string | null) => {
     selected = id
     initialized = true
-    try {
-      if (id === null) localStorage.removeItem(key)
-      else localStorage.setItem(key, id)
-    } catch {
-      /* private mode / no storage */
-    }
+    writeText(key, id)
   }
 
   return {

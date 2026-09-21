@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -95,11 +95,9 @@
       title="Tool accounts"
       info="MCP servers your org runs in per-user mode. Connect your own account (stored encrypted) and your assistant can use the server as you. Disconnect any time; the server drops off your assistant on the next config render."
     />
-    {#if isPending}
-      <SkeletonRows rows={2} />
-    {:else if !data}
-      <QueryError variant="inline" error={query.error} title="Could not load your tool accounts" onRetry={() => void query.refetch()} />
-    {:else}
+    <QueryState query={query} errorTitle="Could not load your tool accounts" errorVariant="inline">
+      {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
+      {#snippet children(data)}
       <ul class="divide-y divide-line-subtle">
         {#each data ?? [] as s (s.id)}
           <li class="space-y-2 py-2.5">
@@ -164,6 +162,7 @@
           </li>
         {/each}
       </ul>
-    {/if}
+      {/snippet}
+    </QueryState>
   </Panel>
 {/if}

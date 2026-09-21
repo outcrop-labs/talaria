@@ -138,6 +138,40 @@ export interface Row {
   }
 }
 
+/** Everything a row is TOLD, as opposed to how it LOOKS: the browser builds one
+ *  `{...shared}` object per row and hands it to whichever view is on screen, so
+ *  the properties that must not drift between the list and the grid (the
+ *  selection state, the drag wiring, the modifier-click grammar) are declared
+ *  once here and consumed by both. Layout — the button's own classes, the
+ *  checkbox's corner — stays with the view: the two bodies are different on
+ *  purpose. */
+export type RowInteraction = {
+  row: Row
+  /** keyOf(row) — the browser's focus model addresses rows by it, and the
+   *  data attribute is what its keyboard nav queries the DOM by. */
+  rowKey: string
+  selected: boolean
+  /** On the clipboard in CUT mode — the row is spoken for: dimmed. */
+  cut: boolean
+  focused: boolean
+  active: boolean
+  dropTarget: boolean
+  onOpen: () => void
+  /** Shift rides the event for range selection, exactly like a body click. */
+  onToggle: (e: Event) => void
+  onFocusIn: () => void
+  /** The browser reads shiftKey here — a checkbox `change` event carries no
+   *  modifier state, but the pointerdown that caused it does. */
+  onPointerDown: (e: PointerEvent) => void
+  onContextMenu: (e: MouseEvent) => void
+  ondragstart: (e: DragEvent) => void
+  ondragend: () => void
+  /** Folders only — the browser passes these for rows a drop can land on. */
+  ondragover?: (e: DragEvent) => void
+  ondragleave?: () => void
+  ondrop?: (e: DragEvent) => void
+}
+
 const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder'
 const DRIVE_KIND: [prefix: string, kind: ArtifactKind, label: string][] = [
   ['application/vnd.google-apps.document', 'doc', 'Google Doc'],

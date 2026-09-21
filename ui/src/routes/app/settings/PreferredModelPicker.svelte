@@ -1,7 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import Combobox from '@/components/ui/Combobox.svelte'
-  import EffortPicker from '@/components/chat/EffortPicker.svelte'
+  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
@@ -50,6 +50,13 @@
   const effectiveEffort = $derived(
     prefs?.preferredEffort && efforts.includes(prefs.preferredEffort) ? prefs.preferredEffort : '',
   )
+
+  // The effort chip's shape: its rows, the rung the saved level sits on ('' is
+  // the model's own default — no rung), and the ingress row that clears the
+  // preference.
+  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
+  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effectiveEffort) + 1) })
+  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
 
   const save = async (model: string | null) => {
     error = null
@@ -114,7 +121,19 @@
          requests something they cannot carry. -->
     <div class="mt-4">
       <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Default reasoning effort</label>
-      <EffortPicker {efforts} value={effectiveEffort} onChange={(v) => void saveEffort(v)} />
+      <ComposerPicker
+        chipVariant="primary"
+        value={effectiveEffort}
+        label={effectiveEffort || 'auto'}
+        options={effortOptions}
+        autoOption={effortAuto}
+        meter={effortMeter}
+        searchable={false}
+        menuClass="min-w-48"
+        title="Reasoning effort for this reply"
+        menuLabel="Reasoning effort"
+        onChange={(v) => void saveEffort(v)}
+      />
       <p class="mt-1 text-xs text-muted">
         Your starting pick wherever the model in play supports effort levels: agent chats and the assistant panel.
         {#if effortFlash.saved && !effortError}<span class="ml-2 text-success">Saved</span>{/if}

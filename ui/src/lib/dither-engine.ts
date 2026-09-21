@@ -131,9 +131,10 @@ export interface DitherEngineOptions {
    * outline — but it holds at every size, which is why it is the default
    * rather than something the small cases opt into.
    *
-   * Four times the cells per paint is the cost. The engine parks its loop as
-   * soon as a field is static, so that is one paint for an idle field, not a
-   * per-frame bill.
+   * Four times the cells is four times the work when a field is BUILT — mount,
+   * resize, a source change — and not a per-frame bill: a static field parks
+   * its loop, and a live one repaints only the cells whose pixel changes (see
+   * `paint`).
    */
   dot?: number
   /** Alpha of the sparsest dots. Density scales alpha up toward maxAlpha, so
@@ -365,6 +366,26 @@ export class DitherEngine {
   private lastWaveBucket = -1
   private destroyed = false
   private mask: MaskRect[] | null = null
+  // ── what a frame has to do, and what it can know ──
+  //
+  // The field is a function of the sources' GEOMETRY, and geometry only moves
+  // when a tween is in flight or a wave is travelling. Everything else a frame
+  // touches — the shimmer's re-rolled threshold, the lit/unlit step it may
+  // cause — is a decision per cell, not a re-evaluation of the field. These
+  // four hold that split: `density`/`ink` are the field itself, `painted` is
+  // what is on the canvas cell by cell, and `styles` keeps the colour strings
+  // a cell can ask for.
+  private density: Float32Array | null = null
+  private ink: Uint32Array | null = null
+  private painted: Uint32Array | null = null
+  private styles = new Map<number, string>()
+  private cacheDirty = true
+  private drew = false
+  // Never paint a field nobody can see — see the constructor.
+  private inView = true
+  private docVisible = true
+  private io: IntersectionObserver | null = null
+  private onDocVisibility: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, opts: DitherEngineOptions = {}) {
     this.canvas = canvas
@@ -380,6 +401,40 @@ export class DitherEngine {
       tweenMs: opts.tweenMs ?? 200,
     }
     this.tones = resolveTones()
+
+    // NEVER PAINT A FIELD NOBODY CAN SEE. The desktop shell is the reason this
+    // lives in the engine rather than in a wrapper: the launcher webview stays
+    // ALIVE while an instance holds the window (hiding it is what keeps its
+    // session), so a full-window field kept repainting there at the cost of the
+    // whole window — and the same is true of any field scrolled out of its pane
+    // in the product. Both signals are watched here, so no call site can forget
+    // one: an invisible field stops its loop, and becoming visible again
+    // repaints from scratch (the canvas cannot be trusted across the gap — the
+    // window may have been resized or repainted by the compositor while away).
+    if (typeof IntersectionObserver === 'function') {
+      this.io = new IntersectionObserver((entries) => {
+        const last = entries[entries.length - 1]
+        if (!last || last.isIntersecting === this.inView) return
+        this.inView = last.isIntersecting
+        if (this.inView) {
+          this.invalidate()
+          this.schedule()
+        }
+      })
+      this.io.observe(canvas)
+    }
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this.docVisible = !document.hidden
+      this.onDocVisibility = () => {
+        if (document.hidden === !this.docVisible) return
+        this.docVisible = !document.hidden
+        if (this.docVisible) {
+          this.invalidate()
+          this.schedule()
+        }
+      }
+      document.addEventListener('visibilitychange', this.onDocVisibility)
+    }
   }
 
   setSize(wCss: number, hCss: number, dpr: number): void {
@@ -400,11 +455,13 @@ export class DitherEngine {
     this.canvas.width = Math.round(wCss * dpr)
     this.canvas.height = Math.round(hCss * dpr)
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    this.invalidate()
     this.schedule()
   }
 
   setReducedMotion(reduced: boolean): void {
     this.reduced = reduced
+    this.invalidate()
     this.schedule()
   }
 
@@ -420,6 +477,8 @@ export class DitherEngine {
   /** Theme flipped — the tokens the tones resolved from have new values. */
   refreshColors(): void {
     this.tones = resolveTones()
+    this.styles.clear()
+    this.invalidate()
     this.schedule()
   }
 
@@ -434,6 +493,10 @@ export class DitherEngine {
    */
   setMask(mask: MaskRect[] | null): void {
     this.mask = mask
+    // Cells outside a new mask have to be erased, and the incremental path
+    // cannot tell which ones were drawn under the old one — so the field is
+    // rebuilt from scratch, clear included.
+    this.invalidate()
     this.schedule()
   }
 
@@ -473,12 +536,31 @@ export class DitherEngine {
       else this.entries.set(id, { from: this.snapshot(entry, now), to: { ...entry.to, strength: 0 }, t0: now, ghost: true })
     }
 
+    this.invalidate()
     this.schedule()
   }
 
   destroy(): void {
     this.destroyed = true
     cancelAnimationFrame(this.raf)
+    this.io?.disconnect()
+    this.io = null
+    if (this.onDocVisibility && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onDocVisibility)
+      this.onDocVisibility = null
+    }
+    this.density = null
+    this.ink = null
+    this.painted = null
+    this.styles.clear()
+  }
+
+  /** The field has to be rebuilt from a clean canvas: geometry, sources, theme
+   *  or motion changed, or the field has been away and its pixels cannot be
+   *  trusted. */
+  private invalidate(): void {
+    this.cacheDirty = true
+    this.painted = null
   }
 
   /** Where an in-flight tween currently sits — retargeting starts from here,
@@ -498,6 +580,9 @@ export class DitherEngine {
 
   private frame(now: number): void {
     if (this.destroyed) return
+    // Invisible: drop the loop. A visibility flip invalidates and reschedules,
+    // so the field comes back painted rather than stale.
+    if (!this.inView || !this.docVisible) return
 
     let tweening = false
     for (const [id, entry] of this.entries) {
@@ -529,35 +614,80 @@ export class DitherEngine {
       if (tweening || (hasWave && waveAdvanced) || (shimmering && shimmerAdvanced)) {
         this.lastShimmerBucket = bucket
         this.lastWaveBucket = waveBucket
-        this.paint(now)
+        // A tween or a travelling wave moves the FIELD under the frame; a
+        // shimmer tick only re-rolls thresholds. Only the first has to
+        // re-evaluate the sources.
+        this.paint(now, tweening || hasWave)
       }
       this.schedule()
     } else {
-      this.paint(now)
+      this.paint(now, false)
       // fully static — stop the loop
     }
   }
 
-  private paint(now: number): void {
+  /**
+   * One frame. `live` says the field's own geometry is moving under it — a
+   * tween mid-flight, or a travelling wave — so density has to be re-evaluated
+   * from the sources. Otherwise the field is a cached PICTURE and the frame
+   * only has to decide, cell by cell, which pixels the re-rolled threshold
+   * changes: those are the only ones it writes.
+   *
+   * That split is this engine's whole performance story, and it is worth the
+   * paragraph. The house grain (pitch 2 / dot 1) is four times the cells of the
+   * 4/2 this started at, and a full-window field is a quarter of a million of
+   * them; writing every cell on every tick cost the desktop shell's launcher
+   * (a full-window field that stays mounted — and repainting — behind an active
+   * instance) ~600ms of main thread per frame, and full-pane empty states ~80%
+   * of a core. Nothing about a static field changes between two shimmer ticks
+   * except a threshold, so nothing else is recomputed and nothing else is
+   * redrawn.
+   */
+  private paint(now: number, live: boolean): void {
     const { ctx, wCss, hCss, tones } = this
     const { pitch, dot, alphaFloor, maxAlpha, shimmer, cover, organic } = this.opts
     if (wCss === 0 || hCss === 0) return
 
-    ctx.clearRect(0, 0, wCss, hCss)
-    if (this.entries.size === 0) return
-
+    // `+ frac` because the grid starts up to one pitch before this canvas —
+    // without it the last column/row on the far edge would be dropped.
+    const cols = Math.ceil((wCss + this.fx) / pitch)
+    const rows = Math.ceil((hCss + this.fy) / pitch)
+    const cells = cols * rows
+    const size = cover ? pitch : dot
+    const off = cover ? 0 : (pitch - dot) / 2
+    const bucket = Math.floor(now / 160)
     const t = now / 1000
+
+    // THE CANVAS IS THE STATE. `painted` is what is on it, cell by cell, packed
+    // into the same 8 bits per channel the canvas stores — so two cells that
+    // pack equal are two cells that PAINT equal, and the frame can write only
+    // the ones that differ. A length change means the geometry moved under us:
+    // clear, and start the picture over.
+    let painted = this.painted
+    if (!painted || painted.length !== cells) {
+      ctx.clearRect(0, 0, wCss, hCss)
+      painted = this.painted = new Uint32Array(cells)
+      this.drew = false
+    }
+
     const active: DitherSource[] = []
     for (const entry of this.entries.values()) {
       const s = this.snapshot(entry, now)
       if (s.strength > 0.002) active.push(s)
     }
-    if (active.length === 0) return
 
     // A mask is a promise about WHERE: an empty list means the caller has
-    // nothing to field, and the cleared canvas above is the correct answer.
+    // nothing to field, and a cleared canvas is the correct answer — including
+    // when a field that HAD ink loses its last source.
     const mask = this.mask
-    if (mask && mask.length === 0) return
+    if (active.length === 0 || (mask !== null && mask.length === 0)) {
+      if (this.drew) {
+        ctx.clearRect(0, 0, wCss, hCss)
+        painted.fill(0)
+        this.drew = false
+      }
+      return
+    }
 
     ctx.save()
     if (mask && mask.length > 0) {
@@ -566,53 +696,92 @@ export class DitherEngine {
       ctx.clip()
     }
 
-    // `+ frac` because the grid starts up to one pitch before this canvas —
-    // without it the last column/row on the far edge would be dropped.
-    const cols = Math.ceil((wCss + this.fx) / pitch)
-    const rows = Math.ceil((hCss + this.fy) / pitch)
-    const size = cover ? pitch : dot
-    const off = cover ? 0 : (pitch - dot) / 2
-    const bucket = Math.floor(now / 160)
+    // THE FIELD IS GEOMETRY, so it is computed once and read per tick: a
+    // shimmer tick re-rolls a threshold, not a source. `density`/`ink` hold the
+    // picture for every frame that is not live; a live frame recomputes it and
+    // leaves the cache dirty, so the frame that settles the field rebuilds it
+    // once.
+    const useCache =
+      !live &&
+      !this.cacheDirty &&
+      this.density !== null &&
+      this.ink !== null &&
+      this.density.length === cells &&
+      this.ink.length === cells
+    // READ the picture, or BUILD it — never both. A frame that builds reads
+    // nothing (the buffers it just allocated are empty), which is the one way
+    // this pair can be miswired: reading a fresh buffer paints an empty field.
+    const densityOf = useCache ? this.density! : null
+    const inkOf = useCache ? this.ink! : null
+    const building = !live && !useCache
+    const writeDensity = building ? new Float32Array(cells) : null
+    const writeInk = building ? new Uint32Array(cells) : null
+    const shimmering = shimmer > 0 && !this.reduced
+    const halfShimmer = shimmer / 2
 
     for (let cy = 0; cy < rows; cy++) {
       const y = cy * pitch - this.fy + pitch / 2
+      const top = cy * pitch - this.fy + off
       // Page cell indices: the matrix and the noise are read from these, so the
       // pattern is continuous across every field on the page. The FIELD is
       // still sampled in local coordinates, because sources are local.
       const gy = this.oy + cy
       for (let cx = 0; cx < cols; cx++) {
+        const i = cy * cols + cx
         const x = cx * pitch - this.fx + pitch / 2
         const gx = this.ox + cx
 
-        // Screen-accumulate density; colour is the tone mix weighted by each
-        // source's contribution, so an accent halo tints only where it lives.
-        let miss = 1
-        let r = 0
-        let g = 0
-        let b = 0
-        let wsum = 0
-        for (const s of active) {
-          const v = evalSource(s, x, y, t, wCss, hCss)
-          if (v <= 0) continue
-          miss *= 1 - clamp01(v)
-          const c = tones[s.tone ?? 'neutral']
-          r += c[0] * v
-          g += c[1] * v
-          b += c[2] * v
-          wsum += v
+        let density = 0
+        let ink = 0
+        if (densityOf) {
+          density = densityOf[i]!
+          ink = inkOf![i]!
+        } else {
+          // Screen-accumulate density; colour is the tone mix weighted by each
+          // source's contribution, so an accent halo tints only where it lives.
+          let miss = 1
+          let r = 0
+          let g = 0
+          let b = 0
+          let wsum = 0
+          for (const s of active) {
+            const v = evalSource(s, x, y, t, wCss, hCss)
+            if (v <= 0) continue
+            miss *= 1 - clamp01(v)
+            const c = tones[s.tone ?? 'neutral']
+            r += c[0] * v
+            g += c[1] * v
+            b += c[2] * v
+            wsum += v
+          }
+          if (wsum > 0) {
+            density = 1 - miss
+            if (organic > 0) {
+              // Two octaves — 4-cell blocks give the clusters, per-cell breaks
+              // their edges. Seeds are constants: the clumps never move, which
+              // is why they belong to the cached picture rather than to every
+              // tick that reads it.
+              const clump = 0.6 * hash01(gx >> 2, gy >> 2, 7) + 0.4 * hash01(gx, gy, 13)
+              density *= 1 + organic * (clump * 1.8 - 0.9)
+            }
+            ink = (Math.round(r / wsum) << 16) | (Math.round(g / wsum) << 8) | Math.round(b / wsum)
+          }
+          if (writeDensity && writeInk) {
+            writeDensity[i] = density
+            writeInk[i] = ink
+          }
         }
-        if (wsum === 0) continue
 
-        let density = 1 - miss
-        if (organic > 0) {
-          // Two octaves — 4-cell blocks give the clusters, per-cell breaks
-          // their edges. Seeds are constants: the clumps never move.
-          const clump = 0.6 * hash01(gx >> 2, gy >> 2, 7) + 0.4 * hash01(gx, gy, 13)
-          density *= 1 + organic * (clump * 1.8 - 0.9)
+        // Nothing here — a cell that used to hold ink is erased, and the rest
+        // are left exactly as they are.
+        if (density <= 0.002) {
+          if (painted[i] !== 0) {
+            ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
+            painted[i] = 0
+          }
+          continue
         }
-        if (shimmer > 0 && !this.reduced && density > 0.03 && density < 0.97) {
-          density += (hash01(gx, gy, bucket) - 0.5) * shimmer
-        }
+
         // TWO TIERS, NOT DOTS AND HOLES.
         //
         // Adopted from dither-kit (MIT, Boring-Software-Inc/dither-kit), whose
@@ -628,8 +797,24 @@ export class DitherEngine {
         //
         // A cell with no field on it at all is still skipped: the tier is a
         // floor under the texture, not a wash over the whole surface.
-        if (density <= 0.002) continue
-        const lit = density > (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64
+        const threshold = (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64
+
+        // SHIMMER IS A THRESHOLD JITTER, and it is paid for only where a flip
+        // is possible: the jitter moves the threshold by at most half a
+        // shimmer, so a cell further than that from its own threshold cannot
+        // change and neither the hash nor the redraw is spent on it. The ALPHA
+        // deliberately does not ride the jitter — it is a function of density
+        // alone. A jitter that moved every cell's alpha by a level would make
+        // every pixel on the field differ on every tick, which is the cost this
+        // whole frame exists to avoid; the visible sparkle is the lit/unlit
+        // step, which is exactly the part that is kept.
+        const lit =
+          shimmering &&
+          density > 0.03 &&
+          density < 0.97 &&
+          Math.abs(density - threshold) <= halfShimmer
+            ? density > threshold - (hash01(gx, gy, bucket) - 0.5) * shimmer
+            : density > threshold
 
         // The unlit tier is scaled by density rather than lifted off
         // `alphaFloor`, so it fades out exactly where the field does instead of
@@ -639,10 +824,35 @@ export class DitherEngine {
           : lit
             ? alphaFloor + (maxAlpha - alphaFloor) * clamp01(density)
             : maxAlpha * clamp01(density) * OFF_TIER
-        ctx.fillStyle = `rgba(${Math.round(r / wsum)},${Math.round(g / wsum)},${Math.round(b / wsum)},${alpha})`
-        ctx.fillRect(cx * pitch - this.fx + off, cy * pitch - this.fy + off, size, size)
+        const packed = ((ink << 8) | (cover ? 255 : Math.round(alpha * 255))) >>> 0
+        if (packed === painted[i]) continue
+        ctx.fillStyle = this.styleOf(packed)
+        ctx.fillRect(cx * pitch - this.fx + off, top, size, size)
+        painted[i] = packed
+        this.drew = true
       }
     }
     ctx.restore()
+
+    this.density = writeDensity ?? densityOf ?? this.density
+    this.ink = writeInk ?? inkOf ?? this.ink
+    // A LIVE frame's picture is not cacheable, so the frame that settles the
+    // field rebuilds it once. A frame that just BUILT it leaves it valid, and a
+    // frame that merely READ it must not throw it away — that mistake made the
+    // cache useless: every other tick paid a full re-evaluation of the field.
+    this.cacheDirty = live
+  }
+
+  /** The colour string for a packed pixel, built once per distinct pixel. The
+   *  canvas quantises alpha to 8 bits anyway, so the key is exact: a field has
+   *  a handful of distinct pixels, not one per cell, and every `fillStyle`
+   *  assignment otherwise re-allocates a string for the CSS colour parser. */
+  private styleOf(packed: number): string {
+    let style = this.styles.get(packed)
+    if (style === undefined) {
+      style = `rgba(${(packed >>> 24) & 255},${(packed >>> 16) & 255},${(packed >>> 8) & 255},${(packed & 255) / 255})`
+      this.styles.set(packed, style)
+    }
+    return style
   }
 }

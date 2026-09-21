@@ -7,9 +7,13 @@
 // to the cron expression underneath; "custom" exposes the raw string for the
 // rest. Schedules DISPLAY in plain English everywhere.
 //
-// Components: CronsPanel.svelte (one agent) and FleetCronsModal.svelte
+// Components: CronsPanel.svelte (one agent) and FleetCronsTab.svelte
 // (fleet-wide, admin) over ScheduleBuilder / CronRow / CronForm /
-// CronListSkeleton; the schedule model and helpers live here.
+// CronListSkeleton; the schedule model, the helpers and the mutations
+// (useCronMutations) live here.
+
+import { confirm } from '@/components/ui/confirm.svelte'
+import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
 
 export interface CronJob {
   id: string
@@ -109,4 +113,101 @@ export function jobDot(j: CronJob): string {
   if (!j.enabled || j.state === 'paused') return 'var(--theme-line)'
   if (j.lastStatus && /error|fail/i.test(j.lastStatus)) return 'var(--theme-danger)'
   return 'var(--theme-success)'
+}
+
+// ── Mutations: one home for what a schedule row can do ─────────────────────
+// Both surfaces (one agent's panel, the fleet-wide tab) fired the same
+// requests at `/api/fleet/agents/{agent}/crons[/{job}]`. Nothing about the
+// request differed — what differed is what each panel does around it, so that
+// arrives as options: the panel's own invalidation, its in-flight flag, and
+// one of the two error channels below.
+
+export type CronAction = 'pause' | 'resume' | 'run' | 'remove'
+/** A mutation the hook can be asked for — the fan-out names what failed. */
+export type CronVerb = CronAction | 'create' | 'edit'
+
+/** The three fields a job is written from (the create and edit forms). */
+export interface CronPatch {
+  name: string
+  schedule: string
+  prompt: string
+}
+
+/** A panel's own state, which the hook drives: the inline error channel —
+ *  the failure message, rendered where the rows are — and the in-flight flag
+ *  its controls disable on. Declare it with `$state({ err: null, busy: false })`;
+ *  the hook writes through that proxy, so the panel re-renders either way. */
+export interface CronMutationState {
+  err: string | null
+  busy: boolean
+}
+
+export interface CronMutationOptions {
+  /** Inline channel: a panel that has room for a message renders `state.err`. */
+  state?: CronMutationState
+  /** Fan-out channel: the raw failure and what was attempted, for a panel
+   *  that reports it away from the rows (the fleet tab toasts it). The two
+   *  are separate channels — a panel passes `state` OR `onError`, never one
+   *  pretending to be the other. */
+  onError?: (e: unknown, what: CronVerb) => void
+  /** The panel's own list(s), re-read once a mutation settles — `failed` when
+   *  the request was rejected. A rejected row action may still have partly
+   *  applied server-side; a rejected write changed nothing. */
+  invalidate: (what: CronVerb, failed: boolean) => void | Promise<void>
+}
+
+/** Where one agent's jobs live; the hook's only URL knowledge. */
+const cronsOf = (agentId: string) => `/api/fleet/agents/${agentId}/crons`
+
+/** Create, edit, and the row actions (pause · resume · run-now · delete) on
+ *  one agent's jobs, for whichever surface is asking. */
+export function useCronMutations(opts: CronMutationOptions) {
+  /** One mutation, with the panel's side of it wrapped around: the error is
+   *  cleared up front, `busy` holds through the re-read, and the failure goes
+   *  out on whichever channel the panel passed. */
+  const run = async (what: CronVerb, request: () => Promise<void>): Promise<boolean> => {
+    const { state } = opts
+    if (state) {
+      state.busy = true
+      state.err = null
+    }
+    let failed = false
+    try {
+      await request()
+    } catch (e) {
+      failed = true
+      if (state) state.err = errorMessage(e)
+      opts.onError?.(e, what)
+    }
+    try {
+      await opts.invalidate(what, failed)
+    } finally {
+      if (state) state.busy = false
+    }
+    return !failed
+  }
+
+  return {
+    create: (agentId: string, input: CronPatch) =>
+      run('create', async () => {
+        await postJson(cronsOf(agentId), input)
+      }),
+
+    edit: (agentId: string, jobId: string, patch: CronPatch) =>
+      run('edit', async () => {
+        await putJson(`${cronsOf(agentId)}/${jobId}`, patch)
+      }),
+
+    act: async (agentId: string, jobId: string, action: CronAction) => {
+      if (
+        action === 'remove' &&
+        !(await confirm({ title: 'Delete scheduled job', message: 'Delete this scheduled job?', confirmLabel: 'Delete', danger: true }))
+      )
+        return
+      await run(action, async () => {
+        if (action === 'remove') await delJson(`${cronsOf(agentId)}/${jobId}`)
+        else await postJson(`${cronsOf(agentId)}/${jobId}`, { action })
+      })
+    },
+  }
 }

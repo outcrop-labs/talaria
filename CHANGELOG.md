@@ -4,6 +4,260 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **The dither field repaints what changed, not the whole field — the desktop
+  shell's launcher stops being a furnace.** `ui/src/lib/dither-engine.ts`'s frame
+  re-evaluated and re-drew EVERY cell of every mount, every tick. At the house
+  grain (pitch 2 / dot 1) the launcher's full-window field is 247,040 cells, and
+  keeping it shimmering cost 575ms per paint on average (633ms worst): the page
+  ran at 1.5 fps with 84% of the main thread inside long tasks — and the launcher
+  stays mounted (and painting) behind an active instance. The field is a function
+  of the sources' GEOMETRY, so it is now computed once per change
+  (`density`/`ink`, per cell) and a shimmer tick re-rolls only what the shimmer
+  can change: the threshold, for the cells whose lit state can flip
+  (`|density − threshold| ≤ shimmer/2`). Every other cell is left as it is, cell
+  by cell, against a `painted` buffer in the canvas's own 8-bit resolution, and a
+  colour string is built once per distinct pixel instead of once per cell. A LIVE
+  frame (a tween in flight, a travelling wave) still re-evaluates and redraws, so
+  transitions keep full rate. Two deliberate consequences: the ALPHA no longer
+  rides the shimmer jitter (it is a function of density alone — a jitter that
+  moved every cell's alpha by a level made every pixel differ on every tick; the
+  visible sparkle, the lit/unlit step, is unchanged), and a field nobody can see
+  stops painting — an IntersectionObserver on the canvas plus `visibilitychange`
+  park the loop, and becoming visible repaints from a clean canvas.
+
+  Measured in a worktree stack (its own DB/Redis, app :5302; the launcher page on
+  :5290), same method before → after: the launcher field 575ms → 7ms per paint
+  (633ms → 17ms worst), 13 long tasks and 7.6s of blocking in 8s → 0 and 0, 1.5 →
+  60 fps, main thread 100% → 7.5% busy; the inbox's full-pane empty-state field
+  85ms → 2ms per paint, 50 long tasks and 4.6s → 0, 34 → 60 fps, 62% → 5.6%.
+  Parity proved rather than assumed: the new paint path rendered against the
+  previous loop verbatim into a second canvas differs in **0 pixels** for three
+  source mixes (edges+organic, rect+halo+ramp, cover mode) and for a masked
+  field; the shimmer rule was checked over 525,525 (density, threshold, jitter)
+  triples with **0** cases where the lit/unlit decision differs from the
+  density-jitter it replaces. Five routes (inbox, brief, boards, knowledge,
+  artifacts) load with no console errors, fields painted, 0 long tasks after
+  settle. The desktop GUI itself was not run — this host has no display — so the
+  launcher was exercised as the page it is, in a browser. `bun run check` and
+  `bun run verify` green.
+
+### Sweep waves W4-remainder, W8-W12 — landed in parallel, one slice per owner
+
+Each slice below is an independent commit's worth of work; all of them are in the
+tree together and share one validation pass.
+
+- **W4a — one status palette.** `ui/src/lib/statuses.ts` owns `STATUS_COLOR`
+  (8 keys); `components/board/kanban.ts`'s `COL_ACCENT` and
+  `components/board/field-pills.ts`'s duplicate are deleted, and the three leaf
+  call sites that imported them (`Kanban.svelte`, `StatusPill.svelte`,
+  `FilterBar.svelte`) read the shared map, each keeping its own unknown-key
+  guard. **One rendered colour changes, measured rather than assumed**:
+  `COL_ACCENT` carried only the six on-board keys, so Kanban's legacy off-board
+  lane renders `failed` as `danger` now instead of `muted` (1 of 16 site×key
+  pairs; `cancelled` unchanged, the other 14 unchanged). That is the drift this
+  wave removes — every other lens already drew `failed` as danger.
+- **W4b — one format module.** `ui/src/lib/format.ts` owns `formatUsd`
+  (`{ unpricedAsWord }`), `formatBytes` (`{ ceilKb }`), `formatTokens` and
+  `fmtDuration`. The flags are real conventions, not rounding preferences: the
+  two byte cascades also disagree on non-finite input (`NaN MB` vs `NaN KB`) and
+  past a GiB (`1024.0 MB` vs `1.0 GB`), so merging them would have changed those
+  strings. Verified by a throwaway parity script: 89 value comparisons across
+  the six helpers, 0 mismatches (0, a boundary, negatives, NaN, Infinity, null),
+  plus `fitness.test.ts`'s four pins. `formatCost`/`formatTokens`/`humanSize`/
+  `fmtTime` each remain one-line re-exports so unowned call sites keep working;
+  `TaskDetail.svelte`'s own call sites were renamed.
+- **W9b — one cron mutation surface.** `useCronMutations` replaces the two
+  panels' create/edit/act code. The plan's premise is wrong for this pair and the
+  agent proved it: both panels hit the SAME endpoint
+  (`/api/fleet/agents/{id}/crons`), so the planned `base` parameter was dropped
+  rather than kept as a dead argument — the agent id is a method argument. Both
+  error channels survive (the agent panel's inline `err`, the fleet tab's
+  `toastError` fan-out, with its titles verbatim) and both invalidation rules
+  (the panel's "not after a failed create/edit", the tab's unconditional) are
+  passed in. Verified with a throwaway vitest against a stubbed fetch: 3/3,
+  including confirm-before-request on delete, a 500 firing BOTH channels, and
+  `busy` released after the invalidate.
+- **W10a — one swatch menu, one rename field, one add row.**
+  `components/ui/{ColorsMenu,RenameField,AddRow}.svelte` (−98 lines across the
+  two settings tabs and the ticket menu). **The add row is `AddRow`, not the
+  planned `InlineCreate`**: `InlineCreate.svelte` already exists as a committed,
+  SDK-exported primitive (a bare `+` that expands), and adopting it would have
+  changed the tabs' always-open "New status + Add" look — the parity rule's
+  case, so the row was extracted under its own name. The three components own
+  no writes: the tabs keep their `run()`/invalidation and `confirm()`/refresh
+  paths, and `AddRow` preserves the one behavioural difference between them —
+  StatusesTab clears the draft immediately (even on failure), LabelsTab only
+  after `.then(refresh)` — by clearing once the submitted promise settles.
+
+- **W4d — one teams-directory read.** `useTeamsDirectory(enabled)` in
+  `lib/teams.ts` replaces four hand-rolled reads and the dead `useTeamDirectory`
+  (zero callers, same endpoint, different key). The key moves from
+  `['teams-directory']` to `['teams','directory']`, so the membership writes that
+  already invalidate `['teams']` now refresh the directory too; the wire shape is
+  the real one (`TeamDirectoryEntry { id, name, memberCount, agentCount }` — there
+  is no `kind` field, and the four consumers each declared a different slice of
+  the same row). The optional `enabled` gate is behaviour, not decoration: the
+  channel settings modal read this only while open.
+- **W4e — two menu builders and one sort header.** `openCopyItems(path, open,
+  icons?)` and `copyTextItems(value)` join `components/ui/context-menu.svelte.ts`
+  (the real home; the plan pointed at `ui/src/`) and absorb ~17 hand-built
+  "Open / Copy link" and "Copy text" pairs across boards, comms, knowledge,
+  research, teams, templates, the four home tabs, the KB editors and the chat
+  message menu — each site keeping its own labels, hrefs and icons.
+  `components/ui/SortHeader.svelte` renders ONLY the sortable `<button>`: the
+  label comes in as children and the table's own geometry classes through
+  `class`, so every `<th>` and grid cell keeps its markup. Both sort cycles
+  (BoardList's `flex-row-reverse` chevron pair, ArtifactsBrowser's 10px arrow
+  pair) keep their glyphs and order.
+
+- **W4c — one persistence module.** `ui/src/lib/persist.ts`
+  (`readStored`/`writeStored`/`readFlag`/`writeFlag` + `readText`/`writeText`)
+  mirrors `lib/view-memory.ts`'s parse/validate contract and absorbs a refusing
+  store on every access; the 12 consumers keep their exact keys, fallback values
+  and stored shapes (`'1'`/`'0'`, bare text, `JSON.stringify`). **Three files had
+  NO guard at all** (`lib/theme.ts`, `components/setup/UnreadableSecretsBanner.svelte`,
+  `routes/app/Artifacts.svelte` — a private-mode or blocked store threw on
+  read *and* write) and `lib/sticky-agent.svelte.ts` guarded only its read; all
+  four are absorbed now, which is the improvement this wave was for.
+- **W11 — one composer picker.** `components/chat/ComposerPicker.svelte` absorbs
+  `TierPicker` and `EffortPicker` (both deleted) and the seven call sites migrate
+  to it. Eleven real differences were enumerated and each became a prop —
+  `chipVariant` (`primary` for both deleted chips), `icon` (the tier's ✳ glyph as
+  a string), `meter: { total, lit }` (computed at each site: the tier floor is
+  `indexOf+1`, the effort chip is 0-lit at `''`), the every-row `MeterBars` on
+  primary chips, `autoOption` (effort's "auto / model default" ingress row),
+  `label` (the tier chip reads "main" while its row reads "main model"),
+  `searchable`/`searchPlaceholder`, `menuClass` (three different min widths:
+  44/48/56), `disabled`, and the aria set (effort's trigger carried
+  `aria-haspopup`/`aria-expanded`, the other two carried neither — now every
+  trigger has them, the one intentional deviation).
+  **Parity proved by rendering, not by inspection**: 10 SSR renders of the old
+  components (from the pre-sweep commit) against the new one, fed each call
+  site's exact props with class-token and attribute order canonicalized — 7/10
+  canonical HTML identical, and the 3 tier renders differ only by those two aria
+  attributes (deleting the two lines makes them byte-identical). Panel min-widths,
+  the search row, the auto/MODEL DEFAULT ingress caption, and the per-row meters
+  (1/3, 2/3, 3/3) all matched. This database has no model endpoints, so `tiers`
+  is empty and the chips cannot be rendered in the running app; SSR is the
+  strongest proof available here, and it cannot speak to open/close, hover or
+  popover placement.
+- **W12a — one home for the cli's env, compose, port and container spellings.**
+  `readEnvFile(ctx, rel, { quotes?, envWins? })` replaces ten hand-assembled
+  `.env` readers; `composeFileArgs(composeFile, base)` (+`COMPOSE_BASE`,
+  `composeFileEnv`) replaces seven copies of the COMPOSE_FILE law — the printed
+  argv the two tests pin is byte-identical; `cli/src/ports.ts` owns the five dev
+  host ports and `cli/src/containers.ts` the seven container names plus the
+  `containerState`/`containerRunning`/`containerExists`/`containerNames` probes
+  (each keeping its original docker argv); `cmd/box/seed.ts`'s ~18 string
+  concatenations read `boxSvc`/`boxHost`/`boxProject`/`boxFleetNetwork`; and the
+  duplicate `COMPOSE_FILE` export in `cmd/service/shared.ts` is gone.
+  `composeFileArgs` takes the already-resolved value rather than `ctx` because
+  `service/unit.ts` is a pure renderer with no `Ctx` — the ctx side is
+  `composeFileEnv(ctx)`.
+
+- **W8a — QueryState adoption, 24 of the surfaces that hand-rolled it.** The
+  plan listed 19 files; the agent adopted **24** forks across 28 listed surfaces
+  and deliberately left four, each for a reason the parity rule covers:
+  * `Comms.svelte` keeps its rail markers. Its failure row is
+    `<QueryError variant="inline">` inside `px-2 py-1.5`, matched to `RailRow`'s
+    own padding, and QueryState's error branch hard-wraps its QueryError in
+    `<div class="h-full">` with no class hook — swapping would move every rail
+    failure row 8px left and 6px up of the rows it replaces, which is exactly
+    what `RailFailure`'s comment says it exists to prevent. Its channel-detail
+    pill fork has NO error arm, so adopting would newly let a settled 500 drop a
+    centred error into the 48px channel header — care point 1 forbids it. (This
+    corrects an earlier note of mine: no concurrent write was lost on this file;
+    `Comms.svelte` was a deliberate non-adoption, and W4e's `openCopyItems` call
+    sites are intact. I verified the same for every other file two slices
+    touched — KbDocEditor, KbSpaceEditor, ChatView, `board-list.ts`,
+    `BoardsSublist`, `ArtifactEditor` — all kept both edits.)
+  * The three undefined-branch decisions are recorded per file: `idle={null}`
+    where the hand-rolled code shimmered, the `empty` slot where it had a
+    distinct empty state (`AdminOrgGooglePanel`, `AdminInstanceDomainPanel`,
+    `AdminInvitesPanel`, `IntegrationsSection`, `AssistantGoogleCard`), and the
+    default idle line where it already said "nothing selected".
+  Typecheck is green (0 errors, 138 pre-existing warnings). One correction worth
+  keeping: five of the "unused `data`" hits were on a dead script-level
+  `const data = $derived(query.data)`, not on the snippet params — the fix was to
+  delete the dead derived, not to rename the param, which would have left the
+  body reading an `X | undefined`.
+
+- **W8b — one home list shell.** `components/app/HomeListPanel.svelte` absorbs the
+  scaffolding the four home tabs shared; the tabs keep their headings, empty
+  states, row markup, queries and menu controllers. The notice is passed in as
+  `notice={list.notice}` **at each tab's own call site**, so
+  `check-invariants.mjs`'s `listquery-notice-dropped` rule still finds its literal
+  (verified by running the rule's own regex over the four files).
+- **W9a — one members header.** `components/app/MembersHeader.svelte` (190 lines)
+  replaces plan's and research's copies; both routes become wiring (42 and 55
+  lines). The seven real differences are props: `chipSurface` (`bg-raised` vs
+  `bg-card`), `active` (presence rings), `hideWhenOwnerless`, `loading`, `noun`
+  (the copy), `directory`, and the `meta`/`empty` snippets. The error-message
+  dialect stays per route on purpose (`(e as Error).message` vs `errorMessage(e)`
+  is user-visible text). Both routes now read the shared teams directory. Parity
+  was checked as a class-token multiset: the only tokens that differ are the four
+  chip colour strings the prop now supplies.
+- **W9c — one artifact row shell.** `RowInteraction` (17 fields) moves to
+  `routes/app/artifacts.ts` and the frame to `ArtifactRowShell.svelte`; the row and
+  the tile keep their own bodies, markup and classes. Verified by rendering new
+  vs old across 42 combinations (3 rows × 7 interaction states × 2 views) and
+  diffing the HTML — identical modulo attribute/class order.
+- **W9d — one agent item.** `components/fleet/AgentItem.svelte` owns the shared
+  derivation (`manage`, `running`, `am`) and the modal tail; the list row and the
+  tile pass their own frame as a snippet. No asymmetry to paper over: both
+  derived the same three bindings from the same inputs.
+- **W10b — one record title.** `components/ui/RecordTitle.svelte` replaces the
+  emoji-trigger + editable-title cluster in the artifact, KB doc and KB space
+  editors (−51 lines). Seven differences became props/snippets (`iconFallback`,
+  `placeholder`, `class`, `meta`, and each editor's own commit/cancel condition);
+  the component writes nothing itself, and read mode still shows the SAVED record
+  so a failed save cannot surface unsaved text.
+- **W10c — tabs, adopted in two of three.** `Segmented` replaces
+  `DescriptionSection`'s bespoke pill group (the markup it had WAS Segmented's),
+  and `Tabs` replaces `RunDetailModal`'s strip (same frame shape as its sibling
+  modal, and the audit already lists "three visually different tab strips" as the
+  defect these two commits were converging on). **`BoardSettingsModal` keeps its
+  bespoke strip**, with a comment naming the variant `Tabs` needs (fill cells +
+  group border): adopting would need two overrides it has no hook for. Two deltas
+  the visual pass must judge: `RunDetailModal`'s active cell gains the kit's
+  hairline mark, and `Segmented`'s xs cells are ~4px wider each.
+- **W12c — one home for the sidecar blocks, and the argv that proves it.**
+  `docker/sidecars.compose.yml` holds the six sidecars (postgres, redis, qdrant,
+  embeddings, minio, searxng: image, restart, volumes, env defaults,
+  healthchecks) and deliberately holds NO `ports`, `networks` or
+  `container_name` — those stay per-stack (prod owns the network, devbox owns
+  the loopback ports, every stack owns its container names). The three stack
+  files consume it with the fragment **first**
+  (`-f docker/sidecars.compose.yml -f <stack>.yml`): compose merges by service
+  name with the later file winning, and the reverse order would hand every
+  devbox a second TEI + SearXNG. The cli builds those argvs through
+  `stackComposeFiles` / `composeFileArgs`.
+  **The proof is a diff, not an opinion**: `docker compose config` for all three
+  stack files, with the fragment, is BYTE-IDENTICAL to the pre-change
+  single-file spec (same 8/6/5 services, same published ports, same network
+  names, same volume names — so a running instance's volumes are neither
+  recreated nor lost), and `bun talaria deploy status` really ran
+  `docker compose -f docker/sidecars.compose.yml -f docker/compose.yml ps`
+  against docker (exit 0). A bare `docker compose -f docker/compose.yml config`
+  now FAILS FAST (`service "qdrant" has neither an image nor a build context`)
+  instead of silently starting a stack with no sidecars — kept on purpose. The
+  one-shot migration for an operator who sets `COMPOSE_FILE` is documented in
+  `docs/CONTAINER.md`: an explicit `-f` beats the env var, so the env list must
+  name the fragment first. `cd cli && bun test` 195/0, cli `tsc --noEmit` clean.
+  The box template's need for `BOX_*` env is pre-existing (it was never runnable
+  bare).
+
+- **W12d — one CI runtime setup.** `.github/actions/setup-runtime/action.yml`
+  (composite) owns the `bun 1.4.0` / `node 22.x` / `rust 1.97.1` pins and the
+  checkout+bun+node+install quartets; `grep` now finds those versions nowhere else
+  in `.github/`. Two traps handled: every `surface` line in `ci.yml` gained
+  `.github/actions/**` (a change there otherwise runs only the invariants job),
+  and **checkout deliberately stays per-job** — a same-repo composite action is
+  resolved from the workspace, so a step inside it can never be the first
+  checkout. `migrations.yml`'s stale `actions/checkout@v4` came up to v5 (all 19
+  occurrences across `.github/` are v5 now), and every touched workflow still
+  parses.
+
 - **W8 (part 1): one stale-board banner, one page skeleton.** The board's three
   lenses each wrote the same "a reference read failed, the tickets did not"
   banner — list, kanban and gantt agreed on the shape and disagreed, twice, on

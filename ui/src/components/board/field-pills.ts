@@ -64,17 +64,6 @@ export interface PillCtx {
   boardId?: string
 }
 
-export const STATUS_COLOR: Record<string, string> = {
-  inbox: 'var(--theme-muted)',
-  assigned: 'var(--theme-accent)',
-  in_progress: 'var(--theme-warning)',
-  blocked: 'var(--theme-danger)',
-  quality_review: 'var(--theme-accent-secondary)',
-  done: 'var(--theme-success)',
-  failed: 'var(--theme-danger)',
-  cancelled: 'var(--theme-muted)',
-}
-
 /** Closed = done-category on this board, plus the legacy terminals: the bare
  *  `done` key (boards that predate custom statuses) and the OFF-BOARD list,
  *  which is imported rather than spelled out — see `@/lib/task-const`.

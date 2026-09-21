@@ -1,7 +1,9 @@
 // Shared types + panel-chrome persistence for InboxChatPanel.svelte. The
-// localStorage read/write helpers live here (plain TS, no runes) — the
-// component mirrors them into $state and subscribes to the sync events.
+// persisted preferences live here (plain TS, no runes) and go through
+// lib/persist — the component mirrors them into $state and subscribes to the
+// sync events.
 import { DEFAULT_INBOX_PANEL_WIDTH, clampInboxPanelWidth } from '@/lib/inbox-panel-size'
+import { readFlag, readText, writeFlag, writeText } from '@/lib/persist'
 
 /** The assistant command modes the server API accepts. The panel's composer
  *  no longer lets the owner pick one (attach + text + submit only) — it always
@@ -67,12 +69,7 @@ let widthFallback = DEFAULT_INBOX_PANEL_WIDTH
 // is a decision, and the panel remembers it (`writePanelCollapsed` stores '0'),
 // so anyone who has ever opened it still lands open.
 export function readPanelCollapsed(): boolean {
-  try {
-    const stored = window.localStorage.getItem(PANEL_COLLAPSED_KEY)
-    return stored === null ? true : stored === '1'
-  } catch {
-    return collapsedFallback
-  }
+  return readFlag(PANEL_COLLAPSED_KEY, collapsedFallback)
 }
 
 export function subscribePanelCollapsed(onChange: () => void): () => void {
@@ -86,22 +83,14 @@ export function subscribePanelCollapsed(onChange: () => void): () => void {
 
 export function writePanelCollapsed(next: boolean): void {
   collapsedFallback = next
-  try {
-    window.localStorage.setItem(PANEL_COLLAPSED_KEY, next ? '1' : '0')
-  } catch {
-    /* private mode: keep the in-memory preference for this tab */
-  }
+  writeFlag(PANEL_COLLAPSED_KEY, next)
   window.dispatchEvent(new Event(PANEL_COLLAPSED_EVENT))
 }
 
 // ── Which conversation instance is on screen ────────────────────────────────
 
 export function readSelectedChatId(): string | null {
-  try {
-    return window.localStorage.getItem(SELECTED_CHAT_KEY) || null
-  } catch {
-    return null
-  }
+  return readText(SELECTED_CHAT_KEY) || null
 }
 
 export function subscribeSelectedChat(onChange: () => void): () => void {
@@ -114,12 +103,7 @@ export function subscribeSelectedChat(onChange: () => void): () => void {
 }
 
 export function writeSelectedChatId(id: string | null): void {
-  try {
-    if (id === null) window.localStorage.removeItem(SELECTED_CHAT_KEY)
-    else window.localStorage.setItem(SELECTED_CHAT_KEY, id)
-  } catch {
-    /* private mode: the switch still applies for this tab */
-  }
+  writeText(SELECTED_CHAT_KEY, id)
   window.dispatchEvent(new Event(SELECTED_CHAT_EVENT))
 }
 
@@ -152,19 +136,11 @@ export function writePanelUnseen(next: boolean): void {
 }
 
 export function readPanelWidth(): number {
-  try {
-    const stored = window.localStorage.getItem(PANEL_WIDTH_KEY)
-    return stored === null ? widthFallback : clampInboxPanelWidth(Number(stored))
-  } catch {
-    return widthFallback
-  }
+  const stored = readText(PANEL_WIDTH_KEY)
+  return stored === null ? widthFallback : clampInboxPanelWidth(Number(stored))
 }
 
 export function writePanelWidth(next: number): void {
   widthFallback = next
-  try {
-    window.localStorage.setItem(PANEL_WIDTH_KEY, String(next))
-  } catch {
-    /* private mode: keep the in-memory preference for this tab */
-  }
+  writeText(PANEL_WIDTH_KEY, String(next))
 }
