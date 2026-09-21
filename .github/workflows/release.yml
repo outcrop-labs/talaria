@@ -120,6 +120,7 @@ jobs:
       moving: ${{ steps.r.outputs.moving }}
       release: ${{ steps.r.outputs.release }}
       prerelease: ${{ steps.r.outputs.prerelease }}
+      profile: ${{ steps.r.outputs.profile }}
     steps:
       - name: Work out what this run publishes
         id: r
@@ -159,6 +160,18 @@ jobs:
                 exit 1
               fi ;;
           esac
+          # WHICH CARGO PROFILE THE PACKAGE IS COMPILED WITH (api/package.Dockerfile's
+          # PROFILE arg). The two pre-stable channels get `dev`: they exist to
+          # smoke-test the same sources, they are re-cut daily or on demand, and
+          # ~25 minutes of release codegen is the wrong price for a feed that is
+          # superseded by tomorrow's nightly — the whole point is that it lands
+          # the same day. `stable` keeps release: its image is the artifact
+          # people run. Keyed on the channel, in ONE place, so a channel added
+          # later inherits the honest default instead of a copy of this case.
+          case "$channel" in
+            nightly|rc) profile=dev ;;
+            *)          profile=release ;;
+          esac
           {
             echo "channel=$channel"
             echo "ref=$ref"
@@ -166,12 +179,13 @@ jobs:
             echo "moving=$moving"
             echo "release=$release"
             echo "prerelease=$prerelease"
+            echo "profile=$profile"
             # Space-separated, IMMUTABLE-FIRST: publish pushes in this order,
             # so a failure midway leaves the dated/versioned artifact up and
             # the moving channel still pointing at yesterday's honest self.
             printf 'tags=%s\n' "${tags[*]}"
           } >> "$GITHUB_OUTPUT"
-          echo "publishing: channel=$channel ref=$ref version=$version tags=[${tags[*]}] release=$release"
+          echo "publishing: channel=$channel ref=$ref version=$version tags=[${tags[*]}] release=$release profile=$profile"
 
   # The same tripwire a PR gets, against the exact ref about to be published.
   ci:
@@ -202,6 +216,9 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.ref }}
       tags: ${{ needs.resolve.outputs.tags }}
+      # nightly/rc compile with cargo's dev profile; stable with release. The
+      # resolve job owns which, and says why.
+      profile: ${{ needs.resolve.outputs.profile }}
 
   publish:
     name: build + push ${{ needs.resolve.outputs.version }}
