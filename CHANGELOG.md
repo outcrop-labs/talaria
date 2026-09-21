@@ -322,6 +322,96 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   Wire bytes, status codes and the route table are unchanged. Verified:
   `bun run api:check` (fmt + clippy `-D warnings` + `cargo test --workspace`,
   exit 0), `bun run check` (gen-docs `--check`: 245 routes, 25 files, no drift).
+- **The pre-stable channels compile the api with the dev profile.** `nightly`
+  and `rc` publish a package built by cargo's own dev profile
+  (`api/Cargo.toml`'s `[profile.dev]`: our crates `-O1`, dependencies `-O3`,
+  `debug = "line-tables-only"`) instead of release. Measured on the same box,
+  same sources: the compile of our ~200 crates is **7m52s instead of 16m04s**
+  (the CI runner was still going at 24m30s when its budget killed it, and that
+  run published nothing), and a whole image build is 8.4 minutes with a warm
+  cook instead of ~21 — the difference between a nightly that lands the same
+  day and one that never lands at all.
+
+  `release.yml`'s `resolve` decides, in one place, keyed on the channel;
+  `api-package.yml` carries a `profile` input and passes it as the
+  Dockerfile's `PROFILE` arg; main's feed and every stable tag keep release,
+  and `PROFILE` refuses any other value by name rather than silently building
+  something. `RELEASING.md` states the trade where an operator reads it: an rc
+  image is a smoke test of the same sources — debug assertions ON, ~417 MB
+  binary vs release's ~144 MB — not a performance preview of the `X.Y.Z` that
+  is built again from the tag, in release.
+
+  The first dev-profile build also caught a defect in #407's stub gate: under
+  `set -eu` the probe aborted the subshell on an *empty first probe*, with no
+  output at all — indistinguishable from the stub the gate exists to catch. It
+  passed until now only because a release binary answers on the first try. The
+  probe tolerates a miss (`|| true`, `if`) and keeps its 30-second patience.
+
+  Verified: `docker build --build-arg PROFILE=dev` → `Finished dev profile in
+  7m 52s` + `stub gate: the built binary answers /api/healthz (HTTP/1.1 503)`;
+  `PROFILE=release` (the default) still builds release and passes the same
+  gate; `PROFILE=staging` fails the build in the deps stage by name; the gate
+  body, extracted verbatim and run under `set -eu`, passes a real binary
+  (exit 0) and fails the published 544 KB stub by name (exit 1);
+  `release.yml`'s resolve script run under all five event shapes emits
+  `profile=dev` for nightly/rc (schedule, dispatch nightly, dispatch rc, `-rc.N`
+  tag) and `profile=release` for `vX.Y.Z`, with a malformed tag still exiting 1;
+  both workflow files parse; `bun run check` green.
+
+- **The publish budgets match the build they pay for.** `api-package`'s
+  30-minute job limit (and `app-image`'s 30-minute digest poll) were sized
+  against a build that never happened: cargo-chef's skeleton compiled in 3-6
+  seconds, so the job only ever paid for the cook layer. With the stub gate in
+  place the `build` stage does the real release compile of the workspace —
+  09-21's first honest run reached `Compiling talaria-api v0.1.0` at 1,470s and
+  the limit cancelled it 30s later, so nothing published, and `app-image`'s pin
+  poll (60 × 30s) gave up on a digest that was still building. Now: 60 minutes
+  for the package job, 70 for the pin job, 100 × 30s for its poll — enough for
+  a cold cook (~8min) plus that compile plus the static musl link, with room
+  left over.
+
+  Verified: `bun run check`; the next api-touching push (the merge of this
+  file is one — both workflow files are in their own `paths` filters) exercises
+  the budget end to end and publishes `sha-<sha12>` + `main` for both images.
+
+- **The api package is built from the api again — and the stub gate that says
+  so.** `cargo chef` landed in `api/package.Dockerfile` on 09-19, and the
+  `build` stage inherited `deps`' `WORKDIR /repo/api` — so its relative
+  `COPY api ./api` landed at `/repo/api/api`, while the skeleton `cargo chef
+  cook` had written (every manifest at `0.0.1`, `src/main.rs` = `fn main() {}`)
+  stayed the only source cargo could see. Cargo relinked the skeleton and the
+  package published a **544 KB binary that exits 0 and prints nothing**. Every
+  app image built on it — main's `:main`/`sha-<sha12>` feed, the one the in-app
+  updater rolls to — died at boot: `server-entry.ts` spawns the api, watches it
+  exit, and exits with it ("RUST API EXITED (code 0)"), so the container
+  crash-loops and the instance serves nothing. That is the 09-19 → 09-21
+  window, and it is why an instance stopped serving when it was updated.
+
+  The `COPY` names its destination absolutely now (`COPY api /repo/api`), and
+  the build stage ends with the stub gate: it boots the binary it just built
+  against an unreachable database and requires an HTTP answer on
+  `/api/healthz` — 503 from a dependency that is down, 200 from a healthy one,
+  because which status is the environment's business and *answering at all* is
+  the api's. A skeleton cannot answer, so this class of breakage is a red build
+  instead of a silent publish.
+
+  **Not done**: the 09-18 → 09-21 nightly failures are a second, unrelated
+  fault — `release.yml` calls today's `ci.yml` against the `testing` branch, and
+  the ui job's prod smoke runs `ui/scripts/check-prod-shell.ts`, which `testing`
+  (moved by hand, by design) does not contain yet. No nightly has published
+  since 09-17. Moving `testing` forward is the documented fix, and that is a
+  human's call.
+
+  Verified: the package build now reports `Compiling talaria-api v0.1.0` (the
+  real crate) where the broken build reported the skeleton's `v0.0.1`, and the
+  artifact is 143.8 MB that names its missing config instead of exiting
+  silently; the gate body was exercised against both binaries (real →
+  `answers /api/healthz (HTTP/1.1 503)`; the 544 KB stub → `never answered on
+  :5274`, exit 1); and an app image built with
+  `--build-arg TALARIA_API_IMAGE=talaria-api:fixed` boots and serves — `/` and
+  `/home/inbox` 200 `text/html`, `/api/healthz` 200 with `rustApi.ok: true` —
+  where the published `ghcr.io/outcrop-labs/talaria:main` image exits 1 on the
+  same command.
 
 - **Routes partition: 7 group crates + a facades crate.** The 98-second
  `talaria-api-routes` unit becomes seven parallel crates; cold build

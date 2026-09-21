@@ -71,6 +71,18 @@ on:
         type: string
         required: false
         default: ''
+      profile:
+        # `dev` compiles the package with cargo's dev profile instead of
+        # release: our crates at -O1 with no optimisation pass to wait on, which
+        # is minutes of build instead of ~25. release.yml passes it for the two
+        # pre-stable channels — a smoke-test feed does not need optimized code,
+        # and the channel's whole value is landing the same day. Everything else
+        # (main's feed on push, stable tags) leaves this at release; a typo is
+        # refused in the Dockerfile, not silently built.
+        description: 'cargo profile to compile with: release | dev'
+        type: string
+        required: false
+        default: 'release'
     outputs:
       image:
         description: 'the sha-tagged package release.yml pins into the app image'
@@ -83,7 +95,15 @@ jobs:
   package:
     name: build + push the api package
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was sized against a build that never happened: cargo-chef's skeleton
+    # compiled in 3-6 seconds, so the job's real cost (the cook layer) was all
+    # it ever measured. With the stub gate in api/package.Dockerfile the build
+    # stage does the actual release compile of the workspace — 09-21's first
+    # honest run reached `Compiling talaria-api v0.1.0` at 1,470s and this
+    # limit cancelled it 30s later, so nothing published. 60 leaves room for
+    # that plus the static musl link, the gate, and a cold cook (~8min when
+    # the registry cache misses) without being a number nobody can reason about.
+    timeout-minutes: 60
     permissions:
       packages: write # the GHCR push
     concurrency:
@@ -120,6 +140,7 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}-api
           EXTRA_TAGS: ${{ inputs.tags }}
+          PROFILE: ${{ inputs.profile || 'release' }}
           EVENT: ${{ github.event_name }}
         run: |
           set -eu
@@ -132,6 +153,7 @@ jobs:
           if [ "$EVENT" = push ]; then tags+=(main); fi
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
+                --build-arg "PROFILE=$PROFILE"
                 --build-arg "REVISION=$(git rev-parse HEAD)"
                 --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
                 --cache-from "type=registry,ref=$IMAGE:buildcache"
@@ -140,4 +162,4 @@ jobs:
           for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
           docker buildx build "${args[@]}" .
           echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
-          echo "pushed $IMAGE for: ${tags[*]} (cache: $IMAGE:buildcache)"
+          echo "pushed $IMAGE for: ${tags[*]} (profile: $PROFILE, cache: $IMAGE:buildcache)"
