@@ -16,8 +16,6 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-fleet-docker = { path = "../talaria-fleet-docker" }
 talaria-runs-lease = { path = "../talaria-runs-lease" }
-talaria-scheduler = { path = "../talaria-scheduler" }
-talaria-state = { path = "../talaria-state" }
 talaria-update-docker = { path = "../talaria-update-docker" }
 talaria-update-layout = { path = "../talaria-update-layout" }
 talaria-update-mode = { path = "../talaria-update-mode" }

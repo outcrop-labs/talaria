@@ -45,11 +45,8 @@ talaria-runs-work-session = { path = "../talaria-runs-work-session" }
 talaria-scheduler = { path = "../talaria-scheduler" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 talaria-state = { path = "../talaria-state" }
-talaria-tasks = { path = "../talaria-tasks" }
-talaria-tasks-types = { path = "../talaria-tasks-types" }
 talaria-update-job = { path = "../talaria-update-job" }
 talaria-work-dispatch = { path = "../talaria-work-dispatch" }
-talaria-workbench-mcp = { path = "../talaria-workbench-mcp" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tracing = "0.1"
 talaria-fleet-create = { path = "../talaria-fleet-create" }

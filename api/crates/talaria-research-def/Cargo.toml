@@ -20,19 +20,14 @@ uuid = { version = "1", features = ["v4"] }
 talaria-artifacts = { path = "../talaria-artifacts" }
 talaria-capability-reach = { path = "../talaria-capability-reach" }
 talaria-conversations = { path = "../talaria-conversations" }
-talaria-fleet-budget = { path = "../talaria-fleet-budget" }
 talaria-fleet-layout = { path = "../talaria-fleet-layout" }
-talaria-gateway = { path = "../talaria-gateway" }
 talaria-harness = { path = "../talaria-harness" }
 talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-harness-model = { path = "../talaria-harness-model" }
 talaria-kb = { path = "../talaria-kb" }
 talaria-model-access = { path = "../talaria-model-access" }
 talaria-notify = { path = "../talaria-notify" }
 talaria-retrieval = { path = "../talaria-retrieval" }
 talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-runs-run = { path = "../talaria-runs-run" }
-talaria-runs-store = { path = "../talaria-runs-store" }
 talaria-source-registry = { path = "../talaria-source-registry" }
 talaria-state = { path = "../talaria-state" }
 regex = "1"

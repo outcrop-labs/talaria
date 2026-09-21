@@ -22,7 +22,6 @@ talaria-mentions = { path = "../talaria-mentions" }
 talaria-notify = { path = "../talaria-notify" }
 talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
 talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
-talaria-retrieval-sources = { path = "../talaria-retrieval-sources" }
 talaria-state = { path = "../talaria-state" }
 talaria-teams = { path = "../talaria-teams" }
 talaria-templates = { path = "../talaria-templates" }

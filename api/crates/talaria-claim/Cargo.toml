@@ -9,9 +9,6 @@ publish = false
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-error = { path = "../talaria-error" }
-talaria-state = { path = "../talaria-state" }
 talaria-users = { path = "../talaria-users" }
 axum = { version = "0.8", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }

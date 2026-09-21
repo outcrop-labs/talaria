@@ -16,7 +16,6 @@ talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-error = { path = "../talaria-error" }
 talaria-internal-history = { path = "../talaria-internal-history" }
 talaria-kb = { path = "../talaria-kb" }
-talaria-kb-perms = { path = "../talaria-kb-perms" }
 talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
 talaria-retrieval-index = { path = "../talaria-retrieval-index" }
 talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }

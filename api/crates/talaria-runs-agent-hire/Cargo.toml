@@ -18,7 +18,6 @@ tokio = { version = "1", features = ["macros"] }
 talaria-agent-skills = { path = "../talaria-agent-skills" }
 talaria-audit = { path = "../talaria-audit" }
 talaria-fleet-create = { path = "../talaria-fleet-create" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
 talaria-runs-define = { path = "../talaria-runs-define" }
 talaria-state = { path = "../talaria-state" }
 tracing = "0.1"

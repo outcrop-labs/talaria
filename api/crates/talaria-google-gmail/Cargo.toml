@@ -19,7 +19,6 @@ talaria-gateway = { path = "../talaria-gateway" }
 talaria-google-client = { path = "../talaria-google-client" }
 talaria-google-connections = { path = "../talaria-google-connections" }
 talaria-google-errors = { path = "../talaria-google-errors" }
-talaria-google-org = { path = "../talaria-google-org" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 tracing = "0.1"
 axum = { version = "0.8", default-features = false }

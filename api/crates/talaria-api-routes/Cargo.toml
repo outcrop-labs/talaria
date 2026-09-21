@@ -20,22 +20,5 @@ talaria-routes-workbench = { path = "../talaria-routes-workbench" }
 talaria-state = { path = "../talaria-state" }
 axum = { version = "0.8", features = ["multipart"] }
 tower-http = { version = "0.7", features = ["trace", "timeout", "catch-panic", "request-id", "propagate-header"] }
-tower = "0.5"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
-futures-util = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
-regex = "1"
-url = "2"
-base64 = "0.23"
-sha2 = "0.11"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-getrandom = "0.3"
-lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 talaria-error = { path = "../talaria-error" }
 talaria-uploads = { path = "../talaria-uploads" }

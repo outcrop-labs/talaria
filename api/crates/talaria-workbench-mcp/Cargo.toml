@@ -24,13 +24,11 @@ talaria-body = { path = "../talaria-body" }
 talaria-fleet-budget = { path = "../talaria-fleet-budget" }
 talaria-fleet-layout = { path = "../talaria-fleet-layout" }
 talaria-github = { path = "../talaria-github" }
-talaria-mcp = { path = "../talaria-mcp" }
 talaria-mcp-jsonrpc = { path = "../talaria-mcp-jsonrpc" }
 talaria-realtime = { path = "../talaria-realtime" }
 talaria-runs-define = { path = "../talaria-runs-define" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 talaria-tasks = { path = "../talaria-tasks" }
-talaria-tasks-types = { path = "../talaria-tasks-types" }
 talaria-work-wait = { path = "../talaria-work-wait" }
 talaria-workbench = { path = "../talaria-workbench" }
 tokio = { version = "1", features = ["macros", "sync", "time"] }

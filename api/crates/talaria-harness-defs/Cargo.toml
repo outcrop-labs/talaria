@@ -22,8 +22,6 @@ talaria-fitness-toolbox = { path = "../talaria-fitness-toolbox" }
 talaria-fitness-world = { path = "../talaria-fitness-world" }
 talaria-gateway = { path = "../talaria-gateway" }
 talaria-harness = { path = "../talaria-harness" }
-talaria-harness-json = { path = "../talaria-harness-json" }
-talaria-harness-json-schema = { path = "../talaria-harness-json-schema" }
 talaria-harness-model = { path = "../talaria-harness-model" }
 talaria-harness-prompt-rules = { path = "../talaria-harness-prompt-rules" }
 talaria-harness-schema = { path = "../talaria-harness-schema" }

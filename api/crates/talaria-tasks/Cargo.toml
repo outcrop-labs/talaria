@@ -20,15 +20,12 @@ talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-agent-writes = { path = "../talaria-agent-writes" }
 talaria-boards = { path = "../talaria-boards" }
 talaria-channels = { path = "../talaria-channels" }
-talaria-error = { path = "../talaria-error" }
 talaria-gateway = { path = "../talaria-gateway" }
 talaria-judge = { path = "../talaria-judge" }
 talaria-labels = { path = "../talaria-labels" }
 talaria-notify = { path = "../talaria-notify" }
 talaria-realtime = { path = "../talaria-realtime" }
 talaria-retrieval = { path = "../talaria-retrieval" }
-talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-runs-run = { path = "../talaria-runs-run" }
 talaria-statuses = { path = "../talaria-statuses" }
 talaria-tasks-types = { path = "../talaria-tasks-types" }
 talaria-ticket-chat = { path = "../talaria-ticket-chat" }
