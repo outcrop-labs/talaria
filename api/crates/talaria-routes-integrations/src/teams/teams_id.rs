@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, present_nullable_string_member, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_teams::{
@@ -33,10 +33,10 @@ async fn owner_gate(
     match team_role(&state.pg, user_id, team_id).await {
         Ok(Some(role)) if role == "owner" => None,
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[teams] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -57,32 +57,20 @@ pub async fn get(
     }
     let role = match team_role(&state.pg, &user.id, &id).await {
         Ok(r) => r.unwrap_or_default(),
-        Err(e) => {
-            tracing::error!("[teams] role read on GET failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] role read on GET failed", e),
     };
     let row = match get_team(&state.pg, &id).await {
         Ok(Some(r)) => r,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[teams] get failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] get failed", e),
     };
     let members = match list_team_members(&state.pg, &id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[teams] member list on GET failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] member list on GET failed", e),
     };
     let agents = match list_team_agents(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[teams] agent list on GET failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] agent list on GET failed", e),
     };
     Json(json!({
         "team": {
@@ -138,19 +126,13 @@ pub async fn patch(
     if let Some(name) = &name {
         match rename_team(&state.pg, &id, name).await {
             Ok(()) => {}
-            Err(e) => {
-                tracing::error!("[teams] rename failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[teams] rename failed", e),
         }
     }
     if let Some(desc) = &description {
         match set_team_description(&state.pg, &id, desc.as_deref()).await {
             Ok(()) => {}
-            Err(e) => {
-                tracing::error!("[teams] description write failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[teams] description write failed", e),
         }
     }
     log_audit(
@@ -185,8 +167,7 @@ pub async fn delete(
         return gate;
     }
     if let Err(e) = delete_team(&state.pg, &id).await {
-        tracing::error!("[teams] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[teams] delete failed", e);
     }
     log_audit(
         &state.pg,

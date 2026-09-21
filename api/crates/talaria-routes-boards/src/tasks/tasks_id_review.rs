@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{as_object, optional_max_string_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_statuses::status_meta;
@@ -31,17 +31,11 @@ pub async fn post(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST review failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on POST review failed", e),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on POST review failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] role read on POST review failed", e),
     };
     if !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -66,8 +60,7 @@ pub async fn post(
         .unwrap_or_else(|| "reviewer".into());
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_review(&deps, &id, &reviewer, &status, notes.as_deref()).await {
-        tracing::error!("[tasks] review record failed: {e}");
-        return thrown_internal_error();
+        return internal("[tasks] review record failed", e);
     }
     // Boards rename and recategorize their columns, so resolve the target
     // from the BOARD — hardcoding 'done'/'in_progress' 400s human sign-off
@@ -83,10 +76,7 @@ pub async fn post(
     // catches the legacy fallback.
     let meta = match status_meta(&state.pg, &task.board_id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[tasks] status meta on POST review failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] status meta on POST review failed", e),
     };
     let approved = status == "approved";
     let target = if approved {
@@ -124,9 +114,6 @@ pub async fn post(
     };
     match update_task(&deps, &id, patch, &TaskActor::human(reviewer)).await {
         Ok(t2) => Json(json!({ "task": t2 })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] review move failed: {:?}", e.message());
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] review move failed", e.message()),
     }
 }

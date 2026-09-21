@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::fleet_caller;
 use talaria_agents_registry::heartbeat_agent;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 use talaria_tasks::assigned_work;
 
@@ -45,7 +45,7 @@ pub async fn get(
             .await
         {
             Ok(name) => name,
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return internal("[fleet] query_scalar failed", e),
         };
     let Some(name) = name else {
         return house_error(axum::http::StatusCode::NOT_FOUND, "unknown agent");
@@ -60,11 +60,11 @@ pub async fn get(
         );
     }
 
-    if heartbeat_agent(&state.pg, &id, None).await.is_err() {
-        return thrown_internal_error();
+    if let Err(e) = heartbeat_agent(&state.pg, &id, None).await {
+        return internal("[fleet] agents_id_heartbeat failed", e);
     }
     match assigned_work(&state.pg, &name).await {
         Ok(work_items) => Json(json!({ "work_items": work_items })).into_response(),
-        Err(_) => thrown_internal_error(),
+        Err(e) => internal("[fleet] assigned_work failed", e),
     }
 }

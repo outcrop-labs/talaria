@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_body::{as_object, optional_string_member, parse, present_nullable_string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_me::{
     gateway_models, get_prefs, is_valid_time_zone, member_model_allowlist, model_allowed_for,
     set_preferred_effort, set_preferred_model, set_timezone, set_user_name,
@@ -65,10 +65,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let (preferred_model, preferred_effort, timezone) = match get_prefs(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[me] prefs read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[me] prefs read failed", e),
     };
     Json(json!({
         "preferredModel": preferred_model,
@@ -103,17 +100,13 @@ pub async fn put(
         // a spaces-only name is legal here and stores "".
         let name = raw.trim();
         if let Err(e) = set_user_name(&state.pg, &user.id, name).await {
-            tracing::error!("[me] set name failed: {e}");
-            return thrown_internal_error();
+            return internal("[me] set name failed", e);
         }
         match update_session_user(&state, &headers, &json!({ "name": name })).await {
             Ok(Some(next)) => updated = next,
             // A session that vanished mid-request keeps the auth-time user.
             Ok(None) => {}
-            Err(e) => {
-                tracing::error!("[me] session patch failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[me] session patch failed", e),
         }
     }
     if let Some(choice) = &patch.preferred_model {
@@ -124,10 +117,7 @@ pub async fn put(
             let allow = member_model_allowlist(&state.pg).await;
             let catalog = match gateway_models(&state.pg).await {
                 Ok(c) => c,
-                Err(e) => {
-                    tracing::error!("[me] catalog read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[me] catalog read failed", e),
             };
             if !model_allowed_for(&user.role, model, &allow, &catalog) {
                 return house_error(
@@ -137,8 +127,7 @@ pub async fn put(
             }
         }
         if let Err(e) = set_preferred_model(&state.pg, &user.id, choice.as_deref()).await {
-            tracing::error!("[me] set preferred model failed: {e}");
-            return thrown_internal_error();
+            return internal("[me] set preferred model failed", e);
         }
     }
     if let Some(choice) = &patch.preferred_effort {
@@ -148,8 +137,7 @@ pub async fn put(
         // vouches for the level. The length bound in the schema is the whole
         // server-side contract.
         if let Err(e) = set_preferred_effort(&state.pg, &user.id, choice.as_deref()).await {
-            tracing::error!("[me] set preferred effort failed: {e}");
-            return thrown_internal_error();
+            return internal("[me] set preferred effort failed", e);
         }
     }
     if let Some(choice) = &patch.timezone {
@@ -163,14 +151,12 @@ pub async fn put(
                     return house_error(StatusCode::BAD_REQUEST, "not a recognized time zone");
                 }
                 if let Err(e) = set_timezone(&state.pg, &user.id, Some(tz)).await {
-                    tracing::error!("[me] set timezone failed: {e}");
-                    return thrown_internal_error();
+                    return internal("[me] set timezone failed", e);
                 }
             }
             None => {
                 if let Err(e) = set_timezone(&state.pg, &user.id, None).await {
-                    tracing::error!("[me] clear timezone failed: {e}");
-                    return thrown_internal_error();
+                    return internal("[me] clear timezone failed", e);
                 }
             }
         }

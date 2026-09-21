@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
 use talaria_body::{as_object, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_research::{
     add_research_team, remove_research_team, research_artifact_for, research_role,
 };
@@ -52,10 +52,10 @@ async fn owner_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> 
             StatusCode::FORBIDDEN,
             "only the research owner can share it",
         )),
-        Err(e) => {
-            tracing::error!("[research] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[research] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -84,14 +84,10 @@ pub async fn post(
     match get_team(&state.pg, &team_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "team not found"),
-        Err(e) => {
-            tracing::error!("[research] team lookup on grant failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] team lookup on grant failed", e),
     }
     if let Err(e) = add_research_team(&state.pg, &id, &team_id).await {
-        tracing::error!("[research] team grant failed: {e}");
-        return thrown_internal_error();
+        return internal("[research] team grant failed", e);
     }
     if let Err(e) = sync_report_grant_team(&state, &id, &team_id, true).await {
         tracing::error!("[research] report grant sync on team share failed: {e}");
@@ -122,8 +118,7 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = remove_research_team(&state.pg, &id, &team_id).await {
-        tracing::error!("[research] team revoke failed: {e}");
-        return thrown_internal_error();
+        return internal("[research] team revoke failed", e);
     }
     if let Err(e) = sync_report_grant_team(&state, &id, &team_id, false).await {
         tracing::error!("[research] report grant sync on team unshare failed: {e}");

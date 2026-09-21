@@ -24,7 +24,7 @@ use talaria_artifacts::{
 use talaria_body::{
     as_object, optional_uuid_member, parse, string_member, string_msg, too_big_msg, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_uploads::save_upload;
@@ -84,10 +84,7 @@ pub async fn post(
             .await
             {
                 Ok(o) => o,
-                Err(e) => {
-                    tracing::error!("[agent-media] owner lookup failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[agent-media] owner lookup failed", e),
             };
             responsible = match talaria_attribution::responsible_user_for(
                 &state.pg,
@@ -97,10 +94,7 @@ pub async fn post(
             .await
             {
                 Ok(o) => o,
-                Err(e) => {
-                    tracing::error!("[agent-media] responsible-user lookup failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[agent-media] responsible-user lookup failed", e),
             };
         }
         Ok(None) => {
@@ -110,10 +104,7 @@ pub async fn post(
             };
             let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
                 Ok(g) => g,
-                Err(e) => {
-                    tracing::error!("[agent-media] gate read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[agent-media] gate read failed", e),
             };
             if !gate(&model) {
                 return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -168,19 +159,13 @@ pub async fn post(
             Ok(folders) => folders
                 .into_iter()
                 .find(|f| f.name.to_lowercase() == want.to_lowercase()),
-            Err(e) => {
-                tracing::error!("[agent-media] folder list failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent-media] folder list failed", e),
         };
         folder_id = match existing {
             Some(f) => Some(f.id),
             None => match create_folder(&state.pg, want, None, &actor, None, Some("org")).await {
                 Ok(f) => Some(f.id),
-                Err(e) => {
-                    tracing::error!("[agent-media] folder create failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[agent-media] folder create failed", e),
             },
         };
     }
@@ -203,10 +188,7 @@ pub async fn post(
     {
         Ok(u) => u,
         // a failed save carries to the framework's own 500.
-        Err(e) => {
-            tracing::error!("[agent-media] upload save failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[agent-media] upload save failed", e),
     };
     let title = match title.filter(|t| !t.is_empty()) {
         Some(t) => t,
@@ -223,10 +205,7 @@ pub async fn post(
     .await
     {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[agent-media] artifact create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[agent-media] artifact create failed", e),
     };
     // ORG-agent media is for the TEAM (a private no-owner artifact would be
     // invisible to humans) — keyed on the PA-only resolve, NOT the ladder:
@@ -252,10 +231,7 @@ pub async fn post(
     .await
     {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[agent-media] artifact save failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[agent-media] artifact save failed", e),
     };
     Json(json!({ "artifact": saved.unwrap_or(created) })).into_response()
 }

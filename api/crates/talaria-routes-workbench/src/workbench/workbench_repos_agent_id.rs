@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_body::{as_object, parse, string_array_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as gh;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -89,8 +89,7 @@ pub async fn put(
     // since the UI loaded isn't a user error.
     let repos: Vec<String> = repos.into_iter().filter(|r| pool.contains(r)).collect();
     if let Err(e) = gh::set_granted_repos(&state.pg, &agent_id, &repos).await {
-        tracing::error!("[workbench/repos] grant write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/repos] grant write failed", e);
     }
     // Rules ride the same PUT, optional: an array of {repo, baseBranch?,
     // pushMode?, branchPrefix?}. Only rules for STILL-GRANTED repos are
@@ -130,8 +129,7 @@ pub async fn put(
                     .filter(|p| !p.is_empty()),
             };
             if let Err(e) = gh::set_repo_rule(&state.pg, &agent_id, &rule).await {
-                tracing::error!("[workbench/repos] rule write failed: {e}");
-                return thrown_internal_error();
+                return internal("[workbench/repos] rule write failed", e);
             }
         }
     }

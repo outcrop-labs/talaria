@@ -23,7 +23,7 @@ use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, ITEM_SPACE, can_read, list_e
 use talaria_api_facades::kb::{effective_doc_perms, get_doc, get_space, guarded_of_space};
 use talaria_artifacts::{get_artifact, guarded};
 use talaria_body::utf16_len;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_internal_history::{get_revision, list_history};
 use talaria_personal_agent::{owns_agent, personality_of};
 use talaria_session::{SessionUser, require_user};
@@ -165,10 +165,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         }
         let versions = match list_versions(&state.pg, id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[history] versions read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[history] versions read failed", e),
         };
         if let Some(rev) = rev {
             return match versions.iter().find(|v| v.id == rev) {
@@ -224,18 +221,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         return match get_revision(&state.pg, kind, &owner_key, rev).await {
             Ok(Some(content)) => Json(ContentBody { content }).into_response(),
             Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-            Err(e) => {
-                tracing::error!("[history] revision read failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[history] revision read failed", e),
         };
     }
     match list_history(&state.pg, kind, &owner_key).await {
         Ok(revisions) => Json(RevisionsBody { revisions }).into_response(),
-        Err(e) => {
-            tracing::error!("[history] snapshot list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[history] snapshot list failed", e),
     }
 }
 

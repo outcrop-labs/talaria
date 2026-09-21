@@ -23,7 +23,7 @@ use talaria_api_facades::google::drive::{
 use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::house_error;
 use talaria_session::{require_admin, require_user};
 use talaria_state::AppState;
 
@@ -300,10 +300,4 @@ pub async fn create_folder(
         }
         Err(e) => google_fail_with(e, "Drive", "drive_error"),
     }
-}
-
-// keep thrown_internal_error linked even if a future arm drops it
-#[allow(dead_code)]
-fn _unused() -> Response {
-    thrown_internal_error()
 }

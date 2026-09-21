@@ -17,7 +17,7 @@ use talaria_body::{
     optional_max_string_member, optional_uuid_member, parse, string_member, too_big_msg, utf16_len,
     zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -157,10 +157,7 @@ pub async fn post(
         .await
     {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[fleet] taken-slug check failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet] taken-slug check failed", e),
     };
     if taken.is_some() {
         return house_error(
@@ -200,10 +197,7 @@ pub async fn post(
     let deps = dispatch_deps(state.pg.clone(), redis, realtime);
     let input = match serde_json::to_value(input) {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[fleet] hire input serialize failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet] hire input serialize failed", e),
     };
     let row = match enqueue(
         def,
@@ -223,10 +217,7 @@ pub async fn post(
     .await
     {
         Ok(row) => row,
-        Err(e) => {
-            tracing::error!("[fleet] hire enqueue failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet] hire enqueue failed", e),
     };
     Json(json!({
         "ok": true,

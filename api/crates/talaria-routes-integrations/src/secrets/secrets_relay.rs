@@ -27,7 +27,7 @@ use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     as_object, nullish_max_string_member, optional_string_array_member, parse, string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_workspace_secrets::mint_relay;
@@ -79,10 +79,7 @@ pub async fn post(
     // could not have talked to anyway.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[secrets.relay] gate read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets.relay] gate read failed", e),
     };
     if !gate(&body.agent_model) {
         return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");

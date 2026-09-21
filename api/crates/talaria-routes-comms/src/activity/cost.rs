@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::gateway::usage::cost_overview;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_view;
 use talaria_state::AppState;
 
@@ -17,9 +17,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     match cost_overview(&state.pg).await {
         // No envelope — the overview object IS the body.
         Ok(overview) => Json(overview).into_response(),
-        Err(e) => {
-            tracing::error!("[cost] overview query failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[cost] overview query failed", e),
     }
 }

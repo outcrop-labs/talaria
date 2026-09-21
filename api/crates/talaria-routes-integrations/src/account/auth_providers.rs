@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::google::client::google_login_enabled;
 use talaria_claim::instance_claimable;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_password_accounts::has_password_accounts;
 use talaria_state::AppState;
 
@@ -37,17 +37,11 @@ pub async fn get(State(state): State<AppState>) -> Response {
     let google = google_login_enabled(&state.pg, &sb).await;
     let password = match has_password_accounts(&state.pg).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[auth/providers] account probe failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/providers] account probe failed", e),
     };
     let claimable = match instance_claimable(&state.pg).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[auth/providers] claim probe failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/providers] claim probe failed", e),
     };
     let mut providers = Vec::new();
     if google {

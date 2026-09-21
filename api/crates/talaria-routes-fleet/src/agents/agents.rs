@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::fleet::{list_fleet_agents, usable_agent_gate};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -27,10 +27,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     );
     let (agents, gate) = match (agents, gate) {
         (Ok(a), Ok(g)) => (a, g),
-        (Err(e), _) | (_, Err(e)) => {
-            tracing::error!("[agents] fleet read failed: {e}");
-            return thrown_internal_error();
-        }
+        (Err(e), _) | (_, Err(e)) => return internal("[agents] fleet read failed", e),
     };
     let visible = agents.into_iter().filter(|a| gate(&a.agent.id)).collect();
     Json(AgentsBody { agents: visible }).into_response()

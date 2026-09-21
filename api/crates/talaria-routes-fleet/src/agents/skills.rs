@@ -11,7 +11,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_skills::list_all_skills;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_skill_access::can_edit_skills;
 use talaria_state::AppState;
@@ -23,10 +23,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let owners = match list_all_skills(&state).await {
         Ok(o) => o,
-        Err(e) => {
-            tracing::error!("[skills] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[skills] list failed", e),
     };
     // each entry is the engine's summary plus this user's write right —
     // canEdit appended after the engine's own keys.
@@ -34,10 +31,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     for owner in owners {
         let can_edit = match can_edit_skills(&state.pg, &user.id, &user.role, &owner.owner).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[skills] edit gate failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[skills] edit gate failed", e),
         };
         let mut entry = serde_json::to_value(&owner).unwrap_or(Value::Null);
         if let Some(map) = entry.as_object_mut() {

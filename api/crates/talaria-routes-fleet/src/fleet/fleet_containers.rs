@@ -7,7 +7,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::fleet::docker::container_status;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
@@ -21,12 +21,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .await;
     let departments = match rows {
         Ok(r) => r.into_iter().map(|(d,)| d).collect::<Vec<_>>(),
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] fleet_containers failed", e),
     };
     // container_status errors on a docker failure — the whole route 500s
     // the house way (no json body).
     match container_status(&departments).await {
         Ok(containers) => Json(json!({ "containers": containers })).into_response(),
-        Err(_) => thrown_internal_error(),
+        Err(e) => internal("[fleet] container_status failed", e),
     }
 }

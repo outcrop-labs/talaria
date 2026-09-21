@@ -16,7 +16,7 @@ use talaria_body::{
     as_object, optional_enum_member, present_nullable_max_string_member, string_member,
 };
 use talaria_channels::{create_channel, list_channels, list_channels_for_agent};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_permissions::has_perm;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -36,10 +36,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // legacy flag away and hand org-wide reach to an asserted identity.
     let channels = match list_channels_for_agent(&state.pg, &AgentSubject::Caller(caller)).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent listing failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent listing failed", e),
     };
     Json(json!({ "channels": channels })).into_response()
 }
@@ -59,10 +56,7 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
     maybe_rag_sweep(state.clone()); // incremental catch-up indexing (15-minute throttle)
     match list_channels(&state.pg, &user.id).await {
         Ok(channels) => Json(json!({ "channels": channels })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] listing failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] listing failed", e),
     }
 }
 
@@ -100,10 +94,7 @@ pub async fn post(
     };
     let allowed = match has_perm(&state.pg, &user.id, &user.role, needed).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] permission read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] permission read failed", e),
     };
     if !allowed {
         return house_error(
@@ -121,10 +112,7 @@ pub async fn post(
     // absent and present-null both create with no topic.
     match create_channel(&state.pg, &user.id, &name, topic.flatten().as_deref(), kind).await {
         Ok(channel) => Json(json!({ "channel": channel })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] create failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] create failed", e),
     }
 }
 

@@ -11,7 +11,7 @@ use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{board_allows_agent, board_role, can_edit};
 use talaria_body::{as_object, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_tasks::{
@@ -39,10 +39,7 @@ pub async fn post(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST dependency failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on POST dependency failed", e),
     };
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
@@ -62,10 +59,7 @@ pub async fn post(
         .await
         {
             Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[tasks] agent policy read on POST dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] agent policy read on POST dependency failed", e),
         };
         if !allowed {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -86,10 +80,7 @@ pub async fn post(
         {
             Ok(None) => {}
             Ok(Some(shut)) => return house_error(StatusCode::FORBIDDEN, &shut),
-            Err(e) => {
-                tracing::error!("[tasks] agent authority on POST dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] agent authority on POST dependency failed", e),
         }
         (caller.model.clone(), Some(caller))
     } else {
@@ -99,10 +90,7 @@ pub async fn post(
         };
         let role = match board_role(&state.pg, &user.id, &task.board_id).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[tasks] role read on POST dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] role read on POST dependency failed", e),
         };
         if !can_edit(role.as_deref()) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -127,10 +115,7 @@ pub async fn post(
     let dep = match get_task(&state.pg, &depends_on_id).await {
         Ok(Some(d)) => d,
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "must be a ticket on this board"),
-        Err(e) => {
-            tracing::error!("[tasks] blocker read on POST dependency failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] blocker read on POST dependency failed", e),
     };
     if dep.board_id != task.board_id {
         return house_error(StatusCode::BAD_REQUEST, "must be a ticket on this board");
@@ -154,10 +139,7 @@ pub async fn post(
                     &format!("{dep_shut}. That is the ticket you named as a blocker."),
                 );
             }
-            Err(e) => {
-                tracing::error!("[tasks] blocker authority on POST dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] blocker authority on POST dependency failed", e),
         }
     }
     // `add_dependency` REFUSES a cycle (X blocks Y, Y blocks X: a graph no
@@ -169,10 +151,7 @@ pub async fn post(
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(TaskError::ApprovalRequired(msg)) => house_error(StatusCode::FORBIDDEN, &msg),
         Err(TaskError::Refusal(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(TaskError::Db(e)) => {
-            tracing::error!("[tasks] dependency add failed: {e}");
-            thrown_internal_error()
-        }
+        Err(TaskError::Db(e)) => internal("[tasks] dependency add failed", e),
     }
 }
 
@@ -193,18 +172,12 @@ pub async fn delete(
     // plane does not reveal whether the id exists.
     let task = match get_task(&state.pg, &id).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[tasks] read on DELETE dependency failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on DELETE dependency failed", e),
     };
     let editable = match task.as_ref() {
         Some(t) => match board_role(&state.pg, &user.id, &t.board_id).await {
             Ok(r) => can_edit(r.as_deref()),
-            Err(e) => {
-                tracing::error!("[tasks] role read on DELETE dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] role read on DELETE dependency failed", e),
         },
         None => false,
     };
@@ -223,9 +196,6 @@ pub async fn delete(
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     match remove_dependency(&deps, &id, &depends_on_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] dependency remove failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] dependency remove failed", e),
     }
 }

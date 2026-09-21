@@ -22,7 +22,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{SessionUser, require_user};
 use talaria_state::AppState;
 use talaria_tasks::{WatchOutcome, add_watcher, get_task, list_watchers, remove_watcher};
@@ -57,17 +57,11 @@ pub async fn post(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on POST watcher failed", e),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on POST watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] role read on POST watcher failed", e),
     };
     if role.is_none() {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -90,17 +84,11 @@ pub async fn post(
     match add_watcher(&state.pg, &id, &watcher).await {
         Ok(WatchOutcome::Added) => {}
         Ok(WatchOutcome::Refused(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(e) => {
-            tracing::error!("[tasks] watcher add failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] watcher add failed", e),
     }
     match list_watchers(&state.pg, &id).await {
         Ok(watchers) => Json(json!({ "watchers": watchers })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] watcher list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] watcher list failed", e),
     }
 }
 
@@ -120,10 +108,7 @@ pub async fn delete(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on DELETE watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on DELETE watcher failed", e),
     };
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -136,17 +121,13 @@ pub async fn delete(
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on DELETE watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] role read on DELETE watcher failed", e),
     };
     if !is_self(&user, &watcher) && !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     if let Err(e) = remove_watcher(&state.pg, &id, &watcher).await {
-        tracing::error!("[tasks] watcher remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[tasks] watcher remove failed", e);
     }
     // The unsubscribe hatch must not become a disclosure hatch: someone with
     // no membership gets confirmation that they are off the ticket, never
@@ -156,9 +137,6 @@ pub async fn delete(
     }
     match list_watchers(&state.pg, &id).await {
         Ok(watchers) => Json(json!({ "watchers": watchers })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] watcher list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] watcher list failed", e),
     }
 }

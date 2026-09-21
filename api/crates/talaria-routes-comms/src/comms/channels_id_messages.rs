@@ -23,7 +23,7 @@ use talaria_channels::{
     agent_may_access_channel, channel_role, get_channel_message, insert_channel_message,
     inserted_wire, list_channel_messages, list_thread_messages,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_refs::{MessageRef, RefUser, resolve_refs};
 use talaria_session::require_user;
@@ -67,20 +67,14 @@ pub async fn get(
     };
     let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent access read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent access read failed", e),
     };
     if !may {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     let messages = match page(&state, &id, since, thread.as_deref()).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] message page read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] message page read failed", e),
     };
     // WITHOUT `guard`. An agent reads a channel through this route (the MCP
     // `read_channel` tool proxies it), and a finding is the guard's verdict on
@@ -117,17 +111,11 @@ async fn get_as_user(
     match channel_role(&state.pg, &user.id, id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on GET messages failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on GET messages failed", e),
     }
     match page(state, id, since, thread.as_deref()).await {
         Ok(messages) => Json(json!({ "messages": messages })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] message page read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] message page read failed", e),
     }
 }
 
@@ -238,10 +226,7 @@ pub async fn post(
     // The CALLER, not `name`: elevation buys org-wide posting rights.
     let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent access read on POST failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent access read on POST failed", e),
     };
     if !may {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -263,10 +248,7 @@ pub async fn post(
     .await
     {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] agent post insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent post insert failed", e),
     };
     let nm = channel_name(&state.pg, &id)
         .await
@@ -335,10 +317,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     match channel_role(&state.pg, &user.id, id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on POST messages failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on POST messages failed", e),
     }
     // A thread reply hangs off a ROOT in this channel; replying to a reply
     // re-roots onto its thread (Slack semantics — threads never nest).
@@ -346,10 +325,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     if let Some(root_id) = &body.thread_root_id {
         let root = match get_channel_message(&state.pg, id, root_id).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[channels] thread root read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] thread root read failed", e),
         };
         let Some(root) = root else {
             return house_error(StatusCode::BAD_REQUEST, "no such thread");
@@ -364,10 +340,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     let uploads =
         match resolve_attachments(&state.pg, body.attachment_ids.as_deref().unwrap_or(&[])).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[channels] attachment resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] attachment resolve failed", e),
         };
     let ref_chips = match resolve_refs(
         &state.pg,
@@ -381,10 +354,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] ref resolve failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] ref resolve failed", e),
     };
     let attachments: Vec<Value> = uploads
         .iter()
@@ -413,10 +383,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     .await
     {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] post insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] post insert failed", e),
     };
 
     // Agent replies + mention notifications run detached; the POST returns
@@ -497,10 +464,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             Ok(r) => r,
             // A failure here 500s the route after the insert and the
             // detached triggers have already fired — the write stands.
-            Err(e) => {
-                tracing::error!("[channels] kind read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] kind read failed", e),
         };
     let sender_label = user.name.clone().unwrap_or_else(|| author.clone());
     if kind.as_ref().map(|(k,)| k.as_str()) == Some("dm") {

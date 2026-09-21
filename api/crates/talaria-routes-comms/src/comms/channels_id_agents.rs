@@ -10,7 +10,7 @@ use serde_json::json;
 use talaria_api_facades::fleet::usable_agent_gate;
 use talaria_body::{as_object, string_member};
 use talaria_channels::{add_channel_agent, channel_role, remove_channel_agent};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -43,18 +43,14 @@ pub async fn post(
     // context never surfaces outside a DM with the owner.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[channels] agent access read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent access read failed", e),
     };
     if !gate(&model) {
         return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_channel_agent(&notify, &id, &model).await {
-        tracing::error!("[channels] agent add failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] agent add failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -83,8 +79,7 @@ pub async fn delete(
     };
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = remove_channel_agent(&notify, &id, &model).await {
-        tracing::error!("[channels] agent remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] agent remove failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

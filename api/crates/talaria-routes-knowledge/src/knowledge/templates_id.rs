@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, optional_max_string_member, parse, trimmed_string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_perm;
 use talaria_state::AppState;
 use talaria_templates::{TemplatePatch, delete_template, get_template, update_template};
@@ -55,10 +55,7 @@ pub async fn put(
     {
         Ok(Some(template)) => Json(json!({ "template": template })).into_response(),
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[templates] update failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[templates] update failed", e),
     }
 }
 
@@ -87,14 +84,8 @@ pub async fn delete(
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
         Ok(Some(_)) => match delete_template(&state.pg, &id).await {
             Ok(()) => Json(json!({ "ok": true })).into_response(),
-            Err(e) => {
-                tracing::error!("[templates] delete failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[templates] delete failed", e),
         },
-        Err(e) => {
-            tracing::error!("[templates] read before delete failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[templates] read before delete failed", e),
     }
 }

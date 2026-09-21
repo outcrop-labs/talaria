@@ -14,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_secret_health::{ClearError, clear_secret, clear_unreadable, secret_health};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -25,10 +25,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/secrets] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/secrets] secretbox unavailable", e),
     };
     Json(secret_health(&state.pg, &sb, &state.cfg.secret_root).await).into_response()
 }
@@ -110,10 +107,7 @@ pub async fn delete(
         // must be exactly true — anything else falls to the blanket below.
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
-            Err(e) => {
-                tracing::error!("[admin/secrets] secretbox unavailable: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[admin/secrets] secretbox unavailable", e),
         };
         let (cleared, failed) = clear_unreadable(&state.pg, &sb, &state.cfg.secret_root).await;
         let after = serde_json::json!({ "cleared": cleared, "failed": failed });

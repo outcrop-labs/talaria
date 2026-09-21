@@ -28,7 +28,7 @@ use talaria_body::{
     present_nullable_max_string_member, too_big_msg, too_small_msg, utf16_len, uuid_member,
     zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -84,7 +84,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     .unwrap_or(None),
             })
             .collect(),
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[admin] query failed", e),
     };
     Json(json!({
         "health": health,
@@ -203,7 +203,7 @@ pub async fn put(
                 });
             }
             // a config-write failure is a 500.
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return internal("[admin] admin_rag failed", e),
         }
     }
 
@@ -214,8 +214,8 @@ pub async fn put(
                 .bind(&collection_id)
                 .execute(&state.pg)
                 .await;
-        if updated.is_err() {
-            return thrown_internal_error();
+        if let Err(e) = updated {
+            return internal("[admin] admin_rag failed", e);
         }
         // Existing docs move to their new home right away — detached, its
         // errors swallowed.
@@ -369,7 +369,7 @@ pub async fn post(
             // a sealed key that cannot open errors — a 500.
             match rerank::rerank_models(&state, &http, &provider, key).await {
                 Ok(models) => Json(json!({ "models": models })).into_response(),
-                Err(_) => thrown_internal_error(),
+                Err(e) => internal("[admin] rerank_models failed", e),
             }
         }
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),

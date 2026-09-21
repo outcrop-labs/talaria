@@ -13,7 +13,7 @@ use talaria_agent_role_templates::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, kebab_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin, require_perm};
 use talaria_state::AppState;
 
@@ -28,10 +28,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     match list_role_templates(&state.pg).await {
         Ok(templates) => Json(json!({ "templates": templates })).into_response(),
-        Err(e) => {
-            tracing::error!("[agent-role-templates] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[agent-role-templates] list failed", e),
     }
 }
 
@@ -89,10 +86,7 @@ pub async fn put(
     };
     let template = match upsert_role_template(&state.pg, &input, &actor_of(&user)).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[agent-role-templates] upsert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[agent-role-templates] upsert failed", e),
     };
     log_audit(
         &state.pg,
@@ -125,10 +119,7 @@ pub async fn delete(
     match delete_role_template(&state.pg, &slug).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[agent-role-templates] delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[agent-role-templates] delete failed", e),
     }
     log_audit(
         &state.pg,

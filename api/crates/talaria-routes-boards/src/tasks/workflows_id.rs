@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_params::uuid_gate;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -56,8 +56,7 @@ pub async fn put(
         return gate;
     }
     if let Err(e) = update_workflow(&state.pg, &id, &patch).await {
-        tracing::error!("[workflows] update failed: {e}");
-        return thrown_internal_error();
+        return internal("[workflows] update failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -74,8 +73,7 @@ pub async fn delete(
         return gate;
     }
     if let Err(e) = delete_workflow(&state.pg, &id).await {
-        tracing::error!("[workflows] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[workflows] delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

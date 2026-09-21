@@ -14,8 +14,8 @@ use serde_json::json;
 use talaria_api_facades::gateway::provider::catalog_models;
 use talaria_api_facades::gateway::registry::list_endpoints;
 use talaria_api_facades::model::catalog::refresh_endpoint_catalog_with;
-use talaria_error::house_error;
-use talaria_error::thrown_internal_error;
+use talaria_error::{house_error, internal};
+
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
@@ -29,7 +29,7 @@ pub async fn get(
     }
     let eps = match list_endpoints(&state.pg).await {
         Ok(e) => e,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] list_endpoints failed", e),
     };
     let Some(ep) = eps.iter().find(|e| e.id == id).cloned() else {
         return house_error(StatusCode::NOT_FOUND, "not found");

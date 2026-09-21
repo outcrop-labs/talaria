@@ -7,6 +7,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
+use talaria_error::internal;
 use talaria_home::home_summary;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -18,9 +19,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     match home_summary(&state, &user.id, user.role == "admin").await {
         Ok(summary) => Json(summary).into_response(),
-        Err(e) => {
-            tracing::error!("[home] summary failed: {e}");
-            talaria_error::thrown_internal_error()
-        }
+        Err(e) => internal("[home] summary failed", e),
     }
 }

@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_permissions::{
     PERM_IDS, PERMISSIONS, get_org_default_perms, get_user_perm_overrides, set_org_default_perm,
     set_user_perm_override,
@@ -32,10 +32,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
             .await;
     let rows = match rows {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[admin/permissions] overrides read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/permissions] overrides read failed", e),
     };
     let mut overrides = serde_json::Map::new();
     for (user_id, perm, allowed) in rows {
@@ -150,8 +147,7 @@ pub async fn put(
     match body {
         UnionBody::OrgDefault { perm, enabled } => {
             if let Err(e) = set_org_default_perm(&state.pg, &perm, enabled).await {
-                tracing::error!("[admin/permissions] org default write failed: {e}");
-                return thrown_internal_error();
+                return internal("[admin/permissions] org default write failed", e);
             }
             log_audit(
                 &state.pg,
@@ -178,8 +174,7 @@ pub async fn put(
             allowed,
         } => {
             if let Err(e) = set_user_perm_override(&state.pg, &user_id, &perm, allowed).await {
-                tracing::error!("[admin/permissions] override write failed: {e}");
-                return thrown_internal_error();
+                return internal("[admin/permissions] override write failed", e);
             }
             log_audit(
                 &state.pg,
@@ -196,10 +191,7 @@ pub async fn put(
             .await;
             let overrides = match get_user_perm_overrides(&state.pg, &user_id).await {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[admin/permissions] overrides read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[admin/permissions] overrides read failed", e),
             };
             Json(serde_json::json!({ "overrides": overrides })).into_response()
         }

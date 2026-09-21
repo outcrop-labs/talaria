@@ -16,7 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_body::{as_object, optional_string_member, optional_uuid_member, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_inbox_focus::conversation::{
     acquire_inbox_focus_lock, attach_timeline_to_action_result,
 };
@@ -80,17 +80,11 @@ pub async fn post(
     };
     let result = match run_focus_action(&state, &user, &input).await {
         Ok(result) => result,
-        Err(e) => {
-            tracing::error!("[inbox-focus] action failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inbox-focus] action failed", e),
     };
     let result = match attach_timeline_to_action_result(&state, &user, result).await {
         Ok(result) => result,
-        Err(e) => {
-            tracing::error!("[inbox-focus] timeline attach failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inbox-focus] timeline attach failed", e),
     };
     let status = match result.get("status").and_then(Value::as_str) {
         Some("stale") => StatusCode::CONFLICT,

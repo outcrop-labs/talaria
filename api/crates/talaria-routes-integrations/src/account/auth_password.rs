@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use std::time::Duration;
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_password_accounts::{has_password_accounts, verify_password_login};
 use talaria_ratelimit::{client_ip, rate_limit, rate_limit_reset};
 use talaria_session::{
@@ -43,10 +43,7 @@ pub async fn post(
     match has_password_accounts(&state.pg).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::BAD_REQUEST, "Password login is disabled"),
-        Err(e) => {
-            tracing::error!("[auth/password] account probe failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/password] account probe failed", e),
     }
 
     // Parse first: the username is what the primary counter keys on.
@@ -96,10 +93,7 @@ pub async fn post(
             tokio::time::sleep(Duration::from_millis(400)).await;
             return house_error(StatusCode::UNAUTHORIZED, "Invalid credentials");
         }
-        Err(e) => {
-            tracing::error!("[auth/password] credential lookup failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/password] credential lookup failed", e),
     };
 
     // A real login clears the budget so a fat-fingered morning doesn't lock
@@ -119,10 +113,7 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[auth/password] upsert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/password] upsert failed", e),
     };
     let user = SessionUser {
         id: row.0,
@@ -135,10 +126,7 @@ pub async fn post(
     };
     let sid = match create_session(&state, &user).await {
         Ok(sid) => sid,
-        Err(e) => {
-            tracing::error!("[auth/password] session create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/password] session create failed", e),
     };
     json_with_cookies(
         Json(LoginBody {

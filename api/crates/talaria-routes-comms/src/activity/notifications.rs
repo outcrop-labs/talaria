@@ -20,7 +20,7 @@ use talaria_body::{
     as_object, boolean_member, enum_member, enum_msg, object_msg, optional_max_string_member,
     optional_uuid_array_member, parse, record_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::{
     NOTIFY_CLASSES, NotifyDeps, get_notify_delivery, get_notify_settings, list_notifications,
     mark_brief_stale, mark_notifications_read, set_notify_delivery, set_notify_settings,
@@ -108,17 +108,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let notifications = match list_notifications(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[notifications] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[notifications] list failed", e),
     };
     let unread = match unread_count(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[notifications] unread count failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[notifications] unread count failed", e),
     };
     // prefs + digest from one row, so the two can never be read a moment
     // apart — and the response keeps this key order.
@@ -164,8 +158,7 @@ pub async fn put(
     if let Err(e) =
         mark_notifications_read(&state.pg, &user.id, ids.as_deref(), href.as_deref()).await
     {
-        tracing::error!("[notifications] mark-read failed: {e}");
-        return thrown_internal_error();
+        return internal("[notifications] mark-read failed", e);
     }
     // The brief nudge, fired after the update — the FULL one: clear the
     // sweep throttle AND ring the bell. Awaiting it costs one UPDATE; its
@@ -204,8 +197,7 @@ pub async fn patch(
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         if let Err(e) = set_notify_delivery(&state.pg, email_enabled).await {
-            tracing::error!("[notifications] set delivery failed: {e}");
-            return thrown_internal_error();
+            return internal("[notifications] set delivery failed", e);
         }
         // Audited: turning this on starts mailing every user in the
         // workspace, and "who did that, and when" is the first question.
@@ -239,10 +231,7 @@ pub async fn patch(
         {
             Ok(v) => v,
             // Includes the no-row corner — a user with no row 500s here.
-            Err(e) => {
-                tracing::error!("[notifications] set settings failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[notifications] set settings failed", e),
         }
     } else {
         get_notify_settings(&state.pg, &user.id).await

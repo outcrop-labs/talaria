@@ -22,7 +22,7 @@ use talaria_api_facades::kb::{NewDoc, create_doc, get_space, list_docs, save_doc
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, optional_max_string_member, optional_uuid_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm, who_of};
 use talaria_state::AppState;
 
@@ -35,10 +35,7 @@ pub async fn get(
 ) -> Response {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space read failed", e),
     };
     let Some(space) = space else {
         return Json(json!({ "docs": [] })).into_response();
@@ -51,17 +48,11 @@ pub async fn get(
     };
     let docs = match list_docs(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] doc list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] doc list failed", e),
     };
     let space_editors = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] editor read failed", e),
     };
     if let Some(caller) = caller {
         let owner = match talaria_users::assistant_owner_for(
@@ -71,17 +62,11 @@ pub async fn get(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] owner resolve failed", e),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &caller.model).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] team membership read failed", e),
         };
         if !can_read_agent(
             &guarded_of(&space),
@@ -94,10 +79,7 @@ pub async fn get(
         }
         let granted = match granted_item_ids_for_agent(&state.pg, "doc", &caller.model).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] grant read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] grant read failed", e),
         };
         let docs: Vec<_> = docs
             .into_iter()
@@ -117,10 +99,7 @@ pub async fn get(
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] team membership read failed", e),
     };
     if !can_read(
         &guarded_of(&space),
@@ -137,10 +116,7 @@ pub async fn get(
     // filter (the granted-set beside it is the grant half).
     let granted = match granted_item_ids(&state.pg, "doc", &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] grant read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] grant read failed", e),
     };
     let docs: Vec<_> = docs
         .into_iter()
@@ -215,10 +191,7 @@ pub async fn post(
         let model = caller.model.clone();
         let space = match get_space(&state.pg, &id).await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[kb] space read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] space read failed", e),
         };
         // Two different questions about the same caller, deliberately two
         // different answers. The READ gate below uses the personal
@@ -235,10 +208,7 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] owner resolve failed", e),
         };
         let responsible = match talaria_attribution::responsible_user_for(
             &state.pg,
@@ -248,19 +218,13 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] responsible-user resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] responsible-user resolve failed", e),
         };
         let readable = match (&space, list_editors(&state.pg, ITEM_SPACE, &id).await) {
             (Some(s), Ok(editors)) => {
                 let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &model).await {
                     Ok(v) => v,
-                    Err(e) => {
-                        tracing::error!("[kb] team membership read failed: {e}");
-                        return thrown_internal_error();
-                    }
+                    Err(e) => return internal("[kb] team membership read failed", e),
                 };
                 can_read_agent(
                     &guarded_of(s),
@@ -289,10 +253,7 @@ pub async fn post(
         .await
         {
             Ok(d) => d,
-            Err(e) => {
-                tracing::error!("[kb] doc create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] doc create failed", e),
         };
         let saved = match &body_text {
             Some(b) => {
@@ -327,28 +288,19 @@ pub async fn post(
     };
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space read failed", e),
     };
     let Some(space) = space else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let editors = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] editor read failed", e),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] team membership read failed", e),
     };
     if !can_read(
         &guarded_of(&space),
@@ -374,10 +326,7 @@ pub async fn post(
     .await
     {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[kb] doc create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] doc create failed", e),
     };
     let saved = match &body_text {
         Some(b) => {

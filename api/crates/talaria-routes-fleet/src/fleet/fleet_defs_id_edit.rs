@@ -22,7 +22,7 @@ use talaria_body::{
     optional_boolean_member, optional_max_string_member, parse, string_member, string_msg,
     too_big_msg, too_small_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
 
@@ -160,10 +160,7 @@ pub async fn post(
     .await
     {
         Ok(row) => row,
-        Err(e) => {
-            tracing::error!("[fleet/defs/edit] def read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/edit] def read failed", e),
     };
     let Some((def_id, department, managed, display_name)) = def else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -171,10 +168,7 @@ pub async fn post(
 
     let versions = match list_versions(&state.pg, &def_id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[fleet/defs/edit] versions read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/edit] versions read failed", e),
     };
     let Some(latest) = versions.first() else {
         return house_error(StatusCode::BAD_REQUEST, "no base version — import first");
@@ -187,10 +181,7 @@ pub async fn post(
     // dies with a gateway 404 on its first turn — a silent-freeze chat.
     let endpoints: Vec<LlmEndpoint> = match list_endpoints(&state.pg).await {
         Ok(eps) => eps,
-        Err(e) => {
-            tracing::error!("[fleet/defs/edit] endpoints read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/edit] endpoints read failed", e),
     };
     let mut endpoints: HashMap<String, LlmEndpoint> =
         endpoints.into_iter().map(|e| (e.name.clone(), e)).collect();
@@ -224,8 +215,7 @@ pub async fn post(
             if let Err(e) =
                 add_endpoint_models(&state.pg, &ep.name, std::slice::from_ref(model)).await
             {
-                tracing::error!("[fleet/defs/edit] endpoint model register failed: {e}");
-                return thrown_internal_error();
+                return internal("[fleet/defs/edit] endpoint model register failed", e);
             }
             ep.models.push(model.to_string());
         } else {
@@ -273,10 +263,7 @@ pub async fn post(
     .await
     {
         Ok(vc) => vc,
-        Err(e) => {
-            tracing::error!("[fleet/defs/edit] version write failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/edit] version write failed", e),
     };
     if created {
         log_audit(
@@ -300,10 +287,7 @@ pub async fn post(
         // edit never interrupts conversations in flight.
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
-            Err(e) => {
-                tracing::error!("[fleet/defs/edit] secretbox unavailable: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[fleet/defs/edit] secretbox unavailable", e),
         };
         match roll_agent(&state.pg, &sb, &department).await {
             Ok(None) => applied = true,

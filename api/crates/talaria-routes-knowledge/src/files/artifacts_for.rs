@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use talaria_api_facades::kb::perms::can_read;
 use talaria_artifacts::{artifacts_for_target, guarded};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -33,10 +33,7 @@ pub async fn get(
     }
     let artifacts = match artifacts_for_target(&state.pg, target_type, target_id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] for-target read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] for-target read failed", e),
     };
     let who = who_of(&user);
     let artifacts: Vec<_> = artifacts

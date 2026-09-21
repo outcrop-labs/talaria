@@ -14,7 +14,7 @@ use talaria_body::{
     NumKind, array_msg, array_too_big_msg, as_object, boolean_member, boolean_msg, enum_member,
     number_member, parse, record_msg, string_msg, too_big_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -64,10 +64,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     let findings =
         match talaria_api_facades::gateway::guard::list_guard_findings(&state.pg, 50).await {
             Ok(f) => f,
-            Err(e) => {
-                tracing::error!("[admin/guardrails] findings read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[admin/guardrails] findings read failed", e),
         };
     let rules = talaria_api_facades::gateway::guard::guard_rule_meta();
     Json(serde_json::json!({
@@ -161,8 +158,7 @@ pub async fn put(
     stored.insert("coach".into(), serde_json::json!(coach));
     let stored = Value::Object(stored);
     if let Err(e) = set_setting(&state.pg, CONFIG_KEY, &stored).await {
-        tracing::error!("[admin/guardrails] config write failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/guardrails] config write failed", e);
     }
     log_audit(
         &state.pg,

@@ -14,7 +14,7 @@ use talaria_body::{
     as_object, optional_string_member, parse, preprocessed_email_member, string_member,
 };
 use talaria_claim::claim_admin;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_password::hash_password;
 use talaria_ratelimit::{client_ip, rate_limit, rate_limit_reset};
 use talaria_session::{
@@ -71,10 +71,7 @@ pub async fn post(
     let pw = password.clone();
     let hash = match tokio::task::spawn_blocking(move || hash_password(&pw)).await {
         Ok(h) => h,
-        Err(e) => {
-            tracing::error!("[auth/claim] hash task panicked: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/claim] hash task panicked", e),
     };
 
     // a name that trims to empty falls back to the email.
@@ -96,10 +93,7 @@ pub async fn post(
                 "This instance already has an admin — sign in instead.",
             );
         }
-        Err(e) => {
-            tracing::error!("[auth/claim] claim failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/claim] claim failed", e),
     };
 
     if let Ok(mut redis) = state.redis().await {
@@ -139,10 +133,7 @@ pub async fn post(
     };
     let sid = match create_session(&state, &user).await {
         Ok(sid) => sid,
-        Err(e) => {
-            tracing::error!("[auth/claim] session create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/claim] session create failed", e),
     };
     json_with_cookies(
         Json(ClaimBody {

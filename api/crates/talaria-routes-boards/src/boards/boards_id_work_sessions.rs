@@ -12,7 +12,7 @@ use serde_json::json;
 use sqlx::Row;
 
 use talaria_boards::board_role;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -31,10 +31,7 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &board_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards/work-sessions] role read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards/work-sessions] role read failed", e),
     }
 
     // Every non-terminal work session on this board's tasks, newest per
@@ -55,10 +52,7 @@ pub async fn get(
     .await;
     let rows = match rows {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[boards/work-sessions] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards/work-sessions] read failed", e),
     };
     let mut map = serde_json::Map::new();
     for row in rows {

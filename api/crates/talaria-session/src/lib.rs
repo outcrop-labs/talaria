@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
+use talaria_error::internal;
 use talaria_state::AppState;
 
 pub const SESSION_COOKIE: &str = "talaria_session";
@@ -417,10 +418,7 @@ pub async fn acting_user(
             .bind(&agent.model)
             .fetch_optional(&state.pg)
             .await
-            .map_err(|e| {
-                tracing::error!("[session] acting-user lookup failed: {e}");
-                talaria_error::thrown_internal_error()
-            })?;
+            .map_err(|e| internal("[session] acting-user lookup failed", e))?;
             Ok(owner.map(|(id, role, email, name, elevated)| {
                 let for_label = email.clone().or(name).unwrap_or_else(|| id.clone());
                 ActingUser {
@@ -443,10 +441,7 @@ pub async fn acting_user(
                 elevated: false,
             })),
             Ok(None) => Ok(None),
-            Err(e) => {
-                tracing::error!("[session] redis read failed: {e}");
-                Err(talaria_error::thrown_internal_error())
-            }
+            Err(e) => Err(internal("[session] redis read failed", e)),
         },
     }
 }
@@ -457,10 +452,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
     match get_session_user(state, headers).await {
         Ok(Some(user)) => Ok(user),
         Ok(None) => Err(unauthorized()),
-        Err(e) => {
-            tracing::error!("[session] redis read failed: {e}");
-            Err(talaria_error::thrown_internal_error())
-        }
+        Err(e) => Err(internal("[session] redis read failed", e)),
     }
 }
 
@@ -489,10 +481,7 @@ pub async fn require_view(
     if user.role != "admin" {
         let denied = talaria_users::denied_views(&state.pg, &user.id, &user.role)
             .await
-            .map_err(|e| {
-                tracing::error!("[session] view-denial read failed: {e}");
-                talaria_error::thrown_internal_error()
-            })?;
+            .map_err(|e| internal("[session] view-denial read failed", e))?;
         if denied
             .iter()
             .any(|v| v == view || view.starts_with(&format!("{v}/")))
@@ -516,10 +505,7 @@ pub async fn require_perm(
     let user = require_user(state, headers).await?;
     if !talaria_users::has_perm(&state.pg, &user.id, &user.role, perm)
         .await
-        .map_err(|e| {
-            tracing::error!("[session] permission read failed: {e}");
-            talaria_error::thrown_internal_error()
-        })?
+        .map_err(|e| internal("[session] permission read failed", e))?
     {
         return Err(talaria_error::house_error(
             StatusCode::FORBIDDEN,

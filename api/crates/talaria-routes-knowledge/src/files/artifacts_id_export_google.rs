@@ -23,7 +23,7 @@ use talaria_api_facades::google::org::get_org_targets;
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
 use talaria_artifacts::{get_artifact, guarded, record_google_export};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_error::{house_error, house_error_msg, thrown_internal_error};
+use talaria_error::{house_error, house_error_msg, internal};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 
@@ -68,20 +68,14 @@ pub async fn post(
 ) -> Response {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] read failed", e),
     };
     let Some(artifact) = artifact else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] grants read failed", e),
     };
     let sb = state.secretbox().await.unwrap_or_default();
 
@@ -110,17 +104,11 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] owner resolve failed", e),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] team membership read failed", e),
         };
         if !can_read_agent(
             &guarded(&artifact),
@@ -175,10 +163,7 @@ pub async fn post(
         };
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] team membership read failed", e),
         };
         if !can_read(
             &guarded(&artifact),

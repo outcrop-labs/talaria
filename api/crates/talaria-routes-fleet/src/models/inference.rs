@@ -12,7 +12,7 @@ use talaria_api_facades::fleet::docker::{Health, container_status};
 use talaria_api_facades::gateway::provider::catalog_models;
 use talaria_api_facades::gateway::registry::list_endpoints;
 use talaria_api_facades::gateway::upstream::gateway_pulse;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_view;
 use talaria_state::AppState;
 
@@ -24,10 +24,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
 
     let endpoints = match list_endpoints(&state.pg).await {
         Ok(eps) => eps,
-        Err(e) => {
-            tracing::error!("[inference] endpoint read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inference] endpoint read failed", e),
     };
     // Each probe runs concurrently.
     let probes = endpoints.iter().filter(|ep| ep.class == "local").map(|ep| {
@@ -73,10 +70,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[inference] usage totals failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inference] usage totals failed", e)
     };
     let per_model: Vec<(Option<String>, i64)> = match sqlx::query_as(
         "select llm_model as \"llmModel\", coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as tokens \
@@ -88,10 +82,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[inference] per-model usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inference] per-model usage failed", e)
     };
 
     // ── Live pulse: what's generating right now + the last hour ─────────
@@ -118,10 +109,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[inference] generating read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inference] generating read failed", e),
     };
     // `lastAt` serializes Date-style: UTC with exactly three fraction digits.
     let last_hour: Vec<(String, i32, i64, String)> = match sqlx::query_as(
@@ -136,10 +124,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[inference] last-hour read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inference] last-hour read failed", e)
     };
 
     // Fleet container temperature: running / warming / unhealthy / down.
@@ -149,10 +134,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[inference] managed-agent read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[inference] managed-agent read failed", e),
         };
     let departments: Vec<String> = managed.into_iter().map(|(d,)| d).collect();
     let states = if departments.is_empty() {

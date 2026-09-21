@@ -16,7 +16,7 @@ use talaria_email::{
     EmailConfigPatch, EmailInput, Provider, SendOutcome, email_shell, get_email_config, send_email,
     set_email_config,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -151,14 +151,10 @@ pub async fn put(
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/email] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/email] secretbox unavailable", e),
     };
     if let Err(e) = set_email_config(&state.pg, &sb, &patch).await {
-        tracing::error!("[admin/email] config write failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/email] config write failed", e);
     }
     log_audit(
         &state.pg,
@@ -204,10 +200,7 @@ pub async fn post(
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/email] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/email] secretbox unavailable", e),
     };
     let html = email_shell(
         "It works",

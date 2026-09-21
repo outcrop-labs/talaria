@@ -17,7 +17,7 @@ use talaria_body::{
     too_big_msg, too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_effort_prefs::{agent_slot, get_effort_prefs, set_effort_pref};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_judge::{get_judge_config, set_judge_config};
 use talaria_platform_agents::{
     PLATFORM_AGENTS, get_platform_agent_models, set_platform_agent_model,
@@ -58,10 +58,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     // panel's graceful [].
     let models: Vec<String> = match gateway_models(&state.pg).await {
         Ok(m) => m.into_iter().map(|m| m.id).collect(),
-        Err(e) => {
-            tracing::error!("[admin/platform-agents] gateway read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/platform-agents] gateway read failed", e),
     };
     let prefs = get_effort_prefs(&state.pg).await;
     let mut efforts = serde_json::Map::new();
@@ -133,10 +130,7 @@ pub async fn put(
         } else {
             let on_gateway = match gateway_models(&state.pg).await {
                 Ok(models) => models.iter().any(|g| &g.id == m),
-                Err(e) => {
-                    tracing::error!("[admin/platform-agents] gateway read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[admin/platform-agents] gateway read failed", e),
             };
             if !on_gateway {
                 return house_error(StatusCode::BAD_REQUEST, "that model is not on the gateway");
@@ -184,8 +178,7 @@ pub async fn put(
             }
         }
         if let Err(e) = set_effort_pref(&state.pg, &agent_slot(&id), effort.as_deref()).await {
-            tracing::error!("[admin/platform-agents] effort write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/platform-agents] effort write failed", e);
         }
         log_audit(
             &state.pg,
@@ -223,8 +216,7 @@ pub async fn put(
             }
             set_judge_config(&state.pg, &cfg).await;
         } else if let Err(e) = set_platform_agent_model(&state.pg, &id, model.as_deref()).await {
-            tracing::error!("[admin/platform-agents] assign write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/platform-agents] assign write failed", e);
         }
     }
     log_audit(

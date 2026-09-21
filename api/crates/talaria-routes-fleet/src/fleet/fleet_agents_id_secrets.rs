@@ -12,7 +12,7 @@ use serde_json::json;
 use talaria_agent_secrets::{delete_agent_secret, list_agent_secrets, set_agent_secret};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, string_member, trimmed_string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_personal_agent::owns_agent;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -35,7 +35,7 @@ pub async fn get(
     }
     match list_agent_secrets(&state.pg, &id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
-        Err(_) => thrown_internal_error(),
+        Err(e) => internal("[fleet] list_agent_secrets failed", e),
     }
 }
 
@@ -68,7 +68,7 @@ pub async fn put(
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] secretbox failed", e),
     };
     let actor = user.email.clone().or_else(|| user.name.clone());
     match set_agent_secret(&state.pg, &sb, &id, &name, &value, actor.as_deref()).await {
@@ -114,8 +114,8 @@ pub async fn delete(
             _ => return house_error(StatusCode::BAD_REQUEST, "missing name"),
         },
     };
-    if delete_agent_secret(&state.pg, &id, &name).await.is_err() {
-        return thrown_internal_error();
+    if let Err(e) = delete_agent_secret(&state.pg, &id, &name).await {
+        return internal("[fleet] query_param failed", e);
     }
     audit(
         &state,

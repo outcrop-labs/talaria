@@ -23,7 +23,7 @@ use talaria_body::{
     optional_boolean_member, optional_string_member, optional_uuid_member, parse, uuid_member,
     zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_realtime_watch::{BoardEvent, RealtimeDeps, publish_board};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -37,8 +37,10 @@ async fn chain_board(state: &AppState, id: &str, action: &str) -> Result<Option<
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::error!("[workchains] board read on {action} failed: {e}");
-                return Err(thrown_internal_error());
+                return Err(internal(
+                    &format!("[workchains] board read on {action} failed"),
+                    e,
+                ));
             }
         };
     Ok(board.and_then(|(b,)| b))
@@ -56,10 +58,10 @@ async fn write_gate(
     match board_role(&state.pg, user_id, &board_id).await {
         Ok(role) if can_edit(role.as_deref()) => Ok(board_id),
         Ok(_) => Err(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[workchains] role read on {action} failed: {e}");
-            Err(thrown_internal_error())
-        }
+        Err(e) => Err(internal(
+            &format!("[workchains] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -151,8 +153,7 @@ pub async fn patch(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[workchains] rename failed: {e}");
-        return thrown_internal_error();
+        return internal("[workchains] rename failed", e);
     }
     if let Some(paused) = paused
         && let Err(e) = sqlx::query(
@@ -163,8 +164,7 @@ pub async fn patch(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[workchains] pause write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workchains] pause write failed", e);
     }
     if let Some(order) = &positions
         && let Err(msg) = reorder_steps(&state, &id, order).await
@@ -183,10 +183,7 @@ async fn reorder_steps(
 ) -> Result<(), Response> {
     let mut tx = match state.pg.begin().await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[workchains] reorder begin failed: {e}");
-            return Err(thrown_internal_error());
-        }
+        Err(e) => return Err(internal("[workchains] reorder begin failed", e)),
     };
     for (task_id, position) in order {
         let updated = sqlx::query(
@@ -212,8 +209,7 @@ async fn reorder_steps(
             Ok(_) => {}
             Err(e) => {
                 let _ = tx.rollback().await;
-                tracing::error!("[workchains] reorder write failed: {e}");
-                return Err(thrown_internal_error());
+                return Err(internal("[workchains] reorder write failed", e));
             }
         }
     }
@@ -223,12 +219,10 @@ async fn reorder_steps(
         .await
     {
         let _ = tx.rollback().await;
-        tracing::error!("[workchains] reorder bump failed: {e}");
-        return Err(thrown_internal_error());
+        return Err(internal("[workchains] reorder bump failed", e));
     }
     if let Err(e) = tx.commit().await {
-        tracing::error!("[workchains] reorder commit failed: {e}");
-        return Err(thrown_internal_error());
+        return Err(internal("[workchains] reorder commit failed", e));
     }
     Ok(())
 }
@@ -256,8 +250,7 @@ pub async fn delete(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[workchains] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[workchains] delete failed", e);
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);
@@ -303,10 +296,7 @@ pub async fn post_step(
             .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[workchains] task read on POST step failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[workchains] task read on POST step failed", e),
         };
     let Some((Some(task_board),)) = task else {
         return house_error(StatusCode::BAD_REQUEST, "no such ticket");
@@ -324,10 +314,7 @@ pub async fn post_step(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[workchains] chain read on POST step failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workchains] chain read on POST step failed", e),
     };
     if in_chain.is_some() {
         return house_error(
@@ -363,10 +350,7 @@ pub async fn post_step(
             .await;
             match shifted {
                 Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("[workchains] step shift failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[workchains] step shift failed", e),
             }
             sqlx::query(
                 "insert into task_workchain_steps (workchain_id, task_id, position) \
@@ -391,18 +375,14 @@ pub async fn post_step(
             );
         }
         Ok(_) => {}
-        Err(e) => {
-            tracing::error!("[workchains] step insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workchains] step insert failed", e),
     }
     if let Err(e) = sqlx::query("update task_workchains set updated_at = now() where id = $1::uuid")
         .bind(&id)
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[workchains] step bump failed: {e}");
-        return thrown_internal_error();
+        return internal("[workchains] step bump failed", e);
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);
@@ -438,16 +418,14 @@ pub async fn delete_step(
     .execute(&state.pg)
     .await
     {
-        tracing::error!("[workchains] step delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[workchains] step delete failed", e);
     }
     if let Err(e) = sqlx::query("update task_workchains set updated_at = now() where id = $1::uuid")
         .bind(&id)
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[workchains] step delete bump failed: {e}");
-        return thrown_internal_error();
+        return internal("[workchains] step delete bump failed", e);
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     bump(&realtime, &board_id);

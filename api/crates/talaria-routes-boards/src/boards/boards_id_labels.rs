@@ -14,7 +14,7 @@ use talaria_body::{
     as_object, optional_max_string_member, optional_string_member, parse, string_member,
     uuid_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_labels::{create_label, delete_label, list_labels, update_label};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::require_user;
@@ -24,10 +24,10 @@ async fn role_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
     match board_role(&state.pg, user_id, id).await {
         Ok(Some(_)) => None,
         Ok(None) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[boards] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[boards] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -35,10 +35,10 @@ async fn edit_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
     match board_role(&state.pg, user_id, id).await {
         Ok(role) if can_edit(role.as_deref()) => None,
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[boards] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[boards] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -59,10 +59,7 @@ pub async fn get(
     }
     match list_labels(&state.pg, &id).await {
         Ok(labels) => Json(json!({ "labels": labels })).into_response(),
-        Err(e) => {
-            tracing::error!("[boards] label list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] label list failed", e),
     }
 }
 
@@ -100,10 +97,7 @@ pub async fn post(
     match create_label(&state.pg, &id, &name, color.as_deref()).await {
         Ok(Ok(label)) => Json(json!({ "label": label })).into_response(),
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(e) => {
-            tracing::error!("[boards] label create failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] label create failed", e),
     }
 }
 
@@ -153,10 +147,7 @@ pub async fn put(
     {
         Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(e) => {
-            tracing::error!("[boards] label update failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] label update failed", e),
     }
 }
 
@@ -187,8 +178,7 @@ pub async fn delete(
     };
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     if let Err(e) = delete_label(&state.pg, &realtime, &id, &label_id).await {
-        tracing::error!("[boards] label delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] label delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

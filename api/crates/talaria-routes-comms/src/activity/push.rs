@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_push::vapid_keys;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -42,17 +42,11 @@ pub async fn key(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[push/key] the secretbox did not load: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[push/key] the secretbox did not load", e),
     };
     let keys = match vapid_keys(&state.pg, &sb).await {
         Ok(k) => k,
-        Err(e) => {
-            tracing::error!("[push/key] could not produce the vapid keypair: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[push/key] could not produce the vapid keypair", e),
     };
     Json(json!({
         "publicKey": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(keys.public),
@@ -158,8 +152,7 @@ pub async fn subscribe(
     .execute(&state.pg)
     .await
     {
-        tracing::error!("[push/subscribe] the subscription write failed: {e}");
-        return thrown_internal_error();
+        return internal("[push/subscribe] the subscription write failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -194,8 +187,7 @@ pub async fn unsubscribe(
             .execute(&state.pg)
             .await
     {
-        tracing::error!("[push/unsubscribe] the subscription delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[push/unsubscribe] the subscription delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

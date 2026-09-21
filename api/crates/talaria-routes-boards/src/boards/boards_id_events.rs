@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use talaria_boards::board_role;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_realtime_watch::{RealtimeDeps, board_event_stream};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -27,10 +27,7 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on events failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on events failed", e),
     }
     let deps = RealtimeDeps::streams_only(&state.cfg.redis_url);
     board_event_stream(&deps, &id).await

@@ -20,7 +20,7 @@ use talaria_body::{
     as_object, optional_boolean_member, optional_enum_member, optional_string_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{acting_user, require_user, unauthorized};
 use talaria_state::AppState;
 
@@ -70,10 +70,7 @@ pub async fn patch(
     // An elevated assistant edits any board (never owner-level).
     let role = match board_role(&state.pg, &user.id, &id).await {
         Ok(r) => r.or_else(|| user.elevated.then(|| "editor".to_string())),
-        Err(e) => {
-            tracing::error!("[boards] role read on PATCH failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on PATCH failed", e),
     };
     if !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -115,10 +112,7 @@ pub async fn patch(
                         &format!("no team named \"{raw_str}\""),
                     );
                 }
-                Err(e) => {
-                    tracing::error!("[boards] team-by-name read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[boards] team-by-name read failed", e),
             }
         };
         team_id = Some(resolved);
@@ -136,10 +130,7 @@ pub async fn patch(
             // setBoardTeam's refusal is the 400 body verbatim; 'unknown
             // team' is its only in-practice message.
             Ok(Err(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
-            Err(e) => {
-                tracing::error!("[boards] team move failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[boards] team move failed", e),
         }
     }
     // The remaining writes, in the schema's order — each independent, each a
@@ -147,20 +138,17 @@ pub async fn patch(
     if let Some(name) = &patch.name
         && let Err(e) = rename_board(&state.pg, &id, name).await
     {
-        tracing::error!("[boards] rename failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] rename failed", e);
     }
     if let Some(archived) = patch.archived
         && let Err(e) = archive_board(&state.pg, &id, archived).await
     {
-        tracing::error!("[boards] archive failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] archive failed", e);
     }
     if let Some(mode) = &patch.judge_mode
         && let Err(e) = set_board_judge_mode(&state.pg, &id, mode).await
     {
-        tracing::error!("[boards] judge mode failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] judge mode failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -180,17 +168,13 @@ pub async fn delete(
     let is_owner = match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(role)) => role == "owner",
         Ok(None) => false,
-        Err(e) => {
-            tracing::error!("[boards] role read on DELETE failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on DELETE failed", e),
     };
     if !is_owner {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     if let Err(e) = delete_board(&state.pg, &id).await {
-        tracing::error!("[boards] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] delete failed", e);
     }
     // A delete removes the board's tickets + comments — purge their activity
     // points too so nothing orphans in the index (the channel analog fires in

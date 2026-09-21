@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, email_member, uuid_member};
 use talaria_channels::{add_channel_member, channel_role, remove_channel_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -43,10 +43,7 @@ pub async fn post(
         // The engine's own sentence ("No user with that email has signed in
         // yet") rides the 400 body verbatim.
         Ok(Some(error)) => house_error(StatusCode::BAD_REQUEST, &error),
-        Err(e) => {
-            tracing::error!("[channels] member add failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] member add failed", e),
     }
 }
 
@@ -62,10 +59,7 @@ pub async fn delete(
     };
     let role = match channel_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[channels] role read on member delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on member delete failed", e),
     };
     let Some(role) = role else {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -84,8 +78,7 @@ pub async fn delete(
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = remove_channel_member(&notify, &id, &user_id).await {
-        tracing::error!("[channels] member remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] member remove failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

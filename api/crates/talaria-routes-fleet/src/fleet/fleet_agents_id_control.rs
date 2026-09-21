@@ -20,7 +20,7 @@ use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, enum_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_permissions::has_perm;
 use talaria_personal_agent::owns_agent;
 use talaria_session::{actor_of, require_user};
@@ -62,7 +62,7 @@ pub async fn post(
     let def = match agent_def_by_id(&state.pg, &id).await {
         Ok(Some(d)) => d,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] agent_def_by_id failed", e),
     };
 
     // Lifecycle actions are governance-relevant — record them, BEFORE the
@@ -227,7 +227,7 @@ pub async fn post(
             }
             Json(json!({ "ok": true })).into_response()
         }
-        _ => thrown_internal_error(),
+        _ => internal("[fleet] control: unknown action", &action),
     }
 }
 

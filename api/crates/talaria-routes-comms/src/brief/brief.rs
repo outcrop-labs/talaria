@@ -11,7 +11,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_daily_brief::{BriefRead, BriefUser, get_brief, real_brief_deps, sweep_if_due};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -54,9 +54,6 @@ pub async fn get(
         Ok(BriefRead::Absent(kind, next_at, agent)) => {
             Json(json!({ "absent": kind, "nextAt": next_at, "agent": agent })).into_response()
         }
-        Err(e) => {
-            tracing::error!("[brief] read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[brief] read failed", e),
     }
 }

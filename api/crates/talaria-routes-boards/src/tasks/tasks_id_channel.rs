@@ -23,7 +23,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::board_role;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_tasks::{ensure_task_channel, get_task};
@@ -43,18 +43,12 @@ pub async fn post(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST channel failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on POST channel failed", e),
     };
     match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] role read on POST channel failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] role read on POST channel failed", e),
     }
     match ensure_task_channel(&state.pg, &id).await {
         Ok(Some(channel_id)) => Json(json!({ "channelId": channel_id })).into_response(),
@@ -66,9 +60,6 @@ pub async fn post(
             Json(json!({ "error": "this ticket has no owner to hold its room — add someone to its board" })),
         )
             .into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] channel ensure failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] channel ensure failed", e)
     }
 }

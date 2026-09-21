@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_teams::{add_team_agent, list_team_agents, remove_team_agent, team_role};
@@ -18,8 +18,10 @@ fn uuid_gate(id: &str, action: &str) -> Option<Response> {
     if Uuid::parse_str(id).is_ok() {
         return None;
     }
-    tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(thrown_internal_error())
+    Some(internal(
+        &format!("[teams] non-uuid id on {action}"),
+        format!("{id:?}"),
+    ))
 }
 
 async fn owner_gate(
@@ -31,10 +33,10 @@ async fn owner_gate(
     match team_role(&state.pg, user_id, team_id).await {
         Ok(Some(role)) if role == "owner" => None,
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[teams] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -55,10 +57,7 @@ pub async fn get(
     }
     match list_team_agents(&state.pg, &id).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] agent list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[teams] agent list failed", e),
     }
 }
 
@@ -90,10 +89,7 @@ pub async fn post(
     match add_team_agent(&state.pg, &id, &model).await {
         Ok(None) => {}
         Ok(Some(sentence)) => return house_error(StatusCode::BAD_REQUEST, &sentence),
-        Err(e) => {
-            tracing::error!("[teams] agent add failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] agent add failed", e),
     }
     log_audit(
         &state.pg,
@@ -137,8 +133,7 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = remove_team_agent(&state.pg, &id, &model).await {
-        tracing::error!("[teams] agent remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[teams] agent remove failed", e);
     }
     log_audit(
         &state.pg,

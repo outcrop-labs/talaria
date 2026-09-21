@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_research::{delete_research_run, get_research_run, research_role};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -29,10 +29,7 @@ pub async fn get(
             match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await
             {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[research] owner resolve on run read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[research] owner resolve on run read failed", e),
             }
         }
         Ok(None) => {
@@ -49,18 +46,12 @@ pub async fn get(
     match research_role(&state.pg, viewer.as_deref(), &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] role read on run read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] role read on run read failed", e),
     }
     match get_research_run(&state.pg, &id).await {
         Ok(Some((run, sources))) => Json(json!({ "run": run, "sources": sources })).into_response(),
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] run read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[research] run read failed", e),
     }
 }
 
@@ -78,10 +69,7 @@ pub async fn delete(
     }
     let found = match get_research_run(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[research] run read on delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] run read on delete failed", e),
     };
     let Some((run, _)) = found else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -93,8 +81,7 @@ pub async fn delete(
     // `delete_research_run`. The report artifact survives either way: deleting
     // a run clears the queue entry, not the knowledge.
     if let Err(e) = delete_research_run(&state, &id).await {
-        tracing::error!("[research] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[research] delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

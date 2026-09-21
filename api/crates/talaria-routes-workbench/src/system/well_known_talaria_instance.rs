@@ -11,16 +11,14 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_error::internal;
 use talaria_instance::{get_company_name, get_instance_id};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>) -> Response {
     let id = match get_instance_id(&state.pg).await {
         Ok(id) => id,
-        Err(e) => {
-            tracing::error!("[well-known] instance id read failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return internal("[well-known] instance id read failed", e),
     };
     Json(json!({ "instance": id, "companyName": get_company_name(&state.pg).await }))
         .into_response()

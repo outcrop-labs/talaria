@@ -23,7 +23,7 @@ use talaria_body::{
     optional_uuid_array_member, optional_uuid_member, parse, string_member, string_value_member,
     too_big_msg, utf16_substr, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_workspace_secrets::{
@@ -132,10 +132,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // LISTING never carries one, only an explicit reveal does.
     match list_secrets_for_user(&state.pg, &user.id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
-        Err(e) => {
-            tracing::error!("[secrets] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[secrets] list failed", e),
     }
 }
 
@@ -268,10 +265,7 @@ pub async fn patch(
         .await
     {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[secrets] move failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets] move failed", e),
     };
     if !moved {
         return house_error(StatusCode::FORBIDDEN, "not yours to move");
@@ -291,10 +285,7 @@ pub async fn patch(
     .await;
     match get_secret_doc(&state.pg, &name).await {
         Ok(doc) => Json(json!({ "secret": doc })).into_response(),
-        Err(e) => {
-            tracing::error!("[secrets] move re-read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[secrets] move re-read failed", e),
     }
 }
 
@@ -319,10 +310,7 @@ pub async fn delete(
 
     let doc = match get_secret_doc(&state.pg, &name).await {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[secrets] delete read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets] delete read failed", e),
     };
     let Some(doc) = doc else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -334,8 +322,7 @@ pub async fn delete(
         return house_error(StatusCode::FORBIDDEN, "not yours to delete");
     }
     if let Err(e) = delete_secret_doc(&state.pg, &name).await {
-        tracing::error!("[secrets] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[secrets] delete failed", e);
     }
     log_audit(
         &state.pg,

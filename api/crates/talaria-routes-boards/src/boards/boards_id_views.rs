@@ -16,7 +16,7 @@ use talaria_body::{
     as_object, optional_enum_member, optional_max_string_member, optional_string_member, parse,
     string_member, uuid_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -120,10 +120,7 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on views failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on views failed", e),
     }
     let rows: Vec<ViewRow> = match sqlx::query_as(
         "select id::text, board_id::text, name, config, created_by, position, \
@@ -136,10 +133,7 @@ pub async fn get(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] view list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] view list failed", e),
     };
     Json(json!({ "views": rows.into_iter().map(view_of).collect::<Vec<_>>() })).into_response()
 }
@@ -160,10 +154,7 @@ pub async fn post(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on view post failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on view post failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -201,10 +192,7 @@ pub async fn post(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] view create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] view create failed", e)
     };
     Json(json!({ "view": view_of(row) })).into_response()
 }
@@ -225,10 +213,7 @@ pub async fn put(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on view put failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on view put failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -260,8 +245,7 @@ pub async fn put(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[boards] view rename failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] view rename failed", e);
     }
     if let Some(config) = &config
         && let Err(e) = sqlx::query(
@@ -274,8 +258,7 @@ pub async fn put(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[boards] view config write failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] view config write failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -296,10 +279,7 @@ pub async fn delete(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on view delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on view delete failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -317,8 +297,7 @@ pub async fn delete(
             .execute(&state.pg)
             .await
     {
-        tracing::error!("[boards] view delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] view delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

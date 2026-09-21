@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_body::{as_object, nullish_max_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as gh;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -22,10 +22,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let sb = state.secretbox().await.unwrap_or_default();
     let flows = match gh::list_repo_flows(&state.pg).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[workbench/flow] flow read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/flow] flow read failed", e),
     };
     let repos = gh::list_reachable_repos(&state.pg, &sb).await;
     Json(json!({ "flows": flows, "repos": repos })).into_response()
@@ -58,15 +55,11 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = gh::set_repo_flow(&state.pg, &repo, base, testing).await {
-        tracing::error!("[workbench/flow] flow write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/flow] flow write failed", e);
     }
     let flows = match gh::list_repo_flows(&state.pg).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[workbench/flow] flow read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/flow] flow read failed", e),
     };
     Json(json!({ "flows": flows })).into_response()
 }

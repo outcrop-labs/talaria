@@ -13,7 +13,7 @@ use sqlx::AssertSqlSafe;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, enum_member, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as gh;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -64,10 +64,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[workbench/repo-requests] queue read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/repo-requests] queue read failed", e),
     };
     Json(json!({ "requests": rows.iter().map(req_wire).collect::<Vec<_>>() })).into_response()
 }
@@ -98,10 +95,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[workbench/repo-requests] request read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/repo-requests] request read failed", e),
     };
     let Some(req) = req else {
         return house_error(StatusCode::NOT_FOUND, "not found or already decided");
@@ -117,8 +111,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         .execute(&state.pg)
         .await
         {
-            tracing::error!("[workbench/repo-requests] reject write failed: {e}");
-            return thrown_internal_error();
+            return internal("[workbench/repo-requests] reject write failed", e);
         }
         return Json(json!({ "ok": true })).into_response();
     }

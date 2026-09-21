@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, zod_uuid_ok};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_org_domains::{add_org_domain, list_org_domains, remove_org_domain, verify_org_domain};
 use talaria_session::{SessionUser, require_admin};
 use talaria_state::AppState;
@@ -28,10 +28,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     let domains = match list_org_domains(&state.pg).await {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[admin/domains] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/domains] list failed", e),
     };
     Json(serde_json::json!({ "domains": domains })).into_response()
 }
@@ -120,10 +117,7 @@ pub async fn post(
                 }
                 Json(r).into_response()
             }
-            Err(e) => {
-                tracing::error!("[admin/domains] verify failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[admin/domains] verify failed", e),
         }
     } else {
         // Neither key — the blanket "Invalid input".
@@ -151,8 +145,7 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = remove_org_domain(&state.pg, &id).await {
-        tracing::error!("[admin/domains] remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/domains] remove failed", e);
     }
     log_audit(
         &state.pg,

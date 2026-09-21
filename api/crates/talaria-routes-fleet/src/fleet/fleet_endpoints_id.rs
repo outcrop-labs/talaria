@@ -20,7 +20,7 @@ use talaria_body::{
     as_object, optional_boolean_member, optional_string_array_member, parse,
     present_nullable_max_string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_price_oracle::kick_auto_prices;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -66,7 +66,7 @@ pub async fn put(
     if let Some(models) = &patch.models {
         let eps = match list_endpoints(&state.pg).await {
             Ok(e) => e,
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return internal("[fleet] list_endpoints failed", e),
         };
         let Some(ep) = eps.iter().find(|e| e.id == id) else {
             return house_error(StatusCode::NOT_FOUND, "not found");
@@ -82,7 +82,7 @@ pub async fn put(
         } else {
             match model_usage(&state.pg, &ep.name, Some(&removed)).await {
                 Ok(u) => u,
-                Err(_) => return thrown_internal_error(),
+                Err(e) => return internal("[fleet] model_usage failed", e),
             }
         };
         let mains: Vec<&ModelUsage> = usage.iter().filter(|u| u.as_main).collect();
@@ -112,7 +112,7 @@ pub async fn put(
         if !usage.is_empty() {
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(_) => return thrown_internal_error(),
+                Err(e) => return internal("[fleet] secretbox failed", e),
             };
             let actor = user
                 .email
@@ -121,20 +121,17 @@ pub async fn put(
                 .unwrap_or_else(|| "admin".into());
             match cascade_removal(&state.pg, &sb, &ep.name, Some(&removed), &actor).await {
                 Ok(r) => cascade = (r.changed, r.render_error),
-                Err(_) => return thrown_internal_error(),
+                Err(e) => return internal("[fleet] cascade_removal failed", e),
             }
         }
     }
 
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] secretbox failed", e),
     };
-    if update_endpoint(&state.pg, &sb, &id, &patch.endpoint)
-        .await
-        .is_err()
-    {
-        return thrown_internal_error();
+    if let Err(e) = update_endpoint(&state.pg, &sb, &id, &patch.endpoint).await {
+        return internal("[fleet] update_endpoint failed", e);
     }
     let actor = actor_of(&user);
     let mut after = serde_json::Map::new();
@@ -187,7 +184,7 @@ pub async fn delete(
         .unwrap_or(false);
     let eps = match list_endpoints(&state.pg).await {
         Ok(e) => e,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] list_endpoints failed", e),
     };
     let Some(ep) = eps.iter().find(|e| e.id == id) else {
         // Unknown id → ok:true, no body fields beyond it.
@@ -196,7 +193,7 @@ pub async fn delete(
 
     let usage = match model_usage(&state.pg, &ep.name, None).await {
         Ok(u) => u,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] model_usage failed", e),
     };
     let mains: Vec<&ModelUsage> = usage.iter().filter(|u| u.as_main).collect();
     if !mains.is_empty() {
@@ -220,7 +217,7 @@ pub async fn delete(
     if !usage.is_empty() {
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return internal("[fleet] secretbox failed", e),
         };
         let actor = user
             .email
@@ -229,12 +226,12 @@ pub async fn delete(
             .unwrap_or_else(|| "admin".into());
         match cascade_removal(&state.pg, &sb, &ep.name, None, &actor).await {
             Ok(r) => cascade = (r.changed, r.render_error),
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return internal("[fleet] cascade_removal failed", e),
         }
     }
     let deleted = match delete_endpoint(&state.pg, &id).await {
         Ok(d) => d,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] delete_endpoint failed", e),
     };
     if !deleted.0 {
         return house_error(

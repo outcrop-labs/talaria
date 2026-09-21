@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_inbox_focus::conversation::{create_inbox_conversation, list_inbox_conversations};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -24,10 +24,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             Json(json!({ "conversations": conversations })),
         )
             .into_response(),
-        Err(e) => {
-            tracing::error!("[inbox-focus] conversation list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[inbox-focus] conversation list failed", e),
     }
 }
 
@@ -44,9 +41,6 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
             Json(json!({ "conversation": { "id": id } })),
         )
             .into_response(),
-        Err(e) => {
-            tracing::error!("[inbox-focus] conversation create failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[inbox-focus] conversation create failed", e),
     }
 }

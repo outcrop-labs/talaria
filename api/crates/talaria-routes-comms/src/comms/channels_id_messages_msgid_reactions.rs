@@ -12,7 +12,7 @@ use talaria_body::{as_object, string_member};
 use talaria_channels::{
     agent_may_access_channel, channel_role, get_channel_message, toggle_reaction,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -35,10 +35,7 @@ pub async fn post(
     };
     let msg = match get_channel_message(&state.pg, &id, &msg_id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] message read on reactions failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] message read on reactions failed", e),
     };
     if msg.is_none() {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -55,20 +52,14 @@ pub async fn post(
         let may =
             match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[channels] agent access read on reactions failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[channels] agent access read on reactions failed", e),
             };
         if !may {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
         }
         return match toggle_reaction(&notify, &id, &msg_id, &emoji, &name, "agent").await {
             Ok(()) => Json(json!({ "ok": true })).into_response(),
-            Err(e) => {
-                tracing::error!("[channels] agent reaction failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[channels] agent reaction failed", e),
         };
     }
     let user = match require_user(&state, &headers).await {
@@ -78,10 +69,7 @@ pub async fn post(
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on reactions failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on reactions failed", e),
     }
     let actor = user
         .email
@@ -90,9 +78,6 @@ pub async fn post(
         .unwrap_or_else(|| "user".into());
     match toggle_reaction(&notify, &id, &msg_id, &emoji, &actor, "user").await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] reaction failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] reaction failed", e),
     }
 }

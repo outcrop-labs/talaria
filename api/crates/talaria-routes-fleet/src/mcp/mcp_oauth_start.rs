@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use talaria_api_facades::mcp::oauth::start_oauth;
 use talaria_api_facades::mcp::registry::get_mcp_server;
-use talaria_error::house_error;
+use talaria_error::{house_error, internal};
 use talaria_instance::instance_base_url;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -38,10 +38,7 @@ pub async fn get(
     };
     let server = match get_mcp_server(&state.pg, &server_id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[mcp/oauth] server read failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp/oauth] server read failed", e),
     };
     let Some(server) = server else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -55,10 +52,7 @@ pub async fn get(
     }
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp/oauth] secretbox unavailable: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp/oauth] secretbox unavailable", e),
     };
     // A verified hosting domain gives every OAuth app ONE stable callback
     // URL, whatever origin the admin happens to browse from.

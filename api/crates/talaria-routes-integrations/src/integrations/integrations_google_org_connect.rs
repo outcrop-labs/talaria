@@ -13,17 +13,14 @@ use talaria_api_facades::google::oauth::{
     ORG_CONNECT_SCOPES, google_connect_url, google_integration_enabled,
     google_org_connect_redirect_uri, oauth_relocation,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{get_session_user, random_token, state_cookie_for};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
     let user = match get_session_user(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] session read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] session read failed", e),
     };
     let Some(user) = user else {
         return (StatusCode::FOUND, [(header::LOCATION, "/login")]).into_response();
@@ -39,8 +36,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         );
     }
     let Some(cfg) = resolve_google_client(&state.pg, &sb).await else {
-        tracing::error!("[integrations/google/org] integration enabled but no client resolved");
-        return thrown_internal_error();
+        return internal(
+            "[integrations/google/org]",
+            "integration enabled but no client resolved",
+        );
     };
     let public_url = talaria_auth_config::get_auth_config().public_url;
     if let Some(to) = oauth_relocation(

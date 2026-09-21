@@ -151,6 +151,21 @@ pub fn thrown_internal_error() -> Response {
         .into_response()
 }
 
+/// Log `context` with the error and answer the house 500 — the one shape a
+/// route uses when an engine call it does not catch has failed.
+///
+/// WHY IT EXISTS: the `tracing::error!("…: {e}"); return thrown_internal_error();`
+/// pair was written out by hand at every call site that did not catch an engine
+/// error, which made the single decision in it — that an unhandled failure is a
+/// LOGGED 500 and never a JSON body — a decision each site re-made, and about a
+/// quarter of them re-made by dropping the log. The pair is one concept, so it
+/// is one call: the `context` keeps the log line grep-able by domain, the way
+/// the hand-written ones were.
+pub fn internal(context: &str, e: impl std::fmt::Display) -> Response {
+    tracing::error!("{context}: {e}");
+    thrown_internal_error()
+}
+
 /// The bare Postgres sentence under a sqlx error — the message
 /// catch-and-answer routes put on the wire. sqlx's own Display wraps it
 /// ("error returned from database: … at line N"), which the wire never

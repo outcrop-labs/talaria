@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_repo_env as repo_env;
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
@@ -96,10 +96,7 @@ pub async fn patch(
     }
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[workbench/env] secretbox: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/env] secretbox", e),
     };
     let actor = actor_of(&user);
     if let Err(e) = repo_env::patch_env(&state.pg, &sb, &repo, &actor, &set, &delete).await {
@@ -107,8 +104,7 @@ pub async fn patch(
         return if e.starts_with('"') {
             house_error(StatusCode::BAD_REQUEST, &e)
         } else {
-            tracing::error!("[workbench/env] write failed: {e}");
-            thrown_internal_error()
+            internal("[workbench/env] write failed", e)
         };
     }
     talaria_audit::log_audit(

@@ -12,7 +12,7 @@ use talaria_agent_defs::{
     AgentVersionRow, NewVersion, add_version_if_changed, get_agent_def_wire, list_versions,
 };
 use talaria_body::{NumKind, as_object, number_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_perm;
 use talaria_state::AppState;
 
@@ -39,20 +39,14 @@ pub async fn get(
     }
     let def = match get_agent_def_wire(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[fleet/defs/versions] def read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/versions] def read failed", e),
     };
     let Some(def) = def else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let versions = match list_versions(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[fleet/defs/versions] versions read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/versions] versions read failed", e),
     };
     let mut body = json!({
         "def": def,
@@ -98,20 +92,14 @@ pub async fn post(
             .await
         {
             Ok(row) => row,
-            Err(e) => {
-                tracing::error!("[fleet/defs/versions] def read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[fleet/defs/versions] def read failed", e),
         };
     let Some((def_id,)) = def else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let versions = match list_versions(&state.pg, &def_id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[fleet/defs/versions] versions read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/versions] versions read failed", e),
     };
     let Some(target) = versions.iter().find(|v| v.version as i64 == revert_to) else {
         return house_error(StatusCode::NOT_FOUND, "version not found");
@@ -137,9 +125,6 @@ pub async fn post(
         Ok((version, created)) => {
             Json(json!({ "ok": true, "version": version, "created": created })).into_response()
         }
-        Err(e) => {
-            tracing::error!("[fleet/defs/versions] revert write failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[fleet/defs/versions] revert write failed", e),
     }
 }

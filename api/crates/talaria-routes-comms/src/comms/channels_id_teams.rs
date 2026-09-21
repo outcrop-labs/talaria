@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, uuid_member};
 use talaria_channels::{add_channel_team, channel_role, remove_channel_team};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -41,19 +41,13 @@ pub async fn post(
     match get_team(&state.pg, &team_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "team not found"),
-        Err(e) => {
-            tracing::error!("[channels] team lookup on grant failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] team lookup on grant failed", e),
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     match add_channel_team(&notify, &id, &team_id).await {
         Ok(None) => Json(json!({ "ok": true })).into_response(),
         Ok(Some(error)) => house_error(StatusCode::BAD_REQUEST, &error),
-        Err(e) => {
-            tracing::error!("[channels] team grant failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] team grant failed", e),
     }
 }
 
@@ -69,10 +63,7 @@ pub async fn delete(
     };
     let role = match channel_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[channels] role read on team revoke failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on team revoke failed", e),
     };
     let Some(role) = role else {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -90,16 +81,12 @@ pub async fn delete(
         match team_role(&state.pg, &user.id, &team_id).await {
             Ok(Some(_)) => {}
             Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-            Err(e) => {
-                tracing::error!("[channels] team role read on revoke failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] team role read on revoke failed", e),
         }
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = remove_channel_team(&notify, &id, &team_id).await {
-        tracing::error!("[channels] team revoke failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] team revoke failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

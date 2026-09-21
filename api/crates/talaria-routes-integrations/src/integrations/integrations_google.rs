@@ -9,7 +9,7 @@ use serde_json::json;
 
 use talaria_api_facades::google::connections::{disconnect, get_connection_status};
 use talaria_api_facades::google::oauth::google_integration_enabled;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -23,10 +23,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let available = google_integration_enabled(&state.pg, &sb).await;
     let status = match get_connection_status(&state.pg, &user.id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[integrations/google] status read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google] status read failed", e),
     };
     // wire key order: available, then the status fields.
     Json(json!({

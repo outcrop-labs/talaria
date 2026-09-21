@@ -15,7 +15,7 @@ use talaria_body::{
     as_object, object_msg, optional_enum_member, parse, present_nullable_max_string_member,
     present_nullable_uuid_member, string_msg, too_big_msg, too_small_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
 use talaria_templates::set_agent_templates;
@@ -157,10 +157,7 @@ pub async fn patch(
     .await
     {
         Ok(row) => row,
-        Err(e) => {
-            tracing::error!("[fleet/defs] def read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs] def read failed", e),
     };
     let Some((def_id, def_model, def_display_name, def_workbench)) = def else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -177,8 +174,7 @@ pub async fn patch(
     )
     .await
     {
-        tracing::error!("[fleet/defs] meta update failed: {e}");
-        return thrown_internal_error();
+        return internal("[fleet/defs] meta update failed", e);
     }
     if workbench.is_some() || workbench_profile.is_some() {
         // workbench ?? stored ?? 'auto' — a profile-only patch re-states the
@@ -192,8 +188,7 @@ pub async fn patch(
         )
         .await
         {
-            tracing::error!("[fleet/defs] workbench set failed: {e}");
-            return thrown_internal_error();
+            return internal("[fleet/defs] workbench set failed", e);
         }
     }
     if (workbench_harness.is_some() || workbench_models.is_some())
@@ -205,8 +200,7 @@ pub async fn patch(
         )
         .await
     {
-        tracing::error!("[fleet/defs] workbench tuning failed: {e}");
-        return thrown_internal_error();
+        return internal("[fleet/defs] workbench tuning failed", e);
     }
     if ticket_template_id.is_some() || plan_template_id.is_some() {
         // Template binds key on the agent's MODEL, not its id — the same
@@ -219,8 +213,7 @@ pub async fn patch(
         )
         .await
         {
-            tracing::error!("[fleet/defs] template bind failed: {e}");
-            return thrown_internal_error();
+            return internal("[fleet/defs] template bind failed", e);
         }
     }
     log_audit(

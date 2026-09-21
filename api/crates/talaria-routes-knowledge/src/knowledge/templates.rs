@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, optional_max_string_member, parse, trimmed_string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{require_perm, require_user};
 use talaria_state::AppState;
 use talaria_templates::{NewTemplate, create_template, list_templates};
@@ -19,10 +19,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
     match list_templates(&state.pg, None).await {
         Ok(templates) => Json(json!({ "templates": templates })).into_response(),
-        Err(e) => {
-            tracing::error!("[templates] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[templates] list failed", e),
     }
 }
 
@@ -74,9 +71,6 @@ pub async fn post(
     .await
     {
         Ok(template) => Json(json!({ "template": template })).into_response(),
-        Err(e) => {
-            tracing::error!("[templates] create failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[templates] create failed", e),
     }
 }

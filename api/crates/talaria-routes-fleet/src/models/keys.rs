@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_llm_keys::{can_mint_keys, list_keys, mint_key};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -21,17 +21,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let keys = match list_keys(&state.pg, &user.id).await {
         Ok(k) => k,
-        Err(e) => {
-            tracing::error!("[keys] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[keys] list failed", e),
     };
     let can_mint = match can_mint_keys(&state.pg, &user.id, &user.role).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[keys] can-mint read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[keys] can-mint read failed", e),
     };
     Json(json!({ "keys": keys, "canMint": can_mint })).into_response()
 }
@@ -53,10 +47,7 @@ pub async fn post(
                 "API keys are not enabled for your account — ask an admin",
             );
         }
-        Err(e) => {
-            tracing::error!("[keys] can-mint read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[keys] can-mint read failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -69,10 +60,7 @@ pub async fn post(
     };
     let (key, secret) = match mint_key(&state.pg, &user.id, &name).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[keys] mint failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[keys] mint failed", e),
     };
     log_audit(
         &state.pg,

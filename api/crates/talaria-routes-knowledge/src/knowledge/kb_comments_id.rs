@@ -11,7 +11,7 @@ use serde_json::json;
 
 use talaria_api_facades::kb::comments::{delete_comment, set_resolved};
 use talaria_body::{as_object, boolean_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -37,10 +37,7 @@ pub async fn patch(
     match set_resolved(&state.pg, &id, resolved, &user.id).await {
         Ok(true) => Json(json!({ "ok": true })).into_response(),
         Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[kb] resolve failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[kb] resolve failed", e),
     }
 }
 
@@ -56,9 +53,6 @@ pub async fn delete(
     match delete_comment(&state.pg, &id, &user.id).await {
         Ok(true) => Json(json!({ "ok": true })).into_response(),
         Ok(false) => house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[kb] comment delete failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[kb] comment delete failed", e),
     }
 }

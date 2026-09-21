@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 use talaria_users::{
@@ -24,10 +24,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     let users = match list_users_admin(&state.pg).await {
         Ok(u) => u,
-        Err(e) => {
-            tracing::error!("[admin/users] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/users] list failed", e),
     };
     Json(serde_json::json!({ "users": users })).into_response()
 }
@@ -139,8 +136,7 @@ pub async fn put(
 
     if let Some(role) = &body.role {
         if let Err(e) = set_user_role(&state.pg, &body.user_id, role).await {
-            tracing::error!("[admin/users] role write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] role write failed", e);
         }
         // Live sessions pick the role up immediately — no re-login dance.
         if let Err(e) = talaria_session::update_sessions_for_user(
@@ -150,8 +146,7 @@ pub async fn put(
         )
         .await
         {
-            tracing::error!("[admin/users] session patch failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] session patch failed", e);
         }
         log_audit(
             &state.pg,
@@ -207,8 +202,7 @@ pub async fn put(
             }
         }
         if let Err(e) = set_assistant_elevated(&state.pg, &body.user_id, elevated).await {
-            tracing::error!("[admin/users] assistant elevation failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] assistant elevation failed", e);
         }
         log_audit(
             &state.pg,
@@ -228,8 +222,7 @@ pub async fn put(
     // An empty array still writes — the console's clear gesture.
     if let Some(models) = &body.agent_models {
         if let Err(e) = set_user_agent_access(&state.pg, &body.user_id, models).await {
-            tracing::error!("[admin/users] agent access write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] agent access write failed", e);
         }
         log_audit(
             &state.pg,
@@ -248,8 +241,7 @@ pub async fn put(
 
     if let Some(mint) = body.can_mint_keys {
         if let Err(e) = set_user_can_mint_keys(&state.pg, &body.user_id, mint).await {
-            tracing::error!("[admin/users] can-mint-keys write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] can-mint-keys write failed", e);
         }
         log_audit(
             &state.pg,
@@ -268,8 +260,7 @@ pub async fn put(
 
     if let Some(denied) = &body.denied_views {
         if let Err(e) = set_denied_views(&state.pg, &body.user_id, denied).await {
-            tracing::error!("[admin/users] denied views write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] denied views write failed", e);
         }
         log_audit(
             &state.pg,
@@ -288,8 +279,7 @@ pub async fn put(
 
     if let Some(allowed) = &body.allowed_manage_views {
         if let Err(e) = set_allowed_manage_views(&state.pg, &body.user_id, allowed).await {
-            tracing::error!("[admin/users] manage views write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/users] manage views write failed", e);
         }
         log_audit(
             &state.pg,

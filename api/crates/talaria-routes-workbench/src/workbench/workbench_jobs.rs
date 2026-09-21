@@ -22,7 +22,7 @@ use talaria_api_facades::workbench::mcp::{
 };
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{as_object, enum_member, optional_max_string_member, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as gh;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -93,10 +93,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     let task = match get_task(&state.pg, task_id).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[workbench/jobs] task read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/jobs] task read failed", e),
     };
     let Some(task) = task else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -105,10 +102,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     // gate and PR links on their board's ticket.
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[workbench/jobs] board role read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/jobs] board role read failed", e),
     };
     if role.is_none() {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -121,10 +115,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[workbench/jobs] jobs read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/jobs] jobs read failed", e),
     };
     // Per-row read, fanned out: each wire gets its repo's testing branch
     // appended — testingBranch is null only when the flow read SAYS so; an
@@ -139,10 +130,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     for (r, flow) in rows.iter().zip(flows) {
         match flow {
             Ok(f) => wires.push(row_wire(r, f.testing_branch)),
-            Err(e) => {
-                tracing::error!("[workbench/jobs] repo flow read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[workbench/jobs] repo flow read failed", e),
         }
     }
     Json(json!({ "jobs": wires })).into_response()
@@ -172,10 +160,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     let job = match job_by_id(&state.pg, &job_id).await {
         Ok(j) => j,
-        Err(e) => {
-            tracing::error!("[workbench/jobs] job read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench/jobs] job read failed", e),
     };
     let Some(job) = job else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -258,10 +243,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
                 );
             }
             Ok(_) => {}
-            Err(e) => {
-                tracing::error!("[workbench/jobs] job count failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[workbench/jobs] job count failed", e),
         }
         (
             "started",
@@ -286,8 +268,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
             .execute(&state.pg)
             .await
     {
-        tracing::error!("[workbench/jobs] job write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/jobs] job write failed", e);
     }
     if let Err(e) = log_activity(
         &state.pg,
@@ -298,8 +279,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     )
     .await
     {
-        tracing::error!("[workbench/jobs] activity write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/jobs] activity write failed", e);
     }
     if status == "started"
         && let Ok(Some(department)) =

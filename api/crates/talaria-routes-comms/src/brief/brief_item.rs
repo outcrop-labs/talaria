@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, enum_member, nullable_optional_string_member, string_member};
 use talaria_daily_brief::{BriefUser, mark_brief_item, real_brief_deps};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -77,9 +77,6 @@ pub async fn post(
                 .as_deref()
                 .unwrap_or("could not update that line"),
         ),
-        Err(e) => {
-            tracing::error!("[brief] item mark failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[brief] item mark failed", e),
     }
 }

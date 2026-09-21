@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_workchains::{Workchain, list_workchains};
@@ -31,17 +31,11 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on GET workchains failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on GET workchains failed", e),
     }
     match list_workchains(&state.pg, &id).await {
         Ok(workchains) => Json(json!({ "workchains": workchains })).into_response(),
-        Err(e) => {
-            tracing::error!("[boards] workchain list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] workchain list failed", e),
     }
 }
 
@@ -61,10 +55,7 @@ pub async fn post(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on POST workchains failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on POST workchains failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -98,10 +89,7 @@ pub async fn post(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] workchain create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] workchain create failed", e)
     };
     let (wid, board_id, name, created_by, paused, position, created_ms, updated_ms) = row;
     Json(json!({

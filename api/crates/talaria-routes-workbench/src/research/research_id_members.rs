@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
 use talaria_body::{as_object, email_member, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::{NotificationInput, add_notification};
 use talaria_research::{
     add_research_member, list_research_members, list_research_teams, remove_research_member,
@@ -58,24 +58,15 @@ pub async fn get(
     match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] role read on members failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] role read on members failed", e),
     }
     let members = match list_research_members(&state.pg, &id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[research] member list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] member list failed", e),
     };
     match list_research_teams(&state.pg, &id).await {
         Ok(teams) => Json(json!({ "members": members, "teams": teams })).into_response(),
-        Err(e) => {
-            tracing::error!("[research] team list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[research] team list failed", e),
     }
 }
 
@@ -100,10 +91,7 @@ pub async fn post(
                 "only the research owner can share it",
             );
         }
-        Err(e) => {
-            tracing::error!("[research] role read on share failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] role read on share failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -121,10 +109,7 @@ pub async fn post(
             .await
         {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[research] invitee lookup failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[research] invitee lookup failed", e),
         };
     let Some((invited_id,)) = invited else {
         return house_error(StatusCode::BAD_REQUEST, "no user with that email");
@@ -133,8 +118,7 @@ pub async fn post(
         return house_error(StatusCode::BAD_REQUEST, "that is you");
     }
     if let Err(e) = add_research_member(&state.pg, &id, &invited_id).await {
-        tracing::error!("[research] member add failed: {e}");
-        return thrown_internal_error();
+        return internal("[research] member add failed", e);
     }
     if let Err(e) = sync_report_grant(&state, &id, &invited_id, true).await {
         // The share landed; the grant sync is best-effort. Completion
@@ -178,10 +162,7 @@ pub async fn post(
     }
     match list_research_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members })).into_response(),
-        Err(e) => {
-            tracing::error!("[research] member list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[research] member list failed", e),
     }
 }
 
@@ -202,10 +183,7 @@ pub async fn delete(
     // still answers 404 and never reveals the parse error first.
     let role = match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[research] role read on unshare failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] role read on unshare failed", e),
     };
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -221,17 +199,13 @@ pub async fn delete(
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     if let Err(e) = remove_research_member(&state.pg, &id, &leaving).await {
-        tracing::error!("[research] member remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[research] member remove failed", e);
     }
     if let Err(e) = sync_report_grant(&state, &id, &leaving, false).await {
         tracing::error!("[research] report grant sync on unshare failed: {e}");
     }
     match list_research_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members })).into_response(),
-        Err(e) => {
-            tracing::error!("[research] member list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[research] member list failed", e),
     }
 }

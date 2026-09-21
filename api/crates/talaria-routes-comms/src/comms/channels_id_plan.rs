@@ -25,7 +25,7 @@ use talaria_body::{
     zod_type_name,
 };
 use talaria_channels::{channel_role, list_channel_agents};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_harness_defs::defs::channel_plan::{Effort, Priority};
 use talaria_plan_drafts::{
     StartPlanDraft, drop_draft, latest_draft_for, save_draft_proposals, start_plan_draft,
@@ -203,17 +203,11 @@ pub async fn get(
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on GET plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on GET plan failed", e),
     }
     match latest_draft_for(&state.pg, &id).await {
         Ok(draft) => Json(json!({ "draft": draft })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] draft read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[channels] draft read failed", e),
     }
 }
 
@@ -230,10 +224,7 @@ pub async fn post(
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on POST plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on POST plan failed", e),
     }
     let parsed = talaria_body::parse(&body);
     let obj = match as_object(&parsed) {
@@ -250,20 +241,14 @@ pub async fn post(
 
     let agents = match list_channel_agents(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[channels] agent list read on POST plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent list read on POST plan failed", e),
     };
     if !agents.iter().any(|a| a == &agent_model) {
         return house_error(StatusCode::BAD_REQUEST, "that agent is not in this channel");
     }
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[channels] agent access read on POST plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] agent access read on POST plan failed", e),
     };
     if !gate(&agent_model) {
         return house_error(
@@ -326,10 +311,7 @@ pub async fn patch(
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on PATCH plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on PATCH plan failed", e),
     }
     let parsed = talaria_body::parse(&body);
     let obj = match as_object(&parsed) {
@@ -341,8 +323,7 @@ pub async fn patch(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = save_draft_proposals(&state.pg, &id, &proposals).await {
-        tracing::error!("[channels] save draft proposals failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] save draft proposals failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -359,14 +340,10 @@ pub async fn delete(
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on DELETE plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on DELETE plan failed", e),
     }
     if let Err(e) = drop_draft(&state, &id).await {
-        tracing::error!("[channels] drop draft failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] drop draft failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

@@ -16,7 +16,7 @@ use talaria_body::{
     optional_max_string_member, optional_string_array_member, optional_uuid_member, parse,
     string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
@@ -53,8 +53,7 @@ async fn task_actor(
             board_allows_agent(&state.pg, board_id, &AgentSubject::Caller(caller.clone()))
                 .await
                 .map_err(|e| {
-                    tracing::error!("[tasks] agent policy read on {action} failed: {e}");
-                    thrown_internal_error()
+                    internal(&format!("[tasks] agent policy read on {action} failed"), e)
                 })?;
         if !allowed {
             let model = caller.model.clone();
@@ -70,10 +69,7 @@ async fn task_actor(
     let user = require_user(state, headers).await?;
     let role = board_role(&state.pg, &user.id, board_id)
         .await
-        .map_err(|e| {
-            tracing::error!("[tasks] role read on {action} failed: {e}");
-            thrown_internal_error()
-        })?;
+        .map_err(|e| internal(&format!("[tasks] role read on {action} failed"), e))?;
     let ok = if require_edit {
         can_edit(role.as_deref())
     } else {
@@ -120,10 +116,7 @@ pub async fn get(
     };
     match list_board_tasks(&state.pg, &id, include_archived).await {
         Ok(tasks) => Json(json!({ "tasks": tasks })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] board list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] board list failed", e),
     }
 }
 
@@ -220,10 +213,7 @@ pub async fn post(
     match invalid_assignee(&state.pg, &id, &assignees).await {
         Ok(None) => {}
         Ok(Some(bad)) => return house_error(StatusCode::BAD_REQUEST, &bad),
-        Err(e) => {
-            tracing::error!("[tasks] assignee check failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] assignee check failed", e),
     }
     // The mention test runs against the RAW body description (below), before
     // template seeding overwrites it.
@@ -241,10 +231,7 @@ pub async fn post(
         match resolve_template(&state.pg, "ticket", &ctx).await {
             Ok(Some(t)) if !t.body.trim().is_empty() => description = Some(t.body),
             Ok(_) => {}
-            Err(e) => {
-                tracing::error!("[tasks] template resolve on create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] template resolve on create failed", e),
         }
     }
     let input = NewTask {
@@ -265,10 +252,7 @@ pub async fn post(
     let deps = talaria_tasks::TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let task = match create_task(&deps, &input).await {
         Ok(t) => t,
-        Err(talaria_tasks::TaskError::Db(e)) => {
-            tracing::error!("[tasks] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(talaria_tasks::TaskError::Db(e)) => return internal("[tasks] create failed", e),
         Err(e) => return e.into_response(),
     };
     // No inline index on the create path: the new ticket reaches the

@@ -19,7 +19,7 @@ use talaria_body::{
     array_msg, array_too_big_msg, as_object, enum_member, object_msg, optional_max_string_member,
     parse, present_nullable_max_string_member, string_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin, require_user};
 use talaria_state::AppState;
 
@@ -81,7 +81,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let _ = collections::ensure_auto_collections(&state.pg, &qd, &ed).await;
     let list = match collections::list_collections(&state.pg).await {
         Ok(l) => l,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[knowledge] list_collections failed", e),
     };
     // Members get names only — the doc "Brain" picker. Key order is part of
     // the contract, and `bindings` is an EMPTY array, not omitted.

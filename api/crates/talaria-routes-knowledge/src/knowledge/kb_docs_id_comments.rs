@@ -13,7 +13,7 @@ use serde_json::json;
 
 use talaria_api_facades::kb::comments::{NewComment, add_comment, can_discuss_doc, list_comments};
 use talaria_body::{as_object, optional_uuid_member, parse, trimmed_string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
@@ -33,10 +33,7 @@ pub async fn get(
     }
     match list_comments(&state.pg, &id).await {
         Ok(comments) => Json(json!({ "comments": comments })).into_response(),
-        Err(e) => {
-            tracing::error!("[kb] comment list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[kb] comment list failed", e),
     }
 }
 
@@ -96,9 +93,6 @@ pub async fn post(
     .await
     {
         Ok(comment) => Json(json!({ "comment": comment })).into_response(),
-        Err(e) => {
-            tracing::error!("[kb] comment insert failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[kb] comment insert failed", e),
     }
 }

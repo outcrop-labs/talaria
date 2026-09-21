@@ -28,7 +28,7 @@
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_realtime_watch::{
     RealtimeDeps, RunWatchVerdict, may_watch_run, real_watch_deps, run_event_stream,
 };
@@ -46,10 +46,7 @@ pub async fn get(
     };
     let verdict = match may_watch_run(&user.id, &run_id, &real_watch_deps(state.pg.clone())).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[runs/events] watch gate failed for {run_id}: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal(&format!("[runs/events] watch gate failed for {run_id}"), e),
     };
     if verdict != RunWatchVerdict::Ok {
         return house_error(StatusCode::FORBIDDEN, "forbidden");

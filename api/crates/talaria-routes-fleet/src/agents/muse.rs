@@ -49,7 +49,7 @@ use talaria_body::{
     array_too_big_msg, as_object, enum_member, optional_max_string_member, parse, string_msg,
     too_big_msg, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_harness_defs::defs::muse::{
     MuseDraftInput, MuseProseInput, MuseProseKind, MuseTurn, muse_agent_harness, muse_cron_harness,
     muse_draft_harness, muse_skill_form_harness, muse_template_form_harness, muse_ticket_harness,
@@ -295,10 +295,7 @@ pub async fn post(
         let resolved: Option<ResolvedHarnessModel> =
             match resolve_harness_model(&state.pg, &user_spec).await {
                 Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("[muse] model resolution failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[muse] model resolution failed", e),
             };
         let Some(resolved) = resolved else {
             return house_error(StatusCode::BAD_REQUEST, NO_MODEL);
@@ -429,10 +426,7 @@ pub async fn post(
     let resolved: Option<ResolvedHarnessModel> =
         match resolve_harness_model(&state.pg, &user_spec).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[muse] model resolution failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[muse] model resolution failed", e),
         };
     let Some(resolved) = resolved else {
         return house_error(StatusCode::BAD_REQUEST, NO_MODEL);

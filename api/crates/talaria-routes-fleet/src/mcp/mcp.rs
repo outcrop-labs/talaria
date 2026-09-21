@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_mcp::{AgentMcp, list_agent_mcp};
 use talaria_api_facades::mcp::registry::servers_for_agent;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -38,10 +38,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let mut agents = match list_agent_mcp(&state.pg).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[mcp] roster failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp] roster failed", e),
     };
     let models: Vec<(String, String)> =
         match sqlx::query_as("select id::text, model from agent_defs where enabled")
@@ -49,10 +46,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .await
         {
             Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!("[mcp] roster models failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[mcp] roster models failed", e),
         };
     for a in &mut agents {
         let Some(model) = models
@@ -64,10 +58,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         };
         let registry = match servers_for_agent(&state.pg, &model).await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[mcp] servers_for_agent failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[mcp] servers_for_agent failed", e),
         };
         for srv in registry {
             if a.servers.iter().any(|s| s.name == srv.name) {

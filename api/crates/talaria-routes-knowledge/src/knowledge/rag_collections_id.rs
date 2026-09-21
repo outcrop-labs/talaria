@@ -14,7 +14,7 @@ use talaria_api_facades::retrieval::collections;
 use talaria_api_facades::retrieval::qdrant;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{array_msg, as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -54,13 +54,10 @@ pub async fn put(
     match collections::get_collection(&state.pg, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[knowledge] get_collection failed", e),
     }
-    if collections::set_bindings(&state.pg, &id, &bindings)
-        .await
-        .is_err()
-    {
-        return thrown_internal_error();
+    if let Err(e) = collections::set_bindings(&state.pg, &id, &bindings).await {
+        return internal("[knowledge] set_bindings failed", e);
     }
     let (pg, actor, target_id) = (state.pg.clone(), actor_of(&user), id.clone());
     tokio::spawn(async move {
@@ -99,7 +96,7 @@ pub async fn delete(
         Err(msg) if msg == AUTO_DELETE_REFUSAL => {
             return house_error(StatusCode::BAD_REQUEST, &msg);
         }
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[knowledge] delete_collection_by_id failed", e),
     }
     let (pg, actor, target_id) = (state.pg.clone(), actor_of(&user), id.clone());
     tokio::spawn(async move {

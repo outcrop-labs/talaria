@@ -11,7 +11,7 @@ use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse};
 use talaria_config::RootSource;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_secret_rotation::rotate_secrets;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -36,10 +36,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     .await;
     let (active, counts) = match (active, counts) {
         (a, Ok(c)) => (a.ok().flatten(), c.0),
-        (Err(e), _) | (_, Err(e)) => {
-            tracing::error!("[admin/encryption] status read failed: {e}");
-            return thrown_internal_error();
-        }
+        (Err(e), _) | (_, Err(e)) => return internal("[admin/encryption] status read failed", e),
     };
     let root_source = match state.cfg.secret_root.source() {
         RootSource::SecretKey => "env:TALARIA_SECRET_KEY",
@@ -101,10 +98,7 @@ pub async fn post(
 
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/encryption] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/encryption] secretbox unavailable", e),
     };
     match rotate_secrets(&state.pg, &sb, new_root.as_deref()).await {
         Ok((fresh, result)) => {

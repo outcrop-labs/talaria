@@ -15,7 +15,7 @@ use talaria_api_facades::google::org::{
     OrgTargetsPatch, disconnect_org, get_org_connection_status, set_org_targets,
 };
 use talaria_body::{as_object, nullish_max_string_member, nullish_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
@@ -28,10 +28,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let available = google_integration_enabled(&state.pg, &sb).await;
     let status = match get_org_connection_status(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] status read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] status read failed", e),
     };
     // Wire key order: available, then the status fields, then targets (whose
     // own key order is TargetsWire's declaration order).
@@ -73,15 +70,11 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
         },
     };
     if let Err(e) = set_org_targets(&state.pg, &patch).await {
-        tracing::error!("[integrations/google/org] targets write failed: {e}");
-        return thrown_internal_error();
+        return internal("[integrations/google/org] targets write failed", e);
     }
     let status = match get_org_connection_status(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] status read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] status read failed", e),
     };
     Json(json!({
         "ok": true,

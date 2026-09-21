@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{NumKind, as_object, nullable_number_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_llm_keys::{KeyPolicy, revoke_key, set_key_policy};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
@@ -33,8 +33,7 @@ pub async fn delete(
         return gate;
     }
     if let Err(e) = revoke_key(&state.pg, &user.id, &id).await {
-        tracing::error!("[keys] revoke failed: {e}");
-        return thrown_internal_error();
+        return internal("[keys] revoke failed", e);
     }
     log_audit(
         &state.pg,
@@ -106,10 +105,7 @@ pub async fn put(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[keys] policy write failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[keys] policy write failed", e),
     };
     if !set {
         return house_error(StatusCode::NOT_FOUND, "no such key");

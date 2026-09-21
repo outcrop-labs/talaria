@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use talaria_agent_media::read_agent_image;
 use talaria_api_facades::fleet::usable_agent_gate;
-use talaria_error::house_error;
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -31,10 +31,7 @@ pub async fn get(
     // Owner-aware: a personal assistant is only ever visible to its owner.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[agent-media] gate read failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return internal("[agent-media] gate read failed", e),
     };
     if !gate(&model) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");

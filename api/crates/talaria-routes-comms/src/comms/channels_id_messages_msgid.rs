@@ -12,7 +12,7 @@ use talaria_body::{as_object, trimmed_string_member};
 use talaria_channels::{
     channel_role, delete_channel_message, edit_channel_message, get_channel_message,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -33,10 +33,7 @@ pub async fn patch(
     }
     let msg = match get_channel_message(&state.pg, &id, &msg_id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] message read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] message read failed", e),
     };
     let Some(msg) = msg else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -61,8 +58,7 @@ pub async fn patch(
     };
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = edit_channel_message(&notify, &id, &msg_id, &content).await {
-        tracing::error!("[channels] message edit failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] message edit failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -78,20 +74,14 @@ pub async fn delete(
     };
     let role = match channel_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[channels] role read on message delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on message delete failed", e),
     };
     let Some(role) = role else {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     };
     let msg = match get_channel_message(&state.pg, &id, &msg_id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] message read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] message read failed", e),
     };
     let Some(msg) = msg else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -107,8 +97,7 @@ pub async fn delete(
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = delete_channel_message(&notify, &id, &msg_id).await {
-        tracing::error!("[channels] message delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] message delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

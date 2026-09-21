@@ -11,7 +11,7 @@ use serde_json::json;
 use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::pending_actions::decide_action;
 use talaria_body::{as_object, enum_member, parse};
-use talaria_error::{house_error, house_error_msg, thrown_internal_error};
+use talaria_error::{house_error, house_error_msg, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -50,10 +50,7 @@ pub async fn post(
         Ok(o) => o,
         // a true failure (a DB error, a token read that blew up rather than
         // answered null) — the 500 rung.
-        Err(e) => {
-            tracing::error!("[integrations/google/pending] decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/pending] decide failed", e),
     };
     let Some(outcome) = outcome else {
         return house_error(StatusCode::NOT_FOUND, "not found");

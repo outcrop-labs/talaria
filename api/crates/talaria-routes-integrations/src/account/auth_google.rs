@@ -13,7 +13,7 @@ use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::google::client::{google_login_enabled, resolve_google_client};
 use talaria_api_facades::google::oauth::{google_auth_url, google_redirect_uri, oauth_relocation};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{random_token, state_cookie_for};
 use talaria_state::AppState;
 
@@ -25,8 +25,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     let Some(cfg) = resolve_google_client(&state.pg, &sb).await else {
         // The toggle and the client are gated together in google_login_enabled;
         // reaching here without a client is not a state either runtime built.
-        tracing::error!("[auth/google] login enabled but no client resolved");
-        return thrown_internal_error();
+        return internal("[auth/google]", "login enabled but no client resolved");
     };
     let public_url = talaria_auth_config::get_auth_config().public_url;
     // The pinned origin's own start URL — one hop, then this handler runs at

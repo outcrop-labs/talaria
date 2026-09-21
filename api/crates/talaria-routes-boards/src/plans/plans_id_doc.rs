@@ -13,7 +13,7 @@ use serde_json::json;
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
 use talaria_body::{as_object, nullish_max_string_member, parse};
 use talaria_conversations::accessible_conversation;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_params::uuid_gate;
 use talaria_plan_doc::{PlanOwner, ensure_plan_doc, sync_plan_doc};
 use talaria_session::require_user;
@@ -33,10 +33,7 @@ pub async fn get(
     }
     let conv = match accessible_conversation(&state.pg, &user.id, &id).await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[plans] accessible read on GET doc failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] accessible read on GET doc failed", e),
     };
     // A chat conversation is reachable through the same helper; only plans
     // have a document.
@@ -62,10 +59,7 @@ pub async fn get(
     .await
     {
         Ok(artifact) => Json(json!({ "artifact": artifact })).into_response(),
-        Err(e) => {
-            tracing::error!("[plans] ensure doc failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[plans] ensure doc failed", e),
     }
 }
 
@@ -84,10 +78,7 @@ pub async fn post(
     }
     let conv = match accessible_conversation(&state.pg, &user.id, &id).await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[plans] accessible read on POST doc failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] accessible read on POST doc failed", e),
     };
     let Some(conv) = conv.filter(|c| c.kind == "plan") else {
         return house_error(StatusCode::NOT_FOUND, "plan not found");
@@ -96,10 +87,7 @@ pub async fn post(
     // agent cannot spend it rewriting the document either.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[plans] agent access read on POST doc failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] agent access read on POST doc failed", e),
     };
     if !gate(&conv.agent_model) {
         return house_error(

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use talaria_api_facades::kb::comments::can_discuss_doc;
 use talaria_body::{as_object, enum_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -48,10 +48,7 @@ pub async fn put(
     };
     let mut conn = match state.redis().await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[kb] presence redis failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] presence redis failed", e),
     };
     if let Err(e) = redis::cmd("SET")
         .arg(format!("{}{}", key_prefix(&id), user.id))
@@ -61,8 +58,7 @@ pub async fn put(
         .query_async::<()>(&mut conn)
         .await
     {
-        tracing::error!("[kb] presence write failed: {e}");
-        return thrown_internal_error();
+        return internal("[kb] presence write failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -82,10 +78,7 @@ pub async fn get(
     }
     let mut conn = match state.redis().await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[kb] presence redis failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] presence redis failed", e),
     };
     let prefix = key_prefix(&id);
     let keys: Vec<String> = match redis::cmd("KEYS")
@@ -94,10 +87,7 @@ pub async fn get(
         .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] presence scan failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] presence scan failed", e),
     };
     if keys.is_empty() {
         return Json(json!({ "active": [] })).into_response();
@@ -105,10 +95,7 @@ pub async fn get(
     let modes: Vec<Option<String>> =
         match redis::cmd("MGET").arg(&keys).query_async(&mut conn).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] presence read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] presence read failed", e),
         };
     let ids: Vec<String> = keys.iter().map(|k| k[prefix.len()..].to_string()).collect();
     let users: Vec<(String, Option<String>, Option<String>)> =
@@ -118,10 +105,7 @@ pub async fn get(
             .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] presence users failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] presence users failed", e),
         };
     let active: Vec<Value> = ids
         .iter()

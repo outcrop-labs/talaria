@@ -24,7 +24,7 @@ use sqlx::PgPool;
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
 use talaria_body::{as_object, parse};
 use talaria_conversations::{accessible_conversation_agent, conversation_accessible};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_params::uuid_gate;
 use talaria_plan_drafts::{
     StartPlanDraft, drop_draft, latest_draft_for, save_draft_proposals, start_plan_draft,
@@ -58,25 +58,16 @@ pub async fn get(
     match draftable_conversation(&state.pg, &id).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
-        Err(e) => {
-            tracing::error!("[plans] kind read on GET draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] kind read on GET draft failed", e),
     }
     match conversation_accessible(&state.pg, &user.id, &id).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
-        Err(e) => {
-            tracing::error!("[plans] accessible read on GET draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] accessible read on GET draft failed", e),
     }
     match latest_draft_for(&state.pg, &id).await {
         Ok(draft) => Json(json!({ "draft": draft })).into_response(),
-        Err(e) => {
-            tracing::error!("[plans] draft read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[plans] draft read failed", e),
     }
 }
 
@@ -96,10 +87,7 @@ pub async fn post(
     match draftable_conversation(&state.pg, &id).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
-        Err(e) => {
-            tracing::error!("[plans] kind read on POST draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] kind read on POST draft failed", e),
     }
     // The conversation's own agent drafts — the body cannot name one. None
     // covers "not accessible" and "no agent" both, and the 404 never says
@@ -107,17 +95,11 @@ pub async fn post(
     let agent_model = match accessible_conversation_agent(&state.pg, &user.id, &id).await {
         Ok(Some(a)) => a,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
-        Err(e) => {
-            tracing::error!("[plans] accessible read on POST draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] accessible read on POST draft failed", e),
     };
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[plans] agent access read on POST draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] agent access read on POST draft failed", e),
     };
     if !gate(&agent_model) {
         return house_error(
@@ -195,10 +177,7 @@ pub async fn patch(
     match conversation_accessible(&state.pg, &user.id, &id).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
-        Err(e) => {
-            tracing::error!("[plans] accessible read on PATCH draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] accessible read on PATCH draft failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -210,8 +189,7 @@ pub async fn patch(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = save_draft_proposals(&state.pg, &id, &proposals).await {
-        tracing::error!("[plans] save draft proposals failed: {e}");
-        return thrown_internal_error();
+        return internal("[plans] save draft proposals failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -231,14 +209,10 @@ pub async fn delete(
     match conversation_accessible(&state.pg, &user.id, &id).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "plan not found"),
-        Err(e) => {
-            tracing::error!("[plans] accessible read on DELETE draft failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[plans] accessible read on DELETE draft failed", e),
     }
     if let Err(e) = drop_draft(&state, &id).await {
-        tracing::error!("[plans] drop draft failed: {e}");
-        return thrown_internal_error();
+        return internal("[plans] drop draft failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

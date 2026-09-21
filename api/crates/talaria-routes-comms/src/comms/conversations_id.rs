@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use talaria_body::{as_object, trimmed_string_member};
 use talaria_conversations::get_conversation;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -39,10 +39,7 @@ pub async fn get(
         )
             .into_response(),
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[conversations] detail read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[conversations] detail read failed", e),
     }
 }
 
@@ -66,10 +63,7 @@ pub async fn patch(
     match get_conversation(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[conversations] gate read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[conversations] gate read failed", e),
     }
     let parsed = talaria_body::parse(&body);
     let obj = match as_object(&parsed) {
@@ -87,9 +81,6 @@ pub async fn patch(
         .await;
     match updated {
         Ok(_) => (StatusCode::OK, Json(OkTrue { ok: true })).into_response(),
-        Err(e) => {
-            tracing::error!("[conversations] rename failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[conversations] rename failed", e),
     }
 }

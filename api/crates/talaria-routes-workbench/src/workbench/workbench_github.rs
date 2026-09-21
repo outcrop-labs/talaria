@@ -17,7 +17,7 @@ use talaria_body::{
     as_object, object_msg, optional_enum_member, optional_max_string_member,
     optional_string_array_member, parse, present_nullable_max_string_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as gh;
 use talaria_github::PatchField;
 use talaria_session::{actor_of, require_admin};
@@ -149,8 +149,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     let sb = state.secretbox().await.unwrap_or_default();
     if let Err(e) = gh::set_github_config(&state.pg, &sb, &patch).await {
-        tracing::error!("[workbench/github] config write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/github] config write failed", e);
     }
     let pg = state.pg.clone();
     let actor = actor_of(&user);
@@ -193,8 +192,7 @@ pub async fn delete(State(state): State<AppState>, headers: HeaderMap) -> Respon
         repo_creation_orgs: None,
     };
     if let Err(e) = gh::set_github_config(&state.pg, &sb, &clear).await {
-        tracing::error!("[workbench/github] disconnect failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/github] disconnect failed", e);
     }
     let target_id = cur.mode.unwrap_or_else(|| "none".to_string());
     let pg = state.pg.clone();

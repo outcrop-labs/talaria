@@ -22,7 +22,7 @@ use serde_json::json;
 
 use talaria_agent_auth::require_agent;
 use talaria_body::{as_object, parse, string_array_member, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as github;
 use talaria_state::AppState;
 
@@ -74,10 +74,7 @@ pub async fn post(
         None => {
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => {
-                    tracing::error!("[secrets] push check secretbox: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[secrets] push check secretbox", e),
             };
             match github::repo_default_branch(&state.pg, &sb, &repo).await {
                 Some(b) => b,

@@ -31,7 +31,7 @@ use talaria_conversations::{
     insert_streaming_assistant, insert_user_message, list_plan_members, next_seq, prior_messages,
     title_from, touch_conversation,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::{NotifyDeps, fan_conversation_event};
 use talaria_permissions::has_perm;
 use talaria_persona::persona_configured_effort;
@@ -151,10 +151,7 @@ pub async fn post(
     if let Some(cid) = conv_id.as_deref() {
         let conv = match accessible_conversation(&state.pg, &user.id, cid).await {
             Ok(c) => c,
-            Err(e) => {
-                tracing::error!("[chat] conversation read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[chat] conversation read failed", e),
         };
         let Some(conv) = conv else {
             return house_error(StatusCode::NOT_FOUND, "conversation not found");
@@ -205,10 +202,7 @@ pub async fn post(
     // assistant (which would act as that owner — Google, memory, private soul).
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[chat] agent access read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[chat] agent access read failed", e),
     };
     if !gate(&agent_model) {
         return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");
@@ -218,10 +212,7 @@ pub async fn post(
     // request `<base>-<tier>` — the agent's own gateway resolves the alias.
     let routed_model = match routed_model_for(&state.pg, &agent_model, body.tier.as_deref()).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[chat] tier routing read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[chat] tier routing read failed", e),
     };
     let Some(routed_model) = routed_model else {
         return house_error(
@@ -331,10 +322,7 @@ pub async fn post(
                 conv_id = Some(id);
                 plan_title = Some(title.clone());
             }
-            Err(e) => {
-                tracing::error!("[chat] conversation create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[chat] conversation create failed", e),
         }
     }
     let conv_id = conv_id.expect("created or resolved above");
@@ -351,28 +339,19 @@ pub async fn post(
     // message isn't duplicated into the prior list).
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[chat] secretbox unusable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[chat] secretbox unusable", e),
     };
     let prior = if queued {
         Vec::new()
     } else {
         match prior_messages(&state.pg, &sb, &conv_id, None).await {
             Ok(p) => p,
-            Err(e) => {
-                tracing::error!("[chat] history read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[chat] history read failed", e),
         }
     };
     let user_seq = match next_seq(&state.pg, &conv_id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[chat] seq read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[chat] seq read failed", e),
     };
     // The effort pick rides the user's row: the queued-message contract. A
     // reply that is already streaming means this turn is covered later by
@@ -394,10 +373,7 @@ pub async fn post(
     .await
     {
         Ok(id) => id,
-        Err(e) => {
-            tracing::error!("[chat] user turn persist failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[chat] user turn persist failed", e),
     };
     let _ = touch_conversation(&state.pg, &conv_id, Some(&title)).await;
 
@@ -630,10 +606,7 @@ pub async fn post(
     let assistant_id =
         match insert_streaming_assistant(&state.pg, &conv_id, user_seq + 1, &json!({})).await {
             Ok(id) => id,
-            Err(e) => {
-                tracing::error!("[chat] assistant row create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[chat] assistant row create failed", e),
         };
 
     // WHERE THIS AGENT IS ANSWERING, recorded before the turn leaves for the

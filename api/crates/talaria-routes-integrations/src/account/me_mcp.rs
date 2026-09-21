@@ -18,7 +18,7 @@ use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     as_object, parse, record_msg, string_msg, too_big_msg, uuid_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 
@@ -29,10 +29,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let servers = match list_mcp_servers(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[me/mcp] registry read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[me/mcp] registry read failed", e),
     };
     let mut out = Vec::new();
     for s in servers
@@ -42,18 +39,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         let connected = if s.oauth_enabled {
             match has_oauth_tokens(&state.pg, &s.id, &user.id).await {
                 Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("[me/mcp] oauth read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[me/mcp] oauth read failed", e),
             }
         } else {
             match has_user_credentials(&state.pg, &s.id, &user.id).await {
                 Ok(b) => b,
-                Err(e) => {
-                    tracing::error!("[me/mcp] credentials read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[me/mcp] credentials read failed", e),
             }
         };
         out.push(json!({
@@ -110,21 +101,16 @@ pub async fn put(
 
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[me/mcp] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[me/mcp] secretbox unavailable", e),
     };
     if let Err(e) = set_user_credentials(&state.pg, &sb, &server_id, &user.id, creds.as_ref()).await
     {
-        tracing::error!("[me/mcp] credential store failed: {e}");
-        return thrown_internal_error();
+        return internal("[me/mcp] credential store failed", e);
     }
     if creds.is_none()
         && let Err(e) = drop_oauth_tokens(&state.pg, &server_id, &user.id).await
     {
-        tracing::error!("[me/mcp] oauth drop failed: {e}");
-        return thrown_internal_error();
+        return internal("[me/mcp] oauth drop failed", e);
     }
     log_audit(
         &state.pg,

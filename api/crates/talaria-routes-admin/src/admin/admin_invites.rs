@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, string_member, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_invites::{create_invite, list_invites, revoke_invite};
 use talaria_session::{SessionUser, require_admin};
 use talaria_state::AppState;
@@ -60,10 +60,7 @@ pub async fn post(
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/invites] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/invites] secretbox unavailable", e),
     };
     match create_invite(
         &state.pg,
@@ -121,8 +118,7 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = revoke_invite(&state.pg, &id).await {
-        tracing::error!("[admin/invites] revoke failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/invites] revoke failed", e);
     }
     log_audit(
         &state.pg,

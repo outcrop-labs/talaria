@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{acting_user, require_user, require_view, unauthorized};
 use talaria_state::AppState;
 use talaria_teams::{create_team, list_all_teams, list_teams};
@@ -30,10 +30,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         };
         return match list_all_teams(&state.pg, &user.id).await {
             Ok(teams) => Json(json!({ "teams": teams })).into_response(),
-            Err(e) => {
-                tracing::error!("[teams] list-all failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[teams] list-all failed", e),
         };
     }
     let user = match acting_user(&state, &headers).await {
@@ -43,10 +40,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     };
     match list_teams(&state.pg, &user.id).await {
         Ok(teams) => Json(json!({ "teams": teams })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[teams] list failed", e),
     }
 }
 
@@ -70,10 +64,7 @@ pub async fn post(
     };
     let (id, team_name, created_ms) = match create_team(&state.pg, &user.id, &name).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[teams] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] create failed", e),
     };
     Json(json!({
         "team": {

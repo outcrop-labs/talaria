@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use talaria_conversations::list_conversations;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -38,9 +39,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             }),
         )
             .into_response(),
-        Err(e) => {
-            tracing::error!("[conversations] list failed: {e}");
-            talaria_error::thrown_internal_error()
-        }
+        Err(e) => internal("[conversations] list failed", e),
     }
 }

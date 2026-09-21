@@ -14,7 +14,7 @@ use talaria_body::{
     NumKind, as_object, nullish_member, number_member, optional_boolean_member,
     optional_max_string_member, parse,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_tasks::{AgentIntent, AgentWriteTarget, agent_ticket_refusal, get_task, log_activity};
@@ -41,10 +41,7 @@ pub async fn get(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on GET usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on GET usage failed", e),
     };
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
@@ -61,10 +58,7 @@ pub async fn get(
         .await
         {
             Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[tasks] agent policy read on GET usage failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] agent policy read on GET usage failed", e),
         };
         if !allowed {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -77,18 +71,12 @@ pub async fn get(
         match board_role(&state.pg, &user.id, &task.board_id).await {
             Ok(Some(_)) => {}
             Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-            Err(e) => {
-                tracing::error!("[tasks] role read on GET usage failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] role read on GET usage failed", e),
         }
     }
     match task_usage(&state.pg, &id).await {
         Ok(usage) => Json(usage).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] usage rollup failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] usage rollup failed", e),
     }
 }
 
@@ -104,10 +92,7 @@ pub async fn post(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on POST usage failed", e),
     };
     // Usage is agent-reported (agents know what they burned); humans don't
     // post token counts by hand.
@@ -124,10 +109,7 @@ pub async fn post(
     .await
     {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[tasks] agent policy read on POST usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] agent policy read on POST usage failed", e),
     };
     if !allowed {
         return house_error(
@@ -160,10 +142,7 @@ pub async fn post(
                 &format!("{shut}. No further spend attaches to it."),
             );
         }
-        Err(e) => {
-            tracing::error!("[tasks] agent authority on POST usage failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] agent authority on POST usage failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -218,8 +197,7 @@ pub async fn post(
         estimated: estimated.unwrap_or(false),
     };
     if let Err(e) = record_usage(&state.pg, &input).await {
-        tracing::error!("[tasks] usage record failed: {e}");
-        return thrown_internal_error();
+        return internal("[tasks] usage record failed", e);
     }
     let total = prompt_tokens + completion_tokens;
     if let Err(e) = log_activity(
@@ -234,8 +212,7 @@ pub async fn post(
     )
     .await
     {
-        tracing::error!("[tasks] usage activity line failed: {e}");
-        return thrown_internal_error();
+        return internal("[tasks] usage activity line failed", e);
     }
     Json(serde_json::json!({ "ok": true })).into_response()
 }

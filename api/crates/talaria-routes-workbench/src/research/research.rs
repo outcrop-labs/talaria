@@ -16,7 +16,7 @@ use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::fleet::usable_agent_gate;
 use talaria_api_facades::runs::defs::research::research_modes;
 use talaria_body::{as_object, optional_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_harness_defs::defs::research::ResearchDepth;
 use talaria_permissions::has_perm;
 use talaria_research as research;
@@ -62,17 +62,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let viewer =
         match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[research] owner resolve on list failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[research] owner resolve on list failed", e),
         };
     match research::list_research_runs(&state.pg, viewer.as_deref(), 60).await {
         Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
-        Err(e) => {
-            tracing::error!("[research] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[research] list failed", e),
     }
 }
 
@@ -83,10 +77,7 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
     };
     match research::list_research_runs(&state.pg, Some(&user.id), 60).await {
         Ok(runs) => Json(json!({ "runs": runs, "modes": modes_json() })).into_response(),
-        Err(e) => {
-            tracing::error!("[research] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[research] list failed", e),
     }
 }
 
@@ -134,10 +125,7 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[research] owner resolve on start failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[research] owner resolve on start failed", e),
         };
         (caller.model.clone(), owner, caller.model.clone())
     } else {
@@ -150,10 +138,7 @@ pub async fn post(
             Ok(false) => {
                 return house_error(StatusCode::FORBIDDEN, "no permission to run research");
             }
-            Err(e) => {
-                tracing::error!("[research] perm read on start failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[research] perm read on start failed", e),
         }
         // Humans pick the agent (and need access to it); an agent-key caller
         // is pinned to itself above and never reaches this leg.
@@ -162,10 +147,7 @@ pub async fn post(
         };
         let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
             Ok(g) => g,
-            Err(e) => {
-                tracing::error!("[research] agent access read on start failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[research] agent access read on start failed", e),
         };
         if !gate(&agent_model) {
             return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");
@@ -192,10 +174,7 @@ pub async fn post(
     .await
     {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[research] duplicate check failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] duplicate check failed", e),
     };
     if let Some((id,)) = dupe {
         return (

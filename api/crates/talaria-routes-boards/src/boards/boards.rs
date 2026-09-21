@@ -15,7 +15,7 @@ use talaria_boards::{
     AgentBoard, Board, create_board, list_all_boards, list_boards, list_boards_for_agent,
 };
 use talaria_body::{as_object, optional_uuid_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_permissions::has_perm;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -45,36 +45,24 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     let subject = AgentSubject::Caller(caller.clone());
     let policy_boards = match list_boards_for_agent(&state.pg, &caller.model).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] agent listing failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent listing failed", e),
     };
     // Owner-proxying and org-wide reach key off the CALLER: a legacy
     // shared-key caller only ever gets the boards its policy allows.
     let owner_id = match assistant_owner_for(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] owner lookup failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] owner lookup failed", e),
     };
     let Some(owner_id) = owner_id else {
         return Json(json!({ "boards": policy_boards })).into_response();
     };
     let owner_boards = match list_boards(&state.pg, &owner_id, false).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] owner listing failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] owner listing failed", e),
     };
     let elevated = match is_elevated_assistant(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] elevation read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] elevation read failed", e),
     };
     // The merged listing is heterogeneous BY DESIGN: the owner's boards carry
     // their role, the elevated rest carries 'editor', and a plain agent's
@@ -90,10 +78,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     let rest: Vec<AgentBoard> = if elevated {
         match list_all_boards(&state.pg).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[boards] org-wide listing failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[boards] org-wide listing failed", e),
         }
     } else {
         policy_boards
@@ -133,10 +118,7 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Respon
         == Some("1");
     let boards: Vec<Board> = match list_boards(&state.pg, &user.id, archived).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] list failed", e),
     };
     Json(json!({ "boards": boards })).into_response()
 }
@@ -154,10 +136,7 @@ pub async fn post(
     // can't take the action.
     let allowed = match has_perm(&state.pg, &user.id, &user.role, "boards.create").await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] permission read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] permission read failed", e),
     };
     if !allowed {
         return house_error(StatusCode::FORBIDDEN, "no permission to create boards");
@@ -182,18 +161,12 @@ pub async fn post(
             Ok(None) => {
                 return house_error(StatusCode::FORBIDDEN, "not a member of that team");
             }
-            Err(e) => {
-                tracing::error!("[boards] team role read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[boards] team role read failed", e),
         }
     }
     let board = match create_board(&state.pg, &user.id, &name, team_id.as_deref()).await {
         Ok(b) => b,
-        Err(e) => {
-            tracing::error!("[boards] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] create failed", e),
     };
     Json(json!({ "board": board })).into_response()
 }

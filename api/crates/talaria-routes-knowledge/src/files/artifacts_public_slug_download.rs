@@ -10,17 +10,14 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use talaria_artifacts::get_public_artifact;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 use talaria_uploads::{get_upload, serve_upload};
 
 pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
     let a = match get_public_artifact(&state.pg, &slug).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] public read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] public read failed", e),
     };
     let Some(a) = a else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -35,10 +32,7 @@ pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Res
     let sb = state.secretbox().await.unwrap_or_default();
     let found = match get_upload(&state.pg, &sb, storage_ref).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[uploads] blob read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[uploads] blob read failed", e),
     };
     let Some((bytes, mime, filename)) = found else {
         return house_error(StatusCode::NOT_FOUND, "not found");

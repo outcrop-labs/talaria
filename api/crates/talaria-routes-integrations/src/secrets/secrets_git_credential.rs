@@ -23,7 +23,7 @@ use serde_json::json;
 
 use talaria_agent_auth::require_agent;
 use talaria_body::{as_object, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_github as github;
 use talaria_state::AppState;
 use talaria_workspace_secrets::{HostCredential, credential_for_host};
@@ -73,17 +73,11 @@ pub async fn post(
     // own GitHub token, and an operator who pinned one expects it used.
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[secrets] credential read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets] credential read failed", e),
     };
     let mut cred = match credential_for_host(&state.pg, &sb, &caller.model, &host).await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[secrets] credential read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets] credential read failed", e),
     };
     if cred.is_none()
         && let Some(agent_id) = &caller.id
@@ -104,10 +98,7 @@ pub async fn post(
                 });
             }
             Ok(None) => {}
-            Err(e) => {
-                tracing::error!("[secrets] github credential failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[secrets] github credential failed", e),
         }
     }
     let Some(cred) = cred else {

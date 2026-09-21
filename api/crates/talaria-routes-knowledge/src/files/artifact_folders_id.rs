@@ -23,7 +23,7 @@ use talaria_body::{
     as_object, enum_member, object_msg, optional_enum_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member, string_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -89,27 +89,18 @@ pub async fn get(
     };
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[folders] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] read failed", e),
     };
     let Some(folder) = folder else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let editors = match list_editors(&state.pg, ITEM_FOLDER, &folder.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[folders] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] grants read failed", e),
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[folders] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] team membership read failed", e),
     };
     if !can_read(
         &guarded_folder(&folder),
@@ -146,28 +137,19 @@ pub async fn put(
     };
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[folders] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] read failed", e),
     };
     let Some(folder) = folder else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let editors = match list_editors(&state.pg, ITEM_FOLDER, &folder.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[folders] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] grants read failed", e),
     };
     let g = guarded_folder(&folder);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[folders] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] team membership read failed", e),
     };
     if !can_edit_human(
         &g,
@@ -186,10 +168,7 @@ pub async fn put(
         let who = who_of(&user);
         let governor = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[folders] govern check failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[folders] govern check failed", e),
         };
         if !governor {
             return house_error(StatusCode::FORBIDDEN, "not allowed to change sharing");
@@ -204,11 +183,9 @@ pub async fn put(
             return house_error(StatusCode::FORBIDDEN, "no permission to publish to the web");
         }
         if let Some(editors) = &body.editors
-            && set_editors(&state.pg, ITEM_FOLDER, &id, editors)
-                .await
-                .is_err()
+            && let Err(e) = set_editors(&state.pg, ITEM_FOLDER, &id, editors).await
         {
-            return thrown_internal_error();
+            return internal("[knowledge] set_editors failed", e);
         }
     }
     let updated = match update_folder(
@@ -224,10 +201,7 @@ pub async fn put(
     {
         Ok(Some(f)) => f,
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "invalid"),
-        Err(e) => {
-            tracing::error!("[folders] update failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] update failed", e),
     };
     Json(json!({ "folder": updated })).into_response()
 }
@@ -243,10 +217,7 @@ pub async fn delete(
     };
     let folder = match get_folder(&state.pg, &id).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[folders] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] read failed", e),
     };
     let Some(folder) = folder else {
         return Json(json!({ "ok": true })).into_response();
@@ -265,17 +236,13 @@ pub async fn delete(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[folders] govern check failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] govern check failed", e),
     };
     if !governor {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     if let Err(e) = delete_folder(&state.pg, &id).await {
-        tracing::error!("[folders] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[folders] delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

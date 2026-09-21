@@ -13,7 +13,7 @@ use talaria_artifacts::{create_folder, guarded_folder, list_folders};
 use talaria_body::{
     as_object, optional_enum_member, parse, present_nullable_uuid_member, string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -46,17 +46,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // artifact list beside it — same canRead, same grant escape hatch.
     let granted = match granted_item_ids(&state.pg, ITEM_FOLDER, &user.id).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[folders] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] grants read failed", e),
     };
     let folders = match list_folders(&state.pg).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[folders] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] list failed", e),
     };
     let folders: Vec<_> = folders
         .iter()
@@ -104,10 +98,7 @@ pub async fn post(
     .await
     {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[folders] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[folders] create failed", e),
     };
     Json(json!({ "folder": folder })).into_response()
 }

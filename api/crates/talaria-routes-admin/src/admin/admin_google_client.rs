@@ -19,16 +19,16 @@ use talaria_api_facades::google::client::{
 use talaria_api_facades::google::connections::get_connection_status;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, nullable_optional_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_secretbox::SecretBox;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
 async fn secretbox_or_500(state: &AppState) -> Result<SecretBox, Response> {
-    state.secretbox().await.map_err(|e| {
-        tracing::error!("[admin/google-client] secretbox unavailable: {e}");
-        thrown_internal_error()
-    })
+    state
+        .secretbox()
+        .await
+        .map_err(|e| internal("[admin/google-client] secretbox unavailable", e))
 }
 
 pub async fn get(
@@ -56,10 +56,7 @@ pub async fn get(
     );
     let conn = match conn {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[admin/google-client] connection read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/google-client] connection read failed", e),
     };
     Json(json!({
         "status": status,
@@ -113,8 +110,7 @@ pub async fn put(
     };
     if let Err(e) = set_google_client_config(&state.pg, &sb, &patch).await {
         // The one refusal is a client id that trims to nothing — a 500.
-        tracing::error!("[admin/google-client] set failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/google-client] set failed", e);
     }
     // `after` carries hd only when the body's hd was a string — '' rides,
     // null/absent are dropped.
@@ -162,8 +158,7 @@ pub async fn delete(State(state): State<AppState>, headers: axum::http::HeaderMa
         Err(res) => return res,
     };
     if let Err(e) = clear_google_client_config(&state.pg).await {
-        tracing::error!("[admin/google-client] clear failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/google-client] clear failed", e);
     }
     log_audit(
         &state.pg,
@@ -221,8 +216,7 @@ pub async fn put_login(
     if let Err(e) =
         talaria_api_facades::google::client::set_google_login_enabled(&state.pg, enabled).await
     {
-        tracing::error!("[admin/google-client/login] set failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/google-client/login] set failed", e);
     }
     log_audit(
         &state.pg,

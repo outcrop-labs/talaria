@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, email_member, enum_member, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_teams::{add_team_member, list_team_members, remove_team_member, team_role};
@@ -23,8 +23,10 @@ fn uuid_gate(id: &str, action: &str) -> Option<Response> {
     if Uuid::parse_str(id).is_ok() {
         return None;
     }
-    tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(thrown_internal_error())
+    Some(internal(
+        &format!("[teams] non-uuid id on {action}"),
+        format!("{id:?}"),
+    ))
 }
 
 async fn owner_gate(
@@ -36,10 +38,10 @@ async fn owner_gate(
     match team_role(&state.pg, user_id, team_id).await {
         Ok(Some(role)) if role == "owner" => None,
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[teams] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -60,10 +62,7 @@ pub async fn get(
     }
     match list_team_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] member list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[teams] member list failed", e),
     }
 }
 
@@ -104,10 +103,7 @@ pub async fn post(
     match add_team_member(&state.pg, &id, &email, &role).await {
         Ok(None) => {}
         Ok(Some(sentence)) => return house_error(StatusCode::BAD_REQUEST, &sentence),
-        Err(e) => {
-            tracing::error!("[teams] member add failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] member add failed", e),
     }
     log_audit(
         &state.pg,
@@ -151,8 +147,7 @@ pub async fn delete(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = remove_team_member(&state.pg, &id, &user_id).await {
-        tracing::error!("[teams] member remove failed: {e}");
-        return thrown_internal_error();
+        return internal("[teams] member remove failed", e);
     }
     log_audit(
         &state.pg,

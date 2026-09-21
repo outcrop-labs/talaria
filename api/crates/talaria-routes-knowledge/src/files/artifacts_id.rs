@@ -29,7 +29,7 @@ use talaria_body::{
     as_object, optional_boolean_member, optional_enum_member, optional_max_string_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 use talaria_users::is_elevated_assistant;
@@ -75,20 +75,14 @@ pub async fn get(
 ) -> Response {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] read failed", e),
     };
     let Some(artifact) = artifact else {
         return not_found();
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] grants read failed", e),
     };
     // Agents (over MCP) read org/public artifacts, ones granted to them, and —
     // for a personal assistant — its owner's own (can_read_agent's owner arm).
@@ -104,17 +98,11 @@ pub async fn get(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] owner resolve failed", e),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &reader.model).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] team membership read failed", e),
         };
         if !can_read_agent(
             &guarded(&artifact),
@@ -134,10 +122,7 @@ pub async fn get(
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[artifacts] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] team membership read failed", e),
     };
     if !can_read(
         &guarded(&artifact),
@@ -159,10 +144,7 @@ pub async fn put(
 ) -> Response {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] read failed", e),
     };
     let Some(artifact) = artifact else {
         return not_found();
@@ -178,10 +160,7 @@ pub async fn put(
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] grants read failed", e),
     };
     let g = guarded(&artifact);
 
@@ -197,17 +176,11 @@ pub async fn put(
         let elevated = artifact.visibility != "private"
             && match is_elevated_assistant(&state.pg, &AgentSubject::Caller(agent)).await {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[artifacts] elevation read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[artifacts] elevation read failed", e),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] team membership read failed", e),
         };
         let may_edit = can_edit_agent(&name, &editors, &team_ids) || elevated;
         if !may_edit {
@@ -227,10 +200,7 @@ pub async fn put(
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] team membership read failed", e),
         };
         if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -247,10 +217,7 @@ pub async fn put(
         // owners' to govern.
         owner = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] govern check failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] govern check failed", e),
         };
         if body.visibility.as_deref() == Some("public")
             && !matches!(
@@ -280,11 +247,9 @@ pub async fn put(
     }
     if owner
         && let Some(editors) = &body.editors
-        && set_editors(&state.pg, ITEM_ARTIFACT, &id, editors)
-            .await
-            .is_err()
+        && let Err(e) = set_editors(&state.pg, ITEM_ARTIFACT, &id, editors).await
     {
-        return thrown_internal_error();
+        return internal("[knowledge] set_editors failed", e);
     }
     let mut updated = match save_artifact(
         &state.pg,
@@ -307,10 +272,7 @@ pub async fn put(
     {
         Ok(Some(a)) => a,
         Ok(None) => return not_found(),
-        Err(e) => {
-            tracing::error!("[artifacts] save failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] save failed", e),
     };
     if let Some(official) = body.official
         && official != updated.official
@@ -327,10 +289,7 @@ pub async fn put(
         {
             Ok(Some(a)) => a,
             Ok(None) => updated,
-            Err(e) => {
-                tracing::error!("[artifacts] officialize failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[artifacts] officialize failed", e),
         };
         let (pg, actor_, action, target_id, target_label) = (
             state.pg.clone(),
@@ -407,10 +366,7 @@ pub async fn put(
     }
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] grants read failed", e),
     };
     Json(json!({ "artifact": updated, "editors": editors_json(&editors) })).into_response()
 }
@@ -422,10 +378,7 @@ pub async fn delete(
 ) -> Response {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] read failed", e),
     };
     let Some(artifact) = artifact else {
         return not_found();
@@ -436,17 +389,11 @@ pub async fn delete(
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] grants read failed", e),
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[artifacts] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] team membership read failed", e),
     };
     if !can_edit_human(
         &guarded(&artifact),
@@ -459,8 +406,7 @@ pub async fn delete(
     }
     if let Err(e) = delete_artifact(&state.pg, &qdrant::real_deps(), &embed::real_deps(), &id).await
     {
-        tracing::error!("[artifacts] delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[artifacts] delete failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

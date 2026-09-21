@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
 use talaria_activity::{KINDS, activity_feed};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -36,9 +36,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         .unwrap_or_default();
     match activity_feed(&state.pg, &user.id, &kinds, 80, user.role == "admin").await {
         Ok(events) => Json(ActivityBody { events }).into_response(),
-        Err(e) => {
-            tracing::error!("[activity] feed query failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[activity] feed query failed", e),
     }
 }

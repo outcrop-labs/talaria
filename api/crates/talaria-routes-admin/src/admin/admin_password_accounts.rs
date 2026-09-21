@@ -13,7 +13,7 @@ use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     as_object, optional_string_member, parse, preprocessed_email_member, string_member, uuid_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_password_accounts::{
     WriteRefusal, create_password_account, list_password_accounts, remove_password_account,
     set_password_account_password,
@@ -27,10 +27,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
     }
     match list_password_accounts(&state.pg).await {
         Ok(accounts) => Json(json!({ "accounts": accounts })).into_response(),
-        Err(e) => {
-            tracing::error!("[admin/password-accounts] list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[admin/password-accounts] list failed", e),
     }
 }
 
@@ -64,10 +61,7 @@ pub async fn post(
     let result = match create_password_account(&state.pg, &email, &password, name.as_deref()).await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[admin/password-accounts] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/password-accounts] create failed", e),
     };
     let user_id = match result {
         Ok(id) => id,
@@ -120,10 +114,7 @@ pub async fn put(
 
     let result = match set_password_account_password(&state.pg, &user_id, &password).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[admin/password-accounts] set failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/password-accounts] set failed", e),
     };
     let email = match result {
         Ok(email) => email,
@@ -180,10 +171,7 @@ pub async fn delete(
     let email = match remove_password_account(&state.pg, &user_id).await {
         Ok(Some(email)) => email,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "No password account for that user"),
-        Err(e) => {
-            tracing::error!("[admin/password-accounts] remove failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/password-accounts] remove failed", e),
     };
     log_audit(
         &state.pg,

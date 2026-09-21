@@ -12,7 +12,7 @@ use talaria_boards::board_allows_agent;
 use talaria_body::{
     as_object, optional_max_string_member, optional_uuid_member, parse, string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_gaps::{remember_ticket_refusal, report_gap, report_gap::GapInput};
 use talaria_notify::NotifyDeps;
 use talaria_state::AppState;
@@ -69,10 +69,7 @@ pub async fn post(
     let task = match task_id.as_deref() {
         Some(id) => match get_task(&state.pg, id).await {
             Ok(t) => t,
-            Err(e) => {
-                tracing::error!("[agent.gap] ticket read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.gap] ticket read failed", e),
         },
         None => None,
     };
@@ -106,10 +103,7 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[agent.gap] board policy read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.gap] board policy read failed", e),
         };
         if !allowed {
             remember_ticket_refusal(&state.pg, &agent, None).await;
@@ -141,10 +135,7 @@ pub async fn post(
                 *resp.status_mut() = StatusCode::FORBIDDEN;
                 return resp;
             }
-            Err(e) => {
-                tracing::error!("[agent.gap] ticket refusal read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.gap] ticket refusal read failed", e),
         }
     }
 
@@ -163,10 +154,7 @@ pub async fn post(
     .await
     {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[agent.gap] report failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[agent.gap] report failed", e),
     };
     if let Some(task) = task.as_ref() {
         // the audit line is best-effort — a failed log is not a failed report.

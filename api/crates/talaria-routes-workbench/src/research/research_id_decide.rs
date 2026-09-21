@@ -26,7 +26,7 @@ use serde_json::json;
 use talaria_api_facades::runs::decide::{DecideArgs, DecideRefusal, DecideResult, decide};
 use talaria_api_facades::runs::real_decide_deps;
 use talaria_body::{as_object, optional_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_research::research_role;
 use talaria_session::require_user;
@@ -48,10 +48,7 @@ pub async fn post(
     match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] role read on decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] role read on decide failed", e),
     }
 
     let parsed = parse(&body);
@@ -73,10 +70,7 @@ pub async fn post(
 
     let redis = match state.redis().await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[research] redis for decide deps unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[research] redis for decide deps unavailable", e),
     };
     let deps = real_decide_deps(
         state.pg.clone(),
@@ -96,10 +90,7 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[research] decide on {id} failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal(&format!("[research] decide on {id} failed"), e),
     };
     match res {
         DecideResult::Decided { run, .. } => {

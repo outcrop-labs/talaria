@@ -16,7 +16,7 @@ use talaria_api_facades::kb::perms::{can_edit_agent, can_edit_human};
 use talaria_api_facades::kb::{effective_doc_perms, get_doc, move_doc};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{NumKind, as_object, nullable_uuid_member, number_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm, who_of};
 use talaria_state::AppState;
 
@@ -28,20 +28,14 @@ pub async fn post(
 ) -> Response {
     let existing = match get_doc(&state.pg, &id).await {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[kb] doc read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] doc read failed", e),
     };
     let Some(existing) = existing else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let eff = match effective_doc_perms(&state.pg, &existing).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[kb] perms read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] perms read failed", e),
     };
     // The same agent admission the doc PUT carries, because a move IS an edit
     // of the doc: its own authored doc, an editor grant — or an
@@ -63,17 +57,11 @@ pub async fn post(
             .await
             {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[kb] elevation read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[kb] elevation read failed", e),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] team membership read failed", e),
         };
         let may_edit = existing.created_by.as_deref() == Some(name.as_str())
             || can_edit_agent(&name, &eff.grants, &team_ids)
@@ -90,10 +78,7 @@ pub async fn post(
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] team membership read failed", e),
         };
         if !can_edit_human(
             &eff.perms,
@@ -129,10 +114,7 @@ pub async fn post(
     if let Some(parent) = &parent_id {
         let parent_doc = match get_doc(&state.pg, parent).await {
             Ok(d) => d,
-            Err(e) => {
-                tracing::error!("[kb] parent read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] parent read failed", e),
         };
         match parent_doc {
             Some(p) if p.space_id == existing.space_id => {}
@@ -147,10 +129,7 @@ pub async fn post(
     let doc = match move_doc(&state.pg, &id, parent_id.as_deref(), sort).await {
         Ok(Some(d)) => d,
         Ok(None) => return house_error(StatusCode::BAD_REQUEST, "invalid move"),
-        Err(e) => {
-            tracing::error!("[kb] move failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] move failed", e),
     };
     let (pg, actor, target_id, target_label, after) = (
         state.pg.clone(),

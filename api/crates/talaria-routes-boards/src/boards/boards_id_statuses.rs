@@ -15,7 +15,7 @@ use talaria_body::{
     as_object, optional_boolean_member, optional_enum_member, optional_max_string_member,
     optional_string_member, parse, string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -39,10 +39,10 @@ async fn edit_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> O
     match board_role(&state.pg, user_id, id).await {
         Ok(role) if can_edit(role.as_deref()) => None,
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[boards] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal(
+            &format!("[boards] role read on {action} failed"),
+            e,
+        )),
     }
 }
 
@@ -90,10 +90,7 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on GET statuses failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on GET statuses failed", e),
     }
     // `diagnostics` rides along with the columns because it is a statement
     // ABOUT this column set, and the two must never be read from different
@@ -105,10 +102,7 @@ pub async fn get(
         Ok((statuses, diagnostics)) => {
             Json(json!({ "statuses": statuses, "diagnostics": diagnostics })).into_response()
         }
-        Err(e) => {
-            tracing::error!("[boards] status list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] status list failed", e),
     }
 }
 
@@ -154,10 +148,7 @@ pub async fn post(
     match human_gate_conflict(&state, &id, None, category.as_deref(), agent_start).await {
         Ok(Some(conflict)) => return house_error(StatusCode::BAD_REQUEST, &conflict),
         Ok(None) => {}
-        Err(e) => {
-            tracing::error!("[boards] conflict precheck on POST statuses failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] conflict precheck on POST statuses failed", e),
     }
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     match create_status(
@@ -173,10 +164,7 @@ pub async fn post(
     {
         Ok(Ok(status)) => Json(json!({ "status": status })).into_response(),
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(e) => {
-            tracing::error!("[boards] status create failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] status create failed", e),
     }
 }
 
@@ -236,10 +224,7 @@ pub async fn put(
         {
             Ok(Some(conflict)) => return house_error(StatusCode::BAD_REQUEST, &conflict),
             Ok(None) => {}
-            Err(e) => {
-                tracing::error!("[boards] conflict precheck on PUT statuses failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[boards] conflict precheck on PUT statuses failed", e),
         }
         let patch = StatusPatch {
             label,
@@ -257,10 +242,7 @@ pub async fn put(
         match update_status(&deps, &id, &status_key, &patch, &actor).await {
             Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
             Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-            Err(e) => {
-                tracing::error!("[boards] status update failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[boards] status update failed", e),
         }
     } else {
         let order = match talaria_body::optional_string_array_member(obj, "order", 1, 40, 50) {
@@ -279,10 +261,7 @@ pub async fn put(
         match reorder_statuses(&state.pg, &realtime, &id, &order).await {
             Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
             Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-            Err(e) => {
-                tracing::error!("[boards] status reorder failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[boards] status reorder failed", e),
         }
     }
 }
@@ -333,9 +312,6 @@ pub async fn delete(
     match delete_status(&deps, &id, &status_key, &reassign_to, &actor).await {
         Ok(Ok(())) => Json(json!({ "ok": true })).into_response(),
         Ok(Err(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(e) => {
-            tracing::error!("[boards] status delete failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[boards] status delete failed", e),
     }
 }

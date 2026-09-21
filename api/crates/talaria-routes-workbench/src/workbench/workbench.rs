@@ -20,7 +20,7 @@ use talaria_body::{
     optional_string_array_member, optional_string_member, parse, record_msg, string_member,
     too_big_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_users::has_perm;
@@ -81,10 +81,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let profiles = match list_profiles(&state.pg).await {
         Ok(p) => p,
-        Err(e) => {
-            tracing::error!("[workbench] profile read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench] profile read failed", e),
     };
     if has_perm(&state.pg, &user.id, &user.role, "agents.manage")
         .await
@@ -199,10 +196,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     match update_profile(&state.pg, &slug, &patch).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::NOT_FOUND, "unknown profile"),
-        Err(e) => {
-            tracing::error!("[workbench] profile write failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[workbench] profile write failed", e),
     }
     // after: {...patch, env: keys} — schema key order, env replaced by its
     // KEY LIST. Env values are per-profile config that can carry credentials

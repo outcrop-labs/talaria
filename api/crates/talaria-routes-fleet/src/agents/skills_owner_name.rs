@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_skills::{copy_skill, delete_skill, read_skill, rename_skill, write_skill};
 use talaria_body::{as_object, parse, string_member, too_big_msg, too_small_msg};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_skill_access::{can_edit_skill, can_edit_skills};
 use talaria_state::AppState;
@@ -86,10 +86,7 @@ pub async fn put(
     match gate {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[skills] edit gate failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[skills] edit gate failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -175,10 +172,7 @@ pub async fn post(
         match can_edit_skill(&state.pg, &user.id, &user.role, &owner, &name).await {
             Ok(true) => {}
             Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-            Err(e) => {
-                tracing::error!("[skills] source gate failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[skills] source gate failed", e),
         }
     }
     let dest = match &op {
@@ -188,10 +182,7 @@ pub async fn post(
     match can_edit_skills(&state.pg, &user.id, &user.role, dest).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[skills] destination gate failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[skills] destination gate failed", e),
     }
     let outcome = match op {
         Op::Rename { to_name } => rename_skill(&state.pg, &owner, &name, &to_name).await,
@@ -229,10 +220,7 @@ pub async fn delete(
     match can_edit_skill(&state.pg, &user.id, &user.role, &owner, &name).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[skills] edit gate failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[skills] edit gate failed", e),
     }
     match delete_skill(&state.pg, &owner, &name).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),

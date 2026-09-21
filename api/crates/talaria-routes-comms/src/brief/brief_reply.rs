@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, enum_member, uuid_member};
 use talaria_daily_brief::delegation::{DraftOutcome, decide_draft};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -59,10 +59,7 @@ pub async fn post(
     .await
     {
         Ok(o) => o,
-        Err(e) => {
-            tracing::error!("[brief] draft decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[brief] draft decide failed", e),
     };
     match outcome {
         DraftOutcome::Gone => {

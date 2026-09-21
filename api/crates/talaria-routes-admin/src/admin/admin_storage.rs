@@ -12,7 +12,7 @@ use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     as_object, enum_member, object_msg, optional_enum_member, parse, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_secretbox::SecretBox;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -25,10 +25,10 @@ use talaria_uploads::{
 };
 
 async fn secretbox_or_500(state: &AppState) -> Result<SecretBox, Response> {
-    state.secretbox().await.map_err(|e| {
-        tracing::error!("[admin/storage] secretbox unavailable: {e}");
-        thrown_internal_error()
-    })
+    state
+        .secretbox()
+        .await
+        .map_err(|e| internal("[admin/storage] secretbox unavailable", e))
 }
 
 pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {

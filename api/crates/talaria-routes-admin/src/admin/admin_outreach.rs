@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{NumKind, array_too_big_msg, as_object, boolean_member, number_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_outreach::{
     OutreachConfig, get_outreach_config, recent_outreach_events, set_outreach_config,
 };
@@ -37,10 +37,7 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
                 })
             })
             .collect::<Vec<_>>(),
-        Err(e) => {
-            tracing::error!("[admin/outreach] agents read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/outreach] agents read failed", e),
     };
     let c = get_outreach_config(&state.pg).await;
     Json(serde_json::json!({
@@ -132,8 +129,7 @@ pub async fn put(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[admin/outreach] flags write failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/outreach] flags write failed", e);
     }
     log_audit(
         &state.pg,

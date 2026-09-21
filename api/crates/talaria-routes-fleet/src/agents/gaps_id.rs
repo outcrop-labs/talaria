@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_gaps::set_gap_status;
 use talaria_session::require_perm;
 use talaria_state::AppState;
@@ -40,9 +40,6 @@ pub async fn put(
     }
     match set_gap_status(&state.pg, &id, &status).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => {
-            tracing::error!("[gaps] status set failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[gaps] status set failed", e),
     }
 }

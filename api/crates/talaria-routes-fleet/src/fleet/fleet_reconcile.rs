@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use talaria_api_facades::fleet::reconcile::reconcile_fleet;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -19,7 +19,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap) -> Response
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] secretbox failed", e),
     };
     match reconcile_fleet(&state.pg, &sb).await {
         Ok(result) => {

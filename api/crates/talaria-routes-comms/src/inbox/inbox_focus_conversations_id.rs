@@ -15,7 +15,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_inbox_focus::conversation::{archive_inbox_conversation, get_inbox_conversation};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -45,10 +45,7 @@ pub async fn get(
     };
     match get_inbox_conversation(&state, &user, query.cursor.as_deref(), requested).await {
         Ok(page) => (StatusCode::OK, Json(page)).into_response(),
-        Err(e) => {
-            tracing::error!("[inbox-focus] conversation read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[inbox-focus] conversation read failed", e),
     }
 }
 
@@ -64,9 +61,6 @@ pub async fn delete(
     match archive_inbox_conversation(&state.pg, &user.id, &id).await {
         Ok(true) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
         Ok(false) => house_error(StatusCode::NOT_FOUND, "no such conversation"),
-        Err(e) => {
-            tracing::error!("[inbox-focus] conversation archive failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[inbox-focus] conversation archive failed", e),
     }
 }

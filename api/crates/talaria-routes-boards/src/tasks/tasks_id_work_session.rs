@@ -18,7 +18,7 @@ use serde_json::json;
 use sqlx::Row;
 
 use talaria_boards::board_role;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -50,10 +50,7 @@ pub async fn get(
         // for this caller by the ticket being rendered — this gate only
         // decides visibility of the WORK state.
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[work-session] role read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[work-session] role read failed", e),
     }
 
     // THE LIVE SESSION: newest non-terminal work-session run on this task.
@@ -71,10 +68,7 @@ pub async fn get(
     .await;
     let row = match row {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[work-session] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[work-session] read failed", e),
     };
     let wait = talaria_work_wait::for_task(&state.pg, &id)
         .await

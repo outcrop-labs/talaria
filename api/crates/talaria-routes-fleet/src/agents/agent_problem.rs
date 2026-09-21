@@ -41,7 +41,7 @@ use talaria_boards::{
 use talaria_body::{
     as_object, optional_max_string_member, optional_uuid_member, parse, string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_gaps::{agent_text_authority, remember_ticket_refusal};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_state::AppState;
@@ -144,10 +144,7 @@ pub async fn post(
     let task = match task_id.as_deref() {
         Some(id) => match get_task(&state.pg, id).await {
             Ok(t) => t,
-            Err(e) => {
-                tracing::error!("[agent.problem] ticket read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.problem] ticket read failed", e),
         },
         None => None,
     };
@@ -175,10 +172,7 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[agent.problem] board policy read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.problem] board policy read failed", e),
         };
         if !allowed {
             remember_ticket_refusal(&state.pg, &agent, None).await;
@@ -205,10 +199,7 @@ pub async fn post(
                 *resp.status_mut() = StatusCode::FORBIDDEN;
                 return resp;
             }
-            Err(e) => {
-                tracing::error!("[agent.problem] ticket refusal read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.problem] ticket refusal read failed", e),
         }
     }
 
@@ -257,10 +248,7 @@ pub async fn post(
                 ticket_note = "Helpdesk ticket filed";
                 href = format!("/boards/{board_id}/{}", filed.id);
             }
-            Err(e) => {
-                tracing::error!("[agent.problem] helpdesk filing failed: {}", e.message());
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[agent.problem] helpdesk filing failed", e.message()),
         }
     }
 

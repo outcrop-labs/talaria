@@ -17,7 +17,7 @@ use talaria_body::{
     optional_number_member, optional_string_array_member, optional_string_member,
     optional_uuid_array_member, optional_uuid_member, parse,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_refs::{MessageRef, RefChip, RefUser, resolve_refs};
@@ -43,10 +43,7 @@ pub async fn get(
     let full = match get_task_full(&state.pg, &id).await {
         Ok(Some(f)) => f,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] full read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] full read failed", e),
     };
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
@@ -63,10 +60,7 @@ pub async fn get(
         .await
         {
             Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[tasks] agent policy read on GET task failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] agent policy read on GET task failed", e),
         };
         if !allowed {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -79,19 +73,13 @@ pub async fn get(
         };
         let workflows = match talaria_workflows::workflows_for_task(&state.pg, &target).await {
             Ok(w) => w,
-            Err(e) => {
-                tracing::error!("[tasks] workflow read on GET task failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] workflow read on GET task failed", e),
         };
         // The detail body plus a one-off `workflows` payload — the list an
         // agent caller dispatches against.
         let mut body = match serde_json::to_value(&full) {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[tasks] full detail serialize failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] full detail serialize failed", e),
         };
         if let Some(obj) = body.as_object_mut() {
             obj.insert(
@@ -108,10 +96,7 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &full.task.board_id).await {
         Ok(Some(_)) => Json(full).into_response(),
         Ok(None) => house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[tasks] role read on GET task failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] role read on GET task failed", e),
     }
 }
 
@@ -167,10 +152,7 @@ pub async fn put(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on PUT task failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on PUT task failed", e),
     };
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(c) => c,
@@ -188,10 +170,7 @@ pub async fn put(
         .await
         {
             Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[tasks] agent policy read on PUT task failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] agent policy read on PUT task failed", e),
         };
         if !allowed {
             return house_error(
@@ -209,10 +188,7 @@ pub async fn put(
         };
         let role = match board_role(&state.pg, &user.id, &task.board_id).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[tasks] role read on PUT task failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[tasks] role read on PUT task failed", e),
         };
         if !can_edit(role.as_deref()) {
             return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -350,10 +326,7 @@ pub async fn put(
     {
         Ok(None) => {}
         Ok(Some(bad)) => return house_error(StatusCode::BAD_REQUEST, &bad),
-        Err(e) => {
-            tracing::error!("[tasks] assignee check on PUT task failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] assignee check on PUT task failed", e),
     }
     let attachments = if attachment_ids.is_some() || refs.is_some() {
         // Resolve to canonical chips server-side (never trust client
@@ -363,10 +336,7 @@ pub async fn put(
         let uploads =
             match resolve_attachments(&state.pg, attachment_ids.as_deref().unwrap_or(&[])).await {
                 Ok(u) => u,
-                Err(e) => {
-                    tracing::error!("[tasks] attachment resolve failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[tasks] attachment resolve failed", e),
             };
         let chips: Vec<RefChip> = if let Some(user) = session_user.as_ref() {
             let ref_user = RefUser {
@@ -376,10 +346,7 @@ pub async fn put(
             };
             match resolve_refs(&state.pg, &ref_user, refs.as_deref().unwrap_or(&[])).await {
                 Ok(c) => c,
-                Err(e) => {
-                    tracing::error!("[tasks] ref resolve failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[tasks] ref resolve failed", e),
             }
         } else {
             Vec::new()
@@ -422,10 +389,7 @@ pub async fn put(
         Ok(t) => t,
         Err(TaskError::ApprovalRequired(msg)) => return house_error(StatusCode::FORBIDDEN, &msg),
         Err(TaskError::Refusal(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(TaskError::Db(e)) => {
-            tracing::error!("[tasks] update failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(TaskError::Db(e)) => return internal("[tasks] update failed", e),
     };
     // No inline index or judge trigger on this path: a text edit reaches the
     // activity brain only through the opportunistic RAG sweep (keyed on
@@ -500,17 +464,11 @@ pub async fn delete(
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on DELETE task failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] read on DELETE task failed", e),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on DELETE task failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[tasks] role read on DELETE task failed", e),
     };
     if !can_edit(role.as_deref()) {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -552,9 +510,6 @@ pub async fn delete(
             });
             Json(json!({ "ok": true })).into_response()
         }
-        Err(e) => {
-            tracing::error!("[tasks] delete failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[tasks] delete failed", e),
     }
 }

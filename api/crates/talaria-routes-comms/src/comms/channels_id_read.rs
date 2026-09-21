@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{NumKind, as_object, number_member};
 use talaria_channels::{channel_role, mark_channel_read};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -25,10 +25,7 @@ pub async fn post(
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on read-cursor failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on read-cursor failed", e),
     }
     let parsed = talaria_body::parse(&body);
     let obj = match as_object(&parsed) {
@@ -44,12 +41,10 @@ pub async fn post(
     // last_read_seq is int4: past 2^31-1 the write would die on Postgres'
     // own overflow (→ 500), so it is refused here.
     if seq > 2_147_483_647.0 {
-        tracing::error!("[channels] read cursor past int4: {seq}");
-        return thrown_internal_error();
+        return internal("[channels] read cursor past int4", seq);
     }
     if let Err(e) = mark_channel_read(&state.pg, &id, &user.id, seq as i32).await {
-        tracing::error!("[channels] read-cursor advance failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] read-cursor advance failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

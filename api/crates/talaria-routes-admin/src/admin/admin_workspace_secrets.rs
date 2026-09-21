@@ -38,7 +38,7 @@ use talaria_body::{
     optional_string_array_member, parse, present_nullable_uuid_member, string_member,
     string_value_member, too_big_msg, utf16_len, uuid_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_routes_integrations::secrets::secrets::{entry_key_ok, parse_entry};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -64,27 +64,18 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if let Some(agent) = agent {
         return match handles_held_by(&state.pg, &agent).await {
             Ok(held) => Json(json!({ "held": held })).into_response(),
-            Err(e) => {
-                tracing::error!("[admin/workspace-secrets] held read failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[admin/workspace-secrets] held read failed", e),
         };
     }
     // WORKSPACE folders — owner-less, so they belong to the org rather than to
     // whichever admin happened to make one and can outlive that account.
     let secrets = match list_secret_docs(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[admin/workspace-secrets] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/workspace-secrets] list failed", e),
     };
     let folders = match list_secret_folders(&state.pg, &user.id, true).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[admin/workspace-secrets] folders read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/workspace-secrets] folders read failed", e),
     };
     Json(json!({ "secrets": secrets, "folders": folders })).into_response()
 }
@@ -92,25 +83,20 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
 async fn listing(pg: &sqlx::PgPool) -> Response {
     match list_secret_docs(pg).await {
         Ok(s) => Json(json!({ "secrets": s })).into_response(),
-        Err(e) => internal(e, "list"),
+        Err(e) => internal("[admin/workspace-secrets] list failed", e),
     }
 }
 
 async fn folders_listing(pg: &sqlx::PgPool, user_id: &str) -> Response {
     match list_secret_folders(pg, user_id, true).await {
         Ok(f) => Json(json!({ "folders": f })).into_response(),
-        Err(e) => internal(e, "folders"),
+        Err(e) => internal("[admin/workspace-secrets] folders failed", e),
     }
 }
 
 /// The engine-error rule: ONLY the create surfaces the engine's own message
 /// (a dup-name sentence the operator needs) as a 400; every other action
 /// throws to the 500 boundary.
-fn internal(e: String, what: &str) -> Response {
-    tracing::error!("[admin/workspace-secrets] {what} failed: {e}");
-    thrown_internal_error()
-}
-
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -214,10 +200,7 @@ pub async fn post(
             // a 400 (unlike /api/secrets, which hides it).
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
-                Err(e) => {
-                    tracing::error!("[admin/workspace-secrets] secretbox unavailable: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[admin/workspace-secrets] secretbox unavailable", e),
             };
             let doc = create_secret_doc(
                 &state.pg,
@@ -294,7 +277,7 @@ pub async fn post(
                 revoke_secret(&state.pg, &name, &agent_model).await
             };
             if let Err(e) = result {
-                return internal(e, "grant/revoke");
+                return internal("[admin/workspace-secrets] grant/revoke failed", e);
             }
             log_audit(
                 &state.pg,
@@ -323,7 +306,7 @@ pub async fn post(
                 Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
             };
             if let Err(e) = delete_secret_doc(&state.pg, &name).await {
-                return internal(e, "delete");
+                return internal("[admin/workspace-secrets] delete failed", e);
             }
             log_audit(
                 &state.pg,
@@ -351,7 +334,7 @@ pub async fn post(
             };
             let f = match create_secret_folder(&state.pg, &name, None).await {
                 Ok(f) => f,
-                Err(e) => return internal(e, "folder create"),
+                Err(e) => return internal("[admin/workspace-secrets] folder create failed", e),
             };
             log_audit(
                 &state.pg,
@@ -378,7 +361,7 @@ pub async fn post(
             };
             let deleted = match delete_secret_folder(&state.pg, &id, &user.id, true).await {
                 Ok(d) => d,
-                Err(e) => return internal(e, "folder delete"),
+                Err(e) => return internal("[admin/workspace-secrets] folder delete failed", e),
             };
             if !deleted {
                 return house_error(StatusCode::NOT_FOUND, "no such folder");
@@ -429,7 +412,7 @@ pub async fn post(
             .await
             {
                 Ok(s) => s,
-                Err(e) => return internal(e, "folder grant"),
+                Err(e) => return internal("[admin/workspace-secrets] folder grant failed", e),
             };
             if !shared {
                 return house_error(StatusCode::NOT_FOUND, "no such folder");
@@ -471,7 +454,7 @@ pub async fn post(
                     .await
                 {
                     Ok(m) => m,
-                    Err(e) => return internal(e, "file"),
+                    Err(e) => return internal("[admin/workspace-secrets] file failed", e),
                 };
             if !moved {
                 return house_error(StatusCode::BAD_REQUEST, "could not file that");

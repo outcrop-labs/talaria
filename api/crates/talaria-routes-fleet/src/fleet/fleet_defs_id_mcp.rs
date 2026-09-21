@@ -15,7 +15,7 @@ use talaria_body::{
     NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
     optional_boolean_member, parse, string_msg, too_big_msg, url_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
 
@@ -145,8 +145,7 @@ pub async fn post(
         Ok(row) => row,
         Err(e) => {
             // a non-uuid id is the same postgres refusal — this 500 arm.
-            tracing::error!("[fleet/defs/mcp] def read failed: {e}");
-            return thrown_internal_error();
+            return internal("[fleet/defs/mcp] def read failed", e)
         }
     };
     let Some((def_id, slug, managed, department, display_name)) = def else {
@@ -154,10 +153,7 @@ pub async fn post(
     };
     let latest = match list_versions(&state.pg, &def_id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[fleet/defs/mcp] versions read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/mcp] versions read failed", e),
     };
     let Some(latest) = latest.first() else {
         return house_error(StatusCode::BAD_REQUEST, "no base version — import first");
@@ -212,10 +208,7 @@ pub async fn post(
     .await
     {
         Ok(vc) => vc,
-        Err(e) => {
-            tracing::error!("[fleet/defs/mcp] version write failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/defs/mcp] version write failed", e),
     };
     if created {
         log_audit(
@@ -240,10 +233,7 @@ pub async fn post(
         // Roll, don't restart — see fleet_defs_id_edit.
         let sb = match state.secretbox().await {
             Ok(sb) => sb,
-            Err(e) => {
-                tracing::error!("[fleet/defs/mcp] secretbox unavailable: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[fleet/defs/mcp] secretbox unavailable", e),
         };
         match roll_agent(&state.pg, &sb, &department).await {
             Ok(None) => applied = true,

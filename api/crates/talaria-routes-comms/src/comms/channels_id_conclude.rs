@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_channels::channel_role;
 use talaria_comms_decay::conclude_relay;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -35,10 +35,7 @@ pub async fn post(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[channels] conclude read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] conclude read failed", e),
     };
     let Some((name, kind)) = row else {
         return house_error(StatusCode::NOT_FOUND, "not found");

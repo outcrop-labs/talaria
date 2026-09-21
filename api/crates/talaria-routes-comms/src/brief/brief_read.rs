@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{NumKind, as_object, number_member, uuid_member};
 use talaria_daily_brief::mark_brief_read;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -52,8 +52,7 @@ pub async fn post(
         Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
     };
     if let Err(e) = mark_brief_read(&state.pg, &user.id, &body.brief_id, body.seq as i64).await {
-        tracing::error!("[brief] cursor move failed: {e}");
-        return thrown_internal_error();
+        return internal("[brief] cursor move failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }

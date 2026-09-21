@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_api_facades::runs::defs::agent_hire::agent_hire_run;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_perm;
 use talaria_state::AppState;
 
@@ -64,10 +64,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await;
     let rows = match rows {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[fleet] hires query failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet] hires query failed", e),
     };
 
     let hires = rows

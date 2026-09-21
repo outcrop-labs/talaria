@@ -14,7 +14,7 @@ use talaria_apps::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin, require_view};
 use talaria_state::AppState;
 use talaria_users::{app_build_status, discovered_apps};
@@ -101,10 +101,7 @@ pub async fn put(
     let actor = actor_of(&user);
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/apps] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/apps] secretbox unavailable", e),
     };
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -254,10 +251,7 @@ pub async fn delete(
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/apps] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[admin/apps] secretbox unavailable", e),
     };
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -277,8 +271,7 @@ pub async fn delete(
         return house_error(StatusCode::BAD_REQUEST, &msg);
     }
     if wipe_data && let Err(e) = wipe_app_data(&state.pg, &app).await {
-        tracing::error!("[admin/apps] data wipe failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/apps] data wipe failed", e);
     }
     log_audit(
         &state.pg,

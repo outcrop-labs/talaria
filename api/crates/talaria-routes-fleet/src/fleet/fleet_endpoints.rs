@@ -13,7 +13,7 @@ use talaria_body::{
     as_object, js_numberify, optional_max_string_member, optional_string_array_member, parse,
     string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_price_oracle::{kick_auto_prices, maybe_refresh_auto_prices};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -34,7 +34,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             js_numberify(&mut body);
             Json(body).into_response()
         }
-        Err(_) => thrown_internal_error(),
+        Err(e) => internal("[fleet] fleet_endpoints failed", e),
     }
 }
 
@@ -58,7 +58,7 @@ pub async fn post(
     };
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] secretbox failed", e),
     };
     match create_endpoint(
         &state.pg,

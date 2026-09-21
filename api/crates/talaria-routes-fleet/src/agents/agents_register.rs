@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use talaria_agent_auth::check_fleet_key;
 use talaria_agents_registry::register_agent;
 use talaria_body::{as_object, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 
 pub async fn post(
@@ -21,7 +21,7 @@ pub async fn post(
     // registers BEFORE it has a credential of its own.
     let ok = match check_fleet_key(&state.pg, &headers).await {
         Ok(ok) => ok,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return internal("[fleet] check_fleet_key failed", e),
     };
     if !ok {
         return house_error(StatusCode::UNAUTHORIZED, "unauthorized");
@@ -78,6 +78,6 @@ pub async fn post(
             "registered": true,
         }))
         .into_response(),
-        Err(_) => thrown_internal_error(),
+        Err(e) => internal("[fleet] register_agent failed", e),
     }
 }

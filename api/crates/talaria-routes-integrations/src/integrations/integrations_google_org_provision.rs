@@ -15,7 +15,7 @@ use talaria_api_facades::google::org::{get_org_connection_status, get_org_email}
 use talaria_api_facades::google::pending_actions::agent_from_address;
 use talaria_api_facades::google::provisioning::{provision_workspace, provisioning_readiness};
 use talaria_body::{as_object, optional_boolean_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
@@ -28,24 +28,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // so sequential order answers the same.
     let readiness = match provisioning_readiness(&state.pg).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] readiness read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] readiness read failed", e),
     };
     let status = match get_org_connection_status(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] status read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] status read failed", e),
     };
     let org_email = match get_org_email(&state.pg).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] org email read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] org email read failed", e),
     };
     // The agent_defs row, cut to the five columns this read uses, ordered by
     // slug asc. Personal assistants are filtered out — they send as their
@@ -64,10 +55,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("[integrations/google/org] agent defs read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/org] agent defs read failed", e)
     };
     let agents: Vec<Value> = defs
         .into_iter()
@@ -145,9 +133,6 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
         }
         // provision_workspace folds its throws into per-item outcomes; the
         // Err here is a DB write it could not fold — the route's throw.
-        Err(e) => {
-            tracing::error!("[integrations/google/org] provision failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[integrations/google/org] provision failed", e),
     }
 }

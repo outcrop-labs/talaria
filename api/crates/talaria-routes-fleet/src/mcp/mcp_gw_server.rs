@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
 use talaria_api_facades::mcp::jsonrpc::rpc_error;
 use talaria_api_facades::mcp::registry::{effective_mcp_for, parse_mcp_response};
-use talaria_error::{house_error, thrown_internal_error, upstream_error_message};
+use talaria_error::{house_error, internal, upstream_error_message};
 use talaria_state::AppState;
 use talaria_workspace_secrets::spend_handles_in_tool_call;
 
@@ -78,17 +78,11 @@ pub async fn post(
     let name = caller.model.clone();
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp/gw] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp/gw] secretbox unavailable", e),
     };
     let eff = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[mcp/gw] effective resolution failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp/gw] effective resolution failed", e),
     };
     let Some(mut eff) = eff else {
         return house_error(StatusCode::FORBIDDEN, "no access to this MCP server");
@@ -119,10 +113,7 @@ pub async fn post(
     if let Some(rpc_mut) = rpc.as_mut() {
         let spend = match spend_handles_in_tool_call(&state.pg, &sb, rpc_mut, &name).await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[mcp/gw] spend boundary failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[mcp/gw] spend boundary failed", e),
         };
         let tool = called_tool(Some(rpc_mut));
         for u in &spend.used {
@@ -326,17 +317,11 @@ pub async fn get(
     let subject = AgentSubject::Caller(caller);
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp/gw] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp/gw] secretbox unavailable", e),
     };
     let eff = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[mcp/gw] effective resolution failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp/gw] effective resolution failed", e),
     };
     let Some(mut eff) = eff else {
         return house_error(StatusCode::FORBIDDEN, "no access to this MCP server");
@@ -439,7 +424,7 @@ pub async fn get(
         .status(StatusCode::from_u16(status).unwrap_or(StatusCode::OK))
         .header(header::CONTENT_TYPE, ct)
         .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|_| thrown_internal_error())
+        .unwrap_or_else(|e| internal("[fleet] response build failed", e))
 }
 
 async fn relay(
@@ -493,11 +478,11 @@ async fn relay(
         let out = filter_bodies(&text, allowed, &content_type);
         return builder
             .body(Body::from(out))
-            .unwrap_or_else(|_| thrown_internal_error());
+            .unwrap_or_else(|e| internal("[fleet] response build failed", e));
     }
     builder
         .body(Body::from_stream(upstream.bytes_stream()))
-        .unwrap_or_else(|_| thrown_internal_error())
+        .unwrap_or_else(|e| internal("[fleet] response build failed", e))
 }
 
 /// The tools/list filter over JSON or SSE-framed text: `data:` lines are

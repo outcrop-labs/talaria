@@ -19,7 +19,7 @@ use talaria_api_facades::google::gmail::list_recent_messages_with_token;
 use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
 use talaria_body::{as_object, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, house_error_msg, thrown_internal_error};
+use talaria_error::{house_error, house_error_msg, internal};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_state::AppState;
 
@@ -95,10 +95,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     };
     let principal = match resolve_agent_principal(&state.pg, &agent_model).await {
         Ok(p) => p,
-        Err(e) => {
-            tracing::error!("[integrations/google/agent] principal read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/agent] principal read failed", e),
     };
     // The payload IS the validated draft, stored as drafted and executed as
     // stored at approve time; subject/body always ride (their defaults),
@@ -137,10 +134,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .await
     {
         Ok(q) => q,
-        Err(e) => {
-            tracing::error!("[integrations/google/agent] queue failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/agent] queue failed", e),
     };
     let message = if queued.already_pending {
         "An identical draft is already waiting for approval — nothing new queued."

@@ -14,7 +14,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use talaria_agent_auth::agent_caller;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_users::list_users;
@@ -51,9 +51,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 .collect(),
         })
         .into_response(),
-        Err(e) => {
-            tracing::error!("[users] directory query failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[users] directory query failed", e),
     }
 }

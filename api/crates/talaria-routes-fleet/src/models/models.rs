@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::model::access::gateway_models_for;
 use talaria_api_facades::model::info::model_info;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_harness_model::muse_model_for;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -29,10 +29,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // throttle is two model calls for one batch of pending ids.
     let catalog = match gateway_models_for(&state.pg, &user.role).await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[models] gateway catalog read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[models] gateway catalog read failed", e),
     };
     let mut models = Vec::with_capacity(catalog.len());
     for m in &catalog {
@@ -46,10 +43,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         };
         let info = match model_info(&state.pg, lookup).await {
             Ok(i) => i,
-            Err(e) => {
-                tracing::error!("[models] blurb override read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[models] blurb override read failed", e),
         };
         // `{...m, label, blurb}` — the three catalog keys in their order,
         // then the two info keys. A model the public catalog doesn't know
@@ -67,10 +61,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
     let effective = match muse_model_for(&state.pg, &user.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[models] muse resolution failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[models] muse resolution failed", e),
     };
     Json(json!({ "models": models, "effective": effective })).into_response()
 }

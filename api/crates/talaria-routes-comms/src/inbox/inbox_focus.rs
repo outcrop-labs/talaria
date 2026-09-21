@@ -6,7 +6,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_inbox_focus::{FocusQueueOptions, list_focus_queue};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -27,9 +27,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await
     {
         Ok(queue) => (StatusCode::OK, Json(queue)).into_response(),
-        Err(e) => {
-            tracing::error!("[inbox-focus] queue read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[inbox-focus] queue read failed", e),
     }
 }

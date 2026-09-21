@@ -23,7 +23,7 @@ use talaria_body::{
     as_object, enum_member, object_msg, optional_max_string_member, optional_string_array_member,
     parse, record_msg, string_member, string_value_member, too_big_msg, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm, require_user};
 use talaria_state::AppState;
 
@@ -52,10 +52,7 @@ async fn harnesses_json(pg: &sqlx::PgPool) -> Response {
             "harnesses": list.iter().map(|h| h.wire()).collect::<Vec<_>>(),
         }))
         .into_response(),
-        Err(e) => {
-            tracing::error!("[workbench/harnesses] registry read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[workbench/harnesses] registry read failed", e),
     }
 }
 
@@ -223,8 +220,7 @@ pub async fn put(State(state): State<AppState>, headers: HeaderMap, body: Bytes)
     };
     let slug = definition["slug"].as_str().unwrap_or_default().to_string();
     if let Err(e) = upsert_custom_harness(&state.pg, &slug, &definition, &actor_of(&user)).await {
-        tracing::error!("[workbench/harnesses] definition write failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/harnesses] definition write failed", e);
     }
     harnesses_json(&state.pg).await
 }
@@ -241,8 +237,7 @@ pub async fn delete(State(state): State<AppState>, headers: HeaderMap, uri: Uri)
         return house_error(StatusCode::BAD_REQUEST, "slug required");
     };
     if let Err(e) = delete_custom_harness(&state.pg, slug).await {
-        tracing::error!("[workbench/harnesses] definition delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[workbench/harnesses] definition delete failed", e);
     }
     harnesses_json(&state.pg).await
 }

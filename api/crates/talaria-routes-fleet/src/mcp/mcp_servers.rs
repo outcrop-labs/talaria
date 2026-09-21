@@ -23,7 +23,7 @@ use talaria_body::{
     nullish_max_string_member, object_msg, optional_enum_member, optional_max_string_member, parse,
     record_msg, string_msg, too_big_msg, url_member, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_secretbox::SecretBox;
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
@@ -355,10 +355,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let servers = match list_mcp_servers(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[mcp] registry read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[mcp] registry read failed", e),
     };
     let mut detail = Vec::with_capacity(servers.len());
     for s in &servers {
@@ -375,10 +372,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 .into_iter()
                 .map(|(agent_model, tools)| json!({ "agentModel": agent_model, "tools": tools }))
                 .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("[mcp] assignments read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[mcp] assignments read failed", e),
         };
         let user_access = match list_user_access(&state.pg, &s.id).await {
             Ok(rows) => rows
@@ -387,10 +381,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     json!({ "userId": user_id, "allowed": allowed, "tools": tools })
                 })
                 .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("[mcp] user access read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[mcp] user access read failed", e)
         };
         let team_access = match list_team_access(&state.pg, &s.id).await {
             Ok(rows) => rows
@@ -399,18 +390,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     json!({ "teamId": team_id, "allowed": allowed, "tools": tools })
                 })
                 .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("[mcp] team access read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[mcp] team access read failed", e)
         };
         let org_connected = if s.oauth_enabled {
             match has_oauth_tokens(&state.pg, &s.id, "org").await {
                 Ok(b) => json!(b),
-                Err(e) => {
-                    tracing::error!("[mcp] oauth token read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[mcp] oauth token read failed", e),
             }
         } else {
             json!(null)
@@ -418,10 +403,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         let oauth_meta_v = if s.oauth_enabled {
             match oauth_meta(&state.pg, &s.id).await {
                 Ok(m) => m.unwrap_or(Value::Null),
-                Err(e) => {
-                    tracing::error!("[mcp] oauth meta read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[mcp] oauth meta read failed", e),
             }
         } else {
             Value::Null

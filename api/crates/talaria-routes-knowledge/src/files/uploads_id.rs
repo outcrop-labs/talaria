@@ -9,7 +9,7 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 
 use talaria_agent_auth::agent_caller;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 use talaria_uploads::{
@@ -58,10 +58,7 @@ pub async fn get(
     let sb = state.secretbox().await.unwrap_or_default();
     let found = match get_upload(&state.pg, &sb, &id).await {
         Ok(f) => f,
-        Err(e) => {
-            tracing::error!("[uploads] blob read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[uploads] blob read failed", e),
     };
     let Some((bytes, mime, filename)) = found else {
         return upload_not_found();

@@ -22,7 +22,7 @@ use serde_json::Value;
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_search::{SEARCH_URL_KEY, real_deps, search_reachable, search_url};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -77,8 +77,7 @@ pub async fn put(
         );
     }
     if let Err(e) = set_setting(&state.pg, SEARCH_URL_KEY, &Value::String(url.to_string())).await {
-        tracing::error!("[admin/search] setting write failed: {e}");
-        return thrown_internal_error();
+        return internal("[admin/search] setting write failed", e);
     }
     log_audit(
         &state.pg,

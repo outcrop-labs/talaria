@@ -17,7 +17,7 @@ use talaria_api_facades::kb::perms::{
 use talaria_api_facades::kb::{NewSpace, create_space, list_spaces};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
@@ -40,18 +40,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     let all = match list_spaces(&state.pg).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] space list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space list failed", e),
     };
     if let Some(caller) = caller {
         let granted = match granted_item_ids_for_agent(&state.pg, "space", &caller.model).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] grant read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] grant read failed", e),
         };
         // The owner arm is the inherited-read promise: a personal assistant
         // sees the spaces its owner sees, so a private space is not hidden
@@ -63,10 +57,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] owner resolve failed", e),
         };
         let spaces: Vec<_> = all
             .into_iter()
@@ -86,10 +77,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // the granted-set check beside it covers the grant half.
     let granted = match granted_item_ids(&state.pg, "space", &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] grant read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] grant read failed", e),
     };
     let who = who_of(&user);
     let spaces: Vec<_> = all
@@ -137,10 +125,7 @@ pub async fn post(
         let model = caller.model.clone();
         let dup = match list_spaces(&state.pg).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] space list failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] space list failed", e),
         }
         .into_iter()
         .find(|s| s.name.trim().to_lowercase() == name.trim().to_lowercase());
@@ -156,10 +141,7 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] responsible-user resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] responsible-user resolve failed", e),
         };
         let space = match create_space(
             &state.pg,
@@ -174,10 +156,7 @@ pub async fn post(
         .await
         {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[kb] space create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] space create failed", e),
         };
         return Json(json!({ "space": space })).into_response();
     }
@@ -199,10 +178,7 @@ pub async fn post(
     .await
     {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space create failed", e),
     };
     let (pg, actor, target_id, target_label) = (
         state.pg.clone(),

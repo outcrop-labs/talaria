@@ -16,7 +16,7 @@ use talaria_channels::{
     list_channel_members, list_channel_teams, list_task_room_agents, list_task_room_members,
     update_channel,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -32,10 +32,7 @@ pub async fn get(
     };
     let role = match channel_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[channels] role read on GET failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] role read on GET failed", e),
     };
     let Some(role) = role else {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
@@ -46,50 +43,32 @@ pub async fn get(
     // exactly what a rail channel does.
     let task_room = match is_task_room(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] task-room probe failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] task-room probe failed", e),
     };
     let (members, agents) = if task_room {
         let m = match list_task_room_members(&state.pg, &id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[channels] task-room member read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] task-room member read failed", e),
         };
         let a = match list_task_room_agents(&state.pg, &id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[channels] task-room agent read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] task-room agent read failed", e),
         };
         (m, a)
     } else {
         let m = match list_channel_members(&state.pg, &id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[channels] member read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] member read failed", e),
         };
         let a = match list_channel_agents(&state.pg, &id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[channels] agent read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[channels] agent read failed", e),
         };
         (m, a)
     };
     let teams = match list_channel_teams(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] team read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[channels] team read failed", e),
     };
     Json(json!({ "role": role, "members": members, "agents": agents, "teams": teams }))
         .into_response()
@@ -135,8 +114,7 @@ pub async fn put(
     )
     .await
     {
-        tracing::error!("[channels] update failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] update failed", e);
     }
     Json(json!({ "ok": true })).into_response()
 }
@@ -171,8 +149,7 @@ pub async fn delete(
         archive_channel(&notify, &id).await
     };
     if let Err(e) = result {
-        tracing::error!("[channels] archive/delete failed: {e}");
-        return thrown_internal_error();
+        return internal("[channels] archive/delete failed", e);
     }
     // A hard delete removes the channel's messages — purge their activity
     // points too so nothing orphans in the index. Fire-and-forget: the

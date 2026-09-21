@@ -22,7 +22,7 @@ use talaria_body::{
     as_object, optional_boolean_member, optional_email_array_member, optional_max_string_member,
     parse, string_member,
 };
-use talaria_error::{house_error, house_error_msg, thrown_internal_error};
+use talaria_error::{house_error, house_error_msg, internal};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_state::AppState;
 
@@ -50,10 +50,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     let calendar_id = if google.principal == "org" {
         match get_org_targets(&state.pg).await {
             Ok(t) => t.calendar_id,
-            Err(e) => {
-                tracing::error!("[integrations/google/agent] org targets read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[integrations/google/agent] org targets read failed", e),
         }
     } else {
         None
@@ -109,10 +106,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     };
     let principal = match resolve_agent_principal(&state.pg, &agent_model).await {
         Ok(p) => p,
-        Err(e) => {
-            tracing::error!("[integrations/google/agent] principal read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/agent] principal read failed", e),
     };
     // The payload IS the validated draft, stored exactly as drafted and
     // executed as stored at approve time — optional members ride only when
@@ -150,10 +144,7 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
     .await
     {
         Ok(q) => q,
-        Err(e) => {
-            tracing::error!("[integrations/google/agent] queue failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[integrations/google/agent] queue failed", e),
     };
     // Calendar has no signature in the dedupe yet, so `already_pending` is
     // false from this route today — the wording branch exists so the kind

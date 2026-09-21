@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{as_object, boolean_member, nullable_uuid_member};
 use talaria_daily_brief::delegation::{grant_reply, list_grants, release_drafts, revoke_reply};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -43,10 +43,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     match list_grants(&state.pg, &user.id).await {
         Ok(grants) => Json(json!({ "grants": grants })).into_response(),
-        Err(e) => {
-            tracing::error!("[brief] grant list failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[brief] grant list failed", e),
     }
 }
 
@@ -72,18 +69,12 @@ pub async fn post(
     if !body.granted {
         return match revoke_reply(&state.pg, &user.id, body.channel_id.as_deref()).await {
             Ok(revoked) => Json(json!({ "revoked": revoked })).into_response(),
-            Err(e) => {
-                tracing::error!("[brief] revoke failed: {e}");
-                thrown_internal_error()
-            }
+            Err(e) => internal("[brief] revoke failed", e),
         };
     }
     let grant = match grant_reply(&state.pg, &user.id, body.channel_id.as_deref()).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[brief] grant failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[brief] grant failed", e),
     };
     let Some(grant) = grant else {
         return house_error(

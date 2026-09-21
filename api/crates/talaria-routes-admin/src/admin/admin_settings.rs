@@ -10,7 +10,7 @@ use serde_json::Value;
 use talaria_api_facades::gateway::settings::{get_setting, set_setting};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, utf16_len, zod_type_name};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -271,8 +271,7 @@ pub async fn put(
         )
         .await;
         if let Err(e) = set_setting(&state.pg, "llm_budgets", budgets).await {
-            tracing::error!("[admin/settings] budgets write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/settings] budgets write failed", e);
         }
         log_audit(
             &state.pg,
@@ -297,8 +296,7 @@ pub async fn put(
         )
         .await
         {
-            tracing::error!("[admin/settings] cron floor write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/settings] cron floor write failed", e);
         }
         log_audit(
             &state.pg,
@@ -319,8 +317,7 @@ pub async fn put(
         if let Err(e) =
             set_setting(&state.pg, "audit_retention_days", &serde_json::json!(days)).await
         {
-            tracing::error!("[admin/settings] retention write failed: {e}");
-            return thrown_internal_error();
+            return internal("[admin/settings] retention write failed", e);
         }
         log_audit(
             &state.pg,

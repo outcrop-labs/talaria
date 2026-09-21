@@ -5,13 +5,15 @@
 // response to return; the Option shape keeps clippy's large-Err lint quiet.
 
 use axum::response::Response;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use uuid::Uuid;
 
 pub fn uuid_gate(module: &str, action: &str, id: &str) -> Option<Response> {
     if Uuid::parse_str(id).is_ok() {
         return None;
     }
-    tracing::error!("[{module}] non-uuid id on {action}: {id:?}");
-    Some(thrown_internal_error())
+    Some(internal(
+        &format!("[{module}] non-uuid id on {action}"),
+        format!("{id:?}"),
+    ))
 }

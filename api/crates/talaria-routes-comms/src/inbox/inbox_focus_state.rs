@@ -13,7 +13,7 @@ use talaria_body::{
     as_object, enum_member, optional_boolean_member, present_nullable_datetime_member,
     string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_inbox_focus::conversation::record_inbox_snooze;
 use talaria_inbox_focus::types::FOCUS_SOURCE_TYPES;
 use talaria_inbox_focus::update_focus_state;
@@ -75,10 +75,7 @@ pub async fn put(
     .await
     {
         Ok(ok) => ok,
-        Err(e) => {
-            tracing::error!("[inbox-focus] state write failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[inbox-focus] state write failed", e),
     };
     if !updated {
         return house_error(
@@ -99,10 +96,7 @@ pub async fn put(
         .await
         {
             Ok(entry) => entry,
-            Err(e) => {
-                tracing::error!("[inbox-focus] snooze record failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[inbox-focus] snooze record failed", e),
         },
         None => None,
     };

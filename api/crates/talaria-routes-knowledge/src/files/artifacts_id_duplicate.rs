@@ -13,7 +13,7 @@ use serde_json::json;
 
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
 use talaria_artifacts::{duplicate_artifact, get_artifact, guarded};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -28,27 +28,18 @@ pub async fn post(
     };
     let src = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] read failed", e),
     };
     let Some(src) = src else {
         return house_error(StatusCode::NOT_FOUND, "not found");
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &src.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] grants read failed", e),
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[artifacts] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] team membership read failed", e),
     };
     if !can_read(
         &guarded(&src),
@@ -62,9 +53,6 @@ pub async fn post(
     match duplicate_artifact(&state.pg, &src.id, &user.id, Some(&user.id)).await {
         Ok(Some(copy)) => Json(json!({ "artifact": copy })).into_response(),
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[artifacts] duplicate failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[artifacts] duplicate failed", e),
     }
 }

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use talaria_agent_crons::{create_fleet_crons, list_fleet_crons};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, parse, trimmed_string_member, uuid_array_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -21,7 +21,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     }
     match list_fleet_crons(&state.pg).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
-        Err(_) => thrown_internal_error(),
+        Err(e) => internal("[fleet] list_fleet_crons failed", e),
     }
 }
 
@@ -70,7 +70,7 @@ pub async fn post(
     let results =
         match create_fleet_crons(&state.pg, &agent_ids, &name, &schedule, &prompt, stagger).await {
             Ok(r) => r,
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return internal("[fleet] create_fleet_crons failed", e),
         };
     let actor = actor_of(&user);
     let after = json!({

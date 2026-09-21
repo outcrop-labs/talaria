@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_inbox_focus::focus_summary;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -19,9 +19,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     match focus_summary(&state.pg, &user).await {
         Ok(count) => (StatusCode::OK, Json(json!({ "count": count }))).into_response(),
-        Err(e) => {
-            tracing::error!("[inbox-focus] summary read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[inbox-focus] summary read failed", e),
     }
 }

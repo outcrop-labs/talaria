@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_api_facades::kb::{SearchViewer, search_docs};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::{require_user, who_of};
 use talaria_state::AppState;
 
@@ -41,9 +41,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     .await
     {
         Ok(hits) => Json(json!({ "hits": hits })).into_response(),
-        Err(e) => {
-            tracing::error!("[kb] search failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[kb] search failed", e),
     }
 }

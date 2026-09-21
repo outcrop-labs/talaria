@@ -21,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_workspace_secrets::reveal_entry;
@@ -52,17 +52,11 @@ pub async fn post(
     let actor = actor_of(&user);
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[secrets] reveal failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets] reveal failed", e),
     };
     let out = match reveal_entry(&state.pg, &sb, &name, &key, &user.id, Some(&actor)).await {
         Ok(o) => o,
-        Err(e) => {
-            tracing::error!("[secrets] reveal failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[secrets] reveal failed", e),
     };
     if out.value.is_none() {
         // The refusal reason goes to the CALLER here, unlike the agent

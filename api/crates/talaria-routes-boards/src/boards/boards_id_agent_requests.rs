@@ -33,7 +33,7 @@ use talaria_approvals::{ApprovalDeps, announce_approval};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_boards::{add_board_agent_row, board_info, board_role, can_edit};
 use talaria_body::{as_object, enum_member, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{acting_user, require_user, unauthorized};
@@ -100,10 +100,7 @@ pub async fn get(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => {}
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on agent requests failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on agent requests failed", e),
     }
     let rows: Vec<QueueRow> = match sqlx::query_as(
         "select r.id::text, r.agent_model, d.display_name, r.requested_by_user_id::text, \
@@ -120,10 +117,7 @@ pub async fn get(
     .await
     {
         Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("[boards] agent request queue read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent request queue read failed", e),
     };
     Json(json!({ "requests": rows.iter().map(queue_wire).collect::<Vec<_>>() })).into_response()
 }
@@ -268,10 +262,7 @@ pub async fn post(
                         ),
                     );
                 }
-                Err(e) => {
-                    tracing::error!("[boards] owner read on agent request failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[boards] owner read on agent request failed", e),
             };
             let actor = proxied_actor(&state.pg, &caller.model, &owner).await;
             (caller.model, owner, actor)
@@ -298,10 +289,7 @@ pub async fn post(
             .await
             {
                 Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("[boards] agent def read on agent request failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[boards] agent def read on agent request failed", e),
             };
             match owner {
                 Some((Some(owner_id),)) if owner_id == user.id => {}
@@ -324,10 +312,7 @@ pub async fn post(
     match board_info(&state.pg, &id).await {
         Ok(info) if info.exists => {}
         Ok(_) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[boards] board read on agent request failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] board read on agent request failed", e),
     }
     // The whole point of the request path: the owner CANNOT read this board.
     // If they can, the one-step grant is available and this queue is not the
@@ -344,10 +329,7 @@ pub async fn post(
                 ),
             );
         }
-        Err(e) => {
-            tracing::error!("[boards] owner role read on agent request failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] owner role read on agent request failed", e),
     }
     let inserted = match insert_request(
         &state.pg,
@@ -359,10 +341,7 @@ pub async fn post(
     .await
     {
         Ok(n) => n,
-        Err(e) => {
-            tracing::error!("[boards] agent request insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent request insert failed", e),
     };
     filed(
         &state,
@@ -396,10 +375,7 @@ pub async fn put(
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => {}
         Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on agent request decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on agent request decide failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -427,10 +403,7 @@ pub async fn put(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[boards] agent request read on decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent request read on decide failed", e),
     };
     let Some((req_id, agent_name, requested_by)) = req else {
         return house_error(StatusCode::NOT_FOUND, "not found or already decided");
@@ -441,10 +414,7 @@ pub async fn put(
     // approved twice) or a closed request with no grant behind it.
     let mut tx = match state.pg.begin().await {
         Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!("[boards] agent request decide tx begin failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent request decide tx begin failed", e),
     };
     let decided = async {
         if approve {
@@ -472,14 +442,12 @@ pub async fn put(
             return house_error(StatusCode::NOT_FOUND, "not found or already decided");
         }
         Err(e) => {
-            tracing::error!("[boards] agent request decide write failed: {e}");
             let _ = tx.rollback().await;
-            return thrown_internal_error();
+            return internal("[boards] agent request decide write failed", e);
         }
     }
     if let Err(e) = tx.commit().await {
-        tracing::error!("[boards] agent request decide commit failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] agent request decide commit failed", e);
     }
     let label = board_info(&state.pg, &id).await.ok().map(|i| i.label);
     log_audit(

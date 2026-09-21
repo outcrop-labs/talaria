@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_body::{as_object, optional_max_string_member, parse, string_msg, zod_type_name};
-use talaria_error::house_error;
+use talaria_error::{house_error, internal};
 use talaria_personal_agent::{
     HANDLE_RE_NOTE, PersonalAgentInput, PersonalAgentPatch, PersonalUser, create_personal_agent,
     handle_ok, personal_agent_for, update_personal_agent,
@@ -88,10 +88,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
     match personal_agent_for(&state.pg, &user.id).await {
         Ok(assistant) => Json(json!({ "assistant": assistant })).into_response(),
-        Err(e) => {
-            tracing::error!("[me.assistant] read failed: {e}");
-            talaria_error::thrown_internal_error()
-        }
+        Err(e) => internal("[me.assistant] read failed", e),
     }
 }
 

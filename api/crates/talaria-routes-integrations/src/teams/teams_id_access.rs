@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{as_object, optional_string_array_member, parse, zod_type_name};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_permissions::PERM_IDS;
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
@@ -24,8 +24,10 @@ fn uuid_gate(id: &str, action: &str) -> Option<Response> {
     if Uuid::parse_str(id).is_ok() {
         return None;
     }
-    tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(thrown_internal_error())
+    Some(internal(
+        &format!("[teams] non-uuid id on {action}"),
+        format!("{id:?}"),
+    ))
 }
 
 pub async fn get(
@@ -42,17 +44,11 @@ pub async fn get(
     match get_team(&state.pg, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[teams] access get team failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] access get team failed", e),
     }
     match get_team_access(&state.pg, &id).await {
         Ok(access) => Json(json!({ "access": access })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] access read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[teams] access read failed", e),
     }
 }
 
@@ -72,10 +68,7 @@ pub async fn put(
     match get_team(&state.pg, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[teams] access put team failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[teams] access put team failed", e),
     }
     let parsed = parse(&body);
     let obj = match as_object(&parsed) {
@@ -88,10 +81,7 @@ pub async fn put(
     } {
         match set_team_denied_views(&state.pg, &id, &denied).await {
             Ok(()) => {}
-            Err(e) => {
-                tracing::error!("[teams] denied views write failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[teams] denied views write failed", e),
         }
     }
     if let Some(allowed) = match optional_string_array_member(obj, "allowedManageViews", 1, 60, 10)
@@ -104,8 +94,7 @@ pub async fn put(
             .filter(|v| MANAGE_VIEW_ROUTES.iter().any(|r| r == v))
             .collect();
         if let Err(e) = set_team_allowed_manage_views(&state.pg, &id, &valid).await {
-            tracing::error!("[teams] manage views write failed: {e}");
-            return thrown_internal_error();
+            return internal("[teams] manage views write failed", e);
         }
     }
     if let Some(perms) = obj.get("permissions") {
@@ -137,10 +126,7 @@ pub async fn put(
     .await;
     match get_team_access(&state.pg, &id).await {
         Ok(access) => Json(json!({ "access": access })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] access re-read failed: {e}");
-            thrown_internal_error()
-        }
+        Err(e) => internal("[teams] access re-read failed", e),
     }
 }
 
@@ -167,8 +153,7 @@ async fn apply_perm_overrides(
             }
         };
         if let Err(e) = set_team_perm_override(&state.pg, team_id, perm, allowed).await {
-            tracing::error!("[teams] perm override write failed: {e}");
-            return Err(thrown_internal_error());
+            return Err(internal("[teams] perm override write failed", e));
         }
     }
     Ok(())

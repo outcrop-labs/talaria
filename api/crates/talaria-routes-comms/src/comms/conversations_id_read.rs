@@ -16,7 +16,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{NumKind, as_object, optional_number_member};
 use talaria_conversations::{conversation_accessible, latest_message_seq, mark_conversation_read};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -35,10 +35,7 @@ pub async fn post(
     match conversation_accessible(&state.pg, &user.id, &id).await {
         Ok(true) => {}
         Ok(false) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[conversations] access read on read-cursor failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[conversations] access read on read-cursor failed", e),
     }
     let parsed = talaria_body::parse(&body);
     let obj = match as_object(&parsed) {
@@ -56,23 +53,18 @@ pub async fn post(
     if let Some(seq) = seq
         && seq > 2_147_483_647.0
     {
-        tracing::error!("[conversations] read cursor past int4: {seq}");
-        return thrown_internal_error();
+        return internal("[conversations] read cursor past int4", seq);
     }
     // The latest is needed either way now: as the absent-seq answer, and as
     // the bar the sweep below only clears rows past — having read to seq 5
     // of 9 means the bell rows for 6–9 have NOT been served yet.
     let latest = match latest_message_seq(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[conversations] latest-seq read on read-cursor failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[conversations] latest-seq read on read-cursor failed", e),
     };
     let seq = seq.map(|v| v as i32).unwrap_or(latest);
     if let Err(e) = mark_conversation_read(&state.pg, &id, &user.id, seq).await {
-        tracing::error!("[conversations] read-cursor advance failed: {e}");
-        return thrown_internal_error();
+        return internal("[conversations] read-cursor advance failed", e);
     }
     // Reading the WHOLE thread is also the end of its bell rows — the same
     // gesture the bell's own click performs, arriving by the other door.

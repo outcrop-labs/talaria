@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::collections::HashMap;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
@@ -42,10 +42,7 @@ pub async fn get(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[fleet/resources] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[fleet/resources] read failed", e),
     };
     let mut series: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
     let mut mem_series: HashMap<String, Vec<i64>> = HashMap::new();

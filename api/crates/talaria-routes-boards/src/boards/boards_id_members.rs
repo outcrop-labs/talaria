@@ -16,7 +16,7 @@ use talaria_boards::{
     unshare_board,
 };
 use talaria_body::{as_object, email_member, enum_member, optional_uuid_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{ActingUser, acting_user, require_user, unauthorized};
 use talaria_state::AppState;
 
@@ -39,20 +39,14 @@ pub async fn get(
     let subject = talaria_agent_auth::AgentSubject::Caller(caller);
     let allowed = match board_allows_agent(&state.pg, &id, &subject).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] agent gate on members failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent gate on members failed", e),
     };
     if !allowed {
         return house_error(StatusCode::FORBIDDEN, "forbidden");
     }
     let members = match list_members(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] member list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] member list failed", e),
     };
     Json(json!({ "members": members })).into_response()
 }
@@ -68,17 +62,11 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap, id: &str) -> Respons
     match board_role(&state.pg, &user.id, id).await {
         Ok(Some(_)) => {}
         Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on members failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] role read on members failed", e),
     }
     let members = match list_members(&state.pg, id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] member list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] member list failed", e),
     };
     Json(json!({ "members": members })).into_response()
 }
@@ -87,10 +75,7 @@ async fn write_gate(state: &AppState, user: &ActingUser, id: &str) -> Option<Res
     match board_role(&state.pg, &user.id, id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => None,
         Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[boards] role read on member write failed: {e}");
-            Some(thrown_internal_error())
-        }
+        Err(e) => Some(internal("[boards] role read on member write failed", e)),
     }
 }
 
@@ -132,10 +117,7 @@ pub async fn post(
     match share_board(&state.pg, &id, &email, &role).await {
         Ok(ShareOutcome::Shared) => {}
         Ok(ShareOutcome::Refused(msg)) => return house_error(StatusCode::BAD_REQUEST, msg),
-        Err(e) => {
-            tracing::error!("[boards] share failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] share failed", e),
     }
     log_audit(
         &state.pg,
@@ -204,10 +186,7 @@ pub async fn delete(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[boards] email lookup failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[boards] email lookup failed", e),
         };
         let Some(row) = found else {
             return house_error(StatusCode::BAD_REQUEST, "no user with that email");
@@ -218,8 +197,7 @@ pub async fn delete(
         return house_error(StatusCode::BAD_REQUEST, "userId or email required");
     };
     if let Err(e) = unshare_board(&state.pg, &id, &user_id).await {
-        tracing::error!("[boards] unshare failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] unshare failed", e);
     }
     log_audit(
         &state.pg,

@@ -21,7 +21,7 @@ use talaria_body::{
     array_too_big_msg, as_object, enum_member, object_msg, optional_enum_member, parse,
     present_nullable_max_string_member, string_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 
@@ -97,10 +97,7 @@ pub async fn get(
 ) -> Response {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space read failed", e),
     };
     let Some(space) = space else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -111,18 +108,12 @@ pub async fn get(
     };
     let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] editor read failed", e),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] team membership read failed", e),
     };
     if !can_read(
         &guarded_of(&space),
@@ -144,10 +135,7 @@ pub async fn put(
 ) -> Response {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space read failed", e),
     };
     let Some(space) = space else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -167,10 +155,7 @@ pub async fn put(
     };
     let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] editor read failed", e),
     };
     // Agents (over MCP) may edit a space they created, hold an editor grant
     // on, or — elevated — any non-private one: the same predicate the doc PUT
@@ -193,17 +178,11 @@ pub async fn put(
             .await
             {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[kb] elevation read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return internal("[kb] elevation read failed", e),
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] team membership read failed", e),
         };
         let may_edit = space.created_by.as_deref() == Some(name.as_str())
             || can_edit_agent(&name, &editors, &team_ids)
@@ -225,10 +204,7 @@ pub async fn put(
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] team membership read failed", e),
         };
         if !can_edit_human(
             &guarded_of(&space),
@@ -249,10 +225,7 @@ pub async fn put(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[kb] govern check failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return internal("[kb] govern check failed", e),
         };
         let sharing_touched =
             patch.visibility.is_some() || patch.edit_policy.is_some() || editors_req.is_some();
@@ -261,27 +234,19 @@ pub async fn put(
         }
         if owner
             && let Some(grants) = &editors_req
-            && set_editors(&state.pg, ITEM_SPACE, &id, grants)
-                .await
-                .is_err()
+            && let Err(e) = set_editors(&state.pg, ITEM_SPACE, &id, grants).await
         {
-            return thrown_internal_error();
+            return internal("[knowledge] set_editors failed", e);
         }
         actor = who_of(&user).unwrap_or_else(|| "user".into());
     }
     let updated = match update_space(&state.pg, &id, &patch, Some(&actor)).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space update failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space update failed", e),
     };
     let editors_after = match list_editors(&state.pg, ITEM_SPACE, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] editor read failed", e),
     };
     Json(json!({ "space": updated, "editors": editors_json(&editors_after) })).into_response()
 }
@@ -293,10 +258,7 @@ pub async fn delete(
 ) -> Response {
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[kb] space read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] space read failed", e),
     };
     let Some(space) = space else {
         return house_error(StatusCode::NOT_FOUND, "not found");
@@ -307,18 +269,12 @@ pub async fn delete(
     };
     let editors = match list_editors(&state.pg, ITEM_SPACE, &space.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] editor read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] editor read failed", e),
     };
     let who = who_of(&user);
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[kb] team membership read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] team membership read failed", e),
     };
     if !can_edit_human(
         &guarded_of(&space),
@@ -331,8 +287,8 @@ pub async fn delete(
     }
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
-    if delete_space(&state.pg, &qd, &ed, &id).await.is_err() {
-        return thrown_internal_error();
+    if let Err(e) = delete_space(&state.pg, &qd, &ed, &id).await {
+        return internal("[knowledge] team_ids_for_user failed", e);
     }
     let (pg, actor) = (state.pg.clone(), actor_of(&user));
     tokio::spawn(async move {
