@@ -32,6 +32,19 @@ yours to fix here, but it is yours to name: reproduce it on a clean `rc` checkou
 under **Gate**, and say so. An absorbed failure hides a broken tree from every PR after this
 one ([`AGENTS.md`](../AGENTS.md) — "Parallel sessions share working trees").
 
+The **judge** comments on this pull request with what it can decide from the diff — where the
+base branch points, whether the changelog claim covers the surfaces you touched, tests,
+generated trees, commit subjects. Run it yourself before you push:
+
+```bash
+node scripts/judge-pr.mjs --base origin/rc
+```
+
+A finding it grades `must` is something this repository says about itself; fix it or argue it
+here. `should` and `ask` are for you and the reviewer to settle — never a reason to hold the
+change. What it cannot see (whether the change works) is
+[`.claude/skills/judge-pr/SKILL.md`](../.claude/skills/judge-pr/SKILL.md), which is a reading.
+
 ## Branch flow
 
 `scripts/flow-guard.mjs` (run by CI) holds the branch contract. Does this PR touch it, the

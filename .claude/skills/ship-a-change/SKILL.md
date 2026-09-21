@@ -8,7 +8,7 @@ description: Land a change — the pre-push gates, exercising the changed path i
 The outer loop: from code-complete to merged. The change lands on `rc` — the integration
 branch and the staging environment — and `main` receives it later, by an automated promotion
 once the staging deploy is green. You never open that second pull request. The model, and why:
-[`docs/BRANCHES.md`](../../docs/BRANCHES.md). The rules in full are CONTRIBUTING.md's; this is
+[`docs/BRANCHES.md`(../../../docs/BRANCHES.md). The rules in full are CONTRIBUTING.md's; this is
 the procedure in order.
 
 ## 1. Gates

@@ -80,6 +80,7 @@ cannot open until the commit has been deployed.
 | `migrations.yml` | migration-touching changes | the array replays from zero *and* upgrades a baseline, with the schema snapshot undrifted |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc`: CI green, deploy green |
+| `judge.yml` | every pull request | the standards half: the flow, the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
 | `pre-push` (git hook) | a push from a wired clone | the same provenance rule, before the network |
 | `release.yml` | tags, and 03:17 UTC | the published channel images, the GitHub Release, the desktop installers |
@@ -217,6 +218,10 @@ Five things about that list that are easy to get wrong:
   when main's required checks actually include `promotion gate (rc verified)`;
   otherwise the workflow warns and leaves the merge to a human, because
   auto-merge waits for required checks and nothing else.
+- **The judge is deliberately NOT on this list either.** `judge.yml` runs on every pull request
+  and fails on a `must`, and it is left advisory because a judge with a false positive that
+  blocks a merge teaches everyone to route around it. When its findings have earned the trust,
+  add `judge (standards)` to the contexts above — the same path every other check here took.
 - **`required_approving_review_count: 1` on `rc` assumes more than one
   maintainer.** GitHub does not let an author approve their own pull request, so
   a solo maintainer cannot merge their own work under that rule. Either set it to

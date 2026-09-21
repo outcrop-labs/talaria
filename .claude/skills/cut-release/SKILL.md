@@ -9,7 +9,7 @@ RELEASING.md is the contract — this is the working procedure distilled from it
 that shape everything: **git tags are the version authority** (releasing never edits a file —
 no version-bump commit, no changelog commit, nothing to merge afterwards), and **a release is
 cut from a branch that has already been deployed**: `rc` for a candidate, `main` for a stable.
-The branch model behind that: [`docs/BRANCHES.md`](../../docs/BRANCHES.md).
+The branch model behind that: [`docs/BRANCHES.md`(../../../docs/BRANCHES.md).
 
 ## The branches
 

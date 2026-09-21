@@ -79,6 +79,31 @@ a document it may not have read. The model:
 - **No repo MCP client config.** The MCP server in `mcp/` is product (agents in a
   Talaria workspace); pointing a harness at a dev instance needs a running org and is a
   later tranche.
-- **`.claude/**` is not doc-walked** by `check-docs` (it skips dotted directories), so
-  links inside skills are unenforced — keep them few and pointed at stable paths. The
-  index rows in AGENTS.md are enforced, which is where it counts.
+- **`.claude/skills/` IS doc-walked, and nothing else under `.claude/` is** (`check-docs` skips
+  dotted directories except `.github` and `.claude`, and skips `.claude/worktrees/`, which holds
+  whole checkouts). The links inside a skill are read by every agent that follows one, so they
+  are checked like any other doc — a wrong relative path there used to be invisible for exactly
+  as long as nobody read the skill. Keep them pointed at stable paths: a doc that moves takes
+  every skill link with it, and `bun run check` will say so. The index rows in AGENTS.md ARE
+  enforced, and in both directions, by the `skills-index-drift` rule in
+  [`scripts/check-invariants.mjs`](../scripts/check-invariants.mjs): a skill with no row, a
+  directory with no `SKILL.md`, and a row pointing at nothing all fail `bun run check`.
+
+## The judge
+
+The layers above are how a change is *made*.
+[`judge-pr`](../.claude/skills/judge-pr/SKILL.md) is how one is *measured*, split along the same
+seam as everything else here:
+
+- [`scripts/judge-pr.mjs`](../scripts/judge-pr.mjs) is the mechanical half — the diff-level
+  things the repo states about itself: a pull request aimed at `main`, a user-visible change
+  with no changelog entry, a verification claim that misses the surface it covers, a
+  hand-edited generated reference, a commit subject off the house style, a do-not-touch tree.
+  It prints the lines it judged, and exits 2 on a `must` like every other gate here.
+- the [skill](../.claude/skills/judge-pr/SKILL.md) is the other half: reading the change against
+  the application, each question pointed at the doc that decides it. No script can tell a
+  working fallback from a dormant one, and a judge that guesses is worse than none.
+- [`.github/workflows/judge.yml`](../.github/workflows/judge.yml) runs the script on every pull
+  request, keeps one sticky comment carrying the verdict, and fails on a `must` — deliberately
+  not a required check until its findings earn that, the same promotion path every other check
+  here took.

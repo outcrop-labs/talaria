@@ -101,6 +101,7 @@ situation matches.
 | [`dev-loop`](./.claude/skills/dev-loop/SKILL.md) | starting or restarting the stack, choosing worktree vs devbox, seeding data, or deciding which command verifies which surface |
 | [`repo-traps`](./.claude/skills/repo-traps/SKILL.md) | a change that should work fails oddly — a 500, a zombie port, docker DNS, or an API test that needs auth |
 | [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, exercising the path, CHANGELOG, commit conventions, and the pull request against `rc` |
+| [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed: the diff-level checks (`scripts/judge-pr.mjs`) and the reading no script can do |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
 
 ## Known traps
@@ -161,3 +162,4 @@ send — exit 2, and the push stops with the reason and the way to do it instead
   what you verified.
 - Keep this file under ~200 lines: a new invariant earns a line here; a new procedure earns
   a skill.
+
