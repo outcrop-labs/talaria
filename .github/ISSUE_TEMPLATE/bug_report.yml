@@ -1,0 +1,88 @@
+name: Bug report
+description: Something behaved other than documented, or stopped working.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Talaria's runtime surfaces are yours to break; its secrets are not.
+
+        **Do not paste secrets.** No provider API keys, `tak_` agent keys, session cookies,
+        database connection strings, or `.env` contents — redact them first.
+
+        **A security issue is not a bug report.** Report it privately through
+        [SECURITY.md](https://github.com/outcrop-labs/talaria/blob/main/SECURITY.md) instead;
+        a public issue is the one channel that makes a vulnerability worse.
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The behaviour you saw, and where in the app you saw it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What the docs or the UI led you to expect instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: how-running
+    attributes:
+      label: How you are running Talaria
+      options:
+        - docker compose
+        - dev checkout
+        - Talaria Desktop
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      options:
+        - nightly
+        - rc
+        - stable
+        - built from source
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: >
+        Admin → Security → Updates shows the running version, and `/api/healthz` carries the
+        same value as `version` (null when Talaria runs from source). On a dev checkout,
+        paste the commit instead.
+      placeholder: "e.g. 0.2.0-rc.1, or the commit sha"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: From a fresh start, the shortest path that lands on the bug.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >
+        Error output, container logs, browser console — redacted of anything sensitive.
+        Optional; drop it if the steps above are enough.
+    validations:
+      required: false

@@ -1324,6 +1324,106 @@ for (const rule of CENSUS) {
   }
 }
 
+// THE BRANCH MODEL IS MACHINERY, AND MACHINERY GETS AN ANCHOR.
+//
+// docs/BRANCHES.md says pull requests target `rc` and `main` takes the verified
+// promotion. On its own that sentence is worth nothing: what makes it true is
+// .github/workflows/flow.yml (the server-side tripwire), scripts/flow-guard.mjs
+// (the rules), scripts/hooks/pre-push (the local wiring) and — outside this
+// tree — the branch protection the doc tells a maintainer to apply.
+//
+// The failure this check exists for is the one this file has already paid for
+// twice: a rule whose subject is renamed or deleted goes on passing while
+// guarding nothing. Delete the guard, or quietly put `testing` back into a
+// trigger, and every other check here stays green while the model becomes prose
+// somebody wrote once. So each piece must exist, must still be wired to the
+// others, and the retired branch must not return as a trigger anywhere.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+
+  const doc = read('docs/BRANCHES.md')
+  if (doc === null) {
+    found.push({ path: 'docs/BRANCHES.md', line: 0, text: 'the branch model has no home' })
+  } else {
+    for (const branch of ['rc', 'main']) {
+      if (!new RegExp(`^\\|\\s*\`${branch}\``, 'm').test(doc)) {
+        found.push({
+          path: 'docs/BRANCHES.md',
+          line: 0,
+          text: `the model no longer lists \`${branch}\` as a long-lived branch`,
+        })
+      }
+    }
+  }
+
+  // [file, what it must still contain, what that piece is for]
+  const wired = [
+    ['.github/workflows/flow.yml', 'pr-base', 'the guard that refuses a pull request to main from anywhere but rc'],
+    ['.github/workflows/flow.yml', 'promotion-gate', 'the guard that requires a green rc-deploy run for the promoted commit'],
+    ['.github/workflows/flow.yml', 'flow-guard.mjs', 'the policy script, wired server-side'],
+    ['scripts/hooks/pre-push', 'flow-guard.mjs', 'the same policy, wired before the push leaves the machine'],
+    ['scripts/flow-guard.mjs', "'main'", 'the trunk the policy polices'],
+    ['scripts/flow-guard.mjs', "'rc'", 'the integration branch the policy polices'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+
+  // The retired branch stays retired. `testing` is not a channel source any
+  // more (nightly builds `rc`), so a branch trigger naming it is a second feed
+  // nothing keeps current — the exact rot RELEASING.md records from its last
+  // life. flow.yml may still NAME it, in the transitional refusal; a trigger
+  // may not list it.
+  const workflows = join(ROOT, '.github', 'workflows')
+  for (const file of readdirSync(workflows)) {
+    if (!file.endsWith('.yml')) continue
+    // flow.yml is the one file allowed to name `testing` in a trigger, for the
+    // reason the guard exists: the push that has to be REFUSED is a push to
+    // `testing`, so the guard has to run when one happens. That is a schedule
+    // for a refusal, not a feed — nothing builds from the branch, and no other
+    // workflow may trigger on it.
+    if (file === 'flow.yml') continue
+    const text = readFileSync(join(workflows, file), 'utf8')
+    for (const m of text.matchAll(/branches: \[([^\]]*)\]/g)) {
+      const branches = m[1].split(',').map((b) => b.trim())
+      if (branches.includes('testing')) {
+        found.push({
+          path: `.github/workflows/${file}`,
+          line: 0,
+          text: `\`testing\` is retired but still in a trigger: branches: [${branches.join(', ')}]`,
+        })
+      }
+    }
+  }
+
+  if (found.length) {
+    failures.push({
+      id: 'branch-flow-anchors',
+      what: "the branch model's machinery and its home have drifted apart",
+      fix: [
+        'docs/BRANCHES.md is the model; .github/workflows/flow.yml, scripts/flow-guard.mjs and',
+        'scripts/hooks/pre-push are what enforce it. If one of them moved or was renamed, update',
+        'this check and the doc in the same commit — an anchor that points at nothing passes while',
+        'guarding nothing, and the model becomes a paragraph somebody wrote once.',
+        '',
+        'If a guard is genuinely gone: that is a decision about how changes reach main, not a',
+        'refactor. Make it in docs/BRANCHES.md and here, together, so the next session reads the',
+        'same story from both.',
+        '',
+        'If `testing` reappeared in a trigger: the nightly channel builds `rc` now. Remove it from',
+        'the trigger (and delete the branch) rather than reviving a feed nothing keeps current.',
+      ],
+      found,
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

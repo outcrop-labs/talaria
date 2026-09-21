@@ -14,29 +14,30 @@ version of any published image is the tag that built it. Releasing never
 edits a file — no version-bump commit, no changelog commit, nothing to
 merge afterwards.
 
-Three long-lived branches:
+Two long-lived branches, both already deployed before a version is cut:
+[`docs/BRANCHES.md`](./docs/BRANCHES.md) is the model in full.
 
-| Branch | Role | How it moves |
-|---|---|---|
-| `main` | trunk, always shippable | PRs (merge commits, CI-gated — the merge carries the PR number) |
-| `rc` | staging — what an RC is cut from | a human fast-forwards main into it |
-| `testing` | the nightly feed | a human fast-forwards main into it |
+| Branch | Role | How it moves | What a tag on it means |
+|---|---|---|---|
+| `rc` | the integration branch, and the staging environment: every pull request targets it, and `rc-deploy.yml` deploys its tip | merging pull requests (merge commits) | `vX.Y.Z-rc.N` — a release candidate of what `rc` currently is |
+| `main` | the release trunk — what customers run | only the promotion merge of `rc` into it, after `rc` is deployed and verified | `vX.Y.Z` — a stable release of what `main` currently is |
 
-To advance a channel:
-
-```bash
-git push origin origin/main:rc        # or :testing
-```
-
-No automation moves `rc` or `testing`, on purpose. They exist so a person
-vouched for what's in them; an auto-promotion would defeat that.
+There is no third branch to advance and no fast-forward to remember: `rc` is
+where the work is, `main` is where it lands once the staging deploy says it
+works, and `promote.yml` does that landing by itself. What remains a human's
+call is the one thing that should be: whether a version exists.
 
 ## Cutting an RC
 
 ```bash
-git push origin origin/main:rc                 # advance staging, if needed
+git switch rc && git pull                     # the tip you mean to cut
 git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
+
+Nothing needs advancing first: `rc` is where the work already is, and its tip
+has been deployed and smoke-tested by `rc-deploy.yml` on the way in — which is
+the guarantee an RC is supposed to carry. Tag the tip whose deploy you watched
+(`git log --oneline -1` against the run list under Actions → rc-deploy).
 
 The tag push runs the release workflow: the full CI suite against the tag,
 then the image builds and lands on GHCR as `0.2.0-rc.1` and (moving) `rc`,
@@ -61,9 +62,15 @@ gh release edit v0.2.0-rc.1 --draft=false
 
 ## Promoting to stable
 
-Same shape with a suffix-free tag:
+An RC becoming stable is two steps, in this order: the promotion, then the tag.
 
 ```bash
+# 1. main catches up: promote.yml verifies rc's tip once its staging deploy is
+#    green and offers the rc → main pull request (it opens it for you when a
+#    PROMOTION_TOKEN is configured). Merge it as a merge commit — the one merge
+#    that carries a whole verified branch.
+# 2. tag what main now is:
+git switch main && git pull
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
@@ -77,15 +84,15 @@ installed copies can update in-app. That needs the
 
 ## Nightlies
 
-Every day at 03:17 UTC the workflow builds `testing`'s tip and publishes
+Every day at 03:17 UTC the workflow builds `rc`'s tip and publishes
 image tags `nightly` (moving) and `nightly-YYYYMMDD` (frozen, kept). No
 GitHub Release — 365 prereleases a year is tag noise with no reader; the
 dated image tags carry the history. Dated tags are cheap: each is one
 manifest over shared blobs.
 
 Re-run one by hand from Actions → release → Run workflow (nightly from
-testing; `rc` pushes the moving `rc` tag from the rc tip — a dispatch
-cannot invent a version, only a tag carries one).
+`rc`; `rc` pushes the moving `rc` tag from the rc tip — a dispatch cannot
+invent a version, only a tag carries one).
 
 If nightlies ever just stop, there are two things to check, and the second is
 the one that bit: GitHub disables schedules after 60 days of repo inactivity —
@@ -99,17 +106,22 @@ was refused for asking `packages: write` under a `contents: read` caller. Those
 grants now sit on the calls in `release.yml` — if a new nested call is added and
 the tag or nightly dies as a startup failure, that is the first thing to look at.
 
-`testing` also has to be current, and nothing enforces that: it sat at a
-2026-08-26 commit (no `api/`, no `desktop/`) until 2026-09-16, invisible while
-the channel was dead. Advance it as part of cutting an RC — a stale channel
-publishes stale code with a today's date on it.
+The retired `testing` branch used to be this section's problem: it had to be
+fast-forwarded by hand, nothing enforced that, and a stale channel published
+stale code with today's date on it. `rc` cannot go stale the same way — it is
+where every pull request lands, and `main` is kept current by the promotion —
+which is the other half of why the nightly feed moved onto it.
+
+Delete it when convenient: `git push origin :testing`. Until then, pushes to it
+are refused by `scripts/flow-guard.mjs`, so it cannot quietly come back to life
+as a second feed.
 
 ## The tags on `ghcr.io/outcrop-labs/talaria`
 
 | Tag | Moves when | Immutable? |
 |---|---|---|
-| `main` | every app-touching push to main | no — a pointer |
-| `sha-<sha12>` | every app-touching push to main | yes |
+| `main` | every app-touching promotion to main | no — a pointer |
+| `sha-<sha12>` | every app-touching promotion to main | yes |
 | `nightly` | every nightly build | no — a pointer |
 | `nightly-YYYYMMDD` | every nightly build | yes |
 | `rc` | every RC tag | no — a pointer |
@@ -183,10 +195,14 @@ itself, and it pushes to the package release.yml already made public.
   settings → Change visibility → Public. Until then, pulls need
   `docker login ghcr.io` with a PAT that has `read:packages`.
 - **Branches must contain the workflow.** A tag-push event resolves the
-  workflow file at the *tagged commit*, so `rc` and `testing` must include
-  `release.yml` before the first tag is cut on them. Both branches were
-  created from a main that already had it; a brand-new checkout of the
-  process should mind the ordering.
+  workflow file at the *tagged commit*, so `rc` and `main` must include
+  `release.yml` before the first tag is cut on them. Both were created from a
+  main that already had it; a brand-new checkout of the process should mind the
+  ordering. The same rule runs the other way for the branch model's own
+  automation — `workflow_run` and `schedule` triggers only fire for workflow
+  files present on the default branch, which is why
+  [`docs/BRANCHES.md`](./docs/BRANCHES.md) → Bringing the model up puts the
+  first promotion before the branch protection.
 
 ## Deliberately not
 

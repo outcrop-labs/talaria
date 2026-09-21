@@ -13,6 +13,8 @@ context at launch — keep it under ~200 lines), **procedures live in the skills
 ## Orientation
 
 - [`DEVELOPERS.md`](./DEVELOPERS.md) — the repo map and the index of every doc. Start here.
+- [`docs/BRANCHES.md`](./docs/BRANCHES.md) — the branch model: pull requests target `rc`, `main`
+  takes the verified promotion, and what each gate proves.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — PR norms: verify, exercise, changelog.
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — how the platform works.
 - [`HANDOFF.md`](./HANDOFF.md) — where to start when picking up ongoing work.
@@ -48,6 +50,12 @@ Ports: dev UI **5273**, Rust api **5274**. Worktree stacks get deterministic per
 Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the contract:
 
 - Everything through the Talaria gateway — never wire an agent at a raw provider endpoint.
+- **Pull requests target `rc`; nothing targets `main`.** `rc` is the integration branch and the
+  staging environment — review, CI and a real deploy (`rc-deploy.yml`) happen there — and
+  `main` moves only by the promotion of `rc`, offered by `promote.yml` once that deploy is
+  green and merged by a person as a merge commit. A direct or squashed push to either is
+  refused by [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs), locally and in CI; the model
+  is [`docs/BRANCHES.md`](./docs/BRANCHES.md).
 - Secrets live envelope-encrypted in Postgres, never in config files
   ([`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md)).
 - Never force a `done` transition — agents create and triage; a human signs off.
@@ -77,6 +85,8 @@ Several agent sessions routinely work this repo at once. Consequences:
 
 - `git status` before you stage anything — uncommitted files may belong to another session.
 - Stage by explicit path. Never `git add -A`, never `git clean`, never an unscoped reset.
+- Push your own branch. `main` and `rc` are not push targets — `talaria setup` wires the guard
+  in as a git pre-push hook, and CI refuses the push regardless.
 - The stop gate (below) checks the whole tree — a failure may predate your change. If it
   does, verify that and say so in the PR.
 
@@ -90,7 +100,7 @@ situation matches.
 |---|---|
 | [`dev-loop`](./.claude/skills/dev-loop/SKILL.md) | starting or restarting the stack, choosing worktree vs devbox, seeding data, or deciding which command verifies which surface |
 | [`repo-traps`](./.claude/skills/repo-traps/SKILL.md) | a change that should work fails oddly — a 500, a zombie port, docker DNS, or an API test that needs auth |
-| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, exercising the path, CHANGELOG, commit and PR conventions |
+| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, exercising the path, CHANGELOG, commit conventions, and the pull request against `rc` |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
 
 ## Known traps
@@ -123,6 +133,10 @@ check is cheaper than the scope-matching that would skip it. Wiring per harness 
 Code's tracked [`settings.json`](./.claude/settings.json) Stop hook, the git pre-push
 recipe, CI): [`scripts/hooks/README.md`](./scripts/hooks/README.md). No permissions are
 tracked anywhere — personal allowlists live in `.claude/settings.local.json`, untracked.
+
+The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](./scripts/hooks/pre-push)
+runs [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs) against the refs a push is about to
+send — exit 2, and the push stops with the reason and the way to do it instead.
 
 ## Do not touch
 

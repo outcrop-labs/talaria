@@ -1,7 +1,7 @@
 # Talaria CI — the invariant tripwire, the unit tests, and the typecheck.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main, rc, or testing:
+#   On every pull request and every push to main or rc:
 #     bun scripts/check-invariants.mjs          (no install, seconds)
 #     cd ui && bun install && bun run test      (vitest)
 #     cd ui && bun run typecheck                (svelte-check)
@@ -11,10 +11,12 @@
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
 #   That is the whole thing. It takes a couple of minutes.
 #
-# WHY rc AND testing ARE IN THE PUSH LIST. They are the branches the release
-#   workflow builds FROM (nightly = testing tip, RCs = tags on rc), so a broken
-#   tip must fail HERE, in a push a human made minutes ago — not at 03:17 in a
-#   nightly publish with nobody watching.
+# WHY rc IS IN THE PUSH LIST. It is the branch the release workflow builds FROM
+#   (nightly = rc's tip, RCs = tags cut on rc) and the branch every pull request
+#   targets, so a broken tip has to fail HERE — on the push that created it, in
+#   front of the person who made it — rather than at 03:17 in a nightly publish
+#   with nobody watching. `main` is in the list for the one push it ever gets:
+#   the promotion merge. Why the branches work this way: docs/BRANCHES.md.
 #
 # WHY THIS FILE IS CALLABLE (workflow_call). `release.yml` runs these exact
 #   jobs before every publish, passing the ref it is about to build (a
@@ -85,11 +87,13 @@
 #     a broken link lives). The old objection stands too: a filtered-out checks
 #     run that a branch protection rule requires reports "pending" forever and
 #     blocks the merge. What this file does instead is decide per job, inside
-#     the run, in the `changes` job below — same grain as the jobs, and a
-#     skipped job is a visible "skipped" rather than an absent run. Verified:
-#     `main` carries no required status checks today (protection asks for a
-#     review and nothing else), so a skip cannot wedge a merge; if that ever
-#     changes, `changes` is the thing to revisit.
+#     the run, in the `changes` job below — same grain as the jobs, and a job
+#     skipped by a job-level `if` counts as a SUCCESSFUL required check, so a
+#     skipped surface cannot wedge a merge either (GitHub's documented behavior
+#     for skipped jobs; it is the workflow-level filter that reports nothing at
+#     all). These jobs are required checks on rc and main — docs/BRANCHES.md →
+#     The required settings — which is exactly why there is no `paths:` filter
+#     on this file's triggers.
 #
 # THE INVARIANTS JOB, and why a typechecker cannot replace it. `tsc` cannot see
 #   the failure this repo actually keeps having. Seven consecutive review rounds
@@ -140,9 +144,10 @@ name: CI
 on:
   pull_request:
   push:
-    # rc/testing: the branches releases are built from — see the header's
-    # "WHY rc AND testing ARE IN THE PUSH LIST".
-    branches: [main, rc, testing]
+    # rc: the branch nightly and the RC channel are built from, and the one
+    # every pull request targets. main: the promotion merge, and nothing else.
+    # See the header's "WHY rc IS IN THE PUSH LIST", and docs/BRANCHES.md.
+    branches: [main, rc]
   # The release workflow calls this file (see its own header) so a publish is
   # gated by exactly what gates a PR. The ref MUST be explicit when called:
   # a schedule event's github.ref is the default branch, not the branch
@@ -178,10 +183,11 @@ jobs:
   # inside the run keeps that grain and leaves the cheap check unconditional.
   #
   # A job whose surface did not move is SKIPPED, and that is honest rather than
-  # quiet: `main` carries no required status checks (protection asks for a review
-  # and nothing else — verified, not assumed), so a skipped job cannot wedge a
-  # merge the way a filtered-out required check would. If required checks are
-  # ever configured, this job list is the thing to revisit.
+  # quiet: these jobs ARE required checks on rc and main, and a job skipped by a
+  # job-level `if` is reported as a success (GitHub's documented behavior), so a
+  # skipped surface satisfies its check instead of wedging the merge the way a
+  # workflow-level `paths:` filter would. The header's "WHY rc IS IN THE PUSH
+  # LIST" and docs/BRANCHES.md carry the rest.
   changes:
     name: what changed
     runs-on: ubuntu-latest
@@ -279,8 +285,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Empty when run standalone (PR/push); the called ref (testing, a
-          # tag) when release.yml drives this file.
+          # Empty when run standalone (PR/push); the called ref (rc, a tag)
+          # when release.yml drives this file.
           ref: ${{ inputs.ref || github.ref }}
 
       - uses: oven-sh/setup-bun@v2

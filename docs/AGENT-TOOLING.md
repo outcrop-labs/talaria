@@ -11,7 +11,7 @@ quality gate. [`AGENTS.md`](../AGENTS.md) is the entry point for all of it.
 |---|---|---|---|
 | Invariants | [`AGENTS.md`](../AGENTS.md) | every session, at launch | keep it under ~200 lines — a new invariant earns a line, nothing more |
 | Procedures | [`.claude/skills/`](../.claude/skills)/*/SKILL.md | on demand, when the situation matches | one skill per procedure; plain markdown |
-| Gates | [`scripts/hooks/`](../scripts/hooks/README.md) | at the "about to claim done" moment | one exit-code contract; wiring is per-harness |
+| Gates | [`scripts/hooks/`](../scripts/hooks/README.md) | at the "about to claim done" moment — and, for the branch guard, at `git push` | one exit-code contract; wiring is per-harness |
 
 The split is a context budget, not a filing system: what loads every session must stay
 small, so it carries only invariants; procedures live in files an agent reads when
@@ -60,6 +60,16 @@ with the reason on stderr, anything else a non-blocking error). It always runs o
 whole tree, no diff fast path: the check is seconds and dependency-free, and scope-skipping
 is a second place for checker scope to rot. Because parallel sessions share working trees,
 a gate failure may predate your change — the block message says what to do about that.
+
+The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](../scripts/hooks/pre-push)
+forwards the refs a push is about to send to
+[`scripts/flow-guard.mjs`](../scripts/flow-guard.mjs), which is the same policy
+[`../.github/workflows/flow.yml`](../.github/workflows/flow.yml) runs server-side. `talaria setup`
+sets `core.hooksPath`, so it is on by default in any clone that has been set up. An agent
+therefore learns "pull requests target `rc`, and `main` takes the promotion of a verified `rc`"
+from a refused push — the message names the rule and the way to do it instead — rather than from
+a document it may not have read. The model:
+[`docs/BRANCHES.md`](../docs/BRANCHES.md).
 
 ## What is deliberately not here
 

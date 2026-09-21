@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing to Talaria
+    url: https://github.com/outcrop-labs/talaria/blob/main/CONTRIBUTING.md
+    about: Setup, the gates a PR must pass, and the conventions that aren't style.
+  - name: Report a vulnerability
+    url: https://github.com/outcrop-labs/talaria/blob/main/SECURITY.md
+    about: Security issues go through private vulnerability reporting — never a public issue.

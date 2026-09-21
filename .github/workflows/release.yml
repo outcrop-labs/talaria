@@ -1,13 +1,15 @@
 # Talaria release — build the image, push it to GHCR, open the GitHub Release.
 #
-# THE MODEL (RELEASING.md is the operator-facing half of this header):
-#   main                trunk, always shippable
-#   rc                  staging; moved ONLY by a human fast-forwarding main into it
-#   testing             nightly feed; same rule
-#   03:17 UTC daily     testing tip  → image `nightly` + `nightly-YYYYMMDD`, no Release
-#   push vX.Y.Z-rc.N    (tag on rc)  → image `X.Y.Z-rc.N` + moving `rc` + GitHub PRERELEASE
-#   push vX.Y.Z         (anywhere)   → image `X.Y.Z` + moving `latest` + GitHub Release
-#   dispatch            manual re-run of a channel (nightly from testing; `rc` pushes the
+# THE MODEL (docs/BRANCHES.md is the branch model; RELEASING.md is the
+# operator-facing half of this header):
+#   rc                  the integration branch AND the staging environment:
+#                       every PR targets it, and rc-deploy.yml deploys its tip
+#   main                the release trunk; moves ONLY by the promotion merge of
+#                       rc into it, once rc has been deployed and verified
+#   03:17 UTC daily     rc's tip    → image `nightly` + `nightly-YYYYMMDD`, no Release
+#   push vX.Y.Z-rc.N    (tag cut on rc)   → image `X.Y.Z-rc.N` + moving `rc` + GitHub PRERELEASE
+#   push vX.Y.Z         (tag cut on main) → image `X.Y.Z` + moving `latest` + GitHub Release
+#   dispatch            manual re-run of a channel (nightly from rc; `rc` pushes the
 #                       moving tag from the rc tip — a dispatch cannot invent a version,
 #                       only a tag carries one)
 #
@@ -59,10 +61,12 @@
 #   decision for the day a real arm64 user exists, not a default now.
 #
 # DELIBERATELY LEFT OUT (do not treat these as oversights):
-#   - Any automation that moves rc or testing. Those branches move by human
-#     fast-forward only; an automation that promoted code nobody had looked
-#     at would defeat the point of having a staging branch a person vouched
-#     for.
+#   - Any automation that CUTS a release. A version is a tag a human pushes,
+#     and nothing here invents one. `main` IS moved by automation —
+#     promote.yml merges rc into it once the staging deploy is green — and that
+#     is the whole point of having a staging branch: rc is vouched for per pull
+#     request, by review and by the deploy, and the promotion carries exactly
+#     that content. What no machine does is decide that a version exists.
 #   - Nightly GitHub Releases. 365 prereleases a year is tag noise with no
 #     reader; the dated image tags carry the history, RELEASING.md says where
 #     the changelog lives.
@@ -72,12 +76,12 @@
 #
 # NOTES FOR WHOEVER TOUCHES THIS NEXT
 #   - A `schedule` event runs this file from the DEFAULT branch but builds
-#     `testing`: github.ref/github.sha are main's, which is why every ref
-#     flows through `resolve` and REVISION comes from the publish job's own
+#     `rc`: github.ref/github.sha are main's, which is why every ref flows
+#     through `resolve` and REVISION comes from the publish job's own
 #     checkout, never from github.sha.
-#   - A `push: tags:` event resolves THIS FILE at the tagged commit — so
-#     rc/testing branches must contain release.yml before any tag is cut on
-#     them (see RELEASING.md, the sequencing note).
+#   - A `push: tags:` event resolves THIS FILE at the tagged commit — so rc
+#     (and main) must contain release.yml before any tag is cut on them (see
+#     RELEASING.md, the sequencing note).
 #   - GitHub disables schedules after 60 days of repo inactivity; if the
 #     nightly ever stops, that is the first thing to check.
 
@@ -92,7 +96,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: 'channel to publish (nightly from testing; rc pushes the moving tag from the rc tip)'
+        description: 'channel to publish (nightly from rc; rc pushes the moving tag from the rc tip)'
         type: choice
         options: [nightly, rc]
         default: nightly
@@ -130,7 +134,7 @@ jobs:
           set -eu
           case "$EVENT" in
             schedule)
-              channel=nightly; ref=testing
+              channel=nightly; ref=rc
               version="nightly-$(date -u +%Y%m%d)"
               tags=("$version" nightly); moving=nightly; release=false; prerelease=false ;;
             workflow_dispatch)
@@ -142,7 +146,7 @@ jobs:
                 version='@tip'
                 tags=(rc); moving=rc; release=false; prerelease=false
               else
-                channel=nightly; ref=testing
+                channel=nightly; ref=rc
                 version="nightly-$(date -u +%Y%m%d)"
                 tags=("$version" nightly); moving=nightly; release=false; prerelease=false
               fi ;;
@@ -227,7 +231,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       # One build, every tag. REVISION comes from THIS checkout: under a
-      # schedule event github.sha is main's HEAD, not the testing tip we
+      # schedule event github.sha is main's HEAD, not the rc tip we
       # actually build.
       - name: Build
         env:

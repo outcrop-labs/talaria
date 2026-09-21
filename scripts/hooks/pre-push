@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+// pre-push — the branch-flow guard, wired where it can still say no.
+//
+// WHAT GIT HANDS A PRE-PUSH HOOK, and what it expects back. One line per ref
+// about to leave the machine, on stdin:
+//
+//     <local ref> <local sha> <remote ref> <remote sha>
+//
+// and an exit code as the whole answer: 0 lets the push through, anything else
+// stops it. This hook forwards every line to scripts/flow-guard.mjs — the SAME
+// policy .github/workflows/flow.yml runs server-side — so a push that would be
+// refused there is refused here, before anything touches the network, with the
+// same reason. One implementation, two enforcers (flow-guard.mjs's header is
+// where the rules and their reasoning live; docs/BRANCHES.md is the prose).
+//
+// WIRING. `talaria setup` sets `core.hooksPath = scripts/hooks` for this
+// repository, which is what makes this file run at all. A clone that has not
+// run setup gets the server-side tripwire only — which is the check that
+// cannot be uninstalled, so nothing here is load-bearing on its own.
+//
+// THE CONTRACT (../README.md): 0 pass, 2 block with the reason on stderr,
+// anything else a NON-BLOCKING error. A hook that cannot run never silently
+// allows a push it could not check — but it also never fakes a refusal, which
+// is why an unrunnable check exits 1 and says so.
+//
+// IT DOES NOT FETCH. flow-guard reads origin/main and origin/rc as this clone
+// has them; a clone that has never fetched one of them is told so, and the
+// push is refused with the command to run, rather than passing on ignorance.
+//
+// WHAT IT IS NOT, said plainly. This hook runs the policy from the WORKING
+// TREE — `scripts/flow-guard.mjs` as that branch has it. Check out a
+// contributor's branch, rebase it and push, and you are executing their copy of
+// the guard; a branch that weakens the guard mutes its own local check. Nothing
+// here is load-bearing for that reason: the enforcement is
+// .github/workflows/flow.yml, which reads the policy from a revision the change
+// cannot edit. This hook is the courtesy that catches a mistake before it
+// leaves the machine, and `git push --no-verify` skips it.
+
+import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+const HERE = import.meta.dirname
+const GUARD = resolve(HERE, '..', 'flow-guard.mjs')
+
+/** Empty stdin (the hook run by hand) is nothing to check, not an error. */
+const lines = readFileSync(0, 'utf8')
+  .split('\n')
+  .filter((line) => line.trim())
+
+let blocked = false
+let unverified = false
+
+for (const line of lines) {
+  // [local ref, local sha, remote ref, remote sha]. A deletion arrives as
+  // local sha 0000…, which flow-guard reads as "refusing to delete a
+  // long-lived branch". Tag refs and feature branches fall straight through.
+  const [, localSha, remoteRef, remoteSha] = line.trim().split(/\s+/)
+  const run = spawnSync(process.execPath, [GUARD, 'push', remoteRef, remoteSha, localSha], {
+    // The guard reads GIT history, so it has to run in the repository being
+    // pushed — and that is where git puts a hook, at the top of the working
+    // tree. Deliberately not this file's own directory: `core.hooksPath` can
+    // point at another checkout, and then the two are different repositories,
+    // which is how the first version of this line managed to check the wrong
+    // one and report "cannot resolve the pushed commit".
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  })
+  if (run.status === 0) continue
+  if (run.status === 2) blocked = true
+  else unverified = true
+  if (run.stderr) process.stderr.write(run.stderr)
+}
+
+if (blocked) {
+  process.stderr.write('pre-push: refused. The model, and the ways to move a change: docs/BRANCHES.md\n')
+  process.exit(2)
+}
+
+if (unverified) {
+  process.stderr.write(
+    'pre-push: a check above could not run, so nothing verified this push. Git refuses a\n' +
+      'push on any non-zero hook exit and this is exit 1 — fix what the message above names\n' +
+      '(usually `git fetch origin main rc`) and push again, or push past it with\n' +
+      '`git push --no-verify`, which is the same as not having this hook.\n'
+  )
+  process.exit(1)
+}
+
+process.exit(0)
