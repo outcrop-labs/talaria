@@ -9,7 +9,6 @@ publish = false
 workspace = true
 
 [dependencies]
-talaria-api-facades = { path = "../talaria-api-facades" }
 talaria-routes-admin = { path = "../talaria-routes-admin" }
 talaria-routes-fleet = { path = "../talaria-routes-fleet" }
 talaria-routes-boards = { path = "../talaria-routes-boards" }
