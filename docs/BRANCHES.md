@@ -112,6 +112,20 @@ auto-merge), as a merge commit. Deliberately never `GITHUB_TOKEN`: a merge made 
 land on `main` and start nothing — not `ci.yml`, not the push guard, and not the trunk image
 feed the in-app updater rolls from.
 
+Three decisions that shape this, stated because they are policy rather than accident:
+
+- **Nothing auto-merges work into `rc`.** A pull request is merged by a person. Auto-merge is
+  available for the promotion step only, and only when `PROMOTION_TOKEN` is configured — with
+  no secret, the default posture is that every merge here is a human's.
+- **Conflicts are the author's.** Both branches are linear where it matters and neither is
+  rebased by machinery: a branch behind `rc` is brought up to date by whoever owns it. A
+  promotion's merge is the exception that proves the rule — it introduces no content, and
+  `flow-guard` refuses a merge whose tree is not the tree it merged, precisely so a
+  hand-resolved conflict cannot ride into `main` without passing through `rc` first.
+- **No "Update branch" click on promos.** `strict` is off on `main` (see the recipe below), so a
+  promotion merges without one; the merge is clean by construction because `rc` already contains
+  everything `main` has.
+
 ## The required settings
 
 The guards in the repo are tripwires: they report, and somebody acts. What
@@ -122,12 +136,19 @@ commit cannot enforce. Set them once, and again if a rule is ever edited:
 ```bash
 # main — the trunk. Merge commits only (squash/rebase would rewrite the commits
 # the staging deploy verified), no bypass, and the checks below. No required
-# approval: the content was reviewed on rc, and the promotion is machine-driven.
+# approval: the content was reviewed on rc, and the promotion is machine-verified.
+# `strict: false` matters here for the same reason it does on rc, only more so:
+# after a promotion, main's tip is the merge commit — which rc does NOT contain —
+# so "require branches to be up to date" would block every later promotion until
+# somebody clicked Update branch, producing a merge on rc that changes nothing.
+# What makes the promotion safe is not being tested against main's tip (it adds
+# no content of its own); it is the gate reading CI's and the deploy's runs for
+# the head commit.
 gh api -X PUT "repos/outcrop-labs/talaria/branches/main/protection" \
   -H 'Accept: application/vnd.github+json' --input - <<'JSON'
 {
   "required_status_checks": {
-    "strict": true,
+    "strict": false,
     "contexts": [
       "what changed",
       "invariants (no deps)",
@@ -185,7 +206,7 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/rc/protection" \
 JSON
 ```
 
-Five things about that list that are easy to get wrong:
+Things about that list that are easy to get wrong:
 
 - **A required check has to be able to REPORT on the pull request it guards.**
   flow.yml's `branch-push` job is triggered by a push, so it is not on rc's
@@ -195,11 +216,20 @@ Five things about that list that are easy to get wrong:
   branch protection's "require a pull request", not a check that cannot report.
   The two flow.yml checks on main's list DO report there: `flow.yml` triggers on
   pull requests to `main`.
-- **Merge commits only, on BOTH branches.** GitHub's "merge method" settings
-  are per repository ("Allow merge commits / squash merging / rebase merging"),
-  so squash and rebase have to be turned off in Settings → General. The guard
+- **Merge commits only, on BOTH branches.** GitHub's "merge method" settings are
+  per repository ("Allow merge commits / squash merging / rebase merging"), so
+  squash and rebase have to be turned off in Settings → General. The guard
   refuses them if they are switched back on, but a guard that has to fire is a
   broken merge already in `rc`.
+- **`strict` is off on BOTH branches, for two different reasons, and both are
+  deliberate.** On `rc` a pull request's checks run against GitHub's merge commit
+  either way, so requiring an up-to-date base would only add rebase churn. On
+  `main` it is load-bearing the other way: after a promotion, main's tip is the
+  merge commit and rc does not contain it, so `strict: true` would block every
+  later promotion until someone clicked "Update branch" — and that click would
+  put a merge on `rc` that changes nothing. What makes a promotion safe is not
+  being tested against main's tip (it adds no content of its own); it is the gate
+  reading CI's and the deploy's runs for the head commit.
 - **`migrations` is deliberately NOT in either list.** Its workflow is filtered
   by `paths:`, and a required check whose workflow never starts reports nothing
   at all — which branch protection reads as "pending" and blocks the merge with.

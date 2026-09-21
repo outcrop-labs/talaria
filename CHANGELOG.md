@@ -116,7 +116,15 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   `testing` is retired: the nightly channel builds `rc`'s tip, which closes the
   nightly outage the entry below records — `release.yml` was calling today's
   `ci.yml` against a branch that had sat still since 09-17, and nothing kept it
-  current. The branch model now has one home,
+  current. Nothing auto-merges work into `rc` (a person merges; auto-merge exists
+  for the promotion step alone, and only with `PROMOTION_TOKEN` configured), and
+  conflicts are the author's — `flow-guard` refuses a promotion merge carrying
+  content of its own so a hand-resolved conflict cannot reach `main` without
+  passing through `rc`. The protection recipe needs no "Update branch" click
+  either: after a promotion, `main`'s tip is the merge commit `rc` does not
+  contain, so `strict` is off on both branches — the promotion is safe because
+  the gate reads the runs for its head commit, not because it was tested against
+  the trunk's tip. The branch model now has one home,
   [`docs/BRANCHES.md`](./docs/BRANCHES.md), with the repository settings that
   make it hold; `CONTRIBUTING.md`, `RELEASING.md`, `AGENTS.md`, the
   `ship-a-change` and `cut-release` skills, and the tooling doc all point there
