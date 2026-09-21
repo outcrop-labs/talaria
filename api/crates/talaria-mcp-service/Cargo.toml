@@ -1,0 +1,15 @@
+[package]
+name = "talaria-mcp-service"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+tokio = { version = "1", features = ["process", "io-util", "macros", "rt"] }
+tracing = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

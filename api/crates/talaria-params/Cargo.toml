@@ -1,0 +1,15 @@
+[package]
+name = "talaria-params"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { version = "0.8", default-features = false }
+talaria-error = { path = "../talaria-error" }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

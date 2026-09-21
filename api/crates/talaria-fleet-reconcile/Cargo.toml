@@ -1,0 +1,18 @@
+[package]
+name = "talaria-fleet-reconcile"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util = "0.3"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+tokio = { version = "1", features = ["macros", "time"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }

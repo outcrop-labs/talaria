@@ -271,7 +271,7 @@ Two docker networks, one socket — this is the "right shape"
   the shared network — **no host firewall rule needed**, which is the entire
   point: the dev/host install needs an INPUT-chain rule for exactly this hop.
 - **App → agents**: `TALARIA_AGENT_DIAL=container` makes the fleet manifest
-  ([`api/src/fleet/render.rs`](../api/src/fleet/render.rs)) dial agents by their
+  ([`api/crates/talaria-fleet-render/src/lib.rs`](../api/crates/talaria-fleet-render/src/lib.rs)) dial agents by their
   compose service names (`agent-<dept>:8642`, slot-aware) instead of the
   host-loopback ports the dev stack publishes — and in this mode the renderer
   doesn't publish those ports at all (the manifest never dials them, and
@@ -413,9 +413,9 @@ channel this repo publishes lands on `ghcr.io/outcrop-labs/talaria`.
 
 | Image tag | What it is | How it moves |
 |---|---|---|
-| `main` | whatever main shipped last | every app-touching push to main |
-| `sha-<sha12>` | one commit on main, frozen | with that push; never rewritten |
-| `nightly` | testing branch, built daily 03:17 UTC | automatic, nightly |
+| `main` | whatever main shipped last | every app-touching promotion to main |
+| `sha-<sha12>` | one commit on main, frozen | with that promotion; never rewritten |
+| `nightly` | `rc`'s tip, built daily 03:17 UTC | automatic, nightly |
 | `nightly-YYYYMMDD` | that day's nightly, frozen | automatic, daily; never rewritten |
 | `X.Y.Z-rc.N` | a release candidate | a `vX.Y.Z-rc.N` tag on `rc` |
 | `rc` | whatever RC was cut last | with each RC |

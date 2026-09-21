@@ -27,11 +27,11 @@
     onContextMenu,
     onWatch,
     session = null,
+    wait = null,
   }: {
     task: Task
-    /** The live work session, when an agent is working this ticket — the
-     *  card wears the dither and the watch affordance while it runs. */
     session?: { runId: string; agentModel: string | null; turn: number | null } | null
+    wait?: { reason: string; phase: string } | null
     onWatch?: () => void
     pillCtx: PillCtx
     subtasks: Task[]
@@ -89,10 +89,7 @@
       task.archivedAt && 'opacity-60',
     )}
   >
-  {#if session}
-    <!-- The working treatment: the dither field across the card, plus the
-         watch affordance — live work is visible in the DEFAULT view, not
-         only from the ticket. -->
+  {#if session || wait}
     <div class="pointer-events-none absolute inset-0 z-[5]" aria-hidden="true">
       <DitherLayer
         sources={[
@@ -105,6 +102,7 @@
         maxAlpha={0.26}
       />
     </div>
+    {#if session}
     <button
       type="button"
       class="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
@@ -117,6 +115,14 @@
       <WaitingMark site="ticket/work-watch" size={11} />
       watch
     </button>
+    {:else if wait}
+    <span
+      class="absolute right-2 top-2 z-10 max-w-[10rem] truncate rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-muted"
+      title="{wait.phase} — {wait.reason}"
+    >
+      queued
+    </span>
+    {/if}
   {/if}
     <!-- Color-code stripe (ticket color, when set). -->
     {#if task.color}

@@ -1,0 +1,28 @@
+[package]
+name = "talaria-mcp-oauth"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+talaria-mcp-jsonrpc = { path = "../talaria-mcp-jsonrpc" }
+talaria-safe-fetch = { path = "../talaria-safe-fetch" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+tracing = "0.1"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+url = "2"
+base64 = "0.23"
+sha2 = "0.11"
+getrandom = "0.3"

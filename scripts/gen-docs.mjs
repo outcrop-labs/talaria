@@ -44,8 +44,8 @@ import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
-const ROUTES_MOD = join(ROOT, 'api/src/routes/mod.rs')
-const ROUTES_DIR = join(ROOT, 'api/src/routes')
+const ROUTES_MOD = join(ROOT, 'api/crates/talaria-api-routes/src/routes/mod.rs')
+const ROUTES_DIR = join(ROOT, 'api/crates/talaria-api-routes/src/routes')
 // The SPA host's permanent TS residents (rust-proxy.ts STAY_TS), minus the
 // app-MCP branch that never had its own row. Extracted with the TS extractor.
 const TS_RESIDENT_FILES = [
@@ -66,7 +66,7 @@ const GROUPS = {
   admin: { segs: ['admin'], blurb: 'Instance administration (admin session required).' },
   agents: { segs: ['agents', 'agent', 'agent-role-templates', 'gaps', 'skills', 'muse', 'vision', 'runs'], blurb: 'Agent CRUD, registration, heartbeats, skills, runs.' },
   apps: { segs: ['apps'], blurb: 'The app platform surface and the app-server gateway.' },
-  boards: { segs: ['boards'], blurb: 'Kanban boards, members, statuses, labels, views.' },
+  boards: { segs: ['boards', 'workchains'], blurb: 'Kanban boards, members, statuses, labels, views, workchains.' },
   brief: { segs: ['brief'], blurb: 'The personal brief: items, replies, delegation.' },
   comms: { segs: ['channels', 'chat', 'conversations', 'dms'], blurb: 'Channels, DMs, threads, chat streaming.' },
   files: { segs: ['artifacts', 'artifact-folders', 'uploads', 'agent-media'], blurb: 'Uploads, artifacts, shares, downloads.' },
@@ -362,11 +362,41 @@ function parseRouterTable(modText) {
   return routes
 }
 
-/** module path (`boards::boards_id_statuses`) → repo-relative handler file. */
+/** The handler groups live one crate per family; the table's fn paths carry
+ *  the crate prefix (`talaria_routes_boards::boards::boards_id_statuses`). */
+const ROUTE_GROUP_CRATES = {
+  admin: 'talaria-routes-admin',
+  fleet: 'talaria-routes-fleet',
+  agents: 'talaria-routes-fleet',
+  apps: 'talaria-routes-fleet',
+  models: 'talaria-routes-fleet',
+  llm: 'talaria-routes-fleet',
+  mcp: 'talaria-routes-fleet',
+  boards: 'talaria-routes-boards',
+  tasks: 'talaria-routes-boards',
+  workchains: 'talaria-routes-boards',
+  plans: 'talaria-routes-boards',
+  comms: 'talaria-routes-comms',
+  inbox: 'talaria-routes-comms',
+  brief: 'talaria-routes-comms',
+  activity: 'talaria-routes-comms',
+  knowledge: 'talaria-routes-knowledge',
+  files: 'talaria-routes-knowledge',
+  integrations: 'talaria-routes-integrations',
+  secrets: 'talaria-routes-integrations',
+  account: 'talaria-routes-integrations',
+  teams: 'talaria-routes-integrations',
+  workbench: 'talaria-routes-workbench',
+  research: 'talaria-routes-workbench',
+  system: 'talaria-routes-workbench',
+}
+
+/** module path (`talaria_routes_boards::boards::boards_id_statuses`) → repo-relative handler file. */
 function moduleFile(fnPath) {
   const segs = fnPath.split('::')
   segs.pop() // the fn itself
-  return `api/src/routes/${segs.join('/')}.rs`
+  const [crate, group, ...rest] = segs
+  return `api/crates/${ROUTE_GROUP_CRATES[group]}/src/${group}/${rest.join('/')}.rs`
 }
 
 /** Find `fn name(…) {body}` in comment-stripped Rust text. Returns the body's
@@ -559,6 +589,7 @@ function constIndex() {
     }
   }
   walk(join(ROOT, 'api/src'))
+  if (existsSync(join(ROOT, 'api/crates'))) walk(join(ROOT, 'api/crates'))
   return _constIndex
 }
 
@@ -1246,7 +1277,7 @@ for (const { file, entries, path } of byModule.values()) {
       }
     }
   }
-  walk(ROUTES_DIR)
+  for (const c of new Set(Object.values(ROUTE_GROUP_CRATES))) walk(join(ROOT, 'api/crates', c, 'src'))
 }
 
 // The TS residents, extracted exactly as before.

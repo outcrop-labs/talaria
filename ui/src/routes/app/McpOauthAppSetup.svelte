@@ -6,14 +6,24 @@
   import { slide } from '@/lib/motion'
   import { OAUTH_APP_PORTALS, patchServer } from './mcp'
 
-  /** Credentials form for providers without dynamic client registration: shows
-   *  the exact callback URL to register, takes the app's client id/secret. */
+  /** Credentials form for providers a dashboard OAuth app is the way into:
+   *  either no dynamic client registration (GitHub), or a registration that
+   *  refused this deployment's callback URL (Vercel allowlists localhost and
+   *  known clients only). Shows the exact callback URL to register, takes
+   *  the app's client id/secret. */
   let {
     serverId,
     domain,
     docs,
+    rejected = false,
     onSaved,
-  }: { serverId: string; domain?: string | null; docs?: string | null; onSaved: () => void } = $props()
+  }: {
+    serverId: string
+    domain?: string | null
+    docs?: string | null
+    rejected?: boolean
+    onSaved: () => void
+  } = $props()
 
   let openForm = $state(false)
   let clientId = $state('')
@@ -25,6 +35,17 @@
   // The provider's own service_documentation (from its AS metadata)
   // beats our portal map — API data first.
   const link = $derived(docs ?? (domain ? OAUTH_APP_PORTALS[domain] : undefined))
+
+  const headline = $derived(
+    rejected
+      ? 'This provider refused automatic registration for this callback URL'
+      : 'This provider needs a pre-registered OAuth app',
+  )
+  const tip = $derived(
+    rejected
+      ? 'It supports automatic client registration, but only for redirect URLs it has approved (localhost apps and a few known clients) — a hosted Talaria callback is not on that list. Create an OAuth app in the provider\'s developer settings with the callback URL below, then paste the app\'s client id and secret here. They\'re stored encrypted and spoken only during the OAuth flow.'
+      : 'It doesn\'t support automatic client registration (GitHub, for example). Create an OAuth app in the provider\'s developer settings with the callback URL below, then paste the app\'s client id and secret here. They\'re stored encrypted and spoken only during the OAuth flow.',
+  )
 
   const save = async () => {
     busy = true
@@ -44,8 +65,8 @@
   <div class="flex items-center gap-3">
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
-        <span class="text-xs font-medium text-fg">This provider needs a pre-registered OAuth app</span>
-        <InfoTip text="It doesn't support automatic client registration (GitHub, for example). Create an OAuth app in the provider's developer settings with the callback URL below, then paste the app's client id and secret here. They're stored encrypted and spoken only during the OAuth flow." />
+        <span class="text-xs font-medium text-fg">{headline}</span>
+        <InfoTip text={tip} />
       </div>
       {#if link}
         <a href={link} target="_blank" rel="noreferrer" class="mt-0.5 inline-block text-xs text-accent hover:underline">

@@ -73,7 +73,9 @@
           buf = buf.slice(nl + 1)
           if (!line.startsWith('data: ')) continue
           try {
-            appendEvent(JSON.parse(line.slice(6)) as { t: string; v: string; s?: string })
+            appendEvent(
+              JSON.parse(line.slice(6)) as { t: string; v: string; s?: string; p?: string; r?: string; ms?: number },
+            )
           } catch {
             // a frame we cannot parse is a frame we skip
           }
@@ -88,8 +90,10 @@
   })
 
   /** One watch line → one terminal line. Tool calls get their own marker
-   *  line; prose appends to the flowing paragraph. */
-  function appendEvent(ev: { t: string; v: string; s?: string }) {
+   *  line, their argument preview indented beneath (that preview is where
+   *  the harness steering is legible — the whole command the agent ran);
+   *  prose appends to the flowing paragraph. */
+  function appendEvent(ev: { t: string; v: string; s?: string; p?: string; r?: string; ms?: number }) {
     if (ev.t === 'd') {
       terminal += ev.v
       return
@@ -104,10 +108,18 @@
     const mark =
       ev.t === 'tool'
         ? `⚙ ${ev.v}${ev.s === 'running' ? ' …' : ev.s === 'completed' ? ' ✓' : ''}`
-        : ev.t === 'r'
-          ? `· ${ev.v}`
-          : `⚠ ${ev.v}`
+        : ev.t === 'toolfull'
+          ? `⚙ ${ev.v}${ev.s === 'running' ? ' …' : ' ✓'}`
+          : ev.t === 'wtool'
+            ? `🛠 ${ev.v}${ev.ms ? ` (${(ev.ms / 1000).toFixed(1)}s)` : ''}`
+            : ev.t === 'r'
+              ? `· ${ev.v}`
+              : `⚠ ${ev.v}`
     lines = [...lines, mark]
+    if ((ev.t === 'tool' || ev.t === 'toolfull' || ev.t === 'wtool') && (ev.p || ev.r)) {
+      const detail = [ev.p, ev.r ? `→ ${ev.r}` : ''].filter(Boolean).join('\n')
+      lines = [...lines, `  ${detail.split('\n').join('\n  ')}`]
+    }
   }
 
   // Pinned scroll: the terminal follows the newest line while the modal is

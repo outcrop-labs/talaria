@@ -1,0 +1,29 @@
+[package]
+name = "talaria-comms-decay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-artifacts = { path = "../talaria-artifacts" }
+talaria-channels = { path = "../talaria-channels" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-harness = { path = "../talaria-harness" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
+talaria-retrieval-index = { path = "../talaria-retrieval-index" }
+talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
+talaria-retrieval-sources = { path = "../talaria-retrieval-sources" }
+talaria-scheduler = { path = "../talaria-scheduler" }
+talaria-state = { path = "../talaria-state" }
+tokio = { version = "1", features = ["macros"] }
+tracing = "0.1"
+futures-util = "0.3"

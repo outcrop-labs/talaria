@@ -1,0 +1,116 @@
+# The judge — the standards half of review, on every pull request.
+#
+# WHY THIS FILE EXISTS. The gates answer "does it pass". They cannot answer "is
+# this the change this repository asked for": that the changelog claims a
+# verification the diff does not support, that a behaviour change arrived with no
+# test, that the pull request is aimed at `main`, that a generated reference was
+# hand-edited, that a commit subject broke the house style. scripts/judge-pr.mjs
+# decides those from the diff (its header lists them and their reasoning); this
+# file runs it on the pull request's own range and puts the answer where the
+# author will read it — one sticky comment, edited in place, plus the job
+# summary.
+#
+# THE OTHER HALF IS A READER, and this file does not pretend otherwise: whether
+# the change WORKS in Talaria is `.claude/skills/judge-pr/SKILL.md`, which points
+# a reviewer at the docs that decide each question. A script cannot tell a real
+# fallback from a dormant one.
+#
+# WHY IT IS NOT A REQUIRED CHECK. A judge with a false positive that blocks a
+# merge teaches everyone to route around the judge. So it fails the job on a
+# `must` (visible, red, named) but is deliberately absent from the required
+# contexts in docs/BRANCHES.md → The required settings. Once its findings have
+# earned it, adding `judge (standards)` to that list is the one-line promotion —
+# the same shape the repo uses for every check it trusts.
+#
+# WHY THE COMMENT IS SKIPPED ON FORK PULL REQUESTS. A fork's pull request gets a
+# read-only token, so the comment call would fail rather than report. The report
+# still lands in the job summary, which is where a maintainer reads it, and the
+# job still fails on a `must` — nothing about the verdict depends on the comment.
+
+name: judge
+
+on:
+  pull_request:
+    # `edited` because the body is judged: an author filling in the parts a
+    # machine can check should see the verdict change without pushing a commit.
+    types: [opened, synchronize, reopened, edited]
+
+# A new push replaces the verdict for the commit it superseded.
+concurrency:
+  group: judge-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  judge:
+    name: judge (standards)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write # the sticky comment (same-repo pull requests only)
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The whole history: the judge diffs merge-base(base, head)..head and
+          # reads the commit subjects in that range.
+          fetch-depth: 0
+
+      - name: Fetch the base branch
+        env:
+          BASE: ${{ github.base_ref }}
+        run: git fetch --no-tags origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+
+      - name: Write the pull request body out
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
+
+      # `continue-on-error` so the comment and the failure below both happen: a
+      # judge that hides its report when it finds a `must` is a judge nobody
+      # reads.
+      - name: Judge the diff
+        id: judge
+        continue-on-error: true
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -eu
+          node scripts/judge-pr.mjs \
+            --base "origin/$BASE" \
+            --target "$BASE" \
+            --pr-body "$RUNNER_TEMP/body.md" \
+            --summary | tee "$RUNNER_TEMP/report.md"
+
+      - name: Keep one comment on the pull request
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          # The marker makes the comment addressable, so a re-run edits the
+          # verdict instead of stacking a new one.
+          { printf '<!-- judge-pr -->\n'; cat "$RUNNER_TEMP/report.md"; } > "$RUNNER_TEMP/comment.md"
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | contains("<!-- judge-pr -->")) | .id' | tail -1)
+          if [ -n "$id" ]; then
+            echo "updating judge comment $id"
+            jq -Rs '{body: .}' < "$RUNNER_TEMP/comment.md" |
+              gh api -X PATCH "repos/$REPO/issues/comments/$id" --input - >/dev/null
+          else
+            echo "posting the judge comment"
+            jq -Rs '{body: .}' < "$RUNNER_TEMP/comment.md" |
+              gh api -X POST "repos/$REPO/issues/$PR/comments" --input - >/dev/null
+          fi
+
+      - name: Fail on a `must`
+        if: steps.judge.outcome == 'failure'
+        run: |
+          echo "::error::judge-pr found something this repository states about itself — read the job summary (and the comment, on a same-repo pull request). A finding you believe is wrong gets argued in the pull request, not silenced: scripts/judge-pr.mjs prints the lines it judged."
+          exit 1

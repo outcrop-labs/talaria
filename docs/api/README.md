@@ -6,20 +6,20 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-240 routes across 23 groups.
+245 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 13 |
 | [`activity`](./activity.md) | What happened, what it cost, what needs you. | 8 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 24 |
-| [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 16 |
+| [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 17 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
-| [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views. | 12 |
+| [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 15 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 17 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 15 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 20 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 21 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 23 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, search. | 19 |

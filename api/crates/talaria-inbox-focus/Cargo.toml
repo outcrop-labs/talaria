@@ -1,0 +1,48 @@
+[package]
+name = "talaria-inbox-focus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = "0.23"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-audit = { path = "../talaria-audit" }
+talaria-auth = { path = "../talaria-auth" }
+talaria-boards = { path = "../talaria-boards" }
+talaria-body = { path = "../talaria-body" }
+talaria-channel-replies = { path = "../talaria-channel-replies" }
+talaria-channels = { path = "../talaria-channels" }
+talaria-conversations = { path = "../talaria-conversations" }
+talaria-daily-brief = { path = "../talaria-daily-brief" }
+talaria-fleet-agents = { path = "../talaria-fleet-agents" }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-google-pending = { path = "../talaria-google-pending" }
+talaria-harness = { path = "../talaria-harness" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-inbox-focus-types = { path = "../talaria-inbox-focus-types" }
+talaria-model-access = { path = "../talaria-model-access" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-persona = { path = "../talaria-persona" }
+talaria-refs = { path = "../talaria-refs" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-session = { path = "../talaria-session" }
+talaria-state = { path = "../talaria-state" }
+talaria-statuses = { path = "../talaria-statuses" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }
+talaria-uploads = { path = "../talaria-uploads" }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tracing = "0.1"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+getrandom = "0.3"
+talaria-model-efforts = { path = "../talaria-model-efforts" }
+axum = { version = "0.8", features = ["multipart"] }

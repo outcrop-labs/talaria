@@ -214,6 +214,31 @@ LLM_MODEL=
     ctx.log.skip('git alias')
   }
 
+  // The branch-flow guard, wired where git will actually run it: `git push`
+  // then refuses a push to a long-lived branch from a working copy, naming the
+  // rule and the way to do it instead — the same policy CI runs
+  // (.github/workflows/flow.yml; docs/BRANCHES.md). Installed by setup rather
+  // than by hand because a guard most clones never install is a guard that does
+  // not exist, and this is the mistake nobody notices until it is on main.
+  //
+  // Repository-scoped on purpose: linked worktrees (`git wt`) share the repo
+  // config, and git resolves a relative core.hooksPath against the top of the
+  // working tree — so one setting covers every worktree of this clone.
+  const hooksPath = 'scripts/hooks'
+  const currentHooks = await ctx
+    .exec('git', ['config', '--get', 'core.hooksPath'])
+    .then((r) => r.stdout.trim())
+    // Unset exits 1. That is the normal first run, not a failure.
+    .catch(() => '')
+  if (currentHooks === hooksPath) {
+    ctx.log.skip(`git hooks (already ${hooksPath})`)
+  } else if ((await ctx.run('git', ['config', 'core.hooksPath', hooksPath])) === 0) {
+    if (currentHooks) ctx.log.warn(`core.hooksPath was ${currentHooks} — this repo's hooks replace it`)
+    ctx.log.ok(`git hooks → ${hooksPath} (pre-push refuses a push to main or rc)`)
+  } else {
+    ctx.log.skip('git hooks')
+  }
+
   ctx.log.say('`talaria` on your PATH')
   // The docs spell `bun talaria …` because that form works on any fresh
   // checkout with no setup step; this shim is the convenience setup leaves

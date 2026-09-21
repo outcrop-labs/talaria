@@ -37,7 +37,7 @@ describe('off-board pin', () => {
   // compares (same move as the secretbox fixtures test reading api/tests/). If
   // the Rust literal is renamed or reflows so the regex misses, this parses to
   // [] and FAILS against the client list — it cannot silently pass.
-  const RUST_STATUSES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'src', 'statuses.rs')
+  const RUST_STATUSES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'crates', 'talaria-statuses', 'src', 'lib.rs')
 
   it('matches the Rust statuses engine list exactly', () => {
     const src = readFileSync(RUST_STATUSES, 'utf8')

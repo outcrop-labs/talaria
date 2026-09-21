@@ -1,0 +1,9 @@
+# Dev/CI linker. gcc's `-fuse-ld=mold` looks up `ld.mold` on PATH (the
+# `mold` package on Debian/Ubuntu/Fedora ships both). rustc 1.97 already
+# passes `-fuse-ld=lld` against its sysroot; the later `-fuse-ld=mold`
+# wins once `ld.mold` is visible.
+#
+# Install mold. Missing `ld.mold` fails the link with collect2 "cannot
+# find 'ld'". musl/package image stays on the default linker until proven.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

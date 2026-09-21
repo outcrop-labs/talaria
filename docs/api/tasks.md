@@ -32,7 +32,7 @@
 
 ## `/api/tasks/{id}`
 
-Source: [`api/src/routes/tasks/tasks_id.rs`](../../api/src/routes/tasks/tasks_id.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id.rs)
 
 > /api/tasks/{id}. One ticket.
 > GET → full detail (task, comments, activity, watchers, reviews, judge,
@@ -71,7 +71,7 @@ Source: [`api/src/routes/tasks/tasks_id.rs`](../../api/src/routes/tasks/tasks_id
 
 ## `/api/tasks/{id}/channel`
 
-Source: [`api/src/routes/tasks/tasks_id_channel.rs`](../../api/src/routes/tasks/tasks_id_channel.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_channel.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_channel.rs)
 
 > /api/tasks/{id}/channel.
 >
@@ -85,7 +85,7 @@ Source: [`api/src/routes/tasks/tasks_id_channel.rs`](../../api/src/routes/tasks/
 
 ## `/api/tasks/{id}/comments`
 
-Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks/tasks_id_comments.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_comments.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_comments.rs)
 
 > /api/tasks/{id}/comments. GET → the thread (board member or board-allowed
 > agent). POST → add a comment; an agent goes through the one
@@ -107,7 +107,7 @@ Source: [`api/src/routes/tasks/tasks_id_comments.rs`](../../api/src/routes/tasks
 
 ## `/api/tasks/{id}/dependencies`
 
-Source: [`api/src/routes/tasks/tasks_id_dependencies.rs`](../../api/src/routes/tasks/tasks_id_dependencies.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs)
 
 > /api/tasks/{id}/dependencies. POST { dependsOnId } → this ticket is
 > blocked by another. DELETE → remove. Editors or board-allowed agents may
@@ -133,7 +133,7 @@ Source: [`api/src/routes/tasks/tasks_id_dependencies.rs`](../../api/src/routes/t
 
 ## `/api/tasks/{id}/review`
 
-Source: [`api/src/routes/tasks/tasks_id_review.rs`](../../api/src/routes/tasks/tasks_id_review.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs)
 
 > /api/tasks/{id}/review. The human quality gate. Approve moves the ticket
 > to the board's done column; reject sends it back to the board's first
@@ -152,7 +152,7 @@ Source: [`api/src/routes/tasks/tasks_id_review.rs`](../../api/src/routes/tasks/t
 
 ## `/api/tasks/{id}/usage`
 
-Source: [`api/src/routes/tasks/tasks_id_usage.rs`](../../api/src/routes/tasks/tasks_id_usage.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs)
 
 > /api/tasks/{id}/usage. Per-ticket token spend. POST (agents, via MCP
 > log_usage): report tokens burned working this ticket — attributed to the
@@ -175,7 +175,7 @@ Source: [`api/src/routes/tasks/tasks_id_usage.rs`](../../api/src/routes/tasks/ta
 
 ## `/api/tasks/{id}/watchers`
 
-Source: [`api/src/routes/tasks/tasks_id_watchers.rs`](../../api/src/routes/tasks/tasks_id_watchers.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_watchers.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_watchers.rs)
 
 > /api/tasks/{id}/watchers. POST { watcher } → follow.
 > DELETE { watcher } → unfollow.
@@ -202,7 +202,7 @@ Source: [`api/src/routes/tasks/tasks_id_watchers.rs`](../../api/src/routes/tasks
 
 ## `/api/tasks/{id}/work-session`
 
-Source: [`api/src/routes/tasks/tasks_id_work_session.rs`](../../api/src/routes/tasks/tasks_id_work_session.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session.rs)
 
 > GET /api/tasks/{id}/work-session. The LIVE WORK SESSION on a ticket, for
 > the detail view's ticker and its watch modal: the run row (state, phase,
@@ -212,11 +212,11 @@ Source: [`api/src/routes/tasks/tasks_id_work_session.rs`](../../api/src/routes/t
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{session}` | 200, 403, 404 | — |
+| GET | `session` | — | `{session, wait}` | 200, 403, 404 | — |
 
 ## `/api/workflows`
 
-Source: [`api/src/routes/tasks/workflows.rs`](../../api/src/routes/tasks/workflows.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/workflows.rs`](../../api/crates/talaria-routes-boards/src/tasks/workflows.rs)
 
 > /api/workflows. GET lists every workflow for any signed-in member (they
 > ground what agents will be told — deliberately unscoped); POST is
@@ -240,7 +240,7 @@ Source: [`api/src/routes/tasks/workflows.rs`](../../api/src/routes/tasks/workflo
 
 ## `/api/workflows/{id}`
 
-Source: [`api/src/routes/tasks/workflows_id.rs`](../../api/src/routes/tasks/workflows_id.rs)
+Source: [`api/crates/talaria-routes-boards/src/tasks/workflows_id.rs`](../../api/crates/talaria-routes-boards/src/tasks/workflows_id.rs)
 
 > /api/workflows/{id}. PUT patch and DELETE, both agents.manage. Gate
 > order: perm, body, then the SQL bind — so a member with a bad body gets

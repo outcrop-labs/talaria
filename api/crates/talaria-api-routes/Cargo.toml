@@ -1,0 +1,23 @@
+[package]
+name = "talaria-api-routes"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-routes-admin = { path = "../talaria-routes-admin" }
+talaria-routes-fleet = { path = "../talaria-routes-fleet" }
+talaria-routes-boards = { path = "../talaria-routes-boards" }
+talaria-routes-comms = { path = "../talaria-routes-comms" }
+talaria-routes-knowledge = { path = "../talaria-routes-knowledge" }
+talaria-routes-integrations = { path = "../talaria-routes-integrations" }
+talaria-routes-workbench = { path = "../talaria-routes-workbench" }
+talaria-state = { path = "../talaria-state" }
+axum = { version = "0.8", features = ["multipart"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "catch-panic", "request-id", "propagate-header"] }
+talaria-error = { path = "../talaria-error" }
+talaria-uploads = { path = "../talaria-uploads" }

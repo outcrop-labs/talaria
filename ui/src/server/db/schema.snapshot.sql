@@ -47,6 +47,23 @@ CREATE TABLE public.agent_keys (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     last_used_at timestamp with time zone
 );
+CREATE TABLE public.agent_resource_samples (
+    id bigint NOT NULL,
+    agent_model text NOT NULL,
+    container text NOT NULL,
+    cpu_percent double precision DEFAULT 0 NOT NULL,
+    mem_bytes bigint DEFAULT 0 NOT NULL,
+    pids bigint DEFAULT 0 NOT NULL,
+    taken_at timestamp with time zone DEFAULT now() NOT NULL
+);
+ALTER TABLE public.agent_resource_samples ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.agent_resource_samples_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
 CREATE TABLE public.agent_role_templates (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     slug text NOT NULL,
@@ -645,7 +662,9 @@ CREATE TABLE public.mcp_servers (
     required_headers jsonb DEFAULT '[]'::jsonb NOT NULL,
     builtin boolean DEFAULT false NOT NULL,
     oauth jsonb,
-    app_slug text
+    app_slug text,
+    package jsonb,
+    env_enc text
 );
 CREATE TABLE public.mcp_team_access (
     server_id uuid NOT NULL,
@@ -895,6 +914,23 @@ CREATE TABLE public.task_watchers (
     watcher text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_workchain_steps (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    workchain_id uuid NOT NULL,
+    task_id uuid NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.task_workchains (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    board_id uuid NOT NULL,
+    name text NOT NULL,
+    created_by text,
+    paused boolean DEFAULT false NOT NULL,
+    "position" integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_workflows (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     name text NOT NULL,
@@ -1036,6 +1072,13 @@ CREATE TABLE public.users (
     preferred_effort text,
     timezone text
 );
+CREATE TABLE public.work_wait (
+    task_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    reason text NOT NULL,
+    queued_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.workbench_harness_defs (
     slug text NOT NULL,
     definition jsonb NOT NULL,
@@ -1147,6 +1190,8 @@ ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_key_hash_key UNIQUE (key_hash);
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_pkey PRIMARY KEY (agent_id);
+ALTER TABLE ONLY public.agent_resource_samples
+    ADD CONSTRAINT agent_resource_samples_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_role_templates
     ADD CONSTRAINT agent_role_templates_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_role_templates
@@ -1355,6 +1400,12 @@ ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_pkey PRIMARY KEY (task_id, watcher);
+ALTER TABLE ONLY public.task_workchain_steps
+    ADD CONSTRAINT task_workchain_steps_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.task_workchain_steps
+    ADD CONSTRAINT task_workchain_steps_workchain_id_task_id_key UNIQUE (workchain_id, task_id);
+ALTER TABLE ONLY public.task_workchains
+    ADD CONSTRAINT task_workchains_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.task_workflows
     ADD CONSTRAINT task_workflows_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.tasks
@@ -1385,6 +1436,8 @@ ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_sub_key UNIQUE (sub);
+ALTER TABLE ONLY public.work_wait
+    ADD CONSTRAINT work_wait_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.workbench_harness_defs
     ADD CONSTRAINT workbench_harness_defs_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_jobs
@@ -1407,6 +1460,7 @@ ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_name_key UNIQUE (name);
 ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_pkey PRIMARY KEY (id);
+CREATE INDEX agent_resource_samples_agent_time ON public.agent_resource_samples USING btree (agent_model, taken_at);
 CREATE INDEX app_data_updated_idx ON public.app_data USING btree (app, collection, updated_at DESC);
 CREATE INDEX artifact_folders_owner_idx ON public.artifact_folders USING btree (owner_user_id);
 CREATE INDEX artifact_links_target_idx ON public.artifact_links USING btree (target_type, target_id);
@@ -1460,12 +1514,14 @@ CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_k
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
+CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);
+CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
@@ -1695,6 +1751,12 @@ ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_workchain_steps
+    ADD CONSTRAINT task_workchain_steps_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_workchain_steps
+    ADD CONSTRAINT task_workchain_steps_workchain_id_fkey FOREIGN KEY (workchain_id) REFERENCES public.task_workchains(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_workchains
+    ADD CONSTRAINT task_workchains_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tasks
     ADD CONSTRAINT tasks_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.tasks
@@ -1717,6 +1779,8 @@ ALTER TABLE ONLY public.user_password_credentials
     ADD CONSTRAINT user_password_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.user_permissions
     ADD CONSTRAINT user_permissions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.work_wait
+    ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs

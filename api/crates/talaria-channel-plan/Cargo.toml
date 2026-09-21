@@ -1,0 +1,23 @@
+[package]
+name = "talaria-channel-plan"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-artifacts = { path = "../talaria-artifacts" }
+talaria-channels = { path = "../talaria-channels" }
+talaria-conversations = { path = "../talaria-conversations" }
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }
+talaria-harness = { path = "../talaria-harness" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-state = { path = "../talaria-state" }
+talaria-templates = { path = "../talaria-templates" }
+talaria-workflows = { path = "../talaria-workflows" }

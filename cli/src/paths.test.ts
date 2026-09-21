@@ -2,7 +2,7 @@
 // devbox lesson), port slots scan, name regexes hold.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { canonicalDir, NAME_RE, portSlot, repoRoot } from './paths'
@@ -17,10 +17,17 @@ describe('canonicalDir', () => test('resolves symlinks and collapses ..', () => 
 }))
 
 describe('repoRoot', () => {
-  test('walks up to .git', () => {
-    // This file is at <root>/cli/src — the repo root is three up.
+  test('walks up to the first .git', () => {
+    // This file is at <root>/cli/src, so the root is two levels up — whatever
+    // the checkout is CALLED. An earlier version of this assertion pinned the
+    // directory name (`root.endsWith('talaria')`), which made every worktree
+    // red: they live at `../talaria-<name>`, so `bun test` in `cli/` — part of
+    // the PR gate — could never pass in the isolation the repo tells everyone
+    // to work in. The stop is the assertion now, and the stop is the property
+    // that matters: it must not walk past the first `.git`.
     const root = repoRoot(canonicalDir(import.meta.dir))
-    expect(root.endsWith('talaria')).toBe(true)
+    expect(root).toBe(canonicalDir(join(import.meta.dir, '..', '..')))
+    expect(existsSync(join(root, '.git'))).toBe(true)
   })
 })
 

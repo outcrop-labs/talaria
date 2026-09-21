@@ -78,6 +78,15 @@ export async function getText(url: string): Promise<string> {
   return r.text()
 }
 
+/** GET a raw binary body (file downloads) — same credentials door as getText.
+ *  The in-app file modal saves through this so a desktop webview never has to
+ *  open `/api/uploads/…` in a browser tab. */
+export async function getBlob(url: string): Promise<Blob> {
+  const r = await fetch(url, withDeadline(SAME_ORIGIN, TEXT_TIMEOUT_MS))
+  if (!r.ok) throw new HttpError(r.status, `getBlob failed (${r.status})`)
+  return r.blob()
+}
+
 /** GET + parse. Throws on ANY non-2xx, 404 included. */
 export async function getJson<T>(url: string, init?: RequestInit): Promise<T> {
   return readJson<T>(await fetch(url, withDeadline({ ...SAME_ORIGIN, ...init }, READ_TIMEOUT_MS)))

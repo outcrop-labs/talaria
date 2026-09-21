@@ -20,7 +20,7 @@
 
 ## `/api/llm/v1/chat/completions`
 
-Source: [`api/src/routes/llm/llm_chat.rs`](../../api/src/routes/llm/llm_chat.rs)
+Source: [`api/crates/talaria-routes-fleet/src/llm/llm_chat.rs`](../../api/crates/talaria-routes-fleet/src/llm/llm_chat.rs)
 
 > POST /api/llm/v1/chat/completions. OpenAI-compatible chat over the org's
 > model stack: streaming and non-streaming both relay, every call metered
@@ -34,7 +34,7 @@ Source: [`api/src/routes/llm/llm_chat.rs`](../../api/src/routes/llm/llm_chat.rs)
 
 ## `/api/llm/v1/models`
 
-Source: [`api/src/routes/llm/llm_models.rs`](../../api/src/routes/llm/llm_models.rs)
+Source: [`api/crates/talaria-routes-fleet/src/llm/llm_models.rs`](../../api/crates/talaria-routes-fleet/src/llm/llm_models.rs)
 
 > GET /api/llm/v1/models. OpenAI-compatible model list for external tools
 > pointing a tlk_ key at base_url http://<talaria>/api/llm/v1. Byte-stability

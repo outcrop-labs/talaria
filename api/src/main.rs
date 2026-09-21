@@ -5,7 +5,7 @@
 // routes::router, so integration tests drive the exact stack this serves.
 
 use std::sync::Arc;
-use talaria_api::{config, config::Config, db, jobs, routes, runs, scheduler, state::AppState};
+use talaria_api::{config, config::Config, db, jobs, scheduler, state::AppState};
 
 #[tokio::main]
 async fn main() {
@@ -62,7 +62,7 @@ async fn main() {
     {
         let pg = state.pg.clone();
         tokio::spawn(async move {
-            if let Err(e) = talaria_api::mcp::registry::ensure_builtin_mcp(&pg).await {
+            if let Err(e) = talaria_mcp::registry::ensure_builtin_mcp(&pg).await {
                 tracing::warn!(
                     "[mcp] builtin rows not seeded — the first registry list retries: {e}"
                 );
@@ -82,6 +82,17 @@ async fn main() {
         });
     }
 
+    // Package-run MCP servers (marketplace installs from the registry's
+    // npm/pypi/oci long tail) get the same boot guarantee: a reconcile pass
+    // removes strays a previous life left and containers disabled rows no
+    // longer want. Enabled oci-http containers self-heal on first use.
+    {
+        let pg = state.pg.clone();
+        tokio::spawn(async move {
+            talaria_mcp::pkg::reconcile(&pg).await;
+        });
+    }
+
     // The toolkit child gets the same boot guarantee. It spawns on demand —
     // renders and comms reads are the only callers that summon it — so a
     // deploy's first agent session can beat the spawn, and a session whose
@@ -89,9 +100,9 @@ async fn main() {
     // whole lifetime. Boot closes the window before any session opens it.
     // Fire-and-forget like everything here; the gateway relay double-checks
     // before every builtin hop.
-    talaria_api::mcp::service::ensure_mcp_service();
+    talaria_mcp_service::ensure_mcp_service();
 
-    let app = routes::router(state.clone());
+    let app = talaria_api_routes::routes::router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -113,7 +124,7 @@ async fn main() {
     // each drive's cleanup release its lease, so the instance that replaces
     // this one resumes the work in seconds (its 30s sweep) rather than after
     // each lease TTL — a roll must never stall work it can hand over.
-    runs::drivers::drain(5_000).await;
+    talaria_runs_drivers::drain(5_000).await;
     // Draining means the scheduler's drain too: no new runs armed, in-flight
     // job work given its grace, then the pool. A job that ARCHIVES
     // conversations or MESSAGES people must not be killed half a second from

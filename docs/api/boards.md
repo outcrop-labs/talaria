@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-12 routes.
+15 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -43,10 +43,16 @@
 | [`/api/boards/{id}/views`](#apiboardsidviews) | PUT | `session` |
 | [`/api/boards/{id}/views`](#apiboardsidviews) | DELETE | `session` |
 | [`/api/boards/{id}/work-sessions`](#apiboardsidwork-sessions) | GET | `session` |
+| [`/api/boards/{id}/workchains`](#apiboardsidworkchains) | GET | `session` |
+| [`/api/boards/{id}/workchains`](#apiboardsidworkchains) | POST | `session` |
+| [`/api/workchains/{id}`](#apiworkchainsid) | PATCH | `session` |
+| [`/api/workchains/{id}`](#apiworkchainsid) | DELETE | `session` |
+| [`/api/workchains/{id}/steps`](#apiworkchainsidsteps) | POST | `session` |
+| [`/api/workchains/{id}/steps`](#apiworkchainsidsteps) | DELETE | `session` |
 
 ## `/api/boards`
 
-Source: [`api/src/routes/boards/boards.rs`](../../api/src/routes/boards/boards.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards.rs`](../../api/crates/talaria-routes-boards/src/boards/boards.rs)
 
 > /api/boards. GET → the boards the caller owns or that are shared with them;
 > an agent key swaps the question
@@ -68,7 +74,7 @@ Source: [`api/src/routes/boards/boards.rs`](../../api/src/routes/boards/boards.r
 
 ## `/api/boards/{id}`
 
-Source: [`api/src/routes/boards/boards_id.rs`](../../api/src/routes/boards/boards_id.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id.rs)
 
 > /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName? }
 > → rename/archive/set the QA
@@ -93,7 +99,7 @@ Source: [`api/src/routes/boards/boards_id.rs`](../../api/src/routes/boards/board
 
 ## `/api/boards/{id}/agent-requests`
 
-Source: [`api/src/routes/boards/boards_id_agent_requests.rs`](../../api/src/routes/boards/boards_id_agent_requests.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agent_requests.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_agent_requests.rs)
 
 > /api/boards/{id}/agent-requests. The request half of board access for a
 > personal assistant whose owner CANNOT read the board — self-service
@@ -124,7 +130,7 @@ Source: [`api/src/routes/boards/boards_id_agent_requests.rs`](../../api/src/rout
 
 ## `/api/boards/{id}/agents`
 
-Source: [`api/src/routes/boards/boards_id_agents.rs`](../../api/src/routes/boards/boards_id_agents.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs)
 
 > /api/boards/{id}/agents. GET → { allowAll, models }. PUT → set the board's
 > agent policy (owner/editor,
@@ -150,7 +156,7 @@ Source: [`api/src/routes/boards/boards_id_agents.rs`](../../api/src/routes/board
 
 ## `/api/boards/{id}/events`
 
-Source: [`api/src/routes/boards/boards_id_events.rs`](../../api/src/routes/boards/boards_id_events.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_events.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_events.rs)
 
 > /api/boards/{id}/events. SSE stream of this board's live events
 > (task/comment changes), auth-gated to board members. Powers multiplayer
@@ -163,7 +169,7 @@ Source: [`api/src/routes/boards/boards_id_events.rs`](../../api/src/routes/board
 
 ## `/api/boards/{id}/labels`
 
-Source: [`api/src/routes/boards/boards_id_labels.rs`](../../api/src/routes/boards/boards_id_labels.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_labels.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_labels.rs)
 
 > /api/boards/{id}/labels. Board labels: GET → the registry (any member);
 > POST create, PUT rename/recolor (a rename cascades into tickets), DELETE
@@ -201,7 +207,7 @@ Source: [`api/src/routes/boards/boards_id_labels.rs`](../../api/src/routes/board
 
 ## `/api/boards/{id}/members`
 
-Source: [`api/src/routes/boards/boards_id_members.rs`](../../api/src/routes/boards/boards_id_members.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_members.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_members.rs)
 
 > /api/boards/{id}/members. GET → the member list. POST { email, role } →
 > share; DELETE { userId |
@@ -231,7 +237,7 @@ Source: [`api/src/routes/boards/boards_id_members.rs`](../../api/src/routes/boar
 
 ## `/api/boards/{id}/statuses`
 
-Source: [`api/src/routes/boards/boards_id_statuses.rs`](../../api/src/routes/boards/boards_id_statuses.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs)
 
 > /api/boards/{id}/statuses. Board statuses (custom workflow columns). GET →
 > the ordered list incl. the
@@ -280,7 +286,7 @@ Source: [`api/src/routes/boards/boards_id_statuses.rs`](../../api/src/routes/boa
 
 ## `/api/boards/{id}/tasks`
 
-Source: [`api/src/routes/boards/boards_id_tasks.rs`](../../api/src/routes/boards/boards_id_tasks.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_tasks.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_tasks.rs)
 
 > /api/boards/{id}/tasks. GET → the board's tasks (any member, or a
 > board-allowed agent; only humans
@@ -311,7 +317,7 @@ Source: [`api/src/routes/boards/boards_id_tasks.rs`](../../api/src/routes/boards
 
 ## `/api/boards/{id}/templates`
 
-Source: [`api/src/routes/boards/boards_id_templates.rs`](../../api/src/routes/boards/boards_id_templates.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_templates.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_templates.rs)
 
 > /api/boards/{id}/templates. The ticket templates a board uses. GET → the
 > bindings (any member); PUT
@@ -333,7 +339,7 @@ Source: [`api/src/routes/boards/boards_id_templates.rs`](../../api/src/routes/bo
 
 ## `/api/boards/{id}/views`
 
-Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards/boards_id_views.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_views.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_views.rs)
 
 > /api/boards/{id}/views. Saved board views: named filter/layout presets
 > shared with the board.
@@ -353,7 +359,7 @@ Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `name` | `string(1, 60)` |  |
-| `view` | `enum(board|list|gantt)?` |  |
+| `view` | `enum(board|list|gantt|workchains)?` |  |
 
 ### PUT `/api/boards/{id}/views` body
 
@@ -370,7 +376,7 @@ Source: [`api/src/routes/boards/boards_id_views.rs`](../../api/src/routes/boards
 
 ## `/api/boards/{id}/work-sessions`
 
-Source: [`api/src/routes/boards/boards_id_work_sessions.rs`](../../api/src/routes/boards/boards_id_work_sessions.rs)
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_work_sessions.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_work_sessions.rs)
 
 > GET /api/boards/{id}/work-sessions. The board's LIVE WORK SESSIONS as a
 > taskId → session map — the list view's question ("which cards are being
@@ -380,5 +386,70 @@ Source: [`api/src/routes/boards/boards_id_work_sessions.rs`](../../api/src/route
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{sessions}` | 200, 403 | — |
+| GET | `session` | — | `{sessions, waits}` | 200, 403 | — |
+
+## `/api/boards/{id}/workchains`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_workchains.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_workchains.rs)
+
+> /api/boards/{id}/workchains. The board's workchains — ordered pipelines
+> of its tickets. GET → the chains with their steps joined to task
+> summaries and the derived done/head/waiting state (any member, exactly
+> the readers board configuration gets); POST { name } → create, positioned
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{workchains}` | 200, 403 | — |
+| POST | `session` | [body](#post-apiboardsidworkchains-body) | `{workchain}` | 200, 400, 403 | — |
+
+### POST `/api/boards/{id}/workchains` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 120)` |  |
+
+## `/api/workchains/{id}`
+
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PATCH | `session` | [body](#patch-apiworkchainsid-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403 | — |
+
+### PATCH `/api/workchains/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string?(120)` |  |
+| `paused` | `bool?` |  |
+
+## `/api/workchains/{id}/steps`
+
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiworkchainsidsteps-body) | `{ok}` | 200, 400, 403, 409 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403 | — |
+
+### POST `/api/workchains/{id}/steps` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `taskId` | `uuid` |  |
+| `after` | `uuid?` |  |
 

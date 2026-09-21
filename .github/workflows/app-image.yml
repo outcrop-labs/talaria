@@ -75,7 +75,7 @@ jobs:
   api-pin:
     name: pin the api package
     runs-on: ubuntu-latest
-    timeout-minutes: 40 # the poll below can outwait a full api build
+    timeout-minutes: 70 # the poll below can outwait a full api build (60min now)
     outputs:
       pin: ${{ steps.pin.outputs.pin }}
     steps:
@@ -119,7 +119,11 @@ jobs:
             i=0
             until docker manifest inspect "$API_IMAGE:sha-$sha" >/dev/null 2>&1; do
               i=$((i + 1))
-              if [ "$i" -gt 60 ]; then
+              # 100 × 30s = 50min of patience, sized on what the api build
+              # actually costs now (~25-30min of release compile on a hosted
+              # runner; see api-package.yml): 30min of polling failed against a
+              # still-running green build on 09-21.
+              if [ "$i" -gt 100 ]; then
                 echo "::error::$API_IMAGE:sha-$sha never appeared — is the api-package run for this commit green?"
                 exit 1
               fi

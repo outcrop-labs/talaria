@@ -1,0 +1,17 @@
+[package]
+name = "talaria-state"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
+talaria-config = { path = "../talaria-config" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"

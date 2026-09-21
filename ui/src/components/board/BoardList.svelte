@@ -2,9 +2,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
-  import Modal from '@/components/ui/Modal.svelte'
-  import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import WorkWatch from './WorkWatch.svelte'
+  import RunDetailModal from './RunDetailModal.svelte'
   import { useBoardWorkSessions } from '@/lib/work-session.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { ChevronUp, ChevronDown } from '@lucide/svelte'
@@ -82,6 +80,7 @@
   const work = useBoardWorkSessions(() => boardId)
   let watchTask = $state<{ id: string; runId: string } | null>(null)
   const working = (id: string) => work.data?.sessions?.[id] ?? null
+  const queued = (id: string) => work.data?.waits?.[id] ?? null
   const fleetQuery = useAgents()
   const sessionQuery = useSession()
   const me = $derived(sessionQuery.data)
@@ -529,11 +528,7 @@
                       </td>
                     {/each}
                     <td></td>
-                    {#if working(t.id)}
-                      <!-- The working strip, BELOW the row's cells: it never
-                           adds a column, so the list's alignment stays exact
-                           whether or not work is live. The dither field plus
-                           the watch affordance live here. -->
+                    {#if working(t.id) || queued(t.id)}
                       <tr class="dither-fill" onclick={(e) => e.stopPropagation()}>
                         <td></td>
                         <td colspan={cols.length + 1} class="!py-1">
@@ -549,12 +544,19 @@
                               maxAlpha={0.4}
                             />
                             <div class="relative flex min-w-0 flex-1 items-center gap-2">
-                              <WaitingMark site="ticket/work-watch" size={12} class="text-accent" />
-                              <span class="truncate text-xs text-fg">
-                                {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
-                                {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
-                              </span>
+                              {#if working(t.id)}
+                                <span class="truncate text-xs text-fg">
+                                  {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
+                                  {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
+                                </span>
+                              {:else if queued(t.id)}
+                                <span class="truncate text-xs text-fg">
+                                  {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
+                                  <span class="text-muted"> · {queued(t.id)!.phase}</span>
+                                </span>
+                              {/if}
                             </div>
+                            {#if working(t.id)}
                             <button
                               type="button"
                               class="relative rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
@@ -562,6 +564,7 @@
                             >
                               watch
                             </button>
+                            {/if}
                           </div>
                         </td>
                       </tr>
@@ -576,9 +579,7 @@
     </div>
 
     {#if watchTask}
-      <Modal open={!!watchTask} onClose={() => (watchTask = null)} title="Work in progress" width="max-w-2xl">
-        <WorkWatch runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
-      </Modal>
+      <RunDetailModal open={!!watchTask} onClose={() => (watchTask = null)} runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
     {/if}
 
     <!-- Bulk action bar — appears with a selection, acts on every selected

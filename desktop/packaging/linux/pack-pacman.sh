@@ -27,8 +27,8 @@ pkgname = $pkgname
 pkgbase = $pkgname
 xdata = pkgtype=pkg
 pkgver = $pkgver
-pkgdesc = A multitenant shell around Talaria instances
-url = https://github.com/outcrop-labs/talaria
+pkgdesc = Official desktop client for Talaria
+url = https://talariaworks.ai
 builddate = $(date -u +%s)
 packager = Outcrop Labs LLC
 size = $(du -sb "$tree/usr" | cut -f1)

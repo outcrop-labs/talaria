@@ -62,6 +62,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "android_system_properties"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "arc-swap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -494,7 +503,9 @@ version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
+ "iana-time-zone",
  "num-traits",
+ "windows-link",
 ]
 
 [[package]]
@@ -1481,6 +1492,30 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "iana-time-zone"
+version = "0.1.65"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+dependencies = [
+ "android_system_properties",
+ "core-foundation-sys",
+ "iana-time-zone-haiku",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "windows-core",
+]
+
+[[package]]
+name = "iana-time-zone-haiku"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -3393,13 +3428,218 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
+name = "talaria-activity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agent-auth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-auth",
+ "talaria-collate",
+ "talaria-error",
+ "talaria-password",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agent-crons"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-docker",
+ "talaria-gateway",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-agent-defs"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agent-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-mcp-service",
+]
+
+[[package]]
+name = "talaria-agent-media"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "talaria-fleet-docker",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-agent-memory"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "talaria-fleet-docker",
+ "talaria-internal-history",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-agent-role-templates"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+]
+
+[[package]]
+name = "talaria-agent-secrets"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-layout",
+ "talaria-secretbox",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agent-skills"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-fleet-layout",
+ "talaria-internal-history",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-agent-writes"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-agents-registry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-alerts"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-brain-health",
+ "talaria-fleet-agents",
+ "talaria-fleet-docker",
+ "talaria-fleet-preflight",
+ "talaria-gateway",
+ "talaria-mcp-service",
+ "talaria-notify",
+ "talaria-retrieval",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-api"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "axum",
  "base64 0.23.1",
- "boa_engine",
  "chrono",
  "chrono-tz",
  "futures-util",
@@ -3420,6 +3660,220 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.11.0",
  "sqlx",
+ "talaria-activity",
+ "talaria-agent-auth",
+ "talaria-agent-crons",
+ "talaria-agent-defs",
+ "talaria-agent-mcp",
+ "talaria-agent-media",
+ "talaria-agent-memory",
+ "talaria-agent-role-templates",
+ "talaria-agent-secrets",
+ "talaria-agent-skills",
+ "talaria-agent-writes",
+ "talaria-agents-registry",
+ "talaria-alerts",
+ "talaria-api-facades",
+ "talaria-api-routes",
+ "talaria-approvals",
+ "talaria-apps",
+ "talaria-artifacts",
+ "talaria-attribution",
+ "talaria-audit",
+ "talaria-auth",
+ "talaria-auth-config",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-brain-health",
+ "talaria-capability",
+ "talaria-capability-platform",
+ "talaria-capability-reach",
+ "talaria-channel-plan",
+ "talaria-channel-replies",
+ "talaria-channels",
+ "talaria-chat-persist",
+ "talaria-claim",
+ "talaria-collate",
+ "talaria-comms-decay",
+ "talaria-config",
+ "talaria-conversations",
+ "talaria-daily-brief",
+ "talaria-daily-brief-comms",
+ "talaria-daily-brief-config",
+ "talaria-daily-brief-delegation",
+ "talaria-daily-brief-focus",
+ "talaria-daily-brief-types",
+ "talaria-db",
+ "talaria-digest",
+ "talaria-effort-prefs",
+ "talaria-email",
+ "talaria-error",
+ "talaria-fitness",
+ "talaria-fitness-code-runner",
+ "talaria-fitness-talaria-tools",
+ "talaria-fitness-toolbox",
+ "talaria-fitness-world",
+ "talaria-fleet-agents",
+ "talaria-fleet-brain",
+ "talaria-fleet-budget",
+ "talaria-fleet-cascade",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-fleet-federate",
+ "talaria-fleet-layout",
+ "talaria-fleet-preflight",
+ "talaria-fleet-reconcile",
+ "talaria-fleet-render",
+ "talaria-fleet-resources",
+ "talaria-gaps",
+ "talaria-gateway",
+ "talaria-github",
+ "talaria-google-agent",
+ "talaria-google-api-health",
+ "talaria-google-calendar",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-drive",
+ "talaria-google-errors",
+ "talaria-google-gmail",
+ "talaria-google-oauth",
+ "talaria-google-org",
+ "talaria-google-pending",
+ "talaria-google-provisioning",
+ "talaria-guard-coaching",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-json",
+ "talaria-harness-json-schema",
+ "talaria-harness-model",
+ "talaria-harness-prompt-rules",
+ "talaria-harness-schema",
+ "talaria-harness-text",
+ "talaria-hermes-skills",
+ "talaria-home",
+ "talaria-inbox-focus",
+ "talaria-inbox-focus-types",
+ "talaria-instance",
+ "talaria-internal-history",
+ "talaria-invites",
+ "talaria-jobs",
+ "talaria-judge",
+ "talaria-kb",
+ "talaria-kb-perms",
+ "talaria-labels",
+ "talaria-llm-keys",
+ "talaria-mcp",
+ "talaria-mcp-apply",
+ "talaria-mcp-icons",
+ "talaria-mcp-jsonrpc",
+ "talaria-mcp-library",
+ "talaria-mcp-oauth",
+ "talaria-mcp-probe",
+ "talaria-mcp-service",
+ "talaria-me",
+ "talaria-mentions",
+ "talaria-model-access",
+ "talaria-model-catalog",
+ "talaria-model-efforts",
+ "talaria-model-info",
+ "talaria-model-roles",
+ "talaria-native-search",
+ "talaria-notify",
+ "talaria-org",
+ "talaria-org-domains",
+ "talaria-outreach",
+ "talaria-params",
+ "talaria-password",
+ "talaria-password-accounts",
+ "talaria-permissions",
+ "talaria-persona",
+ "talaria-personal-agent",
+ "talaria-plan-doc",
+ "talaria-plan-drafts",
+ "talaria-platform-agents",
+ "talaria-price-oracle",
+ "talaria-push",
+ "talaria-ratelimit",
+ "talaria-realtime",
+ "talaria-realtime-watch",
+ "talaria-refs",
+ "talaria-repo-env",
+ "talaria-research",
+ "talaria-research-def",
+ "talaria-research-origin",
+ "talaria-retrieval",
+ "talaria-retrieval-collections",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-http",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-rerank",
+ "talaria-retrieval-sources",
+ "talaria-retrieval-sparse",
+ "talaria-routes-admin",
+ "talaria-routes-boards",
+ "talaria-routes-comms",
+ "talaria-routes-fleet",
+ "talaria-routes-integrations",
+ "talaria-routes-knowledge",
+ "talaria-routes-workbench",
+ "talaria-runs-agent-hire",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-drivers",
+ "talaria-runs-lease",
+ "talaria-runs-plan-draft",
+ "talaria-runs-reclaim",
+ "talaria-runs-reindex",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-runs-work-session",
+ "talaria-safe-fetch",
+ "talaria-scheduler",
+ "talaria-search",
+ "talaria-secret-health",
+ "talaria-secret-rotation",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-settings",
+ "talaria-skill-access",
+ "talaria-source-registry",
+ "talaria-state",
+ "talaria-statuses",
+ "talaria-storage",
+ "talaria-task-const",
+ "talaria-tasks",
+ "talaria-tasks-types",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-ticket-chat",
+ "talaria-titler",
+ "talaria-tz",
+ "talaria-undici",
+ "talaria-update-adopt",
+ "talaria-update-docker",
+ "talaria-update-job",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-roll",
+ "talaria-update-state",
+ "talaria-uploads",
+ "talaria-users",
+ "talaria-vision",
+ "talaria-web-search",
+ "talaria-work-dispatch",
+ "talaria-work-wait",
+ "talaria-workbench",
+ "talaria-workbench-harnesses",
+ "talaria-workbench-mcp",
+ "talaria-workchains",
+ "talaria-workflows",
+ "talaria-workspace-handles",
+ "talaria-workspace-secrets",
+ "talaria-yaml",
+ "talaria-yaml11",
  "thiserror",
  "tokio",
  "tower",
@@ -3428,6 +3882,3533 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-api-facades"
+version = "0.1.0"
+dependencies = [
+ "talaria-daily-brief",
+ "talaria-fitness",
+ "talaria-fitness-code-runner",
+ "talaria-fitness-toolbox",
+ "talaria-fleet-agents",
+ "talaria-fleet-brain",
+ "talaria-fleet-budget",
+ "talaria-fleet-cascade",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-fleet-federate",
+ "talaria-fleet-layout",
+ "talaria-fleet-preflight",
+ "talaria-fleet-reconcile",
+ "talaria-fleet-render",
+ "talaria-fleet-resources",
+ "talaria-gateway",
+ "talaria-google-agent",
+ "talaria-google-api-health",
+ "talaria-google-calendar",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-drive",
+ "talaria-google-errors",
+ "talaria-google-gmail",
+ "talaria-google-oauth",
+ "talaria-google-org",
+ "talaria-google-pending",
+ "talaria-google-provisioning",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-json",
+ "talaria-harness-json-schema",
+ "talaria-harness-prompt-rules",
+ "talaria-harness-schema",
+ "talaria-harness-text",
+ "talaria-hermes-skills",
+ "talaria-inbox-focus",
+ "talaria-kb",
+ "talaria-mcp",
+ "talaria-mcp-apply",
+ "talaria-mcp-icons",
+ "talaria-mcp-jsonrpc",
+ "talaria-mcp-library",
+ "talaria-mcp-oauth",
+ "talaria-mcp-probe",
+ "talaria-mcp-service",
+ "talaria-model-access",
+ "talaria-model-catalog",
+ "talaria-model-efforts",
+ "talaria-model-info",
+ "talaria-model-roles",
+ "talaria-research",
+ "talaria-research-def",
+ "talaria-retrieval",
+ "talaria-runs-agent-hire",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-drivers",
+ "talaria-runs-lease",
+ "talaria-runs-plan-draft",
+ "talaria-runs-reclaim",
+ "talaria-runs-reindex",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-runs-work-session",
+ "talaria-update-adopt",
+ "talaria-update-docker",
+ "talaria-update-job",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-roll",
+ "talaria-update-state",
+ "talaria-workbench",
+ "talaria-workbench-harnesses",
+ "talaria-workbench-mcp",
+]
+
+[[package]]
+name = "talaria-api-routes"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "talaria-error",
+ "talaria-routes-admin",
+ "talaria-routes-boards",
+ "talaria-routes-comms",
+ "talaria-routes-fleet",
+ "talaria-routes-integrations",
+ "talaria-routes-knowledge",
+ "talaria-routes-workbench",
+ "talaria-state",
+ "talaria-uploads",
+ "tower-http 0.7.0",
+]
+
+[[package]]
+name = "talaria-approvals"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-apps"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-mcp-apply",
+ "talaria-safe-fetch",
+ "talaria-secretbox",
+ "talaria-users",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-artifacts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-error",
+ "talaria-internal-history",
+ "talaria-kb",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+]
+
+[[package]]
+name = "talaria-attribution"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-research-origin",
+ "talaria-users",
+]
+
+[[package]]
+name = "talaria-audit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-auth"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.11.0",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-auth-config"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-boards"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-users",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-body"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "talaria-brain-health"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-capability"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-capability-platform"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability-reach",
+ "talaria-search",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-capability-reach"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability",
+ "talaria-gateway",
+ "talaria-model-roles",
+ "talaria-search",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-channel-plan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-channels",
+ "talaria-conversations",
+ "talaria-fleet-layout",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-state",
+ "talaria-templates",
+ "talaria-workflows",
+]
+
+[[package]]
+name = "talaria-channel-replies"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-channels",
+ "talaria-fleet-agents",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-mentions",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-refs",
+ "talaria-secretbox",
+ "talaria-state",
+ "talaria-ticket-chat",
+ "talaria-uploads",
+ "talaria-users",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-channels"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-users",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-chat-persist"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-conversations",
+ "talaria-fleet-agents",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-model-efforts",
+ "talaria-notify",
+ "talaria-plan-doc",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-state",
+ "talaria-titler",
+ "talaria-workspace-handles",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-claim"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-users",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-collate"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-comms-decay"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-channels",
+ "talaria-fleet-layout",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-notify",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-config"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-conversations"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "talaria-uploads",
+]
+
+[[package]]
+name = "talaria-daily-brief"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-artifacts",
+ "talaria-daily-brief-comms",
+ "talaria-daily-brief-config",
+ "talaria-daily-brief-delegation",
+ "talaria-daily-brief-focus",
+ "talaria-daily-brief-types",
+ "talaria-google-calendar",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-me",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-state",
+ "talaria-tz",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-daily-brief-comms"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-daily-brief-types",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-daily-brief-config"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-tz",
+]
+
+[[package]]
+name = "talaria-daily-brief-delegation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-channels",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-notify",
+ "talaria-state",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-daily-brief-focus"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-daily-brief-types",
+ "talaria-statuses",
+]
+
+[[package]]
+name = "talaria-daily-brief-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "talaria-agent-auth",
+]
+
+[[package]]
+name = "talaria-db"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "talaria-config",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-digest"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-approvals",
+ "talaria-daily-brief",
+ "talaria-email",
+ "talaria-gateway",
+ "talaria-home",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-scheduler",
+ "talaria-state",
+ "talaria-tz",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-effort-prefs"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-efforts",
+]
+
+[[package]]
+name = "talaria-email"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "lettre",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-error"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fitness"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "getrandom 0.3.4",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-capability",
+ "talaria-capability-reach",
+ "talaria-config",
+ "talaria-db",
+ "talaria-fitness-code-runner",
+ "talaria-fitness-toolbox",
+ "talaria-gateway",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-harness-schema",
+ "talaria-model-access",
+ "talaria-model-catalog",
+ "talaria-model-roles",
+ "talaria-persona",
+ "talaria-platform-agents",
+ "talaria-price-oracle",
+ "talaria-safe-fetch",
+ "talaria-state",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-fitness-code-runner"
+version = "0.1.0"
+dependencies = [
+ "boa_engine",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-fitness-talaria-tools"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-fitness-toolbox"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "talaria-fitness-talaria-tools",
+ "talaria-fitness-world",
+ "talaria-harness",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-fitness-world"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-fleet-agents"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agents-registry",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-users",
+]
+
+[[package]]
+name = "talaria-fleet-brain"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-auth",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-llm-keys",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-budget"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "talaria-fleet-docker",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-cascade"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-defs",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-secretbox",
+]
+
+[[package]]
+name = "talaria-fleet-create"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "getrandom 0.3.4",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-defs",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-docker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-layout",
+ "talaria-hermes-skills",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-federate"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sqlx",
+ "talaria-agent-defs",
+ "talaria-fleet-create",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-layout"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-fleet-preflight"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-reconcile"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "sqlx",
+ "talaria-fleet-docker",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-render"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-secrets",
+ "talaria-fleet-brain",
+ "talaria-fleet-budget",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-github",
+ "talaria-guard-coaching",
+ "talaria-mcp",
+ "talaria-mcp-service",
+ "talaria-org",
+ "talaria-repo-env",
+ "talaria-secretbox",
+ "talaria-workbench",
+ "talaria-workbench-harnesses",
+ "talaria-workspace-handles",
+ "talaria-yaml11",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-fleet-resources"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-budget",
+ "talaria-fleet-docker",
+ "talaria-scheduler",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-gaps"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-notify",
+ "talaria-runs-define",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-gateway"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.3.4",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-fleet-layout",
+ "talaria-secretbox",
+ "talaria-settings",
+ "talaria-state",
+ "talaria-undici",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-github"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "talaria-tz",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-google-agent"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-google-connections",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-api-health"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-calendar"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-client"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-google-connections"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-drive"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-gateway",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-oauth",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "talaria-uploads",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-errors"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "talaria-error",
+ "talaria-google-connections",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-google-gmail"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-oauth"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-auth-config",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-state",
+ "talaria-users",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-org"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-google-connections",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-google-pending"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-google-calendar",
+ "talaria-google-connections",
+ "talaria-google-gmail",
+ "talaria-google-org",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-google-provisioning"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-google-client",
+ "talaria-google-connections",
+ "talaria-google-org",
+ "talaria-secretbox",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-guard-coaching"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-settings",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-harness"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-capability",
+ "talaria-capability-reach",
+ "talaria-config",
+ "talaria-db",
+ "talaria-effort-prefs",
+ "talaria-fleet-agents",
+ "talaria-gateway",
+ "talaria-harness-json",
+ "talaria-harness-json-schema",
+ "talaria-harness-model",
+ "talaria-harness-schema",
+ "talaria-me",
+ "talaria-persona",
+ "talaria-state",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-harness-defs"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-capability-platform",
+ "talaria-capability-reach",
+ "talaria-config",
+ "talaria-fitness-toolbox",
+ "talaria-fitness-world",
+ "talaria-gateway",
+ "talaria-harness",
+ "talaria-harness-model",
+ "talaria-harness-prompt-rules",
+ "talaria-harness-schema",
+ "talaria-harness-text",
+ "talaria-native-search",
+ "talaria-platform-agents",
+ "talaria-search",
+ "talaria-secretbox",
+ "talaria-state",
+ "talaria-task-const",
+ "talaria-web-search",
+ "talaria-workspace-handles",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-harness-json"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "talaria-harness-json-schema",
+ "talaria-harness-schema",
+]
+
+[[package]]
+name = "talaria-harness-json-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "talaria-harness-schema",
+]
+
+[[package]]
+name = "talaria-harness-model"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-access",
+ "talaria-model-roles",
+ "talaria-platform-agents",
+ "talaria-users",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-harness-prompt-rules"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-harness-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-harness-text"
+version = "0.1.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
+name = "talaria-hermes-skills"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-home"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-activity",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-gateway",
+ "talaria-org",
+ "talaria-state",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-inbox-focus"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "getrandom 0.3.4",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-audit",
+ "talaria-auth",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-channel-replies",
+ "talaria-channels",
+ "talaria-conversations",
+ "talaria-daily-brief",
+ "talaria-fleet-agents",
+ "talaria-gateway",
+ "talaria-google-pending",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-inbox-focus-types",
+ "talaria-model-access",
+ "talaria-model-efforts",
+ "talaria-notify",
+ "talaria-persona",
+ "talaria-refs",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-state",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "talaria-uploads",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-inbox-focus-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-harness-defs",
+]
+
+[[package]]
+name = "talaria-instance"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-internal-history"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-invites"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-email",
+ "talaria-instance",
+ "talaria-org",
+ "talaria-secretbox",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-jobs"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-comms-decay",
+ "talaria-config",
+ "talaria-daily-brief",
+ "talaria-digest",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-fleet-preflight",
+ "talaria-fleet-reconcile",
+ "talaria-fleet-render",
+ "talaria-fleet-resources",
+ "talaria-gateway",
+ "talaria-mcp",
+ "talaria-mcp-apply",
+ "talaria-mcp-library",
+ "talaria-model-info",
+ "talaria-notify",
+ "talaria-outreach",
+ "talaria-price-oracle",
+ "talaria-push",
+ "talaria-realtime",
+ "talaria-research-def",
+ "talaria-runs-agent-hire",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-plan-draft",
+ "talaria-runs-reclaim",
+ "talaria-runs-reindex",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-runs-work-session",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-state",
+ "talaria-update-job",
+ "talaria-web-search",
+ "talaria-work-dispatch",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-judge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-settings",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-kb"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-email",
+ "talaria-error",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-internal-history",
+ "talaria-kb-perms",
+ "talaria-notify",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-sources",
+ "talaria-state",
+ "talaria-teams",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-kb-perms"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sqlx",
+ "talaria-fleet-agents",
+]
+
+[[package]]
+name = "talaria-labels"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-realtime",
+]
+
+[[package]]
+name = "talaria-llm-keys"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-auth",
+ "talaria-body",
+ "talaria-permissions",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mcp"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-mcp-jsonrpc",
+ "talaria-mcp-oauth",
+ "talaria-mcp-service",
+ "talaria-safe-fetch",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-undici",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-mcp-apply"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde_json",
+ "sqlx",
+ "talaria-audit",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-mcp-icons"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-safe-fetch",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-mcp-jsonrpc"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-mcp-library"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-mcp-icons",
+ "talaria-safe-fetch",
+ "talaria-scheduler",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-oauth"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.3.4",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-probe"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mcp-service"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "talaria-fleet-layout",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-me"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-mentions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-notify",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-model-access"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-collate",
+ "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-model-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-capability",
+ "talaria-gateway",
+ "talaria-persona",
+ "talaria-state",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-model-efforts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-catalog",
+ "talaria-persona",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-model-info"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-model-access",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-model-roles"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability",
+ "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-native-search"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-notify"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-body",
+ "talaria-email",
+ "talaria-fleet-layout",
+ "talaria-instance",
+ "talaria-push",
+ "talaria-realtime",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-settings",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-org"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fitness-talaria-tools",
+ "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-org-domains"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "hickory-resolver",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-outreach"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-conversations",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-google-oauth",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-notify",
+ "talaria-scheduler",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-params"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "talaria-error",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-password"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "scrypt",
+]
+
+[[package]]
+name = "talaria-password-accounts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-password",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-permissions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-settings",
+ "talaria-teams",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-persona"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-capability",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-personal-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-defs",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-retrieval-collections",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-plan-doc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-conversations",
+ "talaria-fleet-layout",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-kb",
+ "talaria-mentions",
+ "talaria-notify",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "talaria-state",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-users",
+ "talaria-workflows",
+]
+
+[[package]]
+name = "talaria-plan-drafts"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-realtime",
+ "talaria-runs-plan-draft",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-tasks-types",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-platform-agents"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-price-oracle"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-scheduler",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-push"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.23.1",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hmac",
+ "p256",
+ "reqwest",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-ratelimit"
+version = "0.1.0"
+dependencies = [
+ "http",
+ "redis",
+]
+
+[[package]]
+name = "talaria-realtime"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-runs-define",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-realtime-watch"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "sqlx",
+ "talaria-boards",
+ "talaria-channels",
+ "talaria-conversations",
+ "talaria-realtime",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-users",
+]
+
+[[package]]
+name = "talaria-refs"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+]
+
+[[package]]
+name = "talaria-repo-env"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "sqlx",
+ "talaria-secretbox",
+]
+
+[[package]]
+name = "talaria-research"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-conversations",
+ "talaria-realtime",
+ "talaria-research-def",
+ "talaria-runs-run",
+ "talaria-source-registry",
+ "talaria-state",
+ "talaria-tasks-types",
+ "talaria-titler",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-research-def"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-capability-reach",
+ "talaria-conversations",
+ "talaria-fleet-layout",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-kb",
+ "talaria-model-access",
+ "talaria-model-roles",
+ "talaria-notify",
+ "talaria-retrieval",
+ "talaria-runs-define",
+ "talaria-source-registry",
+ "talaria-state",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-research-origin"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "talaria-state",
+]
+
+[[package]]
+name = "talaria-retrieval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-artifacts",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "talaria-retrieval-collections",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-http",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-rerank",
+ "talaria-retrieval-sources",
+ "talaria-retrieval-sparse",
+ "talaria-runs-define",
+ "talaria-runs-store",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-retrieval-collections"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-retrieval-embed"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "talaria-retrieval-http",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-retrieval-http"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-retrieval-index"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-retrieval-collections",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-http",
+ "talaria-retrieval-qdrant",
+ "talaria-retrieval-rerank",
+ "talaria-retrieval-sparse",
+ "talaria-state",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-retrieval-qdrant"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "talaria-retrieval-http",
+ "talaria-retrieval-sparse",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-retrieval-rerank"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-retrieval-http",
+ "talaria-state",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-retrieval-sources"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-retrieval-collections",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-index",
+ "talaria-retrieval-qdrant",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-retrieval-sparse"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "talaria-routes-admin"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-api-facades",
+ "talaria-apps",
+ "talaria-audit",
+ "talaria-auth-config",
+ "talaria-body",
+ "talaria-config",
+ "talaria-effort-prefs",
+ "talaria-email",
+ "talaria-error",
+ "talaria-fitness",
+ "talaria-instance",
+ "talaria-invites",
+ "talaria-judge",
+ "talaria-org",
+ "talaria-org-domains",
+ "talaria-outreach",
+ "talaria-password-accounts",
+ "talaria-permissions",
+ "talaria-platform-agents",
+ "talaria-routes-integrations",
+ "talaria-search",
+ "talaria-secret-health",
+ "talaria-secret-rotation",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-state",
+ "talaria-storage",
+ "talaria-uploads",
+ "talaria-users",
+ "talaria-workspace-secrets",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-routes-boards"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-api-facades",
+ "talaria-approvals",
+ "talaria-audit",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-conversations",
+ "talaria-error",
+ "talaria-labels",
+ "talaria-mentions",
+ "talaria-notify",
+ "talaria-params",
+ "talaria-permissions",
+ "talaria-plan-doc",
+ "talaria-plan-drafts",
+ "talaria-realtime-watch",
+ "talaria-refs",
+ "talaria-routes-comms",
+ "talaria-session",
+ "talaria-state",
+ "talaria-statuses",
+ "talaria-task-const",
+ "talaria-tasks",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-uploads",
+ "talaria-users",
+ "talaria-work-wait",
+ "talaria-workchains",
+ "talaria-workflows",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-routes-comms"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-activity",
+ "talaria-agent-auth",
+ "talaria-agent-defs",
+ "talaria-alerts",
+ "talaria-api-facades",
+ "talaria-artifacts",
+ "talaria-audit",
+ "talaria-body",
+ "talaria-channel-replies",
+ "talaria-channels",
+ "talaria-chat-persist",
+ "talaria-comms-decay",
+ "talaria-conversations",
+ "talaria-daily-brief",
+ "talaria-error",
+ "talaria-harness-defs",
+ "talaria-home",
+ "talaria-inbox-focus",
+ "talaria-internal-history",
+ "talaria-notify",
+ "talaria-permissions",
+ "talaria-persona",
+ "talaria-personal-agent",
+ "talaria-plan-doc",
+ "talaria-plan-drafts",
+ "talaria-push",
+ "talaria-realtime-watch",
+ "talaria-refs",
+ "talaria-research",
+ "talaria-research-origin",
+ "talaria-session",
+ "talaria-state",
+ "talaria-tasks",
+ "talaria-teams",
+ "talaria-ticket-chat",
+ "talaria-titler",
+ "talaria-uploads",
+ "talaria-workspace-handles",
+ "talaria-yaml",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-routes-fleet"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "redis",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-crons",
+ "talaria-agent-defs",
+ "talaria-agent-mcp",
+ "talaria-agent-role-templates",
+ "talaria-agent-secrets",
+ "talaria-agent-skills",
+ "talaria-agents-registry",
+ "talaria-api-facades",
+ "talaria-approvals",
+ "talaria-audit",
+ "talaria-auth",
+ "talaria-auth-config",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-brain-health",
+ "talaria-channels",
+ "talaria-error",
+ "talaria-gaps",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-instance",
+ "talaria-llm-keys",
+ "talaria-notify",
+ "talaria-org",
+ "talaria-outreach",
+ "talaria-params",
+ "talaria-permissions",
+ "talaria-persona",
+ "talaria-personal-agent",
+ "talaria-price-oracle",
+ "talaria-ratelimit",
+ "talaria-realtime-watch",
+ "talaria-safe-fetch",
+ "talaria-secretbox",
+ "talaria-session",
+ "talaria-skill-access",
+ "talaria-state",
+ "talaria-tasks",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-uploads",
+ "talaria-users",
+ "talaria-vision",
+ "talaria-work-dispatch",
+ "talaria-workspace-secrets",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-routes-integrations"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-api-facades",
+ "talaria-artifacts",
+ "talaria-audit",
+ "talaria-auth-config",
+ "talaria-body",
+ "talaria-claim",
+ "talaria-error",
+ "talaria-github",
+ "talaria-invites",
+ "talaria-me",
+ "talaria-org-domains",
+ "talaria-params",
+ "talaria-password",
+ "talaria-password-accounts",
+ "talaria-permissions",
+ "talaria-personal-agent",
+ "talaria-ratelimit",
+ "talaria-realtime-watch",
+ "talaria-session",
+ "talaria-state",
+ "talaria-teams",
+ "talaria-users",
+ "talaria-workspace-secrets",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-routes-knowledge"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-media",
+ "talaria-agent-memory",
+ "talaria-api-facades",
+ "talaria-artifacts",
+ "talaria-attribution",
+ "talaria-audit",
+ "talaria-body",
+ "talaria-error",
+ "talaria-notify",
+ "talaria-params",
+ "talaria-permissions",
+ "talaria-personal-agent",
+ "talaria-session",
+ "talaria-state",
+ "talaria-teams",
+ "talaria-templates",
+ "talaria-uploads",
+ "talaria-users",
+ "talaria-web-search",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-routes-workbench"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-api-facades",
+ "talaria-attribution",
+ "talaria-audit",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-db",
+ "talaria-error",
+ "talaria-github",
+ "talaria-harness-defs",
+ "talaria-instance",
+ "talaria-notify",
+ "talaria-params",
+ "talaria-permissions",
+ "talaria-realtime-watch",
+ "talaria-repo-env",
+ "talaria-research",
+ "talaria-research-origin",
+ "talaria-session",
+ "talaria-state",
+ "talaria-tasks",
+ "talaria-teams",
+ "talaria-users",
+ "talaria-work-wait",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-agent-hire"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-skills",
+ "talaria-audit",
+ "talaria-fleet-create",
+ "talaria-fleet-docker",
+ "talaria-fleet-render",
+ "talaria-runs-define",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-decide"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-approvals",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-realtime-watch",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-runs-define"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-drivers"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-lease"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-runs-plan-draft"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-channel-plan",
+ "talaria-harness-defs",
+ "talaria-runs-define",
+ "talaria-state",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-runs-reclaim"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-scheduler",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-reindex"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-artifacts",
+ "talaria-fleet-layout",
+ "talaria-realtime",
+ "talaria-retrieval",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-state",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-run"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-runs-define",
+ "talaria-runs-drivers",
+ "talaria-runs-lease",
+ "talaria-runs-store",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-runs-store"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-runs-define",
+]
+
+[[package]]
+name = "talaria-runs-work-session"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-artifacts",
+ "talaria-body",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-github",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-runs-define",
+ "talaria-state",
+ "talaria-statuses",
+ "talaria-tasks",
+ "talaria-workflows",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-safe-fetch"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-scheduler"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "talaria-agent-auth",
+ "talaria-runs-lease",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-search"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-secret-health"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-config",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-secret-rotation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-secretbox",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-secretbox"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "scrypt",
+ "sqlx",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-session"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "getrandom 0.3.4",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-error",
+ "talaria-password",
+ "talaria-state",
+ "talaria-users",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-settings"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+]
+
+[[package]]
+name = "talaria-skill-access"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "sqlx",
+ "talaria-agent-skills",
+ "talaria-fleet-agents",
+ "talaria-permissions",
+]
+
+[[package]]
+name = "talaria-source-registry"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-state"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "sqlx",
+ "talaria-config",
+ "talaria-secretbox",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-statuses"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-boards",
+ "talaria-realtime",
+ "talaria-tasks-types",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-storage"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-task-const"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-tasks"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-writes",
+ "talaria-boards",
+ "talaria-channels",
+ "talaria-gateway",
+ "talaria-judge",
+ "talaria-labels",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-retrieval",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "talaria-ticket-chat",
+ "talaria-workchains",
+ "talaria-workflows",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-tasks-types"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-error",
+ "talaria-notify",
+ "talaria-realtime",
+ "talaria-runs-run",
+]
+
+[[package]]
+name = "talaria-teams"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-templates"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-internal-history",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-ticket-chat"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-state",
+ "talaria-tasks-types",
+]
+
+[[package]]
+name = "talaria-titler"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-conversations",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-tz"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "talaria-agent-auth",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-undici"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+]
+
+[[package]]
+name = "talaria-update-adopt"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-docker",
+ "talaria-runs-lease",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-roll",
+ "talaria-update-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-docker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-fleet-docker",
+ "talaria-update-layout",
+ "talaria-update-registry",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-job"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-scheduler",
+ "talaria-state",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-roll",
+ "talaria-update-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-layout"
+version = "0.1.0"
+dependencies = [
+ "talaria-fleet-docker",
+]
+
+[[package]]
+name = "talaria-update-mode"
+version = "0.1.0"
+
+[[package]]
+name = "talaria-update-registry"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-update-layout",
+ "talaria-update-state",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "talaria-update-render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-yaml11",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-roll"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-runs-lease",
+ "talaria-update-docker",
+ "talaria-update-layout",
+ "talaria-update-mode",
+ "talaria-update-registry",
+ "talaria-update-render",
+ "talaria-update-state",
+ "talaria-yaml11",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-update-state"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+]
+
+[[package]]
+name = "talaria-uploads"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "futures-util",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-error",
+ "talaria-gateway",
+ "talaria-secretbox",
+ "talaria-storage",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-users"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-gateway",
+ "talaria-permissions",
+ "talaria-teams",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-vision"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-harness",
+ "talaria-harness-model",
+ "talaria-state",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-web-search"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-capability-platform",
+ "talaria-capability-reach",
+ "talaria-gateway",
+ "talaria-search",
+ "talaria-secretbox",
+ "talaria-state",
+ "tokio",
+]
+
+[[package]]
+name = "talaria-work-dispatch"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-budget",
+ "talaria-realtime",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-runs-store",
+ "talaria-runs-work-session",
+ "talaria-scheduler",
+ "talaria-statuses",
+ "talaria-tasks",
+ "talaria-tasks-types",
+ "talaria-work-wait",
+ "talaria-workbench",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-work-wait"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-workbench"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-layout",
+]
+
+[[package]]
+name = "talaria-workbench-harnesses"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-gateway",
+ "talaria-model-roles",
+]
+
+[[package]]
+name = "talaria-workbench-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "getrandom 0.3.4",
+ "redis",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-approvals",
+ "talaria-artifacts",
+ "talaria-attribution",
+ "talaria-boards",
+ "talaria-body",
+ "talaria-fleet-budget",
+ "talaria-fleet-layout",
+ "talaria-github",
+ "talaria-mcp-jsonrpc",
+ "talaria-realtime",
+ "talaria-runs-define",
+ "talaria-secretbox",
+ "talaria-tasks",
+ "talaria-work-wait",
+ "talaria-workbench",
+ "talaria-workbench-harnesses",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-workchains"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-notify",
+ "talaria-statuses",
+ "talaria-tasks-types",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-workflows"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "chrono-tz",
+ "futures-util",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-gateway",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-workspace-handles"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "sqlx",
+]
+
+[[package]]
+name = "talaria-workspace-secrets"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-audit",
+ "talaria-secretbox",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-yaml"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "talaria-yaml11"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -4022,6 +8003,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "windows-core"
+version = "0.62.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
+dependencies = [
+ "windows-implement",
+ "windows-interface",
+ "windows-link",
+ "windows-result",
+ "windows-strings",
+]
+
+[[package]]
+name = "windows-implement"
+version = "0.60.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "windows-interface"
+version = "0.59.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -1,0 +1,15 @@
+[package]
+name = "talaria-db"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
+talaria-config = { path = "../talaria-config" }
+tracing = "0.1"
+

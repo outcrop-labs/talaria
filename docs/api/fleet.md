@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-20 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -40,10 +40,11 @@
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
 | [`/api/fleet/render`](#apifleetrender) | POST | `admin` |
+| [`/api/fleet/resources`](#apifleetresources) | GET | `admin` |
 
 ## `/api/fleet`
 
-Source: [`api/src/routes/fleet/fleet.rs`](../../api/src/routes/fleet/fleet.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet.rs)
 
 > GET /api/fleet. Owned fleet ops data (agents + Talaria-native usage).
 > Ops-wide detail: admins + people granted the Observability view.
@@ -54,7 +55,7 @@ Source: [`api/src/routes/fleet/fleet.rs`](../../api/src/routes/fleet/fleet.rs)
 
 ## `/api/fleet/agents/{id}/control`
 
-Source: [`api/src/routes/fleet/fleet_agents_id_control.rs`](../../api/src/routes/fleet/fleet_agents_id_control.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs)
 
 > POST /api/fleet/agents/{id}/control. Lifecycle control for one agent
 > (admin; owners of a personal assistant may up/stop/restart their own).
@@ -74,7 +75,7 @@ Source: [`api/src/routes/fleet/fleet_agents_id_control.rs`](../../api/src/routes
 
 ## `/api/fleet/agents/{id}/crons`
 
-Source: [`api/src/routes/fleet/fleet_agents_id_crons.rs`](../../api/src/routes/fleet/fleet_agents_id_crons.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs)
 
 > /api/fleet/agents/{id}/crons. One agent's native Hermes cron jobs. GET →
 > jobs (read from the container's jobs.json). POST → create. Admin, or the
@@ -95,7 +96,7 @@ Source: [`api/src/routes/fleet/fleet_agents_id_crons.rs`](../../api/src/routes/f
 
 ## `/api/fleet/agents/{id}/crons/{jobId}`
 
-Source: [`api/src/routes/fleet/fleet_agents_id_crons_jobid.rs`](../../api/src/routes/fleet/fleet_agents_id_crons_jobid.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.rs)
 
 > /api/fleet/agents/{id}/crons/{jobId}. One cron job: DELETE → remove. POST
 > { action } → pause | resume | run ("run" queues it for the next scheduler
@@ -124,7 +125,7 @@ Source: [`api/src/routes/fleet/fleet_agents_id_crons_jobid.rs`](../../api/src/ro
 
 ## `/api/fleet/agents/{id}/secrets`
 
-Source: [`api/src/routes/fleet/fleet_agents_id_secrets.rs`](../../api/src/routes/fleet/fleet_agents_id_secrets.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs)
 
 > /api/fleet/agents/{id}/secrets. Per-agent secrets, write-only. GET →
 > names + timestamps (never values). PUT { name, value } → set/replace.
@@ -153,7 +154,7 @@ source.
 
 ## `/api/fleet/containers`
 
-Source: [`api/src/routes/fleet/fleet_containers.rs`](../../api/src/routes/fleet/fleet_containers.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_containers.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_containers.rs)
 
 > GET /api/fleet/containers. Container reality per agent (the managed
 > service), admin.
@@ -164,7 +165,7 @@ Source: [`api/src/routes/fleet/fleet_containers.rs`](../../api/src/routes/fleet/
 
 ## `/api/fleet/create`
 
-Source: [`api/src/routes/fleet/fleet_create.rs`](../../api/src/routes/fleet/fleet_create.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_create.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_create.rs)
 
 > /api/fleet/create. POST → start HIRING a new agent. The work — create the
 > def, write v1 and any starter skills, render the fleet, boot the
@@ -190,7 +191,7 @@ Source: [`api/src/routes/fleet/fleet_create.rs`](../../api/src/routes/fleet/flee
 
 ## `/api/fleet/crons`
 
-Source: [`api/src/routes/fleet/fleet_crons.rs`](../../api/src/routes/fleet/fleet_crons.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs)
 
 > /api/fleet/crons. Fleet-wide crons (admin). GET → every managed agent's
 > jobs (down containers reported per-agent, not fatal). POST → create the
@@ -213,7 +214,7 @@ Source: [`api/src/routes/fleet/fleet_crons.rs`](../../api/src/routes/fleet/fleet
 
 ## `/api/fleet/defs`
 
-Source: [`api/src/routes/fleet/fleet_defs.rs`](../../api/src/routes/fleet/fleet_defs.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs)
 
 > GET /api/fleet/defs. The harness registry: agent definitions (latest
 > version inline) + LLM endpoints + brain routability. Admins only — the
@@ -225,7 +226,7 @@ Source: [`api/src/routes/fleet/fleet_defs.rs`](../../api/src/routes/fleet/fleet_
 
 ## `/api/fleet/defs/{id}`
 
-Source: [`api/src/routes/fleet/fleet_defs_id.rs`](../../api/src/routes/fleet/fleet_defs_id.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs)
 
 > /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
 > display name, send alias) plus the workbench and template binds. Not
@@ -248,7 +249,7 @@ Source: [`api/src/routes/fleet/fleet_defs_id.rs`](../../api/src/routes/fleet/fle
 
 ## `/api/fleet/defs/{id}/edit`
 
-Source: [`api/src/routes/fleet/fleet_defs_id_edit.rs`](../../api/src/routes/fleet/fleet_defs_id_edit.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs)
 
 > /api/fleet/defs/{id}/edit. POST → save an edit as a NEW immutable version
 > (and optionally apply it to the running managed container). Admin. This is
@@ -272,7 +273,7 @@ Source: [`api/src/routes/fleet/fleet_defs_id_edit.rs`](../../api/src/routes/flee
 
 ## `/api/fleet/defs/{id}/mcp`
 
-Source: [`api/src/routes/fleet/fleet_defs_id_mcp.rs`](../../api/src/routes/fleet/fleet_defs_id_mcp.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs)
 
 > /api/fleet/defs/{id}/mcp. POST → add/remove MCP servers on an agent as a
 > NEW config version (same versioned-internals contract as model edits),
@@ -290,7 +291,7 @@ Source: [`api/src/routes/fleet/fleet_defs_id_mcp.rs`](../../api/src/routes/fleet
 
 ## `/api/fleet/defs/{id}/versions`
 
-Source: [`api/src/routes/fleet/fleet_defs_id_versions.rs`](../../api/src/routes/fleet/fleet_defs_id_versions.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_versions.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_versions.rs)
 
 > /api/fleet/defs/{id}/versions. GET → an agent definition's full version
 > history (admin). POST { revertTo } → re-publish an old version's payload
@@ -310,7 +311,7 @@ Source: [`api/src/routes/fleet/fleet_defs_id_versions.rs`](../../api/src/routes/
 
 ## `/api/fleet/endpoints`
 
-Source: [`api/src/routes/fleet/fleet_endpoints.rs`](../../api/src/routes/fleet/fleet_endpoints.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints.rs)
 
 > /api/fleet/endpoints. The model-backend registry (Models tab). GET → all
 > endpoints. POST → add one.
@@ -334,7 +335,7 @@ Source: [`api/src/routes/fleet/fleet_endpoints.rs`](../../api/src/routes/fleet/f
 
 ## `/api/fleet/endpoints/{id}`
 
-Source: [`api/src/routes/fleet/fleet_endpoints_id.rs`](../../api/src/routes/fleet/fleet_endpoints_id.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints_id.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints_id.rs)
 
 > /api/fleet/endpoints/{id}. PUT → edit an endpoint (class, pricing, model
 > catalog). Removing catalog models that agents use returns 409 with the
@@ -360,7 +361,7 @@ Source: [`api/src/routes/fleet/fleet_endpoints_id.rs`](../../api/src/routes/flee
 
 ## `/api/fleet/endpoints/{id}/available`
 
-Source: [`api/src/routes/fleet/fleet_endpoints_id_available.rs`](../../api/src/routes/fleet/fleet_endpoints_id_available.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints_id_available.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_endpoints_id_available.rs)
 
 > GET /api/fleet/endpoints/{id}/available. What this provider actually
 > offers right now (live /models call, server-side, keys never leave the
@@ -374,7 +375,7 @@ Source: [`api/src/routes/fleet/fleet_endpoints_id_available.rs`](../../api/src/r
 
 ## `/api/fleet/federate`
 
-Source: [`api/src/routes/fleet/fleet_federate.rs`](../../api/src/routes/fleet/fleet_federate.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs)
 
 > POST /api/fleet/federate. Federate outside agents into Talaria: read a
 > Hermes-format directory and create each agent natively (Talaria def,
@@ -393,7 +394,7 @@ Source: [`api/src/routes/fleet/fleet_federate.rs`](../../api/src/routes/fleet/fl
 
 ## `/api/fleet/hires`
 
-Source: [`api/src/routes/fleet/fleet_hires.rs`](../../api/src/routes/fleet/fleet_hires.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hires.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_hires.rs)
 
 > GET /api/fleet/hires. What the roster shows while an agent-hire run
 > works: every live hire, plus the recently-finished ones long enough for
@@ -407,7 +408,7 @@ Source: [`api/src/routes/fleet/fleet_hires.rs`](../../api/src/routes/fleet/fleet
 
 ## `/api/fleet/reconcile`
 
-Source: [`api/src/routes/fleet/fleet_reconcile.rs`](../../api/src/routes/fleet/fleet_reconcile.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_reconcile.rs)
 
 > POST /api/fleet/reconcile. Render + start every enabled managed agent
 > that isn't running. One button to bring the fleet to desired state
@@ -419,7 +420,7 @@ Source: [`api/src/routes/fleet/fleet_reconcile.rs`](../../api/src/routes/fleet/f
 
 ## `/api/fleet/render`
 
-Source: [`api/src/routes/fleet/fleet_render.rs`](../../api/src/routes/fleet/fleet_render.rs)
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_render.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_render.rs)
 
 > POST /api/fleet/render. Render every managed agent's config + the fleet
 > compose + the gateway manifest (the bridge hot-reloads the manifest).
@@ -428,4 +429,18 @@ Source: [`api/src/routes/fleet/fleet_render.rs`](../../api/src/routes/fleet/flee
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | — | `{result}` | 200, 500 | audit |
+
+## `/api/fleet/resources`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_resources.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_resources.rs)
+
+> GET /api/fleet/resources?agent=<model>&minutes=<n>. The per-agent
+> container resource series the run-detail modal and the Compute panel read:
+> cpu/mem/pids sampled once a minute by the agent-resource-sample job.
+> Admin. `agent` narrows to one; `minutes` bounds the window (default 60,
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{host, agents}` | 200 | — |
 

@@ -1,0 +1,35 @@
+[package]
+name = "talaria-harness"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-body = { path = "../talaria-body" }
+talaria-capability = { path = "../talaria-capability" }
+talaria-capability-reach = { path = "../talaria-capability-reach" }
+talaria-config = { path = "../talaria-config" }
+talaria-db = { path = "../talaria-db" }
+talaria-effort-prefs = { path = "../talaria-effort-prefs" }
+talaria-fleet-agents = { path = "../talaria-fleet-agents" }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-harness-json = { path = "../talaria-harness-json" }
+talaria-harness-json-schema = { path = "../talaria-harness-json-schema" }
+talaria-harness-model = { path = "../talaria-harness-model" }
+talaria-harness-schema = { path = "../talaria-harness-schema" }
+talaria-me = { path = "../talaria-me" }
+talaria-persona = { path = "../talaria-persona" }
+talaria-state = { path = "../talaria-state" }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }

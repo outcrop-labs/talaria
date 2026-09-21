@@ -1,14 +1,17 @@
 // The desktop-shell bridge. Inside the Talaria desktop app (a Tauri shell
 // wrapping this same web UI), the webview carries `window.__TAURI_INTERNALS__`
-// and the shell grants this origin exactly three commands — list, activate,
-// show-welcome. In a browser none of that exists: the check is false, the
-// dynamic import never runs, and every consumer renders nothing.
+// and the shell grants this origin the switcher commands plus window chrome
+// (titlebar mode, min/max/close/drag). In a browser none of that exists: the
+// check is false, the dynamic import never runs, and every consumer renders
+// nothing.
 //
 // A FUNCTION, not a const: module-load order in the SPA must never decide
 // this. Tauri injects the internals at document-start, so a call at render
 // time always sees the truth.
 
-export const inDesktopShell = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+export const inDesktopShell = () =>
+  typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
 
 /** Mirror of the shell's registry entry (desktop/src-tauri/src/registry.rs). */
 export interface ShellInstance {
@@ -37,4 +40,42 @@ export async function shellActivateInstance(id: string): Promise<void> {
 export async function shellShowWelcome(): Promise<void> {
   if (!inDesktopShell()) return
   await ipc().then((invoke) => invoke('show_welcome'))
+}
+
+export type TitlebarMode = 'themed' | 'os' | 'none'
+
+export interface DesktopSettings {
+  titlebar: TitlebarMode
+}
+
+export type DesktopWindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'startDragging'
+
+export async function shellGetDesktopSettings(): Promise<DesktopSettings> {
+  if (!inDesktopShell()) return { titlebar: 'themed' }
+  return ipc().then((invoke) => invoke<DesktopSettings>('get_desktop_settings'))
+}
+
+export async function shellSetTitlebarMode(mode: TitlebarMode): Promise<DesktopSettings> {
+  if (!inDesktopShell()) return { titlebar: mode }
+  return ipc().then((invoke) => invoke<DesktopSettings>('set_titlebar_mode', { mode }))
+}
+
+export async function shellDesktopWindow(action: DesktopWindowAction): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) => invoke('desktop_window', { action }))
+}
+
+export interface DesktopUpdate {
+  version: string
+  notes: string | null
+}
+
+export async function shellCheckForUpdate(): Promise<DesktopUpdate | null> {
+  if (!inDesktopShell()) return null
+  return ipc().then((invoke) => invoke<DesktopUpdate | null>('check_for_update'))
+}
+
+export async function shellInstallUpdate(): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) => invoke('install_update'))
 }

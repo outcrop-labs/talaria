@@ -31,7 +31,7 @@
 
 ## `/api/auth/claim`
 
-Source: [`api/src/routes/account/auth_claim.rs`](../../api/src/routes/account/auth_claim.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_claim.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_claim.rs)
 
 > POST /api/auth/claim { email, password, name? }. The FIRST admin. Offered
 > only while the instance has zero admins (GET /api/auth/providers →
@@ -53,7 +53,7 @@ Source: [`api/src/routes/account/auth_claim.rs`](../../api/src/routes/account/au
 
 ## `/api/auth/google`
 
-Source: [`api/src/routes/account/auth_google.rs`](../../api/src/routes/account/auth_google.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_google.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_google.rs)
 
 > GET /api/auth/google. Begin the OAuth dance: set the one-shot state cookie
 > and 302 to Google's consent screen. The state cookie is double-submit CSRF
@@ -67,7 +67,7 @@ Source: [`api/src/routes/account/auth_google.rs`](../../api/src/routes/account/a
 
 ## `/api/auth/google/callback`
 
-Source: [`api/src/routes/account/auth_google_callback.rs`](../../api/src/routes/account/auth_google_callback.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_google_callback.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_google_callback.rs)
 
 > GET /api/auth/google/callback. Verify the state cookie, exchange the code,
 > mint the session, and land on the cockpit. Every failure bounces to /login
@@ -80,7 +80,7 @@ Source: [`api/src/routes/account/auth_google_callback.rs`](../../api/src/routes/
 
 ## `/api/auth/logout`
 
-Source: [`api/src/routes/account/auth_logout.rs`](../../api/src/routes/account/auth_logout.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_logout.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_logout.rs)
 
 > POST /api/auth/logout. Delete the Redis session and clear the cookie.
 
@@ -90,7 +90,7 @@ Source: [`api/src/routes/account/auth_logout.rs`](../../api/src/routes/account/a
 
 ## `/api/auth/password`
 
-Source: [`api/src/routes/account/auth_password.rs`](../../api/src/routes/account/auth_password.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_password.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_password.rs)
 
 > POST /api/auth/password { username, password }. Sets the session cookie.
 > Credentials live in user_password_credentials (Admin → People); the provider
@@ -110,7 +110,7 @@ Source: [`api/src/routes/account/auth_password.rs`](../../api/src/routes/account
 
 ## `/api/auth/providers`
 
-Source: [`api/src/routes/account/auth_providers.rs`](../../api/src/routes/account/auth_providers.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_providers.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_providers.rs)
 
 > GET /api/auth/providers. The login screen asks one question: what doors
 > exist on this instance? Answered live on every call, so flipping a toggle
@@ -124,7 +124,7 @@ Source: [`api/src/routes/account/auth_providers.rs`](../../api/src/routes/accoun
 
 ## `/api/auth/session`
 
-Source: [`api/src/routes/account/auth_session.rs`](../../api/src/routes/account/auth_session.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/auth_session.rs`](../../api/crates/talaria-routes-integrations/src/account/auth_session.rs)
 
 > GET /api/auth/session. The current user + their denied views + effective
 > permissions, read from the DB each time so an admin's access change applies
@@ -137,7 +137,7 @@ Source: [`api/src/routes/account/auth_session.rs`](../../api/src/routes/account/
 
 ## `/api/join`
 
-Source: [`api/src/routes/account/join.rs`](../../api/src/routes/account/join.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/join.rs`](../../api/crates/talaria-routes-integrations/src/account/join.rs)
 
 > /api/join.
 >
@@ -151,7 +151,7 @@ Source: [`api/src/routes/account/join.rs`](../../api/src/routes/account/join.rs)
 
 ## `/api/me`
 
-Source: [`api/src/routes/account/me.rs`](../../api/src/routes/account/me.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/me.rs`](../../api/crates/talaria-routes-integrations/src/account/me.rs)
 
 > /api/me. The signed-in person's own profile: GET reads the three preference
 > columns, PUT edits display name (users row + the live session, so the SPA's
@@ -175,7 +175,7 @@ Source: [`api/src/routes/account/me.rs`](../../api/src/routes/account/me.rs)
 
 ## `/api/me/assistant`
 
-Source: [`api/src/routes/account/me_assistant.rs`](../../api/src/routes/account/me_assistant.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/me_assistant.rs`](../../api/crates/talaria-routes-integrations/src/account/me_assistant.rs)
 
 > /api/me/assistant. The signed-in user's personal assistant. GET → theirs
 > (or null), with personality + live status. POST → create + start one,
@@ -203,7 +203,7 @@ Source: [`api/src/routes/account/me_assistant.rs`](../../api/src/routes/account/
 
 ## `/api/me/events`
 
-Source: [`api/src/routes/account/me_events.rs`](../../api/src/routes/account/me_events.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/me_events.rs`](../../api/crates/talaria-routes-integrations/src/account/me_events.rs)
 
 > GET /api/me/events → SSE stream of THIS person's own firehose: their runs
 > changing state, their notifications landing, their brief being appended to.
@@ -217,7 +217,7 @@ Source: [`api/src/routes/account/me_events.rs`](../../api/src/routes/account/me_
 
 ## `/api/me/mcp`
 
-Source: [`api/src/routes/account/me_mcp.rs`](../../api/src/routes/account/me_mcp.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../api/crates/talaria-routes-integrations/src/account/me_mcp.rs)
 
 > /api/me/mcp. Connected accounts (Settings → Connections): per-user MCP
 > servers and whether YOU have connected yours. PUT { serverId, headers }
@@ -238,7 +238,7 @@ Source: [`api/src/routes/account/me_mcp.rs`](../../api/src/routes/account/me_mcp
 
 ## `/api/users`
 
-Source: [`api/src/routes/account/users.rs`](../../api/src/routes/account/users.rs)
+Source: [`api/crates/talaria-routes-integrations/src/account/users.rs`](../../api/crates/talaria-routes-integrations/src/account/users.rs)
 
 > GET /api/users. Everyone who has signed in (id, email, name), for the
 > people pickers. Any signed-in user — and agents (their own tak_ key or the

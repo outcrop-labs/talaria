@@ -1,28 +1,33 @@
 <script lang="ts">
-  import { FileAudio, FileText, FileVideo, Paperclip } from '@lucide/svelte'
+  import { FileAudio, Paperclip } from '@lucide/svelte'
   import { onMount } from 'svelte'
   import { getText } from '@/lib/fetch-json'
+  import { downloadFile } from '@/lib/download-file'
 
   // The file preview — one component, every common filetype, no browser-view
   // dumps. The PICKER below is the single source of what "common" means:
   // images, PDF, plain text (code, markdown, csv, json…), audio, video.
-  // Everything else gets the honest card — name, type, size, Download —
-  // because pretending to render what we can't is worse than saying so.
+  // Everything else gets the honest card — name, type, size, and "cannot
+  // preview" — because pretending to render what we can't is worse than
+  // saying so.
   //
   // Text previews FETCH the bytes (they're not in the artifact row) and cap
-  // at 512 KB: beyond that a browser tab is the right tool, and the card
-  // says so. PDF/audio/video ride <embed>/<audio>/<video> — the browser's
-  // own renderers, inside OUR chrome.
+  // at 512 KB. PDF/audio/video ride <embed>/<audio>/<video> — the browser's
+  // own renderers, inside OUR chrome. Download never uses target=_blank:
+  // that opened a browser tab (and in the desktop webview, left the app).
   let {
     url,
     title,
     contentType,
     sizeBytes = null,
+    showDownload = true,
   }: {
     url: string
     title: string
     contentType: string | null
     sizeBytes?: number | null
+    /** False when a parent (the file modal) owns the Download button. */
+    showDownload?: boolean
   } = $props()
 
   const family = $derived.by(() => {
@@ -102,21 +107,20 @@
     {/if}
   {/if}
 {:else}
-  <!-- The honest card: what it is, how big, where to get it. -->
+  <!-- The honest card: what it is, how big, that we cannot preview it. -->
   <div class="mx-auto flex max-w-xl flex-col items-center gap-3 rounded-lg border border-line bg-panel p-8 text-center">
-    {#if family === 'other'}
-      <Paperclip size={22} class="text-accent" />
-    {:else if family === 'text'}
-      <FileText size={22} class="text-accent" />
-    {:else if family === 'audio'}
-      <FileAudio size={22} class="text-accent" />
-    {:else}
-      <FileVideo size={22} class="text-accent" />
-    {/if}
+    <Paperclip size={22} class="text-accent" />
     <div class="min-w-0 break-words font-sans text-sm text-fg">{title}</div>
+    <div class="font-sans text-sm text-muted">This file cannot be previewed</div>
     <div class="font-mono text-[11px] text-muted">{contentType ?? 'file'}{humanSize ? ` · ${humanSize}` : ''}</div>
-    <a href={url} target="_blank" rel="noreferrer" class="mt-1 rounded-md border border-line bg-surface px-3 py-1.5 font-sans text-sm text-fg transition-colors hover:bg-raised">
-      Download
-    </a>
+    {#if showDownload}
+      <button
+        type="button"
+        class="mt-1 rounded-md border border-line bg-surface px-3 py-1.5 font-sans text-sm text-fg transition-colors hover:bg-raised"
+        onclick={() => void downloadFile(url, title)}
+      >
+        Download
+      </button>
+    {/if}
   </div>
 {/if}

@@ -4,8 +4,827 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **The judge: a pull request is now measured against the standards this repo
+  states about itself, and against the application.** Review had no definition
+  beyond "somebody read it", which is how a change with a changelog claim its
+  diff does not support, a behaviour change with no test, a hand-edited generated
+  reference or a commit subject off the house style all arrive looking identical
+  to a clean one. `scripts/judge-pr.mjs` decides what the diff can decide —
+  including the flow itself (a pull request aimed at `main` or at the retired
+  `testing`) and whether the verification a change *claims* covers the surfaces
+  it *touches* (`ui/` needs `verify`, `api/` needs `api:check`, `desktop/` needs
+  `desktop:check`, and `cli/` is named because `verify` does not run its suite).
+  Findings are graded `must` (the repo states it about itself, exit 2),
+  `should` (a convention with a reason) and `ask` (a question — never a reason to
+  hold a change), and every finding quotes the lines it judged.
+
+  The half a script cannot do is a procedure now instead of a hope:
+  [`.claude/skills/judge-pr`](./.claude/skills/judge-pr/SKILL.md) walks a reviewer
+  through the application questions — layering and the gateway, a second copy of
+  something that already has a canonical home, wire drift, migration overlap, the
+  secret and permission boundaries, the guardrails — each pointed at the doc that
+  answers it, with the instruction that matters most: say "I could not tell, and
+  here is what I would need" rather than inventing a finding.
+
+  `.github/workflows/judge.yml` runs it on every pull request, keeps one sticky
+  comment with the verdict (edited in place, skipped on forks whose token is
+  read-only — the summary still carries it) and fails the job on a `must`. It is
+  deliberately NOT a required check yet: a judge with a false positive that
+  blocks a merge teaches everyone to route around it, and `docs/BRANCHES.md`
+  records the one-line promotion for when it has earned the trust.
+
+  The skills index became enforced in the process: the `skills-index-drift`
+  invariant fails when a skill has no row in `AGENTS.md`, a directory has no
+  `SKILL.md`, or a row points at a skill that does not exist — which is what
+  `docs/AGENT-TOOLING.md` had claimed since it was written.
+
+  Verified: the judge on this very change (0 findings, exit 0) and on a planted
+  range with deliberate violations — a `fleet/` file, a hand-edited
+  `docs/api/README.md`, a `ui/src` change with no changelog entry and no test, an
+  `Update stuff.` commit subject, an unfilled pull-request body — where each
+  finding fired with the intended severity and exit 2; its own self-test caught
+  two defects in it (a diff base read as a pull-request target, and a skill
+  description whose trigger is on a wrapped line), both fixed; the new invariant
+  fires on a removed row and on a row for a skill that does not exist, and stays
+  clean with all five; `bun run check` and `bun run verify` green.
+
+- **A change now reaches `main` only through a verified `rc`, and the branch
+  model is enforced by code rather than agreed in prose.** Every pull request
+  targets `rc`, which is both the integration branch and the staging
+  environment; every push to `rc` builds this commit's image, boots it as a
+  fresh instance and checks it; and `main` — the release trunk — moves one way
+  only, by an automated promotion of `rc` merged as a merge commit once that
+  deploy is green. Nobody opens the second pull request, and nothing reaches the
+  trunk without passing the first branch's gates.
+
+  The enforcement, three pieces sharing one implementation:
+
+  - `scripts/flow-guard.mjs` — the policy. Content provenance, not identity: a
+    push to `main` may introduce only commits already reachable from `rc`, and a
+    merge's tree must BE the tree of the branch it merged (main takes `rc` whole;
+    a hand-made merge with an edit smuggled inside fails) — so a direct push, a
+    squash merge and a rebase merge all fail the same test, while the promotion
+    merge passes it. A push to `rc` must be a merge commit or a fast-forward of
+    `main`; neither may be rewritten or deleted; the retired `testing` branch
+    takes no pushes and no pull requests, and deleting it is the one thing a push
+    may do to it. It fails closed on an unknown — an unresolvable base, a missing
+    `origin/rc`, a shallow clone — instead of passing because it could not tell.
+  - `.github/workflows/flow.yml` — the server-side tripwire: a pull request to
+    `main` from anywhere but `rc` is refused, the promotion's head commit must
+    have a green **CI run and a green `rc-deploy` run** read from the Actions
+    API, and a push to a long-lived branch is judged by the rules above. It reads
+    the guard from a revision the change cannot edit (the base branch's tip; the
+    tip a push moves) and refuses outright, rather than falling back to the
+    pushed copy, when that revision is not in the repository at all — the
+    force-push case "no guard at that revision" must never be confused with. Both
+    new manual-dispatch paths are gated on their ref, because a dispatch runs the
+    dispatched ref's own copy of the file with that job's token grants.
+  - `scripts/hooks/pre-push` — the same policy before the network, wired by
+    `talaria setup` through `core.hooksPath`, so the refusal a developer sees
+    locally is the one CI would have reported.
+
+  `rc-deploy.yml` is what "verified in RC" means: it builds the commit's api
+  package and app image and runs `scripts/deploy-smoke.mjs`, which boots a fresh
+  instance (scratch postgres and redis, first-boot state dir, no sidecars) and
+  asserts `/api/healthz` ok — true only when the boot migration pass succeeded —
+  the SPA shell on `/` and on a client route, the Rust api answering behind the
+  proxy, the version reported matching the commit built, and no restart after
+  all of that. `promote.yml` verifies the tip when that run finishes green and writes the
+  evidence where the person who has to act reads it (the run summary); with a
+  `PROMOTION_TOKEN` secret it opens the promotion pull request itself and arms
+  auto-merge — only when `main`'s required checks actually name the gate, since
+  auto-merge waits for required checks and nothing else — and without one it
+  hands over the exact command. That split is not a preference: events caused by
+  the repository's `GITHUB_TOKEN` start no workflows, so a promotion pull
+  request opened with the default token would never have its checks report and
+  `main`'s protection would hold it open for ever. For the same reason the merge
+  is a person's (or a bot token's): a merge made with `GITHUB_TOKEN` would land
+  on `main` and start nothing — not `ci.yml`, not the push guard, and not the
+  trunk image feed the updater rolls from.
+
+  One pre-existing defect surfaced on the way and is fixed here: api-package.yml
+  appended the moving `main` tag to every run whose CALLER's event was a push —
+  and a called workflow sees the caller's event and ref. The first push to `rc`
+  (this file's own staging deploy) would therefore have re-pointed
+  `ghcr.io/outcrop-labs/talaria-api:main` at an api built from `rc`, which is the
+  root Dockerfile's default ARG and the digest app-image.yml pins for a main push
+  that does not touch `api/` — silently baking rc's api into the trunk image the
+  in-app updater rolls from. An RC tag cut on `rc` did the same. The tag is now
+  conditional on the run's own ref being `refs/heads/main`, which is what the tag
+  documents itself as meaning.
+
+  `testing` is retired: the nightly channel builds `rc`'s tip, which closes the
+  nightly outage the entry below records — `release.yml` was calling today's
+  `ci.yml` against a branch that had sat still since 09-17, and nothing kept it
+  current. Nothing auto-merges work into `rc` (a person merges; auto-merge exists
+  for the promotion step alone, and only with `PROMOTION_TOKEN` configured), and
+  conflicts are the author's — `flow-guard` refuses a promotion merge carrying
+  content of its own so a hand-resolved conflict cannot reach `main` without
+  passing through `rc`. The protection recipe needs no "Update branch" click
+  either: after a promotion, `main`'s tip is the merge commit `rc` does not
+  contain, so `strict` is off on both branches — the promotion is safe because
+  the gate reads the runs for its head commit, not because it was tested against
+  the trunk's tip. The branch model now has one home,
+  [`docs/BRANCHES.md`](./docs/BRANCHES.md), with the repository settings that
+  make it hold; `CONTRIBUTING.md`, `RELEASING.md`, `AGENTS.md`, the
+  `ship-a-change` and `cut-release` skills, and the tooling doc all point there
+  rather than restating it.
+
+  Contributor-facing scaffolding for outside pull requests lands with it: a pull
+  request template, bug and feature issue forms, [`SECURITY.md`](./SECURITY.md)
+  (private vulnerability reporting — the GitHub advisory channel, no email), and
+  [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) (Contributor Covenant 2.1).
+
+  **Not done, and it needs a human with repo settings:** branch protection on
+  `main` and `rc`, merge commits only, `PROMOTION_TOKEN` (if the promotion should
+  open its own pull request), "Allow auto-merge" (only alongside that token), and
+  private vulnerability reporting for [`SECURITY.md`](./SECURITY.md) — all
+  configured in GitHub, not in this tree. The branch-protection recipe is
+  [`docs/BRANCHES.md`](./docs/BRANCHES.md) → The required settings, and until it
+  is applied the guards report while somebody acts.
+
+  Verified: 27 branch-guard scenarios in a scratch clone — a direct push to
+  `main`, squash- and rebase-shaped promotions, a merge from a non-`rc` branch, a
+  merge with an edit inside it, a rewrite, a delete, a direct commit on `rc`, a
+  PR-shaped merge on `rc`, a trunk sync, `testing` (content refused, deletion
+  allowed), tags, feature branches, bad usage, a clone with no `origin/rc` — each
+  behaved as specified, and a real `git push origin main` through the hook was
+  refused while a feature-branch push went through. The deploy smoke PASSED
+  against a working image, FAILED on an `--expect-version` mismatch, and FAILED
+  against the published `ghcr.io/outcrop-labs/talaria:main` — the 544 KB stub api
+  the entry below describes, caught from outside the container exactly as a deploy
+  would catch it. Both policy-materialization branches were exercised in a
+  scratch clone (a base that predates the guard falls back; a base that is not in
+  the repository fails the job with the reason). Every workflow YAML parses and
+  all `run:` blocks pass `bash -n`; promote.yml was executed against stub
+  `gh`/`git` fixtures on both paths — no token (verify, write the summary, print
+  the command) and bot token (create, refresh, arm auto-merge only when
+  `promotion gate (rc verified)` is among main's required contexts) — plus the
+  nothing-to-promote exit. `bun run check` and `bun run verify` are green, and the
+  new `branch-flow-anchors` invariant was confirmed to fail on two deliberate
+  violations — `testing` restored to a trigger, and `docs/BRANCHES.md` removed.
+  One test came along: `cli/src/paths.test.ts`'s `repoRoot` case asserted the
+  checkout's directory NAME (`root.endsWith('talaria')`), so `bun test` in
+  `cli/` could never pass in a worktree — the isolation this repo tells everyone
+  to work in, at `../talaria-<name>`. It asserts the walk and its stop now
+  (two levels up from `cli/src`, with a `.git` there), and the cli suite is
+  187 pass / 0 fail in a worktree.
+- **The publish budgets match the build they pay for.** `api-package`'s
+  30-minute job limit (and `app-image`'s 30-minute digest poll) were sized
+  against a build that never happened: cargo-chef's skeleton compiled in 3-6
+  seconds, so the job only ever paid for the cook layer. With the stub gate in
+  place the `build` stage does the real release compile of the workspace —
+  09-21's first honest run reached `Compiling talaria-api v0.1.0` at 1,470s and
+  the limit cancelled it 30s later, so nothing published, and `app-image`'s pin
+  poll (60 × 30s) gave up on a digest that was still building. Now: 60 minutes
+  for the package job, 70 for the pin job, 100 × 30s for its poll — enough for
+  a cold cook (~8min) plus that compile plus the static musl link, with room
+  left over.
+
+  Verified: `bun run check`; the next api-touching push (the merge of this
+  file is one — both workflow files are in their own `paths` filters) exercises
+  the budget end to end and publishes `sha-<sha12>` + `main` for both images.
+
+- **The api package is built from the api again — and the stub gate that says
+  so.** `cargo chef` landed in `api/package.Dockerfile` on 09-19, and the
+  `build` stage inherited `deps`' `WORKDIR /repo/api` — so its relative
+  `COPY api ./api` landed at `/repo/api/api`, while the skeleton `cargo chef
+  cook` had written (every manifest at `0.0.1`, `src/main.rs` = `fn main() {}`)
+  stayed the only source cargo could see. Cargo relinked the skeleton and the
+  package published a **544 KB binary that exits 0 and prints nothing**. Every
+  app image built on it — main's `:main`/`sha-<sha12>` feed, the one the in-app
+  updater rolls to — died at boot: `server-entry.ts` spawns the api, watches it
+  exit, and exits with it ("RUST API EXITED (code 0)"), so the container
+  crash-loops and the instance serves nothing. That is the 09-19 → 09-21
+  window, and it is why an instance stopped serving when it was updated.
+
+  The `COPY` names its destination absolutely now (`COPY api /repo/api`), and
+  the build stage ends with the stub gate: it boots the binary it just built
+  against an unreachable database and requires an HTTP answer on
+  `/api/healthz` — 503 from a dependency that is down, 200 from a healthy one,
+  because which status is the environment's business and *answering at all* is
+  the api's. A skeleton cannot answer, so this class of breakage is a red build
+  instead of a silent publish.
+
+  **Not done**: the 09-18 → 09-21 nightly failures are a second, unrelated
+  fault — `release.yml` calls today's `ci.yml` against the `testing` branch, and
+  the ui job's prod smoke runs `ui/scripts/check-prod-shell.ts`, which `testing`
+  (moved by hand, by design) does not contain yet. No nightly has published
+  since 09-17. Moving `testing` forward is the documented fix, and that is a
+  human's call.
+
+  Verified: the package build now reports `Compiling talaria-api v0.1.0` (the
+  real crate) where the broken build reported the skeleton's `v0.0.1`, and the
+  artifact is 143.8 MB that names its missing config instead of exiting
+  silently; the gate body was exercised against both binaries (real →
+  `answers /api/healthz (HTTP/1.1 503)`; the 544 KB stub → `never answered on
+  :5274`, exit 1); and an app image built with
+  `--build-arg TALARIA_API_IMAGE=talaria-api:fixed` boots and serves — `/` and
+  `/home/inbox` 200 `text/html`, `/api/healthz` 200 with `rustApi.ok: true` —
+  where the published `ghcr.io/outcrop-labs/talaria:main` image exits 1 on the
+  same command.
+
+- **Routes partition: 7 group crates + a facades crate.** The 98-second
+ `talaria-api-routes` unit becomes seven parallel crates; cold build
+ 207.3s → 183s (now faster than the pre-split monolith's 186s), routes
+ edit rebuild 8.5s → 4.8s. Also repairs two latent split casualties the
+ fail-fast test runner had been hiding: the toolbox census test lost its
+ registry scan (moved to harness-defs next to the registry), and
+ hermes-skills read `scripts/skills` off a stale relative path. The full
+ suite is 2,175 tests — the earlier "868" figure was an undercount from
+ aborted runs. Verified: `cargo test --workspace` (2,175 passed, exit 0),
+ `clippy -D warnings`, `bun run check` (245-route table unchanged).
+
+ 117 static-init) is safe-by-construction — constant regexes, guarded
+ doubles; the two fragile guarded-unwrap shapes (history `kind`, oauth
+ callback tuple) are destructured instead. The workspace's one remaining
+ `unsafe` (SSE metered stream `get_unchecked_mut`) is audited sound.
+ Split-era helper copies deduped onto their owners. Verified:
+ `cargo clippy --workspace --all-targets -- -D warnings`,
+ `cargo test --workspace` (868 passed).
+
+ mid-build at 15. Verified: the rerun on this change is the first to fit
+ the budget cold.
+
+ it. Verified: `bun run check` (doc links).
+
+ build is cargo-chef-layered (deps build once per manifest change) and
+ exports its layers through a buildx registry cache (`:buildcache`, mode=max)
+ — the gha backend can't be used because release.yml calls the build via
+ workflow_call. Verified: `bun run check`; the image build itself exercises
+ on the next push to `main` (no docker on this box).
+
+
+  the split: clippy `-D warnings` and 868 tests green. Verified:
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- **API dev builds: opt-level 1 + mold.** `api/Cargo.toml` `[profile.dev]`
+  compiles our crate at `-C opt-level=1`, deps at 3, `debug =
+  "line-tables-only"` (unwind stays — tests and catch-panic). gnu linux
+  links with mold (`api/.cargo/config.toml`); CI installs the package, the
+  devbox image does too. musl/package image unchanged until mold-on-musl is
+  proven. Verified: `cargo build` after the profile flip (4m 34s, deps at
+  opt-level 3); incremental `touch src/routes/mod.rs` 20.7s (was 23.7s);
+  `cargo clippy --all-targets -- -D warnings` green; `cargo test` green;
+  `bun run check`.
+
+
+- **Workbench agents pack against the docker host, not a 3-job stall.**
+  Admit uses `docker info` MemTotal when the API is cgrouped smaller than
+  the VM (`/proc/meminfo` when they match). Keep-back is 25% of that total
+  (2–16 GiB). Ceiling is total − keep-back (never above 32 GiB);
+  `oom_score_adj: 500`. Reservation sums each live job's effort (1/2/4 GiB).
+  A refused start writes `work_wait` and the ticket API returns `{ session,
+  wait }` — board cards and the ticker show queued position + reason; wait
+  rows clear only when a session is actually live. Verified: `merge_host_mem`
+  + `jobs_bytes` + `work_wait::wire` tests; `bun run check`.
+
+- **Migrations: CI upgrade baseline back to `origin/main`.** The repair
+  (#398) pinned the upgrade pass's baseline to e9f08476 — the last array
+  any deployed instance ran — because main's tip then carried the broken
+  order. With the repair merged, the default (`origin/main`) is the honest
+  baseline again and the pin is gone. Verified: this PR's own migrations
+  run compares origin/main's array against itself — `applied: 0`, snapshot
+  matches.
+
+- **Migrations: repair the mid-array workchains insert + CI now replays the
+  upgrade path.** #394 landed its three workchains statements in the MIDDLE
+  of the append-only array; every fresh database (all of CI) applied it
+  green, but every deployed instance refused to boot on the roll — the
+  checksum guard fired `migration 338 changed after it was applied` and the
+  canary (outcrop) came back rolled to e9f08476 within minutes, public
+  domain 200 again. Fixed: the workchains statements moved to the END of
+  the array (fleet ledgers at 343 rows upgrade cleanly to 348). CI: the
+  migrations job now also replays the UPGRADE — baseline array into a
+  second scratch postgres, then the PR's array on top of that ledger, plus
+  the snapshot check on the upgraded database — which fails exactly where
+  the fleet failed (verified by replaying the incident locally: baseline
+  343 → broken array → guard, exit 1; baseline 343 → fixed array → applied
+  5, total 348, snapshot matches). Dev stacks that ran the broken array
+  from a workchains-era branch need a `talaria reset` — no deployed
+  database ever applied it. The upgrade baseline is pinned to e9f08476
+  (the last array any instance ran) until the first post-repair migrations
+  PR flips it back to origin/main.
+
+- **Workchains: CI repair after the main merge.** The merged tree failed
+  the api and migrations CI jobs. Fixed: regenerated
+  `ui/src/server/db/schema.snapshot.sql` (the merge hand-carried a stale
+  snapshot — table ordering and `"position"` quoting drifted from what
+  pg_dump emits); dropped the dead `read_gate` helper and an unused
+  parameter that tripped clippy `-D warnings`; repaired
+  `tests/workchains_live.rs`, which never compiled (missing `pg`
+  bindings, `as_deref` on tuple options, moved `String`s); and updated
+  the two unit tests that pinned the pre-workchain worlds (the views
+  enum without `workchains`, the digest derivation without the
+  `workchain_turn`/`workchain_paused` classes). Verified: `bun run
+  api:check` green (fmt, clippy `-D warnings`, 2067 tests), two-pass
+  `migrations:check` against a scratch postgres 16 (`applied: 0` on the
+  second pass, snapshot matches), and full `bun run verify` green
+  (svelte-check 0 errors, 1200 tests).
+
+- **Workchains: the ticket's own chain section.** A ticket in a chain
+  shows a Workchain block in its detail view — chain name, `step N of
+  M`, and (for editors) move-earlier/move-later/leave verbs. The move
+  ships the full reorder payload (`moveStepOrder`, unit-tested: swaps,
+  end refusals, unknown ids, no caller-mutation); leaving unlinks the
+  ticket and the chain reads on. Joining stays in the Workchains view's
+  pickers; step-assignee edits are deliberately absent (a step's
+  assignee is the ticket's assignee — one edit surface, and the MCP
+  guardrails hold by construction: no agent tool reaches the
+  workchain routes). Verified: `bun run verify` green (1179 tests);
+  the section driven in headless Chrome — renders for a chained
+  ticket, correct position read (screenshot filed with the ticket).
+
+- **Workchains: the fourth Boards view.** The view toggle gains a
+  `workchains` lens (`?view=workchains`, URL-driven like the others,
+  saveable as a saved view, persisted per board in localStorage). Each
+  workchain renders as a horizontal rail of compact step cards — status
+  dot, ref, title, effort, due, assignee avatars — joined by chevrons:
+  done steps fade under a check, the head wears the accent ring and a
+  `HEAD` marker, waiting stays quiet, archived steps strike through and
+  always render (they are chain structure, not filter fodder). Below the
+  rails, UNCHAINED lists the tickets no chain holds, each row offering a
+  `+ chain…` picker; it collapses once chains exist. Rails read the
+  board's filtered task set (a step whose ticket is filtered out is
+  hidden, chevrons reconnect what remains) and stay live through the
+  board's SSE stream (`useBoardLive` invalidates `['board-workchains']`
+  alongside the cards). The add-ticket picker rides the §7 Popover shell
+  with search; the step-card summaries render off the chain read rather
+  than the pills (which want a full Task). The skeleton grows a matching
+  rail-shaped lens so the canvas shifts rail count, not widths. Wire
+  types are the strict ones (`Effort`/`TaskStatus`); the pure rules
+  (`buildPositions`, `chainProgress`, `chainedTaskIds`) live in
+  `workchain-rules.ts` with the 9 unit tests, split from the
+  svelte-query client (`workchain-client.ts`) so the node suite can run
+  them. Verified: `bun run verify` green end to end (check + svelte-check
+  0 errors + 1175 tests across 68 files), and the view driven in a real
+  headless Chrome against a stubbed API — rails render with derived
+  states (`1/4` progress, `HEAD` ring on the in-flight step), the lens
+  round-trips through the URL against board/list/gantt, and clicking a
+  card opens the ticket overlay (screenshots filed with the ticket).
+  Live-data pass and the interactive writes (add step, reorder,
+  pause/unpause) still need a dev stack.
+
+- **Workchains: the handoff engine and the workchain-aware agent
+  heartbeat.** A ticket landing in a done column now advances its chain:
+  the new head's human assignees get an in-app `workchain_turn`
+  notification ("It's your turn: <ref> - <title>", deep link
+  `/boards/{board}/{task}`); an agent head hears nothing — its visibility is
+  the heartbeat serving it. A ticket landing off-board (failed/cancelled)
+  pauses the chain and notifies the chain's creator
+  (`workchain_paused`, "Workchain paused: <chain> - <ref> <title>");
+  unpausing is a human PATCH that re-derives the head, advancing nothing.
+  The engine derives from the DB at write time — no in-memory chain state —
+  and fires only on the normal status-write paths (`update_task` and the
+  review sign-off in `complete_quality_review`), where human sign-off is
+  the only trigger by construction (agents cannot land terminal columns).
+  The agent heartbeat now enforces the chain's ordering: a step behind an
+  earlier live step is excluded from `work_items` whatever its own column
+  says, and a ready head carries `workchainReady: true` (absent on
+  chain-free tickets — byte-identical feed shape for them). Verified:
+  `bun run check` green; `cargo fmt --check` green; `cargo check --lib`
+  green (the full clippy and test-target builds are SIGKILLed by the box's
+  4 GiB cgroup — six attempts, every one an OOM kill with zero lint or
+  compile findings surfaced; they must run in CI). The
+  `derive_states`/`terminal_of` unit tests and the extended
+  `workchains_live` router suite (4 more `#[ignore]`d tests: human-head
+  turn notification, heartbeat ordering + ready flag + all-done,
+  failed → pause + creator notification + unpause semantics, archived
+  mid-chain head) need a dev Postgres + Redis to run.
+
+### Added
+- **Workchains: ordered ticket pipelines with human/agent handoffs (API +
+  data model).** Two new tables — `task_workchains` (a named, position-
+  ordered chain on a board) and `task_workchain_steps` (the chain's tickets
+  in position order, unique per task across all chains) — land in the
+  migrations array, with the CRUD API: `GET/POST /api/boards/{id}/workchains`
+  (list with derived per-step state — done/head/waiting/archived, computed
+  from the board's real status categories; create), `PATCH/DELETE
+  /api/workchains/{id}` (rename, pause, reorder `positions: [{taskId,
+  position}]` — all-or-nothing, a miss refuses the whole write; deleting a
+  chain unlinks, it never deletes tickets), and `POST /api/workchains/{id}/
+  steps` + `DELETE /api/workchains/{id}/steps/{taskId}` (add after an
+  optional step, remove without touching the task). One chain per ticket is
+  a v1 invariant backed by a unique index; cross-board adds answer 400,
+  duplicates 409, unknown chains 403 like the boards family. Access mirrors
+  board configuration: any member reads, owner/editor writes; every write
+  bumps the board's SSE stream. Verified: `bun run check`; `cargo fmt`;
+  `cargo check --lib`. Clippy and the full test pass are still owed — the
+  box's 4 GiB cgroup, shared with sibling agent sessions, cannot fit the
+  compile — as are the live proofs: `derive_states` unit tests (4,
+  in-module) and the `workchains_live` router suite (6 `#[ignore]`d
+  tests: create/list-with-derived-states, one-chain-per-task incl. the
+  unique-index refusal, task-delete cascade, cross-board refusal,
+  reorder + step-delete order honesty, chain-delete leaves tickets
+  standing) need a dev Postgres + Redis.
+
+- **Container-side tool RESULTS reach the run-detail modal — the talaria-events
+  Hermes plugin.** Hermes' plugin API exposes `pre_tool_call`/`post_tool_call`
+  with full arguments and results (the one datum no platform wire carried); a
+  small Talaria plugin — embedded in the api, seeded into the fleet tree by
+  render, mounted read-only at every agent's `~/.hermes/plugins/`, enabled in
+  config.yaml — reports each call to the new agent-authed
+  `POST /api/agents/tool-events`, which re-clamps, secret-scrubs, and lands
+  `toolfull` frames on the live run's watch stream (live pane + retained
+  transcripts, no Hermes fork). The plugin is best-effort by contract: a
+  bounded queue and a short-timeout POST mean observability never blocks an
+  agent's tool loop. Correlation is the agent's newest live work session
+  (v1 approximation; exact persona-session pinning is the follow-up).
+  Verified: cargo + ui gates; dev stack — render seeds and enables the
+  plugin, and an agent-authed POST lands a `toolfull` frame on the watch
+  replay with the args and result scrubbed (a planted `tak_…` arrived as
+  `[redacted:key]`).
+
+- **The desktop app auto-versions itself off main.** Every green build of a
+  push that touches `desktop/` now mints the next minor version — highest
+  suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1 — and
+  publishes it as `desktop-vX.Y.0`: a regular GitHub Release carrying all
+  platform installers, `SHA256SUMS`, update signatures, and `latest.json`, so
+  `/releases/latest` resolves to it and installed desktop apps auto-update
+  (the feed flips only after every asset is uploaded). Until now trunk desktop
+  builds were `0.0.0-sha…` artifacts that expired. Majors stay manual
+  (dispatch `desktop-package` with `version=1.0.0, publish=true`); auto never
+  crosses a major, and stable `vX.Y.Z` cuts raise the baseline. Verified:
+  `bun run check`; the merge itself is the first live mint (resolve →
+  desktop-vX.Y.0 → release + latest.json flipped) per RELEASING.md's new
+  auto-minor section.
+- **Full run observability — the run-detail modal replaces the small watch
+  modal.** The old surface showed agent prose and tool names only; now every
+  "watch the work" affordance opens a takeover modal with three panes. LIVE:
+  the agent's stream with each tool call's argument preview (the persona's
+  display-redacted primary argument — the whole terminal command, where the
+  harness steering is legible) and the workbench's own MCP calls with full
+  arguments and outcomes (`wtool` frames recorded at dispatch). TURNS: a
+  retained per-turn transcript (prompt + stream) captured to a
+  `run-transcript` artifact on the ticket at each turn's end — scrubbed of
+  known credential shapes, bounded (16K prompt / 256K stream per turn), and
+  retained per the new `observability.transcriptRetentionDays` admin setting
+  (default 7 days, null = permanent; samples keep a 7-day cap). RESOURCES:
+  the agent container's cpu/mem/pids sparklines over the run's window, from
+  a new once-a-minute `agent-resource-sample` scheduler job over `docker
+  stats` (new `agent_resource_samples` table; admin-only
+  `GET /api/fleet/resources`). Known limit, documented: container-side tool
+  RESULTS don't ride the persona wire — richer capture needs a Hermes-side
+  change (follow-up). Verified: cargo + ui gates; dev stack — a work-session
+  turn writes its transcript artifact (secret-shaped strings scrubbed), the
+  modal's Turns pane parses prompt + tool-preview lines, wtool frames
+  render live, the resources route answers (403 for non-admins), and the
+  watch replay shows previews mid-stream.
+
+- **Marketplace installs for package-shipped MCP servers (npm, pypi, and
+  docker/oci images) — the GitHub-and-friends long tail.** The official
+  registry's package-only entries — over a third of sampled search results —
+  were invisible to the marketplace ("packages that need a local process
+  can't be one-click added"); now they install like anything else. Each
+  install becomes one hardened `docker run` child of the api: stdio packages
+  (npm via `npx` in stock node, pypi via `uv tool run` in the bundled-python
+  uv image, oci images directly) pipe JSON-RPC through a pump this process
+  owns, and oci packages declaring an http transport run detached and relay
+  like any remote. The container carries the Hermes chassis posture minus
+  its cap_adds (no-new-privileges, cap-drop ALL, pids/memory/cpus ceilings,
+  pinned DNS, default bridge network — no fleet network, no postgres, no
+  docker socket), registry-declared `docker run` flags pass an allowlist
+  (volumes/env/mounts/hosts/publish only) enforced at install AND spawn,
+  images pull at install and pin by digest, and credentials use the same
+  Input schema as hosted headers — sealed at rest, materialized into the
+  child's environment only at spawn, never on any GET. Installs show a
+  third-party-code warning with an explicit confirm (strongest wording for
+  community tier); v1 runs one org-shared container per package (per-user
+  auth is refused). Lazy spawn with respawn debounce, tools refresh and
+  gateway dispatch through the pump, stop on disable/delete, and a boot +
+  5-minute reconcile that sweeps strays. Verified live: installing
+  `mcp-server-time` (pypi/uvx) pulls and digest-pins the runner image,
+  discovers `get_current_time`/`convert_time`, answers a gateway
+  `tools/call` with real data through the hardened container, re-answers
+  `initialize` from the cached handshake, stops on disable, and self-heals
+  after an api restart with no stray containers; browser-verified the pkg
+  badge, the community warning, env fields, and the acknowledgement gate.
+
+- **Workbench task concurrency is capped, with the sweep as the queue** — the
+  fix for the 2026-09-17 outcrop freeze, where the engineering agent was
+  offered 14 tickets at once, started 11 workbench jobs, and the accumulated
+  per-job processes (vite, two Chrome clusters, tsservers, a Playwright
+  install) OOM-killed its 4 GiB container 26 times until every work session
+  blew its turn lease. Dispatch now offers a WORKBENCH agent at most 3 live
+  work sessions (agents without a workbench are uncapped — their sessions are
+  just model turns); a ticket past the cap is simply re-offered by the 60s
+  sweep within a minute of a slot freeing — no queue table. `start_job`
+  refuses a 4th live job naming the ones it has; approving a heavy plan at the
+  cap 400s (reject always allowed). Workbench agents also render with
+  `mem_limit: ${AGENT_WB_MEM_LIMIT:-8g}` (their sandbox runs builds, dev
+  servers, and browsers; overridable per deployment like `AGENT_MEM_LIMIT`,
+  lands on roll). Verified: cargo tests; dev stack — rendered compose carries
+  the WB limit only on workbench agents; a workbench agent at 3 live sessions
+  gets no 4th, and the ticket dispatches ~1 min after a slot frees;
+  workbench-less agents dispatch past 3 unimpeded.
+
+### Changed
+
+- **Desktop packaging copy says what the app is.** The Flatpak/AppStream
+  listing, `.desktop` comment, pacman `pkgdesc`, and installer descriptions
+  call this the official Talaria desktop client, describe Talaria in the
+  same voice as talariaworks.ai (one workspace, agents as teammates), and
+  point homepage at https://talariaworks.ai. `stage.sh` now ships the
+  metainfo into the FHS tree both packagers consume. Verified:
+  `desktop-file-validate`; `appstreamcli validate --no-net`; `bun run check`.
+
+- **Workbench coding harnesses are opencode, Pi, and Oh My Pi.** Claude Code
+  and Codex are gone from the builtin registry and the seeded `dev` profile
+  (a migration strips them from existing profiles and clears per-agent picks).
+  All three authenticate through Talaria's gateway (`OPENAI_BASE_URL` /
+  `OPENAI_API_KEY` / `LLM_WORKBENCH_API_KEY`) — Pi and Oh My Pi get a rendered
+  `models.json` `talaria` provider. Hermes is the orchestrator, not a script:
+  first turn is `jsonRun`, later turns are `continueJsonRun` (`-c`) against a
+  per-job `--session-dir` (opencode continues by running again in the workdir).
+  Print/json mode, no TUI; `--auto-approve` / `-a` so tool and trust prompts
+  cannot hang. Invoke templates use `npx @latest` so CLIs auto-update; the
+  workbench image preinstalls them and `talaria-harness-update` refreshes
+  globals. Git in the sandbox uses `/usr/local/bin/git-credential-talaria`
+  via `/etc/gitconfig` (`GIT_CONFIG_SYSTEM` set) — clone URLs carry no token.
+  Skills teach driving, not forbidding the CLI. Dispatch forbids hand-coding
+  and one-shotting. Verified: harness unit tests including `fill_harness_cmd`;
+  `talaria_provider_models_json`; gitconfig pin; `bun run check`; live
+  `--version` on opencode 1.18.31, pi 0.85.1, omp 18.2.4.
+
+### Fixed
+
+- **Workbench job branches now obey the repo's own branch rules.** `start_job`
+  minted every job branch as `talaria/<ticket-ref>-<slug>`, but the platform's
+  per-grant branch law (`workbench_repos.branch_prefix`, enforced on every
+  sandbox push) can require a prefix — on outcrop-labs/talaria it is `agent/`,
+  so every job branch on our own repo was unpushable from birth and
+  `finish_job` could never see commits; PRs shipped only through the manual
+  push-an-agent-branch-and-call-REST workaround (TALA-16 / PR #402), and job
+  completion bookkeeping never fired. `start_job` now mints the job branch
+  under the grant's configured prefix when one exists (the historical
+  `talaria/…` shape otherwise), the job's rules text says the branch satisfies
+  the repo's rules, and `finish_job` pre-checks the job's branch against the
+  same law — a legacy job with an unpushable name gets an honest refusal
+  pointing at abandon-and-restart instead of a misleading "no commits yet"
+  after GitHub 404s the compare. Tools and docs updated to match. Verified:
+  `cargo fmt`, clippy `-D warnings`, and the api test suite green, including
+  the new self-referential test (a minted branch passes its own repo's
+  `push_allowed`; the old `talaria/*` shape fails it).
+
+- **The omapak Flatpak opened on "Could not connect to localhost: Connection
+  refused".** Tauri treats the *absence* of the `custom-protocol` Cargo
+  feature as `cfg(dev)` even for `--release`: `generate_context!` skips
+  `frontendDist` and the window loads `tauri.conf.json`'s `devUrl`
+  (`http://localhost:5290`). `tauri build` (GitHub Release installers) adds
+  the feature; omapak's source build is a plain `cargo build --release` after
+  `bun run build:vite`, so the published `app.talaria.desktop` was a Vite
+  client with nothing listening. The crate now defines `custom-protocol`
+  (`tauri/custom-protocol`); packagers that skip the CLI pass
+  `--features custom-protocol`. It is not default: `generate_context!`
+  panics when `frontendDist` is missing, and clippy/tests have no
+  `desktop/dist`. Verified: `cargo metadata` lists the feature;
+  `cargo tree -e features` without the flag does not enable
+  `tauri/custom-protocol`; `bun run check`.
+
+- **Marketplace servers that declare credentials lost their API keys on the
+  way in.** The official registry declares remote headers as a `value`
+  template ("Bearer {smithery_api_key}") with an optional `variables` map —
+  and `classify()` parsed neither, so the install and per-user connect forms
+  showed a bare header box, stored whatever was typed verbatim, and a pasted
+  key left out the `Bearer ` prefix (upstream 401s); fixed publisher-set
+  headers were dropped entirely, and the install POST's parser also stripped
+  `isRequired`/`default`/`choices` from the stored declarations that drive
+  the Settings → Connections form. The full `InputWithVariables` shape now
+  flows registry → library wire → stored row → forms: a templated header
+  renders one field per variable (secret-ness inherited, metadata from
+  `variables`), the typed values are composed back into the final header, a
+  literal `value` auto-applies with no prompt, and nothing is ever stored
+  half-composed (`Bearer {key}` stays braces-intact until filled). Verified
+  live: installing Smithery Notion from the marketplace prompts for
+  `smithery_api_key → Authorization` and lands
+  `Authorization: Bearer sk-…` on the server row; the per-user form renders
+  the same field from the stored declaration; `bun run api:check` + `verify`.
+
+- **OAuth connect failed on providers whose dynamic registration refuses
+  hosted callback URLs (Vercel).** Vercel's DCR endpoint allowlists
+  redirect URIs to localhost and a few known clients, so any deployed
+  Talaria's callback gets `400 invalid_redirect_uri` — which `ensure_client`
+  collapsed to the unhelpful "client registration failed (400)" while the
+  server card's manual-app escape hatch stayed hidden behind its
+  `dcr: true` flag. A refused registration now persists a `dcrRejected`
+  marker on the OAuth config, the connect error carries the upstream's own
+  reason plus the exact callback URL to register, and the card shows the
+  manual-app setup (its dashboard app accepts custom callbacks; saving
+  credentials clears the refusal and restores Connect). Discovery also
+  falls back to the protected-resource document's `resource_documentation`,
+  so Vercel's setup banner links its real MCP docs. Verified live against
+  mcp.vercel.com: connect under a hosted origin answers the actionable
+  sentence and sets the marker; saving a manual client clears it and
+  re-arms Connect; `oauth_meta` matrix + sentence pinned in tests.
+
+- **Stripe's MCP server was un-connectable: OAuth discovery never found its
+  authorization-server metadata.** Stripe's issuer URL carries a path
+  (`https://access.stripe.com/mcp`) and serves metadata at the RFC 8414
+  location — the well-known segment before the path — which was the one
+  shape `discover_oauth` didn't try, so Stripe installed as a plain
+  header-auth server with no Connect flow at all. The candidate set (now
+  extracted and test-pinned) tries every well-known shape; probed the other
+  marketplace majors while in there — Notion, Linear, Airtable, and PayPal
+  register hosted callbacks out of the box, Figma and Asana refuse DCR and
+  land in the manual-app flow above, and GitHub keeps its documented
+  cross-domain pin. Verified live: registering `mcp.stripe.com` now
+  discovers OAuth (`dcr: true`) and a connect start 302s into Stripe's
+  authorize endpoint.
+
+- **Hobby apps on `*.vercel.app` wore the gold "official" badge in
+  marketplace search.** An `app.vercel.<project>` namespace reverses to
+  `<project>.vercel.app`, and a remote on that same host promoted the entry
+  to first-party — the platform's badge on a tenant. Shared-hosting
+  suffixes (vercel.app, netlify.app, pages.dev, workers.dev, github.io,
+  gitlab.io, fly.dev, deno.dev) now demote to community. Verified live:
+  `agent-svg-registry` search answers `community`; registry-shaped fixtures
+  pinned in the library tests.
+
+- **The api package image failed to compile on `main`.** `hermes_skills.rs`
+  `include_str!`s `scripts/hermes-skill-authority.json` from repo root;
+  `package.Dockerfile` had flattened `api/` onto `/repo`, so the path was
+  `/scripts/...` and missing. The build now keeps the repo layout
+  (`/repo/api` + `/repo/scripts/...`). Verified: the previous `main` package
+  job failed on that exact error; this file is the fix.
+
+- **Every page 404'd in production while `/api` kept working.** The server
+  build now splits into `dist/server/assets/*.js` chunks — one directory
+  deeper than the `dist/server/server.js` the SPA-shell lookup was anchored
+  to — so `readFile('../client/index.html', import.meta.url)` threw, the
+  handler cached `shell = null`, and all four deployed instances (dogfood ×3
+  + bbills) served plain `404 Not Found` for `/`, `/home`, `/login`, … Dev
+  mode never runs the shell path (vite serves `index.html` itself) and no
+  gate executed the built bundle, so CI was green on it. The shell now
+  resolves from `process.cwd()` (`ui/` in dev and under server-entry alike —
+  the rule `app-build/paths.ts` states). Verified: `bun scripts/check-prod-shell.ts`
+  red on the pre-fix build, green after; `bun run check`; ui test + typecheck.
+
 ### Added
 
+- **A new invariant keeps `@types/*` packages out of runtime dependency
+  sections.** `scripts/check-invariants.mjs` now fails on any tracked
+  `package.json` that lists a `@types/` package under `dependencies`,
+  `optionalDependencies`, or `peerDependencies` (id
+  `types-package-in-runtime-dependencies`). Type stubs are compile-time only —
+  in a runtime section they ride production installs and ship to every deploy
+  for nothing, which is exactly how `@types/nodemailer` ended up in
+  `ui/package.json` dependencies until GH #264 pulled it out by hand. The
+  check discovers manifests via `git ls-files` (gitignored client subrepos
+  under `apps/` stay out of scope) and teaches the devDependencies move in the
+  failure; a believed-legitimate exception is an argument in the PR, not a
+  widened rule. Verified: clean tree passes, moving `@types/nodemailer` into
+  ui dependencies fails with the new id, `git checkout` restore is clean, and
+  `bun run check` passes.
+
+- **CI smokes the built bundle.** The `ui` CI job now runs
+  `bun run build` + `bun scripts/check-prod-shell.ts`: it imports the real
+  `dist/server/server.js` and asserts GET `/` (and a deep client route)
+  serve the SPA shell and that `/api` paths never leak it. This is the gate
+  that would have caught the 404 outage at PR time instead of on the fleet.
+
+- **Hermes bundled skills stay classified, and every pack we prune occupies
+  the name agents reach for.** Hermes ships Notion, Obsidian, Airtable, gh,
+  gws, Himalaya, Box, xlsx, llm-wiki, raw coding-harness CLIs, and more —
+  and adds packs on image updates. A six-path prune array in docker.rs
+  silently let new conflicts in, and only `github` had a Talaria signpost,
+  so a search for "notion" found a hole and the model improvised. Source of
+  truth is `scripts/hermes-skill-authority.json`: every snapshot path is
+  replaced, keepExact, or keepPrefix; unclassified fails `bun run check`.
+  Replaced packs are `rm -rf`'d on every container roll (`hermes_skills::
+  prune_paths`); a short SKILL.md at `scripts/skills/<signpost>/` occupies
+  the Hermes `name:` (email, obsidian, notion, airtable, google-workspace,
+  box, xlsx, llm-wiki, claude-code, codex, opencode, xurl,
+  teams-meeting-pipeline — github already existed). Fitness: `hermes:authority`
+  (six fixtures — Notion/Obsidian/Excel/Box/wiki/Airtable asks must hit
+  Talaria tools). keepPrefixes is apple/ only — every other family is
+  keepExact so a new creative/ or web/ pack cannot sneak in. The chassis boot
+  smoke `find`s SKILL.md in the live image and fails on unclassified packs.
+  `update_document` takes `rows`/`html` and refuses markdown on a sheet or
+  page (that would smash the grid). Soul-header bullets generate from
+  `TALARIA_TOOLS` so a new tool cannot miss the contract. `hermes:authority`
+  fails a reply that called the right tool then claimed "saved to Notion".
+  Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
+  `cargo test --lib` hermes_skills, hermes_authority, talaria_tools, sandbox,
+  org, registry.
+
+- **Agents can now author spreadsheets and web pages, reply in threads, and
+  react — and the fitness suite measures whether a model uses those tools.**
+  The built-in toolkit was missing three teammate-shaped verbs the HTTP API
+  already allowed: `create_sheet` (Files spreadsheet, JSON `string[][]` with
+  row 0 the header), `create_page` (HTML microsite), and `react_to_message`
+  (the dual-auth reaction route, under the agent's own identity).
+  `post_to_channel` takes `threadId` so a reply stays in the thread;
+  `read_channel` takes the same id to read one thread. The talaria-toolkit
+  skill teaches the reflexes (grid ≠ markdown table; a ✅ is not a new post).
+  Fitness: catalog 58 → 61 with sandbox backends; new `hermes:comms` harness
+  (six fixtures: read before post, react don't chatter, replies stay in
+  thread, the room not a DM, ids from listings, don't spam DMs) bound to the
+  workspace-agent fleet slot; `hermes:documents` gains a spreadsheet-vs-
+  markdown-table fixture. Guardrails unchanged (no assign, no complete).
+  Verified: `bun run check`; `cargo fmt`; `cargo clippy --lib -- -D warnings`;
+  `cargo test --lib` on `hermes_comms`, `hermes_documents`, `talaria_tools`,
+  `toolbox::sandbox`, `registry::tests`, and `score::tests`.
+
+- **Desktop updates itself from a GitHub Release.** Settings → Profile (and
+  the launcher) Check for updates reads `/releases/latest/download/latest.json`,
+  verifies a minisign signature, replaces the install, and relaunches. Stable
+  tags attach `latest.json` plus `.sig` files for the AppImage, the universal
+  `.app.tar.gz`, and the NSIS installer; RCs do not (GitHub's `/releases/latest`
+  is the stable pointer). Verified: `write-latest-json.py --self-test`; cargo
+  test + clippy on the new `check_for_update` / `install_update` commands.
 - **Teams are first-class.** They are no longer a boards-only grouping:
   Manage → Teams (`/teams`) is a LibraryPane of org teams (people + agents),
   with admin view grants, permission overrides, and MCP tool rules on the
@@ -294,6 +1113,28 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ### Fixed
 
+- **The plan document builds itself again: server-side sync replaces the
+  client's witnessed-landing guess (TALA-33).** The plan's living document was
+  rewritten only when a client POSTed `/api/plans/:id/doc` — and the client
+  fired that only when THIS tab watched a turn's in-flight → complete flip.
+  Three ordinary gaps silenced it: a reply longer than the chat view's ~4
+  minute resume poller, a turn landing behind a queued message (the landing
+  check read only the last row's role), and a stream-death retry whose
+  completion the tab never saw. The pane then sat stale until someone pressed
+  "Sync from chat" by hand. Now the server calls the same `sync_plan_doc`
+  rewrite (whole-document contract and data-loss guard intact, `tier` routed
+  and metered exactly like the manual route) as a detached task when a plan
+  turn persists complete; a per-plan in-flight guard skips overlaps and a
+  5-second recency window skips a double-burn behind a manual sync the client
+  already fired. The doc pane listens on the conversation event firehose, so
+  it refetches and renders the new version even for landings this tab never
+  witnessed or that other members' tabs triggered. The chat view's landing
+  arm is conversation-scoped (a turn landing behind a queued row now fires
+  `onTurnComplete`) and the resume poller lost its tick cap — its lifetime is
+  the turn's, not four minutes. "Sync from chat" stays as the explicit
+  fallback, and a failed auto-sync logs loudly rather than failing the turn.
+  Verified: `cargo test --lib chat_persist` (auto-sync policy suite), clippy
+  `-D warnings`, `turn-landing.test.ts` (6 tests) in vitest.
 - **Boards crash under WebKit with "Can't find variable: requestIdleCallback".**
   `BoardLayout.svelte` feature-detected the global with
   `requestIdleCallback ?? fallback` — but reading an absent global by name
@@ -341,6 +1182,23 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   an agent def carries. Verified: a unit test pins the override (authored
   keys preserved, both modes flipped), and a live render in an isolated
   worktree emits the approvals block into the agent's config.yaml.
+
+- **Desktop switcher, titlebar, unnamed instances, and in-app files.** Four
+  desktop-app bugs in one pass. The instance switcher in the left nav opened
+  `align="right"`, so the menu painted off the left edge of the window —
+  dropdowns now clamp to the viewport and the switcher always opens to the
+  right of its trigger. macOS and Windows had no working titlebar
+  (`decorations: false` and no custom chrome): Settings → Profile (and the
+  launcher) now pick Themed / OS / None, Themed by default on every OS, with
+  drag + min/max/close following traffic-light side. Switching dropped
+  instances that had no company name because the row matched on a blank
+  label — the switcher now matches beacon uuid then origin, and labels fall
+  back to the host. Chat (and board) file chips opened `target="_blank"` on
+  `/api/uploads/…`, which in the desktop webview left the app with no Save;
+  every such file now opens an in-app modal (preview when we can, "cannot
+  be previewed" when we cannot, Download either way, like Drive). Verified:
+  `dropdownHorizStyle` and `findCurrentInstance` / `instanceDisplayLabel`
+  unit tests; `sanitizeFilename`; cargo tests for settings default/roundtrip.
 
 ### Added
 

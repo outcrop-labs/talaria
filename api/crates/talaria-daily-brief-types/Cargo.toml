@@ -1,0 +1,15 @@
+[package]
+name = "talaria-daily-brief-types"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sha2 = "0.11"
+talaria-agent-auth = { path = "../talaria-agent-auth" }

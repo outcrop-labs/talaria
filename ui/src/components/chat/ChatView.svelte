@@ -23,6 +23,7 @@
   import { loadConversation, markConversationRead } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import { toDisplay, type DisplayMessage } from './chat-view'
+  import { landingTransition, type TurnArm } from './turn-landing'
 
   // A durable chat thread. Server owns history; this loads an existing conversation
   // (conversationId) or starts fresh (newChatSignal), and streams new turns.
@@ -246,10 +247,10 @@
   // didn't start streaming ourselves — a reload landed mid-generation (last
   // reply still 'streaming'), or the last message is the user's (a queued
   // message whose chained follow-up turn hasn't appeared yet — without this
-  // the follow-up lands server-side but the chat never shows it). Capped so
-  // it can't poll forever. A READER STOP suppresses it (see `userStopped`):
-  // the poller's sync would hand back the server's still-streaming row and
-  // the stopped reply would keep typing.
+  // the follow-up lands server-side but the chat never shows it). A READER
+  // STOP suppresses it (see `userStopped`): the poller's sync would hand
+  // back the server's still-streaming row and the stopped reply would keep
+  // typing.
   const last = $derived(messages[messages.length - 1])
   const resuming = $derived(
     !streaming && !userStopped && (last?.role === 'user' || (last?.role === 'assistant' && last.status === 'streaming')),
@@ -257,26 +258,32 @@
 
   // Turn-landing edge: fire onTurnComplete when an IN-FLIGHT turn (one we
   // streamed, or one the poller was watching) flips to a complete assistant
-  // reply. The flag arms only while something is in flight, so loading an old
-  // conversation never fires it. (Props are live in runes mode, so no
-  // onTurnCompleteRef is needed to see the fresh callback.)
-  let turnInFlight = false
+  // reply. The arm is CONVERSATION-SCOPED (TALA-33): it holds the convId
+  // that had a turn in flight, so a landing counts only for the thread that
+  // armed it — a turn that lands behind a queued user row still fires (the
+  // `resuming` poller reloads history and the arm was set), and a thread
+  // switch clears the arm without firing. (Props are live in runes mode, so
+  // no onTurnCompleteRef is needed to see the fresh callback.)
+  let turnArm: TurnArm = null
   $effect(() => {
     const landed = last?.role === 'assistant' && last.status === 'complete'
-    if ((streaming || resuming) && !landed) turnInFlight = true
-    else if (landed && turnInFlight) {
-      turnInFlight = false
-      onTurnComplete?.()
-    }
+    const next = landingTransition(turnArm, convId, streaming || resuming, landed)
+    turnArm = next.arm
+    if (next.fire) onTurnComplete?.()
   })
   $effect(() => {
     if (!resuming) return
     const id = convId
     if (!id) return
     let stop = false
-    let ticks = 0
     const iv = setInterval(async () => {
-      if (stop || ++ticks > 300) return clearInterval(iv) // ~4 min — long agent replies keep animating
+      // TALA-33: no tick cap. The old ~4-minute ceiling starved exactly the
+      // turns this poller exists to watch — a long planning reply outlived
+      // the watch and its landing was never observed, so the living document
+      // never synced. The poll's own lifetime is the correct bound: it ends
+      // when `resuming` goes false (the row reaches a terminal status), and
+      // the effect cleanup below ends it on unmount or thread switch.
+      if (stop) return clearInterval(iv)
       const res = await loadConversation(id)
       if (!stop && res) messages = res.messages.map(toDisplay)
     }, 800)

@@ -1,0 +1,31 @@
+[package]
+name = "talaria-retrieval"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-artifacts = { path = "../talaria-artifacts" }
+talaria-gateway = { path = "../talaria-gateway" }
+talaria-retrieval-collections = { path = "../talaria-retrieval-collections" }
+talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
+talaria-retrieval-http = { path = "../talaria-retrieval-http" }
+talaria-retrieval-index = { path = "../talaria-retrieval-index" }
+talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
+talaria-retrieval-rerank = { path = "../talaria-retrieval-rerank" }
+talaria-retrieval-sources = { path = "../talaria-retrieval-sources" }
+talaria-retrieval-sparse = { path = "../talaria-retrieval-sparse" }
+talaria-runs-define = { path = "../talaria-runs-define" }
+talaria-runs-store = { path = "../talaria-runs-store" }
+talaria-state = { path = "../talaria-state" }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tracing = "0.1"
+talaria-fleet-layout = { path = "../talaria-fleet-layout" }

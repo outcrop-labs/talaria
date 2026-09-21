@@ -1,0 +1,70 @@
+[package]
+name = "talaria-routes-fleet"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+talaria-agent-auth = { path = "../talaria-agent-auth" }
+talaria-agent-crons = { path = "../talaria-agent-crons" }
+talaria-agent-defs = { path = "../talaria-agent-defs" }
+talaria-agent-mcp = { path = "../talaria-agent-mcp" }
+talaria-agent-role-templates = { path = "../talaria-agent-role-templates" }
+talaria-agent-secrets = { path = "../talaria-agent-secrets" }
+talaria-agent-skills = { path = "../talaria-agent-skills" }
+talaria-agents-registry = { path = "../talaria-agents-registry" }
+talaria-approvals = { path = "../talaria-approvals" }
+talaria-audit = { path = "../talaria-audit" }
+talaria-auth = { path = "../talaria-auth" }
+talaria-auth-config = { path = "../talaria-auth-config" }
+talaria-boards = { path = "../talaria-boards" }
+talaria-body = { path = "../talaria-body" }
+talaria-brain-health = { path = "../talaria-brain-health" }
+talaria-channels = { path = "../talaria-channels" }
+talaria-error = { path = "../talaria-error" }
+talaria-gaps = { path = "../talaria-gaps" }
+talaria-harness-defs = { path = "../talaria-harness-defs" }
+talaria-harness-model = { path = "../talaria-harness-model" }
+talaria-instance = { path = "../talaria-instance" }
+talaria-llm-keys = { path = "../talaria-llm-keys" }
+talaria-notify = { path = "../talaria-notify" }
+talaria-org = { path = "../talaria-org" }
+talaria-outreach = { path = "../talaria-outreach" }
+talaria-params = { path = "../talaria-params" }
+talaria-permissions = { path = "../talaria-permissions" }
+talaria-persona = { path = "../talaria-persona" }
+talaria-personal-agent = { path = "../talaria-personal-agent" }
+talaria-price-oracle = { path = "../talaria-price-oracle" }
+talaria-ratelimit = { path = "../talaria-ratelimit" }
+talaria-realtime-watch = { path = "../talaria-realtime-watch" }
+talaria-safe-fetch = { path = "../talaria-safe-fetch" }
+talaria-secretbox = { path = "../talaria-secretbox" }
+talaria-session = { path = "../talaria-session" }
+talaria-skill-access = { path = "../talaria-skill-access" }
+talaria-state = { path = "../talaria-state" }
+talaria-tasks = { path = "../talaria-tasks" }
+talaria-teams = { path = "../talaria-teams" }
+talaria-templates = { path = "../talaria-templates" }
+talaria-uploads = { path = "../talaria-uploads" }
+talaria-users = { path = "../talaria-users" }
+talaria-vision = { path = "../talaria-vision" }
+talaria-work-dispatch = { path = "../talaria-work-dispatch" }
+talaria-workspace-secrets = { path = "../talaria-workspace-secrets" }
+axum = { version = "0.8", features = ["multipart"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+url = "2"
+base64 = "0.23"
+talaria-api-facades = { path = "../talaria-api-facades" }

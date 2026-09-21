@@ -68,6 +68,9 @@
   import ResultBlock from './ResultBlock.svelte'
   import Section from './Section.svelte'
   import SubtaskAdd from './SubtaskAdd.svelte'
+  import WorkchainSection from './WorkchainSection.svelte'
+  import { useBoardWorkchains } from '@/lib/workchain-client'
+  import type { Workchain, WorkchainStep } from '@/lib/workchain-rules'
   import TicketMuseBar from './TicketMuseBar.svelte'
   import WorkbenchJobsStrip from './WorkbenchJobsStrip.svelte'
   import WorkbenchTicker from './WorkbenchTicker.svelte'
@@ -84,6 +87,15 @@
   // skeleton left a modal of shimmering placeholders on screen for ever, with
   // no words on it at all, for a ticket that simply no longer exists.
   const taskQuery = useTask(() => taskId)
+
+  // The ticket's chain membership, read off the board's workchains lens.
+  // Cheap (one list read shared with the workchains view via the query key);
+  // renders nothing when the ticket is in no chain.
+  const chainsQuery = useBoardWorkchains(() => board.id)
+  const myChain = $derived(
+    (chainsQuery.data ?? []).find((w: Workchain) => w.steps.some((s: WorkchainStep) => s.taskId === taskId)) ?? null,
+  )
+  const myStep = $derived(myChain?.steps.find((s: WorkchainStep) => s.taskId === taskId) ?? null)
   const data = $derived(taskQuery.data)
   const fleetQuery = useAgents()
   const sessionQuery = useSession()
@@ -343,6 +355,16 @@
           {/key}
 
           <AttachmentsSection task={t} {canEdit} onSaved={() => qc.invalidateQueries({ queryKey: ['task', taskId] })} />
+
+          <WorkchainSection
+            chain={myChain}
+            step={myStep}
+            {canEdit}
+            onChanged={() => {
+              void qc.invalidateQueries({ queryKey: ['board-workchains', board.id] })
+              void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+            }}
+          />
 
           <!-- Agent-reported result -->
           {#if t.outcome || t.resolution || t.errorMessage}

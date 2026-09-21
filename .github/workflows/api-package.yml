@@ -15,9 +15,14 @@
 #   sha-<sha12>   immutable, per commit. The provenance tag: release.yml pins
 #                 THIS one into the app image it builds, so a released image
 #                 names the exact api bits it carries (its revision label
-#                 agrees).
-#   main          tracks main's api source — the root Dockerfile's default
-#                 ARG, because main is the ref checkout-builds build.
+#                 agrees). rc-deploy.yml pins it the same way for a staging
+#                 deploy.
+#   main          tracks MAIN's api source — the root Dockerfile's default
+#                 ARG, because main is the ref checkout-builds build. Pushed
+#                 only when the run's own ref is main: a called workflow sees
+#                 the CALLER's ref, so an rc push (rc-deploy) or a tag cut on
+#                 rc would otherwise move this tag to a non-main api source and
+#                 bake it into the next trunk app image.
 #   channel tags  nightly-YYYYMMDD / nightly / X.Y.Z-rc.N / rc / X.Y.Z /
 #                 latest — pushed when release.yml calls this file
 #                 (workflow_call), so the package's channels mirror the app
@@ -55,8 +60,10 @@ on:
       - 'api/package.Dockerfile'
       - '.github/workflows/api-package.yml'
       # The context's shape is a build input too: .dockerignore decides what
-      # `COPY api ./` picks up (it's what keeps api/target out).
+      # `COPY api ./api` picks up (it's what keeps api/target out).
       - '.dockerignore'
+      # include_str!'d into the binary — a catalog change must rebuild.
+      - 'scripts/hermes-skill-authority.json'
   workflow_dispatch: {}
   workflow_call:
     inputs:
@@ -81,7 +88,15 @@ jobs:
   package:
     name: build + push the api package
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was sized against a build that never happened: cargo-chef's skeleton
+    # compiled in 3-6 seconds, so the job's real cost (the cook layer) was all
+    # it ever measured. With the stub gate in api/package.Dockerfile the build
+    # stage does the actual release compile of the workspace — 09-21's first
+    # honest run reached `Compiling talaria-api v0.1.0` at 1,470s and this
+    # limit cancelled it 30s later, so nothing published. 60 leaves room for
+    # that plus the static musl link, the gate, and a cold cook (~8min when
+    # the registry cache misses) without being a number nobody can reason about.
+    timeout-minutes: 60
     permissions:
       packages: write # the GHCR push
     concurrency:
@@ -104,30 +119,51 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # Registry cache, not the gha backend: this file is also called by
+      # release.yml (workflow_call), and the gha cache backend does not work
+      # from a called workflow's token. The cache rides the same GHCR repo as
+      # the package itself (:buildcache), is exported with mode=max so the
+      # cargo-chef DEPENDENCY layers inside package.Dockerfile survive, and
+      # turns every cold hosted runner into "rebuild our crates only".
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build + push
         id: build
         env:
           IMAGE: ghcr.io/${{ github.repository }}-api
           EXTRA_TAGS: ${{ inputs.tags }}
           EVENT: ${{ github.event_name }}
+          # The CALLER's ref: a called workflow's `github` context belongs to the
+          # caller, so on rc-deploy's call this is refs/heads/rc, and on a
+          # release tag it is refs/tags/vX.Y.Z.
+          REF: ${{ github.ref }}
         run: |
           set -eu
           sha=$(git rev-parse HEAD | cut -c1-12)
           # Immutable first: the sha tag, then the caller's channel tags
           # (resolve already ordered them dated/versioned before moving), then
-          # `main` on a push event — where HEAD is main by definition.
+          # `main` — and ONLY when this run's ref IS main.
+          #
+          # `EVENT = push` alone was wrong, and quietly so: the event name is
+          # the caller's, so a push to rc that calls this file (rc-deploy, the
+          # staging deploy) and a release tag cut on rc both satisfied it, and
+          # each re-pointed `talaria-api:main` at a non-main api source. The
+          # tag's whole meaning is "the api source main has" — the root
+          # Dockerfile's default ARG, and the digest app-image.yml pins for a
+          # main push that did not touch api/ — so a re-point silently bakes an
+          # rc-built api into the trunk app image the updater rolls from.
           tags=("sha-$sha")
           for t in $EXTRA_TAGS; do tags+=("$t"); done
-          if [ "$EVENT" = push ]; then tags+=(main); fi
+          if [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then tags+=(main); fi
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
                 --build-arg "REVISION=$(git rev-parse HEAD)"
-                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+                --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                --cache-from "type=registry,ref=$IMAGE:buildcache"
+                --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max"
+                --push)
           for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
-          docker build "${args[@]}" .
-          for t in "${tags[@]}"; do
-            echo "pushing $IMAGE:$t"
-            docker push "$IMAGE:$t"
-          done
+          docker buildx build "${args[@]}" .
           echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
-          echo "pushed $IMAGE for: ${tags[*]}"
+          echo "pushed $IMAGE for: ${tags[*]} (cache: $IMAGE:buildcache)"
