@@ -22,9 +22,25 @@ use talaria_api::session::{SessionUser, create_session};
 use talaria_api::state::AppState;
 use tower::ServiceExt; // oneshot
 
+mod support;
+
 /// Real services, the same ones the process boots with — Redis carries the
 /// minted sessions.
 async fn app_state() -> AppState {
+    // The engine's cross-crate edges (GET_TASK) are boot-injected in
+    // production by register_all; a test binary boots none of that, so the
+    // seams are set here, exactly the way the composition root sets them.
+    support::wire_boot_seams();
+    static TRACE: std::sync::Once = std::sync::Once::new();
+    TRACE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .with_test_writer()
+            .try_init();
+    });
     let cfg = Config::from_parts(
         std::env::var("DATABASE_URL").expect("set DATABASE_URL (source ui/.env)"),
         std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)"),
@@ -750,18 +766,23 @@ async fn fleet_agent(state: &AppState, board_id: &str, tag: &str) -> (String, St
     let key = talaria_api::agent_auth::rotate_agent_api_key(pg, &sb, &id)
         .await
         .expect("agent key mints");
-    sqlx::query("insert into fleet_agents (name) values ($1)")
-        .bind(&model)
-        .execute(pg)
-        .await
-        .unwrap();
+    let (fleet_id,): (String,) =
+        sqlx::query_as("insert into fleet_agents (name) values ($1) returning id::text")
+            .bind(&model)
+            .fetch_one(pg)
+            .await
+            .expect("fleet_agents row the insert just wrote");
     sqlx::query("insert into board_agents (board_id, agent_model) values ($1::uuid, $2)")
         .bind(board_id)
         .bind(&model)
         .execute(pg)
         .await
-        .unwrap();
-    (id, model, key)
+        .expect("board_agents row");
+    let _ = id;
+    // The heartbeat (and every fleet-plane route) names the agent by
+    // fleet_agents.id — the registry the fleet renders from — not by
+    // agent_defs.id. Heartbeating with the defs id 404s as "unknown agent".
+    (fleet_id, model, key)
 }
 
 /// One heartbeat through the REAL router, with the agent's own key — the
@@ -1003,12 +1024,22 @@ async fn failed_pauses_the_chain_and_tells_its_creator() {
     .await;
     assert_eq!(status, 200, "failed write failed: {body}");
 
-    let paused: Option<(bool,)> =
-        sqlx::query_as("select paused from task_workchains where id = $1::uuid")
+    // The engine runs DETACHED from the status write (a pause may never cost
+    // the ticket write it rode in on), so the pause is awaited by POLLING —
+    // same contract as await_notification below, not a one-shot read racing
+    // the spawned task.
+    let mut paused: Option<(bool,)> = None;
+    for _ in 0..50 {
+        paused = sqlx::query_as("select paused from task_workchains where id = $1::uuid")
             .bind(&chain)
             .fetch_optional(pg)
             .await
-            .unwrap();
+            .expect("chain row survives the failed write");
+        if paused == Some((true,)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(paused, Some((true,)), "the engine paused the chain");
 
     let row = await_notification(pg, &f.owner.id, "workchain_paused").await;

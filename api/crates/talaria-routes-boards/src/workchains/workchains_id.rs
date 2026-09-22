@@ -340,10 +340,16 @@ pub async fn post_step(
                 Err(e) => return Ok(internal("[workchains] step shift failed", e)),
             }
             sqlx::query(
+                // The `where exists` is the 400 the rows_affected check below
+                // expects: without it, a missing anchor puts a NULL-position
+                // row in the select and the insert dies on the NOT NULL
+                // constraint as a 500 instead of affecting zero rows.
                 "insert into task_workchain_steps (workchain_id, task_id, position) \
                  select $1::uuid, $2::uuid, \
                         (select position + 1 from task_workchain_steps \
-                         where workchain_id = $1::uuid and task_id = $3::uuid)",
+                         where workchain_id = $1::uuid and task_id = $3::uuid) \
+                 where exists (select 1 from task_workchain_steps \
+                               where workchain_id = $1::uuid and task_id = $3::uuid)",
             )
             .bind(&id)
             .bind(&task_id)

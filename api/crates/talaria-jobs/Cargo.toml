@@ -17,6 +17,11 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 uuid = { version = "1", features = ["v4"] }
 talaria-comms-decay = { path = "../talaria-comms-decay" }
 talaria-config = { path = "../talaria-config" }
+talaria-attribution = { path = "../talaria-attribution" }
+talaria-conversations = { path = "../talaria-conversations" }
+talaria-inbox-focus = { path = "../talaria-inbox-focus" }
+talaria-tasks = { path = "../talaria-tasks" }
+talaria-workchains = { path = "../talaria-workchains" }
 talaria-daily-brief = { path = "../talaria-daily-brief" }
 talaria-digest = { path = "../talaria-digest" }
 talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
