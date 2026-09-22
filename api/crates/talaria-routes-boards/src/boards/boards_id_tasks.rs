@@ -12,11 +12,10 @@ use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{board_allows_agent, board_role, can_edit, invalid_assignee, list_members};
 use talaria_body::{
-    as_object, nullish_datetime_member, nullish_enum_member, optional_enum_member,
-    optional_max_string_member, optional_string_array_member, optional_uuid_member, parse,
-    string_member,
+    nullish_datetime_member, nullish_enum_member, optional_enum_member, optional_max_string_member,
+    optional_string_array_member, optional_uuid_member, parse, string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
@@ -53,8 +52,7 @@ async fn task_actor(
             board_allows_agent(&state.pg, board_id, &AgentSubject::Caller(caller.clone()))
                 .await
                 .map_err(|e| {
-                    tracing::error!("[tasks] agent policy read on {action} failed: {e}");
-                    thrown_internal_error()
+                    internal(&format!("[tasks] agent policy read on {action} failed"), e)
                 })?;
         if !allowed {
             let model = caller.model.clone();
@@ -70,10 +68,7 @@ async fn task_actor(
     let user = require_user(state, headers).await?;
     let role = board_role(&state.pg, &user.id, board_id)
         .await
-        .map_err(|e| {
-            tracing::error!("[tasks] role read on {action} failed: {e}");
-            thrown_internal_error()
-        })?;
+        .map_err(|e| internal(&format!("[tasks] role read on {action} failed"), e))?;
     let ok = if require_edit {
         can_edit(role.as_deref())
     } else {
@@ -95,13 +90,13 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
     uri: Uri,
-) -> Response {
+) -> Result<Response, Response> {
     let who = match task_actor(&state, &headers, &id, false, "GET board tasks").await {
         Ok(w) => w,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "GET tasks", &id) {
-        return gate;
+        return Ok(gate);
     }
     // The archived tail is asked for by name, and only by humans — an agent
     // has no business trawling retired work.
@@ -118,13 +113,12 @@ pub async fn get(
                 == Some("1")
         }
     };
-    match list_board_tasks(&state.pg, &id, include_archived).await {
-        Ok(tasks) => Json(json!({ "tasks": tasks })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] board list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+    Ok(
+        match list_board_tasks(&state.pg, &id, include_archived).await {
+            Ok(tasks) => Json(json!({ "tasks": tasks })).into_response(),
+            Err(e) => internal("[tasks] board list failed", e),
+        },
+    )
 }
 
 pub async fn post(
@@ -132,54 +126,51 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let who = match task_actor(&state, &headers, &id, true, "POST board tasks").await {
         Ok(w) => w,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "POST tasks", &id) {
-        return gate;
+        return Ok(gate);
     }
     let (is_agent, actor, session_user) = match who {
         TaskActor::Agent { model } => (true, model, None),
         TaskActor::Human { actor, user } => (false, actor, Some(user)),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let title = match string_member(obj, "title", 1, 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let description = match optional_max_string_member(obj, "description", 20_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let priority = match optional_enum_member(obj, "priority", PRIORITIES) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let effort = match nullish_enum_member(obj, "effort", EFFORTS) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let assignees = match optional_string_array_member(obj, "assignees", 0, 200, 20) {
         Ok(v) => v.unwrap_or_default(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let due_date = match nullish_datetime_member(obj, "dueDate") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let start_date = match nullish_datetime_member(obj, "startDate") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let color = match nullish_enum_member(obj, "color", TICKET_COLORS) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let estimated_hours = match talaria_body::nullable_number_member(
         obj,
@@ -189,20 +180,23 @@ pub async fn post(
         999.0,
     ) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let parent_id = match optional_uuid_member(obj, "parentId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let tags = match optional_string_array_member(obj, "tags", 0, 40, 20) {
         Ok(v) => v.unwrap_or_default(),
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Guardrail: agents create into inbox only — assignment stays a human
     // call.
     if is_agent && !assignees.is_empty() {
-        return house_error(StatusCode::FORBIDDEN, "agents cannot assign tickets");
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "agents cannot assign tickets",
+        ));
     }
     // The same human-planning fields update_task strips from an agent PATCH
     // (estimate, sub-task structure) are not an agent's to set at CREATION
@@ -219,11 +213,8 @@ pub async fn post(
     // are agents and must pass the board's agent policy.
     match invalid_assignee(&state.pg, &id, &assignees).await {
         Ok(None) => {}
-        Ok(Some(bad)) => return house_error(StatusCode::BAD_REQUEST, &bad),
-        Err(e) => {
-            tracing::error!("[tasks] assignee check failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(Some(bad)) => return Ok(house_error(StatusCode::BAD_REQUEST, &bad)),
+        Err(e) => return Ok(internal("[tasks] assignee check failed", e)),
     }
     // The mention test runs against the RAW body description (below), before
     // template seeding overwrites it.
@@ -241,10 +232,7 @@ pub async fn post(
         match resolve_template(&state.pg, "ticket", &ctx).await {
             Ok(Some(t)) if !t.body.trim().is_empty() => description = Some(t.body),
             Ok(_) => {}
-            Err(e) => {
-                tracing::error!("[tasks] template resolve on create failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[tasks] template resolve on create failed", e)),
         }
     }
     let input = NewTask {
@@ -265,11 +253,8 @@ pub async fn post(
     let deps = talaria_tasks::TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let task = match create_task(&deps, &input).await {
         Ok(t) => t,
-        Err(talaria_tasks::TaskError::Db(e)) => {
-            tracing::error!("[tasks] create failed: {e}");
-            return thrown_internal_error();
-        }
-        Err(e) => return e.into_response(),
+        Err(talaria_tasks::TaskError::Db(e)) => return Ok(internal("[tasks] create failed", e)),
+        Err(e) => return Ok(e.into_response()),
     };
     // No inline index on the create path: the new ticket reaches the
     // activity brain through the opportunistic RAG sweep (maybe_rag_sweep,
@@ -327,5 +312,5 @@ pub async fn post(
             .await;
         });
     }
-    Json(json!({ "task": task })).into_response()
+    Ok(Json(json!({ "task": task })).into_response())
 }

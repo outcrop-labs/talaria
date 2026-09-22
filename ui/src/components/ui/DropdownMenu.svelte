@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { outsidePointer } from '@/lib/outside-click'
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
@@ -63,8 +64,7 @@
 
   function onDocMousedown(e: MouseEvent) {
     if (!open) return
-    const t = e.target as Node
-    if (!ref?.contains(t) && !panelEl?.contains(t)) close()
+    if (outsidePointer(e, ref, panelEl)) close()
   }
 
   function onDocKeydown(e: KeyboardEvent) {

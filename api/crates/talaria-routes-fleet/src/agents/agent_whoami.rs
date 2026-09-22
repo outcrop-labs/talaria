@@ -29,6 +29,7 @@ use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, require_agent, subject_p
 use talaria_api_facades::mcp::registry::servers_for_agent;
 use talaria_boards::{list_all_boards, list_boards, list_boards_for_agent};
 use talaria_channels::list_channels_for_agent;
+use talaria_error::internal;
 use talaria_users::{assistant_owner_for, is_elevated_assistant};
 
 /// The refusal sentences an agent will actually receive, stated up front
@@ -46,11 +47,11 @@ const GUARDRAILS: [&str; 5] = [
 pub async fn get(
     State(state): State<talaria_state::AppState>,
     headers: axum::http::HeaderMap,
-) -> axum::response::Response {
+) -> Result<axum::response::Response, axum::response::Response> {
     use axum::response::IntoResponse;
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     let subject = AgentSubject::Caller(caller.clone());
     let model = caller.model.as_str();
@@ -65,10 +66,7 @@ pub async fn get(
 
     let owner = match assistant_owner_for(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[agent.whoami] owner lookup failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.whoami] owner lookup failed", e)),
     };
     let owner_json = match &owner {
         Some(owner_id) => {
@@ -89,10 +87,7 @@ pub async fn get(
     };
     let elevated = match is_elevated_assistant(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[agent.whoami] elevation read failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.whoami] elevation read failed", e)),
     };
 
     // The boards answer mirrors GET /api/boards's agent branch arm for arm,
@@ -102,20 +97,14 @@ pub async fn get(
     // owner first, so a board both arms cover reports the stronger why.
     let policy_boards = match list_boards_for_agent(&state.pg, model).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[agent.whoami] agent board listing failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.whoami] agent board listing failed", e)),
     };
     let mut boards: Vec<Value> = Vec::new();
     let mut seen: std::collections::HashSet<String> = Default::default();
     if let Some(owner_id) = &owner {
         let owner_boards = match list_boards(&state.pg, owner_id, false).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[agent.whoami] owner board listing failed: {e}");
-                return talaria_error::thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.whoami] owner board listing failed", e)),
         };
         for b in owner_boards {
             seen.insert(b.id.clone());
@@ -130,10 +119,7 @@ pub async fn get(
     let rest = if elevated {
         match list_all_boards(&state.pg).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[agent.whoami] org-wide board listing failed: {e}");
-                return talaria_error::thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.whoami] org-wide board listing failed", e)),
         }
     } else {
         policy_boards
@@ -154,17 +140,11 @@ pub async fn get(
     // the source of truth; this answers "do I have anywhere to speak".
     let channels = match list_channels_for_agent(&state.pg, &subject).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[agent.whoami] channel listing failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.whoami] channel listing failed", e)),
     };
     let servers = match servers_for_agent(&state.pg, model).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[agent.whoami] server listing failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.whoami] server listing failed", e)),
     };
 
     // Its own open requests — the pending half of the ask, so an agent that
@@ -181,13 +161,9 @@ pub async fn get(
     .await
     {
         Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("[agent.whoami] request listing failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent.whoami] request listing failed", e)),
     };
-
-    axum::Json(json!({
+    Ok(axum::Json(json!({
         "agent": {
             "model": model,
             "name": name.map(|(n,)| n),
@@ -222,5 +198,5 @@ pub async fn get(
                      request is the path when the owner cannot",
         },
     }))
-    .into_response()
+    .into_response())
 }

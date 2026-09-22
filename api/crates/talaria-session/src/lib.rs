@@ -11,6 +11,8 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
+use talaria_body::{percent_decode, percent_encode};
+use talaria_error::internal;
 use talaria_state::AppState;
 
 pub const SESSION_COOKIE: &str = "talaria_session";
@@ -223,55 +225,11 @@ pub fn parse_cookies(headers: &HeaderMap) -> Option<std::collections::HashMap<St
         if k.is_empty() {
             continue;
         }
-        if let Some(v) = decode_uri_component(part[idx + 1..].trim()) {
+        if let Some(v) = percent_decode(part[idx + 1..].trim()) {
             out.insert(k.to_string(), v);
         }
     }
     Some(out)
-}
-
-/// Percent-decoded UTF-8, `+` untouched (component semantics, not query
-/// semantics). None when the decodes don't land in valid UTF-8.
-fn decode_uri_component(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = bytes.get(i + 1..i + 3)?;
-            let hi = (hex[0] as char).to_digit(16)?;
-            let lo = (hex[1] as char).to_digit(16)?;
-            out.push((hi * 16 + lo) as u8);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-/// Everything but the unreserved set escapes, as %XX of the UTF-8 bytes.
-fn encode_uri_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(*b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// The caller's scheme as the app host stated it (`x-forwarded-proto`). None
@@ -315,7 +273,7 @@ fn cookie_string_for(headers: &HeaderMap, name: &str, value: &str, max_age: u64)
 fn cookie_string_with_secure(name: &str, value: &str, max_age: u64, secure: bool) -> String {
     format!(
         "{name}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{}",
-        encode_uri_component(value),
+        percent_encode(value),
         if secure { "; Secure" } else { "" }
     )
 }
@@ -417,10 +375,7 @@ pub async fn acting_user(
             .bind(&agent.model)
             .fetch_optional(&state.pg)
             .await
-            .map_err(|e| {
-                tracing::error!("[session] acting-user lookup failed: {e}");
-                talaria_error::thrown_internal_error()
-            })?;
+            .map_err(|e| internal("[session] acting-user lookup failed", e))?;
             Ok(owner.map(|(id, role, email, name, elevated)| {
                 let for_label = email.clone().or(name).unwrap_or_else(|| id.clone());
                 ActingUser {
@@ -443,11 +398,21 @@ pub async fn acting_user(
                 elevated: false,
             })),
             Ok(None) => Ok(None),
-            Err(e) => {
-                tracing::error!("[session] redis read failed: {e}");
-                Err(talaria_error::thrown_internal_error())
-            }
+            Err(e) => Err(internal("[session] redis read failed", e)),
         },
+    }
+}
+
+/// The app's secretbox, or the house 500 with `context` on the log line.
+/// `state.secretbox()` is the one call every key-touching route makes, and it
+/// failed hand-wrapped at 26 call sites — the same three lines, the same 500.
+pub async fn secretbox_or_500(
+    state: &AppState,
+    context: &str,
+) -> Result<talaria_secretbox::SecretBox, Response> {
+    match state.secretbox().await {
+        Ok(sb) => Ok(sb),
+        Err(e) => Err(internal(context, e)),
     }
 }
 
@@ -457,10 +422,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<Sessi
     match get_session_user(state, headers).await {
         Ok(Some(user)) => Ok(user),
         Ok(None) => Err(unauthorized()),
-        Err(e) => {
-            tracing::error!("[session] redis read failed: {e}");
-            Err(talaria_error::thrown_internal_error())
-        }
+        Err(e) => Err(internal("[session] redis read failed", e)),
     }
 }
 
@@ -489,10 +451,7 @@ pub async fn require_view(
     if user.role != "admin" {
         let denied = talaria_users::denied_views(&state.pg, &user.id, &user.role)
             .await
-            .map_err(|e| {
-                tracing::error!("[session] view-denial read failed: {e}");
-                talaria_error::thrown_internal_error()
-            })?;
+            .map_err(|e| internal("[session] view-denial read failed", e))?;
         if denied
             .iter()
             .any(|v| v == view || view.starts_with(&format!("{v}/")))
@@ -516,10 +475,7 @@ pub async fn require_perm(
     let user = require_user(state, headers).await?;
     if !talaria_users::has_perm(&state.pg, &user.id, &user.role, perm)
         .await
-        .map_err(|e| {
-            tracing::error!("[session] permission read failed: {e}");
-            talaria_error::thrown_internal_error()
-        })?
+        .map_err(|e| internal("[session] permission read failed", e))?
     {
         return Err(talaria_error::house_error(
             StatusCode::FORBIDDEN,
@@ -548,19 +504,19 @@ mod tests {
     #[test]
     fn uri_component_round_trips_the_js_way() {
         // The unreserved set survives; everything else escapes as %XX.
-        assert_eq!(encode_uri_component("aZ9-_.!~*'()"), "aZ9-_.!~*'()");
-        assert_eq!(encode_uri_component("a b/c"), "a%20b%2Fc");
-        assert_eq!(encode_uri_component("ü"), "%C3%BC");
+        assert_eq!(percent_encode("aZ9-_.!~*'()"), "aZ9-_.!~*'()");
+        assert_eq!(percent_encode("a b/c"), "a%20b%2Fc");
+        assert_eq!(percent_encode("ü"), "%C3%BC");
         // decode is its inverse, and leaves '+' alone (component semantics,
         // not query semantics)
-        assert_eq!(decode_uri_component("a%20b%2Fc").as_deref(), Some("a b/c"));
-        assert_eq!(decode_uri_component("a+b").as_deref(), Some("a+b"));
-        assert_eq!(decode_uri_component("%C3%BC").as_deref(), Some("ü"));
+        assert_eq!(percent_decode("a%20b%2Fc").as_deref(), Some("a b/c"));
+        assert_eq!(percent_decode("a+b").as_deref(), Some("a+b"));
+        assert_eq!(percent_decode("%C3%BC").as_deref(), Some("ü"));
         // Invalid escapes: decline rather than throw.
-        assert_eq!(decode_uri_component("100%"), None);
-        assert_eq!(decode_uri_component("%ZZ"), None);
+        assert_eq!(percent_decode("100%"), None);
+        assert_eq!(percent_decode("%ZZ"), None);
         // Broken UTF-8 after decode: decline rather than throw.
-        assert_eq!(decode_uri_component("%FF"), None);
+        assert_eq!(percent_decode("%FF"), None);
     }
 
     #[test]

@@ -8,8 +8,8 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { getJson, putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import { useModels } from '@/lib/muse.svelte'
   import CapabilityTags from '@/components/models/CapabilityTags.svelte'
   import { useModelCapabilities } from '@/components/models/fitness-queries'
@@ -76,7 +76,7 @@
       await putJson<{ ok: true }>('/api/admin/settings', { memberModels: effective })
     } catch (e) {
       // Keep the draft: a failed save must not quietly revert the checklist.
-      pushToast({ title: 'Could not save member access', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not save member access', e)
       return
     }
     modeOverride = null

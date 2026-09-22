@@ -1,6 +1,7 @@
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, errorMessage, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
-import { pushToast } from '@/lib/toast.svelte'
+import { delJson, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { toastError } from '@/lib/toast.svelte'
 
 export type TeamRole = 'owner' | 'member'
 export interface Team {
@@ -37,8 +38,6 @@ export interface TeamAccess {
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export function useTeams() {
   return createQuery(() => ({
@@ -113,7 +112,7 @@ export const removeTeamMember = (teamId: string, userId: string) =>
   // The call site fires and forgets (`.then(refresh)`, no catch), so a refused
   // remove is surfaced here rather than left as an unhandled rejection.
   delJson<{ ok: true }>(`/api/teams/${teamId}/members`, { userId }).catch((e: unknown) =>
-    pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
+    toastError('Remove failed', e),
   )
 export const renameTeam = (teamId: string, name: string) =>
   patchJson<{ ok: true }>(`/api/teams/${teamId}`, { name })

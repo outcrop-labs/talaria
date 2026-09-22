@@ -10,16 +10,13 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_artifacts::get_public_artifact;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
     let a = match get_public_artifact(&state.pg, &slug).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] public read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[artifacts] public read failed", e),
     };
     let Some(a) = a else {
         return house_error(StatusCode::NOT_FOUND, "not found");

@@ -20,11 +20,8 @@ use talaria_realtime_watch::{RealtimeDeps, user_event_stream};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let deps = RealtimeDeps::streams_only(&state.cfg.redis_url);
-    user_event_stream(&deps, &user.id).await
+    Ok(user_event_stream(&deps, &user.id).await)
 }

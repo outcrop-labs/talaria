@@ -23,7 +23,7 @@ use talaria_api_facades::google::org::get_org_targets;
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
 use talaria_artifacts::{get_artifact, guarded, record_google_export};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_error::{house_error, house_error_msg, thrown_internal_error};
+use talaria_error::{house_error, house_error_msg, internal};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 
@@ -65,30 +65,21 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[artifacts] read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[artifacts] read failed", e)),
     };
     let Some(artifact) = artifact else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => {
-            tracing::error!("[artifacts] grants read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
     };
     let sb = state.secretbox().await.unwrap_or_default();
 
-    let agent = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    let agent = agent_caller(&state.pg, &headers).await?;
     let file = if let Some(agent) = agent {
         // Writing into a human's Drive (personal assistant) or the shared
         // ORG Drive is acting AS someone — the same grant the Gmail and
@@ -97,7 +88,7 @@ pub async fn post(
         // identity, so "I am <any ordinary agent>" cannot buy org Drive
         // write access.
         if let Some(denied) = refuse_legacy(&agent, "Google Drive export") {
-            return denied;
+            return Ok(denied);
         }
         let name = agent.model.clone();
         // The read gate the GET uses, owner arm included — a personal
@@ -110,17 +101,11 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] owner resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[artifacts] owner resolve failed", e)),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
         };
         if !can_read_agent(
             &guarded(&artifact),
@@ -129,7 +114,7 @@ pub async fn post(
             &editors,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         // Resolve the agent's Google identity (owner for personal assistants,
         // shared org account for general fleet agents). Pass the CALLER —
@@ -138,11 +123,11 @@ pub async fn post(
         let Some(google) =
             resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(agent), now_ms()).await
         else {
-            return house_error_msg(
+            return Ok(house_error_msg(
                 StatusCode::CONFLICT,
                 "not_connected",
                 "No Google account is connected for this agent (its owner, or the org account).",
-            );
+            ));
         };
         // Org files go to the configured Shared Drive/folder (team-owned).
         let folder_id = if google.principal == "org" {
@@ -150,7 +135,7 @@ pub async fn post(
                 Ok(t) => t.drive_folder_id,
                 Err(e) => {
                     tracing::error!("[artifacts/export/google] org targets read failed: {e}");
-                    return export_failed(ExportError::Failed(e.to_string()));
+                    return Ok(export_failed(ExportError::Failed(e.to_string())));
                 }
             }
         } else {
@@ -166,19 +151,13 @@ pub async fn post(
         .await
         {
             Ok(f) => f,
-            Err(e) => return export_failed(e),
+            Err(e) => return Ok(export_failed(e)),
         }
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[artifacts] team membership read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
         };
         if !can_read(
             &guarded(&artifact),
@@ -187,26 +166,28 @@ pub async fn post(
             &editors,
             &team_ids,
         ) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         let connected = match get_connection_status(&state.pg, &user.id).await {
             Ok(c) => c,
             Err(e) => {
                 // a failed status read takes the same 502 as a failed export.
-                return export_failed(ExportError::Failed(format!("connection status read: {e}")));
+                return Ok(export_failed(ExportError::Failed(format!(
+                    "connection status read: {e}"
+                ))));
             }
         };
         if !connected.connected {
-            return house_error_msg(
+            return Ok(house_error_msg(
                 StatusCode::CONFLICT,
                 "not_connected",
                 "Connect a Google account first (Settings → Integrations).",
-            );
+            ));
         }
         let file =
             match export_artifact_to_drive(&state.pg, &sb, &user.id, &artifact, now_ms()).await {
                 Ok(f) => f,
-                Err(e) => return export_failed(e),
+                Err(e) => return Ok(export_failed(e)),
             };
         let (pg, audit_actor, target_id, target_label) = (
             state.pg.clone(),
@@ -234,7 +215,9 @@ pub async fn post(
 
     if let Err(e) = record_google_export(&state.pg, &artifact.id, &file.id, &file.url).await {
         // a failed record write takes the same 502 as a failed export.
-        return export_failed(ExportError::Failed(format!("export record: {e}")));
+        return Ok(export_failed(ExportError::Failed(format!(
+            "export record: {e}"
+        ))));
     }
-    Json(json!({ "file": file })).into_response()
+    Ok(Json(json!({ "file": file })).into_response())
 }

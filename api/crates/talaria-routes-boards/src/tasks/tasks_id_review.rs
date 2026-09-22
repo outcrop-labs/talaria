@@ -8,8 +8,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::{board_role, can_edit};
-use talaria_body::{as_object, optional_max_string_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_max_string_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_statuses::status_meta;
@@ -20,44 +20,32 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("tasks", "POST review", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST review failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on POST review failed", e)),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on POST review failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[tasks] role read on POST review failed", e)),
     };
     if !can_edit(role.as_deref()) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let status = match talaria_body::enum_member(obj, "status", &["approved", "rejected"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let notes = match optional_max_string_member(obj, "notes", 20_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let reviewer = user
         .email
@@ -66,8 +54,7 @@ pub async fn post(
         .unwrap_or_else(|| "reviewer".into());
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = add_review(&deps, &id, &reviewer, &status, notes.as_deref()).await {
-        tracing::error!("[tasks] review record failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[tasks] review record failed", e));
     }
     // Boards rename and recategorize their columns, so resolve the target
     // from the BOARD — hardcoding 'done'/'in_progress' 400s human sign-off
@@ -83,10 +70,7 @@ pub async fn post(
     // catches the legacy fallback.
     let meta = match status_meta(&state.pg, &task.board_id).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[tasks] status meta on POST review failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[tasks] status meta on POST review failed", e)),
     };
     let approved = status == "approved";
     let target = if approved {
@@ -98,35 +82,34 @@ pub async fn post(
             .or_else(|| meta.assigned_key.clone())
     };
     let Some(target) = target else {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             if approved {
                 "this board has no done column to move the ticket into"
             } else {
                 "this board has no working column to move the ticket into"
             },
-        );
+        ));
     };
     if !meta.keys.contains(&target) {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             if approved {
                 "this board has no done column to move the ticket into"
             } else {
                 "this board has no working column to move the ticket into"
             },
-        );
+        ));
     }
     // Any update_task throw here is the house 500, never a refusal shape.
     let patch = TaskPatch {
         status: Some(target),
         ..Default::default()
     };
-    match update_task(&deps, &id, patch, &TaskActor::human(reviewer)).await {
-        Ok(t2) => Json(json!({ "task": t2 })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] review move failed: {:?}", e.message());
-            thrown_internal_error()
-        }
-    }
+    Ok(
+        match update_task(&deps, &id, patch, &TaskActor::human(reviewer)).await {
+            Ok(t2) => Json(json!({ "task": t2 })).into_response(),
+            Err(e) => internal("[tasks] review move failed", e.message()),
+        },
+    )
 }

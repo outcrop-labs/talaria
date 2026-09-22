@@ -76,6 +76,18 @@ on:
         type: string
         required: false
         default: ''
+      profile:
+        # `dev` compiles the package with cargo's dev profile instead of
+        # release: our crates at -O1 with no optimisation pass to wait on, which
+        # is minutes of build instead of ~25. release.yml passes it for the two
+        # pre-stable channels — a smoke-test feed does not need optimized code,
+        # and the channel's whole value is landing the same day. Everything else
+        # (main's feed on push, stable tags) leaves this at release; a typo is
+        # refused in the Dockerfile, not silently built.
+        description: 'cargo profile to compile with: release | dev'
+        type: string
+        required: false
+        default: 'release'
     outputs:
       image:
         description: 'the sha-tagged package release.yml pins into the app image'
@@ -133,6 +145,7 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}-api
           EXTRA_TAGS: ${{ inputs.tags }}
+          PROFILE: ${{ inputs.profile || 'release' }}
           EVENT: ${{ github.event_name }}
           # The CALLER's ref: a called workflow's `github` context belongs to the
           # caller, so on rc-deploy's call this is refs/heads/rc, and on a
@@ -158,6 +171,7 @@ jobs:
           if [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then tags+=(main); fi
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
+                --build-arg "PROFILE=$PROFILE"
                 --build-arg "REVISION=$(git rev-parse HEAD)"
                 --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
                 --cache-from "type=registry,ref=$IMAGE:buildcache"
@@ -166,4 +180,4 @@ jobs:
           for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
           docker buildx build "${args[@]}" .
           echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
-          echo "pushed $IMAGE for: ${tags[*]} (cache: $IMAGE:buildcache)"
+          echo "pushed $IMAGE for: ${tags[*]} (profile: $PROFILE, cache: $IMAGE:buildcache)"

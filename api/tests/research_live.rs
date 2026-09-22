@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proofs for the research harness's conversation plane (cargo test
 // -- --ignored). The bug this file exists to pin: research conversations are
 // kind='research', and the chat door's access predicates only admitted
@@ -9,6 +10,7 @@
 //   DATABASE_URL=postgres://… cargo test --test research_live -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::{fabricate_user, pg, sweep_user_rows};
 use talaria_api::conversations::{
     accessible_conversation, conversation_accessible, post_agent_turn,
 };
@@ -20,36 +22,6 @@ use talaria_api::runs::decide::{DecideArgs, DecideResult, decide};
 use talaria_api::runs::define::{DecisionOption, DecisionRequest, RunDecision};
 use talaria_api::runs::real_decide_deps;
 use talaria_api::runs::store::{NewRun, PgRunStore, RunStore};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
-async fn fabricate_user(pg: &PgPool, tag: &str) -> String {
-    let sub = format!("research-live:{tag}:{}", uuid::Uuid::new_v4());
-    sqlx::query("insert into users (sub) values ($1)")
-        .bind(&sub)
-        .execute(pg)
-        .await
-        .unwrap();
-    let id: String = sqlx::query_scalar("select id::text from users where sub = $1")
-        .bind(&sub)
-        .fetch_one(pg)
-        .await
-        .unwrap();
-    id
-}
-
-async fn sweep_user_rows(pg: &PgPool, tag: &str) {
-    sqlx::query("delete from users where sub like $1")
-        .bind(format!("research-live:{tag}:%"))
-        .execute(pg)
-        .await
-        .unwrap();
-}
-
 /// A parked research run's bare research record, for tests that only need the
 /// conversation plane (no runs row, no driver): the columns the inserts below
 /// actually depend on, everything else at its default.
@@ -77,10 +49,10 @@ async fn fabricate_research_run(pg: &PgPool, owner: &str, question: &str) -> Str
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_research_conversation_passes_the_chat_gates_for_owner_and_member_only() {
-    let pg = pool().await;
-    let owner = fabricate_user(&pg, "gates-owner").await;
-    let member = fabricate_user(&pg, "gates-member").await;
-    let stranger = fabricate_user(&pg, "gates-stranger").await;
+    let pg = pg().await;
+    let owner = fabricate_user(&pg, "research-live", "gates-owner").await;
+    let member = fabricate_user(&pg, "research-live", "gates-member").await;
+    let stranger = fabricate_user(&pg, "research-live", "gates-stranger").await;
     let run_id = fabricate_research_run(&pg, &owner, "who audits the auditors?").await;
 
     let conv = ensure_research_conversation(&pg, &run_id)
@@ -124,9 +96,9 @@ async fn a_research_conversation_passes_the_chat_gates_for_owner_and_member_only
         "membership is the run's, not the conversation's"
     );
 
-    sweep_user_rows(&pg, "gates-owner").await;
-    sweep_user_rows(&pg, "gates-member").await;
-    sweep_user_rows(&pg, "gates-stranger").await;
+    sweep_user_rows(&pg, "research-live", "gates-owner").await;
+    sweep_user_rows(&pg, "research-live", "gates-member").await;
+    sweep_user_rows(&pg, "research-live", "gates-stranger").await;
 }
 
 /// post_agent_turn is the run's mouth, and a run step that crashes between
@@ -135,8 +107,8 @@ async fn a_research_conversation_passes_the_chat_gates_for_owner_and_member_only
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn an_agent_turn_posts_once_per_marker() {
-    let pg = pool().await;
-    let owner = fabricate_user(&pg, "turn-owner").await;
+    let pg = pg().await;
+    let owner = fabricate_user(&pg, "research-live", "turn-owner").await;
     let run_id = fabricate_research_run(&pg, &owner, "who repeats themselves?").await;
     let conv = ensure_research_conversation(&pg, &run_id)
         .await
@@ -168,7 +140,7 @@ async fn an_agent_turn_posts_once_per_marker() {
         .unwrap();
     assert_ne!(other, first);
 
-    sweep_user_rows(&pg, "turn-owner").await;
+    sweep_user_rows(&pg, "research-live", "turn-owner").await;
 }
 
 /// A run parked exactly the way the scope step parks one: research record,
@@ -237,8 +209,8 @@ async fn fabricate_parked_scope_run(pg: &PgPool, owner: &str, question: &str) ->
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_parked_scope_run_reads_as_awaiting_with_its_free_text_question() {
-    let pg = pool().await;
-    let owner = fabricate_user(&pg, "awaiting-owner").await;
+    let pg = pg().await;
+    let owner = fabricate_user(&pg, "research-live", "awaiting-owner").await;
     let id = fabricate_parked_scope_run(&pg, &owner, "which database should we move to?").await;
 
     let (run, _sources) = get_research_run(&pg, &id)
@@ -274,7 +246,7 @@ async fn a_parked_scope_run_reads_as_awaiting_with_its_free_text_question() {
         .execute(&pg)
         .await
         .unwrap();
-    sweep_user_rows(&pg, "awaiting-owner").await;
+    sweep_user_rows(&pg, "research-live", "awaiting-owner").await;
 }
 
 /// The resume hook's whole contract: a conversation's parked scope run is
@@ -285,8 +257,8 @@ async fn a_parked_scope_run_reads_as_awaiting_with_its_free_text_question() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL, REDIS_URL)"]
 async fn answering_the_scope_park_clears_the_resume_hook() {
-    let pg = pool().await;
-    let owner = fabricate_user(&pg, "resume-owner").await;
+    let pg = pg().await;
+    let owner = fabricate_user(&pg, "research-live", "resume-owner").await;
     let id = fabricate_parked_scope_run(&pg, &owner, "which cache, and how warm?").await;
     let conv = get_research_run(&pg, &id)
         .await
@@ -342,7 +314,7 @@ async fn answering_the_scope_park_clears_the_resume_hook() {
     // And the authority is decide()'s, not the hook's: a run MEMBER can chat
     // in this conversation but cannot answer the owner's park — their
     // message spends nothing, and the run stays parked for the owner.
-    let member = fabricate_user(&pg, "resume-member").await;
+    let member = fabricate_user(&pg, "research-live", "resume-member").await;
     let id2 = fabricate_parked_scope_run(&pg, &owner, "a second, member-watched ask").await;
     add_research_member(&pg, &id2, &member).await.unwrap();
     let conv2 = get_research_run(&pg, &id2)
@@ -387,6 +359,6 @@ async fn answering_the_scope_park_clears_the_resume_hook() {
             .await
             .unwrap();
     }
-    sweep_user_rows(&pg, "resume-owner").await;
-    sweep_user_rows(&pg, "resume-member").await;
+    sweep_user_rows(&pg, "research-live", "resume-owner").await;
+    sweep_user_rows(&pg, "research-live", "resume-member").await;
 }

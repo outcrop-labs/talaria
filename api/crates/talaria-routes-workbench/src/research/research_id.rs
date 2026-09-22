@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_research::{delete_research_run, get_research_run, research_role};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -18,9 +18,9 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("research", "GET run", &id) {
-        return gate;
+        return Ok(gate);
     }
     let viewer = match agent_caller(&state.pg, &headers).await {
         Ok(Some(caller)) => {
@@ -29,72 +29,53 @@ pub async fn get(
             match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(caller)).await
             {
                 Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("[research] owner resolve on run read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[research] owner resolve on run read failed", e)),
             }
         }
         Ok(None) => {
-            let user = match require_user(&state, &headers).await {
-                Ok(u) => u,
-                Err(gate) => return gate,
-            };
+            let user = require_user(&state, &headers).await?;
             Some(user.id)
         }
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     // No role is a 404, the same answer as a missing row — a stranger probing
     // ids learns nothing about which runs exist.
     match research_role(&state.pg, viewer.as_deref(), &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] role read on run read failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[research] role read on run read failed", e)),
     }
-    match get_research_run(&state.pg, &id).await {
+    Ok(match get_research_run(&state.pg, &id).await {
         Ok(Some((run, sources))) => Json(json!({ "run": run, "sources": sources })).into_response(),
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] run read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[research] run read failed", e),
+    })
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("research", "DELETE run", &id) {
-        return gate;
+        return Ok(gate);
     }
     let found = match get_research_run(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[research] run read on delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[research] run read on delete failed", e)),
     };
     let Some((run, _)) = found else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     if run.owner_user_id.as_deref() != Some(user.id.as_str()) && user.role != "admin" {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     // Cancels the run FIRST, then deletes the record — see the comment on
     // `delete_research_run`. The report artifact survives either way: deleting
     // a run clears the queue entry, not the knowledge.
     if let Err(e) = delete_research_run(&state, &id).await {
-        tracing::error!("[research] delete failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[research] delete failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

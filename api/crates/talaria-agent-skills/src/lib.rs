@@ -19,6 +19,7 @@ use talaria_state::AppState;
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
+use talaria_body::hex;
 
 /// Wired from the api binary so skill summaries do not pull in the harness runner.
 pub static SUMMARIZE_SKILL: OnceLock<
@@ -451,16 +452,6 @@ pub fn skill_hash(md: &str) -> String {
     let mut h = Sha1::new();
     h.update(md.as_bytes());
     hex(&h.finalize())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xf) as usize] as char);
-    }
-    s
 }
 
 pub struct StoredSummary {

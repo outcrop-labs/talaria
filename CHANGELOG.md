@@ -169,6 +169,361 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   to work in, at `../talaria-<name>`. It asserts the walk and its stop now
   (two levels up from `cli/src`, with a `.git` there), and the cli suite is
   187 pass / 0 fail in a worktree.
+
+- **The dither field repaints what changed, not the whole field — the desktop
+  shell's launcher stops being a furnace.** `ui/src/lib/dither-engine.ts`'s frame
+  re-evaluated and re-drew EVERY cell of every mount, every tick. At the house
+  grain (pitch 2 / dot 1) the launcher's full-window field is 247,040 cells, and
+  keeping it shimmering cost 575ms per paint on average (633ms worst): the page
+  ran at 1.5 fps with 84% of the main thread inside long tasks — and the launcher
+  stays mounted (and painting) behind an active instance. The field is a function
+  of the sources' GEOMETRY, so it is now computed once per change
+  (`density`/`ink`, per cell) and a shimmer tick re-rolls only what the shimmer
+  can change: the threshold, for the cells whose lit state can flip
+  (`|density − threshold| ≤ shimmer/2`). Every other cell is left as it is, cell
+  by cell, against a `painted` buffer in the canvas's own 8-bit resolution, and a
+  colour string is built once per distinct pixel instead of once per cell. A LIVE
+  frame (a tween in flight, a travelling wave) still re-evaluates and redraws, so
+  transitions keep full rate. Two deliberate consequences: the ALPHA no longer
+  rides the shimmer jitter (it is a function of density alone — a jitter that
+  moved every cell's alpha by a level made every pixel differ on every tick; the
+  visible sparkle, the lit/unlit step, is unchanged), and a field nobody can see
+  stops painting — an IntersectionObserver on the canvas plus `visibilitychange`
+  park the loop, and becoming visible repaints from a clean canvas.
+
+  Measured in a worktree stack (its own DB/Redis, app :5302; the launcher page on
+  :5290), same method before → after: the launcher field 575ms → 7ms per paint
+  (633ms → 17ms worst), 13 long tasks and 7.6s of blocking in 8s → 0 and 0, 1.5 →
+  60 fps, main thread 100% → 7.5% busy; the inbox's full-pane empty-state field
+  85ms → 2ms per paint, 50 long tasks and 4.6s → 0, 34 → 60 fps, 62% → 5.6%.
+  Parity proved rather than assumed: the new paint path rendered against the
+  previous loop verbatim into a second canvas differs in **0 pixels** for three
+  source mixes (edges+organic, rect+halo+ramp, cover mode) and for a masked
+  field; the shimmer rule was checked over 525,525 (density, threshold, jitter)
+  triples with **0** cases where the lit/unlit decision differs from the
+  density-jitter it replaces. Five routes (inbox, brief, boards, knowledge,
+  artifacts) load with no console errors, fields painted, 0 long tasks after
+  settle. The desktop GUI itself was not run — this host has no display — so the
+  launcher was exercised as the page it is, in a browser. `bun run check` and
+  `bun run verify` green.
+
+- **W8 (part 1): one stale-board banner, one page skeleton.** The board's three
+  lenses each wrote the same "a reference read failed, the tickets did not"
+  banner — list, kanban and gantt agreed on the shape and disagreed, twice, on
+  the sentence. `components/board/StaleBoardNotice.svelte` is that banner: it
+  takes the statuses read, an optional labels read, the word the lens uses
+  ("Columns" in kanban) and, for gantt, its own sentence for "the status set
+  never arrived"; everything else — which read is blamed, what the retry
+  refetches, and the rule that a failed labels read only costs tint — is in one
+  place. And `routes/app/ArtifactPageSkeleton.svelte` is gone: it was
+  `KbDocPageSkeleton` with the prose widths frozen, and only the widths had
+  drifted (58% where knowledge's list lands 88% on the tenth bar).
+  `ArtifactEditor` renders `<KbDocPageSkeleton bars={10} />` — knowledge's
+  widths, deliberately.
+
+  Verified in the running app, not inferred: with `/api/boards/<id>/labels`
+  aborted, the extracted banner renders "Could not load labels…" **and the board
+  still draws its 5 tickets across 6 columns** (the mark-don't-replace rule); and
+  the artifact editor's cold load renders exactly **10** prose bars with the
+  detail read delayed, which is the geometry the deleted skeleton had.
+  `bun run verify` green (1,186 tests), `bun run check` green (15 rules, 0
+  duplicate clusters).
+
+- **One SSE door, and the two rules that keep it.**
+  `ui/src/lib/sse.ts`'s `openStream(url, onMessage)` now opens every EventSource
+  in the client: the board rail (`boards.svelte.ts`), the channel rail
+  (`channels.svelte.ts`), the `/api/me/events` fan
+  (`user-events.svelte.ts` — it keeps its reference-counted subscriber registry
+  on top) and `WorkWatch.svelte` (which keeps its own frame parsing). What the
+  four had disagreed about is the part that breaks: a frame that does not parse.
+  Two swallowed it, one let `JSON.parse` throw inside the listener (an unhandled
+  error with the stream still open), one returned early. The door hands the raw
+  data over — that judgment is per-surface, and every consumer here has a poll
+  floor behind it — and owns the connection and its teardown, which is what the
+  four `es.close()` calls could each forget. `ts-event-source-outside-the-door`
+  and `ts-maybe-getter-copy` are the wave's last two rules; **15 rules, all
+  clean**, `0` duplicate clusters in both languages, `DUPLICATE_BODY_ALLOW`
+  empty.
+
+  Verified in the running app (docker + the dev stack are up now, so this is
+  real exercise, not inference): the seeded board rendered, and a ticket created
+  out of band through the API appeared in the open board view **without a
+  reload** (3 → 4 tickets) — which is the board rail's `openStream` invalidating
+  through the refactor. No console errors. `bun run verify` green (1,186 tests).
+
+  Also recorded here: **the `#[ignore]`d live-DB suite now runs and is not
+  green, and none of its failures is this sweep's.** With the schema migrated
+  (`ui/.env` + `bun -e 'migrate()'`), 67+ live tests pass — including every test
+  the W2 test-support module touched. Four fail: `attribution::a_live_turn_
+  outranks_the_hirer` (A/B-proven pre-existing: nothing in the tree ever installs
+  `talaria_attribution::CONVERSATION_OWNER`, so that rung of the ladder is dead
+  in production too), `llm_models::minted_key_lists_the_catalog` (A/B-proven
+  pre-existing), `realtime_fan::the_fans_reach_exactly_their_audiences` (an
+  ordering flake: the assertion compares the same two ids in arrival order,
+  ~1 run in 3), and `workchains_live`'s three (also flaky run-to-run, in a file
+  the sweep never touched). A/B = the same test run from the pre-sweep commit.
+
+- **Consistency pins that ride along.** The Rust crates stop re-spelling
+  ladders the constant crate already owns: `talaria-fitness-talaria-tools`
+  (which had its own `PRIORITIES`/`EFFORTS`/`COLORS`) and
+  `talaria-routes-comms`'s `channels_id_plan` now import
+  `talaria-task-const`'s, which is what the api validates against. The
+  cross-language pin in `ui/src/lib/task-const.test.ts` grows from one
+  assertion to four: the priority ladder, the effort ladder, `talaria-statuses`'
+  off-board list (as before) and mcp's `AGENT_STATUSES` — each read out of the
+  other language's source, so a drift on either side fails the client's suite.
+
+  `scripts/check-invariants.mjs` gains the app-DB container-name pin: the
+  resident tier (`ui/src/server/app-db.ts`) and the CLI's backup
+  (`cli/src/cmd/backup.ts`) both compose `talaria-appdb-<instance>-<slug>`, and
+  a drift would surface as "that container is not there" on the day somebody
+  needs the dump. It is a pin, not an import — one end reads `process.env` and
+  the other a passed-in record — so it checks the shape: the prefix, both
+  variables, the `'talaria'` fallback.
+
+  **Not done**: the ports pin (it needs `cli/src/ports.ts`, which is W12's), and
+  `talaria-fitness-world`'s bare `INBOX`/`ASSIGNED`/… consts — there is no
+  home to import them from: the board statuses are DB columns with a virtual
+  default list, not constants, so the crate's copy is its own wire vocabulary.
+
+  Verified: `bun run check` (13 rules, 0 clusters), `bun run api:check`,
+  `bun run verify`.
+
+- **UI data layer: one home per helper (part 1).** The sweep's UI wave, done as
+  the pieces that are verifiable without a browser:
+
+  * **The three duplicate function bodies the detector was holding open for the
+    UI are gone — the allow list is now EMPTY, and `bun run check` reports zero
+    clusters in both languages.** `lib/list-nav.ts` owns the
+    Arrow/Enter/Tab grammar (EmojiList + MentionList; each menu's exported
+    `onKeyDown` is an adapter over a `createListNav` bound to its own runes),
+    `lib/outside-click.ts` owns the outside-pointer test (Popover +
+    DropdownMenu), `lib/menu-position.ts` owns the caret-anchored placement
+    (mention-suggest + slash-commands) — which is also where the two caret
+    menus' flip-above rule finally agrees.
+  * **`lib/reactive-arg.ts`** — `MaybeGetter<T>` and `resolve()`, declared
+    locally in sixteen files (plus two one-off spellings, `resolveModel` and
+    `resolveValue`). One type, one resolution.
+  * **`toastError(title, e)`** — 93 call sites wrote
+    `pushToast({ title, body: errorMessage(e), tone: 'danger' })` by hand; the
+    helper is that pairing, and 54 files call it now. Four sites whose body is a
+    composed sentence (`\`${label}: ${errorMessage(e)}\``) keep their own call —
+    the rule is the pairing, not the tone.
+
+  **Not done in this wave** (and why): `persist.ts`, `statuses.ts`'s
+  `STATUS_COLOR`, `format.ts`'s usd/bytes/token/duration spellings, the
+  `teams.ts` directory hook, the context-menu/SortHeader helpers and
+  `sse.ts`'s `openStream`. Each is a behavioural refactor of a component's
+  render path, and this host has **no docker, so no dev stack and no browser** —
+  the remaining UI waves (W8–W11: QueryState adoption, the component-pair
+  merges, the row-chrome and composer-picker collapses) would be landed
+  unexercised and pixel-unverifiable, which is the one thing their wave notes
+  say not to do. They are left for a session that can run `bun talaria dev`.
+
+  Verified: `bun run verify` (check + svelte-check 0 errors + 1,183 vitest
+  tests).
+
+- **One dither engine for ui + desktop (−645 lines).** `desktop/src/lib/dither.ts`
+  was a 649-line copy of ui's, kept in step by a comment that said so. The
+  engine is `ui/src/lib/dither-engine.ts` now — it imports NOTHING (no `@/`
+  alias, no framework, a local `clamp01`), which is what lets a separate package
+  share it; `ui/src/lib/dither.ts` stays as the door its ~15 importers already
+  point at (`export * from './dither-engine'`). `desktop/vite.config.ts` aliases
+  `@dither` onto that file and allows the cross-package read with
+  `server.fs.allow: ['..']`. `docs/DESKTOP.md` stops describing a port. The
+  per-side `.svelte` wrappers stay per-side — ui's `DitherLayer` (219) and
+  `WingMark` (38) are not desktop's (84 / 55), and only the engine was ever
+  identical.
+
+  Verified: `bun run typecheck` (0 errors), `bun run build` (ui), and
+  `cd desktop && bun run build:vite` — 120 modules including the aliased engine
+  (the built bundle contains `hash01`, so the shared file really is in it).
+  `bun run desktop:check` **cannot** run on this host (its Tauri build needs
+  `dbus-devel`, and cargo panics in libdbus-sys's build script — pre-existing,
+  unrelated to this change). The launcher's rendered field is likewise not
+  visually verifiable here (no display, no docker): `docs/DESKTOP.md`'s own
+  rule, boxes build and the host runs.
+
+- **One client for `/api/skills` — and the stale list it caused.** Two hooks
+  backed one endpoint: `lib/skills.ts`'s `useSkills()` under key `['skills']`,
+  and `lib/workflows.ts`'s `useSkillLibrary()` under `['skill-library']`. Each
+  surface invalidated only its own key, so renaming or deleting a skill from the
+  Studio left the Skills library showing the old name until a manual refresh.
+  `workflows.ts`'s second client is gone; `Studio.svelte`, `StudioGuide.svelte`,
+  `WorkflowDetail.svelte` and `SkillRow.svelte` now read `useSkills()` and
+  invalidate `SKILLS_KEY`, so any surface's write updates all of them.
+  `SkillOwner` carries the `label`/`model` the Studio rows read.
+  Verified: `bun run verify` (svelte-check 0 errors, 1,183 tests). The rename
+  round-trip itself was **not** exercised in a browser — no docker on this host,
+  so the dev stack cannot be started; the fix is the shared key, which is what
+  `SkillEditor`/`SkillsLibrary` already invalidate.
+
+- **Dead code deleted across the UI, cli and their docs (~440 lines, no
+  behaviour).** Every one was verified by grep before it went: no importer, no
+  invariant anchor, no test.
+
+  * `ui/src/server/permissions.ts` (192 lines) and its 214-line test — the TS
+    permission catalog and `requirePerm` gate. The live catalog is
+    `api/crates/talaria-permissions/src/lib.rs` now; the file survived only as a
+    re-export in `api-guard.ts` nothing imported. `docs/PERMISSIONS.md` and
+    `docs/API-CONVENTIONS.md` stop calling it "the catalog" and name the Rust
+    twin of each guard.
+  * `ui/src/lib/notify-classes.ts` — the routing/digest half
+    (`isNotifyRoute`, `isNotifyClass`, `KIND_CLASS`, `notifyClassOf`,
+    `resolveNotifyPrefs`, `DIGEST_PREF_KEY`, `storedDigestPref`,
+    `digestEnabled`): zero importers; `talaria-notify` owns the vocabulary and
+    the derived answer. What stays is what the client draws from —
+    `NotifyClass`, `NotifyRoute`, `NOTIFY_CLASSES`, `NotifyPrefs`,
+    `DigestPref`. (238 → 151 lines.)
+  * `TERMINAL_KINDS` / `isTerminal` in `daily-brief-types.ts` and
+    `RawFocusItem` in `inbox-focus-types.ts`. **Not** the two exported arrays
+    the plan named: `BRIEF_SECTIONS` and `BRIEF_ENTRY_KINDS` are the *source* of
+    `BriefSection` / `BriefEntryKind` (`typeof X[number]`), so they are
+    load-bearing, not dead.
+  * `cli/src/paths.ts`'s `isNewer` and its `boxDir(devboxes, name)` — the
+    latter shadowed by `cli/src/cmd/box/shared.ts`'s `boxDir(ctx, name)`, which
+    is what every caller imports.
+
+  Verified: `bun run verify` (check + svelte-check 0 errors + 1,183 vitest tests
+  pass), `bun talaria --help` still renders. No running-app pass: this host has
+  no docker, so the dev stack (and therefore any visual check) is unavailable.
+
+- **One home per duplicated helper in the api crate.** Every cluster the new
+  duplicate-body detector reported is gone (`0 clusters`, down from 13), and the
+  named families the sweep listed followed:
+
+  * `audience` → `talaria-runs-define` (beside the `Authority` it answers with;
+    research-def, runs-agent-hire and runs-plan-draft each had a copy).
+  * `roll_drain_ms` → `talaria-update-layout` (already the import home for the
+    two update crates; fleet-reconcile now reads it there).
+  * `assistant_owner_for`, `personal_assistant_owners` → `talaria-users`;
+    `has_oauth_tokens` → `talaria-mcp-oauth`; `talaria-mcp/src/registry.rs` had
+    private copies of all three.
+  * `percent_encode`/`percent_decode` → `talaria-body`. Four crates wrote JS's
+    `encodeURIComponent` (gateway provider URLs, google-client path segments,
+    session cookies, inbox cursors) and two wrote the decoder; the unreserved
+    set is a JS contract, and five of them imported it from each other in a
+    chain. HEX_UPPER is a table now, not `format!` per byte.
+  * `now_ms`/`now_iso` → `talaria-agent-auth` (7 `u64` copies + `now_iso` ×3;
+    the clock crate already owned the `i64` one and `epoch_ms_to_iso`).
+  * `hex` → `talaria-body` (4 copies: LLM key minting, update signing, SigV4's
+    canonical request, skill hashing).
+
+  The detector's allow list is down to the three TypeScript clusters the UI
+  waves own; each Rust entry died exactly when its work landed, which is what
+  the stale-entry check is for. The plan's remaining W3 rows (`NowFn`,
+  `utf16_*`, `fold_slug`, `truncate_bytes`, the `js_*` coercions, `sha256_hex`)
+  are **not** in this commit: they are either type aliases or pairs whose
+  signatures differ, so they need per-call-site surgery rather than a
+  collapse — and none of them is detector-flagged, so nothing regrows
+  unwatched. (Honest note: the sweep's "~800 lines" for this wave is really
+  ~150 — most of the duplicates it named were already collapsed by W1/W2 or
+  were never byte-identical.)
+
+  Verified: `bun run api:check` (fmt + clippy `-D warnings` + `cargo test
+  --workspace`), `bun run check` (13 rules, `gen-docs --check` clean).
+
+- **Handlers answer `Result<Response, Response>`, and the gate/body/secretbox
+  unwraps collapse onto one call each.** Five passes over the route crates,
+  every one locked by a new invariant rule:
+
+  * **Gates propagate with `?`.** ~380 call sites spelled out
+    `match require_user(&state, &headers).await { Ok(u) => u, Err(gate) => return
+    gate }`. Every guard already returns `Result<_, Response>`, and axum
+    implements `Handler` for any `R: IntoResponse` — `Result<Response, Response>`
+    is one — so the whole match becomes `require_user(&state, &headers).await?`.
+    `rust-hand-wrapped-gate` fails the next one.
+  * **`object_or_400`.** 194 route files hand-wrote the same 400 for a
+    non-object body. `let obj = object_or_400(&parsed)?;` is that conversion,
+    defined beside the envelope it produces (`talaria_body` stays pure and
+    answers the message only). `rust-as-object-unwrap` fails the next one.
+  * **`secretbox_or_500`.** 29 `state.secretbox()` hand-unwraps become
+    `secretbox_or_500(&state, "<context>").await?`. It lives in `talaria-session`
+    rather than `talaria-error` — `AppState` depends on the error crate, so the
+    cycle the plan assumed away is real; session is the layer that may name both
+    `AppState` AND a `Response`. `rust-secretbox-unwrap` fails the next one.
+  * **In-crate gates get one home each.** `channel_gate` (6 copies in comms),
+    `edit_gate` (boards), `owner_gate` (teams) and `can_manage_agent` (fleet) now
+    live in their module's `mod.rs`; `talaria_params::uuid_gate` absorbed its 4
+    copies and gained `uuid_gate_404` for the one route that answers "not found".
+  * **`api/tests/support/`.** An integration test is its own crate, so the
+    shared fixtures HAD to be copied per binary — 19 `pool()`/`pg()`, 5
+    `fabricate_user`, 3 `person`, 3 `sweep_user_rows`, 3 `app_state` and the
+    same DATABASE_URL expect string in 25 files. The prefix variation is a
+    parameter now. (The 13 `cleanup` helpers stayed put: each holds a different
+    table and WHERE clause, so they were never copies.)
+
+  **The docs oracle moved one row group, on purpose.** `scripts/gen-docs.mjs`
+  now follows helpers in the module's `mod.rs` (the gate move would otherwise
+  drop every 403 from the reference) and reads the new `object_or_400` binding.
+  That surfaced a pre-existing inaccuracy it had never been able to see: the
+  three `/api/teams/{id}*` GET rows are `session + view:/teams`, because
+  `reader_gate` consults `require_view` for a non-member. `docs/api/**` is
+  regenerated with exactly those 6 rows changed; every path, method, body field,
+  return shape and status list is byte-identical.
+
+  Verified: `bun run api:check` (fmt + clippy `-D warnings` + `cargo test
+  --workspace`, exit 0), `bun run check` (13 rules clean, `gen-docs --check`:
+  245 routes, no further drift). The `#[ignore]`d live-DB suite was **not**
+  executed — this host has no Postgres, Redis or docker (the dev stack cannot be
+  started here), so `api/tests/support/` is compile- and clippy-verified only.
+
+- **One internal-error trap: ~860 hand-written log-and-500 sites collapse onto
+  `talaria_error::internal`.** The `tracing::error!("…: {e}"); return
+  thrown_internal_error();` pair was written out by hand at every call site that
+  did not catch an engine error, in five spellings (terminal `return`, tail
+  expression, `Err(…)`, `Some(…)`, fully-qualified). Because each site re-made
+  the one decision in it, about a quarter re-made it as "no log at all" — a 500
+  with nothing in the log and no way to tell which read failed. `internal`
+  (api/crates/talaria-error/src/lib.rs) is that pair once: it logs
+  `"{context}: {e}"` and returns the same byte-exact `thrown_internal_error()`
+  response. Rust `tracing::error!` in api/crates: 993 → 172; `return
+  thrown_internal_error();` → 1 (inside `internal`). Two new invariant rules
+  (`rust-trap-block`, `rust-thrown-internal-error-outside-its-envelope`) fail the
+  next copy, and the checker now scans `api/crates` as a second source tree
+  (`scripts/check-invariants.mjs`, `lang: 'rust'`; a duplicate-function-body
+  detector with a name+path allow list rides along). Non-conforming sites — a
+  log line quoting a value rather than the error, or an `.is_err()` that logged
+  nothing — were converted by hand; those log lines gain a `: <detail>` suffix.
+  Wire bytes, status codes and the route table are unchanged. Verified:
+  `bun run api:check` (fmt + clippy `-D warnings` + `cargo test --workspace`,
+  exit 0), `bun run check` (gen-docs `--check`: 245 routes, 25 files, no drift).
+- **The pre-stable channels compile the api with the dev profile.** `nightly`
+  and `rc` publish a package built by cargo's own dev profile
+  (`api/Cargo.toml`'s `[profile.dev]`: our crates `-O1`, dependencies `-O3`,
+  `debug = "line-tables-only"`) instead of release. Measured on the same box,
+  same sources: the compile of our ~200 crates is **7m52s instead of 16m04s**
+  (the CI runner was still going at 24m30s when its budget killed it, and that
+  run published nothing), and a whole image build is 8.4 minutes with a warm
+  cook instead of ~21 — the difference between a nightly that lands the same
+  day and one that never lands at all.
+
+  `release.yml`'s `resolve` decides, in one place, keyed on the channel;
+  `api-package.yml` carries a `profile` input and passes it as the
+  Dockerfile's `PROFILE` arg; main's feed and every stable tag keep release,
+  and `PROFILE` refuses any other value by name rather than silently building
+  something. `RELEASING.md` states the trade where an operator reads it: an rc
+  image is a smoke test of the same sources — debug assertions ON, ~417 MB
+  binary vs release's ~144 MB — not a performance preview of the `X.Y.Z` that
+  is built again from the tag, in release.
+
+  The first dev-profile build also caught a defect in #407's stub gate: under
+  `set -eu` the probe aborted the subshell on an *empty first probe*, with no
+  output at all — indistinguishable from the stub the gate exists to catch. It
+  passed until now only because a release binary answers on the first try. The
+  probe tolerates a miss (`|| true`, `if`) and keeps its 30-second patience.
+
+  Verified: `docker build --build-arg PROFILE=dev` → `Finished dev profile in
+  7m 52s` + `stub gate: the built binary answers /api/healthz (HTTP/1.1 503)`;
+  `PROFILE=release` (the default) still builds release and passes the same
+  gate; `PROFILE=staging` fails the build in the deps stage by name; the gate
+  body, extracted verbatim and run under `set -eu`, passes a real binary
+  (exit 0) and fails the published 544 KB stub by name (exit 1);
+  `release.yml`'s resolve script run under all five event shapes emits
+  `profile=dev` for nightly/rc (schedule, dispatch nightly, dispatch rc, `-rc.N`
+  tag) and `profile=release` for `vX.Y.Z`, with a malformed tag still exiting 1;
+  both workflow files parse; `bun run check` green.
+
 - **The publish budgets match the build they pay for.** `api-package`'s
   30-minute job limit (and `app-image`'s 30-minute digest poll) were sized
   against a build that never happened: cargo-chef's skeleton compiled in 3-6

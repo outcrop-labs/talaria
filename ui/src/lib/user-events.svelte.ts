@@ -11,6 +11,7 @@
 // on the server. A firehose with one reader per subscriber is a connection
 // farm; this is the same shape as the toast store: module-level singleton,
 // callers subscribe, the last unsubscribe closes the socket.
+import { openStream } from '@/lib/sse'
 import { useQueryClient } from '@tanstack/svelte-query'
 
 /** The wire's id-shaped events — camelCase, tagged `type`, nothing else. */
@@ -23,30 +24,31 @@ export type UserEvent =
 
 type Listener = (event: UserEvent) => void
 
-let source: EventSource | null = null
+let close: (() => void) | null = null
 let refs = 0
 const listeners = new Set<Listener>()
 
 function connect(): void {
-  if (source) return
-  source = new EventSource('/api/me/events')
-  source.onmessage = (event: MessageEvent<string>) => {
+  if (close) return
+  // The singleton subscriber registry stays here — this is the one stream with
+  // N consumers — but the connection itself goes through the shared door.
+  close = openStream('/api/me/events', (data) => {
     // A frame we cannot parse is a frame we ignore — every consumer's own
     // poll floor is what makes that safe rather than silent.
     let parsed: UserEvent
     try {
-      parsed = JSON.parse(event.data) as UserEvent
+      parsed = JSON.parse(data) as UserEvent
     } catch {
       return
     }
     if (!parsed || typeof parsed.type !== 'string') return
     for (const fn of listeners) fn(parsed)
-  }
+  })
 }
 
 function disconnect(): void {
-  source?.close()
-  source = null
+  close?.()
+  close = null
 }
 
 /** Subscribe to the firehose. Returns the unsubscribe; the LAST unsubscribe

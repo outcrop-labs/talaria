@@ -1,65 +1,34 @@
 // /api/teams/{id}/agents. GET → agent members (any team member).
 // POST { model } → add (owner). DELETE { model } → remove (owner).
 
+use super::owner_gate;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
-use talaria_teams::{add_team_agent, list_team_agents, remove_team_agent, team_role};
-use uuid::Uuid;
-
-fn uuid_gate(id: &str, action: &str) -> Option<Response> {
-    if Uuid::parse_str(id).is_ok() {
-        return None;
-    }
-    tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(thrown_internal_error())
-}
-
-async fn owner_gate(
-    state: &AppState,
-    user_id: &str,
-    team_id: &str,
-    action: &str,
-) -> Option<Response> {
-    match team_role(&state.pg, user_id, team_id).await {
-        Ok(Some(role)) if role == "owner" => None,
-        Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
-    }
-}
-
+use talaria_teams::{add_team_agent, list_team_agents, remove_team_agent};
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if let Some(gate) = uuid_gate(&id, "GET agents") {
-        return gate;
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("teams", "GET agents", &id) {
+        return Ok(gate);
     }
     if let Some(gate) = super::reader_gate(&state, &headers, &user.id, &id, "GET agents").await {
-        return gate;
+        return Ok(gate);
     }
-    match list_team_agents(&state.pg, &id).await {
+    Ok(match list_team_agents(&state.pg, &id).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] agent list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[teams] agent list failed", e),
+    })
 }
 
 pub async fn post(
@@ -67,33 +36,24 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if let Some(gate) = uuid_gate(&id, "POST agents") {
-        return gate;
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("teams", "POST agents", &id) {
+        return Ok(gate);
     }
     if let Some(gate) = owner_gate(&state, &user.id, &id, "POST agents").await {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let model = match string_member(obj, "model", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     match add_team_agent(&state.pg, &id, &model).await {
         Ok(None) => {}
-        Ok(Some(sentence)) => return house_error(StatusCode::BAD_REQUEST, &sentence),
-        Err(e) => {
-            tracing::error!("[teams] agent add failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(Some(sentence)) => return Ok(house_error(StatusCode::BAD_REQUEST, &sentence)),
+        Err(e) => return Ok(internal("[teams] agent add failed", e)),
     }
     log_audit(
         &state.pg,
@@ -108,7 +68,7 @@ pub async fn post(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
@@ -116,29 +76,22 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if let Some(gate) = uuid_gate(&id, "DELETE agents") {
-        return gate;
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("teams", "DELETE agents", &id) {
+        return Ok(gate);
     }
     if let Some(gate) = owner_gate(&state, &user.id, &id, "DELETE agents").await {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let model = match string_member(obj, "model", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = remove_team_agent(&state.pg, &id, &model).await {
-        tracing::error!("[teams] agent remove failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[teams] agent remove failed", e));
     }
     log_audit(
         &state.pg,
@@ -153,5 +106,5 @@ pub async fn delete(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

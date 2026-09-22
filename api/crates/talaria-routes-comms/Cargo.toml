@@ -40,6 +40,7 @@ talaria-research = { path = "../talaria-research" }
 talaria-research-origin = { path = "../talaria-research-origin" }
 talaria-session = { path = "../talaria-session" }
 talaria-state = { path = "../talaria-state" }
+talaria-task-const = { path = "../talaria-task-const" }
 talaria-tasks = { path = "../talaria-tasks" }
 talaria-teams = { path = "../talaria-teams" }
 talaria-ticket-chat = { path = "../talaria-ticket-chat" }

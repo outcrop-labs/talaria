@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the long-turn liveness contract (cargo test -- --ignored).
 // A turn is alive while it is WRITING (streamed_at), not while it is YOUNG
 // (created_at) — the stale sweep, the working flags, and the one-shot
@@ -8,19 +9,13 @@
 //   DATABASE_URL=postgres://… cargo test --test streamed_at_liveness -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::conversations::{
     active_streaming_assistant, create_conversation, insert_streaming_assistant,
     mark_message_resumed, message_still_errored, prior_messages, resurrect_streaming_assistant,
     update_assistant,
 };
 use talaria_api::secretbox::SecretBox;
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// One throwaway person per test, keyed by the test's own tag — the suite
 /// runs its cases concurrently, so each cleans up ONLY its own user (a shared
 /// pattern would delete a sibling test's person mid-flight and fail its
@@ -78,7 +73,7 @@ async fn status_of(pg: &PgPool, message: &str) -> String {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_writing_turn_is_alive_however_old_its_row() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg, "alive").await;
     let user = person(&pg, "alive").await;
     let conv = create_conversation(&pg, &user, "claude-test", "Long turn", "chat", None)
@@ -112,7 +107,7 @@ async fn a_writing_turn_is_alive_however_old_its_row() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_silent_writer_is_swept_to_an_explained_error() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg, "swept").await;
     let user = person(&pg, "swept").await;
     let conv = create_conversation(&pg, &user, "claude-test", "Swept turn", "chat", None)
@@ -168,7 +163,7 @@ async fn a_silent_writer_is_swept_to_an_explained_error() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_resume_gate_opens_once_and_the_re_drive_forgets_the_attempt() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg, "gate").await;
     let user = person(&pg, "gate").await;
     let conv = create_conversation(&pg, &user, "claude-test", "Resumed turn", "chat", None)

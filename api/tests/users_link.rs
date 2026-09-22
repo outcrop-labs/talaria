@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the sign-in email link (cargo test -- --ignored). The
 // link is one UPDATE whose correctness is a WHERE clause — a sign-in that
 // forks a second row for a claimed email does not fail a unit test, it
@@ -15,15 +16,9 @@
 
 use sqlx::postgres::PgPool;
 use std::time::Duration;
+use support::pg;
 use talaria_api::password_accounts::verify_password_login;
 use talaria_api::users::{Identity, link_by_email, upsert_user};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// Every row this suite fabricates lives under one domain, so a crashed run
 /// cannot leak users into the next (credentials and memberships ride the
 /// cascades).
@@ -74,7 +69,7 @@ async fn seed_user(pg: &PgPool, sub: &str, email: &str, name: &str, role: &str) 
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_google_sign_in_links_to_the_same_email_admin() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     seed_user(
         &pg,
@@ -112,7 +107,7 @@ async fn a_google_sign_in_links_to_the_same_email_admin() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_google_sign_in_without_a_same_email_row_creates_a_member() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
 
     upsert_user(
@@ -135,7 +130,7 @@ async fn a_google_sign_in_without_a_same_email_row_creates_a_member() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_re_sign_in_is_still_one_row() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     seed_user(
         &pg,
@@ -179,7 +174,7 @@ async fn a_re_sign_in_is_still_one_row() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_link_never_steals_a_sub_another_row_holds() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     // The unmerged fork: an admin row for the email plus a member row that
     // already holds the incoming Google sub. The sign-in must land on the
@@ -235,7 +230,7 @@ async fn the_link_never_steals_a_sub_another_row_holds() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_claim_promotion_upgrades_the_same_email_row_in_place() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let member_id = seed_user(
         &pg,
@@ -275,7 +270,7 @@ async fn the_claim_promotion_upgrades_the_same_email_row_in_place() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_claim_still_writes_the_credential_on_the_promoted_row() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     seed_user(
         &pg,

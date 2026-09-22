@@ -38,10 +38,8 @@ use talaria_approvals::audience_for;
 use talaria_boards::{
     create_board, join_everyone_to_board, list_all_boards, set_board_agent_config,
 };
-use talaria_body::{
-    as_object, optional_max_string_member, optional_uuid_member, parse, string_member,
-};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_max_string_member, optional_uuid_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{agent_text_authority, remember_ticket_refusal};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_state::AppState;
@@ -107,34 +105,31 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let agent = caller.model.clone();
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let summary = match string_member(obj, "summary", 5, 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let details = match optional_max_string_member(obj, "details", 20_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // what the agent was trying to do
     let context = match optional_max_string_member(obj, "context", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // the ticket the agent was working when it broke
     let task_id = match optional_uuid_member(obj, "taskId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let label = describe_agent(&agent).label;
 
@@ -144,10 +139,7 @@ pub async fn post(
     let task = match task_id.as_deref() {
         Some(id) => match get_task(&state.pg, id).await {
             Ok(t) => t,
-            Err(e) => {
-                tracing::error!("[agent.problem] ticket read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.problem] ticket read failed", e)),
         },
         None => None,
     };
@@ -163,7 +155,7 @@ pub async fn post(
         };
         let Some(task) = task.as_ref() else {
             remember_ticket_refusal(&state.pg, &agent, None).await;
-            return refuse();
+            return Ok(refuse());
         };
         // The CALLER, not its model: board policy's elevated bypass is only
         // for an identity that was proven, never merely asserted.
@@ -175,14 +167,11 @@ pub async fn post(
         .await
         {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[agent.problem] board policy read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.problem] board policy read failed", e)),
         };
         if !allowed {
             remember_ticket_refusal(&state.pg, &agent, None).await;
-            return refuse();
+            return Ok(refuse());
         }
         let target = AgentWriteTarget {
             board_id: task.board_id.clone(),
@@ -203,12 +192,9 @@ pub async fn post(
                 let mut resp =
                     Json(json!({ "error": "forbidden", "message": shut })).into_response();
                 *resp.status_mut() = StatusCode::FORBIDDEN;
-                return resp;
+                return Ok(resp);
             }
-            Err(e) => {
-                tracing::error!("[agent.problem] ticket refusal read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[agent.problem] ticket refusal read failed", e)),
         }
     }
 
@@ -258,8 +244,10 @@ pub async fn post(
                 href = format!("/boards/{board_id}/{}", filed.id);
             }
             Err(e) => {
-                tracing::error!("[agent.problem] helpdesk filing failed: {}", e.message());
-                return thrown_internal_error();
+                return Ok(internal(
+                    "[agent.problem] helpdesk filing failed",
+                    e.message(),
+                ));
             }
         }
     }
@@ -344,6 +332,7 @@ pub async fn post(
     } else {
         "report was sent"
     };
+    Ok(
     Json(json!({
         "ok": true,
         "ticket": if href != "/observability/alerts" { json!(href) } else { Value::Null },
@@ -351,5 +340,5 @@ pub async fn post(
         // consistent and plain.
         "relay": format!("The workspace admin has been notified and a {filed_word} — no action needed on your side."),
     }))
-    .into_response()
+    .into_response())
 }

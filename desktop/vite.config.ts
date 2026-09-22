@@ -1,5 +1,6 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 
 // The launcher — the only local content in the app. Every instance is a
@@ -10,6 +11,13 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [tailwindcss(), svelte()],
   clearScreen: false,
-  server: { port: 5290, strictPort: true },
+  // The launcher shares ui/'s dither engine instead of keeping a 649-line copy
+  // in step by hand. The alias names the file (which imports nothing, so no
+  // other alias is needed), and `fs.allow` lets vite serve it from outside this
+  // package root.
+  resolve: {
+    alias: { '@dither': fileURLToPath(new URL('../ui/src/lib/dither-engine.ts', import.meta.url)) },
+  },
+  server: { port: 5290, strictPort: true, fs: { allow: ['..'] } },
   envPrefix: ['VITE_', 'TAURI_'],
 })

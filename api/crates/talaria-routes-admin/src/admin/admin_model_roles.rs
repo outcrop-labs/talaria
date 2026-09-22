@@ -27,11 +27,10 @@ use talaria_api_facades::model::roles::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, enum_member, parse, present_nullable_max_string_member,
-    present_nullable_string_member,
+    enum_member, parse, present_nullable_max_string_member, present_nullable_string_member,
 };
 use talaria_effort_prefs::{get_effort_prefs, role_slot, set_effort_pref};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -78,16 +77,11 @@ async fn efforts_panel(pg: &PgPool) -> serde_json::Map<String, Value> {
     out
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let models = match gateway_models(&state.pg).await {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[model-roles] gateway catalog read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[model-roles] gateway catalog read failed", e)),
     };
     let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
     let issues: Vec<Value> = role_assignment_issues(&state.pg)
@@ -95,7 +89,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         .iter()
         .map(|i| i.to_json())
         .collect();
-    Json(json!({
+    Ok(Json(json!({
         "roles": role_specs(),
         "assignments": get_model_roles(&state.pg).await,
         "models": ids,
@@ -103,56 +97,49 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         // The per-role effort preference (null = the model's own default).
         "efforts": Value::Object(efforts_panel(&state.pg).await),
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // Schema order: role, then model, then effort — an invalid role outranks
     // an invalid model, which outranks an invalid effort.
     let role = match enum_member(obj, "role", &ROLES) {
         Ok(r) => r,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let model = match present_nullable_max_string_member(obj, "model", 200) {
         Ok(m) => m,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Absent = leave the preference alone (a model-only save); null = clear.
     let effort = match present_nullable_string_member(obj, "effort", 24) {
         Ok(e) => e,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Some(Some(m)) = &model
         && !m.is_empty()
     {
         let on_gateway = match gateway_models(&state.pg).await {
             Ok(all) => all.iter().any(|g| &g.id == m),
-            Err(e) => {
-                tracing::error!("[model-roles] gateway catalog read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[model-roles] gateway catalog read failed", e)),
         };
         if !on_gateway {
-            return house_error(StatusCode::BAD_REQUEST, "that model is not on the gateway");
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "that model is not on the gateway",
+            ));
         }
     }
     if let Some(model_value) = &model {
         if let Err(e) = set_model_role(&state.pg, &role, model_value.as_deref()).await {
-            tracing::error!("[model-roles] assignment write failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[model-roles] assignment write failed", e));
         }
         // after: { model: body.model } — the RAW parsed value, so present-null
         // audits {model: null} and an explicit "" audits {model: ""}.
@@ -190,8 +177,7 @@ pub async fn put(
         let Some(chosen) = effort_value.as_deref().filter(|e| !e.is_empty()) else {
             // null (or "") = clear the preference; nothing to validate.
             if let Err(e) = set_effort_pref(&state.pg, &role_slot(&role), None).await {
-                tracing::error!("[model-roles] effort pref write failed: {e}");
-                return thrown_internal_error();
+                return Ok(internal("[model-roles] effort pref write failed", e));
             }
             log_audit(
                 &state.pg,
@@ -206,26 +192,25 @@ pub async fn put(
                 },
             )
             .await;
-            return finish(&state).await;
+            return Ok(finish(&state).await);
         };
         let Some(target) = target.filter(|t| !t.is_empty()) else {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 "assign a model before setting its effort",
-            );
+            ));
         };
         if !efforts_for_model(&state.pg, &target)
             .await
             .contains(&chosen.to_string())
         {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 &format!("that model does not publish the \"{chosen}\" effort level"),
-            );
+            ));
         }
         if let Err(e) = set_effort_pref(&state.pg, &role_slot(&role), Some(chosen)).await {
-            tracing::error!("[model-roles] effort pref write failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[model-roles] effort pref write failed", e));
         }
         log_audit(
             &state.pg,
@@ -241,7 +226,7 @@ pub async fn put(
         )
         .await;
     }
-    finish(&state).await
+    Ok(finish(&state).await)
 }
 
 async fn finish(state: &AppState) -> Response {

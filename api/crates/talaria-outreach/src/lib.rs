@@ -294,7 +294,7 @@ pub async fn agent_message_user(
     };
     let href = format!(
         "/comms/agent/{}/{}",
-        talaria_google_oauth::encode_uri_component(agent_model),
+        talaria_body::percent_encode(agent_model),
         conv_id
     );
     let _ = talaria_notify::add_notification(

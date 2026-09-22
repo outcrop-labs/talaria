@@ -13,9 +13,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_body::{NumKind, as_object, number_member, uuid_member};
+use talaria_body::{NumKind, number_member, uuid_member};
 use talaria_daily_brief::mark_brief_read;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -37,23 +37,16 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = mark_brief_read(&state.pg, &user.id, &body.brief_id, body.seq as i64).await {
-        tracing::error!("[brief] cursor move failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[brief] cursor move failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

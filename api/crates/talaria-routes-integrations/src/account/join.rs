@@ -13,7 +13,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::house_error;
+use talaria_error::{house_error, internal};
 use talaria_invites::invite_by_token;
 use talaria_ratelimit::{client_ip, rate_limit};
 use talaria_state::AppState;
@@ -65,9 +65,6 @@ pub async fn get(
     match invite_by_token(&state.pg, &token).await {
         Ok(Some(invite)) => Json(json!({ "invite": invite })).into_response(),
         Ok(None) => house_error(StatusCode::NOT_FOUND, "invite not found or no longer valid"),
-        Err(e) => {
-            tracing::error!("[join] invite lookup failed: {e}");
-            talaria_error::thrown_internal_error()
-        }
+        Err(e) => internal("[join] invite lookup failed", e),
     }
 }

@@ -10,11 +10,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, boolean_member, object_msg,
-    optional_max_string_member, optional_string_array_member, optional_uuid_array_member, parse,
-    string_member, trimmed_string_member, zod_type_name,
+    array_msg, array_too_big_msg, boolean_member, object_msg, optional_max_string_member,
+    optional_string_array_member, optional_uuid_array_member, parse, string_member,
+    trimmed_string_member, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_perm, require_user};
 use talaria_state::AppState;
 use talaria_workflows::{create_workflow, list_workflows};
@@ -128,37 +128,26 @@ pub(crate) fn toolkits_json(t: &Option<Vec<Toolkit>>) -> Option<Value> {
     ))
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_user(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_user(&state, &headers).await?;
     let workflows = match list_workflows(&state.pg).await {
         Ok(w) => w,
-        Err(e) => {
-            tracing::error!("[workflows] list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[workflows] list failed", e)),
     };
-    Json(json!({ "workflows": workflows })).into_response()
+    Ok(Json(json!({ "workflows": workflows })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate_workflow_body(obj, true) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = body.name.expect("post requires name");
     let skills = json!(body.skills.unwrap_or_default());
@@ -176,10 +165,7 @@ pub async fn post(
     .await
     {
         Ok(w) => w,
-        Err(e) => {
-            tracing::error!("[workflows] create failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[workflows] create failed", e)),
     };
-    Json(json!({ "workflow": workflow })).into_response()
+    Ok(Json(json!({ "workflow": workflow })).into_response())
 }

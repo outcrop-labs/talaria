@@ -10,9 +10,9 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
   import { cn } from '@/lib/cn'
-  import { errorMessage, postJson } from '@/lib/fetch-json'
+  import { postJson } from '@/lib/fetch-json'
   import { listStagger, slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import CollectionRow from './CollectionRow.svelte'
   import HealthDot from './HealthDot.svelte'
   import RerankSection from './RerankSection.svelte'
@@ -38,7 +38,7 @@
       name = ''
       await qc.invalidateQueries({ queryKey: ['rag-collections'] })
     } catch (e) {
-      pushToast({ title: 'Create failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Create failed', e)
     } finally {
       busy = false
     }
@@ -47,7 +47,7 @@
     try {
       await postJson('/api/admin/rag', { action })
     } catch (e) {
-      pushToast({ title: action === 'reindex' ? 'Rebuild failed' : 'Backfill failed', body: errorMessage(e), tone: 'danger' })
+      toastError(action === 'reindex' ? 'Rebuild failed' : 'Backfill failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })

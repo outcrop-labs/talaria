@@ -7,7 +7,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::{SessionUser, get_session_user};
 use talaria_state::AppState;
 use talaria_users as users;
@@ -23,10 +23,7 @@ struct SessionBody {
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let user = match get_session_user(&state, &headers).await {
         Ok(u) => u,
-        Err(e) => {
-            tracing::error!("[auth/session] redis read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[auth/session] redis read failed", e),
     };
     // Either read failing 500s the route.
     let (denied, perms) = match &user {
@@ -35,10 +32,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             let perms = users::user_permissions(&state.pg, &u.id, &u.role).await;
             match (denied, perms) {
                 (Ok(d), Ok(p)) => (d, p.into_iter().map(String::from).collect()),
-                _ => {
-                    tracing::error!("[auth/session] permission/view read failed");
-                    return thrown_internal_error();
-                }
+                _ => return internal("[auth/session]", "permission/view read failed"),
             }
         }
         None => (Vec::new(), Vec::new()),

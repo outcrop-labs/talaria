@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_api_facades::runs::defs::agent_hire::agent_hire_run;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_perm;
 use talaria_state::AppState;
 
@@ -40,10 +40,8 @@ struct HiresBody {
     hires: Vec<AgentHireView>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
 
     // Registration touch (see the module header) — before the read, so this
     // process answers a reclaim sweep the same boot it answered the roster.
@@ -64,10 +62,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     .await;
     let rows = match rows {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[fleet] hires query failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[fleet] hires query failed", e)),
     };
 
     let hires = rows
@@ -76,7 +71,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             hire_view(id, &input, state, phase, error, created_ms)
         })
         .collect();
-    Json(HiresBody { hires }).into_response()
+    Ok(Json(HiresBody { hires }).into_response())
 }
 
 /// Each input field is `??`'d to its default — a missing key reads as the

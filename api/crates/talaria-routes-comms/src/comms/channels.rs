@@ -12,23 +12,21 @@ use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::mcp::service::ensure_mcp_service;
 use talaria_api_facades::retrieval::backfill::maybe_rag_sweep;
-use talaria_body::{
-    as_object, optional_enum_member, present_nullable_max_string_member, string_member,
-};
+use talaria_body::{optional_enum_member, present_nullable_max_string_member, string_member};
 use talaria_channels::{create_channel, list_channels, list_channels_for_agent};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_permissions::has_perm;
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_titler::maybe_sweep_titles;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     // Agents see the channels they've been added to. Err is the refusal to
     // return verbatim; Ok(None) falls to the session path.
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(Some(c)) => c,
         Ok(None) => return get_as_user(&state, &headers).await,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     // The CALLER, not its model. `list_channels_for_agent` widens to EVERY
     // non-DM channel for an elevated assistant, and the subject type reads a
@@ -36,18 +34,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     // legacy flag away and hand org-wide reach to an asserted identity.
     let channels = match list_channels_for_agent(&state.pg, &AgentSubject::Caller(caller)).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent listing failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] agent listing failed", e)),
     };
-    Json(json!({ "channels": channels })).into_response()
+    Ok(Json(json!({ "channels": channels })).into_response())
 }
 
-async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
+async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Result<Response, Response> {
     let user = match require_user(state, headers).await {
         Ok(u) => u,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     // Comms decay and the outreach sweep are scheduler jobs, not kicked from
     // here. These three ride the request path: `maybe_sweep_titles` and
@@ -56,41 +51,35 @@ async fn get_as_user(state: &AppState, headers: &HeaderMap) -> Response {
     // everything but name.
     maybe_sweep_titles(state.clone()); // retroactive + ongoing naming (hourly, detached)
     ensure_mcp_service(); // keep the fleet's toolkit MCP endpoint alive (probe-guarded)
-    maybe_rag_sweep(state.clone()); // incremental catch-up indexing (15-minute throttle)
-    match list_channels(&state.pg, &user.id).await {
-        Ok(channels) => Json(json!({ "channels": channels })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] listing failed: {e}");
-            thrown_internal_error()
-        }
-    }
+    maybe_rag_sweep(state.clone());
+    Ok(
+        // incremental catch-up indexing (15-minute throttle)
+        match list_channels(&state.pg, &user.id).await {
+            Ok(channels) => Json(json!({ "channels": channels })).into_response(),
+            Err(e) => internal("[channels] listing failed", e),
+        },
+    )
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 1, 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let topic = match present_nullable_max_string_member(obj, "topic", 300) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let kind = match optional_enum_member(obj, "kind", &["channel", "group"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let kind = kind.as_deref().unwrap_or("channel");
     let needed = if kind == "group" {
@@ -100,13 +89,10 @@ pub async fn post(
     };
     let allowed = match has_perm(&state.pg, &user.id, &user.role, needed).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] permission read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] permission read failed", e)),
     };
     if !allowed {
-        return house_error(
+        return Ok(house_error(
             StatusCode::FORBIDDEN,
             &format!(
                 "no permission to create {}",
@@ -116,16 +102,15 @@ pub async fn post(
                     "channels"
                 }
             ),
-        );
+        ));
     }
-    // absent and present-null both create with no topic.
-    match create_channel(&state.pg, &user.id, &name, topic.flatten().as_deref(), kind).await {
-        Ok(channel) => Json(json!({ "channel": channel })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] create failed: {e}");
-            thrown_internal_error()
-        }
-    }
+    Ok(
+        // absent and present-null both create with no topic.
+        match create_channel(&state.pg, &user.id, &name, topic.flatten().as_deref(), kind).await {
+            Ok(channel) => Json(json!({ "channel": channel })).into_response(),
+            Err(e) => internal("[channels] create failed", e),
+        },
+    )
 }
 
 #[cfg(test)]

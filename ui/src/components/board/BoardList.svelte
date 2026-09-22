@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StaleBoardNotice from '@/components/board/StaleBoardNotice.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
@@ -387,22 +388,7 @@
         status picker are all derived from it. Reaching here with
         `statusesQuery.isError` means a CACHED set is being shown: stale, but
         real. The no-data case returned above. -->
-    {#if statusesQuery.isError || labelsQuery.isError}
-      <QueryError
-        variant="inline"
-        class="border-b border-line-subtle px-4 py-2"
-        title={statusesQuery.isError
-          ? 'Statuses may be out of date'
-          : labelsQuery.data === undefined
-            ? 'Could not load labels, so the pills below show names without their colours'
-            : 'Labels may be out of date'}
-        error={statusesQuery.isError ? statusesQuery.error : labelsQuery.error}
-        onRetry={() => {
-          if (statusesQuery.isError) void statusesQuery.refetch()
-          if (labelsQuery.isError) void labelsQuery.refetch()
-        }}
-      />
-    {/if}
+    <StaleBoardNotice statuses={statusesQuery} labels={labelsQuery} />
     <div class="relative min-h-0 flex-1 overflow-auto p-4">
       {#if tasks.length === 0}
         <div class="grid h-full place-items-center font-sans text-sm text-muted">No tasks match.</div>

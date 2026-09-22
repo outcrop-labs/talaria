@@ -13,4 +13,5 @@ axum = { version = "0.8", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres"] }
+talaria-body = { path = "../talaria-body" }
 tracing = "0.1"

@@ -23,7 +23,7 @@
   import { useAgents } from '@/lib/agents'
   import { errorMessage, getJson, patchJson, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
   import { markConversationRead, useConversations } from '@/lib/conversations.svelte'
@@ -491,7 +491,7 @@
                                     }
                                   })
                                   .catch((e: unknown) =>
-                                    pushToast({ title: 'Mark read failed', body: errorMessage(e), tone: 'danger' }),
+                                    toastError('Mark read failed', e),
                                   )
                               },
                             },
@@ -505,7 +505,7 @@
                             try {
                               await patchJson(`/api/conversations/${c.id}`, { title: name.trim() })
                             } catch (e) {
-                              pushToast({ title: 'Rename failed', body: errorMessage(e), tone: 'danger' })
+                              toastError('Rename failed', e)
                             }
                             void qc.invalidateQueries({ queryKey: ['conversations'] })
                           })

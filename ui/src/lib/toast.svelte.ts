@@ -7,6 +7,7 @@
 // same call site, not by this store: a toast is always ours to show, an OS
 // notification never is.
 export type ToastTone = 'info' | 'success' | 'danger'
+import { errorMessage } from '@/lib/fetch-json'
 
 export interface ToastSpec {
   title: string
@@ -35,6 +36,14 @@ const MAX_STACK = 4
 const store = $state<{ items: ToastItem[] }>({ items: [] })
 let nextId = 1
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
+
+/** A danger toast carrying an error's message — the shape 93 call sites wrote
+ *  out by hand (`pushToast({ title, body: errorMessage(e), tone: 'danger' })`).
+ *  The pairing is the point: an error toast whose body is not the server's own
+ *  sentence is a toast that stopped the person from reading it. */
+export function toastError(title: string, e: unknown): void {
+  pushToast({ title, body: errorMessage(e), tone: 'danger' })
+}
 
 export function pushToast(spec: ToastSpec): void {
   const item: ToastItem = { id: nextId++, title: spec.title, body: spec.body, href: spec.href, tone: spec.tone ?? 'info' }

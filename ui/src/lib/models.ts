@@ -1,4 +1,5 @@
 // Models tab client: provider presets + endpoint CRUD.
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
 import { delJsonOr, errorMessage, getJson, getList, postJson, putJsonOr } from '@/lib/fetch-json'
 import type { LlmEndpoint } from '@/lib/fleet-defs'
@@ -148,8 +149,6 @@ export function inferClass(baseUrl?: string | null): 'local' | 'cloud' {
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 /** The provider's live catalog — what it offers right now (server-side fetch
  *  on every open; `note` explains an empty result, e.g. missing key). */

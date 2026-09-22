@@ -16,8 +16,8 @@ use talaria_boards::{
     BoardAgentConfig, add_board_agent_row, board_info, board_role, can_edit,
     get_board_agent_config, remove_board_agent_row, set_board_agent_config,
 };
-use talaria_body::{as_object, optional_boolean_member, optional_string_array_member, parse};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_boolean_member, optional_string_array_member, parse};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{acting_user, require_user, unauthorized};
 use talaria_state::AppState;
 use talaria_users::assistant_owner_for;
@@ -26,31 +26,22 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "GET agents", &id) {
-        return gate;
+        return Ok(gate);
     }
     // Any member may read the policy; only owner/editor (or elevated) may
     // write it.
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on agents failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on agents failed", e)),
     }
-    match get_board_agent_config(&state.pg, &id).await {
+    Ok(match get_board_agent_config(&state.pg, &id).await {
         Ok(cfg) => Json(json!(cfg)).into_response(),
-        Err(e) => {
-            tracing::error!("[boards] agent config read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[boards] agent config read failed", e),
+    })
 }
 
 pub async fn put(
@@ -58,52 +49,43 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let user = match acting_user(&state, &headers).await {
         Ok(Some(u)) => u,
-        Ok(None) => return unauthorized(),
-        Err(gate) => return gate,
+        Ok(None) => return Ok(unauthorized()),
+        Err(gate) => return Ok(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "PUT agents", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on agent put failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on agent put failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // PUT's fields in schema order: allowAll, models, add, remove — each an
     // array of model ids, each id ≤200 chars, ≤100 of them.
     let allow_all = match optional_boolean_member(obj, "allowAll") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let models = match optional_string_array_member(obj, "models", 0, 200, 100) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let add = match optional_string_array_member(obj, "add", 0, 200, 100) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let remove = match optional_string_array_member(obj, "remove", 0, 200, 100) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let current: BoardAgentConfig = match get_board_agent_config(&state.pg, &id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] agent config read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent config read failed", e)),
     };
     // Incremental spelling merges onto the current list: survivors first,
     // additions after, first occurrence wins — insertion order.
@@ -133,8 +115,7 @@ pub async fn put(
         false
     });
     if let Err(e) = set_board_agent_config(&state.pg, &id, allow_all, &merged).await {
-        tracing::error!("[boards] agent config write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[boards] agent config write failed", e));
     }
     // The answer is the FRESH config — re-read after the write, not echoed
     // from it. The policy write is an audited mutation (it decides which
@@ -143,10 +124,7 @@ pub async fn put(
     // proxying its owner is recorded as "model (for owner)".
     let fresh = match get_board_agent_config(&state.pg, &id).await {
         Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!("[boards] agent config re-read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent config re-read failed", e)),
     };
     let label = match board_info(&state.pg, &id).await {
         Ok(info) if info.exists => Some(info.label),
@@ -172,7 +150,7 @@ pub async fn put(
         },
     )
     .await;
-    Json(json!(fresh)).into_response()
+    Ok(Json(json!(fresh)).into_response())
 }
 
 // ── The one-step grant (/agents/self) ─────────────────────────────────────────
@@ -208,10 +186,7 @@ async fn self_service_actor(
                 ),
             ));
         }
-        Err(e) => {
-            tracing::error!("[boards] owner read on agents/self failed: {e}");
-            return Err(thrown_internal_error());
-        }
+        Err(e) => return Err(internal("[boards] owner read on agents/self failed", e)),
     };
     // Best-effort label for the audit actor only — the owner id above is the
     // authority; this is how the audit line reads.
@@ -220,10 +195,7 @@ async fn self_service_actor(
             .bind(&owner)
             .fetch_optional(&state.pg)
             .await
-            .map_err(|e| {
-                tracing::error!("[boards] owner label read on agents/self failed: {e}");
-                thrown_internal_error()
-            })?;
+            .map_err(|e| internal("[boards] owner label read on agents/self failed", e))?;
     let actor = format!(
         "{} (for {})",
         caller.model,
@@ -240,15 +212,11 @@ async fn self_write(
     write: impl std::future::Future<Output = Result<(), sqlx::Error>>,
 ) -> Response {
     if let Err(e) = write.await {
-        tracing::error!("[boards] agents/self write failed: {e}");
-        return thrown_internal_error();
+        return internal("[boards] agents/self write failed", e);
     }
     let fresh = match get_board_agent_config(&state.pg, id).await {
         Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!("[boards] agent config re-read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[boards] agent config re-read failed", e),
     };
     let label = match board_info(&state.pg, id).await {
         Ok(info) if info.exists => Some(info.label),
@@ -285,27 +253,24 @@ pub async fn post_self(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let (caller, owner, actor) = match self_service_actor(&state, &headers, "Joining a board").await
     {
         Ok(v) => v,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "POST agents self", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_info(&state.pg, &id).await {
         Ok(info) if info.exists => {}
-        Ok(_) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[boards] board read on agents/self failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[boards] board read on agents/self failed", e)),
     }
     match board_role(&state.pg, &owner, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 &format!(
                     "agent \"{}\" cannot self-serve on this board — its owner cannot read it. \
@@ -313,29 +278,28 @@ pub async fn post_self(
                      agentModel \"{}\"",
                     caller.model, id, caller.model
                 ),
-            );
+            ));
         }
         Err(e) => {
-            tracing::error!("[boards] owner role read on agents/self failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[boards] owner role read on agents/self failed",
+                e,
+            ));
         }
     }
     let before = match get_board_agent_config(&state.pg, &id).await {
         Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!("[boards] agent config read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent config read failed", e)),
     };
     let pg = state.pg.clone();
-    self_write(
+    Ok(self_write(
         &state,
         &id,
         &actor,
         before,
         add_board_agent_row(&pg, &id, &caller.model),
     )
-    .await
+    .await)
 }
 
 /// DELETE /api/boards/{id}/agents/self — the assistant removes only its own
@@ -347,37 +311,31 @@ pub async fn delete_self(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let (caller, _owner, actor) =
         match self_service_actor(&state, &headers, "Leaving a board").await {
             Ok(v) => v,
-            Err(gate) => return gate,
+            Err(gate) => return Err(gate),
         };
     if let Some(gate) = talaria_params::uuid_gate("boards", "DELETE agents self", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_info(&state.pg, &id).await {
         Ok(info) if info.exists => {}
-        Ok(_) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[boards] board read on agents/self failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[boards] board read on agents/self failed", e)),
     }
     let before = match get_board_agent_config(&state.pg, &id).await {
         Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::error!("[boards] agent config read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent config read failed", e)),
     };
     let pg = state.pg.clone();
-    self_write(
+    Ok(self_write(
         &state,
         &id,
         &actor,
         before,
         remove_board_agent_row(&pg, &id, &caller.model),
     )
-    .await
+    .await)
 }

@@ -38,7 +38,7 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 use talaria_runs_define::{
-    Authority, DEFAULT_MAX_ATTEMPTS, RunDefinition, RunRow, RunStepContext, StepError, StepResult,
+    DEFAULT_MAX_ATTEMPTS, RunDefinition, RunStepContext, StepError, StepResult, audience,
     register_run,
 };
 
@@ -158,17 +158,6 @@ pub struct AgentHireDeps {
     pub render: RenderFn,
     pub up: UpFn,
     pub wait_healthy: WaitHealthyFn,
-}
-
-/// Who may watch and be told: the admin who clicked Create (the surface that
-/// lists hires is admin-gated anyway, same as the roster it lands in).
-fn audience(run: &RunRow) -> Authority {
-    match &run.owner_user_id {
-        Some(owner) => Authority::User {
-            user_ids: vec![owner.clone()],
-        },
-        None => Authority::Admin { on_board: None },
-    }
 }
 
 /// The stage machine. Pure with respect to the deps: every branch is entered
@@ -470,6 +459,7 @@ pub fn agent_hire_run() -> &'static Arc<RunDefinition> {
 
 #[cfg(test)]
 mod tests {
+    use talaria_runs_define::RunRow;
     // The definition's contract, driven with fake deps — no database, no
     // docker, no clock. What is under test is the stage machine: the
     // checkpoint is the only state, each stage is entered from the checkpoint

@@ -16,6 +16,7 @@ use regex::Regex;
 use sqlx::PgPool;
 use std::sync::LazyLock;
 
+use talaria_body::hex;
 use talaria_gateway::provider::http;
 use talaria_gateway::settings::get_setting;
 use talaria_secretbox::SecretBox;
@@ -453,10 +454,6 @@ fn signed_get(t: &BucketTarget, key: &str, amz_date: &str) -> (String, String) {
         t.access_key_id
     );
     (url, authorization)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The signed PUT. The canonical request carries the payload's own hash and,

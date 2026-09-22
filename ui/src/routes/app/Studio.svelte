@@ -26,12 +26,11 @@
     deleteWorkflow,
     setGapStatus,
     useGaps,
-    useSkillLibrary,
-    useWorkflows,
+        useWorkflows,
     type CapabilityGap,
-    type SkillLibraryOwner,
     type TaskWorkflow,
   } from '@/lib/workflows'
+  import { SKILLS_KEY, useSkills, type SkillOwner } from '@/lib/skills'
   import SectionTitle from './studio/SectionTitle.svelte'
   import SkillRow from './studio/SkillRow.svelte'
 
@@ -62,7 +61,7 @@
   // selection, and the "who am I building for" pane. Dropping its rejection
   // made a DOWN SKILLS SERVICE render "No agents yet" — a sentence about the
   // FLEET, from a read that never asked about the fleet.
-  const libraryQuery = useSkillLibrary()
+  const libraryQuery = useSkills()
   const rawOwners = $derived(libraryQuery.data ?? [])
   const isLoading = $derived(libraryQuery.isLoading)
   // PLATFORM skills (talaria-toolkit and friends) are plumbing, not
@@ -101,12 +100,12 @@
 
   const sharedSkills = $derived(new Set(shared?.skills.map((s) => s.name) ?? []))
   const boardName = (id: string) => boards.find((b) => b.id === id)?.name ?? 'a board'
-  const agentMeta = (o: SkillLibraryOwner) => agentsData?.agents.find((a) => a.id === o.model)
-  const firstName = (o: SkillLibraryOwner) => o.label.split(' ')[0]!
+  const agentMeta = (o: SkillOwner) => agentsData?.agents.find((a) => a.id === o.model)
+  const firstName = (o: SkillOwner) => o.label.split(' ')[0]!
 
   /** Workflows steering work onto this owner: any bound skill it carries.
    *  The shared view also collects workflows whose skills nobody carries. */
-  const routedTo = (o: SkillLibraryOwner): TaskWorkflow[] => {
+  const routedTo = (o: SkillOwner): TaskWorkflow[] => {
     const own = new Set(o.skills.map((s) => s.name))
     const carriedBySomeone = new Set(owners.flatMap((x) => x.skills.map((s) => s.name)))
     return workflows.filter((w) => {
@@ -128,7 +127,7 @@
     return `Tickets ${where || '(no rules yet)'} → ${flow}`
   }
 
-  const ownerGaps = (o: SkillLibraryOwner): CapabilityGap[] =>
+  const ownerGaps = (o: SkillOwner): CapabilityGap[] =>
     o.owner === 'shared' ? gaps : gaps.filter((g) => g.agentModel === o.model)
 
   // Overlays driven by URL params
@@ -315,7 +314,7 @@
                         owner={selected.owner}
                         skill={s}
                         {owners}
-                        canEdit={selected.canEdit && (!s.platform || isAdmin)}
+                        canEdit={(selected.canEdit ?? false) && (!s.platform || isAdmin)}
                         onOpen={() => selected && void navigate('/studio', { search: { a: selectedKey, sk: `${selected.owner}/${s.name}` } })}
                       />
                     {/each}
@@ -391,7 +390,7 @@
         name={skName}
         canEdit={skOwnerInfo.canEdit && (!skOwnerInfo.skills.find((x) => x.name === skName)?.platform || isAdmin)}
         onClose={closeOverlay}
-        onChanged={() => void qc.invalidateQueries({ queryKey: ['skill-library'] })}
+        onChanged={() => void qc.invalidateQueries({ queryKey: SKILLS_KEY })}
       />
     {/if}
     {#if openWorkflow}

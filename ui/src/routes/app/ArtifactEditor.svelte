@@ -21,7 +21,7 @@
   import { cn } from '@/lib/cn'
   import { downloadFile } from '@/lib/download-file'
   import { errorMessage, postJsonOr } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
@@ -30,7 +30,7 @@
   import { KIND_LABEL } from './artifacts'
   import ArtifactHistory from './ArtifactHistory.svelte'
   import FilePreview from './FilePreview.svelte'
-  import ArtifactPageSkeleton from './ArtifactPageSkeleton.svelte'
+  import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import ArtifactSheetView from './ArtifactSheetView.svelte'
 
   let { id, onDeleted }: { id: string; onDeleted: () => void } = $props()
@@ -76,7 +76,7 @@
     } catch (e) {
       // dirty stays true: the editor's content is not saved, and must not
       // read as saved.
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
     } finally {
       saving = false
     }
@@ -150,7 +150,7 @@
         try {
           await deleteArtifact(id)
         } catch (e) {
-          pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+          toastError('Delete failed', e)
           return
         }
         await qc.invalidateQueries({ queryKey: ['artifacts'] })
@@ -186,7 +186,11 @@
 {:else if !artifact}
   <!-- Kind is unknown until the fetch lands, so use the doc-page shape (toolbar
        + centered prose bars) as the default stand-in for every kind. -->
-  <ArtifactPageSkeleton />
+  <!-- The knowledge editors' skeleton, not a second copy of it: the two
+      layouts are the same (toolbar over a centred prose column), and only the
+      prose widths had drifted — 58% where knowledge's list lands 88% on the
+      tenth bar. Ten bars is the artifact page's shape. -->
+  <KbDocPageSkeleton bars={10} />
 {:else}
   <div class={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
@@ -345,7 +349,7 @@
                   size="sm"
                   onclick={() =>
                     void downloadFile(`/api/uploads/${artifact.storageRef}`, artifact.title).catch((e) =>
-                      pushToast({ title: 'Could not download', body: errorMessage(e), tone: 'danger' }),
+                      toastError('Could not download', e),
                     )}
                 >
                   Download

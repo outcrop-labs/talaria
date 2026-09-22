@@ -16,8 +16,7 @@
   import { inlineEditKeys } from '@/components/ui/control'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { updateSpace, useSpace } from '@/lib/kb'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import KbDocPageSkeleton from './KbDocPageSkeleton.svelte'
   import KbHistoryRail from './KbHistoryRail.svelte'
@@ -64,7 +63,7 @@
     } catch (e) {
       // updateSpace used to resolve the `{ error }` body as success — the
       // same lie as the doc editor's save. Reject, say so, keep the edits.
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['kb-space', spaceId] })

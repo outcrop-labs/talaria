@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_mcp::{AgentMcp, list_agent_mcp};
 use talaria_api_facades::mcp::registry::servers_for_agent;
-use talaria_error::thrown_internal_error;
+use talaria_error::internal;
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -31,17 +31,11 @@ fn agent_wire(a: &AgentMcp) -> Value {
     })
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let mut agents = match list_agent_mcp(&state.pg).await {
         Ok(a) => a,
-        Err(e) => {
-            tracing::error!("[mcp] roster failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp] roster failed", e)),
     };
     let models: Vec<(String, String)> =
         match sqlx::query_as("select id::text, model from agent_defs where enabled")
@@ -49,10 +43,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             .await
         {
             Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!("[mcp] roster models failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[mcp] roster models failed", e)),
         };
     for a in &mut agents {
         let Some(model) = models
@@ -64,10 +55,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         };
         let registry = match servers_for_agent(&state.pg, &model).await {
             Ok(s) => s,
-            Err(e) => {
-                tracing::error!("[mcp] servers_for_agent failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[mcp] servers_for_agent failed", e)),
         };
         for srv in registry {
             if a.servers.iter().any(|s| s.name == srv.name) {
@@ -83,9 +71,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
     }
     if user.role == "admin" {
-        return Json(json!({ "agents": agents.iter().map(agent_wire).collect::<Vec<_>>() }))
-            .into_response();
+        return Ok(
+            Json(json!({ "agents": agents.iter().map(agent_wire).collect::<Vec<_>>() }))
+                .into_response(),
+        );
     }
+    Ok(
     // Names only — and of the extras, just the two the UI renders.
     Json(json!({
         "agents": agents.iter().map(|a| {
@@ -103,5 +94,5 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
             })
         }).collect::<Vec<_>>()
     }))
-    .into_response()
+    .into_response())
 }

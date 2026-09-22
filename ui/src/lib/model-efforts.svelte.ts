@@ -8,6 +8,7 @@
 // and no effort field on its requests. A failed read also renders as no
 // picker, which is the honest degradation for a dial, not a contract — better
 // a missing control than a chat surface that refuses to send.
+import { resolve } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
 
@@ -15,11 +16,10 @@ import { getJson } from '@/lib/fetch-json'
  *  change under the picker (a tier switch reroutes the turn). */
 type MaybeModel = string | null | undefined | (() => string | null | undefined)
 
-const resolveModel = (v: MaybeModel): string | null | undefined => (typeof v === 'function' ? v() : v)
 
 export function useModelEfforts(model: MaybeModel) {
   const query = createQuery(() => {
-    const id = resolveModel(model)
+    const id = resolve(model)
     return {
       queryKey: ['model-efforts', id ?? ''],
       enabled: Boolean(id),

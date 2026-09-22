@@ -13,6 +13,7 @@ use talaria_secretbox::SecretBox;
 
 use futures_util::future::BoxFuture;
 use std::sync::{Arc, OnceLock};
+use talaria_update_layout::roll_drain_ms;
 
 /// Overlay: (slug, slot, port) when rolling.
 pub static RENDER_FLEET: OnceLock<
@@ -29,19 +30,6 @@ pub static RENDER_FLEET: OnceLock<
 pub static NEXT_FREE_PORT: OnceLock<
     Arc<dyn Fn(sqlx::PgPool) -> BoxFuture<'static, Result<i64, String>> + Send + Sync>,
 > = OnceLock::new();
-
-/// How long the old container keeps serving after cutover so in-flight
-/// replies drain (TALARIA_ROLL_DRAIN_SECONDS; default 45s). The app's own
-/// rolls read the same knob — one drain policy per host — so this is
-/// crate-visible to update/layout.rs.
-pub fn roll_drain_ms() -> u64 {
-    std::env::var("TALARIA_ROLL_DRAIN_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(45.0)
-        .max(0.0) as u64
-        * 1000
-}
 
 /// The roll verdict. `Err` is a failed step (the caller decides what that
 /// means); `Ok(Some(error))` is a deliberate soft failure with a sentence

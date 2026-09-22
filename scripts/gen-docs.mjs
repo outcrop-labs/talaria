@@ -41,7 +41,7 @@
 // Prose about a route lives with the route or nowhere.
 
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { join, resolve, relative } from 'node:path'
+import { dirname, join, resolve, relative } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const ROUTES_MOD = join(ROOT, 'api/crates/talaria-api-routes/src/routes/mod.rs')
@@ -482,6 +482,10 @@ const KNOWN_HEADER_TAKERS = new Set([
   'client_ip', 'oauth_relocation', 'handle_connect_callback',
   'session_cookie_for', 'parse_cookies', 'google_auth_url', 'google_redirect_uri',
   'state_cookie_for', 'clear_state_cookie_for',
+  // Not calls at all: the Result/Option constructors every handler answers
+  // through. A handler that returns `Ok(post_as_user(&state, &headers, …))`
+  // hands `headers` to a KNOWN taker, and `Ok` is not an unknown guard.
+  'Ok', 'Err', 'Some',
 ])
 
 function authClassRust(combined, locals, fileRaw) {
@@ -615,7 +619,13 @@ function bodySchemaRust(combined, sigText, fileRaw) {
   const text = combined.text
   // The object every member call reads from — `as_object(&parsed)` (the fn)
   // or `parsed.as_object()` (the method).
+  // ORDER MATTERS: the first alternative that matches anywhere wins, and a
+  // helper's `let m = v.as_object()` sits LATER in the combined text than the
+  // handler's own binding. The house unwrap comes first so the handler's
+  // object is the one read — the same object the old `match as_object(&parsed)`
+  // spelling named.
   const objVarMatch =
+    /([a-z_][\w]*)\s*=\s*(?:talaria_error::)?object_or_400\(&/.exec(text) ||
     /([a-z_][\w]*)\s*=\s*(?:match\s+)?(?:crate::body::)?as_object\(/.exec(text) ||
     /([a-z_][\w]*)\s*=\s*(?:match\s+)?[a-z_][\w]*\.as_object\(/.exec(text)
   const objVar = objVarMatch ? objVarMatch[1] : null
@@ -748,11 +758,27 @@ function statusListRust(handlerStripped, sse) {
   return s || null
 }
 
+/** A route module's handler text PLUS its parent `mod.rs`, so the gate helpers
+ *  a handler calls are inlined wherever they live. The sweep moved the shared
+ *  gates (`edit_gate`, `owner_gate`, `channel_gate`, `can_manage_agent`) into
+ *  the module root; without this the 403 and the guard they carry would drop
+ *  out of the reference the moment a helper found a second caller.
+ *
+ *  The module's own text stays at its original offsets — mod.rs is appended —
+ *  so `lineOf` still maps a handler's `// note` to the right line. mod.rs text
+ *  carries no member calls, so no note is ever read out of it. */
+function moduleScanText(file, raw) {
+  const stripped = stripRustComments(raw)
+  const modPath = join(dirname(file), 'mod.rs')
+  if (!existsSync(modPath) || resolve(modPath) === resolve(file)) return stripped
+  return stripped + '\n' + stripRustComments(readFileSync(modPath, 'utf8'))
+}
+
 /** Extract one handler module's route rows. */
 function extractRustRoute(file, entries) {
   const raw = readFileSync(file, 'utf8')
   const rawLines = raw.split('\n')
-  const stripped = stripRustComments(raw)
+  const stripped = moduleScanText(file, raw)
   const locals = localFns(stripped)
   const headerRun = (() => {
     const run = []

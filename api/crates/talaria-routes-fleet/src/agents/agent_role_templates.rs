@@ -12,8 +12,8 @@ use talaria_agent_role_templates::{
     RoleTemplateInput, delete_role_template, list_role_templates, upsert_role_template,
 };
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, kebab_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{kebab_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin, require_perm};
 use talaria_state::AppState;
 
@@ -22,48 +22,40 @@ pub struct SlugQuery {
     slug: Option<String>,
 }
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_perm(&state, &headers, "agents.manage").await {
-        return gate;
-    }
-    match list_role_templates(&state.pg).await {
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_perm(&state, &headers, "agents.manage").await?;
+    Ok(match list_role_templates(&state.pg).await {
         Ok(templates) => Json(json!({ "templates": templates })).into_response(),
-        Err(e) => {
-            tracing::error!("[agent-role-templates] list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[agent-role-templates] list failed", e),
+    })
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let slug = match kebab_member(obj, "slug") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = match string_member(obj, "name", 1, 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let role = match string_member(obj, "role", 1, 80) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let department = match kebab_member(obj, "department") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // description: no min ('' is legal), max 300. An absent member IS '' —
     // only a MISSING one defaults; a present null still fails the type check.
@@ -71,12 +63,12 @@ pub async fn put(
         None => String::new(),
         Some(_) => match string_member(obj, "description", 0, 300) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
     let soul = match string_member(obj, "soul", 1, 20_000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let input = RoleTemplateInput {
@@ -89,10 +81,7 @@ pub async fn put(
     };
     let template = match upsert_role_template(&state.pg, &input, &actor_of(&user)).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[agent-role-templates] upsert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[agent-role-templates] upsert failed", e)),
     };
     log_audit(
         &state.pg,
@@ -107,28 +96,22 @@ pub async fn put(
         },
     )
     .await;
-    Json(json!({ "template": template })).into_response()
+    Ok(Json(json!({ "template": template })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Query(q): Query<SlugQuery>,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let Some(slug) = q.slug.filter(|s| !s.is_empty()) else {
-        return house_error(StatusCode::BAD_REQUEST, "slug required");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "slug required"));
     };
     match delete_role_template(&state.pg, &slug).await {
         Ok(true) => {}
-        Ok(false) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[agent-role-templates] delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(false) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[agent-role-templates] delete failed", e)),
     }
     log_audit(
         &state.pg,
@@ -143,5 +126,5 @@ pub async fn delete(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

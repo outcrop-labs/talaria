@@ -15,8 +15,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use talaria_body::{as_object, optional_string_member, optional_uuid_member, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_string_member, optional_uuid_member, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_inbox_focus::conversation::{
     acquire_inbox_focus_lock, attach_timeline_to_action_result,
 };
@@ -54,48 +54,36 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let input = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let Some(_guard) = acquire_inbox_focus_lock(&user.id) else {
-        return (
+        return Ok((
             StatusCode::CONFLICT,
             Json(json!({
                 "status": "failed",
                 "message": "Your assistant is already handling another Inbox action.",
             })),
         )
-            .into_response();
+            .into_response());
     };
     let result = match run_focus_action(&state, &user, &input).await {
         Ok(result) => result,
-        Err(e) => {
-            tracing::error!("[inbox-focus] action failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[inbox-focus] action failed", e)),
     };
     let result = match attach_timeline_to_action_result(&state, &user, result).await {
         Ok(result) => result,
-        Err(e) => {
-            tracing::error!("[inbox-focus] timeline attach failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[inbox-focus] timeline attach failed", e)),
     };
     let status = match result.get("status").and_then(Value::as_str) {
         Some("stale") => StatusCode::CONFLICT,
         Some("failed") => StatusCode::UNPROCESSABLE_ENTITY,
         _ => StatusCode::OK,
     };
-    (status, Json(result)).into_response()
+    Ok((status, Json(result)).into_response())
 }

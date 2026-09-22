@@ -20,53 +20,55 @@ use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::resolve_agent_google;
 use talaria_api_facades::google::errors::{GoogleError, google_fail};
 use talaria_api_facades::google::gmail::{OrganizeInput, organize_emails_with_token};
-use talaria_body::{as_object, optional_string_array_member, parse, string_array_member};
-use talaria_error::{house_error, house_error_msg};
+use talaria_body::{optional_string_array_member, parse, string_array_member};
+use talaria_error::{house_error, house_error_msg, object_or_400};
 use talaria_state::AppState;
 
-pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
     let caller = match require_agent(&state.pg, &headers).await {
         Ok(c) => c,
-        Err(gate) => return gate,
+        Err(gate) => return Ok(gate),
     };
     // Mutating the owner's mailbox — a legacy shared-key caller only ASSERTS
     // which agent it is, so it never reaches the token.
     if let Some(denied) = refuse_legacy(&caller, "Gmail access") {
-        return denied;
+        return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
     let Some(google) =
         resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
     else {
-        return house_error_msg(
+        return Ok(house_error_msg(
             StatusCode::CONFLICT,
             "not_connected",
             "No Google account is connected for this agent (its owner, or the org account).",
-        );
+        ));
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // ids is required: at least one, each 1–128 chars, 1–100 of them.
     let ids = match string_array_member(obj, "ids", 1, 128, 1, 100) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let add_labels = match optional_string_array_member(obj, "addLabels", 1, 120, 10) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let remove_labels = match optional_string_array_member(obj, "removeLabels", 1, 120, 10) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let input = OrganizeInput {
         ids: &ids,
         add_labels: add_labels.as_deref().unwrap_or(&[]),
         remove_labels: remove_labels.as_deref().unwrap_or(&[]),
     };
+    Ok(
     match organize_emails_with_token(&google.token, &input).await {
         Ok(updated) => Json(json!({
             "updated": updated,
@@ -80,5 +82,5 @@ pub async fn post(State(state): State<AppState>, headers: HeaderMap, body: Bytes
             house_error_msg(StatusCode::BAD_REQUEST, "bad request", &m)
         }
         Err(e) => google_fail(e, "Gmail"),
-    }
+    })
 }

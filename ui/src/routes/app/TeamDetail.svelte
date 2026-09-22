@@ -9,10 +9,9 @@
   import { listQuery } from '@/components/ui/query-state'
   import TeamMembers from '@/components/board/TeamMembers.svelte'
   import { useAgents } from '@/lib/agents'
-  import { errorMessage } from '@/lib/fetch-json'
   import { GATEABLE_VIEWS, MANAGE_VIEWS } from '@/lib/nav'
   import { useSession } from '@/lib/session'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import {
     addTeamAgent,
     patchTeam,
@@ -78,7 +77,7 @@
     try {
       await patchTeam(team.id, patch)
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       name = team.name
       description = team.description ?? ''
       return
@@ -90,7 +89,7 @@
     try {
       await addTeamAgent(team.id, model)
     } catch (e) {
-      pushToast({ title: 'Could not add that agent', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not add that agent', e)
       return
     }
     refreshAgents()
@@ -100,7 +99,7 @@
     try {
       await removeTeamAgent(team.id, model)
     } catch (e) {
-      pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Remove failed', e)
       return
     }
     refreshAgents()
@@ -114,7 +113,7 @@
     try {
       await putTeamAccess(team.id, body)
     } catch (e) {
-      pushToast({ title: 'Could not save access', body: errorMessage(e), tone: 'danger' })
+      toastError('Could not save access', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['team-access', team.id] })

@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the rail badges' one read (cargo test -- --ignored).
 // /api/unreads is a tokio::join! of five counters, and a badge that disagreed
 // with the pills it summarizes would be worse than no badge — so this suite
@@ -10,16 +11,10 @@
 //   DATABASE_URL=postgres://… cargo test --test unreads -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::{person, pg};
 use talaria_api::channels::{channel_unread_total, create_channel};
 use talaria_api::conversations::{conversation_unread_total, create_conversation};
 use talaria_api::notify::{unread_count, unread_count_of_kind};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// Two throwaway people — the reader whose badges we count, and a teammate to
 /// author turns and own the shared plan. The cascade takes everything below.
 async fn cleanup(pg: &PgPool) {
@@ -28,20 +23,6 @@ async fn cleanup(pg: &PgPool) {
         .await
         .unwrap();
 }
-
-async fn person(pg: &PgPool, sub: &str, email: &str, name: &str) -> String {
-    let (id,): (String,) = sqlx::query_as(
-        "insert into users (sub, email, name, role) values ($1, $2, $3, 'member') returning id::text",
-    )
-    .bind(sub)
-    .bind(email)
-    .bind(name)
-    .fetch_one(pg)
-    .await
-    .unwrap();
-    id
-}
-
 /// Land a channel message directly with an explicit seq — this suite proves
 /// the counting predicates, not the counter machinery that allocates seqs.
 async fn room_msg(
@@ -106,7 +87,7 @@ async fn notify(pg: &PgPool, user: &str, kind: &str, read: bool) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn every_arm_counts_what_its_surface_calls_waiting() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let reader = person(
         &pg,

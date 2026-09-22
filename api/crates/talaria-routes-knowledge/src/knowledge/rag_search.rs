@@ -16,9 +16,9 @@ use talaria_agent_auth::agent_caller;
 use talaria_api_facades::retrieval::index::{self, Principal, SearchOpts};
 use talaria_api_facades::retrieval::{embed, qdrant};
 use talaria_body::{
-    NumKind, as_object, optional_number_member, optional_uuid_array_member, parse, string_member,
+    NumKind, optional_number_member, optional_uuid_array_member, parse, string_member,
 };
-use talaria_error::house_error;
+use talaria_error::{house_error, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -38,7 +38,7 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     // Agent-first: a fleet key + x-agent-name searches AS that agent, and a
     // REJECTED agent credential answers its own 401/403 here — it never
     // falls through to the session, because a bad key is not "no key".
@@ -46,30 +46,27 @@ pub async fn post(
         Ok(Some(caller)) => (None, Some(caller.model)),
         Ok(None) => match require_user(&state, &headers).await {
             Ok(u) => (Some(u.id), None),
-            Err(gate) => return gate,
+            Err(gate) => return Ok(gate),
         },
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let principal = Principal {
         user_id: user_id.as_deref(),
         agent_model: agent_model.as_deref(),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let query = match string_member(obj, "query", 1, 2000) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let limit = match optional_number_member(obj, "limit", NumKind::Int, 1.0, 20.0) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let collection_ids = match optional_uuid_array_member(obj, "collectionIds", 20) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let opts = SearchOpts {
         limit: limit.map(|l| l as usize),
@@ -78,13 +75,14 @@ pub async fn post(
     let qd = qdrant::real_deps();
     let ed = embed::real_deps();
     let http = talaria_api_facades::retrieval::real_http();
-    match index::search_for_principal(&state, &qd, &ed, &http, principal, &query, opts).await {
-        Ok(hits) => {
-            Json(json!({ "hits": hits.iter().map(hit_json).collect::<Vec<_>>() })).into_response()
-        }
-        // The failure's own sentence is carried at 502: retrieval is a
-        // gateway to someone else's index, and "unreachable" is the honest
-        // status for a search that never ran.
-        Err(msg) => house_error(StatusCode::BAD_GATEWAY, &msg),
-    }
+    Ok(
+        match index::search_for_principal(&state, &qd, &ed, &http, principal, &query, opts).await {
+            Ok(hits) => Json(json!({ "hits": hits.iter().map(hit_json).collect::<Vec<_>>() }))
+                .into_response(),
+            // The failure's own sentence is carried at 502: retrieval is a
+            // gateway to someone else's index, and "unreachable" is the honest
+            // status for a search that never ran.
+            Err(msg) => house_error(StatusCode::BAD_GATEWAY, &msg),
+        },
+    )
 }

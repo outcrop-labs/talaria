@@ -10,9 +10,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
 
-use talaria_api_facades::google::oauth::{
-    ConnectFlavor, encode_uri_component, handle_connect_callback,
-};
+use talaria_api_facades::google::oauth::{ConnectFlavor, handle_connect_callback};
+use talaria_body::percent_encode;
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -22,12 +21,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         &uri,
         ConnectFlavor::Personal,
         "integrations/google",
-        |status| {
-            format!(
-                "/settings/connections?google={}",
-                encode_uri_component(status)
-            )
-        },
+        |status| format!("/settings/connections?google={}", percent_encode(status)),
     )
     .await
 }

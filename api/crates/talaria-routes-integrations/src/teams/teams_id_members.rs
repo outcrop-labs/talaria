@@ -4,67 +4,36 @@
 // (owner; owners are silently kept by the SQL's role guard). Non-uuid {id} →
 // the house 500. Gate order: uuid bind, then the role check, then the body.
 
+use super::owner_gate;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, email_member, enum_member, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{email_member, enum_member, parse, uuid_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
-use talaria_teams::{add_team_member, list_team_members, remove_team_member, team_role};
-use uuid::Uuid;
+use talaria_teams::{add_team_member, list_team_members, remove_team_member};
 
 const ROLES: &[&str] = &["owner", "member"];
-
-fn uuid_gate(id: &str, action: &str) -> Option<Response> {
-    if Uuid::parse_str(id).is_ok() {
-        return None;
-    }
-    tracing::error!("[teams] non-uuid id on {action}: {id:?}");
-    Some(thrown_internal_error())
-}
-
-async fn owner_gate(
-    state: &AppState,
-    user_id: &str,
-    team_id: &str,
-    action: &str,
-) -> Option<Response> {
-    match team_role(&state.pg, user_id, team_id).await {
-        Ok(Some(role)) if role == "owner" => None,
-        Ok(_) => Some(house_error(StatusCode::FORBIDDEN, "forbidden")),
-        Err(e) => {
-            tracing::error!("[teams] role read on {action} failed: {e}");
-            Some(thrown_internal_error())
-        }
-    }
-}
-
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if let Some(gate) = uuid_gate(&id, "GET members") {
-        return gate;
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("teams", "GET members", &id) {
+        return Ok(gate);
     }
     if let Some(gate) = super::reader_gate(&state, &headers, &user.id, &id, "GET members").await {
-        return gate;
+        return Ok(gate);
     }
-    match list_team_members(&state.pg, &id).await {
+    Ok(match list_team_members(&state.pg, &id).await {
         Ok(members) => Json(json!({ "members": members })).into_response(),
-        Err(e) => {
-            tracing::error!("[teams] member list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[teams] member list failed", e),
+    })
 }
 
 pub async fn post(
@@ -72,25 +41,19 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if let Some(gate) = uuid_gate(&id, "POST members") {
-        return gate;
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("teams", "POST members", &id) {
+        return Ok(gate);
     }
     if let Some(gate) = owner_gate(&state, &user.id, &id, "POST members").await {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let email = match email_member(obj, "email") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // role's `.default('member')`: absent means member; present — including
     // null — must be one of ROLES, else the enum's message.
@@ -98,16 +61,13 @@ pub async fn post(
         None => "member".to_string(),
         Some(_) => match enum_member(obj, "role", ROLES) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
     match add_team_member(&state.pg, &id, &email, &role).await {
         Ok(None) => {}
-        Ok(Some(sentence)) => return house_error(StatusCode::BAD_REQUEST, &sentence),
-        Err(e) => {
-            tracing::error!("[teams] member add failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(Some(sentence)) => return Ok(house_error(StatusCode::BAD_REQUEST, &sentence)),
+        Err(e) => return Ok(internal("[teams] member add failed", e)),
     }
     log_audit(
         &state.pg,
@@ -122,7 +82,7 @@ pub async fn post(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
@@ -130,29 +90,22 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if let Some(gate) = uuid_gate(&id, "DELETE members") {
-        return gate;
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("teams", "DELETE members", &id) {
+        return Ok(gate);
     }
     if let Some(gate) = owner_gate(&state, &user.id, &id, "DELETE members").await {
-        return gate;
+        return Ok(gate);
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let user_id = match uuid_member(obj, "userId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = remove_team_member(&state.pg, &id, &user_id).await {
-        tracing::error!("[teams] member remove failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[teams] member remove failed", e));
     }
     log_audit(
         &state.pg,
@@ -167,5 +120,5 @@ pub async fn delete(
         },
     )
     .await;
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }

@@ -7,6 +7,7 @@
 use sqlx::PgPool;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_auth::sha256_hex;
+use talaria_body::hex;
 use talaria_permissions::has_perm;
 
 /// One key as /api/keys serves it, in wire order. The cap columns
@@ -163,10 +164,6 @@ pub async fn set_key_policy(
     // Caps ride the identity — a policy edit lands now, not at TTL expiry.
     talaria_auth::reset_identity_cache();
     Ok(row.is_some())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

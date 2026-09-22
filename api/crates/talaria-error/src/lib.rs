@@ -151,6 +151,47 @@ pub fn thrown_internal_error() -> Response {
         .into_response()
 }
 
+/// Log `context` with the error and answer the house 500 — the one shape a
+/// route uses when an engine call it does not catch has failed.
+///
+/// WHY IT EXISTS: the `tracing::error!("…: {e}"); return thrown_internal_error();`
+/// pair was written out by hand at every call site that did not catch an engine
+/// error, which made the single decision in it — that an unhandled failure is a
+/// LOGGED 500 and never a JSON body — a decision each site re-made, and about a
+/// quarter of them re-made by dropping the log. The pair is one concept, so it
+/// is one call: the `context` keeps the log line grep-able by domain, the way
+/// the hand-written ones were.
+pub fn internal(context: &str, e: impl std::fmt::Display) -> Response {
+    tracing::error!("{context}: {e}");
+    thrown_internal_error()
+}
+
+/// The parsed request body as an object, or the house 400 carrying the zod
+/// sentence — the shape ~160 route handlers wrote out by hand:
+///
+/// ```text
+/// let obj = match as_object(&parsed) {
+///     Ok(o) => o,
+///     Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+/// };
+/// ```
+///
+/// WHY IT EXISTS: `talaria_body` deliberately stays pure — it answers the
+/// MESSAGE and knows nothing about HTTP — so the message-to-400 conversion
+/// lived at every call site instead. It is one conversion, and it belongs
+/// beside the envelope it produces, not 160 times inside the routes.
+// The Err here IS the response to send — a Response is the only thing a route
+// can return, and clippy's size heuristic cannot know that.
+#[allow(clippy::result_large_err)]
+pub fn object_or_400(
+    parsed: &serde_json::Value,
+) -> Result<&serde_json::Map<String, serde_json::Value>, Response> {
+    match talaria_body::as_object(parsed) {
+        Ok(o) => Ok(o),
+        Err(msg) => Err(house_error(StatusCode::BAD_REQUEST, &msg)),
+    }
+}
+
 /// The bare Postgres sentence under a sqlx error — the message
 /// catch-and-answer routes put on the wire. sqlx's own Display wraps it
 /// ("error returned from database: … at line N"), which the wire never

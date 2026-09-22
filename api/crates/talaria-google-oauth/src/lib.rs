@@ -13,6 +13,7 @@ use axum::http::{HeaderMap, Uri, header};
 use axum::response::Response;
 use sqlx::PgPool;
 use std::collections::HashMap;
+use talaria_error::internal;
 use talaria_gateway::provider::http;
 use talaria_google_client::{GoogleClient, resolve_google_client};
 use talaria_google_connections::{SaveConnection, save_connection};
@@ -536,8 +537,6 @@ pub async fn exchange_google_tokens(
     })
 }
 
-pub use talaria_google_client::encode_uri_component;
-
 // ── The connect flow's savers + shared callback body ──────────────────────────
 
 /// Exchange the connect code and store the connection (encrypted) for a user.
@@ -675,10 +674,7 @@ pub async fn handle_connect_callback(
     }
     let user = match talaria_session::get_session_user(state, headers).await {
         Ok(u) => u,
-        Err(e) => {
-            tracing::error!("[{log_tag}] session read failed: {e}");
-            return talaria_error::thrown_internal_error();
-        }
+        Err(e) => return internal(&format!("[{log_tag}] session read failed"), e),
     };
     let Some(user) = user else {
         // The bare login bounce — no state cookie was ever set, so there is

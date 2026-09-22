@@ -3,14 +3,15 @@
 // (owner, or any member removing a team they belong to). Direct messages
 // stay private.
 
+use super::{ChannelNeed, channel_gate};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_body::{as_object, uuid_member};
+use talaria_body::uuid_member;
 use talaria_channels::{add_channel_team, channel_role, remove_channel_team};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -21,40 +22,28 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
-    if !member(&state, &user.id, &id).await {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if !channel_gate(&state, &user.id, &id, ChannelNeed::Member, " on teams").await {
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let team_id = match uuid_member(obj, "teamId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     match get_team(&state.pg, &team_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::BAD_REQUEST, "team not found"),
-        Err(e) => {
-            tracing::error!("[channels] team lookup on grant failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::BAD_REQUEST, "team not found")),
+        Err(e) => return Ok(internal("[channels] team lookup on grant failed", e)),
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
-    match add_channel_team(&notify, &id, &team_id).await {
+    Ok(match add_channel_team(&notify, &id, &team_id).await {
         Ok(None) => Json(json!({ "ok": true })).into_response(),
         Ok(Some(error)) => house_error(StatusCode::BAD_REQUEST, &error),
-        Err(e) => {
-            tracing::error!("[channels] team grant failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[channels] team grant failed", e),
+    })
 }
 
 pub async fn delete(
@@ -62,54 +51,31 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let role = match channel_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[channels] role read on team revoke failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] role read on team revoke failed", e)),
     };
     let Some(role) = role else {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     };
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let team_id = match uuid_member(obj, "teamId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if role != "owner" {
         match team_role(&state.pg, &user.id, &team_id).await {
             Ok(Some(_)) => {}
-            Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-            Err(e) => {
-                tracing::error!("[channels] team role read on revoke failed: {e}");
-                return thrown_internal_error();
-            }
+            Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(internal("[channels] team role read on revoke failed", e)),
         }
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = remove_channel_team(&notify, &id, &team_id).await {
-        tracing::error!("[channels] team revoke failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[channels] team revoke failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
-}
-
-async fn member(state: &AppState, user_id: &str, id: &str) -> bool {
-    match channel_role(&state.pg, user_id, id).await {
-        Ok(r) => r.is_some(),
-        Err(e) => {
-            tracing::error!("[channels] role read on teams failed: {e}");
-            false
-        }
-    }
+    Ok(Json(json!({ "ok": true })).into_response())
 }

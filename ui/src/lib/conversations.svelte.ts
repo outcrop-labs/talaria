@@ -1,6 +1,7 @@
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { delJson, errorMessage, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
-import { pushToast } from '@/lib/toast.svelte'
+import { delJson, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
+import { toastError } from '@/lib/toast.svelte'
 import type { ToolCall } from '@/lib/sse-parse'
 
 export interface Conversation {
@@ -51,8 +52,6 @@ export interface PlanTeam {
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 /** Plan membership + live presence. Pings presence while mounted and polls so
  *  everyone's avatars/dots stay current. */
@@ -90,7 +89,7 @@ export const unsharePlan = async (planId: string, userId: string): Promise<void>
   // The call site fires and forgets (`.then(refresh)`, no catch), so a refused
   // remove is surfaced here rather than left as an unhandled rejection.
   await delJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { userId }).catch((e: unknown) =>
-    pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
+    toastError('Remove failed', e),
   )
 }
 
@@ -100,7 +99,7 @@ export const sharePlanTeam = async (planId: string, teamId: string): Promise<voi
 
 export const unsharePlanTeam = async (planId: string, teamId: string): Promise<void> => {
   await delJson<{ ok: true }>(`/api/plans/${planId}/teams`, { teamId }).catch((e: unknown) =>
-    pushToast({ title: 'Remove failed', body: errorMessage(e), tone: 'danger' }),
+    toastError('Remove failed', e),
   )
 }
 

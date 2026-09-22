@@ -11,8 +11,7 @@
   import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
   import { staggerIn } from '@/lib/motion'
   import { claimViewTitle } from '@/lib/view-title.svelte'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { createTeam, deleteTeam, useTeamsAll, type Team } from '@/lib/teams'
   import TeamDetail from './TeamDetail.svelte'
 
@@ -60,7 +59,7 @@
     try {
       await deleteTeam(t.id)
     } catch (e) {
-      pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Delete failed', e)
       return
     }
     if (selectedId === t.id) select(null)

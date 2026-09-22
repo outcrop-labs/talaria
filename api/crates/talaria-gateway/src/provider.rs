@@ -4,7 +4,9 @@
 
 use regex::Regex;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use talaria_agent_auth::now_ms;
+use talaria_body::percent_encode;
 use talaria_state::AppState;
 
 pub fn native_base(provider: &str) -> Option<&'static str> {
@@ -219,13 +221,6 @@ pub async fn migrate_env_keys_to_cipher(state: &AppState) -> Result<usize, sqlx:
     Ok(sealed)
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 struct UsPoolCache {
     at: u64,
     failed_at: Option<u64>,
@@ -268,7 +263,7 @@ pub async fn openrouter_us_pool() -> Option<Vec<String>> {
     {
         let cache = us_pool().lock().ok()?;
         if let Some(c) = cache.as_ref()
-            && us_pool_decision(c.at, c.failed_at, now_ms()) == UsPoolDecision::Serve
+            && us_pool_decision(c.at, c.failed_at, now_ms() as u64) == UsPoolDecision::Serve
         {
             return (!c.slugs.is_empty()).then(|| c.slugs.clone());
         }
@@ -279,7 +274,7 @@ pub async fn openrouter_us_pool() -> Option<Vec<String>> {
     {
         let cache = us_pool().lock().ok()?;
         if let Some(c) = cache.as_ref()
-            && us_pool_decision(c.at, c.failed_at, now_ms()) == UsPoolDecision::Serve
+            && us_pool_decision(c.at, c.failed_at, now_ms() as u64) == UsPoolDecision::Serve
         {
             return (!c.slugs.is_empty()).then(|| c.slugs.clone());
         }
@@ -319,7 +314,7 @@ pub async fn openrouter_us_pool() -> Option<Vec<String>> {
         Some(slugs) => {
             if let Ok(mut cache) = us_pool().lock() {
                 *cache = Some(UsPoolCache {
-                    at: now_ms(),
+                    at: now_ms() as u64,
                     failed_at: None,
                     slugs: slugs.clone(),
                 });
@@ -331,7 +326,7 @@ pub async fn openrouter_us_pool() -> Option<Vec<String>> {
             if let Ok(mut cache) = us_pool().lock()
                 && let Some(c) = cache.as_mut()
             {
-                c.failed_at = Some(now_ms());
+                c.failed_at = Some(now_ms() as u64);
             }
             us_pool()
                 .lock()
@@ -651,29 +646,6 @@ async fn perplexity_models() -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-/// `encodeURIComponent` — unreserved (+ JS's `!'()*`) pass through.
-fn encode_uri_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 /// The localhost spelling of a docker-internal base URL, when the host is a
 /// bare name (`inference-router` — no dot, not localhost): docker-internal
 /// hostnames don't resolve from the host, and the compose stacks publish
@@ -835,7 +807,7 @@ pub async fn catalog_models(
         qs = format!(
             "{}after_id={}",
             if anthropic { "?limit=1000&" } else { "?" },
-            encode_uri_component(last_id)
+            percent_encode(last_id)
         );
     }
     Ok(out)

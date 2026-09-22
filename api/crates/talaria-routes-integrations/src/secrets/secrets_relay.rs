@@ -24,10 +24,8 @@ use serde_json::json;
 
 use talaria_api_facades::fleet::usable_agent_gate;
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{
-    as_object, nullish_max_string_member, optional_string_array_member, parse, string_member,
-};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{nullish_max_string_member, optional_string_array_member, parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_workspace_secrets::mint_relay;
@@ -59,19 +57,13 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match parse_body(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // The same owner-aware gate `/api/chat` applies before letting a turn
@@ -79,13 +71,13 @@ pub async fn post(
     // could not have talked to anyway.
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[secrets.relay] gate read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[secrets.relay] gate read failed", e)),
     };
     if !gate(&body.agent_model) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden: no access to this agent");
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            "forbidden: no access to this agent",
+        ));
     }
 
     let actor = actor_of(&user);
@@ -95,10 +87,10 @@ pub async fn post(
         Ok(sb) => sb,
         Err(e) => {
             tracing::error!("[secrets.relay] mint failed: {e}");
-            return house_error(
+            return Ok(house_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "could not mint that one-shot — see server logs",
-            );
+            ));
         }
     };
     let relay = match mint_relay(
@@ -118,10 +110,10 @@ pub async fn post(
             // Never echo the raw error to the caller: this path sits one
             // variable away from the value it was handed.
             tracing::error!("[secrets.relay] mint failed: {e}");
-            return house_error(
+            return Ok(house_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "could not mint that one-shot — see server logs",
-            );
+            ));
         }
     };
 
@@ -144,14 +136,16 @@ pub async fn post(
         },
     )
     .await;
-    // THE HANDLE, AND NOTHING THAT COULD RECONSTRUCT THE VALUE. There is no
-    // read path anywhere in this feature that returns one, and this is not
-    // the first.
-    Json(json!({
-        "handle": relay.handle,
-        "name": relay.name,
-        "label": relay.label,
-        "expiresAt": relay.expires_at,
-    }))
-    .into_response()
+    Ok(
+        // THE HANDLE, AND NOTHING THAT COULD RECONSTRUCT THE VALUE. There is no
+        // read path anywhere in this feature that returns one, and this is not
+        // the first.
+        Json(json!({
+            "handle": relay.handle,
+            "name": relay.name,
+            "label": relay.label,
+            "expiresAt": relay.expires_at,
+        }))
+        .into_response(),
+    )
 }

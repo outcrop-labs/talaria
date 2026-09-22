@@ -33,7 +33,7 @@ use talaria_approvals::{ApprovalDeps, announce_approval};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_boards::{add_board_agent_row, board_info, board_role, can_edit};
 use talaria_body::{as_object, enum_member, optional_max_string_member, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{acting_user, require_user, unauthorized};
@@ -88,22 +88,19 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let user = match acting_user(&state, &headers).await {
         Ok(Some(u)) => u,
-        Ok(None) => return unauthorized(),
-        Err(gate) => return gate,
+        Ok(None) => return Ok(unauthorized()),
+        Err(gate) => return Err(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "GET agent requests", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on agent requests failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on agent requests failed", e)),
     }
     let rows: Vec<QueueRow> = match sqlx::query_as(
         "select r.id::text, r.agent_model, d.display_name, r.requested_by_user_id::text, \
@@ -120,12 +117,12 @@ pub async fn get(
     .await
     {
         Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("[boards] agent request queue read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent request queue read failed", e)),
     };
-    Json(json!({ "requests": rows.iter().map(queue_wire).collect::<Vec<_>>() })).into_response()
+    Ok(
+        Json(json!({ "requests": rows.iter().map(queue_wire).collect::<Vec<_>>() }))
+            .into_response(),
+    )
 }
 
 async fn insert_request(
@@ -204,9 +201,9 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("boards", "POST agent requests", &id) {
-        return gate;
+        return Ok(gate);
     }
     // Both branches read the same optional body members; an empty body is a
     // valid file (the reason is optional). The parsed value lives out here so
@@ -221,24 +218,21 @@ pub async fn post(
         Some(value) => {
             let obj = match as_object(value) {
                 Ok(o) => o,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let reason = match optional_max_string_member(obj, "reason", 500) {
                 Ok(v) => v,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             (Some(obj), reason)
         }
     };
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     // The requester — the agent's owner on both branches, proven differently.
     let (agent_model, requested_by, actor) = match caller {
         Some(caller) => {
             if let Some(gate) = refuse_legacy(&caller, "Requesting board access") {
-                return gate;
+                return Ok(gate);
             }
             // An agent files for ITSELF; a body naming another model is a
             // spoof attempt, not a convenience.
@@ -246,47 +240,44 @@ pub async fn post(
                 && let Ok(Some(model)) = optional_max_string_member(obj, "agentModel", 200)
                 && model != caller.model
             {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     &format!(
                         "an agent may only request access for itself (\"{}\")",
                         caller.model
                     ),
-                );
+                ));
             }
             let owner = match assistant_owner_for(&state.pg, &AgentSubject::Caller(caller.clone()))
                 .await
             {
                 Ok(Some(owner)) => owner,
                 Ok(None) => {
-                    return house_error(
+                    return Ok(house_error(
                         StatusCode::FORBIDDEN,
                         &format!(
                             "agent \"{}\" is not a personal assistant — its access is the board \
                              policy's to set, not a request's",
                             caller.model
                         ),
-                    );
+                    ));
                 }
-                Err(e) => {
-                    tracing::error!("[boards] owner read on agent request failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[boards] owner read on agent request failed", e)),
             };
             let actor = proxied_actor(&state.pg, &caller.model, &owner).await;
             (caller.model, owner, actor)
         }
         None => {
-            let user = match require_user(&state, &headers).await {
-                Ok(u) => u,
-                Err(gate) => return gate,
-            };
+            let user = require_user(&state, &headers).await?;
             let Some(obj) = obj else {
-                return house_error(StatusCode::BAD_REQUEST, "body must be an object");
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "body must be an object",
+                ));
             };
             let agent_model = match string_member(obj, "agentModel", 1, 200) {
                 Ok(v) => v,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             // Only the owner may file for their own assistant — anything
             // else is somebody else's access being requested in their name.
@@ -299,19 +290,21 @@ pub async fn post(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::error!("[boards] agent def read on agent request failed: {e}");
-                    return thrown_internal_error();
+                    return Ok(internal(
+                        "[boards] agent def read on agent request failed",
+                        e,
+                    ));
                 }
             };
             match owner {
                 Some((Some(owner_id),)) if owner_id == user.id => {}
                 Some(_) => {
-                    return house_error(
+                    return Ok(house_error(
                         StatusCode::FORBIDDEN,
                         "only the assistant's owner may request access for it",
-                    );
+                    ));
                 }
-                _ => return house_error(StatusCode::BAD_REQUEST, "unknown agentModel"),
+                _ => return Ok(house_error(StatusCode::BAD_REQUEST, "unknown agentModel")),
             }
             let label = user
                 .email
@@ -323,11 +316,8 @@ pub async fn post(
     };
     match board_info(&state.pg, &id).await {
         Ok(info) if info.exists => {}
-        Ok(_) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[boards] board read on agent request failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[boards] board read on agent request failed", e)),
     }
     // The whole point of the request path: the owner CANNOT read this board.
     // If they can, the one-step grant is available and this queue is not the
@@ -335,18 +325,20 @@ pub async fn post(
     match board_role(&state.pg, &requested_by, &id).await {
         Ok(None) => {}
         Ok(Some(_)) => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::FORBIDDEN,
                 &format!(
                     "this board's owner can already read it — self-serve instead: \
                      POST /api/boards/{}/agents/self (agentModel \"{}\")",
                     id, agent_model
                 ),
-            );
+            ));
         }
         Err(e) => {
-            tracing::error!("[boards] owner role read on agent request failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[boards] owner role read on agent request failed",
+                e,
+            ));
         }
     }
     let inserted = match insert_request(
@@ -359,12 +351,9 @@ pub async fn post(
     .await
     {
         Ok(n) => n,
-        Err(e) => {
-            tracing::error!("[boards] agent request insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent request insert failed", e)),
     };
-    filed(
+    Ok(filed(
         &state,
         &id,
         &agent_model,
@@ -372,7 +361,7 @@ pub async fn post(
         reason.as_deref(),
         inserted,
     )
-    .await
+    .await)
 }
 
 /// The request a decide acts on: its id, a display name for the outcome
@@ -384,35 +373,34 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let user = match acting_user(&state, &headers).await {
         Ok(Some(u)) => u,
-        Ok(None) => return unauthorized(),
-        Err(gate) => return gate,
+        Ok(None) => return Ok(unauthorized()),
+        Err(gate) => return Ok(gate),
     };
     if let Some(gate) = talaria_params::uuid_gate("boards", "PUT agent requests", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) || user.elevated => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => {
-            tracing::error!("[boards] role read on agent request decide failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[boards] role read on agent request decide failed",
+                e,
+            ));
         }
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let agent_model = match string_member(obj, "agentModel", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let action = match enum_member(obj, "action", &["approve", "reject"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let req: Option<OpenRequestRow> = match sqlx::query_as(
         "select r.id::text, coalesce(d.display_name, r.agent_model), \
@@ -427,13 +415,13 @@ pub async fn put(
     .await
     {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[boards] agent request read on decide failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent request read on decide failed", e)),
     };
     let Some((req_id, agent_name, requested_by)) = req else {
-        return house_error(StatusCode::NOT_FOUND, "not found or already decided");
+        return Ok(house_error(
+            StatusCode::NOT_FOUND,
+            "not found or already decided",
+        ));
     };
     let approve = action == "approve";
     // ONE transaction: the grant and the close commit together, so an approve
@@ -441,10 +429,7 @@ pub async fn put(
     // approved twice) or a closed request with no grant behind it.
     let mut tx = match state.pg.begin().await {
         Ok(tx) => tx,
-        Err(e) => {
-            tracing::error!("[boards] agent request decide tx begin failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] agent request decide tx begin failed", e)),
     };
     let decided = async {
         if approve {
@@ -469,17 +454,18 @@ pub async fn put(
             // Another editor decided between the read and the close — their
             // decision stands, whole transaction rolled back.
             let _ = tx.rollback().await;
-            return house_error(StatusCode::NOT_FOUND, "not found or already decided");
+            return Ok(house_error(
+                StatusCode::NOT_FOUND,
+                "not found or already decided",
+            ));
         }
         Err(e) => {
-            tracing::error!("[boards] agent request decide write failed: {e}");
             let _ = tx.rollback().await;
-            return thrown_internal_error();
+            return Ok(internal("[boards] agent request decide write failed", e));
         }
     }
     if let Err(e) = tx.commit().await {
-        tracing::error!("[boards] agent request decide commit failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[boards] agent request decide commit failed", e));
     }
     let label = board_info(&state.pg, &id).await.ok().map(|i| i.label);
     log_audit(
@@ -539,6 +525,7 @@ pub async fn put(
             tracing::error!("[boards] agent request outcome notify failed: {e}");
         }
     }
+    Ok(
     Json(json!({ "ok": true, "agentModel": agent_model, "status": if approve { "approved" } else { "declined" } }))
-        .into_response()
+        .into_response())
 }

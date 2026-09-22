@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof for the brief item mark (cargo test -- --ignored). The bug
 // this file pins, reported on the live fleet 2026-09-03: the read serves the
 // most recent readable document when today's has not opened yet — get_brief's
@@ -13,47 +14,11 @@
 //
 //   source ui/.env && cargo test --test brief_item_live -- --ignored
 
-use talaria_api::config::Config;
+use support::{app_state, fabricate_user, pg};
 use talaria_api::daily_brief::{BriefUser, mark_brief_item, real_brief_deps};
-use talaria_api::state::AppState;
-
-async fn pg() -> sqlx::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    sqlx::PgPool::connect(&url).await.expect("connect")
-}
-
 /// An AppState exactly the way the other live tests build one. Redis points
 /// at a dead port on purpose: the mark's notify publish degrades to a no-op
 /// without a connection, and this file is about the rows, not the socket.
-async fn app_state() -> AppState {
-    let cfg = Config::from_parts(
-        std::env::var("DATABASE_URL").unwrap_or_default(),
-        "redis://127.0.0.1:1".into(),
-        std::env::var("TALARIA_SECRET_KEY").unwrap_or_default(),
-        std::env::var("TALARIA_SECRET_KEY_FILE").unwrap_or_default(),
-        String::new(),
-        String::new(),
-    )
-    .expect("test config assembles");
-    AppState::new(talaria_api::db::pool(&cfg), std::sync::Arc::new(cfg))
-}
-
-async fn fabricate_user(pg: &sqlx::PgPool, tag: &str) -> String {
-    let sub = format!("brief-live:{tag}:{}", uuid::Uuid::new_v4());
-    sqlx::query("insert into users (sub) values ($1)")
-        .bind(&sub)
-        .execute(pg)
-        .await
-        .unwrap();
-    let id: String = sqlx::query_scalar("select id::text from users where sub = $1")
-        .bind(&sub)
-        .fetch_one(pg)
-        .await
-        .unwrap();
-    id
-}
-
 /// A readable brief the read would serve as "the current one": a row with
 /// entries, created now (inside the 48h recency window), dated well BEHIND
 /// today — three days, so no timezone the org config could resolve to (any
@@ -111,7 +76,7 @@ async fn checked_rows(pg: &sqlx::PgPool, brief: &str, key: &str) -> i64 {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_mark_lands_on_the_document_the_read_serves() {
     let pg = pg().await;
-    let owner = fabricate_user(&pg, "mark-owner").await;
+    let owner = fabricate_user(&pg, "brief-live", "mark-owner").await;
     // Two readable documents, the newer one (two days back) is the one the
     // read serves; the older one (three days back) stands for a stale tab.
     let stale = fabricate_served_brief(&pg, &owner, 3, "brief-live:stale").await;
@@ -185,7 +150,7 @@ async fn a_mark_lands_on_the_document_the_read_serves() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_reader_with_no_readable_document_gets_a_clean_refusal() {
     let pg = pg().await;
-    let owner = fabricate_user(&pg, "mark-bare").await;
+    let owner = fabricate_user(&pg, "brief-live", "mark-bare").await;
     let state = app_state().await;
     let deps = real_brief_deps(&state).await;
     let user = BriefUser {

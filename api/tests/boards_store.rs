@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of boards.rs (cargo test -- --ignored). The agent listing is
 // one SELECT whose legality is a Postgres rule — DISTINCT demands every
 // ORDER BY expression in the select list — and a query that violates it does
@@ -11,14 +12,8 @@
 //   DATABASE_URL=postgres://… cargo test --test boards_store -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::boards::list_boards_for_agent;
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// Everything this suite fabricates hangs off one throwaway user, so the
 /// cascade removes board, board_agents and grants along with it.
 async fn cleanup(pg: &PgPool) {
@@ -31,7 +26,7 @@ async fn cleanup(pg: &PgPool) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_agent_listing_is_a_legal_statement_on_an_empty_result() {
-    let pg = pool().await;
+    let pg = pg().await;
     // A model with no per-agent boards still runs the FULL statement, and on
     // a shared database it still sees the allow_all_agents boards — the
     // point is that Postgres accepts the statement at all, which is what
@@ -44,7 +39,7 @@ async fn the_agent_listing_is_a_legal_statement_on_an_empty_result() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_agent_listing_returns_the_board_the_policy_admits() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let (owner,): (String,) = sqlx::query_as(
         "insert into users (sub, email, name, role) \

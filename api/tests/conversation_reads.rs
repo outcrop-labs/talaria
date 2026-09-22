@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the conversation read cursors (cargo test -- --ignored).
 // The unread subquery's WHERE is the whole feature — whose turns count, which
 // statuses count, what a member with no cursor row yet sees — and none of it
@@ -7,17 +8,11 @@
 //   DATABASE_URL=postgres://… cargo test --test conversation_reads -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::{person, pg};
 use talaria_api::conversations::{
     create_conversation, latest_message_seq, list_conversations, mark_conversation_read,
 };
 use talaria_api::notify::clear_thread_notifications;
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// Two throwaway people — an owner and a teammate to share a plan with. The
 /// cascade takes their conversations, members, reads, and messages with them.
 async fn cleanup(pg: &PgPool) {
@@ -26,20 +21,6 @@ async fn cleanup(pg: &PgPool) {
         .await
         .unwrap();
 }
-
-async fn person(pg: &PgPool, sub: &str, email: &str, name: &str) -> String {
-    let (id,): (String,) = sqlx::query_as(
-        "insert into users (sub, email, name, role) values ($1, $2, $3, 'member') returning id::text",
-    )
-    .bind(sub)
-    .bind(email)
-    .bind(name)
-    .fetch_one(pg)
-    .await
-    .unwrap();
-    id
-}
-
 /// Land a message directly — this suite proves the counting predicate, not
 /// the streaming machinery that fills these rows in production.
 async fn land(
@@ -87,7 +68,7 @@ async fn cleanup_bell(pg: &PgPool) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn unreads_count_whose_turns_and_cursors_only_advance() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let owner = person(
         &pg,
@@ -185,7 +166,7 @@ async fn unreads_count_whose_turns_and_cursors_only_advance() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn reading_the_thread_clears_its_bell_rows() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup_bell(&pg).await;
     let owner = person(
         &pg,

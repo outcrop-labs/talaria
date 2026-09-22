@@ -3,8 +3,8 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
-  import { errorMessage, putJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { putJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
 
   // Where the org account's agents build: a Shared Drive so files are team-owned,
   // a specific calendar, and an optional send-as alias for outgoing mail.
@@ -21,7 +21,7 @@
     try {
       await putJson<{ ok: true }>('/api/integrations/google/org', { driveFolderId: drive, calendarId: cal, sendAs })
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     await qc.invalidateQueries({ queryKey: ['org-google'] })

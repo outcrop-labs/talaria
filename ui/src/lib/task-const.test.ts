@@ -37,12 +37,42 @@ describe('off-board pin', () => {
   // compares (same move as the secretbox fixtures test reading api/tests/). If
   // the Rust literal is renamed or reflows so the regex misses, this parses to
   // [] and FAILS against the client list — it cannot silently pass.
-  const RUST_STATUSES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'crates', 'talaria-statuses', 'src', 'lib.rs')
+  const CRATES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'crates')
+  const RUST_STATUSES = join(CRATES, 'talaria-statuses', 'src', 'lib.rs')
+  const RUST_TASK_CONST = join(CRATES, 'talaria-task-const', 'src', 'lib.rs')
 
   it('matches the Rust statuses engine list exactly', () => {
     const src = readFileSync(RUST_STATUSES, 'utf8')
     const literal = src.match(/pub const OFF_BOARD_STATUSES: &\[&str\] = &\[([^\]]*)\]/)?.[1] ?? ''
     const rust = literal.match(/"([^"]+)"/g)?.map((s) => s.slice(1, -1)) ?? []
     expect(rust).toEqual([...OFF_BOARD_STATUSES])
+  })
+
+  // The same pin, for the two ladders this file's client list feeds the
+  // composer with: the Rust crate the api validates against and the client
+  // must offer the same words in the same order, or a ticket picks a priority
+  // no engine accepts.
+  const rustList = (file: string, name: string): string[] => {
+    const src = readFileSync(file, 'utf8')
+    const literal = src.match(new RegExp(`pub const ${name}: &\\[&str\\] = &\\[([^\\]]*)\\]`))?.[1] ?? ''
+    return literal.match(/"([^"]+)"/g)?.map((s) => s.slice(1, -1)) ?? []
+  }
+
+  it('matches talaria-task-const on exactly the priority ladder', () => {
+    expect(rustList(RUST_TASK_CONST, 'PRIORITIES')).toEqual([...PRIORITIES])
+  })
+
+  it('matches talaria-task-const on exactly the effort ladder', () => {
+    expect(rustList(RUST_TASK_CONST, 'EFFORTS')).toEqual([...EFFORTS])
+  })
+
+  // mcp/src/index.ts is the agent-facing surface: it documents the statuses an
+  // agent may set. It must not quietly grow one the engine refuses.
+  it("matches mcp's AGENT_STATUSES on the statuses an agent may set", () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'mcp', 'src', 'index.ts'), 'utf8')
+    const literal = src.match(/AGENT_STATUSES = \[([^\]]*)\]/)?.[1] ?? ''
+    const mcp = literal.match(/'([^']+)'/g)?.map((s) => s.slice(1, -1)) ?? []
+    expect(mcp.length).toBeGreaterThan(0)
+    expect(mcp).toEqual(['in_progress', 'blocked', 'quality_review'])
   })
 })

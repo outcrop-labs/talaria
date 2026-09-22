@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DitherSource } from '../lib/dither'
+  import type { DitherSource } from '@dither'
   import {
     checkForUpdate,
     errorText,

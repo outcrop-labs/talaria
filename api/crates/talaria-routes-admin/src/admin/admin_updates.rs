@@ -33,10 +33,9 @@ use talaria_api_facades::update::roll::{
 };
 use talaria_api_facades::update::state::{RunBy, UpdateState, load, patch};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{
-    NumKind, as_object, boolean_member, optional_enum_member, optional_number_member, parse,
-};
-use talaria_error::house_error;
+use talaria_body::hex;
+use talaria_body::{NumKind, boolean_member, optional_enum_member, optional_number_member, parse};
+use talaria_error::{house_error, object_or_400};
 use talaria_session::{SessionUser, require_admin};
 use talaria_state::AppState;
 
@@ -51,10 +50,6 @@ fn key_hash(presented: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(presented.as_bytes());
     hex(&hasher.finalize())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Mint a fresh machine key: 32 bytes of getrandom, hex. Returned ONCE —
@@ -179,12 +174,9 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let action = match optional_enum_member(
         obj,
         "action",
@@ -192,12 +184,12 @@ pub async fn post(
     ) {
         Ok(Some(a)) => a,
         Ok(None) => {
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 "action is required (check, apply, rollback, adopt, mint-key)",
-            );
+            ));
         }
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // Minting is admin-only (a key that mints keys is a permanent key);
@@ -205,19 +197,18 @@ pub async fn post(
     let machine_ok = action != "mint-key";
     let who = caller(&state, &headers, &state.pg, machine_ok).await;
     let actor = match who {
-        Caller::Rejected(gate) => return gate,
+        Caller::Rejected(gate) => return Ok(gate),
         Caller::Admin(u) => talaria_session::actor_of(&u),
         Caller::Machine => "machine-key".to_string(),
     };
-
-    match action.as_str() {
+    Ok(match action.as_str() {
         "check" => check(&state.pg, &actor).await,
         "apply" => apply(&state, &actor).await,
         "rollback" => do_rollback(&state, &actor).await,
         "adopt" => do_adopt(&state, &actor, obj).await,
         "mint-key" => mint(&state.pg, &actor).await,
         _ => unreachable!("the enum member already gated the action"),
-    }
+    })
 }
 
 async fn check(pg: &PgPool, actor: &str) -> Response {
@@ -457,19 +448,13 @@ pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let enabled = match boolean_member(obj, "autoUpdate") {
         Ok(e) => e,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = patch(&state.pg, |mut s| {
         s.auto_update = enabled;
@@ -477,10 +462,10 @@ pub async fn put(
     })
     .await
     {
-        return house_error(
+        return Ok(house_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("the toggle did not write: {e}"),
-        );
+        ));
     }
     log_audit(
         &state.pg,
@@ -495,7 +480,7 @@ pub async fn put(
         },
     )
     .await;
-    Json(serde_json::json!({ "autoUpdate": enabled })).into_response()
+    Ok(Json(serde_json::json!({ "autoUpdate": enabled })).into_response())
 }
 
 #[cfg(test)]

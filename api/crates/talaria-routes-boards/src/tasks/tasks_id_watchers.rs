@@ -21,8 +21,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_boards::{board_role, can_edit};
-use talaria_body::{as_object, parse, string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{parse, string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{SessionUser, require_user};
 use talaria_state::AppState;
 use talaria_tasks::{WatchOutcome, add_watcher, get_task, list_watchers, remove_watcher};
@@ -46,62 +46,44 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("tasks", "POST watcher", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on POST watcher failed", e)),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on POST watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[tasks] role read on POST watcher failed", e)),
     };
     if role.is_none() {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let watcher = match string_member(obj, "watcher", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if !is_self(&user, &watcher) && !can_edit(role.as_deref()) {
-        return house_error(
+        return Ok(house_error(
             StatusCode::FORBIDDEN,
             "only a board editor can make someone else follow this ticket",
-        );
+        ));
     }
     match add_watcher(&state.pg, &id, &watcher).await {
         Ok(WatchOutcome::Added) => {}
-        Ok(WatchOutcome::Refused(msg)) => return house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(e) => {
-            tracing::error!("[tasks] watcher add failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(WatchOutcome::Refused(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        Err(e) => return Ok(internal("[tasks] watcher add failed", e)),
     }
-    match list_watchers(&state.pg, &id).await {
+    Ok(match list_watchers(&state.pg, &id).await {
         Ok(watchers) => Json(json!({ "watchers": watchers })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] watcher list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[tasks] watcher list failed", e),
+    })
 }
 
 pub async fn delete(
@@ -109,56 +91,40 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("tasks", "DELETE watcher", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on DELETE watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on DELETE watcher failed", e)),
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let watcher = match string_member(obj, "watcher", 1, 200) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let role = match board_role(&state.pg, &user.id, &task.board_id).await {
         Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[tasks] role read on DELETE watcher failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[tasks] role read on DELETE watcher failed", e)),
     };
     if !is_self(&user, &watcher) && !can_edit(role.as_deref()) {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     if let Err(e) = remove_watcher(&state.pg, &id, &watcher).await {
-        tracing::error!("[tasks] watcher remove failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[tasks] watcher remove failed", e));
     }
     // The unsubscribe hatch must not become a disclosure hatch: someone with
     // no membership gets confirmation that they are off the ticket, never
     // the list of who else is on it.
     if role.is_none() {
-        return Json(json!({ "unwatched": true })).into_response();
+        return Ok(Json(json!({ "unwatched": true })).into_response());
     }
-    match list_watchers(&state.pg, &id).await {
+    Ok(match list_watchers(&state.pg, &id).await {
         Ok(watchers) => Json(json!({ "watchers": watchers })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] watcher list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[tasks] watcher list failed", e),
+    })
 }

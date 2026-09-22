@@ -6,8 +6,8 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { cn } from '@/lib/cn'
-  import { delJson, errorMessage, patchJson, postJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { delJson, patchJson, postJson } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import { fade, slide, GROW_X, QUICK } from '@/lib/motion'
   import KbCommentBody from './KbCommentBody.svelte'
   import type { KbComment } from './knowledge.svelte'
@@ -59,7 +59,7 @@
     try {
       await patchJson(`/api/kb/comments/${id}`, { resolved })
     } catch (e) {
-      pushToast({ title: resolved ? 'Resolve failed' : 'Reopen failed', body: errorMessage(e), tone: 'danger' })
+      toastError(resolved ? 'Resolve failed' : 'Reopen failed', e)
     }
     await refresh()
   }
@@ -67,7 +67,7 @@
     try {
       await delJson(`/api/kb/comments/${id}`)
     } catch (e) {
-      pushToast({ title: 'Delete failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Delete failed', e)
     }
     await refresh()
   }
@@ -127,7 +127,7 @@
                   replyDraft = ''
                   replyTo = null
                 })
-                .catch((e) => pushToast({ title: 'Reply failed', body: errorMessage(e), tone: 'danger' }))
+                .catch((e) => toastError('Reply failed', e))
             } else if (e.key === 'Escape') {
               replyTo = null
             }
@@ -205,7 +205,7 @@
               draft = ''
               onQuoteConsumed()
             })
-            .catch((e) => pushToast({ title: 'Comment failed', body: errorMessage(e), tone: 'danger' }))
+            .catch((e) => toastError('Comment failed', e))
         }
       }}
       placeholder={pendingQuote ? 'Comment on the selection' : 'Start a thread'}

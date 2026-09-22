@@ -1,3 +1,4 @@
+import { placeMenu } from '@/lib/menu-position'
 import { flushSync, mount, unmount } from 'svelte'
 import { Extension, type Editor, type Range } from '@tiptap/core'
 import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
@@ -12,7 +13,6 @@ import { prompt } from './confirm.svelte'
 
 // A slash-command menu (like Outline's block menu): type "/" to insert a block.
 // Filterable, keyboard-navigable, positioned at the caret. Built on TipTap's
-// Suggestion utility; the item set maps to the nodes our editor supports.
 
 export interface SlashItem {
   title: string
@@ -54,18 +54,7 @@ interface MenuHandle {
   onKeyDown: (e: KeyboardEvent) => boolean
 }
 
-// Position a fixed popup at the caret rect, flipping above if it would overflow.
-function place(el: HTMLElement, rect: DOMRect) {
-  const margin = 6
-  el.style.left = `${rect.left}px`
-  const below = rect.bottom + margin
-  const wouldOverflow = below + el.offsetHeight > window.innerHeight
-  if (wouldOverflow && rect.top - margin - el.offsetHeight > 0) {
-    el.style.top = `${rect.top - margin - el.offsetHeight}px`
-  } else {
-    el.style.top = `${below}px`
-  }
-}
+
 
 const suggestion: Omit<SuggestionOptions<SlashItem>, 'editor'> = {
   char: '/',
@@ -85,16 +74,16 @@ const suggestion: Omit<SuggestionOptions<SlashItem>, 'editor'> = {
         document.body.appendChild(popup)
         menu = mount(SlashMenu, { target: popup }) as unknown as MenuHandle
         menu.update(props.items, (item: SlashItem) => props.command(item))
-        // Render synchronously so place() can measure the popup's height.
+        // Render synchronously so placeMenu() can measure the popup's height.
         flushSync()
         const rect = props.clientRect()
-        if (rect) place(popup, rect)
+        if (rect) placeMenu(popup, rect)
       },
       onUpdate: (props) => {
         menu?.update(props.items, (item: SlashItem) => props.command(item))
         flushSync()
         const rect = props.clientRect?.()
-        if (popup && rect) place(popup, rect)
+        if (popup && rect) placeMenu(popup, rect)
       },
       onKeyDown: (props) => {
         if (props.event.key === 'Escape') {

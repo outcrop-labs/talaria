@@ -17,12 +17,12 @@ use talaria_api_facades::gateway::registry::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    as_object, optional_boolean_member, optional_string_array_member, parse,
+    optional_boolean_member, optional_string_array_member, parse,
     present_nullable_max_string_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_price_oracle::kick_auto_prices;
-use talaria_session::{actor_of, require_admin};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
 /// The 409's blast radius — four keys in a fixed order.
@@ -45,19 +45,13 @@ pub async fn put(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let patch = match validate_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // One batched cascade: one new version per agent, one render, one restart
@@ -66,10 +60,10 @@ pub async fn put(
     if let Some(models) = &patch.models {
         let eps = match list_endpoints(&state.pg).await {
             Ok(e) => e,
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return Ok(internal("[fleet] list_endpoints failed", e)),
         };
         let Some(ep) = eps.iter().find(|e| e.id == id) else {
-            return house_error(StatusCode::NOT_FOUND, "not found");
+            return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
         };
         let removed: Vec<String> = ep
             .models
@@ -82,7 +76,7 @@ pub async fn put(
         } else {
             match model_usage(&state.pg, &ep.name, Some(&removed)).await {
                 Ok(u) => u,
-                Err(_) => return thrown_internal_error(),
+                Err(e) => return Ok(internal("[fleet] model_usage failed", e)),
             }
         };
         let mains: Vec<&ModelUsage> = usage.iter().filter(|u| u.as_main).collect();
@@ -94,26 +88,23 @@ pub async fn put(
                     seen.push(&m.slug);
                 }
             }
-            return house_error(
+            return Ok(house_error(
                 StatusCode::BAD_REQUEST,
                 &format!(
                     "main model for: {} — reassign before removing",
                     seen.join(", ")
                 ),
-            );
+            ));
         }
         if !usage.is_empty() && !patch.force {
-            return (
+            return Ok((
                 StatusCode::CONFLICT,
                 Json(json!({ "needsForce": true, "affected": summarize(&usage) })),
             )
-                .into_response();
+                .into_response());
         }
         if !usage.is_empty() {
-            let sb = match state.secretbox().await {
-                Ok(sb) => sb,
-                Err(_) => return thrown_internal_error(),
-            };
+            let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
             let actor = user
                 .email
                 .clone()
@@ -121,20 +112,14 @@ pub async fn put(
                 .unwrap_or_else(|| "admin".into());
             match cascade_removal(&state.pg, &sb, &ep.name, Some(&removed), &actor).await {
                 Ok(r) => cascade = (r.changed, r.render_error),
-                Err(_) => return thrown_internal_error(),
+                Err(e) => return Ok(internal("[fleet] cascade_removal failed", e)),
             }
         }
     }
 
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(_) => return thrown_internal_error(),
-    };
-    if update_endpoint(&state.pg, &sb, &id, &patch.endpoint)
-        .await
-        .is_err()
-    {
-        return thrown_internal_error();
+    let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
+    if let Err(e) = update_endpoint(&state.pg, &sb, &id, &patch.endpoint).await {
+        return Ok(internal("[fleet] update_endpoint failed", e));
     }
     let actor = actor_of(&user);
     let mut after = serde_json::Map::new();
@@ -168,7 +153,7 @@ pub async fn put(
     if patch.models.is_some() {
         kick_auto_prices(&state.pg);
     }
-    Json(cascade_body(true, &cascade)).into_response()
+    Ok(Json(cascade_body(true, &cascade)).into_response())
 }
 
 pub async fn delete(
@@ -176,52 +161,46 @@ pub async fn delete(
     Path(id): Path<String>,
     headers: HeaderMap,
     uri: axum::http::Uri,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let force = uri
         .query()
         .map(|q| q.split('&').any(|pair| pair == "force=1"))
         .unwrap_or(false);
     let eps = match list_endpoints(&state.pg).await {
         Ok(e) => e,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return Ok(internal("[fleet] list_endpoints failed", e)),
     };
     let Some(ep) = eps.iter().find(|e| e.id == id) else {
         // Unknown id → ok:true, no body fields beyond it.
-        return Json(json!({ "ok": true })).into_response();
+        return Ok(Json(json!({ "ok": true })).into_response());
     };
 
     let usage = match model_usage(&state.pg, &ep.name, None).await {
         Ok(u) => u,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return Ok(internal("[fleet] model_usage failed", e)),
     };
     let mains: Vec<&ModelUsage> = usage.iter().filter(|u| u.as_main).collect();
     if !mains.is_empty() {
         let slugs: Vec<&str> = mains.iter().map(|m| m.slug.as_str()).collect();
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             &format!(
                 "main model for: {} — reassign before deleting",
                 slugs.join(", ")
             ),
-        );
+        ));
     }
     if !usage.is_empty() && !force {
-        return (
+        return Ok((
             StatusCode::CONFLICT,
             Json(json!({ "needsForce": true, "affected": summarize(&usage) })),
         )
-            .into_response();
+            .into_response());
     }
     let mut cascade: (Vec<String>, Option<String>) = (Vec::new(), None);
     if !usage.is_empty() {
-        let sb = match state.secretbox().await {
-            Ok(sb) => sb,
-            Err(_) => return thrown_internal_error(),
-        };
+        let sb = secretbox_or_500(&state, "[fleet] secretbox failed").await?;
         let actor = user
             .email
             .clone()
@@ -229,18 +208,18 @@ pub async fn delete(
             .unwrap_or_else(|| "admin".into());
         match cascade_removal(&state.pg, &sb, &ep.name, None, &actor).await {
             Ok(r) => cascade = (r.changed, r.render_error),
-            Err(_) => return thrown_internal_error(),
+            Err(e) => return Ok(internal("[fleet] cascade_removal failed", e)),
         }
     }
     let deleted = match delete_endpoint(&state.pg, &id).await {
         Ok(d) => d,
-        Err(_) => return thrown_internal_error(),
+        Err(e) => return Ok(internal("[fleet] delete_endpoint failed", e)),
     };
     if !deleted.0 {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             &format!("still in use by: {}", deleted.1.join(", ")),
-        );
+        ));
     }
     let actor = actor_of(&user);
     let label = ep.name.clone();
@@ -261,7 +240,7 @@ pub async fn delete(
         )
         .await;
     });
-    Json(cascade_body(true, &cascade)).into_response()
+    Ok(Json(cascade_body(true, &cascade)).into_response())
 }
 
 /// `{ok, cascaded, error?}` — the error key rides last, only on a render

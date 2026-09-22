@@ -19,7 +19,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_research::{ensure_research_conversation, research_role};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -28,22 +28,17 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("research", "POST conversation", &id) {
-        return gate;
+        return Ok(gate);
     }
     match research_role(&state.pg, Some(&user.id), &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[research] role read on conversation failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[research] role read on conversation failed", e)),
     }
+    Ok(
     match ensure_research_conversation(&state.pg, &id).await {
         Ok(Some(conversation_id)) => Json(json!({ "conversationId": conversation_id })).into_response(),
         // A run an AGENT started for the org has no human owner, so there is
@@ -54,9 +49,6 @@ pub async fn post(
             Json(json!({ "error": "this run has no owner, so it has no conversation — it was started by an agent for the org" })),
         )
             .into_response(),
-        Err(e) => {
-            tracing::error!("[research] conversation ensure failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[research] conversation ensure failed", e)
+    })
 }

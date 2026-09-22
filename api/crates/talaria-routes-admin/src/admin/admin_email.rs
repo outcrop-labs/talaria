@@ -9,23 +9,24 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, as_object, nullish_member, optional_boolean_member, optional_enum_member,
+    NumKind, nullish_member, optional_boolean_member, optional_enum_member,
     optional_max_string_member, optional_number_member, parse,
 };
 use talaria_email::{
     EmailConfigPatch, EmailInput, Provider, SendOutcome, email_shell, get_email_config, send_email,
     set_email_config,
 };
-use talaria_error::{house_error, thrown_internal_error};
-use talaria_session::{actor_of, require_admin};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let cfg = get_email_config(&state.pg).await;
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "config": {
             "provider": match cfg.provider {
                 Some(Provider::Smtp) => Value::String("smtp".into()),
@@ -43,24 +44,18 @@ pub async fn get(State(state): State<AppState>, headers: axum::http::HeaderMap) 
             "resend": { "apiKeySet": cfg.resend.api_key_enc.is_some() },
         }
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let actor = actor_of(&user);
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
 
     // Keys in schema order, rejections in the schema's own words: provider
     // (enum smtp|resend), from (max 200), smtp { host max 200, port int
@@ -79,11 +74,11 @@ pub async fn put(
         })
     }) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let from = match optional_max_string_member(obj, "from", 200) {
         Ok(f) => f,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let (smtp_host, smtp_port, smtp_secure, smtp_user, smtp_pass) = match obj.get("smtp") {
         None => (None, None, None, None, None),
@@ -91,32 +86,32 @@ pub async fn put(
             let s = match v.as_object() {
                 Some(s) => s,
                 None => {
-                    return house_error(
+                    return Ok(house_error(
                         StatusCode::BAD_REQUEST,
                         &talaria_body::object_msg(talaria_body::zod_type_name(v)),
-                    );
+                    ));
                 }
             };
             let host = match optional_max_string_member(s, "host", 200) {
                 Ok(h) => h,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let port = match optional_number_member(s, "port", NumKind::Int, 1.0, 65535.0) {
                 Ok(p) => p.map(|f| f as u16),
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let secure = match optional_boolean_member(s, "secure") {
                 Ok(b) => b,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let user = match optional_max_string_member(s, "user", 200) {
                 Ok(u) => u,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             let pass = match nullish_member(s, "pass", |o, k| optional_max_string_member(o, k, 500))
             {
                 Ok(p) => p,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             };
             (host, port, secure, user, pass)
         }
@@ -127,15 +122,15 @@ pub async fn put(
             let r = match v.as_object() {
                 Some(r) => r,
                 None => {
-                    return house_error(
+                    return Ok(house_error(
                         StatusCode::BAD_REQUEST,
                         &talaria_body::object_msg(talaria_body::zod_type_name(v)),
-                    );
+                    ));
                 }
             };
             match nullish_member(r, "apiKey", |o, k| optional_max_string_member(o, k, 200)) {
                 Ok(k) => k,
-                Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             }
         }
     };
@@ -149,16 +144,9 @@ pub async fn put(
         smtp_pass,
         resend_api_key,
     };
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/email] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[admin/email] secretbox unavailable").await?;
     if let Err(e) = set_email_config(&state.pg, &sb, &patch).await {
-        tracing::error!("[admin/email] config write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[admin/email] config write failed", e));
     }
     log_audit(
         &state.pg,
@@ -175,59 +163,52 @@ pub async fn put(
         },
     )
     .await;
-    Json(serde_json::json!({ "ok": true })).into_response()
+    Ok(Json(serde_json::json!({ "ok": true })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // the body must be exactly { test: true }.
     if obj.get("test") != Some(&Value::Bool(true)) {
-        return house_error(StatusCode::BAD_REQUEST, "Invalid input: expected true");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "Invalid input: expected true",
+        ));
     }
     let Some(to) = user.email.clone() else {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             "your account has no email to test against",
-        );
+        ));
     };
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[admin/email] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[admin/email] secretbox unavailable").await?;
     let html = email_shell(
         "It works",
         "<p>Your transactional email configuration delivers. This is a test message from Talaria.</p>",
         talaria_email::DEFAULT_FOOTER,
     );
-    match send_email(
-        &state.pg,
-        &sb,
-        &EmailInput {
-            to,
-            subject: "Talaria test email".into(),
-            html,
-            text: Some("Your transactional email configuration delivers.".into()),
-            headers: Vec::new(),
+    Ok(
+        match send_email(
+            &state.pg,
+            &sb,
+            &EmailInput {
+                to,
+                subject: "Talaria test email".into(),
+                html,
+                text: Some("Your transactional email configuration delivers.".into()),
+                headers: Vec::new(),
+            },
+        )
+        .await
+        {
+            SendOutcome::Sent => Json(serde_json::json!({ "ok": true })).into_response(),
+            SendOutcome::Failed(e) => house_error(StatusCode::BAD_GATEWAY, &e),
         },
     )
-    .await
-    {
-        SendOutcome::Sent => Json(serde_json::json!({ "ok": true })).into_response(),
-        SendOutcome::Failed(e) => house_error(StatusCode::BAD_GATEWAY, &e),
-    }
 }

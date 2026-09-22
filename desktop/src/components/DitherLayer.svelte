@@ -9,7 +9,7 @@
     type DitherEngineOptions,
     type DitherSource,
     type MaskRect,
-  } from '../lib/dither'
+  } from '@dither'
 
   let {
     sources,

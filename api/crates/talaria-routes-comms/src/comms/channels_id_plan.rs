@@ -20,21 +20,19 @@ use serde_json::{Value, json};
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
 use talaria_api_facades::runs::defs::plan_draft::StoredProposal;
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, boolean_member, enum_member, enum_msg, object_msg,
+    array_msg, array_too_big_msg, boolean_member, enum_member, enum_msg, object_msg,
     optional_max_string_member, optional_uuid_member, string_member, too_big_msg, utf16_len,
     zod_type_name,
 };
 use talaria_channels::{channel_role, list_channel_agents};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_harness_defs::defs::channel_plan::{Effort, Priority};
 use talaria_plan_drafts::{
     StartPlanDraft, drop_draft, latest_draft_for, save_draft_proposals, start_plan_draft,
 };
 use talaria_session::require_user;
 use talaria_state::AppState;
-
-const PRIORITIES: &[&str] = &["low", "medium", "high", "urgent"];
-const EFFORTS: &[&str] = &["xs", "s", "m", "l", "xl"];
+use talaria_task_const::{EFFORTS, PRIORITIES};
 
 /// The Start body: the channel side names the drafting agent; the plan
 /// side inherits it from the conversation.
@@ -195,26 +193,17 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on GET plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on GET plan failed", e)),
     }
-    match latest_draft_for(&state.pg, &id).await {
+    Ok(match latest_draft_for(&state.pg, &id).await {
         Ok(draft) => Json(json!({ "draft": draft })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] draft read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[channels] draft read failed", e),
+    })
 }
 
 pub async fn post(
@@ -222,27 +211,18 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on POST plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on POST plan failed", e)),
     }
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let start = match validate_start(obj, true) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // validate_start(_, true) always sets it; unwrap_or_default only keeps
     // the compiler from proving what the boolean switch already guarantees.
@@ -251,25 +231,32 @@ pub async fn post(
     let agents = match list_channel_agents(&state.pg, &id).await {
         Ok(a) => a,
         Err(e) => {
-            tracing::error!("[channels] agent list read on POST plan failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[channels] agent list read on POST plan failed",
+                e,
+            ));
         }
     };
     if !agents.iter().any(|a| a == &agent_model) {
-        return house_error(StatusCode::BAD_REQUEST, "that agent is not in this channel");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "that agent is not in this channel",
+        ));
     }
     let gate = match usable_agent_gate(&state.pg, &user.id, &user.role).await {
         Ok(g) => g,
         Err(e) => {
-            tracing::error!("[channels] agent access read on POST plan failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[channels] agent access read on POST plan failed",
+                e,
+            ));
         }
     };
     if !gate(&agent_model) {
-        return house_error(
+        return Ok(house_error(
             StatusCode::FORBIDDEN,
             "you do not have access to that agent",
-        );
+        ));
     }
     // Tier routing: a blank tier never asks; a failed read or an unknown
     // tier falls back to the base agent — never a 500.
@@ -281,36 +268,37 @@ pub async fn post(
         _ => None,
     }
     .unwrap_or_else(|| agent_model.clone());
-
-    match start_plan_draft(
-        &state,
-        StartPlanDraft {
-            conversation_id: &id,
-            source: "channel",
-            user_id: &user.id,
-            agent_model: &agent_model,
-            routed_model: &routed,
-            tier: start.tier.as_deref(),
-            board_id: start.board_id.as_deref(),
-            template_id: start.template_id.as_deref(),
+    Ok(
+        match start_plan_draft(
+            &state,
+            StartPlanDraft {
+                conversation_id: &id,
+                source: "channel",
+                user_id: &user.id,
+                agent_model: &agent_model,
+                routed_model: &routed,
+                tier: start.tier.as_deref(),
+                board_id: start.board_id.as_deref(),
+                template_id: start.template_id.as_deref(),
+            },
+        )
+        .await
+        {
+            Ok(draft) => Json(json!({ "draft": draft })).into_response(),
+            Err(e) => {
+                // Row-creation failures are internal text (docker, pg); the run's
+                // OWN failures reach the client through the draft row's `error`
+                // field, not this 500 — so the body is a fixed sentence.
+                tracing::error!(
+                    "[channels] start plan draft failed for channel {id} agent {agent_model}: {e}"
+                );
+                house_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not start the plan draft — see server logs",
+                )
+            }
         },
     )
-    .await
-    {
-        Ok(draft) => Json(json!({ "draft": draft })).into_response(),
-        Err(e) => {
-            // Row-creation failures are internal text (docker, pg); the run's
-            // OWN failures reach the client through the draft row's `error`
-            // field, not this 500 — so the body is a fixed sentence.
-            tracing::error!(
-                "[channels] start plan draft failed for channel {id} agent {agent_model}: {e}"
-            );
-            house_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "could not start the plan draft — see server logs",
-            )
-        }
-    }
 }
 
 pub async fn patch(
@@ -318,57 +306,40 @@ pub async fn patch(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on PATCH plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on PATCH plan failed", e)),
     }
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let proposals = match validate_save_body(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) = save_draft_proposals(&state.pg, &id, &proposals).await {
-        tracing::error!("[channels] save draft proposals failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[channels] save draft proposals failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     match channel_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on DELETE plan failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on DELETE plan failed", e)),
     }
     if let Err(e) = drop_draft(&state, &id).await {
-        tracing::error!("[channels] drop draft failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[channels] drop draft failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@
 
 use serde_json::Value;
 
+use talaria_body::{percent_decode, percent_encode};
 use talaria_inbox_focus_types::{
     ActivityEntry, ContextEntry, FocusContext, InboxTimelineEntry, MessageEntry,
 };
@@ -246,24 +247,7 @@ fn id_of(r: &TimelineRecord) -> &str {
 /// one (note `'`, `!`, `~`, `(`, `)` ride through; `:` does not, which is
 /// why ISO timestamps come out escaped).
 pub fn encode_inbox_timeline_cursor(created_at: &str, id: &str) -> String {
-    encode_uri_component(&format!("{created_at}|{id}"))
-}
-
-fn encode_uri_component(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        let unreserved = b.is_ascii_alphanumeric()
-            || matches!(
-                b,
-                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
-            );
-        if unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+    percent_encode(&format!("{created_at}|{id}"))
 }
 
 /// The strict cousin: malformed escapes and invalid UTF-8 read as null.
@@ -271,7 +255,7 @@ fn encode_uri_component(s: &str) -> String {
 /// '2026' is rejected, and the SQL could never satisfy it meaningfully
 /// anyway.
 pub fn decode_inbox_timeline_cursor(cursor: &str) -> Option<(String, String)> {
-    let decoded = decode_uri_component(cursor)?;
+    let decoded = percent_decode(cursor)?;
     let split = decoded.rfind('|')?;
     if split == 0 {
         return None;
@@ -282,36 +266,6 @@ pub fn decode_inbox_timeline_cursor(cursor: &str) -> Option<(String, String)> {
         return None;
     }
     Some((created_at.to_string(), id.to_string()))
-}
-
-fn decode_uri_component(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' => {
-                let hi = hex_val(*bytes.get(i + 1)?)?;
-                let lo = hex_val(*bytes.get(i + 2)?)?;
-                out.push(hi * 16 + lo);
-                i += 3;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 fn looks_like_timestamp(s: &str) -> bool {

@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of the self-service grant path (cargo test -- --ignored).
 // The one-step grant is two single-row writes against board_agents and one
 // partial-unique dedup on board_agent_requests — none of which a unit test
@@ -8,14 +9,8 @@
 //   DATABASE_URL=postgres://… cargo test --test board_agent_access -- --ignored
 
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::boards::{add_board_agent_row, get_board_agent_config, remove_board_agent_row};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// Each test hangs off its OWN throwaway user (tests run concurrently, and a
 /// shared one would mean one test's cleanup deleting the board out from
 /// under the other) — the cascade removes board, board_agents and requests
@@ -52,7 +47,7 @@ async fn throwaway_board(pg: &PgPool, email: &str) -> String {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn self_service_rows_round_trip_without_touching_the_rest_of_the_policy() {
-    let pg = pool().await;
+    let pg = pg().await;
     let email = "board-access-rows@link-test.invalid";
     cleanup(&pg, email).await;
     let board = throwaway_board(&pg, email).await;
@@ -102,7 +97,7 @@ async fn file_open_request(pg: &PgPool, board: &str) -> u64 {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn one_open_request_per_board_and_agent_and_refile_after_a_decision() {
-    let pg = pool().await;
+    let pg = pg().await;
     let email = "board-access-request@link-test.invalid";
     cleanup(&pg, email).await;
     let board = throwaway_board(&pg, email).await;

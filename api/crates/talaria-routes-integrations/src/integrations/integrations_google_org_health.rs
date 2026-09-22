@@ -17,20 +17,20 @@ use talaria_api_facades::google::errors::google_fail;
 use talaria_session::require_admin;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
     // checkedAt is stamped BEFORE the await, so the timestamp names when the
     // probe STARTED, not when it answered.
     let checked_at = epoch_ms_to_iso(now_ms());
-    match probe_org_google_apis(&state.pg, &sb, now_ms()).await {
-        Ok(results) => Json(json!({
-            "checkedAt": checked_at,
-            "results": results,
-        }))
-        .into_response(),
-        Err(e) => google_fail(e, "APIs"),
-    }
+    Ok(
+        match probe_org_google_apis(&state.pg, &sb, now_ms()).await {
+            Ok(results) => Json(json!({
+                "checkedAt": checked_at,
+                "results": results,
+            }))
+            .into_response(),
+            Err(e) => google_fail(e, "APIs"),
+        },
+    )
 }

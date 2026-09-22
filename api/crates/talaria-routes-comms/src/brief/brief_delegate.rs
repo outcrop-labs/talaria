@@ -14,9 +14,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_body::{as_object, boolean_member, nullable_uuid_member};
+use talaria_body::{boolean_member, nullable_uuid_member};
 use talaria_daily_brief::delegation::{grant_reply, list_grants, release_drafts, revoke_reply};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -36,60 +36,44 @@ fn validate(obj: &serde_json::Map<String, serde_json::Value>) -> Result<Delegate
     })
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
-    match list_grants(&state.pg, &user.id).await {
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    Ok(match list_grants(&state.pg, &user.id).await {
         Ok(grants) => Json(json!({ "grants": grants })).into_response(),
-        Err(e) => {
-            tracing::error!("[brief] grant list failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[brief] grant list failed", e),
+    })
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(resp) => return resp,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     if !body.granted {
-        return match revoke_reply(&state.pg, &user.id, body.channel_id.as_deref()).await {
-            Ok(revoked) => Json(json!({ "revoked": revoked })).into_response(),
-            Err(e) => {
-                tracing::error!("[brief] revoke failed: {e}");
-                thrown_internal_error()
-            }
-        };
+        return Ok(
+            match revoke_reply(&state.pg, &user.id, body.channel_id.as_deref()).await {
+                Ok(revoked) => Json(json!({ "revoked": revoked })).into_response(),
+                Err(e) => internal("[brief] revoke failed", e),
+            },
+        );
     }
     let grant = match grant_reply(&state.pg, &user.id, body.channel_id.as_deref()).await {
         Ok(g) => g,
-        Err(e) => {
-            tracing::error!("[brief] grant failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[brief] grant failed", e)),
     };
     let Some(grant) = grant else {
-        return house_error(
+        return Ok(house_error(
             StatusCode::FORBIDDEN,
             "That is not one of your conversations.",
-        );
+        ));
     };
     // Granting permission to send a reply that is already written means
     // sending it — otherwise the control appears to do nothing until the other
@@ -100,5 +84,5 @@ pub async fn post(
     let sent = release_drafts(&notify, &user.id, body.channel_id.as_deref())
         .await
         .unwrap_or(0);
-    Json(json!({ "grant": grant, "sent": sent })).into_response()
+    Ok(Json(json!({ "grant": grant, "sent": sent })).into_response())
 }

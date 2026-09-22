@@ -1,3 +1,4 @@
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createInfiniteQuery, createQuery } from '@tanstack/svelte-query'
 import { delJson, getJson, postJson, postJsonOr, postStream, putJson } from '@/lib/fetch-json'
 import { sseFrames } from '@/lib/sse-parse'
@@ -30,8 +31,6 @@ const requestSignal = (signal?: AbortSignal): AbortSignal => {
 
 /** A reactive argument: pass plain options, or a getter when `enabled` should
  *  track component state. */
-type MaybeGetter<T> = T | (() => T)
-const resolve = <T,>(v: MaybeGetter<T>): T => (typeof v === 'function' ? (v as () => T)() : v)
 
 export function useInboxFocus(options: MaybeGetter<{ enabled?: boolean }> = {}) {
   return createQuery(() => ({

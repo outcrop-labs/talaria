@@ -14,8 +14,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use talaria_body::{as_object, optional_string_member, parse, present_nullable_string_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{optional_string_member, parse, present_nullable_string_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_me::{
     gateway_models, get_prefs, is_valid_time_zone, member_model_allowlist, model_allowed_for,
     set_preferred_effort, set_preferred_model, set_timezone, set_user_name,
@@ -58,43 +58,31 @@ fn validate_me_patch(obj: &serde_json::Map<String, Value>) -> Result<MePatch, St
     })
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let (preferred_model, preferred_effort, timezone) = match get_prefs(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[me] prefs read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[me] prefs read failed", e)),
     };
-    Json(json!({
+    Ok(Json(json!({
         "preferredModel": preferred_model,
         "preferredEffort": preferred_effort,
         "timezone": timezone,
     }))
-    .into_response()
+    .into_response())
 }
 
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let patch = match validate_me_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     let mut updated = user.clone();
@@ -103,17 +91,13 @@ pub async fn put(
         // a spaces-only name is legal here and stores "".
         let name = raw.trim();
         if let Err(e) = set_user_name(&state.pg, &user.id, name).await {
-            tracing::error!("[me] set name failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[me] set name failed", e));
         }
         match update_session_user(&state, &headers, &json!({ "name": name })).await {
             Ok(Some(next)) => updated = next,
             // A session that vanished mid-request keeps the auth-time user.
             Ok(None) => {}
-            Err(e) => {
-                tracing::error!("[me] session patch failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[me] session patch failed", e)),
         }
     }
     if let Some(choice) = &patch.preferred_model {
@@ -124,21 +108,17 @@ pub async fn put(
             let allow = member_model_allowlist(&state.pg).await;
             let catalog = match gateway_models(&state.pg).await {
                 Ok(c) => c,
-                Err(e) => {
-                    tracing::error!("[me] catalog read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[me] catalog read failed", e)),
             };
             if !model_allowed_for(&user.role, model, &allow, &catalog) {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     "that model is not available to you — ask an admin",
-                );
+                ));
             }
         }
         if let Err(e) = set_preferred_model(&state.pg, &user.id, choice.as_deref()).await {
-            tracing::error!("[me] set preferred model failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[me] set preferred model failed", e));
         }
     }
     if let Some(choice) = &patch.preferred_effort {
@@ -148,8 +128,7 @@ pub async fn put(
         // vouches for the level. The length bound in the schema is the whole
         // server-side contract.
         if let Err(e) = set_preferred_effort(&state.pg, &user.id, choice.as_deref()).await {
-            tracing::error!("[me] set preferred effort failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[me] set preferred effort failed", e));
         }
     }
     if let Some(choice) = &patch.timezone {
@@ -160,22 +139,23 @@ pub async fn put(
             Some(raw) => {
                 let tz = raw.trim();
                 if !is_valid_time_zone(tz) {
-                    return house_error(StatusCode::BAD_REQUEST, "not a recognized time zone");
+                    return Ok(house_error(
+                        StatusCode::BAD_REQUEST,
+                        "not a recognized time zone",
+                    ));
                 }
                 if let Err(e) = set_timezone(&state.pg, &user.id, Some(tz)).await {
-                    tracing::error!("[me] set timezone failed: {e}");
-                    return thrown_internal_error();
+                    return Ok(internal("[me] set timezone failed", e));
                 }
             }
             None => {
                 if let Err(e) = set_timezone(&state.pg, &user.id, None).await {
-                    tracing::error!("[me] clear timezone failed: {e}");
-                    return thrown_internal_error();
+                    return Ok(internal("[me] clear timezone failed", e));
                 }
             }
         }
     }
-    Json(json!({ "user": updated })).into_response()
+    Ok(Json(json!({ "user": updated })).into_response())
 }
 
 #[cfg(test)]

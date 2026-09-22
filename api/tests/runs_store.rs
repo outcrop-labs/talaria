@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof of runs/store.rs (cargo test -- --ignored). Every write in
 // the store is a compare-and-set whose correctness is a WHERE clause — a
 // typo'd predicate does not fail a unit test, it silently lets two drivers
@@ -10,19 +11,13 @@
 
 use serde_json::json;
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::runs::define::{
     DecisionAnswer, DecisionOption, DecisionRequest, RunDecision, RunState,
 };
 use talaria_api::runs::store::{
     AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, PgRunStore, RunStore, WriteFailure,
 };
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 /// One run of the test kind; earlier crashed runs of this suite are swept so
 /// the unique approval_key index never bites the next attempt.
 async fn cleanup(pg: &PgPool) {
@@ -35,7 +30,7 @@ async fn cleanup(pg: &PgPool) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_cas_lifecycle_refuses_every_wrong_writer() {
-    let pg = pool().await;
+    let pg = pg().await;
     cleanup(&pg).await;
     let store = PgRunStore::new(pg.clone());
 
@@ -248,7 +243,7 @@ async fn the_cas_lifecycle_refuses_every_wrong_writer() {
 async fn due_finds_the_unleased_and_kind_views_read_the_latest() {
     use talaria_api::runs::store::{active_run_of_kind, latest_run_of_kind};
 
-    let pg = pool().await;
+    let pg = pg().await;
     let kind = "rust-store-test-due"; // own kind: this suite runs its tests in parallel
     sqlx::query("delete from runs where kind = $1")
         .bind(kind)

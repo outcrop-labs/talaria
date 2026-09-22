@@ -13,10 +13,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{
-    as_object, optional_enum_member, optional_max_string_member, optional_string_member, parse,
-    string_member, uuid_member,
+    optional_enum_member, optional_max_string_member, optional_string_member, parse, string_member,
+    uuid_member,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 
@@ -109,21 +109,15 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "GET views", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on views failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on views failed", e)),
     }
     let rows: Vec<ViewRow> = match sqlx::query_as(
         "select id::text, board_id::text, name, config, created_by, position, \
@@ -136,12 +130,9 @@ pub async fn get(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] view list failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[boards] view list failed", e)),
     };
-    Json(json!({ "views": rows.into_iter().map(view_of).collect::<Vec<_>>() })).into_response()
+    Ok(Json(json!({ "views": rows.into_iter().map(view_of).collect::<Vec<_>>() })).into_response())
 }
 
 pub async fn post(
@@ -149,34 +140,25 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "POST views", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on view post failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on view post failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let name = match string_member(obj, "name", 1, 60) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let config = match config_member(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // createdBy is the human-readable attribution: email, else name, else
     // 'user' — the same actor ladder the audit log climbs.
@@ -201,12 +183,8 @@ pub async fn post(
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[boards] view create failed: {e}");
-            return thrown_internal_error();
-        }
-    };
-    Json(json!({ "view": view_of(row) })).into_response()
+        Err(e) => return Ok(internal("[boards] view create failed", e))};
+    Ok(Json(json!({ "view": view_of(row) })).into_response())
 }
 
 pub async fn put(
@@ -214,38 +192,29 @@ pub async fn put(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "PUT views", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on view put failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on view put failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let view_id = match uuid_member(obj, "viewId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let name = match optional_string_member(obj, "name", 60) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let config = match optional_config_member(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // Two separate statements: a name-only PUT does not touch the config,
     // and vice versa.
@@ -260,8 +229,7 @@ pub async fn put(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[boards] view rename failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[boards] view rename failed", e));
     }
     if let Some(config) = &config
         && let Err(e) = sqlx::query(
@@ -274,10 +242,9 @@ pub async fn put(
         .execute(&state.pg)
         .await
     {
-        tracing::error!("[boards] view config write failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[boards] view config write failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn delete(
@@ -285,30 +252,21 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("boards", "DELETE views", &id) {
-        return gate;
+        return Ok(gate);
     }
     match board_role(&state.pg, &user.id, &id).await {
         Ok(role) if can_edit(role.as_deref()) => {}
-        Ok(_) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[boards] role read on view delete failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(_) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[boards] role read on view delete failed", e)),
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let view_id = match uuid_member(obj, "viewId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Err(e) =
         sqlx::query("delete from board_views where id = $1::uuid and board_id = $2::uuid")
@@ -317,10 +275,9 @@ pub async fn delete(
             .execute(&state.pg)
             .await
     {
-        tracing::error!("[boards] view delete failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[boards] view delete failed", e));
     }
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

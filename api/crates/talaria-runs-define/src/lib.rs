@@ -59,6 +59,19 @@ pub enum Authority {
     Nobody,
 }
 
+/// Who may watch a run and be told about it: its owner, or — for org-wide
+/// work with nobody behind it — the admins. Three run engines (research,
+/// agent-hire, plan-draft) each wrote this out; the discriminator is this
+/// crate's `Authority`, so the mapping belongs beside it.
+pub fn audience(run: &RunRow) -> Authority {
+    match &run.owner_user_id {
+        Some(owner) => Authority::User {
+            user_ids: vec![owner.clone()],
+        },
+        None => Authority::Admin { on_board: None },
+    }
+}
+
 /// The lifecycle. Six states, and `awaiting` is the point: a run PARKED on a
 /// human decision — not failed (nothing is wrong), not running (nothing is
 /// burning), not queued (no amount of driving advances it).

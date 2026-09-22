@@ -15,7 +15,7 @@ use talaria_api_facades::retrieval::index::IndexDoc;
 use talaria_api_facades::retrieval::qdrant;
 use talaria_api_facades::retrieval::sources::index_activity;
 use talaria_body::{
-    array_msg, array_too_big_msg, as_object, enum_member, object_msg, optional_uuid_array_member,
+    array_msg, array_too_big_msg, enum_member, object_msg, optional_uuid_array_member,
     optional_uuid_member, string_member, uuid_member, zod_type_name,
 };
 use talaria_channel_replies::{notify_dm_message, notify_user_mentions, trigger_agent_replies};
@@ -23,7 +23,7 @@ use talaria_channels::{
     agent_may_access_channel, channel_role, get_channel_message, insert_channel_message,
     inserted_wire, list_channel_messages, list_thread_messages,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
 use talaria_refs::{MessageRef, RefUser, resolve_refs};
 use talaria_session::require_user;
@@ -35,7 +35,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
     uri: Uri,
-) -> Response {
+) -> Result<Response, Response> {
     let query = |k: &str| -> Option<String> {
         uri.query().and_then(|q| {
             url::form_urlencoded::parse(q.as_bytes())
@@ -63,24 +63,18 @@ pub async fn get(
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(Some(c)) => c,
         Ok(None) => return get_as_user(&state, &headers, &id, since, thread).await,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent access read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] agent access read failed", e)),
     };
     if !may {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let messages = match page(&state, &id, since, thread.as_deref()).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] message page read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] message page read failed", e)),
     };
     // WITHOUT `guard`. An agent reads a channel through this route (the MCP
     // `read_channel` tool proxies it), and a finding is the guard's verdict on
@@ -100,7 +94,7 @@ pub async fn get(
             v
         })
         .collect();
-    Json(json!({ "messages": stripped })).into_response()
+    Ok(Json(json!({ "messages": stripped })).into_response())
 }
 
 async fn get_as_user(
@@ -109,26 +103,20 @@ async fn get_as_user(
     id: &str,
     since: f64,
     thread: Option<String>,
-) -> Response {
+) -> Result<Response, Response> {
     let user = match require_user(state, headers).await {
         Ok(u) => u,
-        Err(gate) => return gate,
+        Err(gate) => return Err(gate),
     };
     match channel_role(&state.pg, &user.id, id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on GET messages failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on GET messages failed", e)),
     }
-    match page(state, id, since, thread.as_deref()).await {
+    Ok(match page(state, id, since, thread.as_deref()).await {
         Ok(messages) => Json(json!({ "messages": messages })).into_response(),
-        Err(e) => {
-            tracing::error!("[channels] message page read failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[channels] message page read failed", e),
+    })
 }
 
 async fn page(
@@ -209,22 +197,19 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     let parsed = talaria_body::parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let body = match validate_post(obj) {
         Ok(b) => b,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // A post needs something in it: text, an attachment, or a ref chip.
     if body.content.is_empty()
         && body.attachment_ids.as_ref().is_none_or(|a| a.is_empty())
         && body.refs.as_ref().is_none_or(|r| r.is_empty())
     {
-        return house_error(StatusCode::BAD_REQUEST, "bad request");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "bad request"));
     }
 
     // An agent in the channel can post. It doesn't trigger other agents (no
@@ -232,22 +217,19 @@ pub async fn post(
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(Some(c)) => c,
         Ok(None) => return post_as_user(&state, &headers, &id, body).await,
-        Err(resp) => return resp,
+        Err(resp) => return Ok(resp),
     };
     let name = caller.model.clone();
     // The CALLER, not `name`: elevation buys org-wide posting rights.
     let may = match agent_may_access_channel(&state.pg, &id, &AgentSubject::Caller(caller)).await {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] agent access read on POST failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] agent access read on POST failed", e)),
     };
     if !may {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     if body.content.trim().is_empty() {
-        return house_error(StatusCode::BAD_REQUEST, "bad request");
+        return Ok(house_error(StatusCode::BAD_REQUEST, "bad request"));
     }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     let msg = match insert_channel_message(
@@ -263,10 +245,7 @@ pub async fn post(
     .await
     {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] agent post insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] agent post insert failed", e)),
     };
     let nm = channel_name(&state.pg, &id)
         .await
@@ -322,23 +301,24 @@ pub async fn post(
         )
         .await;
     });
-    // The insert's own RETURNING shape — no guard/editedAt keys (absent, not
-    // null; decoration hasn't run).
-    Json(json!({ "message": inserted_wire(&msg) })).into_response()
+    Ok(
+        // The insert's own RETURNING shape — no guard/editedAt keys (absent, not
+        // null; decoration hasn't run).
+        Json(json!({ "message": inserted_wire(&msg) })).into_response(),
+    )
 }
 
-async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: PostBody) -> Response {
-    let user = match require_user(state, headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+async fn post_as_user(
+    state: &AppState,
+    headers: &HeaderMap,
+    id: &str,
+    body: PostBody,
+) -> Result<Response, Response> {
+    let user = require_user(state, headers).await?;
     match channel_role(&state.pg, &user.id, id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return house_error(StatusCode::FORBIDDEN, "forbidden"),
-        Err(e) => {
-            tracing::error!("[channels] role read on POST messages failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+        Err(e) => return Ok(internal("[channels] role read on POST messages failed", e)),
     }
     // A thread reply hangs off a ROOT in this channel; replying to a reply
     // re-roots onto its thread (Slack semantics — threads never nest).
@@ -346,13 +326,10 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     if let Some(root_id) = &body.thread_root_id {
         let root = match get_channel_message(&state.pg, id, root_id).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[channels] thread root read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[channels] thread root read failed", e)),
         };
         let Some(root) = root else {
-            return house_error(StatusCode::BAD_REQUEST, "no such thread");
+            return Ok(house_error(StatusCode::BAD_REQUEST, "no such thread"));
         };
         thread_root_id = Some(root.thread_root_id.unwrap_or(root.id));
     }
@@ -364,10 +341,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     let uploads =
         match resolve_attachments(&state.pg, body.attachment_ids.as_deref().unwrap_or(&[])).await {
             Ok(v) => v,
-            Err(e) => {
-                tracing::error!("[channels] attachment resolve failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[channels] attachment resolve failed", e)),
         };
     let ref_chips = match resolve_refs(
         &state.pg,
@@ -381,10 +355,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     .await
     {
         Ok(v) => v,
-        Err(e) => {
-            tracing::error!("[channels] ref resolve failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] ref resolve failed", e)),
     };
     let attachments: Vec<Value> = uploads
         .iter()
@@ -413,10 +384,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
     .await
     {
         Ok(m) => m,
-        Err(e) => {
-            tracing::error!("[channels] post insert failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[channels] post insert failed", e)),
     };
 
     // Agent replies + mention notifications run detached; the POST returns
@@ -497,10 +465,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             Ok(r) => r,
             // A failure here 500s the route after the insert and the
             // detached triggers have already fired — the write stands.
-            Err(e) => {
-                tracing::error!("[channels] kind read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[channels] kind read failed", e)),
         };
     let sender_label = user.name.clone().unwrap_or_else(|| author.clone());
     if kind.as_ref().map(|(k,)| k.as_str()) == Some("dm") {
@@ -531,7 +496,7 @@ async fn post_as_user(state: &AppState, headers: &HeaderMap, id: &str, body: Pos
             .await;
         });
     }
-    Json(json!({ "message": inserted_wire(&message) })).into_response()
+    Ok(Json(json!({ "message": inserted_wire(&message) })).into_response())
 }
 
 async fn channel_name(pg: &sqlx::PgPool, id: &str) -> Option<String> {

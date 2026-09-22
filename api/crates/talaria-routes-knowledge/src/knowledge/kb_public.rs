@@ -9,16 +9,13 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_api_facades::kb::get_public_doc;
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, Path(slug): Path<String>) -> Response {
     let doc = match get_public_doc(&state.pg, &slug).await {
         Ok(d) => d,
-        Err(e) => {
-            tracing::error!("[kb] public doc read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return internal("[kb] public doc read failed", e),
     };
     let Some(doc) = doc else {
         return house_error(StatusCode::NOT_FOUND, "not found");

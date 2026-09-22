@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{board_allows_agent, board_role, can_edit};
-use talaria_body::{as_object, parse, uuid_member};
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_body::{parse, uuid_member};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_tasks::{
@@ -32,22 +32,16 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
+) -> Result<Response, Response> {
     if let Some(gate) = talaria_params::uuid_gate("tasks", "POST dependency", &id) {
-        return gate;
+        return Ok(gate);
     }
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => {
-            tracing::error!("[tasks] read on POST dependency failed: {e}");
-            return thrown_internal_error();
-        }
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on POST dependency failed", e)),
     };
-    let caller = match agent_caller(&state.pg, &headers).await {
-        Ok(c) => c,
-        Err(gate) => return gate,
-    };
+    let caller = agent_caller(&state.pg, &headers).await?;
     // The AGENT itself, not a boolean — the second check below needs the
     // same subject the first one used.
     let (actor, agent) = if let Some(caller) = caller {
@@ -63,12 +57,14 @@ pub async fn post(
         {
             Ok(a) => a,
             Err(e) => {
-                tracing::error!("[tasks] agent policy read on POST dependency failed: {e}");
-                return thrown_internal_error();
+                return Ok(internal(
+                    "[tasks] agent policy read on POST dependency failed",
+                    e,
+                ));
             }
         };
         if !allowed {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         // The central agent-write invariant, imported rather than restated:
         // `add_dependency` never reaches `update_task` (it writes
@@ -85,27 +81,23 @@ pub async fn post(
         .await
         {
             Ok(None) => {}
-            Ok(Some(shut)) => return house_error(StatusCode::FORBIDDEN, &shut),
+            Ok(Some(shut)) => return Ok(house_error(StatusCode::FORBIDDEN, &shut)),
             Err(e) => {
-                tracing::error!("[tasks] agent authority on POST dependency failed: {e}");
-                return thrown_internal_error();
+                return Ok(internal(
+                    "[tasks] agent authority on POST dependency failed",
+                    e,
+                ));
             }
         }
         (caller.model.clone(), Some(caller))
     } else {
-        let user = match require_user(&state, &headers).await {
-            Ok(u) => u,
-            Err(gate) => return gate,
-        };
+        let user = require_user(&state, &headers).await?;
         let role = match board_role(&state.pg, &user.id, &task.board_id).await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::error!("[tasks] role read on POST dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[tasks] role read on POST dependency failed", e)),
         };
         if !can_edit(role.as_deref()) {
-            return house_error(StatusCode::FORBIDDEN, "forbidden");
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         (
             user.email
@@ -116,24 +108,31 @@ pub async fn post(
         )
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let depends_on_id = match uuid_member(obj, "dependsOnId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let dep = match get_task(&state.pg, &depends_on_id).await {
         Ok(Some(d)) => d,
-        Ok(None) => return house_error(StatusCode::BAD_REQUEST, "must be a ticket on this board"),
+        Ok(None) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "must be a ticket on this board",
+            ));
+        }
         Err(e) => {
-            tracing::error!("[tasks] blocker read on POST dependency failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal(
+                "[tasks] blocker read on POST dependency failed",
+                e,
+            ));
         }
     };
     if dep.board_id != task.board_id {
-        return house_error(StatusCode::BAD_REQUEST, "must be a ticket on this board");
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "must be a ticket on this board",
+        ));
     }
     // The edge lands on BOTH tickets (it shows in the target's "blocks"
     // list), so the rule applies to the target too.
@@ -149,14 +148,16 @@ pub async fn post(
         {
             Ok(None) => {}
             Ok(Some(dep_shut)) => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     &format!("{dep_shut}. That is the ticket you named as a blocker."),
-                );
+                ));
             }
             Err(e) => {
-                tracing::error!("[tasks] blocker authority on POST dependency failed: {e}");
-                return thrown_internal_error();
+                return Ok(internal(
+                    "[tasks] blocker authority on POST dependency failed",
+                    e,
+                ));
             }
         }
     }
@@ -165,15 +166,14 @@ pub async fn post(
     // request that cannot be satisfied is 400, and both carry the sentence
     // that says why.
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
-    match add_dependency(&deps, &id, &depends_on_id, &actor).await {
-        Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(TaskError::ApprovalRequired(msg)) => house_error(StatusCode::FORBIDDEN, &msg),
-        Err(TaskError::Refusal(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
-        Err(TaskError::Db(e)) => {
-            tracing::error!("[tasks] dependency add failed: {e}");
-            thrown_internal_error()
-        }
-    }
+    Ok(
+        match add_dependency(&deps, &id, &depends_on_id, &actor).await {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(TaskError::ApprovalRequired(msg)) => house_error(StatusCode::FORBIDDEN, &msg),
+            Err(TaskError::Refusal(msg)) => house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(TaskError::Db(e)) => internal("[tasks] dependency add failed", e),
+        },
+    )
 }
 
 pub async fn delete(
@@ -181,51 +181,36 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_user(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
     if let Some(gate) = talaria_params::uuid_gate("tasks", "DELETE dependency", &id) {
-        return gate;
+        return Ok(gate);
     }
     // One 403 for both a missing ticket and a role failure — the dependency
     // plane does not reveal whether the id exists.
     let task = match get_task(&state.pg, &id).await {
         Ok(t) => t,
-        Err(e) => {
-            tracing::error!("[tasks] read on DELETE dependency failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[tasks] read on DELETE dependency failed", e)),
     };
     let editable = match task.as_ref() {
         Some(t) => match board_role(&state.pg, &user.id, &t.board_id).await {
             Ok(r) => can_edit(r.as_deref()),
-            Err(e) => {
-                tracing::error!("[tasks] role read on DELETE dependency failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[tasks] role read on DELETE dependency failed", e)),
         },
         None => false,
     };
     if !editable {
-        return house_error(StatusCode::FORBIDDEN, "forbidden");
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let depends_on_id = match uuid_member(obj, "dependsOnId") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
-    match remove_dependency(&deps, &id, &depends_on_id).await {
+    Ok(match remove_dependency(&deps, &id, &depends_on_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => {
-            tracing::error!("[tasks] dependency remove failed: {e}");
-            thrown_internal_error()
-        }
-    }
+        Err(e) => internal("[tasks] dependency remove failed", e),
+    })
 }

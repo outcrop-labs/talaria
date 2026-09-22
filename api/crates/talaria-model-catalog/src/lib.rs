@@ -23,18 +23,11 @@
 
 use sqlx::PgPool;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
+use talaria_agent_auth::now_ms;
 use talaria_capability::{CapabilityFact, capability_key, merge_capabilities};
 use talaria_gateway::provider::CatalogModel;
 use talaria_gateway::registry::LlmEndpoint;
 use talaria_gateway::settings::{get_setting, set_setting};
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 pub const KEY: &str = "model_catalog";
 
@@ -327,7 +320,7 @@ pub async fn refresh_endpoint_catalog_with(
     models: Vec<talaria_gateway::provider::CatalogModel>,
 ) -> RefreshResult {
     // `new Date().toISOString()` — millisecond precision, Z.
-    let at = talaria_agent_auth::epoch_ms_to_iso(now_ms() as i64);
+    let at = talaria_agent_auth::epoch_ms_to_iso(now_ms() as u64 as i64);
 
     let mut store = read_store(&state.pg).await;
     let entry = serde_json::json!({

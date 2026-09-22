@@ -1,3 +1,4 @@
+mod support;
 // Live-DB + live-Redis proof of the attribution ladder
 // (cargo test -- --ignored). The ladder is three queries and one Redis GET
 // whose correctness is ORDER: an owner that outranks a live turn, a chatter
@@ -13,16 +14,10 @@
 
 use redis::AsyncCommands;
 use sqlx::postgres::PgPool;
+use support::pg;
 use talaria_api::agent_auth::{AgentCaller, AgentSubject};
 use talaria_api::attribution::responsible_user_for;
 use talaria_api::users::{Identity, upsert_user};
-
-async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    PgPool::connect(&url).await.expect("connect")
-}
-
 async fn redis() -> redis::aio::ConnectionManager {
     let url = std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)");
     let client = redis::Client::open(url).expect("parse redis url");
@@ -161,7 +156,7 @@ async fn clear_turn(redis: &mut redis::aio::ConnectionManager, model: &str) {
 #[tokio::test]
 #[ignore]
 async fn a_personal_assistant_outranks_a_live_turn() {
-    let pg = pool().await;
+    let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-pa", "pa").await;
     let owner = user(&pg, "owner@pa.attribution-test.invalid").await;
@@ -182,7 +177,7 @@ async fn a_personal_assistant_outranks_a_live_turn() {
 #[tokio::test]
 #[ignore]
 async fn a_live_turn_outranks_the_hirer() {
-    let pg = pool().await;
+    let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-org", "org").await;
     let hirer = user(&pg, "hirer@org.attribution-test.invalid").await;
@@ -203,7 +198,7 @@ async fn a_live_turn_outranks_the_hirer() {
 #[tokio::test]
 #[ignore]
 async fn no_turn_falls_to_the_latest_hirer() {
-    let pg = pool().await;
+    let pg = pg().await;
     let redis = redis().await;
     cleanup(&pg, "attrtest-rehire", "rehire").await;
     let first = user(&pg, "first@rehire.attribution-test.invalid").await;
@@ -224,7 +219,7 @@ async fn no_turn_falls_to_the_latest_hirer() {
 #[tokio::test]
 #[ignore]
 async fn a_dead_turn_names_the_hirer_not_a_missing_conversation() {
-    let pg = pool().await;
+    let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-deadturn", "deadturn").await;
     let hirer = user(&pg, "hirer@deadturn.attribution-test.invalid").await;
@@ -254,7 +249,7 @@ async fn a_dead_turn_names_the_hirer_not_a_missing_conversation() {
 #[tokio::test]
 #[ignore]
 async fn a_legacy_caller_gets_nobody() {
-    let pg = pool().await;
+    let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-legacy", "legacy").await;
     let owner = user(&pg, "owner@legacy.attribution-test.invalid").await;
@@ -277,7 +272,7 @@ async fn a_legacy_caller_gets_nobody() {
 #[tokio::test]
 #[ignore]
 async fn nobody_stands_behind_an_untraceable_agent() {
-    let pg = pool().await;
+    let pg = pg().await;
     let redis = redis().await;
     cleanup(&pg, "attrtest-orphan", "orphan").await;
     let model = agent(&pg, "attrtest-orphan", None).await;

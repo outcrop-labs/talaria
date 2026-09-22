@@ -37,7 +37,8 @@
   import { slide, staggerIn } from '@/lib/motion'
   import { useBoards } from '@/lib/boards.svelte'
   import { streamMuse } from '@/lib/muse.svelte'
-  import { createWorkflow, updateWorkflow, type SkillLibraryOwner } from '@/lib/workflows'
+  import type { SkillOwner } from '@/lib/skills'
+  import { createWorkflow, updateWorkflow } from '@/lib/workflows'
   import Tokens from './Tokens.svelte'
 
   let {
@@ -49,7 +50,7 @@
   }: {
     open: boolean
     onClose: () => void
-    owners: SkillLibraryOwner[]
+    owners: SkillOwner[]
     prefill?: GuidePrefill
     onCreated: (workflowId: string | null, skillRef: string) => void
   } = $props()

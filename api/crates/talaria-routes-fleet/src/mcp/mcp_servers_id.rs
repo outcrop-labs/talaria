@@ -19,12 +19,12 @@ use talaria_api_facades::mcp::registry::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    array_msg, as_object, optional_boolean_member, optional_enum_member,
-    optional_max_string_member, optional_string_array_member, optional_url_member, parse,
-    string_msg, uuid_member, zod_type_name,
+    array_msg, optional_boolean_member, optional_enum_member, optional_max_string_member,
+    optional_string_array_member, optional_url_member, parse, string_msg, uuid_member,
+    zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
-use talaria_session::{actor_of, require_perm};
+use talaria_error::{house_error, internal, object_or_400};
+use talaria_session::{actor_of, require_perm, secretbox_or_500};
 use talaria_state::AppState;
 
 pub async fn put(
@@ -32,45 +32,29 @@ pub async fn put(
     Path(id): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let server = match get_mcp_server(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[mcp] server read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp] server read failed", e)),
     };
     let Some(server) = server else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let actor = actor_of(&user);
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[mcp] secretbox unavailable").await?;
 
     // Self-heal: failed/aged discovery re-probes and backfills on any touch.
     if let Err(e) = ensure_oauth_config(&state.pg, &server.id, &server.url).await {
         // a self-heal throw is the route's 500, not a 400.
-        tracing::error!("[mcp] oauth self-heal failed: {e}");
-        return thrown_internal_error();
+        return Ok(internal("[mcp] oauth self-heal failed", e));
     }
 
     let patch = match parse_patch(obj) {
         Ok(p) => p,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if let Some(oauth_client) = &patch.oauth_client {
         // `{origin}/api/mcp/oauth/callback` — the callback this instance
@@ -93,7 +77,7 @@ pub async fn put(
         )
         .await
         {
-            return house_error(StatusCode::BAD_REQUEST, &e);
+            return Ok(house_error(StatusCode::BAD_REQUEST, &e));
         }
         log_audit(
             &state.pg,
@@ -139,8 +123,7 @@ pub async fn put(
         {
             // A guard's refusal and a DB failure alike are the route's 500 —
             // nothing catches this call.
-            tracing::error!("[mcp] server update failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[mcp] server update failed", e));
         }
         // A disabled package server stops running — its container exists to
         // serve, and an idle one still holds sealed credentials in its env.
@@ -208,8 +191,7 @@ pub async fn put(
         )
         .await
         {
-            tracing::error!("[mcp] assign failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[mcp] assign failed", e));
         }
         log_audit(
             &state.pg,
@@ -227,8 +209,7 @@ pub async fn put(
     }
     if let Some(unassign) = &patch.unassign {
         if let Err(e) = remove_assignment(&state.pg, &server.id, unassign).await {
-            tracing::error!("[mcp] unassign failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[mcp] unassign failed", e));
         }
         log_audit(
             &state.pg,
@@ -254,8 +235,7 @@ pub async fn put(
         )
         .await
         {
-            tracing::error!("[mcp] user access failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[mcp] user access failed", e));
         }
         log_audit(
             &state.pg,
@@ -285,8 +265,7 @@ pub async fn put(
         )
         .await
         {
-            tracing::error!("[mcp] team access failed: {e}");
-            return thrown_internal_error();
+            return Ok(internal("[mcp] team access failed", e));
         }
         log_audit(
             &state.pg,
@@ -311,10 +290,10 @@ pub async fn put(
         match refresh_mcp_tools(&state.pg, &sb, &server.id).await {
             Ok(list) => tools = Some(list),
             Err(e) => {
-                return house_error(
+                return Ok(house_error(
                     StatusCode::BAD_GATEWAY,
                     &format!("tool discovery failed: {e}"),
-                );
+                ));
             }
         }
     }
@@ -367,46 +346,31 @@ pub async fn put(
     if let Some(tools) = tools {
         out.insert("tools".into(), Value::Array(tools));
     }
-    Json(Value::Object(out)).into_response()
+    Ok(Json(Value::Object(out)).into_response())
 }
 
 pub async fn delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let server = match get_mcp_server(&state.pg, &id).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[mcp] server read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp] server read failed", e)),
     };
     let Some(server) = server else {
-        return house_error(StatusCode::NOT_FOUND, "not found");
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // Captured before the row vanishes.
     let carriers = match carriers_for_server(&state.pg, &server.id).await {
         Ok(c) => c,
-        Err(e) => {
-            tracing::error!("[mcp] carriers read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp] carriers read failed", e)),
     };
     if let Err(e) = delete_mcp_server(&state.pg, &server.id).await {
-        return house_error(StatusCode::BAD_REQUEST, &e);
+        return Ok(house_error(StatusCode::BAD_REQUEST, &e));
     }
-    let sb = match state.secretbox().await {
-        Ok(sb) => sb,
-        Err(e) => {
-            tracing::error!("[mcp] secretbox unavailable: {e}");
-            return thrown_internal_error();
-        }
-    };
+    let sb = secretbox_or_500(&state, "[mcp] secretbox unavailable").await?;
     enqueue_rolls(&carriers, &state.pg, &sb);
     log_audit(
         &state.pg,
@@ -422,7 +386,7 @@ pub async fn delete(
     )
     .await;
     spawn_render(&state.pg, &sb);
-    Json(json!({ "ok": true })).into_response()
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 fn spawn_render(pg: &sqlx::PgPool, sb: &talaria_secretbox::SecretBox) {

@@ -13,7 +13,7 @@
   import { saveArtifact, useArtifact } from '@/lib/artifacts'
   import { cn } from '@/lib/cn'
   import { errorMessage, postJson } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import { onUserEvent } from '@/lib/user-events.svelte'
   import { p } from '@/router'
 
@@ -50,7 +50,7 @@
     try {
       await saveArtifact(id, { body })
     } catch (e) {
-      pushToast({ title: 'Save failed', body: errorMessage(e), tone: 'danger' })
+      toastError('Save failed', e)
       return
     }
     void qc.invalidateQueries({ queryKey: ['artifact', id] })

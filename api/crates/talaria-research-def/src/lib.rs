@@ -95,8 +95,8 @@ use talaria_retrieval::index::IndexDoc;
 use talaria_retrieval::sources::{index_activity, index_personal};
 use talaria_retrieval::{embed, qdrant};
 use talaria_runs_define::{
-    Authority, DEFAULT_MAX_ATTEMPTS, DecisionOption, DecisionRequest, RunDefinition, RunRow,
-    RunStepContext, StepResult, register_run,
+    DEFAULT_MAX_ATTEMPTS, DecisionOption, DecisionRequest, RunDefinition, RunStepContext,
+    StepResult, audience, register_run,
 };
 use talaria_source_registry::{ResearchSource, SourceRegistry, SourceSeed};
 use talaria_state::AppState;
@@ -2013,30 +2013,6 @@ async fn begin(
     }
 }
 
-/// WHO MAY DECIDE, and it is the run's owner rather than its members.
-///
-/// Research is owner-scoped: the owner gets the run and everyone else a read
-/// through `research_members` or through the run having no owner at all.
-/// MEMBERS ARE DELIBERATELY NOT IN HERE — `audience` is synchronous (called
-/// from inside the approvals census, on a row) so it cannot query the
-/// membership table, and a membership list copied onto the run's input at
-/// enqueue time would be a stale copy of a thing people are added to while a
-/// run is in flight.
-///
-/// AN ORG RUN (no owner — a general agent researching for the workspace) goes
-/// to the admins. That is a NARROWING and not a widening: an ownerless run is
-/// already readable by anyone signed in, so its question is not a disclosure
-/// to the admins, and the admins are the people who can act on "the search
-/// models are not answering".
-fn audience(run: &RunRow) -> Authority {
-    match &run.owner_user_id {
-        Some(owner) => Authority::User {
-            user_ids: vec![owner.clone()],
-        },
-        None => Authority::Admin { on_board: None },
-    }
-}
-
 /// The real step deps. They need the AppState, which the boot wiring owns, so
 /// they are installed separately from registration; an unarmed step is
 /// the loud refusal below — reached only by a driver armed before its deps,
@@ -2093,6 +2069,7 @@ pub fn research_run() -> &'static Arc<RunDefinition> {
 
 #[cfg(test)]
 mod tests {
+    use talaria_runs_define::{Authority, RunRow};
     // What a research run is worth is what it keeps when the process dies, so
     // that is what this file measures: every test below kills a driver
     // somewhere and then asks what the resumed run PAID for and what it

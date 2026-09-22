@@ -10,7 +10,7 @@
 // PlanModal and the header button read one vocabulary; the server's run
 // states fold into it here.
 import type { Proposal } from './plan-modal'
-import { delJson, getJson, HttpError, patchJson, postJson } from '@/lib/fetch-json'
+import { HttpError, delJson, getJson, patchJson, postJson } from '@/lib/fetch-json'
 
 export interface PlanDraftJob {
   status: 'drafting' | 'ready' | 'failed'

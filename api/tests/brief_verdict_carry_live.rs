@@ -1,3 +1,4 @@
+mod support;
 // Live-DB proof for the cross-day verdict carry (cargo test -- --ignored).
 // The report this file pins, 2026-09-10: an item the owner crossed off came
 // back every morning, un-crossed, for as long as its source stood still — a
@@ -11,33 +12,12 @@
 //
 //   source ui/.env && cargo test --test brief_verdict_carry_live -- --ignored
 
-use talaria_api::config::Config;
+use support::{app_state, pg};
 use talaria_api::daily_brief::{
     BriefUser, mark_brief_item, open_brief, real_brief_deps, sweep_brief,
 };
-use talaria_api::state::AppState;
-
-async fn pg() -> sqlx::PgPool {
-    let url = std::env::var("DATABASE_URL")
-        .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
-    sqlx::PgPool::connect(&url).await.expect("connect")
-}
-
 /// Redis on a dead port, exactly like brief_item_live: the appends publish
 /// events that degrade to no-ops, and this file is about the rows.
-async fn app_state() -> AppState {
-    let cfg = Config::from_parts(
-        std::env::var("DATABASE_URL").unwrap_or_default(),
-        "redis://127.0.0.1:1".into(),
-        std::env::var("TALARIA_SECRET_KEY").unwrap_or_default(),
-        std::env::var("TALARIA_SECRET_KEY_FILE").unwrap_or_default(),
-        String::new(),
-        String::new(),
-    )
-    .expect("test config assembles");
-    AppState::new(talaria_api::db::pool(&cfg), std::sync::Arc::new(cfg))
-}
-
 /// A user with the one thing the brief pipeline demands before it writes
 /// anything: a personal assistant. The model string is unique per fixture
 /// (agent_defs.model is UNIQUE) and names no real model, so the lede's

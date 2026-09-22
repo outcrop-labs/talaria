@@ -7,8 +7,7 @@
   // is v1, and reassigning a step is a task edit, not a chain edit.
   import { ArrowLeft, ArrowRight, Link2Off } from '@lucide/svelte'
   import Section from './Section.svelte'
-  import { pushToast } from '@/lib/toast.svelte'
-  import { errorMessage } from '@/lib/fetch-json'
+  import { toastError } from '@/lib/toast.svelte'
   import { removeWorkchainStep, updateWorkchain } from '@/lib/workchain-client'
   import { moveStepOrder, type Workchain, type WorkchainStep } from '@/lib/workchain-rules'
 
@@ -28,7 +27,7 @@
   } = $props()
 
   const failure = (what: string) => (e: unknown) =>
-    pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
+    toastError(`${what} failed`, e)
 
   const move = (delta: -1 | 1) => {
     if (!chain || !step) return

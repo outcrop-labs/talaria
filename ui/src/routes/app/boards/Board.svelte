@@ -41,8 +41,7 @@
     deleteBoardView,
     type BoardViewConfig,
   } from '@/lib/boards.svelte'
-  import { errorMessage } from '@/lib/fetch-json'
-  import { pushToast } from '@/lib/toast.svelte'
+  import { toastError } from '@/lib/toast.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
@@ -245,7 +244,7 @@
     void navigate('/boards/:boardId', { params: { boardId }, search: { ...sv.config, v: sv.id } as Record<string, string> })
   // Saved-view mutations reject through the fetch-json door now; each menu
   // action is void-fired, so this is where the sentence lands.
-  const viewFailure = (what: string) => (e: unknown) => pushToast({ title: `${what} failed`, body: errorMessage(e), tone: 'danger' })
+  const viewFailure = (what: string) => (e: unknown) => toastError(`${what} failed`, e)
   const saveCurrentAsView = async () => {
     const name = await prompt({ title: 'Save view', message: 'Name this view (current layout, grouping, and filters are captured).', confirmLabel: 'Save' })
     if (!name?.trim()) return

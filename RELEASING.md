@@ -135,6 +135,28 @@ The api package — `ghcr.io/outcrop-labs/talaria-api` — carries these same
 tags, plus an immutable `sha-<sha12>` per commit; that sha tag is what a
 release's app-image build is actually pinned to.
 
+**What the api bits are compiled with.** `main` (the feed the in-app updater
+rolls from) and every stable tag carry the api built for release. The two
+pre-stable channels — `nightly` and `rc` — carry it built with cargo's dev
+profile (`api/Cargo.toml`'s `[profile.dev]`: our crates `-O1`, dependencies
+`-O3`, `debug = line-tables-only`). That is deliberate and it is a trade, not a
+downgrade in disguise: those channels exist to smoke-test the same sources, and
+the unoptimised build of our crates is ~2.5 minutes instead of ~25, which is
+the difference between a nightly landing the same day and not landing at all.
+It also means an RC is **not** a performance preview of the stable release —
+`X.Y.Z` is built again from the tag, in release. Do not benchmark an rc image;
+do not read a number off one.
+
+Two more consequences of the dev profile, because they show up as bugs if you
+don't expect them: debug assertions and overflow checks are ON (cargo's dev
+default), so a nightly is also an assertion smoke-test — a panic you can only
+reproduce on `nightly` may be an assertion that release code would have wrapped
+through, not a defect in the release. And it is bigger and slower to start: the
+binary is ≈417 MB against release's ≈146 MB (the package image 536 MB against
+209), and the api takes a few seconds to bind rather than one, which the
+compose healthcheck's 90-second start period absorbs. That is the price of the
+compile being ~8 minutes instead of ~16.
+
 ## The desktop installers
 
 Every tag publish also attaches the desktop app's installers to the GitHub

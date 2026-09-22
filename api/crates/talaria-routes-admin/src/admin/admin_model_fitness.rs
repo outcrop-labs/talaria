@@ -17,8 +17,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_audit::{AuditEntry, log_audit};
-use talaria_body::{as_object, js_numberify, parse};
-use talaria_error::house_error;
+use talaria_body::{js_numberify, parse};
+use talaria_error::{house_error, object_or_400};
 use talaria_fitness::surface::{
     FitnessQuery, RunRefusal, StartOutcome, StartRequest, TierId, clear_fitness_results,
     forget_model, read_fitness, real_deps, start_fitness_run, stop_fitness_run,
@@ -36,10 +36,8 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
-) -> Response {
-    if let Err(gate) = require_admin(&state, &headers).await {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    require_admin(&state, &headers).await?;
     let query = FitnessQuery {
         view: q.get("view").cloned().unwrap_or_else(|| "matrix".into()),
         model: q.get("model").cloned(),
@@ -50,7 +48,7 @@ pub async fn get(
         run: q.get("run").cloned(),
     };
     let deps = real_deps(&state);
-    match read_fitness(&query, &state.pg, &deps).await {
+    Ok(match read_fitness(&query, &state.pg, &deps).await {
         // The whole plane's wire is JS-printed — scores and ratios compute
         // as f64 but must serialize the way JS prints them, 1.0 → 1
         // (`js_numberify`).
@@ -59,7 +57,7 @@ pub async fn get(
             Json(body).into_response()
         }
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
-    }
+    })
 }
 
 // ── the POST body: the four arms ─────────────────────────────────────────────
@@ -260,18 +258,12 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_admin(&state, &headers).await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     let actor = actor_of(&user);
-    match classify_post(obj) {
+    Ok(match classify_post(obj) {
         // `{ stopped, status, runs }` — two things can be running per candidate
         // (the tier-2 sweep and the tier loop) and `stop_fitness_run` signals
         // both.
@@ -296,7 +288,7 @@ pub async fn post(
             let deps = real_deps(&state);
             let cleared = match clear_fitness_results(model.as_deref(), &deps).await {
                 Ok(c) => c,
-                Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+                Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
             };
             audit(
                 &state,
@@ -320,7 +312,7 @@ pub async fn post(
             let deps = real_deps(&state);
             let result = match forget_model(&model, &deps).await {
                 Ok(r) => r,
-                Err(e) => return house_error(StatusCode::BAD_REQUEST, &e),
+                Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
             };
             audit(
                 &state,
@@ -405,7 +397,7 @@ pub async fn post(
             }
         }
         Err(msg) => house_error(StatusCode::BAD_REQUEST, &msg),
-    }
+    })
 }
 
 /// The POST response, JS-printed for the same reason as the GET's — rows

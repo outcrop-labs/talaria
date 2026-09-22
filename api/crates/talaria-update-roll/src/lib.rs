@@ -32,7 +32,7 @@
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 
-use talaria_agent_auth::epoch_ms_to_iso;
+use talaria_agent_auth::now_iso;
 use talaria_agent_auth::now_ms;
 use talaria_fleet_docker::docker;
 use talaria_runs_lease::{AcquireResult, RedisLeases, keep_lease_alive, lease_key};
@@ -96,10 +96,6 @@ const STALE_RUN_MS: i64 = 60 * 60_000;
 /// before this exemption existed, and the close had to be healed by hand.
 fn stale_close_due(age_ms: i64, retired_is_self: bool) -> bool {
     age_ms > STALE_RUN_MS && !retired_is_self
-}
-
-pub fn now_iso() -> String {
-    epoch_ms_to_iso(now_ms())
 }
 
 /// Is a run in one of its three in-flight states?
@@ -756,7 +752,9 @@ mod tests {
                 version: "v2".into(),
             },
             by: RunBy::Auto,
-            started_at: epoch_ms_to_iso(now_ms() - started_minutes_ago * 60_000),
+            started_at: talaria_agent_auth::epoch_ms_to_iso(
+                now_ms() - started_minutes_ago * 60_000,
+            ),
             finished_at: None,
             error: None,
         }

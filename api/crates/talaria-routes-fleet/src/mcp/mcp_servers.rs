@@ -19,11 +19,11 @@ use talaria_api_facades::mcp::registry::{
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, array_msg, array_too_big_msg, as_object, nullable_number_member,
-    nullish_max_string_member, object_msg, optional_enum_member, optional_max_string_member, parse,
-    record_msg, string_msg, too_big_msg, url_member, utf16_len, zod_type_name,
+    NumKind, array_msg, array_too_big_msg, nullable_number_member, nullish_max_string_member,
+    object_msg, optional_enum_member, optional_max_string_member, parse, record_msg, string_msg,
+    too_big_msg, url_member, utf16_len, zod_type_name,
 };
-use talaria_error::{house_error, thrown_internal_error};
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_secretbox::SecretBox;
 use talaria_session::{actor_of, require_perm};
 use talaria_state::AppState;
@@ -348,17 +348,11 @@ fn required_headers_member(
     Ok(Some(out))
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let _user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+    let _user = require_perm(&state, &headers, "agents.manage").await?;
     let servers = match list_mcp_servers(&state.pg).await {
         Ok(s) => s,
-        Err(e) => {
-            tracing::error!("[mcp] registry read failed: {e}");
-            return thrown_internal_error();
-        }
+        Err(e) => return Ok(internal("[mcp] registry read failed", e)),
     };
     let mut detail = Vec::with_capacity(servers.len());
     for s in &servers {
@@ -375,10 +369,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                 .into_iter()
                 .map(|(agent_model, tools)| json!({ "agentModel": agent_model, "tools": tools }))
                 .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("[mcp] assignments read failed: {e}");
-                return thrown_internal_error();
-            }
+            Err(e) => return Ok(internal("[mcp] assignments read failed", e)),
         };
         let user_access = match list_user_access(&state.pg, &s.id).await {
             Ok(rows) => rows
@@ -387,11 +378,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     json!({ "userId": user_id, "allowed": allowed, "tools": tools })
                 })
                 .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("[mcp] user access read failed: {e}");
-                return thrown_internal_error();
-            }
-        };
+            Err(e) => return Ok(internal("[mcp] user access read failed", e))};
         let team_access = match list_team_access(&state.pg, &s.id).await {
             Ok(rows) => rows
                 .into_iter()
@@ -399,18 +386,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
                     json!({ "teamId": team_id, "allowed": allowed, "tools": tools })
                 })
                 .collect::<Vec<_>>(),
-            Err(e) => {
-                tracing::error!("[mcp] team access read failed: {e}");
-                return thrown_internal_error();
-            }
-        };
+            Err(e) => return Ok(internal("[mcp] team access read failed", e))};
         let org_connected = if s.oauth_enabled {
             match has_oauth_tokens(&state.pg, &s.id, "org").await {
                 Ok(b) => json!(b),
-                Err(e) => {
-                    tracing::error!("[mcp] oauth token read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[mcp] oauth token read failed", e)),
             }
         } else {
             json!(null)
@@ -418,10 +398,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         let oauth_meta_v = if s.oauth_enabled {
             match oauth_meta(&state.pg, &s.id).await {
                 Ok(m) => m.unwrap_or(Value::Null),
-                Err(e) => {
-                    tracing::error!("[mcp] oauth meta read failed: {e}");
-                    return thrown_internal_error();
-                }
+                Err(e) => return Ok(internal("[mcp] oauth meta read failed", e)),
             }
         } else {
             Value::Null
@@ -447,39 +424,33 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
         }
         detail.push(wire);
     }
-    Json(json!({ "servers": detail })).into_response()
+    Ok(Json(json!({ "servers": detail })).into_response())
 }
 
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Response {
-    let user = match require_perm(&state, &headers, "agents.manage").await {
-        Ok(u) => u,
-        Err(gate) => return gate,
-    };
+) -> Result<Response, Response> {
+    let user = require_perm(&state, &headers, "agents.manage").await?;
     let parsed = parse(&body);
-    let obj = match as_object(&parsed) {
-        Ok(o) => o,
-        Err(msg) => return talaria_error::house_error(StatusCode::BAD_REQUEST, &msg),
-    };
+    let obj = object_or_400(&parsed)?;
     // The zod body, checked in schema order.
     let name = match slug_member(obj, "name") {
         Ok(v) => v,
-        Err(msg) => return talaria_error::house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(talaria_error::house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let label = match optional_max_string_member(obj, "label", 120) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let description = match nullish_max_string_member(obj, "description", 500) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let package = match package_member(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // A package install has no endpoint to name — the routing token derives
     // from the server name; a custom endpoint still requires its URL.
@@ -487,40 +458,40 @@ pub async fn post(
         (Some(_), None) => format!("talaria-pkg://{name}"),
         _ => match url_member(obj, "url", 500) {
             Ok(v) => v,
-            Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
     let headers_in = match optional_headers_member(obj, "headers") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     // The package credential capture: env values + filled run-args, sealed
     // into one blob (`pkg::SealedDoc`).
     let env_in = match optional_headers_member(obj, "env") {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let arg_values = match arg_values_member(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let timeout_secs = match nullish_positive_int_member(obj, "timeoutSecs", 3600.0) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let auth_mode = match optional_enum_member(obj, "authMode", &["org", "per-user"]) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     if package.is_some() && auth_mode.as_deref() == Some("per-user") {
-        return house_error(
+        return Ok(house_error(
             StatusCode::BAD_REQUEST,
             "package servers run one org-shared container; per-user auth is not available for them",
-        );
+        ));
     }
     let declared = match required_headers_member(obj) {
         Ok(v) => v,
-        Err(msg) => return house_error(StatusCode::BAD_REQUEST, &msg),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
     // Everything from create through the response construction is one
@@ -528,7 +499,7 @@ pub async fn post(
     // duplicate-name special case.
     let sb = match state.secretbox().await {
         Ok(sb) => sb,
-        Err(e) => return bad_request(&format!("secretbox unavailable: {e}")),
+        Err(e) => return Ok(bad_request(&format!("secretbox unavailable: {e}"))),
     };
     let created_by = user
         .email
@@ -557,7 +528,7 @@ pub async fn post(
                     );
                     match sealed {
                         Ok(s) => Some(s),
-                        Err(e) => return bad_request(&e),
+                        Err(e) => return Ok(bad_request(&e)),
                     }
                 }
                 None => None,
@@ -567,7 +538,7 @@ pub async fn post(
     .await;
     let server = match outcome {
         Ok(s) => s,
-        Err(e) => return bad_request(&e),
+        Err(e) => return Ok(bad_request(&e)),
     };
     // A package install's image pull runs behind the response — the row's
     // pull.state is the progress the card reads.
@@ -592,13 +563,13 @@ pub async fn post(
     spawn_audit_and_render(&state.pg, &sb, &user, &server);
     let meta = match oauth_meta(&state.pg, &server.id).await {
         Ok(m) => m,
-        Err(e) => return bad_request(&e.to_string()),
+        Err(e) => return Ok(bad_request(&e.to_string())),
     };
     let mut wire = server_wire(&server);
     wire.as_object_mut()
         .expect("server_wire is an object")
         .insert("oauthMeta".into(), meta.unwrap_or(Value::Null));
-    Json(json!({ "server": wire })).into_response()
+    Ok(Json(json!({ "server": wire })).into_response())
 }
 
 async fn create_and_sniff(
