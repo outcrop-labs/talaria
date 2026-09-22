@@ -1242,7 +1242,7 @@ async fn a_wire_draws_then_refuses_cycles_then_unwires() {
     .await;
     assert_eq!(status, 200);
     let edges = body["workchains"][0]["edges"].as_array().expect("edges");
-    assert_eq!(edges.len(), 2, "two wires listed: {edges}");
+    assert_eq!(edges.len(), 2, "two wires listed: {edges:?}");
     assert_eq!(edges[0]["fromTaskId"], a);
     assert_eq!(edges[0]["toTaskId"], b);
     assert_eq!(edges[1]["fromTaskId"], b);
