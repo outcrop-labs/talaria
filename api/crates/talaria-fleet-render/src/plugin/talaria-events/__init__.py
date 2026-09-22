@@ -165,3 +165,14 @@ def on_post_tool_call(
     if result is not None:
         event["result"] = _clamp(result)
     _enqueue(event)
+
+
+def register(ctx) -> None:
+    """The loader's entry point — Hermes refuses a plugin without it
+    ("Plugin 'talaria-events' has no register() function", the line that
+    spent a deploy silently tool-event-dark). The hook names are the
+    loader's own spelling, on_pre_tool_call / on_post_tool_call — the
+    functions above; the yaml's pre/post section is documentation, not
+    the registration."""
+    ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    ctx.register_hook("post_tool_call", on_post_tool_call)
