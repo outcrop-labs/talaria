@@ -1,29 +1,29 @@
 [package]
 name = "talaria-google-provisioning"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-body = { path = "../talaria-body" }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-google-client = { path = "../talaria-google-client" }
-talaria-google-connections = { path = "../talaria-google-connections" }
-talaria-google-org = { path = "../talaria-google-org" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-tracing = "0.1"
-axum = { version = "0.8", default-features = false }
-futures-util = "0.3"
-url = "2"
-regex = "1"
-base64 = "0.23"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-uuid = { version = "1", features = ["v4"] }
+talaria-body = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-google-client = { workspace = true }
+talaria-google-connections = { workspace = true }
+talaria-google-org = { workspace = true }
+talaria-secretbox = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

@@ -1,0 +1,137 @@
+# The staging deploy — this file is what "verified in RC" MEANS.
+#
+# WHY IT EXISTS. The promotion rule is "rc's tip is deployed and verified before
+# it reaches main" (docs/BRANCHES.md; .github/workflows/promote.yml acts on it).
+# A rule like that is only as good as the thing that establishes it, and a CI
+# suite does not: CI builds the app's bundles and runs its tests, but nothing in
+# it BOOTS the artifact an operator would actually run. This file does, on every
+# push to rc:
+#
+#   1. builds the api package for this commit — api-package.yml, CALLED, so the
+#      package is built by the same jobs that build every other one;
+#   2. builds THIS commit's app image with that package pinned into it (the
+#      root Dockerfile consumes it; the api never compiles inside an image
+#      build — api-package.yml has that story);
+#   3. boots it as a fresh instance and asserts what a deploy asserts —
+#      scripts/deploy-smoke.mjs is the whole list, and it is a script so the
+#      same assertions can be run by hand against any image.
+#
+# WHY IT IS NOT release.yml. release.yml publishes VERSIONS a human cut (an RC
+# tag, a stable tag) and owns the moving channel tags. This runs per merge,
+# publishes NO channel tag — the only thing it pushes is the immutable
+# sha-<sha12> api-package always pushes — and its subject is rc's tip, not a
+# tag. A staging deploy is a rehearsal of the release pipeline, not a release.
+#
+# WHY NOTHING HERE IS A REQUIRED CHECK ON rc. A red staging deploy must not
+# block the next pull request's merge: rc is where a mistake is found and fixed,
+# and the PROMOTION GATE is what refuses to carry it any further. That gate
+# reads this workflow's runs for the head sha, so clearing a flake is a re-run
+# (workflow_dispatch below, dispatched from rc).
+#
+# WHY cancel-in-progress IS SAFE HERE, unlike every other publishing workflow in
+# this repo. Each run builds and boots its own throwaway stack; no moving
+# channel tag and no shared environment is at stake, so a superseded run's
+# answer is worthless and cancelling it costs nothing. The one non-idempotent
+# step is api-package's own push, and a cancelled buildx run leaves the
+# immutable sha tag either absent or complete — buildx pushes the manifest last,
+# and this same commit re-pushes it on the next attempt.
+#
+# WHY THE WHOLE WORKFLOW IS GATED ON ITS DISPATCH REF. A workflow_dispatch run
+# executes the workflow file AT THE REF DISPATCHED, carrying this file's token
+# grants (`packages: write`, on the api-package call). Anyone with push access
+# could otherwise dispatch a modified copy from a feature branch and publish
+# under the org's tags. Both jobs therefore refuse a dispatch that is not from
+# rc — which is what the trigger is for: re-running a deploy that failed for a
+# reason that was not the commit.
+
+name: rc-deploy
+
+on:
+  push:
+    branches: [rc]
+  # Re-run a deploy that failed for a reason that was not the commit (a flake,
+  # a registry hiccup). Dispatch it FROM rc: github.sha is the ref you pick.
+  workflow_dispatch: {}
+
+concurrency:
+  # Per-branch, cancelled: a newer push to rc has already replaced this
+  # commit's answer.
+  group: rc-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The immutable api package for this commit. A called workflow's jobs may
+  # request no more than the CALLING JOB grants — the nesting rule release.yml
+  # learned the hard way — so `packages: write` sits on the call, not on the
+  # workflow.
+  #
+  # The `if` is the dispatch guard: a workflow_dispatch run executes THIS FILE
+  # AT THE DISPATCHED REF with these grants, so one dispatched from a feature
+  # branch would hand that branch's author `packages: write` over a tag the
+  # Dockerfile pins. Dispatches come from rc, or from nothing.
+  api-package:
+    name: api package (this commit)
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/rc'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/api-package.yml
+    with:
+      ref: ${{ github.sha }}
+      tags: '' # channel tags stay release.yml's; the sha tag is api-package's own
+
+  deploy:
+    name: staging deploy + smoke
+    needs: [api-package]
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/rc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      # The app image's first stage is the api package this run just pushed. The
+      # login below is what makes that pull work regardless of the package's
+      # visibility (RELEASING.md records the one-time flip; this file does not
+      # depend on it).
+      packages: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        run: echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # VERSION is what the app reports from /api/healthz, and the smoke asserts
+      # it: a green deploy that cannot say WHICH commit it deployed is a green
+      # deploy that proves nothing about this one.
+      - name: Build this commit's app image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          PIN: ${{ needs.api-package.outputs.image }}
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD | cut -c1-12)
+          docker build --platform linux/amd64 \
+            --build-arg "TALARIA_API_IMAGE=$PIN" \
+            --build-arg "VERSION=$sha" \
+            --build-arg "REVISION=$(git rev-parse HEAD)" \
+            --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "talaria-rc:$sha" .
+          echo "built talaria-rc:$sha (api pin: $PIN)"
+
+      # The deploy itself: fresh postgres + redis, the image, a first-boot state
+      # dir, then the assertions. Everything it prints is the evidence the
+      # promotion gate stands on — including the container's own last 120 log
+      # lines when something fails, which the smoke prints before it tears the
+      # stack down. (A follow-up step here would find nothing to read: the smoke
+      # owns the stack's lifetime, and its compose file lives in a temp dir.)
+      - name: Deploy it and verify
+        run: |
+          set -eu
+          sha=$(git rev-parse HEAD | cut -c1-12)
+          node scripts/deploy-smoke.mjs --image "talaria-rc:$sha" --expect-version "$sha"

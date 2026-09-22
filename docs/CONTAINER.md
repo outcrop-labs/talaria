@@ -417,9 +417,9 @@ channel this repo publishes lands on `ghcr.io/outcrop-labs/talaria`.
 
 | Image tag | What it is | How it moves |
 |---|---|---|
-| `main` | whatever main shipped last | every app-touching push to main |
-| `sha-<sha12>` | one commit on main, frozen | with that push; never rewritten |
-| `nightly` | testing branch, built daily 03:17 UTC | automatic, nightly |
+| `main` | whatever main shipped last | every app-touching promotion to main |
+| `sha-<sha12>` | one commit on main, frozen | with that promotion; never rewritten |
+| `nightly` | `rc`'s tip, built daily 03:17 UTC | automatic, nightly |
 | `nightly-YYYYMMDD` | that day's nightly, frozen | automatic, daily; never rewritten |
 | `X.Y.Z-rc.N` | a release candidate | a `vX.Y.Z-rc.N` tag on `rc` |
 | `rc` | whatever RC was cut last | with each RC |
@@ -464,6 +464,10 @@ file list and every wrapper (up/update/down/logs/status) drops its explicit
 exactly why the CLI steps aside. Because it steps aside entirely, the shared
 sidecar plane has to be IN that list (first): the wrappers' own `-f` pair is
 `docker/sidecars.compose.yml` then the base, and the env replaces both.
+`deploy` and `service install` die up front when the exported list omits the
+fragment — printing the corrected export — instead of letting docker reject
+the project per-service (`service "postgres" has neither an image nor a build
+context`), which beside a pull command reads like a reachability problem.
 Registry mode changes two behaviors on purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
 the api-package pull) and `up` runs WITHOUT `--build` — the override swaps
 the image but cannot remove the base's `build:` key, so a build would tag the

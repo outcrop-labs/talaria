@@ -15,9 +15,14 @@
 #   sha-<sha12>   immutable, per commit. The provenance tag: release.yml pins
 #                 THIS one into the app image it builds, so a released image
 #                 names the exact api bits it carries (its revision label
-#                 agrees).
-#   main          tracks main's api source — the root Dockerfile's default
-#                 ARG, because main is the ref checkout-builds build.
+#                 agrees). rc-deploy.yml pins it the same way for a staging
+#                 deploy.
+#   main          tracks MAIN's api source — the root Dockerfile's default
+#                 ARG, because main is the ref checkout-builds build. Pushed
+#                 only when the run's own ref is main: a called workflow sees
+#                 the CALLER's ref, so an rc push (rc-deploy) or a tag cut on
+#                 rc would otherwise move this tag to a non-main api source and
+#                 bake it into the next trunk app image.
 #   channel tags  nightly-YYYYMMDD / nightly / X.Y.Z-rc.N / rc / X.Y.Z /
 #                 latest — pushed when release.yml calls this file
 #                 (workflow_call), so the package's channels mirror the app
@@ -71,6 +76,18 @@ on:
         type: string
         required: false
         default: ''
+      profile:
+        # `dev` compiles the package with cargo's dev profile instead of
+        # release: our crates at -O1 with no optimisation pass to wait on, which
+        # is minutes of build instead of ~25. release.yml passes it for the two
+        # pre-stable channels — a smoke-test feed does not need optimized code,
+        # and the channel's whole value is landing the same day. Everything else
+        # (main's feed on push, stable tags) leaves this at release; a typo is
+        # refused in the Dockerfile, not silently built.
+        description: 'cargo profile to compile with: release | dev'
+        type: string
+        required: false
+        default: 'release'
     outputs:
       image:
         description: 'the sha-tagged package release.yml pins into the app image'
@@ -83,7 +100,15 @@ jobs:
   package:
     name: build + push the api package
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was sized against a build that never happened: cargo-chef's skeleton
+    # compiled in 3-6 seconds, so the job's real cost (the cook layer) was all
+    # it ever measured. With the stub gate in api/package.Dockerfile the build
+    # stage does the actual release compile of the workspace — 09-21's first
+    # honest run reached `Compiling talaria-api v0.1.0` at 1,470s and this
+    # limit cancelled it 30s later, so nothing published. 60 leaves room for
+    # that plus the static musl link, the gate, and a cold cook (~8min when
+    # the registry cache misses) without being a number nobody can reason about.
+    timeout-minutes: 60
     permissions:
       packages: write # the GHCR push
     concurrency:
@@ -120,18 +145,33 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}-api
           EXTRA_TAGS: ${{ inputs.tags }}
+          PROFILE: ${{ inputs.profile || 'release' }}
           EVENT: ${{ github.event_name }}
+          # The CALLER's ref: a called workflow's `github` context belongs to the
+          # caller, so on rc-deploy's call this is refs/heads/rc, and on a
+          # release tag it is refs/tags/vX.Y.Z.
+          REF: ${{ github.ref }}
         run: |
           set -eu
           sha=$(git rev-parse HEAD | cut -c1-12)
           # Immutable first: the sha tag, then the caller's channel tags
           # (resolve already ordered them dated/versioned before moving), then
-          # `main` on a push event — where HEAD is main by definition.
+          # `main` — and ONLY when this run's ref IS main.
+          #
+          # `EVENT = push` alone was wrong, and quietly so: the event name is
+          # the caller's, so a push to rc that calls this file (rc-deploy, the
+          # staging deploy) and a release tag cut on rc both satisfied it, and
+          # each re-pointed `talaria-api:main` at a non-main api source. The
+          # tag's whole meaning is "the api source main has" — the root
+          # Dockerfile's default ARG, and the digest app-image.yml pins for a
+          # main push that did not touch api/ — so a re-point silently bakes an
+          # rc-built api into the trunk app image the updater rolls from.
           tags=("sha-$sha")
           for t in $EXTRA_TAGS; do tags+=("$t"); done
-          if [ "$EVENT" = push ]; then tags+=(main); fi
+          if [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then tags+=(main); fi
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
+                --build-arg "PROFILE=$PROFILE"
                 --build-arg "REVISION=$(git rev-parse HEAD)"
                 --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
                 --cache-from "type=registry,ref=$IMAGE:buildcache"
@@ -140,4 +180,4 @@ jobs:
           for t in "${tags[@]}"; do args+=( -t "$IMAGE:$t" ); done
           docker buildx build "${args[@]}" .
           echo "image=$IMAGE:sha-$sha" >> "$GITHUB_OUTPUT"
-          echo "pushed $IMAGE for: ${tags[*]} (cache: $IMAGE:buildcache)"
+          echo "pushed $IMAGE for: ${tags[*]} (profile: $PROFILE, cache: $IMAGE:buildcache)"

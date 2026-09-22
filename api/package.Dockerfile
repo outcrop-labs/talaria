@@ -64,15 +64,89 @@ RUN apk add --no-cache build-base cmake
 RUN cargo install cargo-chef --locked
 WORKDIR /repo/api
 COPY --from=planner /repo/api/recipe.json .
-RUN cargo chef cook --release --locked --recipe-path recipe.json
+# WHICH PROFILE THIS PACKAGE IS BUILT WITH — handed in by the workflow, never
+# guessed here: release.yml's resolve passes `dev` for the two pre-stable
+# channels (`nightly` from testing, `rc`) and leaves `release` standing
+# everywhere else (main's feed, every stable tag). `dev` is the workspace's OWN
+# dev profile (api/Cargo.toml: our crates -O1, dependencies -O3, debug =
+# line-tables-only), which exists for exactly this trade — the ~200-crate
+# compile of OUR crates drops from ~25 minutes to minutes, and the unoptimised
+# runtime lands on a channel whose entire job is to be smoke-tested, never on
+# an instance rolled from main. Incremental stays off (ci.yml's argument,
+# verbatim): a cold container gets no reuse out of it, only the churn.
+#
+# The COOK must use the same profile as the build below, or cargo rebuilds the
+# whole dependency tree at build time and the caching trick inverts itself.
+ARG PROFILE=release
+RUN set -eu; \
+    case "$PROFILE" in \
+      release) profile_flag=--release ;; \
+      dev) export CARGO_INCREMENTAL=0; profile_flag= ;; \
+      *) echo "PROFILE must be release or dev (got '$PROFILE')" >&2; exit 1 ;; \
+    esac; \
+    cargo chef cook --locked --recipe-path recipe.json $profile_flag
 
 # ── build ────────────────────────────────────────────────────────────────────
 FROM deps AS build
-COPY api ./api
+# ABSOLUTE destinations, and the absolute part is load-bearing: WORKDIR is
+# inherited, and `deps` left it at /repo/api — so a relative `COPY api ./api`
+# lands at /repo/api/api and cargo-chef's SKELETON (`fn main() {}`) stays the
+# only source at /repo/api. Cargo then relinks the skeleton and the package
+# ships a 544 KB binary that exits 0 and prints nothing (2026-09-19 → 09-21:
+# every app image built on it died at boot with "RUST API EXITED (code 0)").
+COPY api /repo/api
 COPY scripts/hermes-skill-authority.json /repo/scripts/hermes-skill-authority.json
-# The binary is copied OUT to a stable path before the layer closes.
-RUN cargo build --release --locked \
- && cp target/release/talaria-api /talaria-api
+# The binary is copied OUT to a stable path before the layer closes, and then
+# PROVEN to be the api rather than a placeholder — the stub gate. With no
+# database and no redis the real server still binds its port and answers
+# /api/healthz (503 from an unreachable dependency, 200 from a healthy one);
+# the skeleton answers nothing at all. Any HTTP status line is the assertion —
+# which status is the environment's to decide, not this gate's.
+#
+# `set -eu` is what turns a typo'd PROFILE and a failed cargo into the build
+# failure they should be — and it is also why the probe below writes `|| true`
+# on the grep and `if` instead of `[ -n "$status" ] && break`: under `set -e`,
+# an empty FIRST probe (a slow binary, a port that opens a second late) aborts
+# the subshell with exit 1 and no output at all, which is indistinguishable
+# from the stub this gate exists to catch. Learned when the dev profile — the
+# first build whose binary did not answer on the first probe — failed the
+# release-only-tested gate.
+#
+# `dir` matters as much as `flag`: the same ARG that picks the profile picks
+# the artifact directory it leaves the binary in (see the deps stage for which
+# channel gets which, and why).
+ARG PROFILE=release
+RUN set -eu; \
+    case "$PROFILE" in \
+      release) dir=release; flag=--release ;; \
+      dev) dir=debug; flag=''; export CARGO_INCREMENTAL=0 ;; \
+      *) echo "PROFILE must be release or dev (got '$PROFILE')" >&2; exit 1 ;; \
+    esac; \
+    cargo build --locked $flag \
+ && cp "target/$dir/talaria-api" /talaria-api \
+ && (DATABASE_URL=postgres://stub-gate@127.0.0.1:1/stub \
+      REDIS_URL=redis://127.0.0.1:1 \
+      TALARIA_SECRET_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
+      /talaria-api >/tmp/stub-gate.log 2>&1 & \
+     pid=$!; \
+     status=""; \
+     i=0; \
+     while [ "$i" -lt 30 ]; do \
+       status=$(wget -S -q -O /dev/null http://127.0.0.1:5274/api/healthz 2>&1 \
+                | grep -m1 -o 'HTTP/1[.][0-9] [0-9][0-9][0-9]' || true); \
+       if [ -n "$status" ]; then break; fi; \
+       i=$((i + 1)); \
+       sleep 1; \
+     done; \
+     kill "$pid" 2>/dev/null || true; \
+     sleep 1; \
+     kill -9 "$pid" 2>/dev/null || true; \
+     if [ -z "$status" ]; then \
+       cat /tmp/stub-gate.log; \
+       echo "stub gate: the built binary never answered on :5274 — this is not the api"; \
+       exit 1; \
+     fi; \
+     echo "stub gate: the built binary answers /api/healthz ($status)")
 
 # ── package ──────────────────────────────────────────────────────────────────
 # Not scratch: the api verifies outbound TLS through rustls-platform-verifier,

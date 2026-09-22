@@ -31,6 +31,25 @@ pub async fn pg() -> PgPool {
     PgPool::connect(&url).await.expect("connect")
 }
 
+/// Set the boot-injected seams a test binary needs. A test binary never runs
+/// `register_all` (it is the scheduler's arming path, and wants an AppState),
+/// so any OnceLock edge a test exercises has to be set here, exactly the way
+/// `register_all` sets it in production — same closure, same target. Today
+/// that is the attribution ladder's CONVERSATION_OWNER (the chatter rung is
+/// silently skipped when it is unset, which is precisely how it went dead in
+/// production for as long as it did).
+pub fn wire_boot_seams() {
+    let _ = talaria_api::attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_api::conversations::conversation_owner(&pg, &id).await })
+    }));
+    let _ = talaria_workchains::GET_TASK.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
+    }));
+    let _ = talaria_inbox_focus::GET_TASK.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
+    }));
+}
+
 /// A member user row, with the sub/email/name the caller names.
 pub async fn person(pg: &PgPool, sub: &str, email: &str, name: &str) -> String {
     let (id,): (String,) = sqlx::query_as(

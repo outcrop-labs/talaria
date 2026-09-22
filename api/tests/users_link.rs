@@ -19,11 +19,16 @@ use std::time::Duration;
 use support::pg;
 use talaria_api::password_accounts::verify_password_login;
 use talaria_api::users::{Identity, link_by_email, upsert_user};
-/// Every row this suite fabricates lives under one domain, so a crashed run
-/// cannot leak users into the next (credentials and memberships ride the
-/// cascades).
-async fn cleanup(pg: &PgPool) {
-    sqlx::query("delete from users where lower(email) like '%@link-test.invalid'")
+/// The rows THIS TEST fabricates, by email, so a crashed run cannot leak them
+/// into the next (credentials and memberships ride the cascades). Scoped to
+/// the test's own email on purpose: the binary's tests run CONCURRENTLY
+/// (libtest's default), and a domain-wide delete here is one test's cleanup
+/// dropping a sibling's seeded admin row mid-flight — which is exactly how
+/// `a_re_sign_in_is_still_one_row` flaked on CI (the wiped admin row made the
+/// re-sign-in create a fresh member) while passing on a fast box.
+async fn cleanup(pg: &PgPool, email: &str) {
+    sqlx::query("delete from users where lower(email) = lower($1)")
+        .bind(email)
         .execute(pg)
         .await
         .unwrap();
@@ -70,7 +75,7 @@ async fn seed_user(pg: &PgPool, sub: &str, email: &str, name: &str, role: &str) 
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_google_sign_in_links_to_the_same_email_admin() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, "one@link-test.invalid").await;
     seed_user(
         &pg,
         "password:one@link-test.invalid",
@@ -108,7 +113,7 @@ async fn a_google_sign_in_links_to_the_same_email_admin() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_google_sign_in_without_a_same_email_row_creates_a_member() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, "two@link-test.invalid").await;
 
     upsert_user(
         &pg,
@@ -131,7 +136,7 @@ async fn a_google_sign_in_without_a_same_email_row_creates_a_member() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_re_sign_in_is_still_one_row() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, "three@link-test.invalid").await;
     seed_user(
         &pg,
         "password:three@link-test.invalid",
@@ -175,7 +180,7 @@ async fn a_re_sign_in_is_still_one_row() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_link_never_steals_a_sub_another_row_holds() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, "four@link-test.invalid").await;
     // The unmerged fork: an admin row for the email plus a member row that
     // already holds the incoming Google sub. The sign-in must land on the
     // ADMIN — the boot migration merges the fork, not the sign-in.
@@ -231,7 +236,7 @@ async fn the_link_never_steals_a_sub_another_row_holds() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_claim_promotion_upgrades_the_same_email_row_in_place() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, "five@link-test.invalid").await;
     let member_id = seed_user(
         &pg,
         "google:five@link-test.invalid",
@@ -271,7 +276,7 @@ async fn the_claim_promotion_upgrades_the_same_email_row_in_place() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_claim_still_writes_the_credential_on_the_promoted_row() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    cleanup(&pg, "six@link-test.invalid").await;
     seed_user(
         &pg,
         "google:six@link-test.invalid",

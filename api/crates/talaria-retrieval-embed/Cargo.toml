@@ -1,18 +1,18 @@
 [package]
 name = "talaria-retrieval-embed"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-talaria-retrieval-http = { path = "../talaria-retrieval-http" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+talaria-retrieval-http = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
-futures-util = "0.3"
+tokio = { workspace = true }
+futures-util = { workspace = true }
