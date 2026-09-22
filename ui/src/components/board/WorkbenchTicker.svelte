@@ -2,17 +2,22 @@
   import Button from '@/components/ui/Button.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import { useWorkSession } from '@/lib/work-session.svelte'
+  import { Square } from '@lucide/svelte'
+  import { useStopWorkSession, useWorkSession } from '@/lib/work-session.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
 
   // The ticket's live-work treatment: while an agent's work session is on
   // this ticket, the strip carries the dither field (the same material the
   // generating blocks wear — "work is happening here"), the live phase
-  // sentence, and the WATCH affordance. The CTA opens the watch modal.
+  // sentence, and the two controls. WATCH opens the run-detail modal; STOP
+  // is the brake — ghost, but danger-tinted, and disabled while its POST is
+  // in flight so a double-click cannot queue a second one.
   let { taskId }: { taskId: string } = $props()
 
   const session = useWorkSession(() => taskId)
+  const stopWork = useStopWorkSession()
   let watchOpen = $state(false)
+  let stopping = $state(false)
   const live = $derived(session.data?.session ?? null)
   const wait = $derived(session.data?.wait ?? null)
 
@@ -21,6 +26,15 @@
     const head = m.split('-')[0] ?? ''
     return head ? head[0]!.toUpperCase() + head.slice(1) : 'An agent'
   })
+
+  const stop = async () => {
+    stopping = true
+    try {
+      await stopWork(taskId)
+    } finally {
+      stopping = false
+    }
+  }
 </script>
 
 {#if live || wait}
@@ -50,6 +64,16 @@
       </span>
       {#if live}
         <Button size="xs" variant="ghost" onclick={() => (watchOpen = true)}>Watch the work</Button>
+        <Button
+          size="xs"
+          variant="ghost"
+          class="text-danger hover:text-danger"
+          title="Stop the live work session"
+          disabled={stopping}
+          onclick={() => void stop()}
+        >
+          <Square size={11} />Stop
+        </Button>
       {/if}
     </div>
   </div>

@@ -1,7 +1,7 @@
 // The one right-click menu for a ticket — kanban cards and list rows serve
 // the SAME entries: open/copy shortcuts, then quick controls (move, priority,
 // due presets, assign-to-me), then archive. Callers own the actual mutations.
-import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, UserRound } from '@lucide/svelte'
+import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, Square, UserRound } from '@lucide/svelte'
 import { openCopyItems, type ContextMenuEntry, type ContextMenuItem } from '@/components/ui/context-menu.svelte'
 import { userAssignee } from '@/lib/assignees'
 import { PRIORITIES, STATUS_LABEL, TASK_STATUSES, TICKET_COLORS, type Task, type TaskStatus, type Priority, type TicketColor } from '@/lib/task-const'
@@ -16,6 +16,11 @@ export interface TicketMenuOpts {
   onOpen: () => void
   onPatch: (p: { status?: TaskStatus; priority?: Priority; dueDate?: string | null; assignees?: string[]; color?: TicketColor | null }) => void
   onArchive: () => void
+  /** Pass true while a work session is LIVE on the ticket — it is what
+   *  enables the 'Stop the work' entry (the server gates the verb itself). */
+  working?: boolean
+  /** Present → the 'Stop the work' entry renders, last of the action group. */
+  onStop?: () => void
 }
 
 const dueIso = (days: number) => {
@@ -99,6 +104,19 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
       danger: !t.archivedAt,
       onSelect: o.onArchive,
     })
+    // Last of the group, after archive: the brake. Rendered whenever the
+    // caller offers it, enabled only while a session is live — on an idle
+    // ticket it sits greyed rather than vanishing, so the surface it mirrors
+    // (the ticker's Stop) stays discoverable.
+    if (o.onStop) {
+      items.push({
+        label: 'Stop the work',
+        icon: [Square, { size: 14 }],
+        danger: true,
+        disabled: !o.working,
+        onSelect: o.onStop,
+      })
+    }
   }
   return items
 }
