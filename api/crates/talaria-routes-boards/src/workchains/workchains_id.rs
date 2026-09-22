@@ -225,7 +225,7 @@ async fn reorder_steps(
                  and t.workchain_id = e.workchain_id \
                  and (f.id = e.from_step and t.id = e.to_step) \
                  and (f.task_id, t.task_id) in ( \
-                     select a.task_id, b.task_id from unnest($2::uuid[], $3::uuid[]) as u(a, b) \
+                     select u.a, u.b from unnest($2::uuid[], $3::uuid[]) as u(a, b) \
                  ) \
            )",
     )
@@ -792,7 +792,7 @@ async fn would_cycle(
     to_task: &str,
 ) -> Result<bool, sqlx::Error> {
     let edges: Vec<(String, String)> = sqlx::query_as(
-        "select ft.task_id::text, tt.task_id::text \
+        "select fs.task_id::text, ts.task_id::text \
          from task_workchain_edges e \
          join task_workchain_steps fs on fs.id = e.from_step \
          join task_workchain_steps ts on ts.id = e.to_step \

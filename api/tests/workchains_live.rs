@@ -1151,3 +1151,121 @@ async fn an_archived_step_reads_past_and_the_engine_leaves_it_alone() {
 
     reset(pg, "archive").await;
 }
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_wire_draws_then_refuses_cycles_then_unwires() {
+    let state = app_state().await;
+    let f = fixture(&state, "wires").await;
+    let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
+
+    let a = ticket(pg, &f.board_id, "First", "in_progress").await;
+    let b = ticket(pg, &f.board_id, "Second", "in_progress").await;
+    let c = ticket(pg, &f.board_id, "Third", "in_progress").await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Wire rig").await;
+    for task_id in [&a, &b, &c] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+
+    // Drawing a wire: a → b. The edge route serves the canvas, and the
+    // would_cycle read it leans on is the one SQL site the original suite
+    // never exercised with a real database — this POST is its proof.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": a, "toTaskId": b })),
+    )
+    .await;
+    assert_eq!(status, 200, "edge draw failed: {body}");
+
+    let n: (i64,) = sqlx::query_as(
+        "select count(*)::bigint from task_workchain_edges where workchain_id = $1::uuid",
+    )
+    .bind(&chain)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    assert_eq!(n, (1,), "exactly one wire stored");
+
+    // b → a would close a 2-cycle; the router refuses BEFORE any write.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": b, "toTaskId": a })),
+    )
+    .await;
+    assert_eq!(status, 400, "a back-wire must be refused: {body}");
+
+    // b → c draws; then c → a must ALSO be refused — b already reaches a,
+    // so the successor walk (not just a 2-hop check) catches the long way
+    // round.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": b, "toTaskId": c })),
+    )
+    .await;
+    assert_eq!(status, 200, "second wire failed: {body}");
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": c, "toTaskId": a })),
+    )
+    .await;
+    assert_eq!(status, 400, "the long way round is still a cycle: {body}");
+
+    // The wire list echoes what the canvas draws, in draw order.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "GET",
+        &format!("/api/boards/{}/workchains", f.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let edges = body["workchains"][0]["edges"].as_array().expect("edges");
+    assert_eq!(edges.len(), 2, "two wires listed: {edges}");
+    assert_eq!(edges[0]["fromTaskId"], a);
+    assert_eq!(edges[0]["toTaskId"], b);
+    assert_eq!(edges[1]["fromTaskId"], b);
+    assert_eq!(edges[1]["toTaskId"], c);
+
+    // Unwire: DELETE snips the wire the way the canvas does.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "DELETE",
+        &format!("/api/workchains/{chain}/edges/{b}/{c}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "edge delete failed: {body}");
+    let n: (i64,) = sqlx::query_as(
+        "select count(*)::bigint from task_workchain_edges where workchain_id = $1::uuid",
+    )
+    .bind(&chain)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    assert_eq!(n, (1,), "the snipped wire is gone");
+
+    reset(pg, "wires").await;
+}

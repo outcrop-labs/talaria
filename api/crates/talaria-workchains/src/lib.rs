@@ -270,7 +270,7 @@ pub async fn list_workchains(pg: &PgPool, board_id: &str) -> Result<Vec<Workchai
     .fetch_all(pg)
     .await?;
     let edges: Vec<EdgeRow> = sqlx::query_as(
-        "select e.workchain_id::text, ft.task_id::text, tt.task_id::text \
+        "select e.workchain_id::text, ft.task_id::text, ts.task_id::text \
          from task_workchain_edges e \
          join task_workchain_steps ft on ft.id = e.from_step \
          join task_workchain_steps ts on ts.id = e.to_step \
@@ -695,7 +695,7 @@ pub async fn chain_readiness(
     .fetch_all(pg)
     .await?;
     let edge_rows: Vec<(String, String, String)> = sqlx::query_as(
-        "select e.workchain_id::text, ft.task_id::text, ts.task_id::text \
+        "select e.workchain_id::text, fs.task_id::text, ts.task_id::text \
          from task_workchain_edges e \
          join task_workchain_steps fs on fs.id = e.from_step \
          join task_workchain_steps ts on ts.id = e.to_step \
