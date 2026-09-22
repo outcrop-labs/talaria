@@ -43,6 +43,22 @@ pub fn unregister(run_id: &str) {
     registry().lock().expect("driver registry").remove(run_id);
 }
 
+/// Fire ONE driver's abort — the cancel half of the stop route. A cancel
+/// that only flips the row leaves the local driver streaming inside a send
+/// step that may legitimately run for hours; the abort is what ends the
+/// in-flight call, and it is the same signal a lost lease and the shutdown
+/// drain use, so the at-least-once machinery is the machinery that resumes.
+/// False when no live driver holds the run — a cancel from another
+/// instance, or a driver that already exited under its own power; the row
+/// state is the truth in both cases.
+pub fn fire(run_id: &str) -> bool {
+    let reg = registry().lock().expect("driver registry");
+    match reg.get(run_id) {
+        Some(handle) => handle.send(true).is_ok(),
+        None => false,
+    }
+}
+
 /// How many drivers this process is holding right now.
 pub fn live_count() -> usize {
     registry().lock().expect("driver registry").len()

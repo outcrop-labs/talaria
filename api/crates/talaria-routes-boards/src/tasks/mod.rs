@@ -7,5 +7,7 @@ pub mod tasks_id_review;
 pub mod tasks_id_usage;
 pub mod tasks_id_watchers;
 pub mod tasks_id_work_session;
+pub mod tasks_id_work_session_stop;
+pub mod tasks_id_work_sessions;
 pub mod workflows;
 pub mod workflows_id;

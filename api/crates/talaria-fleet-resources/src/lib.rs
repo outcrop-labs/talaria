@@ -84,11 +84,13 @@ pub async fn sample_agent_resources(pg: &PgPool) {
         let Some(model) = by_container.get(name) else {
             continue;
         };
-        let cpu = v
-            .get("CPUPercentage")
-            .and_then(|c| c.as_str())
-            .and_then(|c| c.trim_end_matches('%').parse::<f64>().ok())
-            .unwrap_or(0.0);
+        // docker stats JSON: "CPUPerc" on this daemon — the spelling the
+        // first version of this sampler read ("CPUPercentage") matched the
+        // documented Go template name, not the JSON the CLI actually emits
+        // for {{json .}}, so cpu read 0.00 for four days while mem and pids
+        // were correct. Both spellings accepted: the schema name is not
+        // promised stable across docker versions.
+        let cpu = cpu_of(&v);
         // MemUsage's used half, human-spelled ("2.4GiB", "946MiB", "512B").
         let mem = v
             .get("MemUsage")
@@ -214,6 +216,21 @@ async fn transcript_retention_days(pg: &PgPool) -> Option<i64> {
     }
 }
 
+/// docker stats' CPU percentage, from the JSON the CLI actually emits for
+/// `{{json .}}` — "CPUPerc" on this daemon; the documented
+/// "CPUPercentage" is accepted too, so a docker that spells it the
+/// documented way still parses. 0.0 when neither key is present.
+fn cpu_of(v: &serde_json::Value) -> f64 {
+    ["CPUPerc", "CPUPercentage"]
+        .iter()
+        .find_map(|k| {
+            v.get(*k)
+                .and_then(|c| c.as_str())
+                .and_then(|c| c.trim_end_matches('%').parse::<f64>().ok())
+        })
+        .unwrap_or(0.0)
+}
+
 async fn prune(pg: &PgPool) {
     let _ = sqlx::query(
         "delete from agent_resource_samples where taken_at < now() - ($1::int * interval '1 day')",
@@ -236,11 +253,11 @@ pub fn resource_job_spec(pg: PgPool) -> JobSpec {
         name: JobName::AgentResourceSample,
         every_ms: 60_000,
         first_run_delay_ms: Some(120_000),
-        max_run_ms: Some(30_000),
         // PER-INSTANCE, unlike work-redispatch: the samples come from THIS
         // host's docker — an instance that does not run beside the fleet it
         // samples finds no containers and no-ops.
         per_instance: true,
+        max_run_ms: Some(30_000),
         run: Arc::new(move || {
             let pg = pg.clone();
             Box::pin(async move {
@@ -253,7 +270,8 @@ pub fn resource_job_spec(pg: PgPool) -> JobSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{mem_is_leaking, parse_docker_size};
+    use super::{cpu_of, mem_is_leaking, parse_docker_size};
+    use serde_json::json;
 
     #[test]
     fn docker_sizes_parse_to_bytes() {
@@ -265,6 +283,22 @@ mod tests {
         assert_eq!(parse_docker_size("512B"), Some(512));
         assert_eq!(parse_docker_size("16KiB"), Some(16 << 10));
         assert_eq!(parse_docker_size("nonsense"), None);
+    }
+
+    #[test]
+    fn cpu_reads_the_field_docker_actually_emits() {
+        // The exact shape from the prod daemon (2026-09-22): CPUPerc is the
+        // emitted spelling. Reading "CPUPercentage" — the documented Go
+        // template name — sampled 0.00 for four days.
+        let emitted =
+            json!({"CPUPerc": "201.43%", "MemUsage": "692.6MiB / 23.45GiB", "PIDs": "60"});
+        assert_eq!(cpu_of(&emitted), 201.43);
+        // The documented spelling still parses, for a docker that emits it.
+        assert_eq!(cpu_of(&json!({"CPUPercentage": "2.76%"})), 2.76);
+        // Neither key, or a non-numeric value: 0.0, not a failure — the
+        // sample still records mem and pids.
+        assert_eq!(cpu_of(&json!({"MemUsage": "1MiB"})), 0.0);
+        assert_eq!(cpu_of(&json!({"CPUPerc": "n/a"})), 0.0);
     }
 
     #[test]
