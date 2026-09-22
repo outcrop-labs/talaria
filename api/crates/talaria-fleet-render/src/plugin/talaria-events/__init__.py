@@ -114,6 +114,24 @@ def on_pre_tool_call(
     )
 
 
+def _is_error_result(result: Any) -> bool:
+    """The persona's tool-error convention: a JSON object whose top level
+    says so — `"success": false` or a non-empty `"error"`. Everything else
+    (plain text, data payloads, empty) is a success-shaped result; a tool
+    that legitimately returns such an object AS data is the documented
+    trade-off for having a failure signal at all."""
+    try:
+        parsed = json.loads(result) if isinstance(result, str) else result
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    if parsed.get("success") is False:
+        return True
+    err = parsed.get("error")
+    return isinstance(err, str) and bool(err.strip())
+
+
 def on_post_tool_call(
     *,
     tool_name: str = "",
@@ -122,15 +140,24 @@ def on_post_tool_call(
     session_id: str = "",
     tool_call_id: str = "",
     turn_id: str = "",
+    error: Any = None,
     **_: Any,
 ) -> None:
     if not tool_name:
         return
+    # FAILURE IS A FIRST-CLASS STATUS. During the 2026-09-22 incident every
+    # tool call failed for half an hour while every wire the platform could
+    # see said "completed" — the persona's own convention ({"success":
+    # false} / {"error": ...}) is the only failure signal that exists, so it
+    # rides the status instead of being inferred downstream from a clamped
+    # result string. `error` is accepted when the harness passes one.
+    failed = error is not None and error != "" and error is not False
+    status = "error" if (failed or _is_error_result(result)) else "completed"
     event = {
         "sessionId": session_id,
         "toolName": tool_name,
         "toolCallId": tool_call_id,
-        "status": "completed",
+        "status": status,
         "args": _clamp(args),
         "turnId": turn_id,
         "at": int(time.time() * 1000),
