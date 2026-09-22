@@ -18,9 +18,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
     sharper teeth — those sites `.expect()`ed the unset seam, so the
     workchain turn/pause notification paths PANICKED in production (caught by
     catch-panic as opaque 500s) instead of doing their work. Both wired, and
-    the workchains sites converted to unset-means-skip-with-warning — no
-    armed panic paths left (the inbox-focus site is defused by the wiring;
-    its control flow gets its own careful pass separately).
+    no armed panic paths remain: the workchains sites skip with a warning,
+    and the inbox-focus site throws a failure its decision machinery already
+    records on the card (the message is what the user reads).
   - The step-wedge insert (workchains_id.rs): `after` naming a task outside
     the chain put a NULL-position row through the insert's SELECT and died on
     the NOT NULL constraint as a 500 — the designed 400 ("rows_affected 0 =
