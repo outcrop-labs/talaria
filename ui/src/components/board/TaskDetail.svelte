@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, ArchiveRestore, Trash2 } from '@lucide/svelte'
+  import { Archive, ArchiveRestore, Eye, Trash2 } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -74,6 +74,9 @@
   import TicketMuseBar from './TicketMuseBar.svelte'
   import WorkbenchJobsStrip from './WorkbenchJobsStrip.svelte'
   import WorkbenchTicker from './WorkbenchTicker.svelte'
+  import WorkLogStrip from './WorkLogStrip.svelte'
+  import RunDetailModal from './RunDetailModal.svelte'
+  import { useWorkSession } from '@/lib/work-session.svelte'
 
   const MOVE: TaskStatus[] = [...TASK_STATUSES, ...OFF_BOARD_STATUSES]
 
@@ -225,6 +228,15 @@
   // parent; a child shows its parent with a promote control.
   const parentTask = $derived(t?.parentId ? boardTasks.find((bt) => bt.id === t.parentId) : undefined)
   const subTasks = $derived(t ? boardTasks.filter((bt) => bt.parentId === t.id) : [])
+
+  // ── Watching the work ──────────────────────────────────────────────────
+  // The header eye and the work log's View-log buttons share ONE run-detail
+  // modal; `watchRun` is whichever run it is open on. The live-session read
+  // is the same query the ticker holds (same key), so this adds no fetch.
+  const workSession = useWorkSession(() => taskId)
+  const live = $derived(workSession.data?.session ?? null)
+  const queuedWait = $derived(workSession.data?.wait ?? null)
+  let watchRun = $state<string | null>(null)
 </script>
 
 <!-- The one Modal primitive (fixed height + unpadded): the ticket detail is
@@ -277,11 +289,27 @@
               Archived
             </span>
           {/if}
+          {#if live || queuedWait}
+            <!-- The header eye — the same watch affordance the board surfaces
+                 carry, opening the run-detail modal on the LIVE run. It sits
+                 beside the copy link and, like the card corner's, waits
+                 disabled while work is only queued (no run yet). -->
+            <button
+              type="button"
+              title="Watch the work"
+              aria-label="Watch the work"
+              disabled={!live}
+              onclick={() => live && (watchRun = live.runId)}
+              class="ml-auto flex items-center rounded-md p-1 text-accent transition-colors hover:text-fg disabled:opacity-50"
+            >
+              <Eye size={13} />
+            </button>
+          {/if}
           <CopyLinkButton
             path={`/boards/${board.id}/${taskId}`}
             label="Copy link"
             title="Copy link to this ticket"
-            class="ml-auto px-1.5 py-0.5 text-xs"
+            class={live || queuedWait ? 'px-1.5 py-0.5 text-xs' : 'ml-auto px-1.5 py-0.5 text-xs'}
           />
         </div>
 
@@ -324,6 +352,9 @@
           {/if}
 
           <WorkbenchTicker {taskId} />
+          <!-- The record under the live strip: every session this ticket has
+               seen, each row opening the shared run-detail modal. -->
+          <WorkLogStrip {taskId} onView={(runId) => (watchRun = runId)} />
           <WorkbenchJobsStrip {taskId} {canEdit} />
 
           {#key `ds-${t.id}`}
@@ -749,4 +780,11 @@
       </aside>
     {/if}
   </div>
+
+<!-- The one shared run-detail modal: the header eye (the live run) and the
+     work log's View-log buttons (any retained run) both land here. Modal
+     portals itself, so nesting inside the ticket modal's tree is safe. -->
+{#if watchRun}
+  <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} onEnded={() => (watchRun = null)} />
+{/if}
 </Modal>

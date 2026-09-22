@@ -3686,6 +3686,7 @@ dependencies = [
 name = "talaria-alerts"
 version = "0.1.0"
 dependencies = [
+ "redis",
  "reqwest",
  "serde",
  "sqlx",

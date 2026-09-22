@@ -214,6 +214,14 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_boards::tasks::tasks_id_work_session::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/tasks/{id}/work-session/stop",
+            post(talaria_routes_boards::tasks::tasks_id_work_session_stop::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/tasks/{id}/work-sessions",
+            get(talaria_routes_boards::tasks::tasks_id_work_sessions::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/tasks/{id}",
             get(talaria_routes_boards::tasks::tasks_id::get)
                 .put(talaria_routes_boards::tasks::tasks_id::put)
