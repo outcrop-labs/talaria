@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_boards::{board_allows_agent, board_role, can_edit};
-use talaria_body::{parse, uuid_member};
+use talaria_body::parse;
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -33,9 +33,10 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "POST dependency", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -109,9 +110,13 @@ pub async fn post(
     };
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    let depends_on_id = match uuid_member(obj, "dependsOnId") {
+    let depends_raw = match talaria_body::string_member(obj, "dependsOnId", 1, 200) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let depends_on_id = match super::resolve_task_path(&state.pg, &depends_raw).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
     };
     let dep = match get_task(&state.pg, &depends_on_id).await {
         Ok(Some(d)) => d,
@@ -183,9 +188,10 @@ pub async fn delete(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "DELETE dependency", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     // One 403 for both a missing ticket and a role failure — the dependency
     // plane does not reveal whether the id exists.
     let task = match get_task(&state.pg, &id).await {
@@ -204,9 +210,13 @@ pub async fn delete(
     }
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    let depends_on_id = match uuid_member(obj, "dependsOnId") {
+    let depends_raw = match talaria_body::string_member(obj, "dependsOnId", 1, 200) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let depends_on_id = match super::resolve_task_path(&state.pg, &depends_raw).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     Ok(match remove_dependency(&deps, &id, &depends_on_id).await {

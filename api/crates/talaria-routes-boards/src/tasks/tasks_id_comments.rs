@@ -107,21 +107,17 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "GET comments", &id) {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    let id = super::resolve_task_path(&state.pg, &id).await?;
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[tasks] read on GET comments failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on GET comments failed", e)),
     };
-    if let Err(gate) = comment_reader(&state, &headers, &task.board_id).await {
-        return gate;
-    }
+    comment_reader(&state, &headers, &task.board_id).await?;
     match list_comments(&state.pg, &id).await {
-        Ok(comments) => Json(json!({ "comments": comments })).into_response(),
-        Err(e) => internal("[tasks] comment list failed", e),
+        Ok(comments) => Ok(Json(json!({ "comments": comments })).into_response()),
+        Err(e) => Ok(internal("[tasks] comment list failed", e)),
     }
 }
 
@@ -131,9 +127,10 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "POST comment", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

@@ -376,7 +376,7 @@ server.registerTool(
   {
     description:
       'Get a ticket in full: fields (incl. human estimate, sub-task parentId, mixed assignees — agents by id, humans as user:<id>), comments, activity, watchers, reviews, dependencies. May include `workflows` — how this kind of work is done here; follow their instructions. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
-    inputSchema: { taskId: z.string().describe('Ticket id') },
+    inputSchema: { taskId: z.string().describe('Ticket id or ref (PLAT-118), from list_tickets or the assignment') },
   },
   async ({ taskId }) => ok(await api('GET', `/api/tasks/${encodeURIComponent(taskId)}`)),
 )
@@ -1054,8 +1054,8 @@ server.registerTool(
     description:
       `Mark a ticket as blocked by another ticket on the same board. The edge lands on BOTH tickets, so BOTH must be live: one that is ${OFF_THE_TABLE} refuses with 403 on either side of the edge, and the error names which. Removing an edge is a human call.`,
     inputSchema: {
-      taskId: z.string().describe('The blocked ticket'),
-      dependsOnId: z.string().describe('The ticket it depends on'),
+      taskId: z.string().describe('The blocked ticket — id or ref (PLAT-118)'),
+      dependsOnId: z.string().describe('The ticket it depends on — id or ref (PLAT-118)'),
     },
   },
   async ({ taskId, dependsOnId }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/dependencies`, { dependsOnId })),
