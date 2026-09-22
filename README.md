@@ -18,30 +18,29 @@
 
 Your workday right now isn't a workflow. It's a scavenger hunt with a subscription fee.
 
-Talaria is one multiplayer workspace where the whole workday actually happens, and agents are coworkers. Everyone, humans and agents, collaborate across the entire platform, sharing deep, historical context.
+Talaria is a multiplayer workspace where the whole workday is at your fingertips, and agents are coworkers. Everyone collaborate across the entire platform, sharing deep, historical context. Agents get smarter as your team works together to build whatever it is you're passionate about.
 
 | Surface | What it is |
 | :--- | :--- |
 | **Chat** | One central chat between coworkers and agents. Agents get context from conversations and can work across Talaria and connected tools. |
-| **Boards** | Project management with agentic workflows and human-in-the-loop built in. |
-| **Knowledge** | Your company wiki and processes in one place. Knowledge accessible by humans and agents, contextualized across Talaria. |
-| **Plans** | Think out loud beside an agent and coworkers while a real plan takes shape on the other half of the screen. When it's ready, your agents can build tickets and organize your project. |
-| **Research** | Ask real questions, get a real answers with receipts. A Perplexity grade research harness, multiplayer by default. |
-| **Files** | The stuff work produces: sheets, docs, sites, files. Versioned and shareable. |
+| **Boards** | Project management with agentic workflows and human-in-the-loop built in. Workchains allow programmatic task orchestration across any project. |
+| **Knowledge** | Your company wiki in one place. Knowledge accessible by humans and agents, contextualized across Talaria. |
+| **Plans** | Think out loud beside an agent and coworkers while an agents plan alongside you. When it's ready, your agents can build tickets and organize your project. |
+| **Research** | Ask real questions, get a real answers with sources. A Perplexity grade research harness, multiplayer by default. |
+| **Files** | The stuff work produces: sheets, docs, sites, files. Versioned and shareable, with a first class Google Drive integration. |
 
 ## Agents as coworkers
 
-Everything above is sharable and multiplayer, like a real workplace. An agent isn't just a panel
-bolted to the side of your screen. It's someone you pull into the work across the application:
+Everything in Talaria is sharable and multiplayer, like a real workplace. An agent isn't just a panel
+bolted to the side of your screen. It's a coworker you pull in day-to-day anywhere you're currently working:
 
-- **Hire one like you'd brief a recruiter.** Describe the job, and Talria drafts the whole agent for you, ready for you to edit key bits. Hire in one click.
-- **@mention one in a channel.** It answers in the thread, streaming live, having actually read
-  the context.
+- **Hire one like you'd brief a recruiter.** Describe the job, and Talria drafts the whole agent for you. A full Heremes agent, ready to start working in under 30s.
+- **@mention one in a channel.** It answers in the thread, streaming live, having actually read the context.
 - **Open a plan with one.** You talk, it drafts, the document appears. Your teammates can join too! Finished the plan? Your planning agent will build it into tickets for you and your team.
 - **Assign a ticket.** Tickets worked by humans or agents. Agents work the problem one step at a time, until it's done or until it needs a human.
 - **Walk away from a conversation without guilt.** Idle threads distill into memory instead of cluttering your UI or getting buried under four hundred newer messages.
 
-And it's not just the specialists. Every person on your team gets an assistant of their own:
+Each agent in Talaria can be a departmental specialist, and every person on your team gets an assistant of their own:
 named how they like, tuned to their work, acting on their behalf exactly where they'd delegate.
 
 > AI is something your team *uses*. An agent is someone your team *employs*.
@@ -51,23 +50,22 @@ named how they like, tuned to their work, acting on their behalf exactly where t
 Every agent in Talaria is a full [Hermes](https://github.com/outsourc-e/hermes-workspace) agent
 underneath. It has its own memory, its own skills, its own way of
 working a problem, and it loops until the thing is actually solved. It learns your business the
-way new people do, through the real work. Six months in, your agent isn't the one you hired.
+way new people do, through the real work.
 
 Changes to an agent deploy like software: a fresh one comes up beside the old, and traffic cuts
 over only when the new one is healthy.
 
 ## Keep your stack
 
-Talaria isn't a divorce. Your inbox, your spreadsheets, your calendar, your CRM: they come
-along. (Yes, the repos too, if you've got them.) Workspace level MCP, as well as per-user MCP are all built in. 
+Talaria speaks MCP, so all your apps come along. (Yes, the repos too, if you've got them.) Workspace level MCP with fine-tunable permissions, as well as per-user MCP are all built in. 
 The MCP marketplace makes it easy to find and connect to the tools you already use.
 
-Google Workspace is a first class citizen, with Microsoft 365 on the way soon.
+Google Workspace is already a first class citizen, with Microsoft 365 on the way soon.
 
 ## Talaria SDK
 
 Use our SDK to build your own apps and harnesses that plug into the rest of Talaria natively. Forget about spinning up 
-another new micro app on another new subdomain... Use your custom tooling right there in Talaria, alongside all your existing agents and context.
+another new micro app on another new subdomain... Use your custom tooling right there in Talaria, alongside all your existing agents and context, then give them skills and tools to use them.
 
 ## Guardrails and human-in-the-loop by default
 
@@ -75,116 +73,158 @@ another new micro app on another new subdomain... Use your custom tooling right 
   tickets, for example.
 - **Permissions are real.** A fine-grained catalog, per-person and per-agent, resolved
   server-side on every request.
-- **Secrets stay sealed.** Real encryption and one-click rotation, configs file never holds a
-  live credential. Secret management built into platform tooling as a default.
-- **Everything is on the record.** Every agent action lands on the ticket it worked, in the
-  ledger, in the audit trail. What your team did, and what it cost, is always one question away.
+- **Secrets stay sealed.** Real encryption and one-click rotation, configs never hold a
+  live credential. Secret management built into platform tooling as a default, usable by agents with a token grant system.
+- **Everything is on the record.** Every agent action is tied back to what it affected in the platform. Get full insight into what your team is doing, and what it costs.
 
-## The cloud is coming
+## Cloud soon?
 
 ### → [Join the cloud waitlist](https://talariaworks.ai/#waitlist)
 
-Talaria is open source, self-hosting is free forever, and the self-hosted version never becomes 
-a second-class citizen. If you'd rather host it on your own server, the entire app deploys as a docker compose. 
-The cloud is the easy button for businesses that would rather focus on work than managing infrastructure.
+Talaria is open source, and self-hosting will be= free forever. We are committing to ensuring that the self-hosted version never becomes 
+a neutered sales pitch to pay for our cloud. If you'd rather use your own compute and you have the chops to manage infrastructure, the entire app deploys as a docker compose. 
+The cloud will simply be the easy button for businesses that would rather focus on work instead of managing infrastructure.
 
-One honest note, because early days should sound like early days: the platform is moving fast,
-and the polish lands in the beta first. Come grow with it.
+One honest note, this is beta software right now. The platform is moving fast. Expect little bugs here and there, and never be afraid to open an issue or submit a PR. We're committed to making this something your team can't live without.
 
 ## Quick start
 
-Two prerequisites, both hard: [Docker](https://docs.docker.com/get-docker/) (with its compose
-v2 plugin) and [Bun](https://bun.sh), the repo's runner. Podman is untested. From there it's
-two commands, whichever way you're going.
+Prerequisites: 
+[Docker](https://docs.docker.com/get-docker/)
+[Bun](https://bun.sh)
 
-### Kicking the tires
+Podman is untested.
+
+### Developing
 
 ```bash
 git clone https://github.com/outcrop-labs/talaria && cd talaria
-bun talaria setup     # secrets, config, deps — also puts a plain `talaria` on your PATH
+bun talaria setup     # secrets, config, deps, puts the `talaria` CLI ref on your PATH
 talaria dev           # the whole dev stack → http://localhost:5273
 ```
 
-Open the app and claim the instance: the account you create there is the admin. Then add an
-LLM provider on `/models` (keys are encrypted in the DB), set your organization in Admin, and
-describe your first agent on `/agents`.
-
-### Running it for real
-
-One command builds and runs the entire stack as containers — zero required config, secrets
-generated on first boot:
+### Production Deployment
 
 ```bash
 git clone https://github.com/outcrop-labs/talaria && cd talaria
-bun talaria deploy up         # build + start the stack → http://localhost:5273
-bun talaria service install   # optional, Linux: keep it running across reboots
+bun talaria setup     # secrets, config, deps, puts the `talaria` CLI ref on your PATH
+talaria deploy up         # build + start the stack → http://localhost:5273
+talaria service install   # optional, Linux: keep it running across reboots
 ```
 
-Claim it like above — that account is the admin. Updates are `bun talaria deploy update`. The
-long version — env vars, TLS, orchestrators like Dokploy, prebuilt GHCR images:
+Open the app and claim the instance: the account you create there is the admin. Then add an
+LLM provider on `/models`, set your organization in Admin, and describe your first agent on `/agents`.
+
+For hosting the app on a live domain, we recommend using a Cloudflare Tunnel. It's the cleanest way to prevent unauthorized access to your infrastructure.
+
+### Manual Updates
+
+```bash
+talaria deploy update  # Updates the entire docker stack and rolls live
+```
+
+The long version of all of our container commands and the dirty details can be found here:
 [`docs/CONTAINER.md`](./docs/CONTAINER.md).
 
-> Back up `TALARIA_SECRET_KEY` somewhere a snapshot isn't (`ui/.env` on a dev box, generated
-> in the server's state dir): every stored secret is sealed with it, and a database restored
-> without it cannot read its own secrets.
+#### IMPORTANT
+> Back up your `TALARIA_SECRET_KEY` somewhere safe!
+*Every stored secret is sealed with it, and a database restored without it cannot read its own secrets.*
 
-Full setup detail, the dev loop, and the architecture: [`DEVELOPERS.md`](./DEVELOPERS.md).
-Just using Talaria, no interest in running it? The member guides live in
-[`docs/user/`](./docs/user/README.md).
+Full setup detail, dev loop, and architecture: [`DEVELOPERS.md`](./DEVELOPERS.md).
 
 ## Status & roadmap
 
-**Running today:** chat (channels, DMs, threads, files), boards (kanban, list, Gantt,
-dependencies, custom statuses), docs (versioning, anchored comments, multiplayer editing),
-plans, cited research, artifacts (including Google Drive export) · hiring, federation, and
-versioned identity for agents · a personal assistant for every person · scheduled jobs · the
-app platform and SDK · per-user connected accounts with per-agent tool grants · fine-grained
-permissions · sealed secrets · the priced ledger, attributed to the ticket · ops, alerts, and
-audit surfaces.
+**Running today:** 
+- Quick-deploy Hermes agents (employee agents & personal assistants)
+- Chat (channels, DMs, threads, files)
+- Boards (kanban, list, Gantt, Workchains, dependencies, custom statuses)
+- Docs (versioning, anchored comments, multiplayer editing)
+- Plans
+- Research
+- Knoledgebase
+- Files/Artifacts
+- App & SDK platform
+- Per-user connected accounts & per-agent tool grants
+- Fine-grained permissions
+- Sealed secrets
+- Ledger & agent work attribution
+- Alerts, and audit surfaces
 
-**On the way:** first-party apps for marketing, sales, and support · design and finance
-surfaces · connectors (Slack, accounting, HR) · business multitenancy · the managed cloud.
+**On the way:**
+- First-party apps for marketing, sales, support, design, and finance
+- Business multitenancy
+- Managed cloud
+- A shit-ton more that I don't feel like writing in a list right now
 
-Milestones and detail: [`ROADMAP.md`](./ROADMAP.md) · living backlog
-[`CHANGELOG.md`](./CHANGELOG.md).
+Milestones and detail: [`ROADMAP.md`](./ROADMAP.md)
+Living changelog: [`CHANGELOG.md`](./CHANGELOG.md).
 
 ## For developers
 
-One repo: the app ([`ui/`](./ui), Vite + Svelte 5 + strict TypeScript), the agent-facing server
-([`mcp/`](./mcp)), the app platform ([`apps/`](./apps)), the CLI
-([`cli/`](./cli)), and the per-agent plugin ([`plugin/talaria/`](./plugin/talaria), currently
-dormant). Setup, architecture, conventions, and a link to every doc:
+The platform is moving SUPER fast, so docs may be stale here and there. That said, we're working really hard to make sure they get updated periodically to align them with reality.
 
-[`DEVELOPERS.md`](./DEVELOPERS.md). How the platform works:
-[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). New contributors start with
-[`CONTRIBUTING.md`](./CONTRIBUTING.md).
+Overview: [`DEVELOPERS.md`](./DEVELOPERS.md)
+Architecture: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
+UI: ([`ui/`](./ui), Vite + Svelte 5 + strict TypeScript)
+MCP Server: ([`mcp/`](./mcp))
+App Platform/SDK: ([`apps/`](./apps))
+CLI: ([`cli/`](./cli))
+Hermes Plugin: ([`plugin/talaria/`](./plugin/talaria)
+
+New contributors start with [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## License
 
-MIT, free forever ([`LICENSE`](./LICENSE)). Open source and self-hostable is the deal, and
-self-hosting never loses features. Missing something you'd need to actually run your business
-here? That's the whole idea: [open an issue](https://github.com/outcrop-labs/talaria/issues)
-and help shape it.
+MIT, free forever ([`LICENSE`](./LICENSE))
+
+Open source and self-hostable forever. Missing something you'd need to actually run your business
+here? [open an issue](https://github.com/outcrop-labs/talaria/issues) and help shape it.
 
 ## Acknowledgements
 
-Talaria stands on a small mountain of open source. The surfaces you touch every minute:
-Svelte, Vite, TanStack Query, TipTap and ProseMirror, Tailwind CSS, sv-router, Lucide,
-emoji-mart, highlight.js and lowlight, the remark/rehype/unified family. The machinery you
-never see: the api is Rust on axum, tokio, sqlx, serde and tower, with cryptography from
-RustCrypto, mail from lettre and JS-evaluation from Boa; the agent toolkit speaks the Model
-Context Protocol; the desktop shell is Tauri. The data plane runs PostgreSQL, Redis, Qdrant,
-MinIO, SearXNG and Hugging Face's text-embeddings-inference. The fleet itself runs Hermes
-from Nous Research — the agent runtime every Talaria agent is. The workbench's coding
-harnesses drive opencode, Pi and Oh My Pi. And none of it builds or ships without Bun,
-TypeScript, Vitest, Docker, Alpine, Node, or GitHub's Actions runners and GHCR.
+Talaria stands on a small mountain of open source.
 
-To every maintainer behind those names: Talaria exists because you kept building. Thank you.
+- Svelte
+- Vite
+- TanStack
+- TipTap and ProseMirror
+- Tailwind CSS
+- sv-router
+- Lucide
+- emoji-mart
+- highlight.js and lowlight, the remark/rehype/unified family
+- Rust
+- axum
+- tokio
+- sqlx
+- serde
+- tower
+- RustCrypto
+- lettre
+- Boa
+- Model Context Protocol
+- Tauri
+- PostgreSQL
+- Redis
+- Qdrant
+- MinIO
+- SearXNG
+- text-embeddings-inference
+- Hermes
+- opencode, Pi and Oh My Pi
+- Bun
+- TypeScript
+- Vitest
+- Docker
+- Alpine
+- Node
+- GHCR
+- There's definitely more, holy shit this is a long list.
+
+To every maintainer behind those names: Thank you.
 
 ### The commitment
 
-A sizeable portion of the proceeds from Talaria Cloud is committed to supporting the
-projects on this list — sponsorships, bounties, and upstream contributions — with the split
-published openly. They made this possible; they share in it. That is the deal too, in
-writing, before the first invoice.
+A portion of the proceeds from Talaria Cloud will be committed to supporting the
+projects on this list. More soon.
 
