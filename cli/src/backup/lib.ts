@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
-import { envValue, envWins, parseEnv, stripQuotes } from '../envfile'
+import { envValue, readEnvFile } from '../envfile'
+import { MINIO_PORT } from '../ports'
 
 // Client images, only used when the host has no psql/pg_dump/mc. postgres:16
 // matches docker/dev-compose.yml — a dump is refused if the client is older
@@ -27,13 +28,9 @@ type Env = Record<string, string | undefined>
  *  a checkout of its .env. Env wins even when empty — the documented footgun;
  *  an empty DATABASE_URL export is a loud error, not a silent fallback. */
 export function liftAppEnv(ctx: Ctx): Env {
-  const file = join(ctx.root, ctx.env.TALARIA_ENV_FILE || 'ui/.env')
-  const text = existsSync(file) ? readFileSync(file, 'utf8') : ''
   // One layer of quotes tolerated: the bash stripped them for files other
-  // tools had written by hand.
-  const parsed: Record<string, string> = {}
-  for (const [k, v] of Object.entries(parseEnv(text))) parsed[k] = stripQuotes(v)
-  return envWins(parsed, ctx.env)
+  // tools had written by hand. Env wins even when empty.
+  return readEnvFile(ctx, ctx.env.TALARIA_ENV_FILE || 'ui/.env', { quotes: true, envWins: true })
 }
 
 /** The connection string minus its credentials — safe to print and to record
@@ -101,7 +98,7 @@ const localStorage = (): Storage => ({ mode: 'local', endpoint: '', bucket: '', 
 export function internalTarget(env: Env): Storage {
   return {
     mode: 'internal',
-    endpoint: env.TALARIA_S3_URL || `http://127.0.0.1:${env.TALARIA_MINIO_PORT || '9010'}`,
+    endpoint: env.TALARIA_S3_URL || `http://127.0.0.1:${env.TALARIA_MINIO_PORT || MINIO_PORT}`,
     bucket: env.TALARIA_S3_BUCKET || 'talaria',
     prefix: '',
     accessKey: env.TALARIA_S3_ACCESS_KEY || 'talaria',

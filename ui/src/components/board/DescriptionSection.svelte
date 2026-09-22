@@ -1,6 +1,7 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
+  import Segmented from '@/components/ui/Segmented.svelte'
   import { Maximize2, ChevronLeft } from '@lucide/svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import type { RichEditorHandle } from '@/components/ui/rich-editor'
@@ -48,24 +49,17 @@
     onSave(md)
   }
 
-  const modes = ['read', 'edit'] as const
+  // The read/edit switch is the kit's xs Segmented — the same control the
+  // artifact and KB doc editors use for this identical choice.
+  const MODE_OPTIONS = [
+    { id: 'read', label: 'Read' },
+    { id: 'edit', label: 'Edit' },
+  ] as const
 </script>
 
 {#snippet modeToggle()}
   {#if canEdit}
-    <div class="flex rounded-md border border-line p-0.5">
-      {#each modes as m (m)}
-        <button
-          onclick={() => (mode = m)}
-          class={cn(
-            'rounded px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
-            mode === m ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
-          )}
-        >
-          {m}
-        </button>
-      {/each}
-    </div>
+    <Segmented size="xs" options={MODE_OPTIONS} value={mode} onChange={(m) => (mode = m)} />
   {/if}
 {/snippet}
 

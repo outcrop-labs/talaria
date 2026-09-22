@@ -2,8 +2,66 @@
 // kept re-spelling. The composeArgs shape mirrors the Rust fleet docker
 // builder's (api/src/fleet/docker.rs): every caller goes through ONE place,
 // so the -p/-f/--env-file convention cannot drift between commands.
+//
+// It is also the home of the COMPOSE_FILE law (composeFileArgs): an explicit
+// `-f` BEATS the env in docker's own precedence, so a caller that honors the
+// operator's layering drops its `-f` — spelled once, here.
 
+import { join } from 'node:path'
 import type { Ctx } from './ctx'
+
+/** The canonical production compose file — the RELATIVE path CONTAINER.md
+ *  tells operators to type, which is why every printed equivalent shows it
+ *  spelled exactly this way. */
+export const COMPOSE_BASE = 'docker/compose.yml'
+
+/** The SHARED sidecar plane — postgres, redis, qdrant, embeddings, minio,
+ *  searxng with their images, restart policies, data volumes, env defaults and
+ *  healthchecks — which EVERY stack layers IN FRONT of its own file:
+ *
+ *    docker compose -f docker/sidecars.compose.yml -f docker/dev-compose.yml …
+ *
+ *  FIRST, always. Compose merges by service name with the later file winning,
+ *  so a stack's own container_name / ports / networks / divergent env only
+ *  override if they come after it — and docker/devbox.compose.yml's `!reset`
+ *  of the two services a box must not run only sticks for the same reason
+ *  (a fragment listed last would hand the box a second TEI + SearXNG).
+ *  It is deliberately NOT part of the COMPOSE_FILE env flow: that env names
+ *  the operator's own layering, and this file is not their override. */
+export const SIDECARS_COMPOSE = 'docker/sidecars.compose.yml'
+
+/** A stack's compose file list: the shared sidecar plane FIRST, then the
+ *  stack's own file(s) — the ONE place the merge order is decided, so no
+ *  caller can spell it the other way round (see SIDECARS_COMPOSE for why
+ *  first is load-bearing). `stack` entries are repo-relative, as the CLI's
+ *  other compose-file constants are. */
+export function stackComposeFiles(root: string, ...stack: string[]): string[] {
+  return [join(root, SIDECARS_COMPOSE), ...stack.map((f) => join(root, f))]
+}
+
+/** An operator-provided COMPOSE_FILE (the registry-image flow in
+ *  CONTAINER.md), trimmed. Null when unset or whitespace — the canonical
+ *  single-file path. */
+export function composeFileEnv(ctx: Ctx): string | null {
+  const value = ctx.env.COMPOSE_FILE?.trim()
+  return value ? value : null
+}
+
+/** The `-f` args for a compose invocation of `base`, under the one law every
+ *  caller shares: docker's precedence puts an explicit `-f` ABOVE the
+ *  COMPOSE_FILE env, so honoring the operator's layering means dropping the
+ *  `-f` entirely and letting the env name the files. The argument is the
+ *  already-resolved COMPOSE_FILE value (composeFileEnv(ctx) at a ctx-bearing
+ *  call site; unit.ts renders the unit from an opts field, with no Ctx).
+ *
+ *  `base` is ALWAYS preceded by the shared sidecar plane: the sidecars are not
+ *  an operator override, they are half the project, and without them the
+ *  stack refuses to start (`service "postgres" has neither an image nor a
+ *  build context`). Under COMPOSE_FILE the operator names the files, so THAT
+ *  list has to carry the fragment itself — spelled first, in CONTAINER.md. */
+export function composeFileArgs(composeFile: string | null | undefined, base: string): string[] {
+  return composeFile ? [] : ['-f', SIDECARS_COMPOSE, '-f', base]
+}
 
 export type ComposeSpec = {
   /** Compose files in merge order (later wins). */

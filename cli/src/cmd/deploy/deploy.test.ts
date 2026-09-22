@@ -63,7 +63,7 @@ const makeDeployTree = (envFile?: string) => {
 const docUpArgv = (() => {
   const md = readFileSync(join(import.meta.dir, '../../../../docs/CONTAINER.md'), 'utf8')
   const fences = [...md.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]!)
-  const block = fences.find((b) => b.includes('docker compose -f docker/compose.yml up'))
+  const block = fences.find((b) => b.includes('docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up'))
   if (!block) throw new Error('CONTAINER.md no longer contains the canonical up command')
   const tokens = block
     .replace(/\\\n/g, ' ')
@@ -108,11 +108,12 @@ describe('talaria deploy up — argv parity with CONTAINER.md', () => {
     const up = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('up'))!
     expect(up.args).toEqual(docUpArgv)
     expect(up.args[0]).toBe('compose')
-    expect(up.args[1]).toBe('-f')
-    expect(up.args[2]).toBe('docker/compose.yml')
+    // the shared sidecar plane first, then the base — the order the merge
+    // depends on (see SIDECARS_COMPOSE)
+    expect(up.args.slice(1, 5)).toEqual(['-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml'])
     expect(up.opts?.cwd).toBe(root)
     // the printed equivalent is the same command, copy-pasteable
-    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg === 'docker compose -f docker/compose.yml up -d --build')).toBe(true)
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg === 'docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --build')).toBe(true)
   })
 
   test('DOCKER_GID resolved from the socket when nobody supplied one', async () => {
@@ -188,14 +189,14 @@ describe('talaria deploy down / logs / status / update', () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await runDown(ctx, false)
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'down'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'down'])
   })
 
   test('down --volumes is explicit and the flag says what it costs', async () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await downCommand.run(ctx, { positionals: [], flags: { volumes: true } })
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'down', '--volumes'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'down', '--volumes'])
     expect(downCommand.flags?.[0]!.desc).toContain('DATABASE')
   })
 
@@ -203,7 +204,7 @@ describe('talaria deploy down / logs / status / update', () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await runLogs(ctx)
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'logs', '-f'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'logs', '-f'])
     expect(logsCommand.usage).toBe('talaria deploy logs')
   })
 
@@ -215,7 +216,7 @@ describe('talaria deploy down / logs / status / update', () => {
     expect(line).toContain('http://localhost:9999')
     expect(line).toContain('/srv/tal')
     expect(line).toContain('talaria-fleet/talaria') // the compose defaults
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'ps'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'ps'])
   })
 
   test('update pulls --ff-only then runs the documented up', async () => {
@@ -279,7 +280,7 @@ describe('talaria deploy down / logs / status / update', () => {
 })
 
 describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
-  const FILES = 'docker/compose.yml:docker/compose.registry.yml'
+  const FILES = 'docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml'
 
   // An explicit -f BEATS the COMPOSE_FILE env in docker's own precedence, so
   // honoring the operator's layering means the CLI drops its -f entirely.

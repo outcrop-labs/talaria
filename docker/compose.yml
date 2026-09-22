@@ -1,8 +1,13 @@
 # Talaria — one instance, whole stack. The app container (built from the root
 # Dockerfile) plus its stateful sidecars. Full story: docs/CONTAINER.md.
 #
-#   docker compose -f docker/compose.yml up -d --build
-#   (or: cd docker && docker compose up -d --build)
+#   docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --build
+#
+# The sidecars' DEFINITIONS (images, restart, data volumes, env defaults,
+# healthchecks) are docker/sidecars.compose.yml, layered IN FRONT of this file
+# — which is why both `-f` flags are load-bearing, and why the old
+# `cd docker && docker compose up -d` no longer stands alone. See that file's
+# header for what is shared and what stays here.
 #
 # Zero required env — every ${VAR:-default} below has one, and the app's
 # entrypoint generates the secrets the environment doesn't supply into the
@@ -175,118 +180,53 @@ services:
     #  - traefik.http.routers.talaria.entrypoints=websecure
     #  - traefik.http.services.talaria.loadbalancer.server.port=5273
 
-  # ── Sidecars (ported from docker/dev-compose.yml; healthchecks intact) ────
-  # No published ports anywhere: in-container DNS replaces the dev stack's
-  # loopback publishing, and nothing on the host network can reach any of
-  # these — several carry no authentication at all.
+  # ── Sidecars: the shared definitions — image, restart, data volume, env
+  # defaults, healthcheck — live in docker/sidecars.compose.yml, layered IN
+  # FRONT of this file. Only what prod decides stays here: the `internal`
+  # network (agents must never reach postgres) and, for searxng, the render
+  # handoff and the settings volume. No published ports anywhere: in-container
+  # DNS replaces the dev stack's loopback publishing, and nothing on the host
+  # network can reach any of these — several carry no authentication at all.
   postgres:
-    image: docker.io/library/postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: talaria
-      # Pinned by initdb on first boot — a later value the initialized cluster
-      # has never heard of breaks auth. `talaria deploy up` generates this into
-      # docker/.env BEFORE the first `up`; after that, rotate inside the DB.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-talaria}
-      POSTGRES_DB: talaria
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
-      interval: 3s
-      timeout: 3s
-      retries: 20
+    # POSTGRES_PASSWORD is pinned by initdb on first boot — a later value the
+    # initialized cluster has never heard of breaks auth. `talaria deploy up`
+    # generates it into docker/.env BEFORE the first `up`; after that, rotate
+    # inside the DB.
     networks: [internal]
 
   redis:
-    image: docker.io/library/redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 3s
-      timeout: 3s
-      retries: 20
     networks: [internal]
 
   qdrant:
-    image: docker.io/qdrant/qdrant:latest
-    restart: unless-stopped
-    volumes:
-      - qdrant-data:/qdrant/storage
-    healthcheck:
-      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/6333"']
-      interval: 5s
-      timeout: 3s
-      retries: 30
     networks: [internal]
 
   embeddings:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    # TEI publishes amd64-only CPU images (see #151): on arm64 hosts this runs
-    # under emulation — fine for this small model, or point TALARIA_EMBED_URL
-    # at an external embeddings endpoint instead.
-    platform: linux/amd64
-    restart: unless-stopped
-    command: ['--model-id', '${TALARIA_EMBED_MODEL:-BAAI/bge-small-en-v1.5}']
     # TEI pulls its model on a fresh cache — explicit DNS for the same
-    # stub-resolver reason as the app service above.
+    # stub-resolver reason as the app service above. The dev loop and a devbox
+    # leave TEI on the daemon's default resolver, so this stays prod's alone.
     dns:
       - ${TALARIA_DNS_1:-1.1.1.1}
       - ${TALARIA_DNS_2:-1.0.0.1}
-    volumes:
-      - tei-cache:/data
-    healthcheck:
-      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/80"']
-      interval: 5s
-      timeout: 3s
-      retries: 60
     networks: [internal]
 
   minio:
-    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
-    # quay's latest is digest-identical to the last Hub-published build.
-    # Freshness of quay's images is tracked in issue #366.
-    image: quay.io/minio/minio:latest
-    restart: unless-stopped
-    command: ['server', '/data']
-    environment:
-      MINIO_ROOT_USER: ${TALARIA_S3_ACCESS_KEY:-talaria}
-      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
-      interval: 5s
-      timeout: 3s
-      retries: 30
     networks: [internal]
 
   # AGPL separation, same as dev: SearXNG runs as its own unmodified upstream
-  # container reached over HTTP (see docker/dev-compose.yml for the licence
-  # reasoning). Settings come from the rendered file the init service wrote —
-  # mounted as a directory (the upstream-supported shape), read-only.
+  # container reached over HTTP (the licence reasoning is spelled out in
+  # docker/sidecars.compose.yml). Settings come from the rendered file the init
+  # service wrote — mounted as a directory (the upstream-supported shape),
+  # read-only.
   searxng:
-    image: docker.io/searxng/searxng:latest
-    restart: unless-stopped
     depends_on:
       searxng-config:
         condition: service_completed_successfully
-    dns:
-      - ${TALARIA_DNS_1:-1.1.1.1}
-      - ${TALARIA_DNS_2:-1.0.0.1}
     environment:
       # Must match how the app reaches it (service DNS) or result payloads
       # carry links nothing can follow.
       SEARXNG_BASE_URL: http://searxng:8080/
     volumes:
       - searxng-config:/etc/searxng:ro
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
-      interval: 10s
-      timeout: 5s
-      retries: 20
     networks: [internal]
 
 networks:
@@ -301,9 +241,6 @@ networks:
     driver: bridge
 
 volumes:
-  pg-data: {}
-  redis-data: {}
-  qdrant-data: {}
-  tei-cache: {}
-  minio-data: {}
+  # The sidecars' five data volumes are declared in docker/sidecars.compose.yml
+  # (the services there reference them); only the render handoff is prod's.
   searxng-config: {}

@@ -41,16 +41,9 @@ export function agentLabel(id: string): { label: string; role: string } {
   return { label, role: rest.join(' ') }
 }
 
-/** $12.3456 → "$12.35"; tiny amounts keep enough precision to be non-zero. */
-export function formatCost(n: number): string {
-  if (n === 0) return '$0'
-  if (n < 0.01) return `$${n.toFixed(4)}`
-  return `$${n.toFixed(2)}`
-}
-
-/** 1234 → "1.2k", 5_600_000 → "5.6M". */
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`
-  return String(n)
-}
+// The dollar and token spellings are shared now — `@/lib/format` — and
+// re-exported under the names every cost surface already imports them by.
+// `formatCost` is `formatUsd`'s DEFAULT answer: a sub-cent spend keeps four
+// decimals, so a real amount never renders as "$0.00". The model surfaces take
+// its `unpricedAsWord` variant instead (see `@/components/models/fitness`).
+export { formatTokens, formatUsd as formatCost } from '@/lib/format'

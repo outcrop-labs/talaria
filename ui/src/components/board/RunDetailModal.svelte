@@ -1,5 +1,7 @@
 <script lang="ts">
   import Modal from '@/components/ui/Modal.svelte'
+  import Tabs from '@/components/ui/Tabs.svelte'
+  import type { TabItem } from '@/components/ui/tabs'
   import { getJson } from '@/lib/fetch-json'
   import { useWorkSession } from '@/lib/work-session.svelte'
   import { useTargetArtifacts } from '@/lib/artifacts'
@@ -126,27 +128,18 @@
     if (l.t === 'err') return `⚠ ${l.v}`
     return l.v
   }
-  const tabs: { id: Tab; label: string }[] = [
+  // The strip's items, with the turn count on the one label that carries it.
+  const tabs = $derived<TabItem<Tab>[]>([
     { id: 'live', label: 'Live' },
-    { id: 'turns', label: 'Turns' },
+    { id: 'turns', label: turns.length ? `Turns (${turns.length})` : 'Turns' },
     { id: 'resources', label: 'Resources' },
-  ]
+  ])
 </script>
 
 <Modal {open} {onClose} title="Run detail" takeover>
   <div class="flex h-full min-h-0 flex-col">
     <div class="flex items-center gap-1 border-b border-line-subtle pb-3">
-      {#each tabs as t (t.id)}
-        <button
-          type="button"
-          class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors {tab === t.id
-            ? 'bg-raised text-fg'
-            : 'text-muted hover:text-fg'}"
-          onclick={() => (tab = t.id)}
-        >
-          {t.label}{t.id === 'turns' && turns.length ? ` (${turns.length})` : ''}
-        </button>
-      {/each}
+      <Tabs items={tabs} value={tab} onChange={(id) => (tab = id)} />
       {#if agentModel}<span class="ml-auto truncate text-xs text-muted">{agentModel}</span>{/if}
     </div>
 

@@ -209,7 +209,8 @@ stops the old one and the run lands done. Push v2 as `:main`, `POST check`,
 healthcheck cannot pass — leaves the old container serving and the panel
 showing the failure sentence. The rollback test — a green that 500s a route —
 round-trips through `POST rollback`. And the untouched-default contract: a
-plain `docker compose -f docker/compose.yml up` (no adoption, no registry)
+plain `docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up` (no adoption,
+no registry)
 boots and serves exactly as it always did.
 
 ## The overlap contract — and the rule it imposes on migrations

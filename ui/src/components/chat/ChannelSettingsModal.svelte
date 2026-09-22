@@ -22,6 +22,7 @@
   } from '@/lib/channels.svelte'
   import type { AgentModel } from '@/lib/agents'
   import type { DirectoryUser } from '@/lib/users'
+  import { useTeamsDirectory } from '@/lib/teams'
 
   // Channel settings: people + agents, and the owner's delete. One modal,
   // mirroring Board settings' People/Agents structure.
@@ -48,11 +49,7 @@
   const qc = useQueryClient()
   let error = $state<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['channel', channelId] })
-  const dirQuery = createQuery(() => ({
-    queryKey: ['teams-directory'],
-    enabled: open,
-    queryFn: () => getJson<{ teams: Array<{ id: string; name: string }> }>('/api/teams/directory'),
-  }))
+  const dirQuery = useTeamsDirectory(() => open)
   const mineQuery = createQuery(() => ({
     queryKey: ['teams'],
     enabled: open,
@@ -61,7 +58,7 @@
   const teams = $derived(detail.teams ?? [])
   const mine = $derived(new Set((mineQuery.data?.teams ?? []).map((t) => t.id)))
   const teamOptions = $derived(
-    (dirQuery.data?.teams ?? [])
+    (dirQuery.data ?? [])
       .filter((t) => !teams.some((g) => g.id === t.id))
       .map((t) => ({ value: t.id, label: t.name })),
   )

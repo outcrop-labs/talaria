@@ -8,33 +8,24 @@
 // (the image builds from the repo); bun is the only extra prerequisite.
 
 import { randomBytes } from 'node:crypto'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { envWins, parseEnv, writeSecret } from '../../envfile'
+import { COMPOSE_BASE, composeFileArgs, composeFileEnv } from '../../compose'
+import { APP_PORT } from '../../ports'
+import { envFileText, parseEnv, readEnvFile, writeSecret } from '../../envfile'
 
-const FILE = 'docker/compose.yml'
 const DOCKER_SOCK = '/var/run/docker.sock'
-
-/** An operator-provided COMPOSE_FILE (the registry-image flow in
- *  CONTAINER.md). Docker's precedence puts an explicit -f ABOVE the env, so
- *  honoring the env means dropping this file's -f entirely; cwd stays the
- *  repo root so the relative paths inside a COMPOSE_FILE list resolve. Null
- *  when unset — the canonical single-file path. */
-function composeFileEnv(ctx: Ctx): string | null {
-  const value = ctx.env.COMPOSE_FILE?.trim()
-  return value ? value : null
-}
 
 /** The documented invocation. Relative -f on purpose: it is what
  *  CONTAINER.md tells operators to type, and keeping the real argv and the
  *  printed equivalent literally the same string is what makes the print
  *  honest — which is also why this doesn't go through compose()'s helper
- *  (absolute paths, cwd-inherited): parity beats reuse here. */
+ *  (absolute paths, cwd-inherited): parity beats reuse here. The `-f` itself
+ *  follows the shared COMPOSE_FILE law (compose.ts). */
 function deployCompose(ctx: Ctx, op: string[]): Promise<number> {
-  const fileArgs = composeFileEnv(ctx) === null ? ['-f', FILE] : []
-  return ctx.run('docker', ['compose', ...fileArgs, ...op], { cwd: ctx.root })
+  return ctx.run('docker', ['compose', ...composeFileArgs(composeFileEnv(ctx), COMPOSE_BASE), ...op], { cwd: ctx.root })
 }
 
 /** The copy-pasteable line for what is about to run — COMPOSE_FILE included
@@ -42,13 +33,12 @@ function deployCompose(ctx: Ctx, op: string[]): Promise<number> {
 const plain = (ctx: Ctx, envPrefix: string[], op: string[]): string => {
   const file = composeFileEnv(ctx)
   const shown = file ? [...envPrefix, `COMPOSE_FILE=${file}`] : envPrefix
-  return [...shown, 'docker', 'compose', ...(file ? [] : ['-f', FILE]), ...op].join(' ')
+  return [...shown, 'docker', 'compose', ...composeFileArgs(file, COMPOSE_BASE), ...op].join(' ')
 }
 
 /** docker/.env as compose will interpolate it, when present. */
 export function dockerEnvFile(ctx: Ctx): Record<string, string> {
-  const p = join(ctx.root, 'docker/.env')
-  return existsSync(p) ? parseEnv(readFileSync(p, 'utf8')) : {}
+  return readEnvFile(ctx, 'docker/.env')
 }
 
 /** GID of the docker socket — the `stat -c %g` half of the documented
@@ -106,7 +96,7 @@ async function pgDataExists(ctx: Ctx, volume: string): Promise<boolean> {
  *  file (or its absence) is the state, and the log lines are the story. */
 export async function ensureSharedSecrets(ctx: Ctx, pgVolume = 'talaria_pg-data'): Promise<void> {
   const path = join(ctx.root, 'docker/.env')
-  const current = existsSync(path) ? readFileSync(path, 'utf8') : ''
+  const current = envFileText(ctx, 'docker/.env')
   const fileVars = parseEnv(current)
   const missing = (name: string) => !(name in fileVars) && ctx.env[name] === undefined
 
@@ -257,8 +247,8 @@ export function runLogs(ctx: Ctx): Promise<number> {
  *  screen (same port resolution as runStatus, so the URL is the one compose
  *  actually listens on). */
 export async function runCreds(ctx: Ctx): Promise<number> {
-  const effective = envWins(dockerEnvFile(ctx), ctx.env)
-  const port = effective.TALARIA_HTTP_PORT ?? '5273'
+  const effective = readEnvFile(ctx, 'docker/.env', { envWins: true })
+  const port = effective.TALARIA_HTTP_PORT ?? APP_PORT
   ctx.log.say(`first-run access: open http://localhost:${port} and claim the admin account`)
   ctx.log.say('the account you create there is the admin — there are no default credentials')
   return 0
@@ -269,8 +259,8 @@ export async function runCreds(ctx: Ctx): Promise<number> {
  *  CONTAINER.md are all "which values did this up actually use", so status
  *  answers that in one line before the container table. */
 export async function runStatus(ctx: Ctx): Promise<number> {
-  const effective = envWins(dockerEnvFile(ctx), ctx.env)
-  const port = effective.TALARIA_HTTP_PORT ?? '5273'
+  const effective = readEnvFile(ctx, 'docker/.env', { envWins: true })
+  const port = effective.TALARIA_HTTP_PORT ?? APP_PORT
   const state = effective.TALARIA_STATE_DIR ?? '/var/lib/talaria'
   const fleet = `${effective.TALARIA_FLEET_PROJECT ?? 'talaria-fleet'}/${effective.TALARIA_FLEET_NETWORK ?? 'talaria'}`
   ctx.log.say(`http://localhost:${port} · state ${state} · fleet ${fleet}`)

@@ -45,20 +45,31 @@ export function useBoardStatuses(boardId: MaybeGetter<string | null>) {
 export const statusLabelOf = (key: string, statuses: BoardStatus[]): string =>
   statuses.find((s) => s.key === key)?.label ?? STATUS_LABEL[key as keyof typeof STATUS_LABEL] ?? key
 
+/** THE STATUS PALETTE — the colour of every status key that no board row
+ *  answers for: the virtual defaults before a board's status set arrives, and
+ *  the OFF-BOARD terminals (`failed`, `cancelled`), which are legal on every
+ *  board but never columns, so no row of `/api/boards/:id/statuses` carries
+ *  them. Its keys are `TaskStatus`, across both lists in `@/lib/task-const`.
+ *
+ *  ONE MAP: column accents (Kanban), status pills (StatusPill) and filter
+ *  facets (FilterBar) all read this, so no surface can disagree about what a
+ *  status looks like. Call sites keep their own unknown-key guard and fall
+ *  back to the muted theme colour. */
+export const STATUS_COLOR: Record<string, string> = {
+  inbox: 'var(--theme-muted)',
+  assigned: 'var(--theme-accent)',
+  in_progress: 'var(--theme-warning)',
+  blocked: 'var(--theme-danger)',
+  quality_review: 'var(--theme-accent-secondary)',
+  done: 'var(--theme-success)',
+  failed: 'var(--theme-danger)',
+  cancelled: 'var(--theme-muted)',
+}
+
 export const statusColorOf = (key: string, statuses: BoardStatus[]): string => {
   const c = statuses.find((s) => s.key === key)?.color
   if (c) return LABEL_CSS[c as keyof typeof LABEL_CSS] ?? 'var(--theme-muted)'
-  const FALLBACK: Record<string, string> = {
-    inbox: 'var(--theme-muted)',
-    assigned: 'var(--theme-accent)',
-    in_progress: 'var(--theme-warning)',
-    blocked: 'var(--theme-danger)',
-    quality_review: 'var(--theme-accent-secondary)',
-    done: 'var(--theme-success)',
-    failed: 'var(--theme-danger)',
-    cancelled: 'var(--theme-muted)',
-  }
-  return FALLBACK[key] ?? 'var(--theme-muted)'
+  return STATUS_COLOR[key] ?? 'var(--theme-muted)'
 }
 
 export const createBoardStatus = (boardId: string, input: { label: string; color?: string; category?: string; agentStart?: boolean }) =>

@@ -27,5 +27,7 @@ export async function uploadFile(file: File): Promise<Attachment | { error: stri
   return postJson<Attachment>('/api/uploads', form).catch((e: unknown) => ({ error: errorMessage(e) }))
 }
 
-export const humanSize = (bytes: number) =>
-  bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
+/** An attachment's size, in the spelling the chat and ticket panels already
+ *  read: the shared `formatBytes` (`@/lib/format`) with its attachments
+ *  convention — exact bytes below a KB, nearest KB above. */
+export { formatBytes as humanSize } from '@/lib/format'

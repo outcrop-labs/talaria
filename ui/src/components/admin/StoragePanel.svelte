@@ -7,7 +7,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Select from '@/components/ui/Select.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { fade, slide } from '@/lib/motion'
@@ -98,113 +98,123 @@
   const totalBlobs = $derived(data ? data.stats.local + data.stats.s3 + data.stats.internal : 0)
 </script>
 
+{#snippet panelSkeleton()}
+  <!-- Panel-shaped skeleton (title, stat strip, config grid, button row) so the
+       Storage tab never renders blank and then materializes. -->
+  <Skeleton class="mb-4 h-4 w-20 rounded-full" />
+  <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
+    <Skeleton class="h-3 w-32 rounded-full" />
+    <Skeleton class="h-3 w-36 rounded-full" />
+    <Skeleton class="h-3 w-32 rounded-full" />
+  </div>
+  <div class="grid gap-2 sm:grid-cols-2">
+    {#each Array.from({ length: 6 }) as _, i (i)}
+      <div>
+        <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" />
+        <Skeleton class="h-9 w-full" />
+      </div>
+    {/each}
+  </div>
+  <div class="mt-3 flex items-center gap-2">
+    <Skeleton class="h-7 w-16" />
+    <Skeleton class="h-7 w-32" />
+  </div>
+{/snippet}
+
 <Panel>
   <!-- A failed read used to leave `data` undefined for ever, so this panel
        shimmered its skeleton at a request that had already died — a loading
-       state that never ends is just a slower blank screen. -->
-  {#if !data && query.isError}
-    <QueryError error={query.error} title="Could not load storage settings" onRetry={() => void query.refetch()} />
-  {:else if !data || !form}
-    <!-- Panel-shaped skeleton (title, stat strip, config grid, button row) so
-         the Storage tab never renders blank and then materializes. -->
-    <Skeleton class="mb-4 h-4 w-20 rounded-full" />
-    <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
-      <Skeleton class="h-3 w-32 rounded-full" />
-      <Skeleton class="h-3 w-36 rounded-full" />
-      <Skeleton class="h-3 w-32 rounded-full" />
-    </div>
-    <div class="grid gap-2 sm:grid-cols-2">
-      {#each Array.from({ length: 6 }) as _, i (i)}
-        <div>
-          <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" />
-          <Skeleton class="h-9 w-full" />
-        </div>
-      {/each}
-    </div>
-    <div class="mt-3 flex items-center gap-2">
-      <Skeleton class="h-7 w-16" />
-      <Skeleton class="h-7 w-32" />
-    </div>
-  {:else}
-    {@const cfg = form}
-    {@const d = data}
-    <SectionHeader
-      class="mb-4"
-      title="Storage"
-      info="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service (AWS S3, Backblaze B2, Cloudflare R2, MinIO). Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy."
-    />
+       state that never ends is just a slower blank screen. QueryState's error
+       branch owns that. -->
+  <QueryState query={query} errorTitle="Could not load storage settings">
+    {#snippet skeleton()}{@render panelSkeleton()}{/snippet}
+    {#snippet children(data)}
+    {#if form === null}
+      <!-- The editable draft seeds from the read in an effect, one render after
+           it lands — hold the same skeleton through that beat. -->
+      {@render panelSkeleton()}
+    {:else}
+      {@const cfg = form}
+      {@const d = data}
+      <SectionHeader
+        class="mb-4"
+        title="Storage"
+        info="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service (AWS S3, Backblaze B2, Cloudflare R2, MinIO). Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy."
+      />
 
-    <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3 text-xs text-muted">
-      <span><span class="font-mono text-fg">{d.stats.local}</span> on disk (<span class="font-mono">{fmtBytes(d.stats.localBytes)}</span>)</span>
-      <span><span class="font-mono text-fg">{d.stats.internal}</span> in the built-in bucket</span>
-      <span><span class="font-mono text-fg">{d.stats.s3}</span> in external storage</span>
-      {#if migrating}
-        <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-migrate" size={11} /> moving <span class="font-mono">{d.migrate!.moved}/{d.migrate!.total}</span></span>
-      {/if}
-      {#if syncing}
-        <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-sync" size={11} /> syncing <span class="font-mono">{d.sync!.moved}/{d.sync!.total}</span> to replica</span>
-      {/if}
-      {#if !migrating && d.migrate?.failed}<span class="text-danger">{d.migrate.failed} failed to move</span>{/if}
-      {#if !syncing && d.sync?.failed}<span class="text-danger">{d.sync.failed} failed to sync</span>{/if}
-      {#if inBucket && d.stats.local > 0 && !migrating}
-        <Button size="sm" variant="outline" class="ml-auto" onclick={() => void migrate()} disabled={busy}>
-          Move local files to bucket
-        </Button>
-      {/if}
-    </div>
+      <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3 text-xs text-muted">
+        <span><span class="font-mono text-fg">{d.stats.local}</span> on disk (<span class="font-mono">{fmtBytes(d.stats.localBytes)}</span>)</span>
+        <span><span class="font-mono text-fg">{d.stats.internal}</span> in the built-in bucket</span>
+        <span><span class="font-mono text-fg">{d.stats.s3}</span> in external storage</span>
+        {#if migrating}
+          <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-migrate" size={11} /> moving <span class="font-mono">{d.migrate!.moved}/{d.migrate!.total}</span></span>
+        {/if}
+        {#if syncing}
+          <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-sync" size={11} /> syncing <span class="font-mono">{d.sync!.moved}/{d.sync!.total}</span> to replica</span>
+        {/if}
+        {#if !migrating && d.migrate?.failed}<span class="text-danger">{d.migrate.failed} failed to move</span>{/if}
+        {#if !syncing && d.sync?.failed}<span class="text-danger">{d.sync.failed} failed to sync</span>{/if}
+        {#if inBucket && d.stats.local > 0 && !migrating}
+          <Button size="sm" variant="outline" class="ml-auto" onclick={() => void migrate()} disabled={busy}>
+            Move local files to bucket
+          </Button>
+        {/if}
+      </div>
 
-    <div class="grid gap-2 sm:grid-cols-2">
-      <label class="text-xs text-muted">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
-        <Select value={cfg.mode} onchange={(e) => set({ mode: e.currentTarget.value as StorageAdmin['config']['mode'] })} class="mt-1 w-full">
-          <option value="local">Local disk</option>
-          <option value="internal">Built-in bucket (bundled MinIO)</option>
-          <option value="s3">External (S3-compatible)</option>
-        </Select>
-      </label>
-      {#if cfg.mode === 'internal'}
-        <div class="self-end pb-1 text-xs text-muted">
-          <span class="font-mono text-[11px]">{d.internal.endpoint}</span> · bucket <span class="font-mono text-[11px] text-fg">{d.internal.bucket}</span>
-          <span class="opacity-70"> (creds via TALARIA_S3_* env; bucket auto-created)</span>
-        </div>
-      {/if}
-      {#if external}<TargetFields t={cfg} {secret} onChange={set} onSecret={(v) => (secret = v)} />{/if}
-    </div>
-
-    <!-- Replica — mirror every blob to a second provider -->
-    <div class="mt-4 rounded-md border border-line p-3">
-      <Checkbox checked={cfg.replica.enabled} onChange={(checked) => setReplica({ enabled: checked })} label="Replicate to a second provider" class="gap-2 font-medium text-fg" />
-      <p class="mt-1 text-xs text-muted">
-        New uploads are mirrored as they land (an outage never blocks an upload); "Sync all" copies
-        everything already stored (disk, built-in, or external) into the replica bucket.
-      </p>
-      {#if cfg.replica.enabled}
-        <div transition:slide={{ duration: 150 }} class="mt-2 grid gap-2 sm:grid-cols-2">
-          <TargetFields t={cfg.replica} secret={replicaSecret} onChange={setReplica} onSecret={(v) => (replicaSecret = v)} />
-          <div class="flex items-center gap-2 sm:col-span-2">
-            <Button size="sm" variant="outline" onclick={() => void act('test-replica')} disabled={busy || !cfg.replica.hasSecret}>
-              Test replica
-            </Button>
-            <Button size="sm" variant="outline" onclick={() => void act('sync')} disabled={busy || syncing || !cfg.replica.hasSecret || totalBlobs === 0}>
-              Sync all to replica
-            </Button>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <label class="text-xs text-muted">
+          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
+          <Select value={cfg.mode} onchange={(e) => set({ mode: e.currentTarget.value as StorageAdmin['config']['mode'] })} class="mt-1 w-full">
+            <option value="local">Local disk</option>
+            <option value="internal">Built-in bucket (bundled MinIO)</option>
+            <option value="s3">External (S3-compatible)</option>
+          </Select>
+        </label>
+        {#if cfg.mode === 'internal'}
+          <div class="self-end pb-1 text-xs text-muted">
+            <span class="font-mono text-[11px]">{d.internal.endpoint}</span> · bucket <span class="font-mono text-[11px] text-fg">{d.internal.bucket}</span>
+            <span class="opacity-70"> (creds via TALARIA_S3_* env; bucket auto-created)</span>
           </div>
-        </div>
-      {/if}
-    </div>
+        {/if}
+        {#if external}<TargetFields t={cfg} {secret} onChange={set} onSecret={(v) => (secret = v)} />{/if}
+      </div>
 
-    <div class="mt-3 flex items-center gap-2">
-      <Button size="sm" onclick={() => void save()} disabled={busy}>
-        Save
-      </Button>
-      {#if inBucket}
-        <Button size="sm" variant="outline" onclick={() => void act('test')} disabled={busy || (external && !cfg.hasSecret)}>
-          Test connection
+      <!-- Replica — mirror every blob to a second provider -->
+      <div class="mt-4 rounded-md border border-line p-3">
+        <Checkbox checked={cfg.replica.enabled} onChange={(checked) => setReplica({ enabled: checked })} label="Replicate to a second provider" class="gap-2 font-medium text-fg" />
+        <p class="mt-1 text-xs text-muted">
+          New uploads are mirrored as they land (an outage never blocks an upload); "Sync all" copies
+          everything already stored (disk, built-in, or external) into the replica bucket.
+        </p>
+        {#if cfg.replica.enabled}
+          <div transition:slide={{ duration: 150 }} class="mt-2 grid gap-2 sm:grid-cols-2">
+            <TargetFields t={cfg.replica} secret={replicaSecret} onChange={setReplica} onSecret={(v) => (replicaSecret = v)} />
+            <div class="flex items-center gap-2 sm:col-span-2">
+              <Button size="sm" variant="outline" onclick={() => void act('test-replica')} disabled={busy || !cfg.replica.hasSecret}>
+                Test replica
+              </Button>
+              <Button size="sm" variant="outline" onclick={() => void act('sync')} disabled={busy || syncing || !cfg.replica.hasSecret || totalBlobs === 0}>
+                Sync all to replica
+              </Button>
+            </div>
+          </div>
+        {/if}
+      </div>
+
+      <div class="mt-3 flex items-center gap-2">
+        <Button size="sm" onclick={() => void save()} disabled={busy}>
+          Save
         </Button>
-      {/if}
-      <!-- Inline (non-block) status word — slide can't animate an inline box's
-           height, so this one notice fades instead. -->
-      {#if note}<span transition:fade={{ duration: 150 }} class={`text-xs ${note.ok ? 'text-muted' : 'text-danger'}`}>{note.text}</span>{/if}
-    </div>
-  {/if}
+        {#if inBucket}
+          <Button size="sm" variant="outline" onclick={() => void act('test')} disabled={busy || (external && !cfg.hasSecret)}>
+            Test connection
+          </Button>
+        {/if}
+        <!-- Inline (non-block) status word — slide can't animate an inline box's
+             height, so this one notice fades instead. -->
+        {#if note}<span transition:fade={{ duration: 150 }} class={`text-xs ${note.ok ? 'text-muted' : 'text-danger'}`}>{note.text}</span>{/if}
+      </div>
+    {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

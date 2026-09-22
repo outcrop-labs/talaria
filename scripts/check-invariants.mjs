@@ -1911,6 +1911,51 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
+//
+// `cli/src/ports.ts` is the cli's single source for the host-port defaults, but
+// each value is also spelled where it is USED: the compose file's
+// `${VAR:-default}`, the Rust api's `DEFAULT_PORT`, the Dockerfile's `ENV PORT`.
+// No import reaches across those, so this is a pin — it reads the cli's table
+// and each authority's own spelling and fails when one moves without the others.
+// A drifted port is a stack that half-boots: the app publishes 5273 while its
+// healthcheck probes 5272, and every health gate says "unhealthy" forever.
+{
+  const portsSrc = readFileSync(join(ROOT, 'cli/src/ports.ts'), 'utf8')
+  const cliValue = (name) => new RegExp(`export const ${name} = '([^']+)'`).exec(portsSrc)?.[1]
+  const compose = readFileSync(join(ROOT, 'docker/dev-compose.yml'), 'utf8')
+  const composeDefault = (varName) => new RegExp(`\\$\\{${varName}:-([0-9]+)\\}`).exec(compose)?.[1]
+  const configSrc = readFileSync(join(ROOT, 'api/crates/talaria-config/src/lib.rs'), 'utf8')
+  const rustDefault = /pub const DEFAULT_PORT: u16 = (\d+)/.exec(configSrc)?.[1]
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8')
+  const envPort = /^ENV PORT=(\d+)/m.exec(dockerfile)?.[1]
+
+  const checks = [
+    ['API_PORT', cliValue('API_PORT'), rustDefault, 'api/crates/talaria-config/src/lib.rs DEFAULT_PORT'],
+    ['APP_PORT', cliValue('APP_PORT'), envPort, "the Dockerfile's ENV PORT"],
+    ['PG_PORT', cliValue('PG_PORT'), composeDefault('TALARIA_PG_PORT'), 'docker/dev-compose.yml'],
+    ['REDIS_PORT', cliValue('REDIS_PORT'), composeDefault('TALARIA_REDIS_PORT'), 'docker/dev-compose.yml'],
+    ['MINIO_PORT', cliValue('MINIO_PORT'), composeDefault('TALARIA_MINIO_PORT'), 'docker/dev-compose.yml'],
+    ['SEARCH_PORT', cliValue('SEARCH_PORT'), composeDefault('TALARIA_SEARCH_PORT'), 'docker/dev-compose.yml'],
+  ]
+  const problems = checks
+    .filter(([, a, b]) => a === undefined || b === undefined || a !== b)
+    .map(([name, a, b, where]) => `  ${name}: cli/src/ports.ts says ${a ?? '(missing)'}, ${where} says ${b ?? '(not found)'}`)
+  if (problems.length) {
+    failures.push({
+      id: 'dev-port-drift',
+      what: 'a dev stack port disagrees between the cli and the file that uses it',
+      fix: [
+        'Change the value in BOTH places — `cli/src/ports.ts` is the cli\'s single source, and',
+        'the file named above is the authority for what actually binds. If a port moved on',
+        'purpose, move it here too and update this check only if a NEW file became the owner.',
+        ...problems,
+      ],
+      found: [],
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)
