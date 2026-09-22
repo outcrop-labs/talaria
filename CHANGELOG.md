@@ -4,6 +4,24 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **A roll's two edges are wired at boot, and a roll that fails says so.** The
+  reconcile crate reaches the renderer through two `OnceLock` edges
+  (`RENDER_FLEET`, `NEXT_FREE_PORT`), and the crate split left both unset:
+  `roll_agent` returned `next_free_port not wired` before it rendered
+  anything, the control route discarded that verdict while answering
+  `{"rolling": true}`, and a roll — the only path that makes a re-rendered
+  config live without downtime — silently changed nothing while the agent kept
+  running the config the operator had just replaced. `register_all` now wires
+  both edges beside the fleet edges it already owns; the control route logs and
+  audits the failure it used to drop (`agent.roll_failed`, the shape
+  mcp-apply's queue already writes); and the boot test that pins the job table
+  pins these two edges the same way, because an unwired edge has no other
+  reader.
+  Verified: `cargo test -p talaria-jobs` — with the wiring removed the boot
+  test fails on `the roll's overlay renderer fell out of the boot wiring`, and
+  passes with it. The failure was reproduced on a live deployment first (roll →
+  `{"ok":true,"rolling":true}`, no render write, no new container, no log
+  line).
 - **Desktop's typechecker can see the dither engine — CI on main goes green.**
   The dither merge (#410) taught `desktop/vite.config.ts` an `@dither` alias
   into `ui/src/lib/dither-engine.ts`, but a vite-only alias is invisible to
@@ -181,6 +199,24 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   to work in, at `../talaria-<name>`. It asserts the walk and its stop now
   (two levels up from `cli/src`, with a `.git` there), and the cli suite is
   187 pass / 0 fail in a worktree.
+
+- **A provider's exhausted account limit reads as itself, not as a generic
+  upstream 400.** The upstream boundary replaced every provider message with
+  `upstream error (<status>)`, so a deployment whose model had hit its monthly
+  ceiling showed that sentence on every chat turn: the reader went looking for
+  a malformed request while the actual answer was billing or a reset date. The
+  boundary now classifies structure it already reads — the OpenAI-compatible
+  quota codes (`insufficient_quota`, `quota_exceeded`, `usage_limit_reached`,
+  `billing_hard_limit_reached`, `credit_balance_too_low`) and Anthropic's
+  monthly-limit sentence, whose reset instant rides in our own words
+  (`the upstream account's usage limit is exhausted — access returns
+  2026-10-01 at 00:00 UTC`). The provider's prose still does not cross: a tail
+  that is not an instant to the token — prose, or a date with anything
+  appended — falls back to the generic sentence.
+  Verified: `cargo test -p talaria-error` pins the incident's verbatim
+  Anthropic body and the OpenAI-compatible code spelling (both produce the
+  account sentence) and two look-alikes — a prose tail, and a real instant with
+  a hostname and a key appended — which stay generic and leak none of it.
 
 - **The dither field repaints what changed, not the whole field — the desktop
   shell's launcher stops being a furnace.** `ui/src/lib/dither-engine.ts`'s frame
