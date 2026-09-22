@@ -277,6 +277,101 @@ describe('talaria deploy down / logs / status / update', () => {
     expect(ctx.logLines.some((l) => l.kind === 'skip' && l.msg.includes('TALARIA_API_IMAGE'))).toBe(true)
     expect(apiImageRef(mkdtempSync(join(tmpdir(), 'talaria-empty-')))).toBeNull() // no Dockerfile at all
   })
+
+  test('a saved pin fast-forwards that branch and does not git pull', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    const git = ctx.calls.filter((c) => c.cmd === 'git')
+    expect(git.map((c) => c.args)).toEqual([
+      ['fetch', 'origin', 'rc'],
+      ['merge', '--ff-only', 'origin/rc'],
+    ])
+    expect(git.every((c) => c.opts?.cwd === ctx.root)).toBe(true)
+    const fetchAt = ctx.calls.findIndex((c) => c.cmd === 'git')
+    const pkg = ctx.calls.findIndex((c) => c.cmd === 'docker' && c.args[0] === 'pull')
+    const up = ctx.calls.findIndex((c) => c.args.includes('up'))
+    expect(fetchAt).toBeLessThan(pkg)
+    expect(pkg).toBeLessThan(up)
+  })
+
+  test('--branch repins, persists, and fast-forwards the new branch', async () => {
+    const root = makeDeployTree('TALARIA_DEPLOY_BRANCH=main\nPOSTGRES_PASSWORD=kept\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket', 'rc')
+    const text = readFileSync(join(root, 'docker/.env'), 'utf8')
+    expect(text).toContain('TALARIA_DEPLOY_BRANCH=rc')
+    expect(text).not.toContain('TALARIA_DEPLOY_BRANCH=main')
+    expect(text).toContain('POSTGRES_PASSWORD=kept')
+    expect(ctx.calls.filter((c) => c.cmd === 'git').map((c) => c.args)).toEqual([
+      ['fetch', 'origin', 'rc'],
+      ['merge', '--ff-only', 'origin/rc'],
+    ])
+  })
+
+  test('a bad branch name dies before git, and does not rewrite the pin', async () => {
+    const root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    const msg = await attempt(() => runUpdate(ctx, '/nonexistent-deploy-test-socket', 'origin/rc'))
+    expect(msg).toContain('not a branch name')
+    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+    expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain('TALARIA_DEPLOY_BRANCH=rc')
+  })
+
+  test('a garbage saved pin dies before git pull', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=..\n')
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('not a branch name')
+    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+  })
+
+  test('a failed fetch dies before any docker command', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    ctx.plant(['git', ['fetch', 'origin', 'rc']], new Error('no route'))
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('git fetch origin rc failed')
+    expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+  })
+
+  test('a failed fast-forward dies before any docker command', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    ctx.plant(['git', ['merge', '--ff-only', 'origin/rc']], new Error('diverged'))
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('cannot fast-forward')
+    expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+  })
+
+  test('up --branch pins and fast-forwards before the build; a later plain up does not fetch', async () => {
+    const root = makeDeployTree()
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runUp(ctx, '/nonexistent-deploy-test-socket', 'rc')
+    expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain('TALARIA_DEPLOY_BRANCH=rc')
+    const git = ctx.calls.filter((c) => c.cmd === 'git')
+    expect(git.map((c) => c.args)).toEqual([
+      ['fetch', 'origin', 'rc'],
+      ['merge', '--ff-only', 'origin/rc'],
+    ])
+    const up = ctx.calls.findIndex((c) => c.args.includes('up'))
+    expect(ctx.calls.indexOf(git[1]!)).toBeLessThan(up)
+
+    const again = fakeCtx()
+    again.root = root
+    await runUp(again, '/nonexistent-deploy-test-socket')
+    expect(again.calls.some((c) => c.cmd === 'git')).toBe(false)
+  })
+
+  test('status names the pinned branch', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    await runStatus(ctx)
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes('branch origin/rc'))).toBe(true)
+  })
 })
 
 describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
