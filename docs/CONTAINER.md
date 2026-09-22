@@ -65,7 +65,8 @@ the image builds from the repo; bun is the only extra prerequisite):
 
 ```bash
 bun talaria deploy up       # the one command at the top of this page
-bun talaria deploy update   # git pull --ff-only, api package pull, then up -d --build
+bun talaria deploy up --branch rc   # pin the checkout; later updates follow origin/rc only
+bun talaria deploy update   # ff-only the pin, or git pull --ff-only; then redeploy
 bun talaria deploy down     # stop (--volumes also deletes the data — careful)
 bun talaria deploy logs     # follow every service's logs
 bun talaria deploy creds    # the 'Sign in' block from the logs
@@ -382,6 +383,21 @@ through the orchestrator. Migrations run as the server boots (expect a minute
 of downtime on schema changes; the health check covers the window — a FAILED
 pass reports `migrations: !ok` on `/api/healthz` and flips the container
 unhealthy, instead of a green container whose table queries all 500).
+
+**Pin a checkout to one branch** with `talaria deploy up --branch rc` (or
+`deploy update --branch rc`). The pin is `TALARIA_DEPLOY_BRANCH` in
+`docker/.env` — gitignored, so it survives the fast-forwards. From then on
+`talaria deploy update` runs `git fetch origin rc` and
+`git merge --ff-only origin/rc` instead of `git pull`: it follows that branch
+and not whatever HEAD happens to track, and it will not merge or reset a
+diverged checkout. Pass `--branch` again to repin. With no pin, update stays
+`git pull --ff-only` of the current upstream. A plain `deploy up` does not
+fetch — restarting is not an update.
+
+The checkout has to be able to fast-forward onto that ref. A worktree created
+from it can (`git worktree add -b deploy/rc ../talaria-rc origin/rc` — `rc`
+itself may already be checked out elsewhere); a branch that has diverged
+cannot, and the command stops before it builds.
 
 **There is no manual post-deploy step, ever.** Every schema change and every
 one-time data operation (a backfill, a watermark reset, a repair) ships as an
