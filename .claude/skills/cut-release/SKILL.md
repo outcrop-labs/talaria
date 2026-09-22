@@ -23,11 +23,17 @@ The branch model behind that: [`docs/BRANCHES.md`(../../../docs/BRANCHES.md).
 
 ```bash
 git switch rc && git pull                # the tip you mean to cut
+bun scripts/changelog-roll.mjs 0.2.0-rc.1   # fold changelog/*.md into the section, commit it
 git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
 ```
 
 Tag the tip whose staging deploy you watched (Actions → rc-deploy); that deploy is what an RC
 is supposed to carry. Nothing needs advancing first — `rc` is where the work is.
+
+Roll the changelog BEFORE tagging, on `rc`, and push the roll commit — the tagged tree must
+carry the section (the release's notes link points at CHANGELOG.md as of the tag). The roll
+refuses to run on an empty `changelog/`; if it does, that is a prompt to read the entries,
+not a step to force.
 
 The tag push runs the release workflow: full CI against the tag, images land on GHCR as
 `0.2.0-rc.1` + (moving) `rc`, and a GitHub **prerelease** opens with a stub body pointing
@@ -76,5 +82,5 @@ Everything is `ghcr.io/outcrop-labs/talaria` (the app) and `ghcr.io/outcrop-labs
 is what a release's app-image build is pinned to, and what `rc-deploy.yml` pins for staging).
 
 Production instances run from a separately operated infrastructure deployment — this repo
-ends at the published images. The changelog is already maintained by PRs; releasing adds
-no notes work.
+ends at the published images. The changelog is already maintained by PRs (one entry file
+each); releasing adds exactly one step: the roll above.
