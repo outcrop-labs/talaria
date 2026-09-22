@@ -63,6 +63,21 @@ export function composeFileArgs(composeFile: string | null | undefined, base: st
   return composeFile ? [] : ['-f', SIDECARS_COMPOSE, '-f', base]
 }
 
+/** The die-sentence for an operator COMPOSE_FILE that omits the sidecar
+ *  plane; null when the list is legal. composeFileArgs drops the CLI's own
+ *  `-f` pair under that env — the list REPLACES both files — and the six
+ *  sidecars' images are defined only in the fragment, so a list without it
+ *  is an invalid project. Left to docker, that surfaces as a per-service
+ *  `service "postgres" has neither an image nor a build context` next to a
+ *  pull command, which reads like a reachability problem (two customer VMs,
+ *  2026-09-21: both exports had simply forgotten the fragment). */
+export function sidecarsMissingFromComposeFile(composeFile: string): string | null {
+  const listed = composeFile.split(':').map((p) => p.trim()).filter(Boolean)
+  return listed.includes(SIDECARS_COMPOSE)
+    ? null
+    : `COMPOSE_FILE=${composeFile} does not list ${SIDECARS_COMPOSE} — the env replaces the wrappers' -f pair, and the sidecar plane's images live only in that fragment, so the merged project is invalid (docker answers 'service "postgres" has neither an image nor a build context'). Fix the export, fragment first: COMPOSE_FILE=${SIDECARS_COMPOSE}:${composeFile}`
+}
+
 export type ComposeSpec = {
   /** Compose files in merge order (later wins). */
   files: string[]

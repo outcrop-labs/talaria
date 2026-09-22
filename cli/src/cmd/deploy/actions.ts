@@ -12,7 +12,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { COMPOSE_BASE, composeFileArgs, composeFileEnv } from '../../compose'
+import { COMPOSE_BASE, composeFileArgs, composeFileEnv, sidecarsMissingFromComposeFile } from '../../compose'
 import { APP_PORT } from '../../ports'
 import { envFileText, parseEnv, readEnvFile, writeSecret } from '../../envfile'
 
@@ -25,7 +25,13 @@ const DOCKER_SOCK = '/var/run/docker.sock'
  *  (absolute paths, cwd-inherited): parity beats reuse here. The `-f` itself
  *  follows the shared COMPOSE_FILE law (compose.ts). */
 function deployCompose(ctx: Ctx, op: string[]): Promise<number> {
-  return ctx.run('docker', ['compose', ...composeFileArgs(composeFileEnv(ctx), COMPOSE_BASE), ...op], { cwd: ctx.root })
+  const file = composeFileEnv(ctx)
+  // Every wrapper's compose call passes through here — a COMPOSE_FILE
+  // missing the sidecar plane dies with the fix spelled out, before docker's
+  // per-service error can read like a pull failure.
+  const broken = file !== null ? sidecarsMissingFromComposeFile(file) : null
+  if (broken !== null) ctx.log.die(broken)
+  return ctx.run('docker', ['compose', ...composeFileArgs(file, COMPOSE_BASE), ...op], { cwd: ctx.root })
 }
 
 /** The copy-pasteable line for what is about to run — COMPOSE_FILE included
