@@ -324,6 +324,25 @@ describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
     expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
   })
 
+  // The 2026-09-21 incident, both customer VMs: the export forgot the
+  // fragment, docker rejected the project per-service, and the die line
+  // blamed pull reachability. The guard fires before any docker argv.
+  test('a COMPOSE_FILE without the sidecar plane dies before docker runs', async () => {
+    const broken = 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml'
+    const down = fakeCtx({ env: { COMPOSE_FILE: broken } })
+    down.root = makeDeployTree()
+    const msg = await attempt(() => runDown(down, false))
+    expect(msg).toContain('docker/sidecars.compose.yml')
+    expect(msg).toContain(`COMPOSE_FILE=docker/sidecars.compose.yml:${broken}`)
+    expect(down.calls.some((c) => c.cmd === 'docker')).toBe(false)
+    // the incident command itself: update's git pull runs, no docker argv
+    const update = fakeCtx({ env: { COMPOSE_FILE: broken } })
+    update.root = makeDeployTree()
+    const msg2 = await attempt(() => runUpdate(update, '/nonexistent-deploy-test-socket'))
+    expect(msg2).toContain('docker/sidecars.compose.yml')
+    expect(update.calls.some((c) => c.cmd === 'docker')).toBe(false)
+  })
+
   test('the drift check scans every file COMPOSE_FILE lists', () => {
     const root = makeDeployTree()
     writeFileSync(

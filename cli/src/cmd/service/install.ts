@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { COMPOSE_BASE, composeFileArgs, composeFileEnv } from '../../compose'
+import { COMPOSE_BASE, composeFileArgs, composeFileEnv, sidecarsMissingFromComposeFile } from '../../compose'
 import { dockerEnvFile, runUp, socketGid } from '../deploy/actions'
 import {
   HOST,
@@ -67,6 +67,12 @@ export async function runInstall(ctx: Ctx, o: InstallOpts = {}): Promise<number>
   if (!existsSync(join(ctx.root, COMPOSE_BASE))) {
     ctx.log.die(`no ${COMPOSE_BASE} here — \`service install\` runs from a deploy checkout`)
   }
+  // The unit BAKES the operator's COMPOSE_FILE in (unitText): a list missing
+  // the sidecar plane would ride into /etc and surface at boot as docker's
+  // per-service invalid-project error — die here, before anything privileged.
+  const operatorFiles = composeFileEnv(ctx)
+  const brokenList = operatorFiles !== null ? sidecarsMissingFromComposeFile(operatorFiles) : null
+  if (brokenList !== null) ctx.log.die(brokenList)
 
   // The unit's up argv: --wait only on a compose new enough not to hang on
   // the one-shot init container (see shared.upArgsFor).
