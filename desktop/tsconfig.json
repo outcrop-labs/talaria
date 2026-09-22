@@ -13,7 +13,10 @@
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
-    "types": ["vite/client", "svelte"]
+    "types": ["node", "vite/client", "svelte"],
+    "paths": {
+      "@dither": ["../ui/src/lib/dither-engine.ts"]
+    }
   },
   "include": ["src", "vite.config.ts", "svelte.config.ts"]
 }
