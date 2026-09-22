@@ -19,7 +19,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boxComposeSpec } from './cmd/box/shared'
-import { COMPOSE_BASE, composeArgs, composeFileArgs, SIDECARS_COMPOSE, sidecarsMissingFromComposeFile, stackComposeFiles } from './compose'
+import { COMPOSE_BASE, composeArgs, composeFileArgs, composeFileEnv, SIDECARS_COMPOSE, stackComposeFiles, withSidecarPlane } from './compose'
 import { fakeCtx } from './testing'
 
 const ROOT = join(import.meta.dir, '..', '..')
@@ -77,20 +77,34 @@ describe('sidecar plane — merge order', () => {
     expect(composeFileArgs('docker/compose.yml:docker/compose.registry.yml', COMPOSE_BASE)).toEqual([])
   })
 
-  test('a COMPOSE_FILE that omits the fragment earns the die sentence', () => {
+  test('a COMPOSE_FILE that omits the fragment is repaired — prepended, first', () => {
     // The 2026-09-21 incident: two customer VMs exported the registry flow
     // without the fragment, and docker's answer — a per-service "neither an
     // image nor a build context" beside a pull command — read like a
-    // reachability problem. The sentence names the fix with the operator's
-    // own list spelled in.
+    // reachability problem. Dying on it (the first fix) left every install
+    // that followed the pre-fragment docs down until hands touched each
+    // host, so the law became a repair; a list that already carries the
+    // fragment, anywhere, passes through untouched.
     const bad = 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml'
-    const msg = sidecarsMissingFromComposeFile(bad)!
-    expect(msg).toContain(SIDECARS_COMPOSE)
-    expect(msg).toContain(bad)
-    expect(msg).toContain(`COMPOSE_FILE=${SIDECARS_COMPOSE}:${bad}`)
-    // present anywhere in the list is legal — the six services' images
-    // resolve; only absence is fatal.
-    expect(sidecarsMissingFromComposeFile(`docker/compose.yml:${SIDECARS_COMPOSE}:docker/compose.registry.yml`)).toBeNull()
+    expect(withSidecarPlane(bad)).toBe(`${SIDECARS_COMPOSE}:${bad}`)
+    const legal = `docker/compose.yml:${SIDECARS_COMPOSE}:docker/compose.registry.yml`
+    expect(withSidecarPlane(legal)).toBe(legal)
+  })
+
+  test('composeFileEnv repairs the export IN the env — the docker child reads COMPOSE_FILE, not our string', () => {
+    const bad = 'docker/compose.yml:docker/compose.registry.yml'
+    const ctx = fakeCtx({ env: { COMPOSE_FILE: bad } })
+    expect(composeFileEnv(ctx)).toBe(`${SIDECARS_COMPOSE}:${bad}`)
+    expect(ctx.env.COMPOSE_FILE).toBe(`${SIDECARS_COMPOSE}:${bad}`)
+    expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes(SIDECARS_COMPOSE))).toBe(true)
+    // the write-back is the once-only gate: a second read passes through
+    expect(composeFileEnv(ctx)).toBe(`${SIDECARS_COMPOSE}:${bad}`)
+    expect(ctx.logLines.filter((l) => l.kind === 'warn')).toHaveLength(1)
+    // legal list and no env at all: byte-identical behavior, no notice
+    const fine = fakeCtx({ env: { COMPOSE_FILE: `${SIDECARS_COMPOSE}:docker/compose.yml` } })
+    expect(composeFileEnv(fine)).toBe(`${SIDECARS_COMPOSE}:docker/compose.yml`)
+    expect(fine.logLines.some((l) => l.kind === 'warn')).toBe(false)
+    expect(composeFileEnv(fakeCtx())).toBeNull()
   })
 
   test("a box's argv layers the fragment before its own template", () => {
