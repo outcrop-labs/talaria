@@ -1739,10 +1739,16 @@ async fn execute_action_arms(
     } else if item.source_type == "task"
         && (action_id == "approve_task" || action_id == "request_changes")
     {
-        let fetched = {
-            let f = GET_TASK.get().expect("GET_TASK");
-            f(pg.clone(), item.source_id.clone()).await?
+        // Unset seam = unwired boot, and this arm's caller already records a
+        // thrown failure on the decision row (the message is what the card
+        // reads) — so the honest answer is that throw, never a panic and never
+        // a silent skip of the user's click.
+        let Some(f) = GET_TASK.get() else {
+            return Err(FocusError::Throw(
+                "task lookup is not wired on this instance".into(),
+            ));
         };
+        let fetched = f(pg.clone(), item.source_id.clone()).await?;
         let task = match fetched {
             Some(task) => task,
             None => {

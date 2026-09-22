@@ -17,6 +17,11 @@ sqlx = { workspace = true }
 uuid = { workspace = true }
 talaria-comms-decay = { workspace = true }
 talaria-config = { workspace = true }
+talaria-attribution = { workspace = true }
+talaria-conversations = { workspace = true }
+talaria-inbox-focus = { workspace = true }
+talaria-tasks = { workspace = true }
+talaria-workchains = { workspace = true }
 talaria-daily-brief = { workspace = true }
 talaria-digest = { workspace = true }
 talaria-fleet-preflight = { workspace = true }

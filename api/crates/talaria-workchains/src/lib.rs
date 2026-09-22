@@ -343,12 +343,15 @@ pub async fn advance_workchains(
             if humans.is_empty() {
                 return Ok(());
             }
-            let Some(t) = {
-                let f = GET_TASK.get().expect("GET_TASK");
-                f(pg.clone(), head_id.clone())
-            }
-            .await?
-            else {
+            // Unset seam = unwired boot, not a panic: skip the notification
+            // rather than blow the request off the rails (the seam is set in
+            // register_all; this arm is the safety net, same shape as the
+            // attribution ladder's rungs).
+            let Some(f) = GET_TASK.get() else {
+                tracing::warn!("[workchains] GET_TASK seam unset — turn notification skipped");
+                return Ok(());
+            };
+            let Some(t) = f(pg.clone(), head_id.clone()).await? else {
                 return Ok(());
             };
             let subject = match t.ticket_ref.as_deref() {
@@ -385,12 +388,11 @@ pub async fn advance_workchains(
             let Some(creator) = chain_creator else {
                 return Ok(());
             };
-            let Some(t) = {
-                let f = GET_TASK.get().expect("GET_TASK");
-                f(pg.clone(), task_id.to_string())
-            }
-            .await?
-            else {
+            let Some(f) = GET_TASK.get() else {
+                tracing::warn!("[workchains] GET_TASK seam unset — pause notification skipped");
+                return Ok(());
+            };
+            let Some(t) = f(pg.clone(), task_id.to_string()).await? else {
                 return Ok(());
             };
             let subject = match t.ticket_ref.as_deref() {

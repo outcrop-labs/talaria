@@ -115,11 +115,15 @@ async fn the_fans_reach_exactly_their_audiences() {
         channel.clone(),
     );
     settle(&seen, 2).await;
+    // Both sides sorted: uuids decide member-table order, and an assert that
+    // only holds when insertion order coincides with uuid order is a lottery,
+    // not a property (this flaked on the live suite's first CI-shaped run).
     let mut topics = seen.topics();
     topics.sort();
+    let mut members = vec![format!("user:{owner}"), format!("user:{mate}")];
+    members.sort();
     assert_eq!(
-        topics,
-        [format!("user:{owner}"), format!("user:{mate}")],
+        topics, members,
         "every member, and nobody else — the stranger never appears"
     );
     assert_eq!(
@@ -155,7 +159,9 @@ async fn the_fans_reach_exactly_their_audiences() {
     settle(&seen, 2).await;
     let mut topics = seen.topics();
     topics.sort();
-    assert_eq!(topics, [format!("user:{owner}"), format!("user:{mate}")]);
+    let mut sharers = vec![format!("user:{owner}"), format!("user:{mate}")];
+    sharers.sort();
+    assert_eq!(topics, sharers);
     assert_eq!(
         seen.0.lock().unwrap()[0].split_once(' ').unwrap().1,
         format!(r#"{{"type":"conversation","conversationId":"{plan}"}}"#)
