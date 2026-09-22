@@ -1452,25 +1452,30 @@ async fn task_thread_owner(pg: &PgPool, head: &ThreadHead) -> Result<Option<Stri
     if let Some(id) = author_user_id(pg, &head.created_by).await? {
         return Ok(Some(id));
     }
+    // A `user:` assignee is only a candidate when the suffix is a uuid.
+    // Emails, names, and model strings used to be bound `$1::uuid` and 500
+    // the first comment before the board-member fallback could run — so a
+    // board that had someone to hold the room still failed.
     let assignees = json_strings(&head.assignees);
-    let candidate = human_assignee_ids(&assignees).into_iter().next();
-    let row: Option<(String,)> = match candidate {
-        Some(id) => {
+    if let Some(id) = human_assignee_ids(&assignees).into_iter().next()
+        && uuid::Uuid::parse_str(&id).is_ok()
+    {
+        let row: Option<(String,)> =
             sqlx::query_as("select id::text from users where id = $1::uuid")
                 .bind(&id)
                 .fetch_optional(pg)
-                .await?
+                .await?;
+        if let Some((id,)) = row {
+            return Ok(Some(id));
         }
-        None => {
-            sqlx::query_as(
-                "select user_id::text from board_members \
-                     where board_id = $1::uuid order by created_at asc limit 1",
-            )
-            .bind(&head.board_id)
-            .fetch_optional(pg)
-            .await?
-        }
-    };
+    }
+    let row: Option<(String,)> = sqlx::query_as(
+        "select user_id::text from board_members \
+             where board_id = $1::uuid order by created_at asc limit 1",
+    )
+    .bind(&head.board_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.map(|(v,)| v))
 }
 

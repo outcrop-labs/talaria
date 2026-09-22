@@ -153,6 +153,15 @@ pub async fn post(
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let comment = match add_comment(&deps, &id, &author, &content, parent_id.as_deref()).await {
         Ok(c) => c,
+        // The same None the channel door answers 409: nobody can hold the
+        // room row. A granted agent commenting on an agent-created ticket
+        // used to see that as a 500.
+        Err(sqlx::Error::RowNotFound) => {
+            return Ok(house_error(
+                StatusCode::CONFLICT,
+                "this ticket has no owner to hold its room — add someone to its board",
+            ));
+        }
         Err(e) => return Ok(internal("[tasks] comment add failed", e)),
     };
     // The comment landed through the room insert — the agent-writes door
