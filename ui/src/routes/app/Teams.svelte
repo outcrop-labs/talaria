@@ -8,7 +8,7 @@
   import { listQuery } from '@/components/ui/query-state'
   import { confirmDelete } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
   import { staggerIn } from '@/lib/motion'
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import { toastError } from '@/lib/toast.svelte'
@@ -83,15 +83,11 @@
             e,
             t.role === 'owner'
               ? [
-                  { label: 'Open', onSelect: () => select(t.id) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/teams?t=${t.id}`) },
+                  ...openCopyItems(`/teams?t=${t.id}`, () => select(t.id)),
                   'sep',
                   { label: 'Delete', danger: true, onSelect: () => void remove(t) },
                 ]
-              : [
-                  { label: 'Open', onSelect: () => select(t.id) },
-                  { label: 'Copy link', onSelect: () => copyAppLink(`/teams?t=${t.id}`) },
-                ],
+              : openCopyItems(`/teams?t=${t.id}`, () => select(t.id)),
           )}
         class="h-full"
         onCreate={create}

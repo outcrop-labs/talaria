@@ -5,6 +5,7 @@
   import Panel from '@/components/ui/Panel.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -84,25 +85,17 @@
   const installsFailed = $derived(installsQuery.isError && installsQuery.data === undefined)
 </script>
 
-{#if statusQuery.isPending}
-  <Panel class="mt-4">
-    <Skeleton class="mb-3 h-4 w-24 rounded-full" />
-    <SkeletonRows rows={2} />
-  </Panel>
-{:else if !status}
-  <!-- "Not connected — pick a method" below is a verdict on the stored GitHub
-       credentials. A failed read never delivered one, and following that advice
-       means re-pasting an App key that was already there. -->
-  <Panel class="mt-4">
-    <QueryError
-      variant="compact"
-      error={statusQuery.error}
-      title="Could not load the GitHub connection"
-      onRetry={() => void statusQuery.refetch()}
-    />
-  </Panel>
-{:else}
-  <Panel class="mt-4">
+<Panel class="mt-4">
+  <QueryState query={statusQuery} errorTitle="Could not load the GitHub connection" errorVariant="compact">
+    {#snippet skeleton()}
+      <Skeleton class="mb-3 h-4 w-24 rounded-full" />
+      <SkeletonRows rows={2} />
+    {/snippet}
+    {#snippet children(status)}
+    <!-- "Not connected — pick a method" below is a verdict on the stored GitHub
+         credentials. A failed read never delivered one, and following that
+         advice means re-pasting an App key that was already there. QueryState's
+         error branch owns that verdict. -->
     <SectionHeader
       title="GitHub · Workbench"
       info="Lets granted agents work real repositories through their sandboxed workbench. Connect once; which agent may touch which repo stays an explicit per-agent grant."
@@ -238,5 +231,6 @@
     </div>
 
     <AdminGithubGuideModal open={guideOpen} onClose={() => (guideOpen = false)} mode={effMode === 'pat' ? 'pat' : 'app'} />
-  </Panel>
-{/if}
+    {/snippet}
+  </QueryState>
+</Panel>

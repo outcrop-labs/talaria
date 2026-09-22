@@ -27,8 +27,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { envValue, writeSecret } from '../../envfile'
-import { boxState } from './shared'
+import { DEV_NETWORK, MINIO_CONTAINER, PG_CONTAINER, QDRANT_CONTAINER, containerExists } from '../../containers'
+import { readEnvFile, writeSecret } from '../../envfile'
+import { boxFleetNetwork, boxHost, boxProject, boxSvc, boxState } from './shared'
 
 /** Repoint the chassis's fleet network at THIS box's own — the template
  *  ships the primary install's default name. Range-scoped to the network:
@@ -64,21 +65,13 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
   const root = ctx.root
   const state = boxState(ctx, name)
   // NOT requireBox: `new` calls this before it writes box.env.
-  const MAIN_PGC = ctx.env.TALARIA_PG_CONTAINER ?? 'talaria-postgres-dev'
-  const MAIN_MINIOC = ctx.env.TALARIA_MINIO_CONTAINER ?? 'talaria-minio-dev'
-  const MAIN_QDRANT = ctx.env.TALARIA_QDRANT_CONTAINER ?? 'talaria-qdrant-dev'
-  const PGC = `devbox-${name}-postgres`
+  const MAIN_PGC = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
+  const MAIN_MINIOC = ctx.env.TALARIA_MINIO_CONTAINER ?? MINIO_CONTAINER
+  const MAIN_QDRANT = ctx.env.TALARIA_QDRANT_CONTAINER ?? QDRANT_CONTAINER
+  const PGC = boxSvc(name, 'postgres')
 
-  const up = async (c: string): Promise<boolean> => {
-    try {
-      await ctx.exec('docker', ['inspect', c])
-      return true
-    } catch {
-      return false
-    }
-  }
-  if (!(await up(PGC))) ctx.log.die(`box postgres (${PGC}) isn't running`)
-  if (!(await up(MAIN_PGC))) ctx.log.die(`primary postgres (${MAIN_PGC}) isn't running — start the main stack first`)
+  if (!(await containerExists(ctx, PGC))) ctx.log.die(`box postgres (${PGC}) isn't running`)
+  if (!(await containerExists(ctx, MAIN_PGC))) ctx.log.die(`primary postgres (${MAIN_PGC}) isn't running — start the main stack first`)
 
   // ── Postgres ───────────────────────────────────────────────────────────────
   ctx.log.say('Postgres — point-in-time copy of the primary dev DB')
@@ -113,24 +106,24 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
 
   // ── MinIO ──────────────────────────────────────────────────────────────────
   ctx.log.say('MinIO — mirroring the primary dev bucket (DB rows reference these blobs)')
-  const uiEnv = readFileSync(join(root, 'ui/.env'), 'utf8')
-  const s3Key = envValue(uiEnv, 'TALARIA_S3_ACCESS_KEY') ?? 'talaria'
-  const s3Secret = envValue(uiEnv, 'TALARIA_S3_SECRET_KEY') ?? 'talaria-dev-secret'
-  const s3Bucket = envValue(uiEnv, 'TALARIA_S3_BUCKET') ?? 'talaria'
-  const DSTC = `devbox-${name}-minio`
+  const uiEnv = readEnvFile(ctx, 'ui/.env')
+  const s3Key = uiEnv.TALARIA_S3_ACCESS_KEY ?? 'talaria'
+  const s3Secret = uiEnv.TALARIA_S3_SECRET_KEY ?? 'talaria-dev-secret'
+  const s3Bucket = uiEnv.TALARIA_S3_BUCKET ?? 'talaria'
+  const DSTC = boxSvc(name, 'minio')
   const mirrorFails = 'mirror failed — attachments in the seeded UI will be broken until re-uploaded'
   // The two minios live on different networks (primary dev vs this box's
   // own), so the mirror runs through a throwaway mc container joined to
   // both. Created stopped (networks attach to stopped containers), then
   // started with a sleep PID — the image's `mc` entrypoint with no arguments
   // exits instantly, and exec needs a live container.
-  const MCT = `devbox-${name}-seed-mc`
+  const MCT = boxSvc(name, 'seed-mc')
   try {
     await ctx.exec('docker', ['rm', '-f', MCT]).catch(() => {})
     // quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09)
     await ctx.exec('docker', ['create', '--name', MCT, '--entrypoint', 'sh', 'quay.io/minio/mc:latest', '-c', 'sleep infinity'])
-    await ctx.exec('docker', ['network', 'connect', `devbox-${name}_default`, MCT])
-    await ctx.exec('docker', ['network', 'connect', 'talaria-dev_default', MCT])
+    await ctx.exec('docker', ['network', 'connect', `${boxProject(name)}_default`, MCT])
+    await ctx.exec('docker', ['network', 'connect', DEV_NETWORK, MCT])
     await ctx.exec('docker', ['start', MCT])
     // Single quotes guard the creds from the inner sh — dev keys are hex/simple.
     // A throw from the exec IS the failure signal.
@@ -172,8 +165,8 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
   if (o.force || !existsSync(chassisPath)) {
     const template = readFileSync(join(root, 'scripts/chassis.template.yml'), 'utf8')
     // chassis.yml is config, not a secret — plain 0644 write, like the template.
-    writeFileSync(chassisPath, repointChassis(template, `devbox-${name}-fleet`))
-    ctx.log.ok(`chassis.yml seeded (network: devbox-${name}-fleet)`)
+    writeFileSync(chassisPath, repointChassis(template, boxFleetNetwork(name)))
+    ctx.log.ok(`chassis.yml seeded (network: ${boxFleetNetwork(name)})`)
   } else {
     ctx.log.ok('chassis.yml exists — kept (your edits survive; --force overwrites)')
   }
@@ -196,12 +189,12 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
     // The devbox container is dual-homed (box network + primary dev network)
     // and carries curl: run the whole round-trip through it.
     const code = await ctx.run('docker', [
-      'exec', `devbox-${name}`, 'sh', '-c',
+      'exec', boxHost(name), 'sh', '-c',
       `set -e
 for c in $(curl -sf http://${MAIN_QDRANT}:6333/collections | grep -o '"name":"[^"]*"' | cut -d'"' -f4); do
   snap=$(curl -sf -X POST http://${MAIN_QDRANT}:6333/collections/$c/snapshots | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
   curl -sf http://${MAIN_QDRANT}:6333/collections/$c/snapshots/$snap -o /tmp/$c.snapshot
-  curl -sf -X POST -F "snapshot=@/tmp/$c.snapshot" http://devbox-${name}-qdrant:6333/collections/$c/snapshots/upload?priority=snapshot >/dev/null
+  curl -sf -X POST -F "snapshot=@/tmp/$c.snapshot" http://${boxSvc(name, 'qdrant')}:6333/collections/$c/snapshots/upload?priority=snapshot >/dev/null
   rm -f /tmp/$c.snapshot
   echo "  ok $c"
 done`,

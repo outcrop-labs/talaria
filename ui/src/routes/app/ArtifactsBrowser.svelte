@@ -8,6 +8,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import SortHeader from '@/components/ui/SortHeader.svelte'
   import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
@@ -678,16 +679,16 @@
         }}
       />
       {#each COLUMNS as c (c.key)}
-        <button
-          type="button"
+        <SortHeader
+          active={sortKey === c.key}
+          dir={sortDir}
+          arrows={[ArrowUp, ArrowDown]}
+          size={10}
+          class={cn('font-mono text-[10px]', c.class)}
           onclick={() => onSort(c.key)}
-          class={cn('flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.08em] transition-colors hover:text-fg', sortKey === c.key ? 'text-fg' : 'text-ink-dim', c.class)}
         >
           {c.label}
-          {#if sortKey === c.key}
-            {#if sortDir === 'asc'}<ArrowUp size={10} />{:else}<ArrowDown size={10} />{/if}
-          {/if}
-        </button>
+        </SortHeader>
       {/each}
     </div>
   {/if}

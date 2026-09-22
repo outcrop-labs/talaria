@@ -3,9 +3,9 @@
   import FieldPill from '@/components/ui/FieldPill.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
-  import { statusColorOf, statusLabelOf } from '@/lib/statuses'
+  import { STATUS_COLOR, statusColorOf, statusLabelOf } from '@/lib/statuses'
   import { STATUS_LABEL, TASK_STATUSES, type Task } from '@/lib/task-const'
-  import { STATUS_COLOR, dotIcon, type PillCtx } from './field-pills'
+  import { dotIcon, type PillCtx } from './field-pills'
 
   let { t, ctx, class: className }: { t: Task; ctx: PillCtx; class?: string } = $props()
 

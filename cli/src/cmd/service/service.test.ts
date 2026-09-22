@@ -138,8 +138,8 @@ describe('unitText — the unit file', () => {
   })
 
   test('ExecStart/ExecStop: absolute docker, the documented relative -f, no --build, no --volumes', () => {
-    expect(text).toContain('ExecStart=/usr/bin/docker compose -f docker/compose.yml up -d --wait\n')
-    expect(text).toContain('ExecStop=/usr/bin/docker compose -f docker/compose.yml down\n')
+    expect(text).toContain('ExecStart=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --wait\n')
+    expect(text).toContain('ExecStop=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml down\n')
     // the comments above the directives EXPLAIN the absences — only the
     // directive lines themselves must be clean
     const execLines = text.split('\n').filter((l) => l.startsWith('Exec'))
@@ -151,7 +151,7 @@ describe('unitText — the unit file', () => {
     expect(text.split('\n').some((l) => l.startsWith('Restart=always'))).toBe(false)
     const old = unitText({ root: '/repo', dockerBin: '/usr/bin/docker', upArgs: upArgsFor('2.20.1') })
     expect(old.split('\n').find((l) => l.startsWith('ExecStart'))).toBe(
-      'ExecStart=/usr/bin/docker compose -f docker/compose.yml up -d',
+      'ExecStart=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d',
     )
   })
 
@@ -163,9 +163,9 @@ describe('unitText — the unit file', () => {
       root: '/repo',
       dockerBin: '/usr/bin/docker',
       upArgs: ['up', '-d', '--wait'],
-      composeFile: 'docker/compose.yml:docker/compose.registry.yml',
+      composeFile: 'docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml',
     })
-    expect(layered).toContain('Environment=COMPOSE_FILE=docker/compose.yml:docker/compose.registry.yml\n')
+    expect(layered).toContain('Environment=COMPOSE_FILE=docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml\n')
     expect(layered).toContain('ExecStart=/usr/bin/docker compose up -d --wait\n')
     expect(layered).toContain('ExecStop=/usr/bin/docker compose down\n')
     expect(layered).not.toContain(' -f ')
@@ -194,7 +194,7 @@ describe('talaria service install — orchestration', () => {
 
     // order: deploy's up (build belongs to the operator's terminal), then the privileged trio
     const cmds = ctx.calls.map((c) => [c.cmd, ...c.args].join(' '))
-    const upAt = cmds.findIndex((c) => c.endsWith('compose -f docker/compose.yml up -d --build'))
+    const upAt = cmds.findIndex((c) => c.endsWith('compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --build'))
     const installAt = cmds.findIndex((c) => c.startsWith('sudo install -m 0644'))
     const reloadAt = cmds.indexOf('sudo systemctl daemon-reload')
     const enableAt = cmds.indexOf('sudo systemctl enable --now talaria.service')
@@ -233,7 +233,7 @@ describe('talaria service install — orchestration', () => {
     ctx.root = root
     ctx.plant(['systemctl', [...DOCKER_SERVICE_SHOW]], 'LoadState=loaded\nUnitFileState=enabled\n')
     ctx.plant(['docker', ['compose', 'version', '--short']], 'v2.29.7\n')
-    ctx.plant(['docker', ['compose', '-f', 'docker/compose.yml', 'ps', '--quiet', '--status', 'running']], 'abc123\n')
+    ctx.plant(['docker', ['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'ps', '--quiet', '--status', 'running']], 'abc123\n')
     await runInstall(ctx, { host, euid: 1000 })
     expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
     expect(ctx.logLines.some((l) => l.kind === 'skip' && l.msg.includes('already running'))).toBe(true)
@@ -393,7 +393,7 @@ describe('talaria service status', () => {
     expect(await runServiceStatus(ctx, { host })).toBe(0)
     expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes('enabled'))).toBe(true)
     expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes('active'))).toBe(true)
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'ps'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'ps'])
   })
 
   test('nothing installed → dies pointing at install', async () => {
