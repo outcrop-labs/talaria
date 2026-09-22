@@ -22,10 +22,13 @@
 // `llm_endpoints`, where the fabricated `pl-main` pair does not live.
 //
 // LIVE-DB ONLY: the real record/get edges are the point, and they write the
-// `harness_capabilities` settings row. The pair `pl-main:qwen3-14b` is
-// fabricated — no endpoint named pl-main exists — so nothing else in Talaria
-// reads the entry, and the test forgets it at the door on the way in and out.
-// Never in CI.
+// `harness_capabilities` settings row. The pairs `pl-main:qwen3-14b-reported`
+// and `pl-main:qwen3-14b-declared` are fabricated — no endpoint named pl-main
+// exists — so nothing else in Talaria reads the entry, and each test forgets
+// its own at the door on the way in and out. The two tests run CONCURRENTLY
+// (libtest's default) and each starts by forgetting its key: a SHARED key is
+// one test's reset deleting the other's facts mid-flight — which is exactly
+// how this flaked on CI's slower runners while passing on a fast box.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -255,14 +258,15 @@ async fn a_reported_tool_call_becomes_a_widened_inbox_surface() {
         panic!("set DATABASE_URL (source ui/.env) to run the ignored live tests");
     };
     let state = AppState::new(talaria_api::db::pool(&cfg), Arc::new(cfg));
-    let key = capability_key("pl-main", "qwen3-14b");
+    let model = "qwen3-14b-reported";
+    let key = capability_key("pl-main", model);
     reset(&state.pg, &key).await;
 
     // run_probes with the scripted tool transport under the REAL runner: the
     // ask goes through run_harness, the definitions reach the transport, and
     // the report carries the calls the watcher saw.
-    let mut deps = default_deps(&state, "qwen3-14b");
-    deps.ask_with_tools = runner_tool_ask(&state, "qwen3-14b", tool_transport());
+    let mut deps = default_deps(&state, model);
+    deps.ask_with_tools = runner_tool_ask(&state, model, tool_transport());
     deps.offers_tool_definitions = Arc::new(|| Box::pin(async move { true }));
     // probe_keys derives keys from llm_endpoints, where the fabricated pair
     // does not live.
@@ -275,7 +279,7 @@ async fn a_reported_tool_call_becomes_a_widened_inbox_surface() {
     };
     let report = run_probes(
         &state,
-        "qwen3-14b",
+        model,
         ProbeOpts {
             ids: Some(vec![ProbeId::ToolSelect]),
             deps: Some(deps),
@@ -315,7 +319,7 @@ async fn a_reported_tool_call_becomes_a_widened_inbox_surface() {
     let value = serde_json::to_value(input("what do you make of this?")).unwrap();
     let ctx = RunContext {
         caller: "test:reconcile".into(),
-        model: Some("qwen3-14b".into()),
+        model: Some(model.into()),
         deps: Some(Arc::new(harness_deps(&state.pg))),
         ..RunContext::default()
     };
@@ -340,7 +344,8 @@ async fn a_declared_fact_never_widens_only_the_probe_one_does() {
         panic!("set DATABASE_URL (source ui/.env) to run the ignored live tests");
     };
     let state = AppState::new(talaria_api::db::pool(&cfg), Arc::new(cfg));
-    let key = capability_key("pl-main", "qwen3-14b");
+    let model = "qwen3-14b-declared";
+    let key = capability_key("pl-main", model);
     reset(&state.pg, &key).await;
 
     let at = "2026-01-01T12:00:00.000Z";
@@ -362,10 +367,10 @@ async fn a_declared_fact_never_widens_only_the_probe_one_does() {
     }
 
     let value = serde_json::to_value(input("x")).unwrap();
-    async fn wide(state: &AppState, value: &Value) -> bool {
+    async fn wide(state: &AppState, value: &Value, model: &str) -> bool {
         let ctx = RunContext {
             caller: "test:reconcile".into(),
-            model: Some("qwen3-14b".into()),
+            model: Some(model.into()),
             deps: Some(Arc::new(harness_deps(&state.pg))),
             ..RunContext::default()
         };
@@ -375,7 +380,7 @@ async fn a_declared_fact_never_widens_only_the_probe_one_does() {
             .widened
     }
     assert!(
-        !wide(&state, &value).await,
+        !wide(&state, &value, model).await,
         "a declared fact is a claim, not a measurement"
     );
 
@@ -396,7 +401,7 @@ async fn a_declared_fact_never_widens_only_the_probe_one_does() {
         )
         .await;
     }
-    assert!(wide(&state, &value).await, "the probe fact widens");
+    assert!(wide(&state, &value, model).await, "the probe fact widens");
 
     reset(&state.pg, &key).await;
 }
