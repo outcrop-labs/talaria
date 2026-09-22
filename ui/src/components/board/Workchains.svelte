@@ -1,8 +1,11 @@
 <script lang="ts">
-  // Workchains view — the board's fourth lens (TALA-30). Each chain renders
-  // as a horizontal rail of compact step cards (WorkchainRail) with the
-  // derived states legible at a glance; below the chains sits UNCHAINED —
-  // the tickets no chain holds yet, each row offering to join one.
+  // Workchains view — the board's fourth lens (TALA-30; TALA-35 the graph).
+  // Each chain renders as a horizontal rail of compact step cards
+  // (WorkchainRail) with the derived states legible at a glance; a chain
+  // that BRANCHES (any step with two or more outgoing wires) renders as the
+  // node canvas (WorkchainCanvas) instead — the rails cannot draw a fan-out
+  // honestly. Below the chains sits UNCHAINED — the tickets no chain holds
+  // yet, each row offering to join one.
   //
   // Filtering follows the lens convention (list/gantt): the rails draw what
   // the board's filtered `tasks` contain — a step whose ticket is filtered
@@ -26,8 +29,9 @@
   import { EFFORT_LABEL, type Task } from '@/lib/task-const'
   import type { Board, BoardMember } from '@/lib/boards.svelte'
   import WorkchainRail from './WorkchainRail.svelte'
+  import WorkchainCanvas from './WorkchainCanvas.svelte'
   import { addWorkchainStep, createWorkchain, useBoardWorkchains } from '@/lib/workchain-client'
-  import { chainedTaskIds, type WorkchainStep } from '@/lib/workchain-rules'
+  import { chainBranches, chainedTaskIds, type WorkchainStep } from '@/lib/workchain-rules'
 
   let {
     board,
@@ -142,7 +146,14 @@
       {/if}
     {:else}
       {#each visibleChains as w (w.id)}
-        <WorkchainRail workchain={w} {boardStatuses} {agents} {members} {pickable} {onOpen} onAdded={invalidate} />
+        {#if chainBranches(w)}
+          <!-- A branched chain: the canvas is the honest render (TALA-35).
+               The drag-to-connect wiring editor lands with TALA-34; the
+               canvas here draws the graph with visible ports and wires. -->
+          <WorkchainCanvas workchain={w} {boardStatuses} {agents} {members} {onOpen} onChanged={invalidate} />
+        {:else}
+          <WorkchainRail workchain={w} {boardStatuses} {agents} {members} {pickable} {onOpen} onAdded={invalidate} />
+        {/if}
       {/each}
       {#if canEdit}
         <button

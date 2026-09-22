@@ -270,6 +270,16 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("DELETE") }),
         )
         .route(
+            "/api/workchains/{id}/edges",
+            axum::routing::post(talaria_routes_boards::workchains::workchains_id::post_edge)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workchains/{id}/edges/{fromTaskId}/{toTaskId}",
+            axum::routing::delete(talaria_routes_boards::workchains::workchains_id::delete_edge)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
+        .route(
             "/api/keys/{id}",
             axum::routing::delete(talaria_routes_fleet::models::keys_id::delete)
                 .put(talaria_routes_fleet::models::keys_id::put)
