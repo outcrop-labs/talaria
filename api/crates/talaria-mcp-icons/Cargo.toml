@@ -1,19 +1,19 @@
 [package]
 name = "talaria-mcp-icons"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-talaria-safe-fetch = { path = "../talaria-safe-fetch" }
-tokio = { version = "1", features = ["sync", "time"] }
-tracing = "0.1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-axum = { version = "0.8", default-features = false }
-futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+talaria-safe-fetch = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }

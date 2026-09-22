@@ -123,6 +123,28 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    // THE ATTRIBUTION LADDER'S CHATTER RUNG. The seam (CONVERSATION_OWNER) and
+    // the resolver it wants (conversations::conversation_owner — whose doc
+    // comment names this ladder) both existed; this wiring did not, so the
+    // live-turn rung read an unset OnceLock and silently fell to the hirer on
+    // every install. Nothing noticed for the same reason nothing ever does: an
+    // unset optional rung answers SOMEONE, just the wrong one. The live suite's
+    // first CI run (api-integration.yml, attribution's
+    // a_live_turn_outranks_the_hirer) is what caught it.
+    let _ = talaria_attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_conversations::conversation_owner(&pg, &id).await })
+    }));
+    // THE TWO GET_TASK EDGES — same disease as CONVERSATION_OWNER, found the
+    // same week by the live suite's first runs: workchains' turn/pause paths
+    // and inbox-focus's focus scoring both `.expect("GET_TASK")` on a seam
+    // nothing ever set, so those paths PANICKED in production (caught by
+    // catch-panic as opaque 500s) instead of doing their work.
+    let _ = talaria_workchains::GET_TASK.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
+    }));
+    let _ = talaria_inbox_focus::GET_TASK.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
+    }));
     talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));

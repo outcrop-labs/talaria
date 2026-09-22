@@ -39,10 +39,12 @@ drive the actual surface at <http://localhost:5273>:
 
 ## 3. CHANGELOG
 
-Append to the `[Unreleased]` section of `CHANGELOG.md`: **what changed**, in a bold lead
-sentence, and **what you verified** — the gate you ran and how you exercised the path.
-The changelog is the record reviewers and release-notes readers actually have; "verified:
-typecheck" on a behavior change is a red flag you should catch yourself.
+Add `changelog/YYYY-MM-DD-<slug>.md` containing the entry verbatim: **what changed**, in a
+bold lead sentence, and **what you verified** — the gate you ran and how you exercised the
+path. One file per entry — two open PRs never collide at the `[Unreleased]` anchor, and
+`bun scripts/changelog-roll.mjs --check` (part of `bun run check`) fails a hand-appended
+bullet. The changelog is the record reviewers and release-notes readers actually have;
+"verified: typecheck" on a behavior change is a red flag you should catch yourself.
 
 ## 4. Commit
 
@@ -51,7 +53,7 @@ typecheck" on a behavior change is a red flag you should catch yourself.
 - **Stage by explicit path.** Parallel sessions share working trees: `git status` first,
   then `git add <files>`. Never `git add -A`, never `git clean`, never an unscoped reset —
   uncommitted files may be another session's work in progress.
-- One change per commit; the CHANGELOG entry rides with the change it describes.
+- One change per commit; the changelog entry file rides with the change it describes.
 - Push the branch you are on. `main` and `rc` are not push targets: `talaria setup` wires
   `scripts/hooks/pre-push` in, and it refuses those pushes locally (CI refuses them too).
 

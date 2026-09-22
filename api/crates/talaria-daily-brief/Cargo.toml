@@ -1,35 +1,35 @@
 [package]
 name = "talaria-daily-brief"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-uuid = { version = "1", features = ["v4"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-artifacts = { path = "../talaria-artifacts" }
-talaria-daily-brief-comms = { path = "../talaria-daily-brief-comms" }
-talaria-daily-brief-config = { path = "../talaria-daily-brief-config" }
-talaria-daily-brief-delegation = { path = "../talaria-daily-brief-delegation" }
-talaria-daily-brief-focus = { path = "../talaria-daily-brief-focus" }
-talaria-daily-brief-types = { path = "../talaria-daily-brief-types" }
-talaria-google-calendar = { path = "../talaria-google-calendar" }
-talaria-harness = { path = "../talaria-harness" }
-talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-me = { path = "../talaria-me" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-realtime = { path = "../talaria-realtime" }
-talaria-scheduler = { path = "../talaria-scheduler" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-tz = { path = "../talaria-tz" }
-tokio = { version = "1", features = ["macros"] }
-tracing = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-daily-brief-comms = { workspace = true }
+talaria-daily-brief-config = { workspace = true }
+talaria-daily-brief-delegation = { workspace = true }
+talaria-daily-brief-focus = { workspace = true }
+talaria-daily-brief-types = { workspace = true }
+talaria-google-calendar = { workspace = true }
+talaria-harness = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-me = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-scheduler = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-tz = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

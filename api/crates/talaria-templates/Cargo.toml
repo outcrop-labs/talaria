@@ -1,17 +1,17 @@
 [package]
 name = "talaria-templates"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-serde = { version = "1", features = ["derive"] }
-talaria-internal-history = { path = "../talaria-internal-history" }
-uuid = { version = "1", features = ["v4"] }
+talaria-agent-auth = { workspace = true }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+talaria-internal-history = { workspace = true }
+uuid = { workspace = true }

@@ -27,7 +27,9 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
    `bun run api:check` too; touched `desktop/`? `bun run desktop:check`.
 2. **Exercise the path you changed** in the running app (`bun talaria dev` →
    <http://localhost:5273>) — typecheck alone doesn't prove a surface works.
-3. **Update [`CHANGELOG.md`](./CHANGELOG.md)** with what changed and what you verified.
+3. **Add a changelog entry file** — `changelog/YYYY-MM-DD-<slug>.md`, the bullet verbatim
+   (bold lead, what changed, what you verified). One file per change; the release roll
+   folds them into [`CHANGELOG.md`](./CHANGELOG.md).
 4. **Commit in the repo's style:** `area: lowercase sentence — explanation`, one change per
    commit, the changelog entry riding with the change it describes. `git log` carries the
    voice; the em-dash clause says why, not what.

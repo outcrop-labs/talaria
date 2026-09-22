@@ -1,22 +1,22 @@
 [package]
 name = "talaria-runs-run"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-futures-util = "0.3"
-redis = { version = "1", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-runs-drivers = { path = "../talaria-runs-drivers" }
-talaria-runs-lease = { path = "../talaria-runs-lease" }
-talaria-runs-store = { path = "../talaria-runs-store" }
-tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
-tracing = "0.1"
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+futures-util = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+talaria-runs-define = { workspace = true }
+talaria-runs-drivers = { workspace = true }
+talaria-runs-lease = { workspace = true }
+talaria-runs-store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+sqlx = { workspace = true }

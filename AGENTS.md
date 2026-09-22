@@ -153,13 +153,15 @@ send — exit 2, and the push stops with the reason and the way to do it instead
   [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md)'s "Layout of the
   workspace".
 - `mcp/dist/`, `ui/src/routeTree.gen.ts` — build output.
-- `CHANGELOG.md` is append-only; its links are frozen history.
+- `CHANGELOG.md` is append-only and written only by the roll (`scripts/changelog-roll.mjs`);
+  unreleased entries live as files under `changelog/`, one per change.
 
 ## Conventions
 
 - Commits: `area: lowercase sentence — explanation` (`git log` carries the voice).
-- Every user-visible change appends to [`CHANGELOG.md`](./CHANGELOG.md) — what changed and
-  what you verified.
+- Every user-visible change adds `changelog/YYYY-MM-DD-<slug>.md` — what changed and
+  what you verified, verbatim bullet; `bun run check` fails a hand-appended
+  `[Unreleased]` bullet.
 - Keep this file under ~200 lines: a new invariant earns a line here; a new procedure earns
   a skill.
 

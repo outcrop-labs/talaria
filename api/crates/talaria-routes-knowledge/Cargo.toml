@@ -1,40 +1,40 @@
 [package]
 name = "talaria-routes-knowledge"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-agent-media = { path = "../talaria-agent-media" }
-talaria-agent-memory = { path = "../talaria-agent-memory" }
-talaria-artifacts = { path = "../talaria-artifacts" }
-talaria-attribution = { path = "../talaria-attribution" }
-talaria-audit = { path = "../talaria-audit" }
-talaria-body = { path = "../talaria-body" }
-talaria-error = { path = "../talaria-error" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-params = { path = "../talaria-params" }
-talaria-permissions = { path = "../talaria-permissions" }
-talaria-personal-agent = { path = "../talaria-personal-agent" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-teams = { path = "../talaria-teams" }
-talaria-templates = { path = "../talaria-templates" }
-talaria-uploads = { path = "../talaria-uploads" }
-talaria-users = { path = "../talaria-users" }
-talaria-web-search = { path = "../talaria-web-search" }
-axum = { version = "0.8", features = ["multipart"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-url = "2"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-talaria-api-facades = { path = "../talaria-api-facades" }
+talaria-agent-auth = { workspace = true }
+talaria-agent-media = { workspace = true }
+talaria-agent-memory = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-attribution = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-body = { workspace = true }
+talaria-error = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-personal-agent = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-templates = { workspace = true }
+talaria-uploads = { workspace = true }
+talaria-users = { workspace = true }
+talaria-web-search = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+talaria-api-facades = { workspace = true }

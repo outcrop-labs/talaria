@@ -1,29 +1,29 @@
 [package]
 name = "talaria-research"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", features = ["multipart"] }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-uuid = { version = "1", features = ["v4"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-conversations = { path = "../talaria-conversations" }
-talaria-realtime = { path = "../talaria-realtime" }
-talaria-research-def = { path = "../talaria-research-def" }
-talaria-runs-run = { path = "../talaria-runs-run" }
-talaria-source-registry = { path = "../talaria-source-registry" }
-talaria-state = { path = "../talaria-state" }
-talaria-tasks-types = { path = "../talaria-tasks-types" }
-talaria-titler = { path = "../talaria-titler" }
-tokio = { version = "1", features = ["macros"] }
-tracing = "0.1"
-regex = "1"
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-conversations = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-research-def = { workspace = true }
+talaria-runs-run = { workspace = true }
+talaria-source-registry = { workspace = true }
+talaria-state = { workspace = true }
+talaria-tasks-types = { workspace = true }
+talaria-titler = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }

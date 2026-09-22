@@ -1,51 +1,51 @@
 [package]
 name = "talaria-routes-admin"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-apps = { path = "../talaria-apps" }
-talaria-audit = { path = "../talaria-audit" }
-talaria-auth-config = { path = "../talaria-auth-config" }
-talaria-body = { path = "../talaria-body" }
-talaria-config = { path = "../talaria-config" }
-talaria-effort-prefs = { path = "../talaria-effort-prefs" }
-talaria-email = { path = "../talaria-email" }
-talaria-error = { path = "../talaria-error" }
-talaria-fitness = { path = "../talaria-fitness" }
-talaria-instance = { path = "../talaria-instance" }
-talaria-invites = { path = "../talaria-invites" }
-talaria-judge = { path = "../talaria-judge" }
-talaria-org = { path = "../talaria-org" }
-talaria-org-domains = { path = "../talaria-org-domains" }
-talaria-outreach = { path = "../talaria-outreach" }
-talaria-password-accounts = { path = "../talaria-password-accounts" }
-talaria-permissions = { path = "../talaria-permissions" }
-talaria-platform-agents = { path = "../talaria-platform-agents" }
-talaria-search = { path = "../talaria-search" }
-talaria-secret-health = { path = "../talaria-secret-health" }
-talaria-secret-rotation = { path = "../talaria-secret-rotation" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-storage = { path = "../talaria-storage" }
-talaria-uploads = { path = "../talaria-uploads" }
-talaria-users = { path = "../talaria-users" }
-talaria-workspace-secrets = { path = "../talaria-workspace-secrets" }
-axum = { version = "0.8", features = ["multipart"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-url = "2"
-sha2 = "0.11"
-getrandom = "0.3"
-talaria-api-facades = { path = "../talaria-api-facades" }
-talaria-routes-integrations = { path = "../talaria-routes-integrations" }
+talaria-agent-auth = { workspace = true }
+talaria-apps = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-auth-config = { workspace = true }
+talaria-body = { workspace = true }
+talaria-config = { workspace = true }
+talaria-effort-prefs = { workspace = true }
+talaria-email = { workspace = true }
+talaria-error = { workspace = true }
+talaria-fitness = { workspace = true }
+talaria-instance = { workspace = true }
+talaria-invites = { workspace = true }
+talaria-judge = { workspace = true }
+talaria-org = { workspace = true }
+talaria-org-domains = { workspace = true }
+talaria-outreach = { workspace = true }
+talaria-password-accounts = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-platform-agents = { workspace = true }
+talaria-search = { workspace = true }
+talaria-secret-health = { workspace = true }
+talaria-secret-rotation = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-storage = { workspace = true }
+talaria-uploads = { workspace = true }
+talaria-users = { workspace = true }
+talaria-workspace-secrets = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }
+talaria-api-facades = { workspace = true }
+talaria-routes-integrations = { workspace = true }
