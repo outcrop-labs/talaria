@@ -6,8 +6,8 @@
   // through PATCH nodes. Unplaced steps auto-layout by longest-path levels.
   //
   // The canvas draws the graph; the drag-TO-CONNECT editor (pulling a wire
-  // out of a port) is TALA-34 and lands on this model. Wire deletion here is
-  // a click on a wire (editors only) — the same write the edge DELETE serves.
+  // out of a port) is TALA-34 and lands on this model — the edge POST/DELETE
+  // verbs it uses are already served.
   import { Check, Pause, Play } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -89,14 +89,18 @@
   }
 
   const endDrag = () => {
-    if (!dragId || !dragPos) return
+    if (!dragId || !dragPos || !dragStart) return
     const { x, y } = dragPos
     const id = dragId
+    const moved =
+      Math.abs(x - dragStart.ox) > 1 || Math.abs(y - dragStart.oy) > 1
     dragId = null
     dragPos = null
     dragStart = null
-    // Round to the grid the card snapped out of; a click (no move) skips
-    // the write — the open-ticket handler owns clicks.
+    // A click (no real move) skips the write — the open-ticket handler owns
+    // clicks, and persisting an auto-layout spot would freeze it as a
+    // user placement. Only a real drag writes.
+    if (!moved) return
     void updateWorkchain(workchain.id, { nodes: [{ taskId: id, x: Math.round(x), y: Math.round(y) }] })
       .then(onChanged)
       .catch(failure('Moving the card'))

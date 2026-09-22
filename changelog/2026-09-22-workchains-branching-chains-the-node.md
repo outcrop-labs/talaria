@@ -23,16 +23,21 @@
   gray, fired accent with the dash running, done success), assignee
   avatars so the human/agent mix reads at a glance; cards drag and their
   position persists (`canvas_x`/`canvas_y`, null = auto-layout by
-  longest-path levels); clicking a wire cuts it (`DELETE
-  /api/workchains/{id}/edges/{from}/{to}`, POST draws). Linear chains keep
+  longest-path levels). The wire verbs ship for the editor that lands with
+  TALA-34: POST /api/workchains/{id}/edges draws, DELETE
+  /api/workchains/{id}/edges/{from}/{to} cuts — this ticket's canvas is the
+  reading surface the drag editor is built on. Linear chains keep
   the rails. A step's assignee is still the ticket's assignee — no new
-  agent-writable step-assignee surface, and the drag-to-connect editor
-  itself is TALA-34's, built on these ports. Verified: `bun run check`
+  agent-writable step-assignee surface. Verified: `bun run check`
   green (after regenerating the API reference — which required fixing the
   docs generator's per-module grouping, see its own entry);
   `workchains.test.ts` 29/29 (fan-out, AND-join, failed-pred, diamond,
-  cycle-direction cases); svelte-check 0 errors; `cargo fmt --check` and
-  `cargo check --lib` green. The clippy/test-target builds are SIGKILLed
-  by this box's 4 GiB cgroup (the v1 engine entry's same finding) and the
-  live router suite needs dev Postgres + Redis, absent here — both must
-  run in CI.
+  cycle-direction cases); svelte-check 0 errors; `cargo fmt --check`,
+  `cargo check --lib`, `clippy --lib -D warnings` green on the touched
+  crates, `cargo test --lib` 11/11 on the engine crate (linear, fan-out,
+  AND-join, failed-pred, diamond, off-board, custom done keys); the canvas
+  was driven in a real browser over an API-stub vite server (branched DAG
+  renders as nodes with ports and state-styled wires, linear chain keeps
+  the rail). The workspace-wide clippy/test targets and the live router
+  suite need the CI box (4 GiB cgroup SIGKILLs the big builds; dev
+  Postgres + Redis absent here) — both run on the pull request.
