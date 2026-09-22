@@ -1,0 +1,277 @@
+# The branch flow, ENFORCED — the server-side half of docs/BRANCHES.md.
+#
+# THE MODEL, in one paragraph. Every change reaches this repository through a
+# pull request against `rc`. rc is both the integration branch and the staging
+# environment: a push to it runs CI and rc-deploy.yml, which builds this
+# commit's image, boots it, and checks that it answers — and only once that is
+# green does promote.yml open the `rc → main` pull request. `main` is the
+# release trunk: it moves one way only, by that promotion merge, after rc has
+# been verified. `testing` is retired; the nightly channel is built from rc.
+#
+# WHAT IS CHECKED HERE, and why each is a check rather than a sentence in a doc:
+#
+#   pr-target      a pull request to main may only come from rc. Everything
+#                  else — review, CI, the staging deploy — happens on rc, so a
+#                  second door into main is a door with no gates on it.
+#   promotion-gate a pull request to main requires rc's head commit to have a
+#                  green CI run AND a green rc-deploy run, read from the
+#                  Actions API. This is "verified in RC before it reaches
+#                  main", checked rather than assumed.
+#   branch-push    a push to main may carry only commits that were already on
+#                  rc; a push to rc must be a merge commit (what a PR merge
+#                  leaves) or a fast-forward of main. The rules and their
+#                  reasoning: scripts/flow-guard.mjs.
+#
+# WHY THE LOGIC IS A SCRIPT AND NOT SHELL IN THIS FILE. scripts/flow-guard.mjs
+#   is also run by the git pre-push hook, so the refusal a developer sees
+#   locally and the one CI reports cannot drift apart. This file is wiring: an
+#   event, a branch, the inputs, and where the policy is read from.
+#
+# WHY THE POLICY IS READ FROM A REVISION THIS CHANGE CANNOT EDIT. A guard that
+#   runs the change's own copy of itself is a guard the change can satisfy by
+#   editing it. So each job materializes scripts/flow-guard.mjs from a revision
+#   the change cannot reach — for a pull request, the base branch's own tip; for
+#   a push, the tip being moved — and refuses outright when that revision is not
+#   in the repository at all (a force-push past it, or a clone that never
+#   fetched it: the one case where "no guard at that revision" and "no such
+#   revision" must not be confused). The `cp` fallback exists for exactly one
+#   other case and says so when it takes it: a base that predates the guard,
+#   which is the change that introduces it, landing THROUGH this same flow.
+#
+# DELIBERATELY LEFT OUT (do not read these as oversights)
+#   - No `paths:` filters. A guard that skips is not a guard: the cheaper the
+#     file, the more it matters that it cannot be skipped. It needs no install
+#     and finishes in seconds, which is what makes that affordable.
+#   - No fetch of anything but main and rc. The provenance rules read those two
+#     refs and nothing else, so that is what the fetch asks for.
+#   - No status of its own for `testing` PRs: a pull request targeting it is
+#     refused by pr-target, and the branch itself is deleted in the repo
+#     settings (docs/BRANCHES.md → Bringing the model up).
+
+name: flow
+
+on:
+  pull_request:
+    # Only the branch whose rules are this file's subject. A pull request
+    # against rc is the normal path and needs no guard; against any other
+    # branch it is the author's own business.
+    branches: [main]
+    # `edited` is a recovery path the wait cannot replace. The gate now waits
+    # for the tip's CI and rc-deploy runs to finish, so it no longer fails
+    # ahead of its own evidence — but a gate that HAS failed (a red deploy,
+    # since re-run) is never re-evaluated on its own, and promote.yml's body
+    # refresh fires exactly such an edit, re-running this file on the fresh
+    # evidence. A hand edit of the body does the same for a repository without
+    # the promotion token.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    # Long-lived branches only: every other push is a feature branch's, and
+    # flow-guard.mjs passes those through untouched.
+    branches: [main, rc, testing]
+  workflow_dispatch: {}
+
+# A new push to the same branch cancels the in-flight run: the answer for the
+# replaced commit is no longer anyone's to wait on.
+concurrency:
+  group: flow-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-target:
+    name: pr target (main takes rc only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The base sha has to be readable: it is where the policy comes from.
+          fetch-depth: 0
+
+      # The one place a pull request could satisfy this check by editing it.
+      # Read the guard from the branch the pull request targets instead.
+      - name: Materialize the policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          # A base commit that is not in this repository is never a pass, and it
+          # is NOT the same thing as a base that predates the guard: the first
+          # case means nothing here can judge the pull request, and it is only
+          # ever reached by a rewrite the guard exists to refuse.
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "::error::$BASE_SHA (the base of this pull request) is not in this repository, so the policy cannot be read from the branch being changed. Fetch the base and push again."
+            exit 1
+          fi
+          if git cat-file -e "$BASE_SHA:scripts/flow-guard.mjs" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/flow-guard.mjs" > "$RUNNER_TEMP/flow-guard.mjs"
+            echo "policy: $BASE_SHA:scripts/flow-guard.mjs"
+          else
+            cp scripts/flow-guard.mjs "$RUNNER_TEMP/flow-guard.mjs"
+            echo "policy: this pull request's copy — $BASE_SHA predates the guard (see the header)"
+          fi
+
+      - name: Which branch this pull request comes from
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: node "$RUNNER_TEMP/flow-guard.mjs" pr-base "$BASE" "$HEAD"
+
+  # The "verified in RC" rule. Split from pr-target so a red run says WHICH
+  # thing is missing: the wrong source branch, or a tip that has not been
+  # deployed yet.
+  promotion-gate:
+    name: promotion gate (rc verified)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # The gate WAITS for its evidence, and this timeout is the bound on the
+    # wait. A synchronize event fires the moment rc is pushed — the same push
+    # that STARTS the CI and rc-deploy runs this job reads — so a gate that
+    # reads once, immediately, fails before its evidence exists (a cold
+    # rc-deploy is twenty minutes and more), and a failed required check is
+    # never re-evaluated: every synchronize wedged the promotion until a body
+    # edit or a hand re-run happened to fire. The ceiling covers rc-deploy's
+    # own worst case, its called api-package job (60) plus the deploy job (30).
+    timeout-minutes: 95
+
+    permissions:
+      contents: read
+      actions: read # the run lookup below
+
+    steps:
+      # Queried across ALL workflows rather than by
+      # `/actions/workflows/<file>/runs`, and that is deliberate: that endpoint
+      # resolves the file path against the DEFAULT branch's workflow list, so a
+      # promotion that lands a new workflow file would 404 here — the bootstrap
+      # deadlock the release pipeline already paid for once. Runs by head_sha has
+      # no such dependency.
+      #
+      # No `event=` filter either, and that is a decision: the COMMIT is the
+      # identity, not the event that produced the run. Filtering to `push` reads
+      # as stricter while it quietly breaks the documented recovery — a
+      # dispatched or re-run rc-deploy verifies the SAME tree, and a gate that
+      # refuses to see it leaves a flaky deploy as a permanent red check.
+      # Matching on the workflow `name:` below is what keeps this honest: only a
+      # run OF CI and one OF rc-deploy count.
+      - name: rc's head commit passed CI and deployed in staging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          # One workflow's runs for this commit, folded to a state:
+          #   green    a successful run exists — this half is satisfied. ANY
+          #            green run, not just the latest: a re-run or a dispatch
+          #            after a flake verifies the same tree.
+          #   waiting  no green yet and a run has not completed — building,
+          #            queued, or re-run in flight.
+          #   absent   no run of that workflow at all. The synchronize that
+          #            started this gate is the same push that starts them,
+          #            so this is seconds at most.
+          #   red      every run completed and none was green.
+          state() {
+            printf '%s' "$runs" | jq -r --arg name "$1" '
+              [.workflow_runs[] | select(.name == $name)] as $rs
+              | if any($rs[]; .conclusion == "success") then "green"
+                else ([ $rs[] | select(.status != "completed") ] | length) as $live
+                | if $live > 0 then "waiting"
+                  elif ($rs | length) == 0 then "absent"
+                  else "red" end
+                end'
+          }
+
+          waited=0
+          absent_since=
+          while :; do
+            runs=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=100")
+            ci=$(state CI)
+            deploy=$(state rc-deploy)
+            echo "for $SHA (t+${waited}s): CI=$ci · rc-deploy=$deploy"
+
+            if [ "$ci" = green ] && [ "$deploy" = green ]; then
+              echo "verified in rc: CI green, staging deploy green"
+              exit 0
+            fi
+            if [ "$ci" = red ]; then
+              echo "::error::no green CI run for $SHA. rc's tip has to pass CI before it can reach main — see the run list at https://github.com/$REPO/commit/$SHA/checks"
+              exit 1
+            fi
+            if [ "$deploy" = red ]; then
+              echo "::error::no green rc-deploy run for $SHA. rc's tip has to be DEPLOYED and verified in staging before it can reach main — see https://github.com/$REPO/actions/workflows/rc-deploy.yml"
+              exit 1
+            fi
+
+            # A half with no run AT ALL does not get to wait out the timeout:
+            # five minutes with nothing registered means the push that moved
+            # rc started nothing — a trigger problem no amount of waiting
+            # turns into evidence.
+            if [ "$ci" = absent ] || [ "$deploy" = absent ]; then
+              if [ -z "$absent_since" ]; then absent_since=$waited; fi
+              if [ $((waited - absent_since)) -ge 300 ]; then
+                echo "::error::no CI or rc-deploy run was ever registered for $SHA. The push that moved rc starts both — check the workflow trigger lists."
+                exit 1
+              fi
+            else
+              absent_since=
+            fi
+
+            sleep 30
+            waited=$((waited + 30))
+          done
+
+  branch-push:
+    name: branch push (main takes rc content only)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The pushed commit, its history, and the base sha the rules compare
+          # against all have to be present.
+          fetch-depth: 0
+
+      # Explicit, not "whatever checkout left behind": flow-guard's provenance
+      # rules are about these two refs specifically, and a checkout that
+      # happens to have them today is not a guarantee.
+      - name: Fetch the long-lived branches
+        run: |
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/rc:refs/remotes/origin/rc"
+
+      # Same rule as pr-target, other revision: the tip this push moves is the
+      # copy of the policy that push is judged by.
+      - name: Materialize the policy
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -eu
+          # Two cases, and only one of them is the bootstrap. `cat-file -e
+          # "$BEFORE:scripts/…"` is false for both, so without this split the
+          # fallback would hand a force-push the pushed tree's own copy of the
+          # guard — and a rewrite is the thing this job exists to refuse.
+          if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            echo "::error::$BEFORE is not in this repository, so nothing can judge what this push introduces. A force-push past a tip this clone never fetched looks exactly like this. Fetch it and push again."
+            exit 1
+          fi
+          if git cat-file -e "$BEFORE:scripts/flow-guard.mjs" 2>/dev/null; then
+            git show "$BEFORE:scripts/flow-guard.mjs" > "$RUNNER_TEMP/flow-guard.mjs"
+            echo "policy: $BEFORE:scripts/flow-guard.mjs"
+          else
+            cp scripts/flow-guard.mjs "$RUNNER_TEMP/flow-guard.mjs"
+            echo "policy: the pushed copy — $BEFORE predates the guard (see the header)"
+          fi
+
+      - name: Where the pushed commits came from
+        env:
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: node "$RUNNER_TEMP/flow-guard.mjs" push "$REF" "$BEFORE" "$AFTER"

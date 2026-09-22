@@ -1,0 +1,264 @@
+# The promotion — rc into main, verified before it is offered, merged by a human.
+#
+# WHY THIS FILE EXISTS. main is the release trunk and it takes exactly one
+# input: rc, whole, once rc's tip has been deployed and verified. That is a rule
+# with a state machine behind it, and a state machine that lives in somebody's
+# head is one that gets skipped. So:
+#
+#   ci.yml and rc-deploy.yml both finish green  →  this file verifies the
+#                                   evidence, writes it where a human reads it
+#                                   (the run's summary), and opens or refreshes
+#                                   the `rc → main` pull request when it is
+#                                   allowed to.
+#
+# No step in that chain is a judgement call. The evidence is the CI run and the
+# staging deploy for the exact commit being promoted, and both have to exist
+# before anything is offered: this workflow fires when EITHER of them finishes,
+# and with only one green it says so and waits for the other. flow.yml's
+# promotion-gate re-checks the same two runs when the pull request's own checks
+# run — the same query this file makes for the body, so the body and the gate
+# cannot disagree about what "verified" means.
+#
+# WHY IT WILL NOT OPEN A PULL REQUEST WITH GITHUB_TOKEN. Events caused by the
+#   repository's GITHUB_TOKEN start no workflows — GitHub's rule, not this
+#   repo's preference — so a pull request created here with the default token
+#   would never have its checks report, and main's protection (which requires
+#   `promotion gate (rc verified)`) would hold it open for ever. A promotion
+#   pull request that can never be merged is worse than none: it reads as work
+#   in progress and it is a dead end.
+#
+#   So the token decides the shape. With a `PROMOTION_TOKEN` secret — a
+#   fine-grained PAT or a GitHub App installation token, `contents: read` and
+#   `pull-requests: write` on this repository (docs/BRANCHES.md says why and
+#   what it buys) — this file opens the pull request itself, its checks run, and
+#   auto-merge is armed where that is safe. With no such secret it stops one
+#   step earlier: it verifies the tip, writes the evidence to the run summary,
+#   and prints the exact command. The pull request a PERSON opens runs every
+#   check and can be merged, which is the whole difference.
+#
+# WHY THE MERGE IS A HUMAN'S (OR THE BOT TOKEN'S), AND NEVER GITHUB_TOKEN'S.
+#   The same rule works in the other direction: a merge performed with
+#   GITHUB_TOKEN would land on main and start nothing — not ci.yml, not flow.yml
+#   (the push guard), and not app-image.yml, the trunk image feed the in-app
+#   updater rolls from. A trunk that moves without its own workflows firing is a
+#   trunk nobody is checking. A merge under a bot token is fine — that identity
+#   is not the repository's GITHUB_TOKEN, so its push is an ordinary event — and
+#   a merge by a person is the one signature this flow wants anyway.
+#
+# WHY AUTO-MERGE IS ARMED ONLY WHEN THE GATE IS A REQUIRED CHECK. Auto-merge
+#   waits for REQUIRED checks and nothing else, so "main has a protection rule"
+#   is not enough: a main whose required contexts do not name the gate would
+#   merge rc the moment this job asks. This file reads the contexts, requires
+#   `promotion gate (rc verified)` among them, and otherwise hands the pull
+#   request to a human with a warning naming the recipe. (Reading the rule needs
+#   admin rights the default token may not have; a failed read takes the same
+#   safe path as a missing context.)
+#
+# WHY A MERGE COMMIT. Squash and rebase rewrite the commits, and main's history
+#   has to keep the commits the staging deploy verified — that is the provenance
+#   flow-guard.mjs checks on every push to main, and an RC tag or a promotion
+#   record naming a commit main no longer contains is a dead link in the audit
+#   trail. main should allow merge commits only, and flow-guard refuses the other
+#   two shapes if someone turns them back on.
+#
+# WHY THE DISPATCH IS LIMITED TO main. A workflow_dispatch run executes the
+#   workflow file AT THE DISPATCHED REF, with this file's token grants — so
+#   dispatching a modified copy from a feature branch would hand its author
+#   `pull-requests: write`. The job's `if` refuses any dispatch that is not from
+#   main. (The trigger stays: re-running a wedged promotion is its purpose.)
+#
+# WHY THE BODY IS REFRESHED EVERY TIME. rc moves while a promotion pull request
+#   waits, and the pull request picks the new commits up by itself (its head is
+#   the branch). A body naming yesterday's sha and yesterday's deploy run would
+#   be evidence for a commit that is no longer in line — worse than no body.
+
+name: promote
+
+on:
+  # Either half of the evidence finishing is the trigger, because the promotion
+  # needs BOTH and neither is guaranteed to finish first: ci.yml and rc-deploy.yml
+  # both start on a push to rc, and a promotion offered before the other one
+  # finished would be a pull request whose gate can only fail (a failed required
+  # check is not re-evaluated for ever after — flow.yml's `edited` trigger exists
+  # so the refresh below re-runs it, and this trigger is the other half). A failed
+  # or cancelled run fires this too and is filtered out below: the push that
+  # replaced it has its own runs, and the promotion follows whichever tip ends up
+  # green.
+  workflow_run:
+    workflows: [CI, rc-deploy]
+    types: [completed]
+  # Manual re-promotion: a wedged promotion, a secret just added. Dispatch it
+  # from main (the job's `if` says why).
+  workflow_dispatch: {}
+
+# One promotion at a time, never cancelled: two runs racing would both try to
+# create the pull request.
+concurrency:
+  group: promote-rc
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: verify, then open or hand off the promotion
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      pull-requests: write # the promotion pull request, when a bot token allows opening it
+      actions: read # the run links in the evidence
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify the tip, then open or hand off the promotion
+        env:
+          # Reads (the Actions API, the protection rule) use the workflow token;
+          # writing the pull request may re-authenticate below.
+          GH_TOKEN: ${{ github.token }}
+          BOT_TOKEN: ${{ secrets.PROMOTION_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          git fetch --no-tags origin main rc
+
+          # Nothing to promote: rc's tip is already reachable from main, which is
+          # the state right after every promotion (the merge commit carries it).
+          # This is also why a pull request is only ever opened for content that
+          # is genuinely in line.
+          if git merge-base --is-ancestor origin/rc origin/main; then
+            echo "rc is not ahead of main — nothing to promote."
+            exit 0
+          fi
+
+          sha=$(git rev-parse origin/rc)
+          short=$(git rev-parse --short=12 origin/rc)
+          count=$(git rev-list --count "origin/main..origin/rc")
+          logs=$(git log --oneline --no-decorate "origin/main..origin/rc" | head -40)
+
+          # The evidence, read from the Actions API rather than inferred from
+          # this run's inputs — the promotion gate's query, verbatim. The latest
+          # SUCCESSFUL run per workflow, so a re-run after a flake is what the
+          # body points at. No `event=` filter: the commit is the identity, and a
+          # dispatched or re-run deploy verifies the same tree (flow.yml's gate
+          # makes the same call).
+          runs=$(gh api "repos/$REPO/actions/runs?head_sha=$sha&per_page=100")
+          url_for() {
+            printf '%s' "$runs" | jq -r --arg name "$1" \
+              '[.workflow_runs[] | select(.name == $name and .conclusion == "success")]
+               | sort_by(.run_started_at) | last | .html_url // "not found"'
+          }
+          ci=$(url_for CI)
+          deploy=$(url_for rc-deploy)
+
+          # Both halves or nothing. A promotion offered while the other half is
+          # still running, or red, is a pull request whose gate fails on its
+          # first run — and a failed required check is not re-evaluated, so the
+          # cheap thing to do is wait for the trigger that IS this workflow
+          # firing again when the other one finishes.
+          if [ "$ci" = 'not found' ] || [ "$deploy" = 'not found' ]; then
+            echo "::notice::$short is not ready to promote: CI=$ci · rc-deploy=$deploy. This workflow runs again when either finishes; a red run means the tip needs a fix on rc (a new push re-runs both)."
+            exit 0
+          fi
+
+          commit_url="https://github.com/$REPO/commit/$sha"
+          compare_url="https://github.com/$REPO/compare/main...rc?expand=1"
+
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          ## rc → main
+
+          \`rc\` is verified, and this is its promotion. **Merge commit only** — squash
+          and rebase rewrite the commits the staging deploy verified, and \`flow-guard\`
+          refuses both on main.
+
+          - \`rc\` tip: [\`$short\`]($commit_url)
+          - CI on that commit: $ci
+          - Staging deploy: $deploy
+          - Commits in this promotion: **$count**
+
+          \`\`\`
+          $logs
+          \`\`\`
+
+          The model, and the settings that hold it:
+          [\`docs/BRANCHES.md\`](https://github.com/$REPO/blob/main/docs/BRANCHES.md).
+          EOF
+
+          # What happens next, written where the person who has to act reads it.
+          if [ -n "$BOT_TOKEN" ]; then
+            cat > "$RUNNER_TEMP/next.md" <<EOF
+          The pull request below carries this evidence, refreshed on every promotion so it
+          always names the tip in line.
+          EOF
+          else
+            cat > "$RUNNER_TEMP/next.md" <<EOF
+          **No pull request was opened for you**, deliberately: a pull request created with
+          this workflow's own \`GITHUB_TOKEN\` starts no workflows, so its required checks
+          would never report and main's protection would hold it open for ever. Open it
+          yourself and it runs every check:
+
+          \`\`\`
+          gh pr create --repo $REPO --base main --head rc --title 'promote: rc → main' \\
+            --body-file <the body below>
+          \`\`\`
+
+          or use the compare link: $compare_url
+
+          Merge it as a **merge commit** once its checks are green. Setting the
+          \`PROMOTION_TOKEN\` secret lets this workflow do the opening and write the body
+          for you — docs/BRANCHES.md → Promoting.
+          EOF
+          fi
+
+          {
+            cat "$RUNNER_TEMP/body.md"
+            printf '\n'
+            cat "$RUNNER_TEMP/next.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$BOT_TOKEN" ]; then
+            echo "::notice::rc ($short) is verified and ready to promote. No PROMOTION_TOKEN is set, so the pull request is yours to open and merge: $compare_url"
+            exit 0
+          fi
+
+          # A bot token: the pull request can be opened here, because its events
+          # — unlike GITHUB_TOKEN's — start the workflows that gate it.
+          export GH_TOKEN="$BOT_TOKEN"
+
+          num=$(gh pr list --repo "$REPO" --base main --head rc --state open --json number --jq '.[0].number // ""')
+          if [ -n "$num" ]; then
+            gh pr edit "$num" --repo "$REPO" --body-file "$RUNNER_TEMP/body.md"
+            echo "refreshed promotion pull request #$num for $short"
+          else
+            gh pr create --repo "$REPO" --base main --head rc \
+              --title 'promote: rc → main' \
+              --body-file "$RUNNER_TEMP/body.md"
+            num=$(gh pr list --repo "$REPO" --base main --head rc --state open --json number --jq '.[0].number')
+            echo "opened promotion pull request #$num for $short"
+          fi
+
+          # Arm auto-merge only where it would actually wait for the gate. The
+          # required CONTEXTS are what matters — not the existence of a
+          # protection rule, which a rule with no required checks also satisfies
+          # while gating nothing. A read this token cannot make (the endpoint
+          # wants admin) takes the same path as a missing context: warn, and
+          # leave the merge to a human.
+          contexts=$(gh api "repos/$REPO/branches/main/protection" \
+            --jq '[.required_status_checks.contexts[]?] | join("|")' 2>/dev/null || echo '')
+          if [ -z "$contexts" ]; then
+            echo "::warning::main's required checks could not be read (no protection rule, or this token cannot see it) — not arming auto-merge. #$num is a human's to merge; recipe: docs/BRANCHES.md"
+          elif ! printf '%s' "$contexts" | tr '|' '\n' | grep -qxF 'promotion gate (rc verified)'; then
+            echo "::warning::main's required checks do not include 'promotion gate (rc verified)', so auto-merge would merge without the gate. Not arming it; #$num is a human's to merge. Recipe: docs/BRANCHES.md"
+          elif gh pr merge "$num" --repo "$REPO" --auto --merge; then
+            echo "auto-merge armed on #$num — a merge commit, once the required checks are green"
+          else
+            echo "::warning::could not arm auto-merge on #$num — merge it by hand"
+          fi

@@ -1713,6 +1713,204 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE BRANCH MODEL IS MACHINERY, AND MACHINERY GETS AN ANCHOR.
+//
+// docs/BRANCHES.md says pull requests target `rc` and `main` takes the verified
+// promotion. On its own that sentence is worth nothing: what makes it true is
+// .github/workflows/flow.yml (the server-side tripwire), scripts/flow-guard.mjs
+// (the rules), scripts/hooks/pre-push (the local wiring) and — outside this
+// tree — the branch protection the doc tells a maintainer to apply.
+//
+// The failure this check exists for is the one this file has already paid for
+// twice: a rule whose subject is renamed or deleted goes on passing while
+// guarding nothing. Delete the guard, or quietly put `testing` back into a
+// trigger, and every other check here stays green while the model becomes prose
+// somebody wrote once. So each piece must exist, must still be wired to the
+// others, and the retired branch must not return as a trigger anywhere.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+
+  const doc = read('docs/BRANCHES.md')
+  if (doc === null) {
+    found.push({ path: 'docs/BRANCHES.md', line: 0, text: 'the branch model has no home' })
+  } else {
+    for (const branch of ['rc', 'main']) {
+      if (!new RegExp(`^\\|\\s*\`${branch}\``, 'm').test(doc)) {
+        found.push({
+          path: 'docs/BRANCHES.md',
+          line: 0,
+          text: `the model no longer lists \`${branch}\` as a long-lived branch`,
+        })
+      }
+    }
+  }
+
+  // [file, what it must still contain, what that piece is for]
+  const wired = [
+    ['.github/workflows/flow.yml', 'pr-base', 'the guard that refuses a pull request to main from anywhere but rc'],
+    ['.github/workflows/flow.yml', 'promotion-gate', 'the guard that requires a green rc-deploy run for the promoted commit'],
+    ['.github/workflows/flow.yml', 'flow-guard.mjs', 'the policy script, wired server-side'],
+    ['scripts/hooks/pre-push', 'flow-guard.mjs', 'the same policy, wired before the push leaves the machine'],
+    ['scripts/flow-guard.mjs', "'main'", 'the trunk the policy polices'],
+    ['scripts/flow-guard.mjs', "'rc'", 'the integration branch the policy polices'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+
+  // The retired branch stays retired. `testing` is not a channel source any
+  // more (nightly builds `rc`), so a branch trigger naming it is a second feed
+  // nothing keeps current — the exact rot RELEASING.md records from its last
+  // life. flow.yml may still NAME it, in the transitional refusal; a trigger
+  // may not list it.
+  const workflows = join(ROOT, '.github', 'workflows')
+  for (const file of readdirSync(workflows)) {
+    if (!file.endsWith('.yml')) continue
+    // flow.yml is the one file allowed to name `testing` in a trigger, for the
+    // reason the guard exists: the push that has to be REFUSED is a push to
+    // `testing`, so the guard has to run when one happens. That is a schedule
+    // for a refusal, not a feed — nothing builds from the branch, and no other
+    // workflow may trigger on it.
+    if (file === 'flow.yml') continue
+    const text = readFileSync(join(workflows, file), 'utf8')
+    for (const m of text.matchAll(/branches: \[([^\]]*)\]/g)) {
+      const branches = m[1].split(',').map((b) => b.trim())
+      if (branches.includes('testing')) {
+        found.push({
+          path: `.github/workflows/${file}`,
+          line: 0,
+          text: `\`testing\` is retired but still in a trigger: branches: [${branches.join(', ')}]`,
+        })
+      }
+    }
+  }
+
+  if (found.length) {
+    failures.push({
+      id: 'branch-flow-anchors',
+      what: "the branch model's machinery and its home have drifted apart",
+      fix: [
+        'docs/BRANCHES.md is the model; .github/workflows/flow.yml, scripts/flow-guard.mjs and',
+        'scripts/hooks/pre-push are what enforce it. If one of them moved or was renamed, update',
+        'this check and the doc in the same commit — an anchor that points at nothing passes while',
+        'guarding nothing, and the model becomes a paragraph somebody wrote once.',
+        '',
+        'If a guard is genuinely gone: that is a decision about how changes reach main, not a',
+        'refactor. Make it in docs/BRANCHES.md and here, together, so the next session reads the',
+        'same story from both.',
+        '',
+        'If `testing` reappeared in a trigger: the nightly channel builds `rc` now. Remove it from',
+        'the trigger (and delete the branch) rather than reviving a feed nothing keeps current.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE SKILLS INDEX IS A PROMISE TO EVERY HARNESS THAT HAS NO NATIVE DISCOVERY.
+//
+// AGENTS.md carries the table Pi, Oh My Pi, Codex and anything else without
+// native skill discovery read to decide which procedure to open. A skill with no
+// row is invisible to them; a row with no skill sends them to a file that does
+// not exist, which is how a procedure gets read by one harness and silently not
+// by the rest. docs/AGENT-TOOLING.md has said this is enforced since it was
+// written — this is the rule that makes the sentence true, in both directions,
+// because whichever side drifts the other is still authoritative-looking.
+{
+  const skillsDir = join(ROOT, '.claude', 'skills')
+  const agents = existsSync(join(ROOT, 'AGENTS.md')) ? readFileSync(join(ROOT, 'AGENTS.md'), 'utf8') : null
+
+  if (!existsSync(skillsDir) || agents === null) {
+    failures.push({
+      id: 'skills-index-anchor-missing',
+      what: `${agents === null ? 'AGENTS.md' : '.claude/skills/'} is gone, so the skills index guards nothing`,
+      fix: [
+        'The index in AGENTS.md and the procedures in .claude/skills/ are two halves of one thing:',
+        'the file every harness loads, and the files it sends them to. If either moved, move this',
+        'check with it — an anchor whose subject is renamed keeps passing on a tree that no longer',
+        'contains it.',
+      ],
+      found: [],
+    })
+  } else {
+    // TRACKED skills only. `.claude/skills/` is a working tree in a repository
+    // several sessions share: another session's half-written skill is not this
+    // invariant's business, and the index is a property of the committed tree.
+    // If git cannot be asked, the skill is policed rather than exempted.
+    const isTracked = (name) => {
+      try {
+        return (
+          execFileSync('git', ['ls-files', '--', `.claude/skills/${name}`], {
+            cwd: ROOT,
+            encoding: 'utf8',
+          }).trim() !== ''
+        )
+      } catch {
+        return true
+      }
+    }
+    const dirs = readdirSync(skillsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .filter(isTracked)
+
+    // Rows are checked against what is PRESENT, not what is tracked: a row is
+    // written in the same change as the skill it points at, and failing on a
+    // skill that merely is not committed yet would make `bun run check`
+    // unusable in the middle of adding one.
+    const present = readdirSync(skillsDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+    const found = []
+
+    for (const name of dirs) {
+      if (!existsSync(join(skillsDir, name, 'SKILL.md'))) {
+        found.push({ path: `.claude/skills/${name}`, line: 0, text: 'a directory with no SKILL.md' })
+      }
+      if (!agents.includes(`.claude/skills/${name}/SKILL.md`)) {
+        found.push({
+          path: `.claude/skills/${name}/SKILL.md`,
+          line: 0,
+          text: 'no row in the AGENTS.md skills table',
+        })
+      }
+    }
+
+    for (const m of agents.matchAll(/\.claude\/skills\/([a-z0-9-]+)\/SKILL\.md/g)) {
+      if (!present.includes(m[1])) {
+        found.push({
+          path: 'AGENTS.md',
+          line: 0,
+          text: `the index lists \`${m[1]}\`, which is not a skill directory`,
+        })
+      }
+    }
+
+    if (found.length) {
+      failures.push({
+        id: 'skills-index-drift',
+        what: 'the AGENTS.md skills index and .claude/skills/ disagree',
+        fix: [
+          'Add the row (a skill no harness is pointed at is a procedure only its author knows), or',
+          'delete the skill — and if the row is the stale side, remove it: an index entry that',
+          'points at nothing costs every reader a failed read.',
+          '',
+          'New skills are `.claude/skills/<name>/SKILL.md` with frontmatter whose `name` matches the',
+          'directory and whose `description` carries the trigger ("Use when…"). Repo tooling NEVER',
+          'goes in scripts/skills/ — that tree is product surface, shipped into agent containers.',
+        ],
+        found,
+      })
+    }
+  }
+}
+
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
 //
 // `cli/src/ports.ts` is the cli's single source for the host-port defaults, but

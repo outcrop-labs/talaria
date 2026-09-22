@@ -8,13 +8,20 @@
 //
 // SCOPE. Every .md in the tree except:
 //   - CHANGELOG.md — an append-only record; its links are frozen history, not promises.
-//   - node_modules, .git, .claude, fleet/, logs/ — not documentation or not ours.
+//   - node_modules, .git, fleet/, logs/, worktrees/ — not documentation or not ours.
 //   - apps/leadworks, playground, .inspect — gitignored client/demo trees.
 //   - ui/.uploads — runtime artifact payloads that happen to be markdown.
 //
+// `.claude/` IS walked, and it did not used to be: the exemption's reasoning was
+// that dotted directories are tooling rather than documentation, which is true
+// of the config and false of `.claude/skills/` — every agent that follows a
+// procedure reads those links, and an unenforced link surface is where a wrong
+// path lives for months. The one thing skipped under it is `worktrees/`, which
+// holds whole checkouts.
+//
 // WHAT IT DOES NOT CHECK. External http(s) links (the network is not CI's to interrogate) and
 // same-document #anchors (heading ids are the renderer's business). A link that resolves to a
-// file whose CONTENT is wrong is the reader's — and the docset's — problem, not this check's.
+// file whose CONTENT is wrong is the reader's — and the docset's — problem, not this check.
 //
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs'
@@ -22,14 +29,14 @@ import { join, dirname, resolve } from 'node:path'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
-const EXEMPT_DIRS = new Set(['node_modules', 'fleet', 'logs', 'playground'])
+const EXEMPT_DIRS = new Set(['node_modules', 'fleet', 'logs', 'playground', 'worktrees'])
 const EXEMPT_FILES = new Set(['CHANGELOG.md']) // append-only record; frozen links are history
 
 /** Every markdown file under ROOT, minus the exemptions above. */
 function walkMarkdown(dir, acc = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      if (entry.name.startsWith('.') && entry.name !== '.github') continue
+      if (entry.name.startsWith('.') && entry.name !== '.github' && entry.name !== '.claude') continue
       if (EXEMPT_DIRS.has(entry.name)) continue
       walkMarkdown(join(dir, entry.name), acc)
     } else if (entry.name.endsWith('.md')) {

@@ -1,7 +1,7 @@
 # Migration replay — the one CI job with a database.
 #
 # WHAT THIS DOES
-#   On every pull request and every push to main, rc, or testing:
+#   On every pull request and every push to main or rc:
 #     - boots a scratch postgres:16-alpine (the exact image prod sidecars run)
 #     - replays the ENTIRE MIGRATIONS array against it from zero — proving a
 #       fresh database reaches the full schema, and that no statement in the
@@ -32,11 +32,18 @@ on:
   # Filtered, unlike ci.yml's triggers: everything this job does hangs off the
   # migration array in ui/src/server/db/pg.ts and the committed schema snapshot
   # beside it, so a UI change, a Rust change or a docs push cannot make this job
-  # answer differently. It is not a required check (verified: main's protection
-  # asks for a review, no status checks), so a path filter here reports nothing
-  # rather than a pending check — and `bun run migrations:check` still runs on
-  # every api/... change that could carry SQL, because the api does not own the
-  # migrations (api/src/db.rs says so) and cannot touch them.
+  # answer differently — but the migration RULES (the array's append-only shape,
+  # the destructive-statement marking, the baseline guard; check-invariants.mjs)
+  # still run on every push through `bun run check` in ci.yml's invariants job,
+  # including api/... changes, because the api does not own the migrations
+  # (api/src/db.rs says so) and cannot touch them.
+  # Keep this file OUT of the required-checks list (docs/BRANCHES.md
+  # → The required settings), and that is a property of this file rather than a
+  # preference: a required check whose workflow is filtered out by `paths:`
+  # reports NOTHING for the pushes that do not match, which branch protection
+  # reads as "pending" for ever and blocks the merge with. The jobs on that list
+  # are ci.yml's, whose per-job `changes` gate reports a success when a surface
+  # did not move, and flow.yml's.
   pull_request:
     paths:
       - 'ui/src/server/db/**'
@@ -46,7 +53,7 @@ on:
       - '.github/workflows/migrations.yml'
       - '.github/actions/**'
   push:
-    branches: [main, rc, testing]
+    branches: [main, rc]
     paths:
       - 'ui/src/server/db/**'
       - 'ui/scripts/check-migrations.ts'

@@ -89,7 +89,9 @@ one Talaria-owned chassis when you design an agent in the app. Don't edit it by 
    `-D warnings` + tests — the same gates the CI `api` job runs).
 2. Exercise the affected path in the running app (`bun talaria dev` → <http://localhost:5273>).
 3. Update `CHANGELOG.md` and include what you verified with the change
-   ([`CONTRIBUTING.md`](./CONTRIBUTING.md)).
+   ([`CONTRIBUTING.md`](./CONTRIBUTING.md)), then open the pull request **against `rc`** —
+   `main` takes only the promotion of `rc`, opened automatically once `rc`'s staging deploy is
+   green ([`docs/BRANCHES.md`](./docs/BRANCHES.md)).
 
 Reset or start over: `bun talaria reset <mode>` clears a wedged stack (secrets, database, or
 fleet); backups and restores are `bun talaria backup` / `bun talaria restore` and
@@ -151,6 +153,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 |---|---|
 | [`docs/CONTAINER.md`](./docs/CONTAINER.md) | The container deploy: production image, instance compose, env-only config, fleet networking, systemd boot, Dokploy |
 | [`RELEASING.md`](./RELEASING.md) | Release channels: nightly/RC/stable on GHCR, the branch model |
+| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | How a change reaches `main`: pull requests to `rc`, the staging deploy, the promotion — and what refuses everything else |
 | [`RELEASES/pre-alpha.md`](./RELEASES/pre-alpha.md) | The pre-alpha release notes |
 | [`docs/BACKUPS.md`](./docs/BACKUPS.md) | What a snapshot contains, how to take one, and how to restore |
 | [`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md) | How secrets are protected, and the one rule that keeps them recoverable |
@@ -183,7 +186,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`docs/DESKTOP.md`](./docs/DESKTOP.md) | Talaria Desktop: the Tauri shell — multitenant webviews, isolation model, security posture, the box-builds/host-runs dev split |
 | [`scripts/skills/`](./scripts/skills) | The repo's agent skills: subagent-driven development (2-stage review), the talaria toolkit playbook, workbench driving |
 | [`AGENTS.md`](./AGENTS.md) | Agent instructions — the canonical file for anyone (or anything) coding here: rules, commands, environment facts, traps; `CLAUDE.md` forwards to it |
-| [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, cut-release — plain markdown, natively discovered by Claude Code and opencode |
+| [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, judge-pr, cut-release — plain markdown, natively discovered by Claude Code and opencode. `judge-pr` carries the reviewing half of the pull-request standards (`scripts/judge-pr.mjs` is the mechanical half) |
 | [`scripts/hooks/`](./scripts/hooks) | The gate-hook library: one contract (silent pass / exit-2 block with reason) any harness, git hook, or CI can invoke |
 
 ### For people who use Talaria, not run it
@@ -197,4 +200,5 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | Doc | What it covers |
 |---|---|
 | [`HANDOFF.md`](./HANDOFF.md) | Where to start; the old phase log lives in history |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | PR norms: verify, exercise, changelog |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | PR norms: verify, exercise, changelog, and the pull request against `rc` |
+| [`docs/BRANCHES.md`](./docs/BRANCHES.md) | The branch model: `rc` integration + staging, `main` by promotion only, the gates and the repository settings that enforce them |
