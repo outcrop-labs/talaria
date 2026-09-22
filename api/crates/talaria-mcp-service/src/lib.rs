@@ -29,6 +29,24 @@ pub fn mcp_fleet_url() -> String {
     format!("http://host.docker.internal:{}/mcp", mcp_port())
 }
 
+/// The API port this child dials. Not the UI port: every toolkit route is
+/// Rust, and the child runs in the API's process namespace. Dialing the UI
+/// (`app_port`, :5273) put every agent tool call through one single-threaded
+/// proxy that buffered the body before the API saw it.
+const DEFAULT_API_PORT: u16 = 5274;
+
+fn api_port() -> u16 {
+    std::env::var("TALARIA_API_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .filter(|p| *p > 0)
+        .unwrap_or(DEFAULT_API_PORT)
+}
+
+pub fn toolkit_api_url(api_port: u16) -> String {
+    format!("http://127.0.0.1:{api_port}")
+}
+
 /// mcp/dist/index.js resolved against the repo layout (cwd = api/).
 pub fn mcp_service_entry() -> PathBuf {
     std::env::current_dir()
@@ -87,11 +105,11 @@ async fn spawn_child() {
     if let Ok(mut st) = state().lock() {
         st.last_spawn_ms = now_ms() as u64;
     }
-    let port = talaria_fleet_layout::app_port();
+    let upstream = toolkit_api_url(api_port());
     let mut child = tokio::process::Command::new(js_runtime())
         .arg(&entry)
         .env("MCP_HTTP_PORT", mcp_port().to_string())
-        .env("TALARIA_URL", format!("http://localhost:{port}"))
+        .env("TALARIA_URL", &upstream)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -201,5 +219,11 @@ mod tests {
     fn the_entry_is_the_built_mcp_dist() {
         let e = mcp_service_entry();
         assert!(e.ends_with("mcp/dist/index.js"), "{}", e.display());
+    }
+
+    #[test]
+    fn the_toolkit_dials_the_api_not_the_ui() {
+        assert_eq!(toolkit_api_url(5274), "http://127.0.0.1:5274");
+        assert!(!toolkit_api_url(5274).contains("5273"));
     }
 }

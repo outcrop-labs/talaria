@@ -49,14 +49,20 @@ impl SecretRoot {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        Self::from_parts(
+        let mut cfg = Self::from_parts(
             env("DATABASE_URL"),
             env("REDIS_URL"),
             env("TALARIA_SECRET_KEY"),
             env("TALARIA_SECRET_KEY_FILE"),
             env("AUTH_SECRET"),
             env("TALARIA_API_PORT"),
-        )
+        )?;
+        // Empty keeps loopback — the host posture. Container mode sets
+        // 0.0.0.0 so agent containers on the fleet network dial :5274
+        // directly; the port is not published to the host.
+        cfg.bind = parse_api_bind(&env("TALARIA_API_BIND"), cfg.bind.port())
+            .map_err(|e| format!("talaria-api: cannot start — 1 problem(s):\n  - {e}"))?;
+        Ok(cfg)
     }
 
     /// Named `from_parts` (not `from`) so it can never collide with the
@@ -156,6 +162,18 @@ fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_default().trim().to_string()
 }
 
+/// Bind address for the API. Empty keeps loopback. A value that is not an
+/// IP (or a bracketed IPv6 address) is a startup error, not a silent
+/// fallback — a typo'd bind would leave the process listening somewhere
+/// the proxy is not dialing.
+pub fn parse_api_bind(host: &str, port: u16) -> Result<SocketAddr, String> {
+    let host = host.trim();
+    let host = if host.is_empty() { "127.0.0.1" } else { host };
+    format!("{host}:{port}")
+        .parse()
+        .map_err(|_| format!("TALARIA_API_BIND ({host}) is not a valid bind address"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +244,18 @@ mod tests {
         let c =
             Config::from_parts(db, rd, sk, String::new(), String::new(), String::new()).unwrap();
         assert_eq!(c.bind.port(), DEFAULT_PORT);
+    }
+
+    #[test]
+    fn bind_defaults_to_loopback_and_accepts_an_explicit_host() {
+        assert_eq!(
+            parse_api_bind("", 5274).unwrap(),
+            "127.0.0.1:5274".parse().unwrap()
+        );
+        assert_eq!(
+            parse_api_bind("  0.0.0.0  ", 5274).unwrap(),
+            "0.0.0.0:5274".parse().unwrap()
+        );
+        assert!(parse_api_bind("not a host", 5274).is_err());
     }
 }

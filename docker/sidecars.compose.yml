@@ -39,6 +39,10 @@ services:
       # own DATABASE_URL carries.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-talaria}
       POSTGRES_DB: talaria
+    # Startup flag, not initdb — a restart applies it to an existing volume.
+    # 200 is the headroom the api pool's clamp assumes. The image default of
+    # 100 is what queued a fleet behind 40 connections.
+    command: ["postgres", "-c", "max_connections=200"]
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
