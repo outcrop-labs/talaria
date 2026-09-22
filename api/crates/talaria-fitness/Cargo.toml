@@ -1,46 +1,46 @@
 [package]
 name = "talaria-fitness"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-indexmap = { version = "2", features = ["serde"] }
-futures-util = "0.3"
-regex = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-body = { path = "../talaria-body" }
-talaria-capability = { path = "../talaria-capability" }
-talaria-capability-reach = { path = "../talaria-capability-reach" }
-talaria-config = { path = "../talaria-config" }
-talaria-db = { path = "../talaria-db" }
-talaria-fitness-code-runner = { path = "../talaria-fitness-code-runner" }
-talaria-fitness-toolbox = { path = "../talaria-fitness-toolbox" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-harness = { path = "../talaria-harness" }
-talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-harness-model = { path = "../talaria-harness-model" }
-talaria-harness-schema = { path = "../talaria-harness-schema" }
-talaria-model-access = { path = "../talaria-model-access" }
-talaria-model-catalog = { path = "../talaria-model-catalog" }
-talaria-model-roles = { path = "../talaria-model-roles" }
-talaria-persona = { path = "../talaria-persona" }
-talaria-platform-agents = { path = "../talaria-platform-agents" }
-talaria-price-oracle = { path = "../talaria-price-oracle" }
-talaria-safe-fetch = { path = "../talaria-safe-fetch" }
-talaria-state = { path = "../talaria-state" }
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
-tracing = "0.1"
-url = "2"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-getrandom = "0.3"
+indexmap = { workspace = true }
+futures-util = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-body = { workspace = true }
+talaria-capability = { workspace = true }
+talaria-capability-reach = { workspace = true }
+talaria-config = { workspace = true }
+talaria-db = { workspace = true }
+talaria-fitness-code-runner = { workspace = true }
+talaria-fitness-toolbox = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-harness = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-harness-model = { workspace = true }
+talaria-harness-schema = { workspace = true }
+talaria-model-access = { workspace = true }
+talaria-model-catalog = { workspace = true }
+talaria-model-roles = { workspace = true }
+talaria-persona = { workspace = true }
+talaria-platform-agents = { workspace = true }
+talaria-price-oracle = { workspace = true }
+talaria-safe-fetch = { workspace = true }
+talaria-state = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde_json = { workspace = true }

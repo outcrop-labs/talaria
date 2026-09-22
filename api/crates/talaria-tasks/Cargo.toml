@@ -1,38 +1,38 @@
 [package]
 name = "talaria-tasks"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", features = ["multipart"] }
-futures-util = "0.3"
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-uuid = { version = "1", features = ["v4"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-agent-writes = { path = "../talaria-agent-writes" }
-talaria-boards = { path = "../talaria-boards" }
-talaria-channels = { path = "../talaria-channels" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-judge = { path = "../talaria-judge" }
-talaria-labels = { path = "../talaria-labels" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-realtime = { path = "../talaria-realtime" }
-talaria-retrieval = { path = "../talaria-retrieval" }
-talaria-statuses = { path = "../talaria-statuses" }
-talaria-tasks-types = { path = "../talaria-tasks-types" }
-talaria-ticket-chat = { path = "../talaria-ticket-chat" }
-talaria-workchains = { path = "../talaria-workchains" }
-talaria-workflows = { path = "../talaria-workflows" }
-tokio = { version = "1", features = ["macros", "sync", "time"] }
-tracing = "0.1"
+axum = { workspace = true }
+futures-util = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-agent-writes = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-channels = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-judge = { workspace = true }
+talaria-labels = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-retrieval = { workspace = true }
+talaria-statuses = { workspace = true }
+talaria-tasks-types = { workspace = true }
+talaria-ticket-chat = { workspace = true }
+talaria-workchains = { workspace = true }
+talaria-workflows = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { workspace = true }

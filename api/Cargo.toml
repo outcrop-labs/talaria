@@ -5,224 +5,580 @@
 # Workspace root lives here so `api/target` (dockerignore, package cache
 # mounts) stays put. Members land under crates/; this package is still the
 # binary + the remaining monolith until later extractions.
+
 [workspace]
-members = [
-    "crates/talaria-yaml",
-    "crates/talaria-fleet-layout",
-    "crates/talaria-undici",
-    "crates/talaria-agent-secrets",
-    "crates/talaria-error",
-    "crates/talaria-body",
-    "crates/talaria-config",
-    "crates/talaria-secretbox",
-    "crates/talaria-ratelimit",
-    "crates/talaria-db",
-    "crates/talaria-state",
-    "crates/talaria-password",
-    "crates/talaria-auth",
-    "crates/talaria-collate",
-    "crates/talaria-agent-auth",
-    "crates/talaria-internal-history",
-    "crates/talaria-org-domains",
-    "crates/talaria-teams",
-    "crates/talaria-tz",
-    "crates/talaria-password-accounts",
-    "crates/talaria-templates",
-    "crates/talaria-workspace-secrets",
-    "crates/talaria-task-const",
-    "crates/talaria-audit",
-    "crates/talaria-auth-config",
-    "crates/talaria-workspace-handles",
-    "crates/talaria-work-wait",
-    "crates/talaria-agents-registry",
-    "crates/talaria-source-registry",
-    "crates/talaria-native-search",
-    "crates/talaria-agent-role-templates",
-    "crates/talaria-safe-fetch",
-    "crates/talaria-params",
-    "crates/talaria-push",
-    "crates/talaria-repo-env",
-    "crates/talaria-research-origin",
-    "crates/talaria-secret-rotation",
-    "crates/talaria-settings",
-    "crates/talaria-capability",
-    "crates/talaria-guard-coaching",
-    "crates/talaria-instance",
-    "crates/talaria-judge",
-    "crates/talaria-permissions",
-    "crates/talaria-llm-keys",
-    "crates/talaria-persona",
-    "crates/talaria-gateway",
-    "crates/talaria-agent-defs",
-    "crates/talaria-agent-writes",
-    "crates/talaria-brain-health",
-    "crates/talaria-email",
-    "crates/talaria-github",
-    "crates/talaria-me",
-    "crates/talaria-platform-agents",
-    "crates/talaria-search",
-    "crates/talaria-secret-health",
-    "crates/talaria-storage",
-    "crates/talaria-users",
-    "crates/talaria-workflows",
-    "crates/talaria-boards",
-    "crates/talaria-claim",
-    "crates/talaria-session",
-    "crates/talaria-activity",
-    "crates/talaria-runs-define",
-    "crates/talaria-realtime",
-    "crates/talaria-labels",
-    "crates/talaria-runs-lease",
-    "crates/talaria-scheduler",
-    "crates/talaria-notify",
-    "crates/talaria-mentions",
-    "crates/talaria-price-oracle",
-    "crates/talaria-channels",
-    "crates/talaria-hermes-skills",
-    "crates/talaria-fleet-docker",
-    "crates/talaria-agent-media",
-    "crates/talaria-agent-memory",
-    "crates/talaria-mcp-jsonrpc",
-    "crates/talaria-mcp-icons",
-    "crates/talaria-mcp-library",
-    "crates/talaria-mcp-probe",
-    "crates/talaria-mcp-oauth",
-    "crates/talaria-fitness-code-runner",
-    "crates/talaria-harness-schema",
-    "crates/talaria-retrieval-sparse",
-    "crates/talaria-runs-drivers",
-    "crates/talaria-model-access",
-    "crates/talaria-harness-text",
-    "crates/talaria-daily-brief-types",
-    "crates/talaria-model-roles",
-    "crates/talaria-google-client",
-    "crates/talaria-runs-store",
-    "crates/talaria-model-catalog",
-    "crates/talaria-update-mode",
-    "crates/talaria-update-state",
-    "crates/talaria-model-efforts",
-    "crates/talaria-retrieval-http",
-    "crates/talaria-retrieval-embed",
-    "crates/talaria-retrieval-qdrant",
-    "crates/talaria-retrieval-rerank",
-    "crates/talaria-retrieval-collections",
-    "crates/talaria-retrieval-index",
-    "crates/talaria-retrieval-sources",
-    "crates/talaria-harness-json-schema",
-    "crates/talaria-daily-brief-config",
-    "crates/talaria-runs-run",
-    "crates/talaria-runs-reclaim",
-    "crates/talaria-update-layout",
-    "crates/talaria-google-connections",
-    "crates/talaria-google-org",
-    "crates/talaria-update-registry",
-    "crates/talaria-google-errors",
-    "crates/talaria-google-calendar",
-    "crates/talaria-google-agent",
-    "crates/talaria-google-api-health",
-    "crates/talaria-google-gmail",
-    "crates/talaria-google-provisioning",
-    "crates/talaria-update-docker",
-    "crates/talaria-google-oauth",
-    "crates/talaria-yaml11",
-    "crates/talaria-update-render",
-    "crates/talaria-update-roll",
-    "crates/talaria-update-job",
-    "crates/talaria-update-adopt",
-    "crates/talaria-mcp-service",
-    "crates/talaria-workbench",
-    "crates/talaria-workbench-harnesses",
-    "crates/talaria-fleet-budget",
-    "crates/talaria-fleet-resources",
-    "crates/talaria-fleet-brain",
-    "crates/talaria-fleet-preflight",
-    "crates/talaria-effort-prefs",
-    "crates/talaria-capability-reach",
-    "crates/talaria-capability-platform",
-    "crates/talaria-harness-model",
-    "crates/talaria-agent-crons",
-    "crates/talaria-fitness-world",
-    "crates/talaria-fitness-talaria-tools",
-    "crates/talaria-org",
-    "crates/talaria-invites",
-    "crates/talaria-agent-mcp",
-    "crates/talaria-fleet-agents",
-    "crates/talaria-kb-perms",
-    "crates/talaria-daily-brief-comms",
-    "crates/talaria-mcp-apply",
-    "crates/talaria-apps",
-    "crates/talaria-fleet-create",
-    "crates/talaria-fleet-federate",
-    "crates/talaria-fleet-cascade",
-    "crates/talaria-web-search",
-    "crates/talaria-home",
-    "crates/talaria-agent-skills",
-    "crates/talaria-skill-access",
-    "crates/talaria-personal-agent",
-    "crates/talaria-attribution",
-    "crates/talaria-uploads",
-    "crates/talaria-conversations",
-    "crates/talaria-titler",
-    "crates/talaria-gaps",
-    "crates/talaria-realtime-watch",
-    "crates/talaria-refs",
-    "crates/talaria-harness-json",
-    "crates/talaria-harness-prompt-rules",
-    "crates/talaria-ticket-chat",
-    "crates/talaria-daily-brief-focus",
-    "crates/talaria-channel-replies",
-    "crates/talaria-harness",
-    "crates/talaria-vision",
-    "crates/talaria-fitness-toolbox",
-    "crates/talaria-harness-defs",
-    "crates/talaria-model-info",
-    "crates/talaria-fitness",
-    "crates/talaria-fleet-reconcile",
-    "crates/talaria-kb",
-    "crates/talaria-artifacts",
-    "crates/talaria-google-drive",
-    "crates/talaria-daily-brief",
-    "crates/talaria-channel-plan",
-    "crates/talaria-plan-doc",
-    "crates/talaria-outreach",
-    "crates/talaria-mcp",
-    "crates/talaria-fleet-render",
-    "crates/talaria-tasks-types",
-    "crates/talaria-statuses",
-    "crates/talaria-workchains",
-    "crates/talaria-retrieval",
-    "crates/talaria-alerts",
-    "crates/talaria-google-pending",
-    "crates/talaria-inbox-focus",
-    "crates/talaria-runs-plan-draft",
-    "crates/talaria-plan-drafts",
-    "crates/talaria-runs-reindex",
-    "crates/talaria-approvals",
-    "crates/talaria-digest",
-    "crates/talaria-research-def",
-    "crates/talaria-research",
-    "crates/talaria-runs-decide",
-    "crates/talaria-tasks",
-    "crates/talaria-runs-work-session",
-    "crates/talaria-work-dispatch",
-    "crates/talaria-workbench-mcp",
-    "crates/talaria-jobs",
-    "crates/talaria-api-routes",
-    "crates/talaria-routes-workbench",
-    "crates/talaria-routes-integrations",
-    "crates/talaria-routes-knowledge",
-    "crates/talaria-routes-comms",
-    "crates/talaria-routes-boards",
-    "crates/talaria-routes-fleet",
-    "crates/talaria-routes-admin",
-    "crates/talaria-api-facades",
-    "crates/talaria-runs-agent-hire",
-    "crates/talaria-comms-decay",
-    "crates/talaria-chat-persist",
-    "crates/talaria-inbox-focus-types",
-    "crates/talaria-daily-brief-delegation",
-]
+# Glob membership: every manifest-bearing dir under crates/ is a member. A new
+# crate is picked up by existing; a stray dir without a manifest fails loudly at
+# the next cargo invocation rather than being silently absent from a hand list.
+members = ["crates/*"]
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[workspace.dependencies]
+# External deps first (the root binary's rationale comments travel with their
+# entries), then every workspace crate as a path dep. Manifests say only
+# `name = { workspace = true }` — version and features live here, once.
+# axum's defaults spelled out explicitly (form/http1/json/matched-path/
+# original-uri/query/tokio/tower-log/tracing) plus "multipart" for the uploads
+# route's streamed form read (axum keeps the feature opt-in; the
+# cap-before-buffer discipline is the route's own). One spec for every crate:
+# the 24 that built with defaults on and the 21 that opted out get the same
+# surface — default-features=false with nothing implicit left behind.
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "matched-path", "multipart", "original-uri", "query", "tokio", "tower-log", "tracing"] }
+
+# Feature list is the workspace-wide union of what crates asked for (no "full":
+# nothing here needs net/parking_lot). "sync" is for the OnceCell-style
+# serialization of capability-store writes.
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+
+tower = { version = "0.5" }
+
+# No `cors` feature on purpose: same-origin throughout (the repo's
+# same-origin-fetch invariant). The browser only ever talks to the TS app; the
+# TS→Rust hop is server-side.
+tower-http = { version = "0.7", features = ["catch-panic", "propagate-header", "request-id", "timeout", "trace"] }
+
+# NO "macros" feature, on purpose: runtime queries only during coexistence.
+# The schema moves with the TS MIGRATIONS array (ui/src/server/db/pg.ts —
+# append-only, sha256 checksums, advisory lock 8_314_207) and every devbox has
+# its own database, so compile-time statement checking would couple this build
+# to one devbox's schema. "derive" is for #[derive(FromRow)] structs only.
+sqlx = { version = "0.9", default-features = false, features = ["derive", "json", "postgres", "runtime-tokio", "tls-rustls"] }
+
+redis = { version = "1", default-features = false, features = ["aio", "connection-manager", "script", "tokio-comp"] }
+
+# rustls (not rustls-tls — renamed in reqwest 0.13) so nothing links OpenSSL;
+# the prod runtime image is bare alpine and must stay that way.
+reqwest = { version = "0.13", default-features = false, features = ["http2", "json", "rustls", "stream"] }
+
+serde = { version = "1", features = ["derive"] }
+
+# preserve_order: Value::Object keeps INSERTION order, like a JS object. The
+# guard's annotate path does JSON.parse → mutate → stringify on an upstream
+# body and must not alphabetize it (TS preserves the upstream's key order);
+# merged upstream bodies likewise keep client-first order like TS's spread.
+#
+# float_roundtrip: parse floats at full accuracy. The DEFAULT is best-effort
+# and can land one ULP off the parsed digits — 0.9090909090909091 came back as
+# ...092 on the wire, a byte diff against the stored value TS reads back
+# exactly. Scores, prices and ratios all cross jsonb boundaries, so every
+# float this API parses (request bodies AND app_settings blobs) needs the
+# round-trip-exact parse, not the fast one.
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+
+# serde_json's own ordered map only carries `Value`s (its methods live on
+# `Map<String, Value>`), but the fitness index is an ordered map of TYPED
+# entries — see the `FitnessIndex` alias in src/fitness/surface.rs. Already a
+# transitive dep of serde_json's preserve_order; named here for the typed map.
+indexmap = { version = "2", features = ["serde"] }
+
+tracing = { version = "0.1" }
+
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+thiserror = { version = "2" }
+
+sha2 = { version = "0.11" }
+
+# skill_summaries' content key — node's createHash('sha1'). Same RustCrypto
+# family as sha2; only the digest width differs.
+sha1 = { version = "0.10" }
+
+# SigV4's HMAC-SHA256 (storage.ts's createHmac) — same RustCrypto family as
+# sha2/aes-gcm/scrypt; hand-rolling HMAC buys nothing.
+hmac = { version = "0.13" }
+
+# Web Push's P-256 half (RFC 8291's ECDH + aes128gcm, RFC 8292's ES256 VAPID
+# JWT). The `web-push` crate is deliberately NOT used: it pulls OpenSSL, and
+# the no-OpenSSL invariant (bare-alpine runtime, rustls everywhere) outranks
+# convenience. Pure Rust, same release train as sha2/hmac/aes-gcm above; the
+# crypto here is hand-assembled from these primitives with RFC vectors as
+# tests.
+p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh", "ecdsa", "pkcs8", "std"] }
+
+# The GitHub App JWT (github.ts appJwt) is RS256 — RSA-SHA256 over a PKCS#8
+# PEM. Same RustCrypto family; the sha2 feature wires the digest in.
+rsa = { version = "0.9", features = ["sha2"] }
+
+scrypt = { version = "0.12" }
+
+aes-gcm = { version = "0.11" }
+
+base64 = { version = "0.23" }
+
+uuid = { version = "1", features = ["v4"] }
+
+getrandom = { version = "0.3" }
+
+regex = { version = "1" }
+
+url = { version = "2" }
+
+futures-util = { version = "0.3" }
+
+# Wall-clock reads in IANA zones (tz.ts localMoment + the brief/digest clocks).
+# "clock" comes from the wall-clock surfaces (google calendar/gmail sync, the
+# daily-brief clocks) that read local now(); the scheduler's house rule still
+# holds there — engine code takes "now" as epoch ms so it stays testable.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
+
+# Transactional mail's SMTP leg (email.ts). Hand-rolling the dialect is one
+# page of RFC 5321, but hand-rolling the MIME is where silent corruption
+# breeds — encoded-word subjects, quoted-printable, multipart/alternative
+# boundaries. tokio1 + rustls keeps the no-OpenSSL invariant (alpine runtime).
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+
+serde_yaml_ng = { version = "0.10.0" }
+
+# DNS TXT lookups for org-domain verification (org-domains.ts resolveTxt).
+# Async against the system resolver, like node:dns — no need for a DoH
+# profile; a verifier that cannot reach DNS reports unverifiable, which is
+# the honest answer for that operator anyway.
+hickory-resolver = { version = "0.25", default-features = false, features = ["system-config", "tokio"] }
+
+# Declared by crates only (not by the root binary); union of crate specs.
+boa_engine = { version = "0.22.0", default-features = false }
+
+# Declared by crates only (not by the root binary); union of crate specs.
+hex = { version = "0.4" }
+
+# Declared by crates only (not by the root binary); union of crate specs.
+http = { version = "1" }
+
+talaria-activity = { path = "crates/talaria-activity" }
+
+talaria-agent-auth = { path = "crates/talaria-agent-auth" }
+
+talaria-agent-crons = { path = "crates/talaria-agent-crons" }
+
+talaria-agent-defs = { path = "crates/talaria-agent-defs" }
+
+talaria-agent-mcp = { path = "crates/talaria-agent-mcp" }
+
+talaria-agent-media = { path = "crates/talaria-agent-media" }
+
+talaria-agent-memory = { path = "crates/talaria-agent-memory" }
+
+talaria-agent-role-templates = { path = "crates/talaria-agent-role-templates" }
+
+talaria-agent-secrets = { path = "crates/talaria-agent-secrets" }
+
+talaria-agent-skills = { path = "crates/talaria-agent-skills" }
+
+talaria-agent-writes = { path = "crates/talaria-agent-writes" }
+
+talaria-agents-registry = { path = "crates/talaria-agents-registry" }
+
+talaria-alerts = { path = "crates/talaria-alerts" }
+
+talaria-api-facades = { path = "crates/talaria-api-facades" }
+
+talaria-api-routes = { path = "crates/talaria-api-routes" }
+
+talaria-approvals = { path = "crates/talaria-approvals" }
+
+talaria-apps = { path = "crates/talaria-apps" }
+
+talaria-artifacts = { path = "crates/talaria-artifacts" }
+
+talaria-attribution = { path = "crates/talaria-attribution" }
+
+talaria-audit = { path = "crates/talaria-audit" }
+
+talaria-auth = { path = "crates/talaria-auth" }
+
+talaria-auth-config = { path = "crates/talaria-auth-config" }
+
+talaria-boards = { path = "crates/talaria-boards" }
+
+talaria-body = { path = "crates/talaria-body" }
+
+talaria-brain-health = { path = "crates/talaria-brain-health" }
+
+talaria-capability = { path = "crates/talaria-capability" }
+
+talaria-capability-platform = { path = "crates/talaria-capability-platform" }
+
+talaria-capability-reach = { path = "crates/talaria-capability-reach" }
+
+talaria-channel-plan = { path = "crates/talaria-channel-plan" }
+
+talaria-channel-replies = { path = "crates/talaria-channel-replies" }
+
+talaria-channels = { path = "crates/talaria-channels" }
+
+talaria-chat-persist = { path = "crates/talaria-chat-persist" }
+
+talaria-claim = { path = "crates/talaria-claim" }
+
+talaria-collate = { path = "crates/talaria-collate" }
+
+talaria-comms-decay = { path = "crates/talaria-comms-decay" }
+
+talaria-config = { path = "crates/talaria-config" }
+
+talaria-conversations = { path = "crates/talaria-conversations" }
+
+talaria-daily-brief = { path = "crates/talaria-daily-brief" }
+
+talaria-daily-brief-comms = { path = "crates/talaria-daily-brief-comms" }
+
+talaria-daily-brief-config = { path = "crates/talaria-daily-brief-config" }
+
+talaria-daily-brief-delegation = { path = "crates/talaria-daily-brief-delegation" }
+
+talaria-daily-brief-focus = { path = "crates/talaria-daily-brief-focus" }
+
+talaria-daily-brief-types = { path = "crates/talaria-daily-brief-types" }
+
+talaria-db = { path = "crates/talaria-db" }
+
+talaria-digest = { path = "crates/talaria-digest" }
+
+talaria-effort-prefs = { path = "crates/talaria-effort-prefs" }
+
+talaria-email = { path = "crates/talaria-email" }
+
+talaria-error = { path = "crates/talaria-error" }
+
+talaria-fitness = { path = "crates/talaria-fitness" }
+
+talaria-fitness-code-runner = { path = "crates/talaria-fitness-code-runner" }
+
+talaria-fitness-talaria-tools = { path = "crates/talaria-fitness-talaria-tools" }
+
+talaria-fitness-toolbox = { path = "crates/talaria-fitness-toolbox" }
+
+talaria-fitness-world = { path = "crates/talaria-fitness-world" }
+
+talaria-fleet-agents = { path = "crates/talaria-fleet-agents" }
+
+talaria-fleet-brain = { path = "crates/talaria-fleet-brain" }
+
+talaria-fleet-budget = { path = "crates/talaria-fleet-budget" }
+
+talaria-fleet-cascade = { path = "crates/talaria-fleet-cascade" }
+
+talaria-fleet-create = { path = "crates/talaria-fleet-create" }
+
+talaria-fleet-docker = { path = "crates/talaria-fleet-docker" }
+
+talaria-fleet-federate = { path = "crates/talaria-fleet-federate" }
+
+talaria-fleet-layout = { path = "crates/talaria-fleet-layout" }
+
+talaria-fleet-preflight = { path = "crates/talaria-fleet-preflight" }
+
+talaria-fleet-reconcile = { path = "crates/talaria-fleet-reconcile" }
+
+talaria-fleet-render = { path = "crates/talaria-fleet-render" }
+
+talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
+
+talaria-gaps = { path = "crates/talaria-gaps" }
+
+talaria-gateway = { path = "crates/talaria-gateway" }
+
+talaria-github = { path = "crates/talaria-github" }
+
+talaria-google-agent = { path = "crates/talaria-google-agent" }
+
+talaria-google-api-health = { path = "crates/talaria-google-api-health" }
+
+talaria-google-calendar = { path = "crates/talaria-google-calendar" }
+
+talaria-google-client = { path = "crates/talaria-google-client" }
+
+talaria-google-connections = { path = "crates/talaria-google-connections" }
+
+talaria-google-drive = { path = "crates/talaria-google-drive" }
+
+talaria-google-errors = { path = "crates/talaria-google-errors" }
+
+talaria-google-gmail = { path = "crates/talaria-google-gmail" }
+
+talaria-google-oauth = { path = "crates/talaria-google-oauth" }
+
+talaria-google-org = { path = "crates/talaria-google-org" }
+
+talaria-google-pending = { path = "crates/talaria-google-pending" }
+
+talaria-google-provisioning = { path = "crates/talaria-google-provisioning" }
+
+talaria-guard-coaching = { path = "crates/talaria-guard-coaching" }
+
+talaria-harness = { path = "crates/talaria-harness" }
+
+talaria-harness-defs = { path = "crates/talaria-harness-defs" }
+
+talaria-harness-json = { path = "crates/talaria-harness-json" }
+
+talaria-harness-json-schema = { path = "crates/talaria-harness-json-schema" }
+
+talaria-harness-model = { path = "crates/talaria-harness-model" }
+
+talaria-harness-prompt-rules = { path = "crates/talaria-harness-prompt-rules" }
+
+talaria-harness-schema = { path = "crates/talaria-harness-schema" }
+
+talaria-harness-text = { path = "crates/talaria-harness-text" }
+
+talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
+
+talaria-home = { path = "crates/talaria-home" }
+
+talaria-inbox-focus = { path = "crates/talaria-inbox-focus" }
+
+talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }
+
+talaria-instance = { path = "crates/talaria-instance" }
+
+talaria-internal-history = { path = "crates/talaria-internal-history" }
+
+talaria-invites = { path = "crates/talaria-invites" }
+
+talaria-jobs = { path = "crates/talaria-jobs" }
+
+talaria-judge = { path = "crates/talaria-judge" }
+
+talaria-kb = { path = "crates/talaria-kb" }
+
+talaria-kb-perms = { path = "crates/talaria-kb-perms" }
+
+talaria-labels = { path = "crates/talaria-labels" }
+
+talaria-llm-keys = { path = "crates/talaria-llm-keys" }
+
+talaria-mcp = { path = "crates/talaria-mcp" }
+
+talaria-mcp-apply = { path = "crates/talaria-mcp-apply" }
+
+talaria-mcp-icons = { path = "crates/talaria-mcp-icons" }
+
+talaria-mcp-jsonrpc = { path = "crates/talaria-mcp-jsonrpc" }
+
+talaria-mcp-library = { path = "crates/talaria-mcp-library" }
+
+talaria-mcp-oauth = { path = "crates/talaria-mcp-oauth" }
+
+talaria-mcp-probe = { path = "crates/talaria-mcp-probe" }
+
+talaria-mcp-service = { path = "crates/talaria-mcp-service" }
+
+talaria-me = { path = "crates/talaria-me" }
+
+talaria-mentions = { path = "crates/talaria-mentions" }
+
+talaria-model-access = { path = "crates/talaria-model-access" }
+
+talaria-model-catalog = { path = "crates/talaria-model-catalog" }
+
+talaria-model-efforts = { path = "crates/talaria-model-efforts" }
+
+talaria-model-info = { path = "crates/talaria-model-info" }
+
+talaria-model-roles = { path = "crates/talaria-model-roles" }
+
+talaria-native-search = { path = "crates/talaria-native-search" }
+
+talaria-notify = { path = "crates/talaria-notify" }
+
+talaria-org = { path = "crates/talaria-org" }
+
+talaria-org-domains = { path = "crates/talaria-org-domains" }
+
+talaria-outreach = { path = "crates/talaria-outreach" }
+
+talaria-params = { path = "crates/talaria-params" }
+
+talaria-password = { path = "crates/talaria-password" }
+
+talaria-password-accounts = { path = "crates/talaria-password-accounts" }
+
+talaria-permissions = { path = "crates/talaria-permissions" }
+
+talaria-persona = { path = "crates/talaria-persona" }
+
+talaria-personal-agent = { path = "crates/talaria-personal-agent" }
+
+talaria-plan-doc = { path = "crates/talaria-plan-doc" }
+
+talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
+
+talaria-platform-agents = { path = "crates/talaria-platform-agents" }
+
+talaria-price-oracle = { path = "crates/talaria-price-oracle" }
+
+talaria-push = { path = "crates/talaria-push" }
+
+talaria-ratelimit = { path = "crates/talaria-ratelimit" }
+
+talaria-realtime = { path = "crates/talaria-realtime" }
+
+talaria-realtime-watch = { path = "crates/talaria-realtime-watch" }
+
+talaria-refs = { path = "crates/talaria-refs" }
+
+talaria-repo-env = { path = "crates/talaria-repo-env" }
+
+talaria-research = { path = "crates/talaria-research" }
+
+talaria-research-def = { path = "crates/talaria-research-def" }
+
+talaria-research-origin = { path = "crates/talaria-research-origin" }
+
+talaria-retrieval = { path = "crates/talaria-retrieval" }
+
+talaria-retrieval-collections = { path = "crates/talaria-retrieval-collections" }
+
+talaria-retrieval-embed = { path = "crates/talaria-retrieval-embed" }
+
+talaria-retrieval-http = { path = "crates/talaria-retrieval-http" }
+
+talaria-retrieval-index = { path = "crates/talaria-retrieval-index" }
+
+talaria-retrieval-qdrant = { path = "crates/talaria-retrieval-qdrant" }
+
+talaria-retrieval-rerank = { path = "crates/talaria-retrieval-rerank" }
+
+talaria-retrieval-sources = { path = "crates/talaria-retrieval-sources" }
+
+talaria-retrieval-sparse = { path = "crates/talaria-retrieval-sparse" }
+
+talaria-routes-admin = { path = "crates/talaria-routes-admin" }
+
+talaria-routes-boards = { path = "crates/talaria-routes-boards" }
+
+talaria-routes-comms = { path = "crates/talaria-routes-comms" }
+
+talaria-routes-fleet = { path = "crates/talaria-routes-fleet" }
+
+talaria-routes-integrations = { path = "crates/talaria-routes-integrations" }
+
+talaria-routes-knowledge = { path = "crates/talaria-routes-knowledge" }
+
+talaria-routes-workbench = { path = "crates/talaria-routes-workbench" }
+
+talaria-runs-agent-hire = { path = "crates/talaria-runs-agent-hire" }
+
+talaria-runs-decide = { path = "crates/talaria-runs-decide" }
+
+talaria-runs-define = { path = "crates/talaria-runs-define" }
+
+talaria-runs-drivers = { path = "crates/talaria-runs-drivers" }
+
+talaria-runs-lease = { path = "crates/talaria-runs-lease" }
+
+talaria-runs-plan-draft = { path = "crates/talaria-runs-plan-draft" }
+
+talaria-runs-reclaim = { path = "crates/talaria-runs-reclaim" }
+
+talaria-runs-reindex = { path = "crates/talaria-runs-reindex" }
+
+talaria-runs-run = { path = "crates/talaria-runs-run" }
+
+talaria-runs-store = { path = "crates/talaria-runs-store" }
+
+talaria-runs-work-session = { path = "crates/talaria-runs-work-session" }
+
+talaria-safe-fetch = { path = "crates/talaria-safe-fetch" }
+
+talaria-scheduler = { path = "crates/talaria-scheduler" }
+
+talaria-search = { path = "crates/talaria-search" }
+
+talaria-secret-health = { path = "crates/talaria-secret-health" }
+
+talaria-secret-rotation = { path = "crates/talaria-secret-rotation" }
+
+talaria-secretbox = { path = "crates/talaria-secretbox" }
+
+talaria-session = { path = "crates/talaria-session" }
+
+talaria-settings = { path = "crates/talaria-settings" }
+
+talaria-skill-access = { path = "crates/talaria-skill-access" }
+
+talaria-source-registry = { path = "crates/talaria-source-registry" }
+
+talaria-state = { path = "crates/talaria-state" }
+
+talaria-statuses = { path = "crates/talaria-statuses" }
+
+talaria-storage = { path = "crates/talaria-storage" }
+
+talaria-task-const = { path = "crates/talaria-task-const" }
+
+talaria-tasks = { path = "crates/talaria-tasks" }
+
+talaria-tasks-types = { path = "crates/talaria-tasks-types" }
+
+talaria-teams = { path = "crates/talaria-teams" }
+
+talaria-templates = { path = "crates/talaria-templates" }
+
+talaria-ticket-chat = { path = "crates/talaria-ticket-chat" }
+
+talaria-titler = { path = "crates/talaria-titler" }
+
+talaria-tz = { path = "crates/talaria-tz" }
+
+talaria-undici = { path = "crates/talaria-undici" }
+
+talaria-update-adopt = { path = "crates/talaria-update-adopt" }
+
+talaria-update-docker = { path = "crates/talaria-update-docker" }
+
+talaria-update-job = { path = "crates/talaria-update-job" }
+
+talaria-update-layout = { path = "crates/talaria-update-layout" }
+
+talaria-update-mode = { path = "crates/talaria-update-mode" }
+
+talaria-update-registry = { path = "crates/talaria-update-registry" }
+
+talaria-update-render = { path = "crates/talaria-update-render" }
+
+talaria-update-roll = { path = "crates/talaria-update-roll" }
+
+talaria-update-state = { path = "crates/talaria-update-state" }
+
+talaria-uploads = { path = "crates/talaria-uploads" }
+
+talaria-users = { path = "crates/talaria-users" }
+
+talaria-vision = { path = "crates/talaria-vision" }
+
+talaria-web-search = { path = "crates/talaria-web-search" }
+
+talaria-work-dispatch = { path = "crates/talaria-work-dispatch" }
+
+talaria-work-wait = { path = "crates/talaria-work-wait" }
+
+talaria-workbench = { path = "crates/talaria-workbench" }
+
+talaria-workbench-harnesses = { path = "crates/talaria-workbench-harnesses" }
+
+talaria-workbench-mcp = { path = "crates/talaria-workbench-mcp" }
+
+talaria-workchains = { path = "crates/talaria-workchains" }
+
+talaria-workflows = { path = "crates/talaria-workflows" }
+
+talaria-workspace-handles = { path = "crates/talaria-workspace-handles" }
+
+talaria-workspace-secrets = { path = "crates/talaria-workspace-secrets" }
+
+talaria-yaml = { path = "crates/talaria-yaml" }
+
+talaria-yaml11 = { path = "crates/talaria-yaml11" }
 
 [workspace.lints.clippy]
 # await_holding_lock: the port maps TS's single-threaded bookkeeping onto tokio
@@ -243,321 +599,264 @@ module_inception = "allow"
 
 [package]
 name = "talaria-api"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-api-routes = { path = "crates/talaria-api-routes" }
-talaria-routes-workbench = { path = "crates/talaria-routes-workbench" }
-talaria-routes-integrations = { path = "crates/talaria-routes-integrations" }
-talaria-routes-knowledge = { path = "crates/talaria-routes-knowledge" }
-talaria-routes-comms = { path = "crates/talaria-routes-comms" }
-talaria-routes-boards = { path = "crates/talaria-routes-boards" }
-talaria-routes-fleet = { path = "crates/talaria-routes-fleet" }
-talaria-routes-admin = { path = "crates/talaria-routes-admin" }
-talaria-api-facades = { path = "crates/talaria-api-facades" }
-talaria-yaml = { path = "crates/talaria-yaml" }
-talaria-fleet-layout = { path = "crates/talaria-fleet-layout" }
-talaria-undici = { path = "crates/talaria-undici" }
-talaria-agent-secrets = { path = "crates/talaria-agent-secrets" }
-talaria-error = { path = "crates/talaria-error" }
-talaria-body = { path = "crates/talaria-body" }
-talaria-config = { path = "crates/talaria-config" }
-talaria-secretbox = { path = "crates/talaria-secretbox" }
-talaria-ratelimit = { path = "crates/talaria-ratelimit" }
-talaria-db = { path = "crates/talaria-db" }
-talaria-state = { path = "crates/talaria-state" }
-talaria-password = { path = "crates/talaria-password" }
-talaria-auth = { path = "crates/talaria-auth" }
-talaria-collate = { path = "crates/talaria-collate" }
-talaria-agent-auth = { path = "crates/talaria-agent-auth" }
-talaria-internal-history = { path = "crates/talaria-internal-history" }
-talaria-org-domains = { path = "crates/talaria-org-domains" }
-talaria-teams = { path = "crates/talaria-teams" }
-talaria-tz = { path = "crates/talaria-tz" }
-talaria-password-accounts = { path = "crates/talaria-password-accounts" }
-talaria-templates = { path = "crates/talaria-templates" }
-talaria-workspace-secrets = { path = "crates/talaria-workspace-secrets" }
-talaria-task-const = { path = "crates/talaria-task-const" }
-talaria-audit = { path = "crates/talaria-audit" }
-talaria-auth-config = { path = "crates/talaria-auth-config" }
-talaria-workspace-handles = { path = "crates/talaria-workspace-handles" }
-talaria-work-wait = { path = "crates/talaria-work-wait" }
-talaria-agents-registry = { path = "crates/talaria-agents-registry" }
-talaria-source-registry = { path = "crates/talaria-source-registry" }
-talaria-native-search = { path = "crates/talaria-native-search" }
-talaria-agent-role-templates = { path = "crates/talaria-agent-role-templates" }
-talaria-safe-fetch = { path = "crates/talaria-safe-fetch" }
-talaria-params = { path = "crates/talaria-params" }
-talaria-push = { path = "crates/talaria-push" }
-talaria-repo-env = { path = "crates/talaria-repo-env" }
-talaria-research-origin = { path = "crates/talaria-research-origin" }
-talaria-secret-rotation = { path = "crates/talaria-secret-rotation" }
-talaria-settings = { path = "crates/talaria-settings" }
-talaria-capability = { path = "crates/talaria-capability" }
-talaria-guard-coaching = { path = "crates/talaria-guard-coaching" }
-talaria-instance = { path = "crates/talaria-instance" }
-talaria-judge = { path = "crates/talaria-judge" }
-talaria-permissions = { path = "crates/talaria-permissions" }
-talaria-llm-keys = { path = "crates/talaria-llm-keys" }
-talaria-persona = { path = "crates/talaria-persona" }
-talaria-gateway = { path = "crates/talaria-gateway" }
-talaria-agent-defs = { path = "crates/talaria-agent-defs" }
-talaria-agent-writes = { path = "crates/talaria-agent-writes" }
-talaria-brain-health = { path = "crates/talaria-brain-health" }
-talaria-email = { path = "crates/talaria-email" }
-talaria-github = { path = "crates/talaria-github" }
-talaria-me = { path = "crates/talaria-me" }
-talaria-platform-agents = { path = "crates/talaria-platform-agents" }
-talaria-search = { path = "crates/talaria-search" }
-talaria-secret-health = { path = "crates/talaria-secret-health" }
-talaria-storage = { path = "crates/talaria-storage" }
-talaria-users = { path = "crates/talaria-users" }
-talaria-workflows = { path = "crates/talaria-workflows" }
-talaria-boards = { path = "crates/talaria-boards" }
-talaria-claim = { path = "crates/talaria-claim" }
-talaria-session = { path = "crates/talaria-session" }
-talaria-activity = { path = "crates/talaria-activity" }
-talaria-runs-define = { path = "crates/talaria-runs-define" }
-talaria-realtime = { path = "crates/talaria-realtime" }
-talaria-labels = { path = "crates/talaria-labels" }
-talaria-runs-lease = { path = "crates/talaria-runs-lease" }
-talaria-scheduler = { path = "crates/talaria-scheduler" }
-talaria-notify = { path = "crates/talaria-notify" }
-talaria-mentions = { path = "crates/talaria-mentions" }
-talaria-price-oracle = { path = "crates/talaria-price-oracle" }
-talaria-channels = { path = "crates/talaria-channels" }
-talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
-talaria-fleet-docker = { path = "crates/talaria-fleet-docker" }
-talaria-agent-media = { path = "crates/talaria-agent-media" }
-talaria-agent-memory = { path = "crates/talaria-agent-memory" }
-talaria-mcp-jsonrpc = { path = "crates/talaria-mcp-jsonrpc" }
-talaria-mcp-icons = { path = "crates/talaria-mcp-icons" }
-talaria-mcp-library = { path = "crates/talaria-mcp-library" }
-talaria-mcp-probe = { path = "crates/talaria-mcp-probe" }
-talaria-mcp-oauth = { path = "crates/talaria-mcp-oauth" }
-talaria-fitness-code-runner = { path = "crates/talaria-fitness-code-runner" }
-talaria-harness-schema = { path = "crates/talaria-harness-schema" }
-talaria-retrieval-sparse = { path = "crates/talaria-retrieval-sparse" }
-talaria-runs-drivers = { path = "crates/talaria-runs-drivers" }
-talaria-model-access = { path = "crates/talaria-model-access" }
-talaria-harness-text = { path = "crates/talaria-harness-text" }
-talaria-daily-brief-types = { path = "crates/talaria-daily-brief-types" }
-talaria-model-roles = { path = "crates/talaria-model-roles" }
-talaria-google-client = { path = "crates/talaria-google-client" }
-talaria-runs-store = { path = "crates/talaria-runs-store" }
-talaria-model-catalog = { path = "crates/talaria-model-catalog" }
-talaria-update-mode = { path = "crates/talaria-update-mode" }
-talaria-update-state = { path = "crates/talaria-update-state" }
-talaria-model-efforts = { path = "crates/talaria-model-efforts" }
-talaria-retrieval-http = { path = "crates/talaria-retrieval-http" }
-talaria-retrieval-embed = { path = "crates/talaria-retrieval-embed" }
-talaria-retrieval-qdrant = { path = "crates/talaria-retrieval-qdrant" }
-talaria-retrieval-rerank = { path = "crates/talaria-retrieval-rerank" }
-talaria-retrieval-collections = { path = "crates/talaria-retrieval-collections" }
-talaria-retrieval-index = { path = "crates/talaria-retrieval-index" }
-talaria-retrieval-sources = { path = "crates/talaria-retrieval-sources" }
-talaria-harness-json-schema = { path = "crates/talaria-harness-json-schema" }
-talaria-daily-brief-config = { path = "crates/talaria-daily-brief-config" }
-talaria-runs-run = { path = "crates/talaria-runs-run" }
-talaria-runs-reclaim = { path = "crates/talaria-runs-reclaim" }
-talaria-update-layout = { path = "crates/talaria-update-layout" }
-talaria-google-connections = { path = "crates/talaria-google-connections" }
-talaria-google-org = { path = "crates/talaria-google-org" }
-talaria-update-registry = { path = "crates/talaria-update-registry" }
-talaria-google-errors = { path = "crates/talaria-google-errors" }
-talaria-google-calendar = { path = "crates/talaria-google-calendar" }
-talaria-google-agent = { path = "crates/talaria-google-agent" }
-talaria-google-api-health = { path = "crates/talaria-google-api-health" }
-talaria-google-gmail = { path = "crates/talaria-google-gmail" }
-talaria-google-provisioning = { path = "crates/talaria-google-provisioning" }
-talaria-update-docker = { path = "crates/talaria-update-docker" }
-talaria-google-oauth = { path = "crates/talaria-google-oauth" }
-talaria-yaml11 = { path = "crates/talaria-yaml11" }
-talaria-update-render = { path = "crates/talaria-update-render" }
-talaria-update-roll = { path = "crates/talaria-update-roll" }
-talaria-update-job = { path = "crates/talaria-update-job" }
-talaria-update-adopt = { path = "crates/talaria-update-adopt" }
-talaria-mcp-service = { path = "crates/talaria-mcp-service" }
-talaria-workbench = { path = "crates/talaria-workbench" }
-talaria-workbench-harnesses = { path = "crates/talaria-workbench-harnesses" }
-talaria-fleet-budget = { path = "crates/talaria-fleet-budget" }
-talaria-fleet-resources = { path = "crates/talaria-fleet-resources" }
-talaria-fleet-brain = { path = "crates/talaria-fleet-brain" }
-talaria-fleet-preflight = { path = "crates/talaria-fleet-preflight" }
-talaria-effort-prefs = { path = "crates/talaria-effort-prefs" }
-talaria-capability-reach = { path = "crates/talaria-capability-reach" }
-talaria-capability-platform = { path = "crates/talaria-capability-platform" }
-talaria-harness-model = { path = "crates/talaria-harness-model" }
-talaria-agent-crons = { path = "crates/talaria-agent-crons" }
-talaria-fitness-world = { path = "crates/talaria-fitness-world" }
-talaria-fitness-talaria-tools = { path = "crates/talaria-fitness-talaria-tools" }
-talaria-org = { path = "crates/talaria-org" }
-talaria-invites = { path = "crates/talaria-invites" }
-talaria-agent-mcp = { path = "crates/talaria-agent-mcp" }
-talaria-fleet-agents = { path = "crates/talaria-fleet-agents" }
-talaria-kb-perms = { path = "crates/talaria-kb-perms" }
-talaria-daily-brief-comms = { path = "crates/talaria-daily-brief-comms" }
-talaria-mcp-apply = { path = "crates/talaria-mcp-apply" }
-talaria-apps = { path = "crates/talaria-apps" }
-talaria-fleet-create = { path = "crates/talaria-fleet-create" }
-talaria-fleet-federate = { path = "crates/talaria-fleet-federate" }
-talaria-fleet-cascade = { path = "crates/talaria-fleet-cascade" }
-talaria-web-search = { path = "crates/talaria-web-search" }
-talaria-home = { path = "crates/talaria-home" }
-talaria-agent-skills = { path = "crates/talaria-agent-skills" }
-talaria-skill-access = { path = "crates/talaria-skill-access" }
-talaria-personal-agent = { path = "crates/talaria-personal-agent" }
-talaria-attribution = { path = "crates/talaria-attribution" }
-talaria-uploads = { path = "crates/talaria-uploads" }
-talaria-conversations = { path = "crates/talaria-conversations" }
-talaria-titler = { path = "crates/talaria-titler" }
-talaria-gaps = { path = "crates/talaria-gaps" }
-talaria-realtime-watch = { path = "crates/talaria-realtime-watch" }
-talaria-refs = { path = "crates/talaria-refs" }
-talaria-harness-json = { path = "crates/talaria-harness-json" }
-talaria-harness-prompt-rules = { path = "crates/talaria-harness-prompt-rules" }
-talaria-ticket-chat = { path = "crates/talaria-ticket-chat" }
-talaria-daily-brief-focus = { path = "crates/talaria-daily-brief-focus" }
-talaria-channel-replies = { path = "crates/talaria-channel-replies" }
-talaria-harness = { path = "crates/talaria-harness" }
-talaria-vision = { path = "crates/talaria-vision" }
-talaria-fitness-toolbox = { path = "crates/talaria-fitness-toolbox" }
-talaria-harness-defs = { path = "crates/talaria-harness-defs" }
-talaria-model-info = { path = "crates/talaria-model-info" }
-talaria-fitness = { path = "crates/talaria-fitness" }
-talaria-fleet-reconcile = { path = "crates/talaria-fleet-reconcile" }
-talaria-kb = { path = "crates/talaria-kb" }
-talaria-artifacts = { path = "crates/talaria-artifacts" }
-talaria-google-drive = { path = "crates/talaria-google-drive" }
-talaria-daily-brief = { path = "crates/talaria-daily-brief" }
-talaria-channel-plan = { path = "crates/talaria-channel-plan" }
-talaria-plan-doc = { path = "crates/talaria-plan-doc" }
-talaria-outreach = { path = "crates/talaria-outreach" }
-talaria-mcp = { path = "crates/talaria-mcp" }
-talaria-fleet-render = { path = "crates/talaria-fleet-render" }
-talaria-tasks-types = { path = "crates/talaria-tasks-types" }
-talaria-statuses = { path = "crates/talaria-statuses" }
-talaria-workchains = { path = "crates/talaria-workchains" }
-talaria-retrieval = { path = "crates/talaria-retrieval" }
-talaria-alerts = { path = "crates/talaria-alerts" }
-talaria-google-pending = { path = "crates/talaria-google-pending" }
-talaria-inbox-focus = { path = "crates/talaria-inbox-focus" }
-talaria-runs-plan-draft = { path = "crates/talaria-runs-plan-draft" }
-talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }
-talaria-runs-reindex = { path = "crates/talaria-runs-reindex" }
-talaria-approvals = { path = "crates/talaria-approvals" }
-talaria-digest = { path = "crates/talaria-digest" }
-talaria-research-def = { path = "crates/talaria-research-def" }
-talaria-research = { path = "crates/talaria-research" }
-talaria-runs-decide = { path = "crates/talaria-runs-decide" }
-talaria-tasks = { path = "crates/talaria-tasks" }
-talaria-runs-work-session = { path = "crates/talaria-runs-work-session" }
-talaria-work-dispatch = { path = "crates/talaria-work-dispatch" }
-talaria-workbench-mcp = { path = "crates/talaria-workbench-mcp" }
-talaria-jobs = { path = "crates/talaria-jobs" }
-talaria-runs-agent-hire = { path = "crates/talaria-runs-agent-hire" }
-talaria-comms-decay = { path = "crates/talaria-comms-decay" }
-talaria-chat-persist = { path = "crates/talaria-chat-persist" }
-talaria-inbox-focus-types = { path = "crates/talaria-inbox-focus-types" }
-talaria-daily-brief-delegation = { path = "crates/talaria-daily-brief-delegation" }
-
-
-
-
-
-
-# "multipart" for the uploads route's streamed form read (axum keeps the
-# feature opt-in; the cap-before-buffer discipline is the route's own).
-axum = { version = "0.8", features = ["multipart"] }
-# "sync" for the OnceCell-style serialization of capability-store writes.
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tower = "0.5"
-# No `cors` feature on purpose: same-origin throughout (the repo's
-# same-origin-fetch invariant). The browser only ever talks to the TS app; the
-# TS→Rust hop is server-side.
-tower-http = { version = "0.7", features = ["trace", "timeout", "catch-panic", "request-id", "propagate-header"] }
-# NO "macros" feature, on purpose: runtime queries only during coexistence.
-# The schema moves with the TS MIGRATIONS array (ui/src/server/db/pg.ts —
-# append-only, sha256 checksums, advisory lock 8_314_207) and every devbox has
-# its own database, so compile-time statement checking would couple this build
-# to one devbox's schema. "derive" is for #[derive(FromRow)] structs only.
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
-# rustls (not rustls-tls — renamed in reqwest 0.13) so nothing links OpenSSL;
-# the prod runtime image is bare alpine and must stay that way.
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
-serde = { version = "1", features = ["derive"] }
-# preserve_order: Value::Object keeps INSERTION order, like a JS object. The
-# guard's annotate path does JSON.parse → mutate → stringify on an upstream
-# body and must not alphabetize it (TS preserves the upstream's key order);
-# merged upstream bodies likewise keep client-first order like TS's spread.
-#
-# float_roundtrip: parse floats at full accuracy. The DEFAULT is best-effort
-# and can land one ULP off the parsed digits — 0.9090909090909091 came back as
-# ...092 on the wire, a byte diff against the stored value TS reads back
-# exactly. Scores, prices and ratios all cross jsonb boundaries, so every
-# float this API parses (request bodies AND app_settings blobs) needs the
-# round-trip-exact parse, not the fast one.
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-# serde_json's own ordered map only carries `Value`s (its methods live on
-# `Map<String, Value>`), but the fitness index is an ordered map of TYPED
-# entries — see the `FitnessIndex` alias in src/fitness/surface.rs. Already a
-# transitive dep of serde_json's preserve_order; named here for the typed map.
-indexmap = { version = "2", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "2"
-sha2 = "0.11"
-# skill_summaries' content key — node's createHash('sha1'). Same RustCrypto
-# family as sha2; only the digest width differs.
-sha1 = "0.10"
-# SigV4's HMAC-SHA256 (storage.ts's createHmac) — same RustCrypto family as
-# sha2/aes-gcm/scrypt; hand-rolling HMAC buys nothing.
-hmac = "0.13"
-# Web Push's P-256 half (RFC 8291's ECDH + aes128gcm, RFC 8292's ES256 VAPID
-# JWT). The `web-push` crate is deliberately NOT used: it pulls OpenSSL, and
-# the no-OpenSSL invariant (bare-alpine runtime, rustls everywhere) outranks
-# convenience. Pure Rust, same release train as sha2/hmac/aes-gcm above; the
-# crypto here is hand-assembled from these primitives with RFC vectors as
-# tests.
-p256 = { version = "0.14", default-features = false, features = ["arithmetic", "ecdh", "ecdsa", "pkcs8", "std"] }
-# The GitHub App JWT (github.ts appJwt) is RS256 — RSA-SHA256 over a PKCS#8
-# PEM. Same RustCrypto family; the sha2 feature wires the digest in.
-rsa = { version = "0.9", features = ["sha2"] }
-scrypt = "0.12"
-aes-gcm = "0.11"
-base64 = "0.23"
-uuid = { version = "1", features = ["v4"] }
-getrandom = "0.3"
-regex = "1"
-url = "2"
-futures-util = "0.3"
-# Wall-clock reads in IANA zones (tz.ts localMoment + the brief/digest clocks).
-# std only — no clock/oldtime; "now" is always passed in as epoch ms (the house
-# rule that keeps the scheduler testable). Already in the tree via chrono-tz.
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-chrono-tz = { version = "0.10.4", default-features = false, features = ["std"] }
-# Transactional mail's SMTP leg (email.ts). Hand-rolling the dialect is one
-# page of RFC 5321, but hand-rolling the MIME is where silent corruption
-# breeds — encoded-word subjects, quoted-printable, multipart/alternative
-# boundaries. tokio1 + rustls keeps the no-OpenSSL invariant (alpine runtime).
-lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
-serde_yaml_ng = "0.10.0"
-# DNS TXT lookups for org-domain verification (org-domains.ts resolveTxt).
-# Async against the system resolver, like node:dns — no need for a DoH
-# profile; a verifier that cannot reach DNS reports unverifiable, which is
-# the honest answer for that operator anyway.
-hickory-resolver = { version = "0.25", default-features = false, features = ["tokio", "system-config"] }
+talaria-activity = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-agent-crons = { workspace = true }
+talaria-agent-defs = { workspace = true }
+talaria-agent-mcp = { workspace = true }
+talaria-agent-media = { workspace = true }
+talaria-agent-memory = { workspace = true }
+talaria-agent-role-templates = { workspace = true }
+talaria-agent-secrets = { workspace = true }
+talaria-agent-skills = { workspace = true }
+talaria-agent-writes = { workspace = true }
+talaria-agents-registry = { workspace = true }
+talaria-alerts = { workspace = true }
+talaria-api-facades = { workspace = true }
+talaria-api-routes = { workspace = true }
+talaria-approvals = { workspace = true }
+talaria-apps = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-attribution = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-auth = { workspace = true }
+talaria-auth-config = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-body = { workspace = true }
+talaria-brain-health = { workspace = true }
+talaria-capability = { workspace = true }
+talaria-capability-platform = { workspace = true }
+talaria-capability-reach = { workspace = true }
+talaria-channel-plan = { workspace = true }
+talaria-channel-replies = { workspace = true }
+talaria-channels = { workspace = true }
+talaria-chat-persist = { workspace = true }
+talaria-claim = { workspace = true }
+talaria-collate = { workspace = true }
+talaria-comms-decay = { workspace = true }
+talaria-config = { workspace = true }
+talaria-conversations = { workspace = true }
+talaria-daily-brief = { workspace = true }
+talaria-daily-brief-comms = { workspace = true }
+talaria-daily-brief-config = { workspace = true }
+talaria-daily-brief-delegation = { workspace = true }
+talaria-daily-brief-focus = { workspace = true }
+talaria-daily-brief-types = { workspace = true }
+talaria-db = { workspace = true }
+talaria-digest = { workspace = true }
+talaria-effort-prefs = { workspace = true }
+talaria-email = { workspace = true }
+talaria-error = { workspace = true }
+talaria-fitness = { workspace = true }
+talaria-fitness-code-runner = { workspace = true }
+talaria-fitness-talaria-tools = { workspace = true }
+talaria-fitness-toolbox = { workspace = true }
+talaria-fitness-world = { workspace = true }
+talaria-fleet-agents = { workspace = true }
+talaria-fleet-brain = { workspace = true }
+talaria-fleet-budget = { workspace = true }
+talaria-fleet-cascade = { workspace = true }
+talaria-fleet-create = { workspace = true }
+talaria-fleet-docker = { workspace = true }
+talaria-fleet-federate = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-fleet-preflight = { workspace = true }
+talaria-fleet-reconcile = { workspace = true }
+talaria-fleet-render = { workspace = true }
+talaria-fleet-resources = { workspace = true }
+talaria-gaps = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-github = { workspace = true }
+talaria-google-agent = { workspace = true }
+talaria-google-api-health = { workspace = true }
+talaria-google-calendar = { workspace = true }
+talaria-google-client = { workspace = true }
+talaria-google-connections = { workspace = true }
+talaria-google-drive = { workspace = true }
+talaria-google-errors = { workspace = true }
+talaria-google-gmail = { workspace = true }
+talaria-google-oauth = { workspace = true }
+talaria-google-org = { workspace = true }
+talaria-google-pending = { workspace = true }
+talaria-google-provisioning = { workspace = true }
+talaria-guard-coaching = { workspace = true }
+talaria-harness = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-harness-json = { workspace = true }
+talaria-harness-json-schema = { workspace = true }
+talaria-harness-model = { workspace = true }
+talaria-harness-prompt-rules = { workspace = true }
+talaria-harness-schema = { workspace = true }
+talaria-harness-text = { workspace = true }
+talaria-hermes-skills = { workspace = true }
+talaria-home = { workspace = true }
+talaria-inbox-focus = { workspace = true }
+talaria-inbox-focus-types = { workspace = true }
+talaria-instance = { workspace = true }
+talaria-internal-history = { workspace = true }
+talaria-invites = { workspace = true }
+talaria-jobs = { workspace = true }
+talaria-judge = { workspace = true }
+talaria-kb = { workspace = true }
+talaria-kb-perms = { workspace = true }
+talaria-labels = { workspace = true }
+talaria-llm-keys = { workspace = true }
+talaria-mcp = { workspace = true }
+talaria-mcp-apply = { workspace = true }
+talaria-mcp-icons = { workspace = true }
+talaria-mcp-jsonrpc = { workspace = true }
+talaria-mcp-library = { workspace = true }
+talaria-mcp-oauth = { workspace = true }
+talaria-mcp-probe = { workspace = true }
+talaria-mcp-service = { workspace = true }
+talaria-me = { workspace = true }
+talaria-mentions = { workspace = true }
+talaria-model-access = { workspace = true }
+talaria-model-catalog = { workspace = true }
+talaria-model-efforts = { workspace = true }
+talaria-model-info = { workspace = true }
+talaria-model-roles = { workspace = true }
+talaria-native-search = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-org = { workspace = true }
+talaria-org-domains = { workspace = true }
+talaria-outreach = { workspace = true }
+talaria-params = { workspace = true }
+talaria-password = { workspace = true }
+talaria-password-accounts = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-persona = { workspace = true }
+talaria-personal-agent = { workspace = true }
+talaria-plan-doc = { workspace = true }
+talaria-plan-drafts = { workspace = true }
+talaria-platform-agents = { workspace = true }
+talaria-price-oracle = { workspace = true }
+talaria-push = { workspace = true }
+talaria-ratelimit = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-realtime-watch = { workspace = true }
+talaria-refs = { workspace = true }
+talaria-repo-env = { workspace = true }
+talaria-research = { workspace = true }
+talaria-research-def = { workspace = true }
+talaria-research-origin = { workspace = true }
+talaria-retrieval = { workspace = true }
+talaria-retrieval-collections = { workspace = true }
+talaria-retrieval-embed = { workspace = true }
+talaria-retrieval-http = { workspace = true }
+talaria-retrieval-index = { workspace = true }
+talaria-retrieval-qdrant = { workspace = true }
+talaria-retrieval-rerank = { workspace = true }
+talaria-retrieval-sources = { workspace = true }
+talaria-retrieval-sparse = { workspace = true }
+talaria-routes-admin = { workspace = true }
+talaria-routes-boards = { workspace = true }
+talaria-routes-comms = { workspace = true }
+talaria-routes-fleet = { workspace = true }
+talaria-routes-integrations = { workspace = true }
+talaria-routes-knowledge = { workspace = true }
+talaria-routes-workbench = { workspace = true }
+talaria-runs-agent-hire = { workspace = true }
+talaria-runs-decide = { workspace = true }
+talaria-runs-define = { workspace = true }
+talaria-runs-drivers = { workspace = true }
+talaria-runs-lease = { workspace = true }
+talaria-runs-plan-draft = { workspace = true }
+talaria-runs-reclaim = { workspace = true }
+talaria-runs-reindex = { workspace = true }
+talaria-runs-run = { workspace = true }
+talaria-runs-store = { workspace = true }
+talaria-runs-work-session = { workspace = true }
+talaria-safe-fetch = { workspace = true }
+talaria-scheduler = { workspace = true }
+talaria-search = { workspace = true }
+talaria-secret-health = { workspace = true }
+talaria-secret-rotation = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-session = { workspace = true }
+talaria-settings = { workspace = true }
+talaria-skill-access = { workspace = true }
+talaria-source-registry = { workspace = true }
+talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
+talaria-storage = { workspace = true }
+talaria-task-const = { workspace = true }
+talaria-tasks = { workspace = true }
+talaria-tasks-types = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-templates = { workspace = true }
+talaria-ticket-chat = { workspace = true }
+talaria-titler = { workspace = true }
+talaria-tz = { workspace = true }
+talaria-undici = { workspace = true }
+talaria-update-adopt = { workspace = true }
+talaria-update-docker = { workspace = true }
+talaria-update-job = { workspace = true }
+talaria-update-layout = { workspace = true }
+talaria-update-mode = { workspace = true }
+talaria-update-registry = { workspace = true }
+talaria-update-render = { workspace = true }
+talaria-update-roll = { workspace = true }
+talaria-update-state = { workspace = true }
+talaria-uploads = { workspace = true }
+talaria-users = { workspace = true }
+talaria-vision = { workspace = true }
+talaria-web-search = { workspace = true }
+talaria-work-dispatch = { workspace = true }
+talaria-work-wait = { workspace = true }
+talaria-workbench = { workspace = true }
+talaria-workbench-harnesses = { workspace = true }
+talaria-workbench-mcp = { workspace = true }
+talaria-workchains = { workspace = true }
+talaria-workflows = { workspace = true }
+talaria-workspace-handles = { workspace = true }
+talaria-workspace-secrets = { workspace = true }
+talaria-yaml = { workspace = true }
+talaria-yaml11 = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+hmac = { workspace = true }
+p256 = { workspace = true }
+rsa = { workspace = true }
+scrypt = { workspace = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
+getrandom = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }
+futures-util = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+lettre = { workspace = true }
+serde_yaml_ng = { workspace = true }
+hickory-resolver = { workspace = true }
 
 # Dev-loop compile: optimize our crate a little, deps a lot, keep unwind
 # (tests + tower-http catch-panic). debug=line-tables-only cuts link size
-# without dropping backtraces. Moves to the workspace root in Phase 2.
+# without dropping backtraces.
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"

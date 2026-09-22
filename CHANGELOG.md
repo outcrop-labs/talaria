@@ -25,6 +25,50 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
   deliberately mutated, green again after restore; `bun run check` green
   with the new link wired in.
 
+- **The api workspace's dependency truth lives in one table.** 215 manifests
+  each pinned their own versions — serde 168 times, sqlx 144, tokio in 21
+  different feature combinations — so every version bump edited dozens of
+  files and a feature added in one crate silently didn't exist in its
+  siblings. `api/Cargo.toml` now carries `[workspace.dependencies]` (external
+  deps with their rationale comments, then every crate as a path dep) and
+  `[workspace.package]`; every manifest says only `{ workspace = true }`, and
+  the 214-line members list collapsed to `members = ["crates/*"]`. The union
+  entries declare exactly what cargo already unified across the build graph:
+  axum's defaults are spelled out explicitly plus multipart, chrono carries
+  clock for the wall-clock google/brief surfaces while the scheduler's
+  epoch-ms rule stands. `scripts/codemod-workspace-deps.mjs` (stdlib-only,
+  idempotent) did the rewrite and is the rebase-repair tool for any session
+  that conflicts on a manifest.
+  Verified: `api/Cargo.lock` byte-identical after the rewrite (the primary
+  gate); `cargo metadata` package list identical (215/215); enabled feature
+  sets for tokio/sqlx/axum/redis/reqwest/serde_json/chrono identical
+  before/after via `cargo tree -e features -i`; `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings` (479 crates) and
+  `cargo test` green from `api/`; `bun run check` green; a second codemod
+  run is a no-op (root detected-and-skipped, 0/214 crates touched).
+
+- **The dither field is painted in absolute pixels again — an incremental
+  repaint was compositing over itself, and every shimmer field crept past its
+  own maxAlpha into blotch.** The incremental-paint engine (#410) replaced the
+  full clear-and-redraw with a per-cell diff, but `fillRect` composites
+  source-over: a dimmer refill over a brighter dot BRIGHTENS it (0.016 over
+  0.063 reads 0.078), so every shimmer flip and every cell a passing wave crest
+  dimmed stacked another layer — the rail's hover whisper rendered at ~3× its
+  alpha with pixels above the field's ceiling, the brief hero and the border
+  fields accumulated the same way, and it worsened the longer a field lived.
+  Changed cells are now cleared before they are filled, which makes each write
+  the same absolute pixels the full repaint always left; and the shimmer
+  jitter rides the density again (both the alpha wobble and the lit/unlit
+  step — the field breathes as one material) instead of flipping isolated
+  threshold-edge cells. The cached-field plumbing is untouched: density is
+  read, not re-evaluated, per tick, and static fields still park their loop.
+  Verified: old and fixed engines rendered side by side on the rail's exact
+  ambient field are pixel-identical at rest and at settled hover (4 differing
+  pixels of 676k; inked 10,020 and meanAlpha 0.0492 on both), a travelling
+  wave soaks 6.6s on both with identical stats and no creep (max alpha 130 of
+  a 140 ceiling on both), and in the running app the rail reads 7,584 inked
+  cells at rest and ~11,000 hovered with nothing above the field's maxAlpha.
+  `bun run verify` green (svelte-check 0 errors, 1,186 tests).
 - **The promotion gate waits for its evidence instead of failing ahead of it.**
   The gate ran the moment `rc` was pushed — the same push that STARTS the CI
   and rc-deploy runs it reads — so on every synchronize it found no green run

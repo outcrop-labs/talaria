@@ -1,50 +1,50 @@
 [package]
 name = "talaria-routes-boards"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-approvals = { path = "../talaria-approvals" }
-talaria-audit = { path = "../talaria-audit" }
-talaria-boards = { path = "../talaria-boards" }
-talaria-body = { path = "../talaria-body" }
-talaria-conversations = { path = "../talaria-conversations" }
-talaria-error = { path = "../talaria-error" }
-talaria-labels = { path = "../talaria-labels" }
-talaria-mentions = { path = "../talaria-mentions" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-params = { path = "../talaria-params" }
-talaria-permissions = { path = "../talaria-permissions" }
-talaria-plan-doc = { path = "../talaria-plan-doc" }
-talaria-plan-drafts = { path = "../talaria-plan-drafts" }
-talaria-realtime-watch = { path = "../talaria-realtime-watch" }
-talaria-refs = { path = "../talaria-refs" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-statuses = { path = "../talaria-statuses" }
-talaria-task-const = { path = "../talaria-task-const" }
-talaria-tasks = { path = "../talaria-tasks" }
-talaria-teams = { path = "../talaria-teams" }
-talaria-templates = { path = "../talaria-templates" }
-talaria-uploads = { path = "../talaria-uploads" }
-talaria-users = { path = "../talaria-users" }
-talaria-work-wait = { path = "../talaria-work-wait" }
-talaria-workchains = { path = "../talaria-workchains" }
-talaria-workflows = { path = "../talaria-workflows" }
-axum = { version = "0.8", features = ["multipart"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
-url = "2"
-talaria-api-facades = { path = "../talaria-api-facades" }
-talaria-routes-comms = { path = "../talaria-routes-comms" }
+talaria-agent-auth = { workspace = true }
+talaria-approvals = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-body = { workspace = true }
+talaria-conversations = { workspace = true }
+talaria-error = { workspace = true }
+talaria-labels = { workspace = true }
+talaria-mentions = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-plan-doc = { workspace = true }
+talaria-plan-drafts = { workspace = true }
+talaria-realtime-watch = { workspace = true }
+talaria-refs = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
+talaria-task-const = { workspace = true }
+talaria-tasks = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-templates = { workspace = true }
+talaria-uploads = { workspace = true }
+talaria-users = { workspace = true }
+talaria-work-wait = { workspace = true }
+talaria-workchains = { workspace = true }
+talaria-workflows = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+talaria-api-facades = { workspace = true }
+talaria-routes-comms = { workspace = true }
