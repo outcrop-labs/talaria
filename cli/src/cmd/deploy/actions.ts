@@ -165,7 +165,105 @@ async function pullRegistryImages(ctx: Ctx): Promise<void> {
   }
 }
 
-export async function runUp(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<number> {
+const DEPLOY_BRANCH_KEY = 'TALARIA_DEPLOY_BRANCH'
+
+/** A branch an operator types. The value is a git argv, never a shell, so
+ *  this refuses surprises (`..`, a leading dash, whitespace) rather than
+ *  parsing the full ref grammar. The pin is the branch name on `origin`
+ *  (`rc`), not a remote-tracking ref (`origin/rc`). */
+export function deployBranchName(raw: string): string | null {
+  const name = raw.trim()
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(name) ||
+    name.startsWith('origin/') ||
+    name.includes('..') ||
+    name.endsWith('/') ||
+    name.endsWith('.lock') ||
+    name.includes('@{')
+  ) {
+    return null
+  }
+  return name
+}
+
+function refuseBranch(ctx: Ctx, raw: string): never {
+  ctx.log.die(
+    `not a branch name: ${JSON.stringify(raw)} — pass the branch on origin (rc, main), not a remote-tracking ref`,
+  )
+}
+
+/** The saved pin, if docker/.env has one. An empty value is "no pin". A
+ *  garbage value dies: an update must not guess which branch to follow. */
+export function readDeployBranch(ctx: Ctx): string | undefined {
+  const raw = parseEnv(envFileText(ctx, 'docker/.env'))[DEPLOY_BRANCH_KEY]
+  if (raw === undefined || raw === '') return undefined
+  const name = deployBranchName(raw)
+  if (name === null) refuseBranch(ctx, raw)
+  return name
+}
+
+/** Persist the pin. docker/.env is gitignored, so the line survives the
+ *  fast-forwards that follow. Replacing an existing line keeps the secrets
+ *  already in the file; a missing file gets the same header `deploy up`
+ *  writes for those secrets. */
+export function writeDeployBranch(ctx: Ctx, branch: string): void {
+  const path = join(ctx.root, 'docker/.env')
+  const current = envFileText(ctx, 'docker/.env')
+  const line = `${DEPLOY_BRANCH_KEY}=${branch}`
+  if (current === '') {
+    writeSecret(
+      path,
+      `${DOCKER_ENV_HEADER}# Branch this deploy tracks. \`talaria deploy update\` fast-forwards to origin/<branch> and nothing else.\n${line}\n`,
+    )
+    ctx.log.say(`pinned deploy to ${branch} (${DEPLOY_BRANCH_KEY} in docker/.env)`)
+    return
+  }
+  const lines = current.split('\n')
+  const idx = lines.findIndex((l) => l.startsWith(`${DEPLOY_BRANCH_KEY}=`))
+  if (idx >= 0) {
+    if (lines[idx] === line) return
+    lines[idx] = line
+    writeSecret(path, `${lines.join('\n').replace(/\n*$/, '\n')}`)
+  } else {
+    const body = current.endsWith('\n') ? current : `${current}\n`
+    writeSecret(path, `${body}${line}\n`)
+  }
+  ctx.log.say(`pinned deploy to ${branch} (${DEPLOY_BRANCH_KEY} in docker/.env)`)
+}
+
+function branchFromFlag(ctx: Ctx, flag: string): string {
+  const name = deployBranchName(flag)
+  if (name === null) refuseBranch(ctx, flag)
+  writeDeployBranch(ctx, name)
+  return name
+}
+
+/** Fetch origin/<branch> and fast-forward HEAD onto it. Never merges, never
+ *  resets, never checks out a different local branch — a diverged checkout
+ *  dies so a deploy host cannot silently leave the pin. */
+export async function syncPinnedBranch(ctx: Ctx, branch: string): Promise<void> {
+  ctx.log.say(`git fetch origin ${branch}`)
+  if ((await ctx.run('git', ['fetch', 'origin', branch], { cwd: ctx.root })) !== 0) {
+    ctx.log.die(
+      `git fetch origin ${branch} failed — this deploy is pinned to that branch, and an update must not build whatever is already checked out`,
+    )
+  }
+  ctx.log.say(`git merge --ff-only origin/${branch}`)
+  if ((await ctx.run('git', ['merge', '--ff-only', `origin/${branch}`], { cwd: ctx.root })) !== 0) {
+    ctx.log.die(
+      `cannot fast-forward to origin/${branch} — this deploy is pinned to that branch and will not merge or reset. ` +
+        `A worktree created from origin/${branch} fast-forwards; a diverged checkout does not. Reconcile, then finish with \`bun talaria deploy up\``,
+    )
+  }
+}
+
+export async function runUp(ctx: Ctx, sock: string = DOCKER_SOCK, branchFlag?: string): Promise<number> {
+  // --branch pins AND fast-forwards before the build, so the first boot is
+  // that branch. A later plain `up` does not fetch — restarting is not an
+  // update. `update` is what follows the pin.
+  if (branchFlag !== undefined) {
+    await syncPinnedBranch(ctx, branchFromFlag(ctx, branchFlag))
+  }
   const prefix = ensureDockerGid(ctx, sock)
   await ensureSharedSecrets(ctx)
   if (registryMode(ctx)) {
@@ -222,17 +320,24 @@ async function pullApiPackage(ctx: Ctx): Promise<void> {
   }
 }
 
-/** CONTAINER.md's update flow is "a redeploy" — for a checkout-driven host
- *  that means get the new code, pull the api package the rebuild will bake
- *  in, then the same `up -d --build` as boot. Registry mode swaps the package
- *  pull for a compose pull of the channel images. The git pull is --ff-only:
- *  an update must never synthesize a merge commit on a deploy host. */
-export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK): Promise<number> {
-  ctx.log.say('git pull --ff-only')
-  if ((await ctx.run('git', ['pull', '--ff-only'], { cwd: ctx.root })) !== 0) {
-    ctx.log.die(
-      'git pull failed — reconcile the checkout (or fetch/checkout your way), then finish with `bun talaria deploy up`',
-    )
+/** CONTAINER.md's update flow is "a redeploy". Unpinned, that is
+ *  `git pull --ff-only` of whatever the checkout tracks. Pinned
+ *  (`--branch`, or TALARIA_DEPLOY_BRANCH already in docker/.env), it is
+ *  `git fetch origin <branch>` plus `git merge --ff-only origin/<branch>`
+ *  and nothing else — not the current branch's upstream, and never a merge
+ *  commit or a reset. Then the api package (or the registry images) and the
+ *  same `up` as boot. */
+export async function runUpdate(ctx: Ctx, sock: string = DOCKER_SOCK, branchFlag?: string): Promise<number> {
+  const branch = branchFlag !== undefined ? branchFromFlag(ctx, branchFlag) : readDeployBranch(ctx)
+  if (branch) {
+    await syncPinnedBranch(ctx, branch)
+  } else {
+    ctx.log.say('git pull --ff-only')
+    if ((await ctx.run('git', ['pull', '--ff-only'], { cwd: ctx.root })) !== 0) {
+      ctx.log.die(
+        'git pull failed — reconcile the checkout (or fetch/checkout your way), then finish with `bun talaria deploy up`',
+      )
+    }
   }
   if (registryMode(ctx)) await pullRegistryImages(ctx)
   else await pullApiPackage(ctx)
@@ -267,17 +372,25 @@ export async function runStatus(ctx: Ctx): Promise<number> {
   const port = effective.TALARIA_HTTP_PORT ?? APP_PORT
   const state = effective.TALARIA_STATE_DIR ?? '/var/lib/talaria'
   const fleet = `${effective.TALARIA_FLEET_PROJECT ?? 'talaria-fleet'}/${effective.TALARIA_FLEET_NETWORK ?? 'talaria'}`
-  ctx.log.say(`http://localhost:${port} · state ${state} · fleet ${fleet}`)
+  const branch = effective.TALARIA_DEPLOY_BRANCH
+  ctx.log.say(`http://localhost:${port} · state ${state} · fleet ${fleet}${branch ? ` · branch origin/${branch}` : ''}`)
   ctx.log.say(plain(ctx, [], ['ps']))
   return deployCompose(ctx, ['ps'])
+}
+
+const branchFlag = {
+  name: 'branch',
+  kind: 'value' as const,
+  desc: 'pin this deploy to a branch on origin; update fast-forwards to that branch only (saved as TALARIA_DEPLOY_BRANCH in docker/.env)',
 }
 
 export const upCommand: Leaf = {
   kind: 'leaf',
   name: 'up',
   summary: "build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved",
-  usage: 'talaria deploy up',
-  run: (ctx) => runUp(ctx),
+  usage: 'talaria deploy up [--branch <name>]',
+  flags: [branchFlag],
+  run: (ctx, args) => runUp(ctx, DOCKER_SOCK, typeof args.flags.branch === 'string' ? args.flags.branch : undefined),
 }
 
 export const downCommand: Leaf = {
@@ -299,9 +412,10 @@ export const updateCommand: Leaf = {
   kind: 'leaf',
   name: 'update',
   summary:
-    'git pull --ff-only, pull what the deploy runs on (api package, or the registry images under COMPOSE_FILE), then the redeploy',
-  usage: 'talaria deploy update',
-  run: (ctx) => runUpdate(ctx),
+    'fast-forward the pinned branch (or git pull --ff-only), pull what the deploy runs on, then the redeploy',
+  usage: 'talaria deploy update [--branch <name>]',
+  flags: [branchFlag],
+  run: (ctx, args) => runUpdate(ctx, DOCKER_SOCK, typeof args.flags.branch === 'string' ? args.flags.branch : undefined),
 }
 
 export const logsCommand: Leaf = {

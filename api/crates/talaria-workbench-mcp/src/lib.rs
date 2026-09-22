@@ -1443,20 +1443,30 @@ fn random_base36(len: usize) -> String {
 /// pushed, so the mint obeys the rule up front instead of dead-ending
 /// finish_job on a branch git will always refuse. Pure; GitHub is not
 /// consulted.
+///
+/// The prefix is NORMALIZED here even though the config route also trims it:
+/// rows written before that guard (a prefix typed as "agent/") minted
+/// `agent//tala-…`, which sails through `push_allowed` (`starts_with`) and
+/// dies at GitHub's ref validation with a 422 — the start_job failure Doug
+/// reported on TALA-35. The mint is the last line; it reads what is stored.
 fn composed_job_branch(
     prefix: Option<&str>,
     repo: &str,
     ticket_ref: &str,
     title_slug: &str,
 ) -> String {
+    let prefix = prefix
+        .map(str::trim)
+        .map(|p| p.trim_matches('/'))
+        .filter(|p| !p.is_empty());
     let stem = if ticket_ref.is_empty() {
         format!("job-{}-{}", slugify(repo), random_base36(6))
     } else {
         format!("{}-{}", ticket_ref.to_lowercase(), title_slug)
     };
-    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.len() + 1));
+    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.chars().count() + 1));
     let body = truncate_utf16(&stem, budget).to_string();
-    match prefix.filter(|p| !p.is_empty()) {
+    match prefix {
         Some(p) => format!("{p}/{body}"),
         None => format!("talaria/{body}"),
     }
@@ -1707,6 +1717,22 @@ mod tests {
         assert_eq!(
             composed_job_branch(Some(""), "o/r", "TALA-9", "x"),
             "talaria/tala-9-x"
+        );
+        // A prefix STORED with slashes (typed "agent/", the TALA-35 shape)
+        // mints the same branch as the trimmed spelling — `agent//<ref>`
+        // passes push_allowed and then dies at GitHub's ref validation.
+        assert_eq!(
+            composed_job_branch(
+                Some("agent/"),
+                "outcrop-labs/talaria",
+                "TALA-35",
+                "workchains-the-node-canvas"
+            ),
+            "agent/tala-35-workchains-the-node-canvas"
+        );
+        assert_eq!(
+            composed_job_branch(Some("/agent/"), "o/r", "TALA-9", "x"),
+            "agent/tala-9-x"
         );
         // The self-referential contract: a minted branch passes the very
         // branch law it was minted for.

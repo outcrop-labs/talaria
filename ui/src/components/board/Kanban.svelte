@@ -8,7 +8,7 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import KanbanAddCard from './KanbanAddCard.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
-  import { useBoardWorkSessions } from '@/lib/work-session.svelte'
+  import { useBoardWorkSessions, useStopWorkSession } from '@/lib/work-session.svelte'
   import KanbanCard from './KanbanCard.svelte'
   import { fmtHours } from './kanban'
   import { cn } from '@/lib/cn'
@@ -38,6 +38,7 @@
   // Live work per card (one board-wide read) + the shared watch modal.
   const work = useBoardWorkSessions(() => board.id)
   let watchTask = $state<{ id: string; runId: string } | null>(null)
+  const stopWork = useStopWorkSession()
   const working = (id: string) => work.data?.sessions?.[id] ?? null
   const queued = (id: string) => work.data?.waits?.[id] ?? null
   const fleetQuery = useAgents()
@@ -106,9 +107,10 @@
         onOpen: () => onOpen(t.id),
         onPatch: (p) => void patch(t.id, p),
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+        working: !!working(t.id),
+        onStop: () => void stopWork(t.id),
       }),
     )
-
   const addTo = async (status: TaskStatus, title: string) => {
     const { task } = (await createTask(board.id, { title })) as { task: Task }
     if (task.status !== status) await updateTask(task.id, { status })
