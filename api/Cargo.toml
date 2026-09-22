@@ -149,6 +149,12 @@ boa_engine = { version = "0.22.0", default-features = false }
 # Declared by crates only (not by the root binary); union of crate specs.
 hex = { version = "0.4" }
 
+# The skills marketplace unpacks GitHub tarballs (codeload streams a
+# tar.gz of the default branch). flate2 defaults to miniz_oxide — pure
+# Rust, keeps the no-OpenSSL invariant; tar is the boring reader over it.
+flate2 = { version = "1" }
+tar = { version = "0.4" }
+
 # Declared by crates only (not by the root binary); union of crate specs.
 http = { version = "1" }
 
@@ -505,6 +511,8 @@ talaria-session = { path = "crates/talaria-session" }
 talaria-settings = { path = "crates/talaria-settings" }
 
 talaria-skill-access = { path = "crates/talaria-skill-access" }
+
+talaria-skills-marketplace = { path = "crates/talaria-skills-marketplace" }
 
 talaria-source-registry = { path = "crates/talaria-source-registry" }
 

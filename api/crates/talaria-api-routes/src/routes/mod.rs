@@ -1384,6 +1384,24 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_fleet::agents::skills_owner_name::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
         )
+        // The skills marketplace (Hermes Atlas's ranked catalog): the list,
+        // one repo's discovered skills, and the per-owner install. Static
+        // "marketplace" segments outrank the {owner}/{name} captures above.
+        .route(
+            "/api/skills/marketplace",
+            get(talaria_routes_fleet::agents::skills_marketplace::get_list)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/skills/marketplace/detail",
+            get(talaria_routes_fleet::agents::skills_marketplace::get_detail)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/skills/marketplace/install",
+            post(talaria_routes_fleet::agents::skills_marketplace::post_install)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         // The agent surface: media reads/writes scoped by model, the two
         // honesty-loop reports (gap, problem), the plain-language
         // message-user door, and the self-introspection probe.
