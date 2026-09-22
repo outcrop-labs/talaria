@@ -83,6 +83,49 @@ export async function deleteSkill(owner: string, name: string): Promise<void> {
   await delJson<{ ok: true }>(`/api/skills/${owner}/${name}`)
 }
 
+// ── The marketplace (Hermes Atlas's ranked catalog, installed from GitHub) ──
+
+export interface MarketplaceEntry {
+  /** GitHub owner/name — the install identity. */
+  repo: string
+  org: string
+  name: string
+  description: string
+  /** The catalog's own display form ("290.0K"). */
+  stars: string
+  rank: number
+}
+
+export interface MarketplaceSkill {
+  name: string
+  summary: string
+  fileCount: number
+  files: string[]
+}
+
+export interface InstallOutcome {
+  name: string
+  status: 'installed' | 'exists'
+}
+
+/** The catalog read, keyed by the live query text. */
+export const marketplaceKey = (q: string) => ['skills-marketplace', q] as const
+
+/** One repo's discovered skills (the api caches the tarball scan). */
+export function marketplaceDetail(repo: string): Promise<{ repo: string; skills: MarketplaceSkill[] }> {
+  return getJson(`/api/skills/marketplace/detail?repo=${encodeURIComponent(repo)}`)
+}
+
+/** Install into an owner's root. `skills` absent installs every discovered
+ *  skill; per-skill statuses come back (`exists` = left untouched). */
+export function installMarketplaceSkills(
+  owner: string,
+  repo: string,
+  skills?: string[],
+): Promise<{ ok: true; owner: string; repo: string; results: InstallOutcome[] }> {
+  return postJson('/api/skills/marketplace/install', { owner, repo, skills })
+}
+
 /** Rename the skill's directory without touching content. PUTs write to a
  *  single path, so a record that saves under a new name is two writes: rename
  *  the directory first, then write the content under the new name. */

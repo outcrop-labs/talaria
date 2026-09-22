@@ -325,22 +325,27 @@ describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
   })
 
   // The 2026-09-21 incident, both customer VMs: the export forgot the
-  // fragment, docker rejected the project per-service, and the die line
-  // blamed pull reachability. The guard fires before any docker argv.
-  test('a COMPOSE_FILE without the sidecar plane dies before docker runs', async () => {
+  // fragment. Dying on it left every pre-fragment install unable to update
+  // or deploy until a human re-exported on each host — the wrapper now
+  // repairs the list in the env (the docker child reads COMPOSE_FILE from
+  // the inherited environment, not from the CLI's string), and the printed
+  // equivalent teaches the corrected export.
+  test('a COMPOSE_FILE without the sidecar plane is repaired, not fatal', async () => {
     const broken = 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml'
+    const fixed = `docker/sidecars.compose.yml:${broken}`
     const down = fakeCtx({ env: { COMPOSE_FILE: broken } })
     down.root = makeDeployTree()
-    const msg = await attempt(() => runDown(down, false))
-    expect(msg).toContain('docker/sidecars.compose.yml')
-    expect(msg).toContain(`COMPOSE_FILE=docker/sidecars.compose.yml:${broken}`)
-    expect(down.calls.some((c) => c.cmd === 'docker')).toBe(false)
-    // the incident command itself: update's git pull runs, no docker argv
+    await runDown(down, false)
+    expect(down.env.COMPOSE_FILE).toBe(fixed)
+    expect(down.calls.find((c) => c.cmd === 'docker')!.args).toEqual(['compose', 'down'])
+    expect(down.logLines.some((l) => l.kind === 'say' && l.msg === `COMPOSE_FILE=${fixed} docker compose down`)).toBe(true)
+    expect(down.logLines.some((l) => l.kind === 'warn' && l.msg.includes('docker/sidecars.compose.yml'))).toBe(true)
+    // the incident command itself: update now runs through to the compose up
     const update = fakeCtx({ env: { COMPOSE_FILE: broken } })
     update.root = makeDeployTree()
-    const msg2 = await attempt(() => runUpdate(update, '/nonexistent-deploy-test-socket'))
-    expect(msg2).toContain('docker/sidecars.compose.yml')
-    expect(update.calls.some((c) => c.cmd === 'docker')).toBe(false)
+    await runUpdate(update, '/nonexistent-deploy-test-socket')
+    expect(update.calls.some((c) => c.cmd === 'docker' && c.args.includes('searxng-config'))).toBe(true)
+    expect(update.calls.some((c) => c.cmd === 'docker' && c.args.includes('up'))).toBe(true)
   })
 
   test('the drift check scans every file COMPOSE_FILE lists', () => {

@@ -45,6 +45,7 @@ talaria-safe-fetch = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-session = { workspace = true }
 talaria-skill-access = { workspace = true }
+talaria-skills-marketplace = { workspace = true }
 talaria-state = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-teams = { workspace = true }

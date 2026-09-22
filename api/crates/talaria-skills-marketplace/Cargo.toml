@@ -1,0 +1,19 @@
+[package]
+name = "talaria-skills-marketplace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+talaria-agent-skills = { workspace = true }
+talaria-safe-fetch = { workspace = true }

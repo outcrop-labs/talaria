@@ -2,10 +2,11 @@
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Plus, Lock } from '@lucide/svelte'
+  import { Plus, Lock, Store } from '@lucide/svelte'
   import { navigate } from '@/router'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -32,6 +33,7 @@
   } from '@/lib/workflows'
   import { SKILLS_KEY, useSkills, type SkillOwner } from '@/lib/skills'
   import SectionTitle from './studio/SectionTitle.svelte'
+  import SkillMarketplaceModal from './studio/SkillMarketplaceModal.svelte'
   import SkillRow from './studio/SkillRow.svelte'
 
   // The view's title and its InfoTip live in the top strip (lib/view-title) —
@@ -91,6 +93,8 @@
   const sessionQuery = useSession()
   const isAdmin = $derived(sessionQuery.data?.role === 'admin')
   let guide = $state<(GuidePrefill & { gapId?: string }) | null>(null)
+  let market = $state(false)
+
 
   const agents = $derived(owners.filter((o) => o.owner !== 'shared'))
   const shared = $derived(owners.find((o) => o.owner === 'shared'))
@@ -288,9 +292,18 @@
             <!-- Knows — skills -->
             <section>
               {#snippet addSkillAction()}
-                <Button size="sm" variant="outline" onclick={() => selected && (guide = { owner: selected.owner })}>
-                  <Plus size={14} />
-                </Button>
+                <span class="flex items-center gap-1.5">
+                  <IconButton
+                    title="Browse the skills marketplace"
+                    size="sm"
+                    onclick={() => selected && (market = true)}
+                  >
+                    <Store size={14} />
+                  </IconButton>
+                  <Button size="sm" variant="outline" onclick={() => selected && (guide = { owner: selected.owner })}>
+                    <Plus size={14} />
+                  </Button>
+                </span>
               {/snippet}
               <SectionTitle
                 title={selected.owner === 'shared' ? 'Everyone knows' : `${firstName(selected)} knows`}
@@ -403,6 +416,9 @@
           />
         {/key}
       </Modal>
+    {/if}
+    {#if market && selected?.canEdit}
+      <SkillMarketplaceModal owner={selected.owner} owners={rawOwners} onClose={() => (market = false)} />
     {/if}
     {#if guide}
       <StudioGuide
