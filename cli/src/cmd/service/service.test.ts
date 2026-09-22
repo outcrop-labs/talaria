@@ -333,6 +333,12 @@ describe('talaria service install — orchestration', () => {
       },
       expect: 'docker is required',
     })
+    // the unit would bake a fragment-less COMPOSE_FILE into /etc and only
+    // fail at boot — die at install time instead (the 2026-09-21 VM exports)
+    await guard({
+      env: { COMPOSE_FILE: 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml' },
+      expect: 'docker/sidecars.compose.yml',
+    })
     await guard({
       plant: (ctx) => {
         ctx.plant(['systemctl', [...DOCKER_SERVICE_SHOW]], 'LoadState=masked\nUnitFileState=masked\n')
