@@ -333,18 +333,40 @@ describe('talaria service install — orchestration', () => {
       },
       expect: 'docker is required',
     })
-    // the unit would bake a fragment-less COMPOSE_FILE into /etc and only
-    // fail at boot — die at install time instead (the 2026-09-21 VM exports)
-    await guard({
-      env: { COMPOSE_FILE: 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml' },
-      expect: 'docker/sidecars.compose.yml',
-    })
+    // (a fragment-less COMPOSE_FILE is NOT a guard anymore — it is repaired
+    // into the unit; see the test below)
     await guard({
       plant: (ctx) => {
         ctx.plant(['systemctl', [...DOCKER_SERVICE_SHOW]], 'LoadState=masked\nUnitFileState=masked\n')
       },
       expect: 'masked',
     })
+  })
+
+  // A fragment-less COMPOSE_FILE is no longer a guard (see above): the unit
+  // BAKES the env (unitText), so install resolves it early — the repair
+  // lands in the rendered unit, and the notice prints before anything
+  // privileged runs.
+  test('a fragment-less COMPOSE_FILE is repaired into the captured unit', async () => {
+    const root = makeRepo()
+    const { host } = makeHost()
+    const ctx = fakeCtx({
+      env: { PATH: makeStubs(), COMPOSE_FILE: 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml' },
+    })
+    ctx.root = root
+    ctx.plant(['systemctl', [...DOCKER_SERVICE_SHOW]], 'LoadState=loaded\nUnitFileState=enabled\n')
+    ctx.plant(['docker', ['compose', 'version', '--short']], 'v2.29.7\n')
+    expect(await runInstall(ctx, { host, euid: 1000, sock: '/nonexistent-service-test-sock' })).toBe(0)
+    expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('docker/sidecars.compose.yml'))).toBe(true)
+    expect(
+      ctx.logLines.some(
+        (l) =>
+          l.kind === 'raw' &&
+          l.msg.includes(
+            'Environment=COMPOSE_FILE=docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml',
+          ),
+      ),
+    ).toBe(true)
   })
 
   test('no sudo and not root → dies with the copy-pasteable commands, staging dir kept', async () => {

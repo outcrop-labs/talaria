@@ -3,9 +3,11 @@
 // builder's (api/src/fleet/docker.rs): every caller goes through ONE place,
 // so the -p/-f/--env-file convention cannot drift between commands.
 //
-// It is also the home of the COMPOSE_FILE law (composeFileArgs): an explicit
-// `-f` BEATS the env in docker's own precedence, so a caller that honors the
-// operator's layering drops its `-f` — spelled once, here.
+// It is also the home of the COMPOSE_FILE law (composeFileEnv +
+// composeFileArgs): an explicit `-f` BEATS the env in docker's own
+// precedence, so a caller that honors the operator's layering drops its
+// `-f` — and the env, whose list replaces both files, is repaired to carry
+// the sidecar plane — spelled once, here.
 
 import { join } from 'node:path'
 import type { Ctx } from './ctx'
@@ -40,11 +42,25 @@ export function stackComposeFiles(root: string, ...stack: string[]): string[] {
 }
 
 /** An operator-provided COMPOSE_FILE (the registry-image flow in
- *  CONTAINER.md), trimmed. Null when unset or whitespace — the canonical
- *  single-file path. */
+ *  CONTAINER.md), trimmed and REPAIRED: the sidecar plane is prepended when
+ *  the export omits it, with a warning, and the corrected list is written
+ *  back into ctx.env — the docker child reads COMPOSE_FILE from the
+ *  inherited environment, not from this string, so the repair only reaches
+ *  compose by re-exporting it. The write-back is also the once-only gate:
+ *  every later call reads the repaired value and passes it through. Null
+ *  when unset or whitespace — the canonical single-file path. */
 export function composeFileEnv(ctx: Ctx): string | null {
   const value = ctx.env.COMPOSE_FILE?.trim()
-  return value ? value : null
+  if (!value) return null
+  const repaired = withSidecarPlane(value)
+  if (repaired !== value) {
+    ctx.log.warn(
+      `COMPOSE_FILE=${value} omits ${SIDECARS_COMPOSE} — prepending it. The env replaces the wrappers' -f pair ` +
+        'and the sidecar plane\'s images live only in that fragment; spell it first in the export to keep this quiet.',
+    )
+    ctx.env.COMPOSE_FILE = repaired
+  }
+  return repaired
 }
 
 /** The `-f` args for a compose invocation of `base`, under the one law every
@@ -58,24 +74,25 @@ export function composeFileEnv(ctx: Ctx): string | null {
  *  an operator override, they are half the project, and without them the
  *  stack refuses to start (`service "postgres" has neither an image nor a
  *  build context`). Under COMPOSE_FILE the operator names the files, so THAT
- *  list has to carry the fragment itself — spelled first, in CONTAINER.md. */
+ *  list has to carry the fragment itself — composeFileEnv guarantees it does
+ *  (prepended with a warning when the export forgot; two customer VMs,
+ *  2026-09-21). */
 export function composeFileArgs(composeFile: string | null | undefined, base: string): string[] {
   return composeFile ? [] : ['-f', SIDECARS_COMPOSE, '-f', base]
 }
 
-/** The die-sentence for an operator COMPOSE_FILE that omits the sidecar
- *  plane; null when the list is legal. composeFileArgs drops the CLI's own
- *  `-f` pair under that env — the list REPLACES both files — and the six
- *  sidecars' images are defined only in the fragment, so a list without it
- *  is an invalid project. Left to docker, that surfaces as a per-service
- *  `service "postgres" has neither an image nor a build context` next to a
- *  pull command, which reads like a reachability problem (two customer VMs,
- *  2026-09-21: both exports had simply forgotten the fragment). */
-export function sidecarsMissingFromComposeFile(composeFile: string): string | null {
+/** The export with the shared sidecar plane guaranteed IN it, first. The
+ *  plane is half the project, not an operator override — its six services'
+ *  images are defined nowhere else — so a list without it is an invalid
+ *  project, and PREPEND is the repair that preserves the operator's own
+ *  layering exactly (compose merges later-wins, which is also why the plane
+ *  must lead). A list that already carries the fragment — anywhere — passes
+ *  through byte-identical. The die this replaces spelled the same fix out,
+ *  but left every install that followed the pre-fragment docs unable to
+ *  update or deploy until hands re-exported on each host. */
+export function withSidecarPlane(composeFile: string): string {
   const listed = composeFile.split(':').map((p) => p.trim()).filter(Boolean)
-  return listed.includes(SIDECARS_COMPOSE)
-    ? null
-    : `COMPOSE_FILE=${composeFile} does not list ${SIDECARS_COMPOSE} — the env replaces the wrappers' -f pair, and the sidecar plane's images live only in that fragment, so the merged project is invalid (docker answers 'service "postgres" has neither an image nor a build context'). Fix the export, fragment first: COMPOSE_FILE=${SIDECARS_COMPOSE}:${composeFile}`
+  return listed.includes(SIDECARS_COMPOSE) ? composeFile : [SIDECARS_COMPOSE, ...listed].join(':')
 }
 
 export type ComposeSpec = {

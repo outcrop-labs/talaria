@@ -464,10 +464,14 @@ file list and every wrapper (up/update/down/logs/status) drops its explicit
 exactly why the CLI steps aside. Because it steps aside entirely, the shared
 sidecar plane has to be IN that list (first): the wrappers' own `-f` pair is
 `docker/sidecars.compose.yml` then the base, and the env replaces both.
-`deploy` and `service install` die up front when the exported list omits the
-fragment — printing the corrected export — instead of letting docker reject
-the project per-service (`service "postgres" has neither an image nor a build
-context`), which beside a pull command reads like a reachability problem.
+An export that omits the fragment is repaired, not rejected: the wrapper
+prepends `docker/sidecars.compose.yml`, warns once with the corrected export
+spelled out, and re-exports the repaired list for the docker child — so an
+export made before the fragment existed keeps working, and `service
+install` captures the corrected list into the unit. Left to docker, the
+omission answers per-service (`service "postgres" has neither an image nor
+a build context`) beside a pull command, which reads like a reachability
+problem — which is why the CLI never leaves that error to speak for itself.
 Registry mode changes two behaviors on purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
 the api-package pull) and `up` runs WITHOUT `--build` — the override swaps
 the image but cannot remove the base's `build:` key, so a build would tag the
