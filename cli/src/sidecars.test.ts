@@ -19,7 +19,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boxComposeSpec } from './cmd/box/shared'
-import { COMPOSE_BASE, composeArgs, composeFileArgs, SIDECARS_COMPOSE, stackComposeFiles } from './compose'
+import { COMPOSE_BASE, composeArgs, composeFileArgs, SIDECARS_COMPOSE, sidecarsMissingFromComposeFile, stackComposeFiles } from './compose'
 import { fakeCtx } from './testing'
 
 const ROOT = join(import.meta.dir, '..', '..')
@@ -75,6 +75,22 @@ describe('sidecar plane — merge order', () => {
     // An explicit -f beats the env, so honoring COMPOSE_FILE means passing
     // neither — the operator's list has to name the fragment itself.
     expect(composeFileArgs('docker/compose.yml:docker/compose.registry.yml', COMPOSE_BASE)).toEqual([])
+  })
+
+  test('a COMPOSE_FILE that omits the fragment earns the die sentence', () => {
+    // The 2026-09-21 incident: two customer VMs exported the registry flow
+    // without the fragment, and docker's answer — a per-service "neither an
+    // image nor a build context" beside a pull command — read like a
+    // reachability problem. The sentence names the fix with the operator's
+    // own list spelled in.
+    const bad = 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml'
+    const msg = sidecarsMissingFromComposeFile(bad)!
+    expect(msg).toContain(SIDECARS_COMPOSE)
+    expect(msg).toContain(bad)
+    expect(msg).toContain(`COMPOSE_FILE=${SIDECARS_COMPOSE}:${bad}`)
+    // present anywhere in the list is legal — the six services' images
+    // resolve; only absence is fatal.
+    expect(sidecarsMissingFromComposeFile(`docker/compose.yml:${SIDECARS_COMPOSE}:docker/compose.registry.yml`)).toBeNull()
   })
 
   test("a box's argv layers the fragment before its own template", () => {
