@@ -1,19 +1,19 @@
 [package]
 name = "talaria-retrieval-sources"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-retrieval-collections = { path = "../talaria-retrieval-collections" }
-talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
-talaria-retrieval-index = { path = "../talaria-retrieval-index" }
-talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
-tracing = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-retrieval-collections = { workspace = true }
+talaria-retrieval-embed = { workspace = true }
+talaria-retrieval-index = { workspace = true }
+talaria-retrieval-qdrant = { workspace = true }
+tracing = { workspace = true }

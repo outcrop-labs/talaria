@@ -1,43 +1,43 @@
 [package]
 name = "talaria-routes-workbench"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-attribution = { path = "../talaria-attribution" }
-talaria-audit = { path = "../talaria-audit" }
-talaria-boards = { path = "../talaria-boards" }
-talaria-body = { path = "../talaria-body" }
-talaria-db = { path = "../talaria-db" }
-talaria-error = { path = "../talaria-error" }
-talaria-github = { path = "../talaria-github" }
-talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-instance = { path = "../talaria-instance" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-params = { path = "../talaria-params" }
-talaria-permissions = { path = "../talaria-permissions" }
-talaria-realtime-watch = { path = "../talaria-realtime-watch" }
-talaria-repo-env = { path = "../talaria-repo-env" }
-talaria-research = { path = "../talaria-research" }
-talaria-research-origin = { path = "../talaria-research-origin" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-tasks = { path = "../talaria-tasks" }
-talaria-teams = { path = "../talaria-teams" }
-talaria-users = { path = "../talaria-users" }
-talaria-work-wait = { path = "../talaria-work-wait" }
-axum = { version = "0.8", features = ["multipart"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
-futures-util = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-talaria-api-facades = { path = "../talaria-api-facades" }
+talaria-agent-auth = { workspace = true }
+talaria-attribution = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-body = { workspace = true }
+talaria-db = { workspace = true }
+talaria-error = { workspace = true }
+talaria-github = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-instance = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-realtime-watch = { workspace = true }
+talaria-repo-env = { workspace = true }
+talaria-research = { workspace = true }
+talaria-research-origin = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-tasks = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-users = { workspace = true }
+talaria-work-wait = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+talaria-api-facades = { workspace = true }
