@@ -270,25 +270,149 @@ pub fn upstream_error_message(status: u16) -> String {
     format!("upstream error ({status})")
 }
 
-/// The wire body for a failed upstream hop: fixed sentence plus structured
+/// The wire body for a failed upstream hop: OUR sentence — the account's own
+/// limit when the body names one, else the fixed one — plus structured
 /// type/code when the upstream sent them, capped at 64 chars each.
 pub fn sanitized_upstream_body(status: u16, body: &str) -> String {
-    let (kind, code) = structured_tokens(body);
+    let tokens = upstream_tokens(body);
     let error = OpenAiErrorBody {
-        message: upstream_error_message(status),
-        kind: kind.map(|s| s.chars().take(64).collect()),
-        code: code.map(|s| s.chars().take(64).collect()),
+        message: account_limit(&tokens).unwrap_or_else(|| upstream_error_message(status)),
+        kind: cap(tokens.kind),
+        code: cap(tokens.code),
     };
     serde_json::to_string(&OpenAiError { error }).expect("typed struct serializes")
 }
 
-fn structured_tokens(body: &str) -> (Option<String>, Option<String>) {
+/// The structured tokens an upstream sent, plus its own message text — which
+/// is read, classified, and never forwarded.
+struct UpstreamTokens {
+    kind: Option<String>,
+    code: Option<String>,
+    message: Option<String>,
+}
+
+fn upstream_tokens(body: &str) -> UpstreamTokens {
     let parsed: Option<serde_json::Value> = serde_json::from_str(body).ok();
-    let Some(error) = parsed.and_then(|j| j.get("error").cloned()) else {
-        return (None, None); // not JSON — an HTML error page or prose
+    let error = parsed.as_ref().and_then(|j| j.get("error"));
+    let s =
+        |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_str).map(str::to_string);
+    UpstreamTokens {
+        kind: s(error.and_then(|e| e.get("type"))),
+        code: s(error.and_then(|e| e.get("code"))),
+        message: s(error.and_then(|e| e.get("message"))),
+    }
+}
+
+/// The 64-char ceiling the boundary puts on a token it forwards.
+fn cap(token: Option<String>) -> Option<String> {
+    token.map(|t| t.chars().take(64).collect())
+}
+
+// ── The provider's own limit, said in our words ──
+// A refusal for ACCOUNT reasons is not a bad request: the fix is billing, a
+// plan, or waiting for a reset, and "upstream error (400)" sends the reader
+// hunting for a malformed payload that does not exist — an agent hit its
+// model's monthly ceiling for a week and every turn in every chat read as a
+// generic 400. The classification is STRUCTURE ONLY — the OpenAI-compatible
+// quota codes, and the one Anthropic limit sentence whose tail is a reset
+// instant — because the prose around a provider's message is exactly what
+// this boundary exists to keep.
+
+/// Codes that mean "this account is out of quota", as the
+/// OpenAI-compatible providers spell it.
+const QUOTA_CODES: [&str; 5] = [
+    "insufficient_quota",
+    "quota_exceeded",
+    "usage_limit_reached",
+    "billing_hard_limit_reached",
+    "credit_balance_too_low",
+];
+
+/// Anthropic's monthly-limit sentence, whose tail is the reset instant.
+const ANTHROPIC_LIMIT_PREFIX: &str =
+    "You have reached your specified API usage limits. You will regain access on ";
+
+/// The account-limit sentence for an upstream body, or None when the body
+/// says nothing structured about the account.
+fn account_limit(t: &UpstreamTokens) -> Option<String> {
+    if let Some(until) = t.message.as_deref().and_then(reset_instant) {
+        return Some(format!(
+            "the upstream account's usage limit is exhausted — access returns {until}"
+        ));
+    }
+    let named = |token: Option<&str>| token.is_some_and(|t| QUOTA_CODES.contains(&t));
+    if named(t.code.as_deref()) || named(t.kind.as_deref()) {
+        return Some(
+            "the upstream account is out of credit or over its usage limit — check the provider's billing"
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// The reset instant out of that sentence, accepted only when its tail IS an
+/// instant — a date, optionally a clock and a zone — and nothing else. A
+/// provider that starts writing anything past the prefix, or appending to a
+/// real instant, must not be able to push it across the boundary.
+fn reset_instant(message: &str) -> Option<&str> {
+    let tail = message.strip_prefix(ANTHROPIC_LIMIT_PREFIX)?;
+    let tail = tail.strip_suffix('.').unwrap_or(tail);
+    is_instant(tail).then_some(tail)
+}
+
+/// An instant as the provider spells it, as TOKENS rather than a whitelist of
+/// characters: prose that merely opens with a date has nowhere to hide.
+fn is_instant(s: &str) -> bool {
+    if !s.is_ascii() || s.len() > 40 {
+        return false;
+    }
+    let mut tokens = s.split_whitespace();
+    let Some(date) = tokens.next() else {
+        return false;
     };
-    let s = |v: &serde_json::Value| v.as_str().map(str::to_string);
-    (s(&error["type"]), s(&error["code"]))
+    if !is_date(date) {
+        return false;
+    }
+    let mut zone: Option<&str> = None;
+    if let Some(next) = tokens.next() {
+        if next != "at" {
+            return false;
+        }
+        let Some(clock) = tokens.next() else {
+            return false;
+        };
+        if !is_clock(clock) {
+            return false;
+        }
+        zone = tokens.next();
+    }
+    if tokens.next().is_some() {
+        return false;
+    }
+    zone.is_none_or(|z| z.len() <= 8 && z.bytes().all(|b| b.is_ascii_uppercase()))
+}
+
+fn is_date(s: &str) -> bool {
+    let mut parts = s.split('-');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(y), Some(m), Some(d), None) if is_digits(y, 4) && is_digits(m, 2) && is_digits(d, 2)
+    )
+}
+
+fn is_clock(s: &str) -> bool {
+    let mut parts = s.split(':');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(h), Some(m), None, None) => is_digits(h, 2) && is_digits(m, 2),
+        (Some(h), Some(m), Some(sec), None) => {
+            is_digits(h, 2) && is_digits(m, 2) && is_digits(sec, 2)
+        }
+        _ => false,
+    }
+}
+
+fn is_digits(s: &str, len: usize) -> bool {
+    s.len() == len && s.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The one place the verbatim body is allowed to go, capped at 500 chars.
@@ -341,12 +465,12 @@ mod tests {
     fn upstream_boundary_keeps_structured_tokens_and_caps_them() {
         let long_code = "x".repeat(80); // JSON-quoted into the body below
         let body = format!(
-            r#"{{"error":{{"message":"secret is hunter2","type":"insufficient_quota","code":"{long_code}"}}}}"#
+            r#"{{"error":{{"message":"secret is hunter2","type":"rate_limit_exceeded","code":"{long_code}"}}}}"#
         );
         let out = sanitized_upstream_body(429, &body);
         assert_eq!(
             out,
-            r#"{"error":{"message":"upstream error (429)","type":"insufficient_quota","code":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}"#
+            r#"{"error":{"message":"upstream error (429)","type":"rate_limit_exceeded","code":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}"#
         );
         assert!(
             !out.contains("hunter2"),
@@ -358,6 +482,47 @@ mod tests {
             sanitized_upstream_body(502, "<html>Bad Gateway</html>"),
             r#"{"error":{"message":"upstream error (502)"}}"#
         );
+    }
+
+    #[test]
+    fn the_account_s_own_limit_is_named_instead_of_the_generic_sentence() {
+        // The incident, verbatim: Anthropic's monthly ceiling, which used to
+        // reach every chat as "upstream error (400)". The reset instant rides
+        // (it is what makes the sentence actionable); the provider's prose
+        // does not.
+        let body = r#"{"error":{"code":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC.","type":"invalid_request_error","param":null}}"#;
+        assert_eq!(
+            sanitized_upstream_body(400, body),
+            r#"{"error":{"message":"the upstream account's usage limit is exhausted — access returns 2026-10-01 at 00:00 UTC","type":"invalid_request_error","code":"invalid_request_error"}}"#
+        );
+
+        // The OpenAI-compatible spelling: the code alone is the signal.
+        assert_eq!(
+            sanitized_upstream_body(
+                429,
+                r#"{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}"#
+            ),
+            r#"{"error":{"message":"the upstream account is out of credit or over its usage limit — check the provider's billing","type":"insufficient_quota","code":"insufficient_quota"}}"#
+        );
+    }
+
+    #[test]
+    fn a_look_alike_limit_sentence_stays_behind_the_boundary() {
+        // Same opening, prose tail: not an instant, so nothing crosses.
+        let prose = r#"{"error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on the moon, ask ops at https://internal.host."}}"#;
+        assert_eq!(
+            sanitized_upstream_body(400, prose),
+            r#"{"error":{"message":"upstream error (400)","type":"invalid_request_error"}}"#
+        );
+
+        // A real instant with anything appended after it is still a look-alike.
+        let appended = r#"{"error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC. ping https://internal.host with sk-abc"}}"#;
+        let out = sanitized_upstream_body(400, appended);
+        assert_eq!(
+            out,
+            r#"{"error":{"message":"upstream error (400)","type":"invalid_request_error"}}"#
+        );
+        assert!(!out.contains("internal.host") && !out.contains("sk-abc"));
     }
 
     #[test]
