@@ -1,44 +1,44 @@
 [package]
 name = "talaria-routes-integrations"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-artifacts = { path = "../talaria-artifacts" }
-talaria-audit = { path = "../talaria-audit" }
-talaria-auth-config = { path = "../talaria-auth-config" }
-talaria-body = { path = "../talaria-body" }
-talaria-claim = { path = "../talaria-claim" }
-talaria-error = { path = "../talaria-error" }
-talaria-github = { path = "../talaria-github" }
-talaria-invites = { path = "../talaria-invites" }
-talaria-me = { path = "../talaria-me" }
-talaria-org-domains = { path = "../talaria-org-domains" }
-talaria-params = { path = "../talaria-params" }
-talaria-password = { path = "../talaria-password" }
-talaria-password-accounts = { path = "../talaria-password-accounts" }
-talaria-permissions = { path = "../talaria-permissions" }
-talaria-personal-agent = { path = "../talaria-personal-agent" }
-talaria-ratelimit = { path = "../talaria-ratelimit" }
-talaria-realtime-watch = { path = "../talaria-realtime-watch" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-teams = { path = "../talaria-teams" }
-talaria-users = { path = "../talaria-users" }
-talaria-workspace-secrets = { path = "../talaria-workspace-secrets" }
-axum = { version = "0.8", features = ["multipart"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
-regex = "1"
-url = "2"
-talaria-api-facades = { path = "../talaria-api-facades" }
+talaria-agent-auth = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-auth-config = { workspace = true }
+talaria-body = { workspace = true }
+talaria-claim = { workspace = true }
+talaria-error = { workspace = true }
+talaria-github = { workspace = true }
+talaria-invites = { workspace = true }
+talaria-me = { workspace = true }
+talaria-org-domains = { workspace = true }
+talaria-params = { workspace = true }
+talaria-password = { workspace = true }
+talaria-password-accounts = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-personal-agent = { workspace = true }
+talaria-ratelimit = { workspace = true }
+talaria-realtime-watch = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-users = { workspace = true }
+talaria-workspace-secrets = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+url = { workspace = true }
+talaria-api-facades = { workspace = true }

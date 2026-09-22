@@ -1,14 +1,14 @@
 [package]
 name = "talaria-kb-perms"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-fleet-agents = { path = "../talaria-fleet-agents" }
+serde = { workspace = true }
+sqlx = { workspace = true }
+talaria-fleet-agents = { workspace = true }

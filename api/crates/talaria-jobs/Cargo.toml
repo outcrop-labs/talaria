@@ -1,55 +1,55 @@
 [package]
 name = "talaria-jobs"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", features = ["multipart"] }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-uuid = { version = "1", features = ["v4"] }
-talaria-comms-decay = { path = "../talaria-comms-decay" }
-talaria-config = { path = "../talaria-config" }
-talaria-daily-brief = { path = "../talaria-daily-brief" }
-talaria-digest = { path = "../talaria-digest" }
-talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
-talaria-fleet-reconcile = { path = "../talaria-fleet-reconcile" }
-talaria-fleet-render = { path = "../talaria-fleet-render" }
-talaria-fleet-resources = { path = "../talaria-fleet-resources" }
-talaria-mcp = { path = "../talaria-mcp" }
-talaria-mcp-apply = { path = "../talaria-mcp-apply" }
-talaria-mcp-library = { path = "../talaria-mcp-library" }
-talaria-model-info = { path = "../talaria-model-info" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-outreach = { path = "../talaria-outreach" }
-talaria-price-oracle = { path = "../talaria-price-oracle" }
-talaria-push = { path = "../talaria-push" }
-talaria-realtime = { path = "../talaria-realtime" }
-talaria-research-def = { path = "../talaria-research-def" }
-talaria-runs-agent-hire = { path = "../talaria-runs-agent-hire" }
-talaria-runs-decide = { path = "../talaria-runs-decide" }
-talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-runs-plan-draft = { path = "../talaria-runs-plan-draft" }
-talaria-runs-reclaim = { path = "../talaria-runs-reclaim" }
-talaria-runs-reindex = { path = "../talaria-runs-reindex" }
-talaria-runs-run = { path = "../talaria-runs-run" }
-talaria-runs-store = { path = "../talaria-runs-store" }
-talaria-runs-work-session = { path = "../talaria-runs-work-session" }
-talaria-scheduler = { path = "../talaria-scheduler" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-state = { path = "../talaria-state" }
-talaria-update-job = { path = "../talaria-update-job" }
-talaria-work-dispatch = { path = "../talaria-work-dispatch" }
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
-tracing = "0.1"
-talaria-fleet-create = { path = "../talaria-fleet-create" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-web-search = { path = "../talaria-web-search" }
-talaria-fleet-docker = { path = "../talaria-fleet-docker" }
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+talaria-comms-decay = { workspace = true }
+talaria-config = { workspace = true }
+talaria-daily-brief = { workspace = true }
+talaria-digest = { workspace = true }
+talaria-fleet-preflight = { workspace = true }
+talaria-fleet-reconcile = { workspace = true }
+talaria-fleet-render = { workspace = true }
+talaria-fleet-resources = { workspace = true }
+talaria-mcp = { workspace = true }
+talaria-mcp-apply = { workspace = true }
+talaria-mcp-library = { workspace = true }
+talaria-model-info = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-outreach = { workspace = true }
+talaria-price-oracle = { workspace = true }
+talaria-push = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-research-def = { workspace = true }
+talaria-runs-agent-hire = { workspace = true }
+talaria-runs-decide = { workspace = true }
+talaria-runs-define = { workspace = true }
+talaria-runs-plan-draft = { workspace = true }
+talaria-runs-reclaim = { workspace = true }
+talaria-runs-reindex = { workspace = true }
+talaria-runs-run = { workspace = true }
+talaria-runs-store = { workspace = true }
+talaria-runs-work-session = { workspace = true }
+talaria-scheduler = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-state = { workspace = true }
+talaria-update-job = { workspace = true }
+talaria-work-dispatch = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+talaria-fleet-create = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-web-search = { workspace = true }
+talaria-fleet-docker = { workspace = true }

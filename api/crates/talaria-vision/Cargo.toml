@@ -1,18 +1,18 @@
 [package]
 name = "talaria-vision"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
-talaria-harness = { path = "../talaria-harness" }
-talaria-harness-model = { path = "../talaria-harness-model" }
-talaria-state = { path = "../talaria-state" }
-tokio = { version = "1", features = ["macros"] }
+talaria-harness = { workspace = true }
+talaria-harness-model = { workspace = true }
+talaria-state = { workspace = true }
+tokio = { workspace = true }

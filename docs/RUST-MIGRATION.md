@@ -181,9 +181,10 @@ composition root that wires the cross-crate seams.
 ### Where new code goes
 
 1. **A new domain gets a new crate** — `api/crates/talaria-<domain>/`, one
-   concern, `[lints] workspace = true`, registered in the members list of
-   `api/Cargo.toml`. Crate-per-domain is the point of the split; do not grow a
-   grab-bag crate.
+   concern, deps declared as `{ workspace = true }` from
+   `[workspace.dependencies]` (membership is the `crates/*` glob, so the
+   directory IS the registration). Crate-per-domain is the point of the split;
+   do not grow a grab-bag crate.
 2. **Dependencies point DOWN only** — leaf crates (config, db, error, body,
    secretbox, state, realtime…) at the bottom; platform crates (gateway);
    engines above them; `talaria-api-routes` and the binary at the top. If a

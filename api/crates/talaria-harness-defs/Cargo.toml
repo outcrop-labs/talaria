@@ -1,39 +1,39 @@
 [package]
 name = "talaria-harness-defs"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-futures-util = "0.3"
-regex = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-body = { path = "../talaria-body" }
-talaria-capability-platform = { path = "../talaria-capability-platform" }
-talaria-capability-reach = { path = "../talaria-capability-reach" }
-talaria-config = { path = "../talaria-config" }
-talaria-fitness-toolbox = { path = "../talaria-fitness-toolbox" }
-talaria-fitness-world = { path = "../talaria-fitness-world" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-harness = { path = "../talaria-harness" }
-talaria-harness-model = { path = "../talaria-harness-model" }
-talaria-harness-prompt-rules = { path = "../talaria-harness-prompt-rules" }
-talaria-harness-schema = { path = "../talaria-harness-schema" }
-talaria-harness-text = { path = "../talaria-harness-text" }
-talaria-native-search = { path = "../talaria-native-search" }
-talaria-platform-agents = { path = "../talaria-platform-agents" }
-talaria-search = { path = "../talaria-search" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-state = { path = "../talaria-state" }
-talaria-task-const = { path = "../talaria-task-const" }
-talaria-web-search = { path = "../talaria-web-search" }
-talaria-workspace-handles = { path = "../talaria-workspace-handles" }
-tokio = { version = "1", features = ["macros", "rt"] }
-tracing = "0.1"
-url = "2"
+futures-util = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-body = { workspace = true }
+talaria-capability-platform = { workspace = true }
+talaria-capability-reach = { workspace = true }
+talaria-config = { workspace = true }
+talaria-fitness-toolbox = { workspace = true }
+talaria-fitness-world = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-harness = { workspace = true }
+talaria-harness-model = { workspace = true }
+talaria-harness-prompt-rules = { workspace = true }
+talaria-harness-schema = { workspace = true }
+talaria-harness-text = { workspace = true }
+talaria-native-search = { workspace = true }
+talaria-platform-agents = { workspace = true }
+talaria-search = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-state = { workspace = true }
+talaria-task-const = { workspace = true }
+talaria-web-search = { workspace = true }
+talaria-workspace-handles = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
