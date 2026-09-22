@@ -4,7 +4,6 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 - **Three dead cross-crate seams, one 500 that should have been a 400, and two
   test contracts the first live-suite runs put right.** The new live-DB gate
   (below) ran for the first time and everything it found is fixed in the same
