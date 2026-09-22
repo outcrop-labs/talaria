@@ -17,6 +17,12 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri # WebKit composites on the GPU wherever it can
+  # The sandbox's render node is not the host driver's. Without this,
+  # WebKit's DMABUF renderer dies on a Wayland protocol error before a
+  # window exists, and a desktop launch is silent. The binary sets the
+  # same variable when FLATPAK_ID is present; this covers a packager
+  # that ships an older binary.
+  - --env=WEBKIT_DISABLE_DMABUF_RENDERER=1
   - --talk-name=org.freedesktop.portal.* # browser-based OAuth, when it lands
 
 modules:
