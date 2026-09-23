@@ -107,21 +107,17 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Response {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "GET comments", &id) {
-        return gate;
-    }
+) -> Result<Response, Response> {
+    let id = super::resolve_task_path(&state.pg, &id).await?;
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
-        Ok(None) => return house_error(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => return internal("[tasks] read on GET comments failed", e),
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[tasks] read on GET comments failed", e)),
     };
-    if let Err(gate) = comment_reader(&state, &headers, &task.board_id).await {
-        return gate;
-    }
+    comment_reader(&state, &headers, &task.board_id).await?;
     match list_comments(&state.pg, &id).await {
-        Ok(comments) => Json(json!({ "comments": comments })).into_response(),
-        Err(e) => internal("[tasks] comment list failed", e),
+        Ok(comments) => Ok(Json(json!({ "comments": comments })).into_response()),
+        Err(e) => Ok(internal("[tasks] comment list failed", e)),
     }
 }
 
@@ -131,9 +127,10 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "POST comment", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -156,6 +153,15 @@ pub async fn post(
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let comment = match add_comment(&deps, &id, &author, &content, parent_id.as_deref()).await {
         Ok(c) => c,
+        // The same None the channel door answers 409: nobody can hold the
+        // room row. A granted agent commenting on an agent-created ticket
+        // used to see that as a 500.
+        Err(sqlx::Error::RowNotFound) => {
+            return Ok(house_error(
+                StatusCode::CONFLICT,
+                "this ticket has no owner to hold its room — add someone to its board",
+            ));
+        }
         Err(e) => return Ok(internal("[tasks] comment add failed", e)),
     };
     // The comment landed through the room insert — the agent-writes door

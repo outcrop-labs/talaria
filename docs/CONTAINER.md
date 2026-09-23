@@ -213,7 +213,7 @@ Set through compose interpolation (`${VAR:-default}` — override by exporting
 | `TALARIA_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | The TEI model (changing it means re-backfilling) |
 | `TALARIA_FLEET_NETWORK` | `talaria` | Shared fleet network name (per-instance on shared hosts) |
 | `TALARIA_DNS_1` / `TALARIA_DNS_2` | `1.1.1.1` / `1.0.0.1` | SearXNG's upstream resolvers |
-| `TALARIA_PG_POOL_MAX` | `40` | The api's postgres pool ceiling (postgres sidecar runs default `max_connections=100`; api + ui + migration ≈ 61) |
+| `TALARIA_PG_POOL_MAX` | `64` | The api's postgres pool ceiling. Sidecar `max_connections=200` (restart to apply; image default is 100). 64+20+1 also fits the old 100, so a partial restart cannot exhaust postgres. Raise toward 120 on a busy fleet after postgres is at 200 |
 | `TALARIA_PG_ACQUIRE_TIMEOUT_MS` | `15000` | How long a db-bound request queues before failing — bursts wait instead of 500ing |
 | `TALARIA_UI_PG_POOL_MAX` | `20` | The UI's own postgres pool ceiling |
 
@@ -270,11 +270,14 @@ Two docker networks, one socket — this is the "right shape"
     host docker daemon ── runs the fleet's compose project
 ```
 
-- **Agents → app**: the fleet's rendered configs point at
-  `TALARIA_MCP_GW_URL` / `TALARIA_GATEWAY_SELF_URL`, which the compose sets to
-  the app's service name (`http://talaria:5273/...`). Container→container on
-  the shared network — **no host firewall rule needed**, which is the entire
-  point: the dev/host install needs an INPUT-chain rule for exactly this hop.
+- **Agents → app**: MCP gateway (app servers stay in the UI process) is
+  `TALARIA_MCP_GW_URL` (`http://talaria:5273/api/mcp/gw`). LLM, git credential,
+  and tool-events are `TALARIA_GATEWAY_SELF_URL`
+  (`http://talaria:5274/api/llm/v1`) — the API, bound on the container network
+  (`TALARIA_API_BIND=0.0.0.0`) and not published to the host. The UI hop in
+  front of every agent stream was one thread queueing a multi-core box.
+  Container→container, no host firewall rule. A rendered fleet keeps the old
+  URL until the next render and roll.
 - **App → agents**: `TALARIA_AGENT_DIAL=container` makes the fleet manifest
   ([`api/crates/talaria-fleet-render/src/lib.rs`](../api/crates/talaria-fleet-render/src/lib.rs)) dial agents by their
   compose service names (`agent-<dept>:8642`, slot-aware) instead of the

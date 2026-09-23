@@ -36,7 +36,9 @@ use std::path::{Path, PathBuf};
 use talaria_agent_auth::ensure_agent_api_key;
 use talaria_fleet_layout::GATEWAY_PORT_BASE;
 use talaria_secretbox::SecretBox;
-use talaria_workbench_harnesses::{HarnessAuth, McpConfigFormat, list_harness_defs};
+use talaria_workbench_harnesses::{
+    HarnessAuth, McpConfigFormat, PI_CODING_AGENT_DIR, list_harness_defs,
+};
 
 /// The def columns the render loop reads — the agent_defs row for
 /// MANAGED+ENABLED agents (the current version rides alongside in
@@ -1425,44 +1427,24 @@ pub async fn render_fleet(
             // bind-mounted directly — a symlink to a container-only path is
             // dangling on the host, and the docker daemon answers a dangling
             // bind source with mkdir-then-"file exists", which 500s the agent.
+            //
+            // Those file mounts land INSIDE the state volume. Docker creates
+            // the missing parents (`workbench/harness/pi`) as root:root 755
+            // before the entrypoint, and Hermes stage2 does not chown that
+            // tree when `/opt/data` is already hermes-owned. omp and pi write
+            // config there (`PI_CODING_AGENT_DIR`); a root-owned 755 dir is
+            // not writable by the runtime user, so the harness cannot start.
+            // The cont-init hook mounted below hands the directories to hermes
+            // on every boot — existing volumes included — and does not touch
+            // the :ro policy files. Pi and Oh My Pi share one dir, so the
+            // mounts are emitted once; mounting the same destination twice
+            // is a compose error, and `~/.omp` is not where omp looks once
+            // the env is set (those mounts were also what left `/home/hermes/.omp`
+            // root-owned).
+            let mut pi_config = false;
             for slug in &wb.harnesses {
                 match slug.as_str() {
-                    "pi" => {
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/pi/models.json:ro",
-                            wb_dir.join("models.json").display()
-                        ));
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/pi/settings.json:ro",
-                            wb_dir.join("pi-settings.json").display()
-                        ));
-                        if written.iter().any(|f| f == "mcp.json") {
-                            harness_mounts.push(format!(
-                                "{}:/opt/data/workbench/harness/pi/mcp.json:ro",
-                                wb_dir.join("mcp.json").display()
-                            ));
-                        }
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/pi/skills:ro",
-                            fleet_skills.display()
-                        ));
-                    }
-                    "oh-my-pi" => {
-                        for home in ["/home/hermes/.omp/agent", "/root/.omp/agent"] {
-                            harness_mounts.push(format!(
-                                "{}:{home}/models.json:ro",
-                                wb_dir.join("models.json").display()
-                            ));
-                            if written.iter().any(|f| f == "mcp.json") {
-                                harness_mounts.push(format!(
-                                    "{}:{home}/mcp.json:ro",
-                                    wb_dir.join("mcp.json").display()
-                                ));
-                            }
-                            harness_mounts
-                                .push(format!("{}:{home}/skills:ro", fleet_skills.display()));
-                        }
-                    }
+                    "pi" | "oh-my-pi" => pi_config = true,
                     "opencode" => {
                         harness_mounts.push(format!(
                             "{}:/opt/data/workbench/harness/opencode/skills:ro",
@@ -1471,6 +1453,13 @@ pub async fn render_fleet(
                     }
                     _ => {}
                 }
+            }
+            if pi_config {
+                harness_mounts.extend(pi_config_mounts(
+                    &wb_dir,
+                    &fleet_skills,
+                    written.iter().any(|f| f == "mcp.json"),
+                ));
             }
             // The workspace pointers every harness reads in its working
             // directory — where the skills live, whichever tool lands there.
@@ -1489,6 +1478,15 @@ pub async fn render_fleet(
         let mut vols: Vec<String> = Vec::new();
         if wb.is_some() {
             vols.push(format!("{}:/opt/workbench-config:ro", wb_dir.display()));
+            // Heal the root-owned parents Docker just created. The script is
+            // executable on the host; s6 runs `/etc/cont-init.d/*` as root
+            // before the hermes drop, so the chown lands before any harness.
+            let own_path = agent_dir.join("workbench-own");
+            tokio::fs::write(&own_path, HARNESS_OWN_SCRIPT)
+                .await
+                .map_err(|e| format!("{}: {e}", own_path.display()))?;
+            set_executable(&own_path).await;
+            vols.push(format!("{}:{HARNESS_OWN_HOOK}:ro", own_path.display()));
         }
         for m in &harness_mounts {
             vols.push(m.clone());
@@ -1694,6 +1692,77 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
     cfg.insert("unattended_mode".into(), json!("approve"));
     cfg.insert("cron_mode".into(), json!("approve"));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
+/// before user services start.
+const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
+
+/// Heal Docker's root-owned bind-mount parents so the hermes runtime can
+/// write harness config. Directories only — never `-R`. The policy files
+/// mounted inside (models.json, settings.json, mcp.json, skills) are
+/// read-only host files; a recursive chown fails on them or steals host
+/// ownership of the skills tree. `0775` is the shared-group mode: owner
+/// hermes can write, and so can the hermes group. Other users cannot, and
+/// `/opt/data` itself stays `0700`, so the listing is not reachable from
+/// outside the runtime user anyway.
+const HARNESS_OWN_SCRIPT: &str = r#"#!/bin/sh
+# Heal Docker's root-owned bind-mount parents so hermes can write config.
+set -eu
+[ "$(id -u)" = 0 ] || exit 0
+id hermes >/dev/null 2>&1 || exit 0
+own() {
+  [ -d "$1" ] || return 0
+  [ -L "$1" ] && return 0
+  chown hermes:hermes "$1" 2>/dev/null || true
+  chmod 0775 "$1" 2>/dev/null || true
+}
+# Create the writable state dirs. mkdir -p is a no-op on the ones Docker
+# already created as root; own() then hands those to hermes. A fresh volume
+# with no prior mount gets the same ownership, so a newly created harness
+# dir does not come out root-owned.
+mkdir -p \
+  /opt/data/workbench/harness/pi \
+  /opt/data/workbench/harness/opencode \
+  /opt/data/workbench/harness/xdg \
+  /opt/data/workbench/harness/playwright \
+  /opt/data/workbench/harness/npm \
+  /opt/data/workbench/jobs \
+  /opt/data/workbench/sessions \
+  2>/dev/null || true
+own /opt/data/workbench
+own /opt/data/workbench/harness
+own /opt/data/workbench/harness/pi
+own /opt/data/workbench/harness/opencode
+own /opt/data/workbench/harness/xdg
+own /opt/data/workbench/harness/playwright
+own /opt/data/workbench/harness/npm
+own /opt/data/workbench/jobs
+own /opt/data/workbench/sessions
+"#;
+
+/// Policy files Pi and Oh My Pi read inside [`PI_CODING_AGENT_DIR`]. One
+/// destination per file — both slugs share the dir.
+fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path, mcp: bool) -> Vec<String> {
+    let dir = PI_CODING_AGENT_DIR;
+    let mut mounts = vec![
+        format!(
+            "{}:{dir}/models.json:ro",
+            wb_dir.join("models.json").display()
+        ),
+        format!(
+            "{}:{dir}/settings.json:ro",
+            wb_dir.join("pi-settings.json").display()
+        ),
+    ];
+    if mcp {
+        mounts.push(format!(
+            "{}:{dir}/mcp.json:ro",
+            wb_dir.join("mcp.json").display()
+        ));
+    }
+    mounts.push(format!("{}:{dir}/skills:ro", fleet_skills.display()));
+    mounts
 }
 
 /// Pi / Oh My Pi `.mcp.json` shape — `${VAR}` expands from the container env.
@@ -2458,5 +2527,61 @@ empty_list: []
         // caller falls back to the dev origin rather than guessing.
         assert_eq!(origin("https://upstream.example/v1"), None);
         assert_eq!(origin(""), None);
+    }
+
+    #[test]
+    fn the_own_hook_is_valid_shell_and_does_not_chown_the_policy_files() {
+        // A recursive chown is the plausible bug: it fails on the :ro policy
+        // mounts or steals host ownership of the skills tree. The hook must
+        // name the config dir omp writes and hand only the directories over.
+        let dir =
+            std::env::temp_dir().join(format!("talaria-render-tests-{}-own", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("workbench-own");
+        std::fs::write(&p, HARNESS_OWN_SCRIPT).unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("-n")
+            .arg(&p)
+            .output()
+            .expect("sh runs");
+        assert!(
+            out.status.success(),
+            "the generated own hook is not valid shell: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(HARNESS_OWN_SCRIPT.contains("chown hermes:hermes"));
+        assert!(HARNESS_OWN_SCRIPT.contains(PI_CODING_AGENT_DIR));
+        assert!(HARNESS_OWN_SCRIPT.contains("chmod 0775"));
+        assert!(
+            !HARNESS_OWN_SCRIPT.contains("chown -R"),
+            "a recursive chown retakes the :ro policy files"
+        );
+        assert_eq!(
+            HARNESS_OWN_HOOK,
+            "/etc/cont-init.d/03-talaria-workbench-own"
+        );
+        let mounts = pi_config_mounts(
+            Path::new("/fleet/eng/workbench"),
+            Path::new("/fleet/skills"),
+            true,
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/models.json:ro")))
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/mcp.json:ro")))
+        );
+        assert!(mounts.iter().all(|m| !m.contains("/.omp/")));
+        let without_mcp = pi_config_mounts(
+            Path::new("/fleet/eng/workbench"),
+            Path::new("/fleet/skills"),
+            false,
+        );
+        assert!(without_mcp.iter().all(|m| !m.contains("mcp.json")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

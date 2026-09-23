@@ -3084,6 +3084,44 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now()
    )`,
   `create index if not exists work_wait_agent_time on work_wait (agent_model, queued_at)`,
+  // ── TALA-35: workchains become a DAG. Edges replace the ordered list as
+  //  the model: a wire is (fromStep, toStep); the linear v1 order derives
+  //  into consecutive edges so existing chains keep working unchanged. The
+  //  steps' positions stay (the migration reads them; the api keeps the
+  //  PATCH positions verb as a linear rebuild over edges), and canvas_x/y
+  //  hold the node canvas's free placement (null = auto-layout).
+  `create table if not exists task_workchain_edges (
+     id uuid primary key default gen_random_uuid(),
+     workchain_id uuid not null references task_workchains(id) on delete cascade,
+     from_step uuid not null references task_workchain_steps(id) on delete cascade,
+     to_step uuid not null references task_workchain_steps(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     unique(workchain_id, from_step, to_step)
+   )`,
+  `create index if not exists task_workchain_edges_from
+     on task_workchain_edges (workchain_id, from_step)`,
+  `create index if not exists task_workchain_edges_to
+     on task_workchain_edges (workchain_id, to_step)`,
+  // v1 linear orders derive into edges: consecutive steps in the chain's
+  // read order (position, then created_at — the same tiebreak the reader
+  // uses) become one wire each. Two ranked copies joined on rn = rn + 1, so
+  // a chain with duplicated positions still derives a connected line.
+  `insert into task_workchain_edges (workchain_id, from_step, to_step)
+   select a.workchain_id, a.id, b.id
+   from (
+     select id, workchain_id,
+            row_number() over (partition by workchain_id order by position, created_at) as rn
+     from task_workchain_steps
+   ) a
+   join (
+     select id, workchain_id,
+            row_number() over (partition by workchain_id order by position, created_at) as rn
+     from task_workchain_steps
+   ) b on b.workchain_id = a.workchain_id and b.rn = a.rn + 1`,
+  `alter table task_workchain_steps
+     add column if not exists canvas_x integer`,
+  `alter table task_workchain_steps
+     add column if not exists canvas_y integer`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
