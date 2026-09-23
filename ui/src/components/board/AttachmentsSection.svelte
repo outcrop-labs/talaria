@@ -6,11 +6,12 @@
   import { openFileViewer } from '@/lib/file-viewer.svelte'
   import { updateTask } from '@/lib/boards.svelte'
   import { listStagger } from '@/lib/motion'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
   import type { Task } from '@/lib/task-const'
-  import Section from './Section.svelte'
 
   // Files + knowledge/artifact refs pinned to the ticket. Same chips as chat;
   // every change saves immediately (the list on the ticket IS the state).
+  // The tab strip is the heading — this is the body, not a second label.
   let { task, canEdit, onSaved }: { task: Task; canEdit: boolean; onSaved: () => void } = $props()
 
   const items = $derived(task.attachments ?? [])
@@ -19,9 +20,14 @@
   }
 </script>
 
-{#if items.length || canEdit}
-  <Section label="Attachments">
-    {#if items.length > 0}
+<div class="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+  {#if items.length === 0}
+    <EmptyState
+      variant="compact"
+      title="No attachments"
+      hint={canEdit ? 'Attach a file, a knowledge doc, or an artifact.' : 'Nothing is pinned to this ticket.'}
+    />
+  {:else}
       <div class="mb-2 flex flex-wrap gap-2" use:listStagger>
         {#each items as a (a.id)}
           <span class="inline-flex items-center gap-2 rounded-md border border-line bg-raised/50 px-2.5 py-1.5 font-sans text-xs">
@@ -67,7 +73,6 @@
           </span>
         {/each}
       </div>
-    {/if}
-    {#if canEdit}<AttachButton disabled={false} onAttach={(a) => save([...items.filter((x) => x.id !== a.id), a])} />{/if}
-  </Section>
-{/if}
+    {#if canEdit}<div class="mt-3"><AttachButton disabled={false} onAttach={(a) => save([...items.filter((x) => x.id !== a.id), a])} /></div>{/if}
+  {/if}
+</div>
