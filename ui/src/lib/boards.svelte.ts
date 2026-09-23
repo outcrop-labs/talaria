@@ -383,7 +383,7 @@ export const archiveBoard = (boardId: string, archived: boolean) =>
   patchJson<{ board: Board }>(`/api/boards/${boardId}`, { archived })
 export const deleteBoard = (boardId: string) => delJson<{ ok: true }>(`/api/boards/${boardId}`)
 export const archiveTask = (taskId: string, archived: boolean) => updateTask(taskId, { archived })
-export const shareBoard = (boardId: string, email: string, role: 'editor' | 'viewer') =>
+export const shareBoard = (boardId: string, email: string, role: 'owner' | 'editor' | 'viewer') =>
   postJson<{ ok: true }>(`/api/boards/${boardId}/members`, { email, role })
 export const unshareBoard = (boardId: string, userId: string) =>
   delJson<{ ok: true }>(`/api/boards/${boardId}/members`, { userId })

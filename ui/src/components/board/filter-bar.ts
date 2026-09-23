@@ -22,3 +22,6 @@ export const DUE_LABEL: Record<Exclude<BoardFilters['due'], ''>, string> = {
   week: 'Due this week',
   none: 'No due date',
 }
+
+/** Facet menus and the list's group-by menu: opening one closes the others. */
+export const BOARD_MENU_GROUP = 'board-filters'
