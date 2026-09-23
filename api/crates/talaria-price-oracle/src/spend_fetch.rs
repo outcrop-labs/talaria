@@ -137,7 +137,7 @@ pub async fn ingest_published_prices(pg: &PgPool) -> Result<usize, String> {
         };
         n += ingest_one_catalog(pg, &row).await;
     }
-    let _ = talaria_gateway::registry::invalidate_endpoints_cache();
+    talaria_gateway::registry::invalidate_endpoints_cache();
     Ok(n)
 }
 
