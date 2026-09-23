@@ -94,3 +94,5 @@ Three panels in the Admin area's **Agents** tab govern every agent at once:
 | **QA judge** | Run the judge on quality review, **Enforcing** or **Advisory**; each board can override (enforcing / advisory / off), and boards on "inherit" follow this stance |
 | **Confab guard** | Mode — `Off` / `Observe` / `Annotate` / `Strict` — plus minimum confidence, coaching agents from findings, and the findings feed |
 | **Proactive outreach** | Periodic check-ins (every N minutes), a DM cap per day, and which agents are proactive |
+
+Besides these panels, one rule is stamped into every agent's soul at hire and in every role template, so it holds no matter how the soul is later edited: **agents never do dev work in chat**. Code changes — however small — ship through a ticket and a workbench job; a dev-work request in chat produces (or links) a ticket and moves execution to the workbench, and instructions given in chat are posted to the ticket as comments.

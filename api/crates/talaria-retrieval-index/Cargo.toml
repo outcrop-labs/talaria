@@ -1,28 +1,28 @@
 [package]
 name = "talaria-retrieval-index"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-boards = { path = "../talaria-boards" }
-talaria-body = { path = "../talaria-body" }
-talaria-retrieval-collections = { path = "../talaria-retrieval-collections" }
-talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
-talaria-retrieval-http = { path = "../talaria-retrieval-http" }
-talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
-talaria-retrieval-rerank = { path = "../talaria-retrieval-rerank" }
-talaria-retrieval-sparse = { path = "../talaria-retrieval-sparse" }
-talaria-state = { path = "../talaria-state" }
-tracing = "0.1"
-sha2 = "0.11"
-tokio = { version = "1", features = ["sync", "time", "macros"] }
-uuid = { version = "1", features = ["v4"] }
-futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-body = { workspace = true }
+talaria-retrieval-collections = { workspace = true }
+talaria-retrieval-embed = { workspace = true }
+talaria-retrieval-http = { workspace = true }
+talaria-retrieval-qdrant = { workspace = true }
+talaria-retrieval-rerank = { workspace = true }
+talaria-retrieval-sparse = { workspace = true }
+talaria-state = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+futures-util = { workspace = true }

@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { Board } from '@/lib/boards.svelte'
+  import { readStored, writeStored } from '@/lib/persist'
 
   // Which groups the user has expanded, keyed by group name. Persisted so the
   // rail comes back the way it was left; unknown groups fall back to their
@@ -8,18 +9,15 @@
   const ARCHIVED_KEY = ' archived'
 
   function loadGroupState(): Record<string, boolean> {
-    try {
-      const raw = localStorage.getItem(GROUPS_KEY)
-      if (raw) {
-        const v = JSON.parse(raw) as unknown
-        if (v && typeof v === 'object' && !Array.isArray(v)) {
-          return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter(([, o]) => typeof o === 'boolean')) as Record<string, boolean>
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    return {}
+    return readStored<Record<string, boolean>>(
+      GROUPS_KEY,
+      (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+        const entries = Object.entries(value as Record<string, unknown>).filter(([, o]) => typeof o === 'boolean')
+        return Object.fromEntries(entries) as Record<string, boolean>
+      },
+      {},
+    )
   }
 
   const byName = (a: Board, b: Board) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
@@ -29,7 +27,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Archive, ExternalLink, Link as LinkIcon } from '@lucide/svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { useContextMenu, copyAppLink } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { isUnder } from '@/lib/route-tabs'
@@ -64,11 +62,7 @@
   const toggleGroup = (key: string, isOpen: boolean) => {
     const next = { ...groupState, [key]: !isOpen }
     groupState = next
-    try {
-      localStorage.setItem(GROUPS_KEY, JSON.stringify(next))
-    } catch {
-      /* ignore */
-    }
+    writeStored(GROUPS_KEY, next)
   }
 
   const ordered = $derived.by(() => {
@@ -111,10 +105,13 @@
     href={p('/boards/:boardId', { params: { boardId: b.id } })}
     draggable={b.role === 'owner'}
     oncontextmenu={(e) =>
-      menu.openMenu(e, [
-        { label: 'Open', icon: [ExternalLink, { size: 14 }], onSelect: () => navigate('/boards/:boardId', { params: { boardId: b.id } }) },
-        { label: 'Copy link', icon: [LinkIcon, { size: 14 }], onSelect: () => copyAppLink(`/boards/${b.id}`) },
-      ])}
+      menu.openMenu(
+        e,
+        openCopyItems(`/boards/${b.id}`, () => navigate('/boards/:boardId', { params: { boardId: b.id } }), {
+          open: [ExternalLink, { size: 14 }],
+          copy: [LinkIcon, { size: 14 }],
+        }),
+      )}
     ondragstart={() => (dragging = b)}
     ondragend={() => {
       dragging = null

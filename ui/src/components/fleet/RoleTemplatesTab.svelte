@@ -74,7 +74,7 @@
       role: name,
       department: '',
       description: '',
-      soul: `# Role — ${name}\n\n## Who you are\n\n## Voice & personality\n\n## How you work\n- Keep humans in the loop: create and triage tickets, never assign or close them.\n`,
+      soul: `# Role — ${name}\n\n## Who you are\n\n## Voice & personality\n\n## How you work\n- Keep humans in the loop: create and triage tickets, never assign or close them.\n- Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.\n`,
     }
   }
 

@@ -155,14 +155,15 @@
               Your assistant is a real agent that's just yours: its own memory, skills, and tools. Start by naming it.
             </p>
             <div>
-              <label class={fieldLabel}>Name</label>
-              <Input bind:value={name} oninput={rename} placeholder="Maxie" autofocus maxlength={60} />
+              <label for="wizard-name" class={fieldLabel}>Name</label>
+              <Input id="wizard-name" bind:value={name} oninput={rename} placeholder="Maxie" autofocus maxlength={60} />
             </div>
             <div>
-              <label class={fieldLabel}>Handle</label>
+              <label for="wizard-handle" class={fieldLabel}>Handle</label>
               <div class="flex items-center gap-2">
                 <span class="text-sm text-muted">@</span>
                 <Input
+                  id="wizard-handle"
                   bind:value={handle}
                   oninput={() => {
                     handleTouched = true

@@ -35,7 +35,12 @@
   const tabs: Tab[] = ['general', 'statuses', 'labels', 'people', 'agents']
 </script>
 
-<Modal {open} {onClose} title="Board settings" width="max-w-xl">
+<Modal {open} {onClose} title="Board settings" width="max-w-3xl" height="min-h-[32rem]">
+  <!-- NOT `<Tabs>` — the parity rule in docs/UI-CONVENTIONS.md, not an oversight.
+       This strip is one bordered GROUP of five EQUAL cells (`flex-1`) spanning
+       the modal; Tabs lays its cells out at content width with no group frame,
+       and its sliding mark carries a hairline these cells don't. The kit wants a
+       `Tabs` variant (fill cells + group border), not a call-site override. -->
   <div class="mb-4 flex gap-1 rounded-md border border-line p-0.5">
     {#each tabs as t (t)}
       <button
@@ -55,6 +60,6 @@
   {/if}
   {#if tab === 'statuses'}<StatusesTab {board} />{/if}
   {#if tab === 'labels'}<LabelsTab {board} />{/if}
-  {#if tab === 'people'}<PeopleTab {board} />{/if}
+  {#if tab === 'people'}<PeopleTab {board} {isOwner} />{/if}
   {#if tab === 'agents'}<AgentsTab {board} {canEdit} />{/if}
 </Modal>

@@ -4,7 +4,7 @@
   import Generating from '@/components/ui/Generating.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -23,7 +23,6 @@
     queryKey: ['admin-encryption'],
     queryFn: (): Promise<EncryptionData> => getJson<EncryptionData>('/api/admin/encryption'),
   }))
-  const data = $derived(query.data)
   let busy = $state(false)
   let msg = $state<string | null>(null)
   let newRoot = $state('')
@@ -54,23 +53,19 @@
     title="Encryption"
     info="Every stored secret is encrypted at rest (AES-256-GCM). A random data key encrypts the secrets; that key is stored wrapped by the root secret, so the key that unlocks everything is never in a config file. Rotating re-encrypts every secret under a fresh key in one pass."
   />
-  {#if query.isPending}
-    <!-- Stat pills shimmer instead of rendering "v—/—" and reflowing. -->
-    <div class="flex flex-wrap items-center gap-x-6 gap-y-1">
-      {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
-        <Skeleton class="h-3 w-24 rounded-full" />
-      {/each}
-    </div>
-  {:else if !data}
+  <QueryState query={query} errorTitle="Could not load encryption status" errorVariant="inline">
+    {#snippet skeleton()}
+      <!-- Stat pills shimmer instead of rendering "v—/—" and reflowing. -->
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-1">
+        {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
+          <Skeleton class="h-3 w-24 rounded-full" />
+        {/each}
+      </div>
+    {/snippet}
+    {#snippet children(data)}
     <!-- "Secrets protected: —" over a failed read looks like a fact about the
-         key store rather than a fact about the request. -->
-    <QueryError
-      variant="inline"
-      error={query.error}
-      title="Could not load encryption status"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+         key store rather than a fact about the request, so QueryState's error
+         branch owns that state. -->
     <div class="flex flex-wrap items-end gap-x-8 gap-y-2">
       <span>
         <span class="block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key version</span>
@@ -90,7 +85,8 @@
         </span>
       {/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
   <!-- §8 DANGER ZONE: orange hairline panel, mono label + IRREVERSIBLE
        meta, muted body, orange-outline action — never an orange fill. -->
   <div class="mt-4 rounded-md border border-danger/40 p-4">
@@ -103,8 +99,9 @@
     </p>
     <div class="flex flex-wrap items-end gap-3">
       <div class="min-w-[16rem] flex-1">
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New root secret (optional)</label>
+        <label for="encryption-new-root" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New root secret (optional)</label>
         <Input
+          id="encryption-new-root"
           type="password"
           bind:value={newRoot}
           placeholder="leave blank to keep the current root"

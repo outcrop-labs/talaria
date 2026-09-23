@@ -95,6 +95,7 @@
 
   let editorRef = $state<RichEditorHandle | null>(null)
   let seed = $state(0) // bump to remount the editor with new content
+  // svelte-ignore state_referenced_locally -- reason: seeded editor content; later content arrives via the seed-remount counter, not a re-seed
   let current = $state(value)
   let diffing = $state<{ rev: Revision; content: string; diff: DiffLine[] | null } | null>(null)
 

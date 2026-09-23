@@ -11,8 +11,14 @@
   let { targets }: { targets: { driveFolderId: string | null; calendarId: string | null; sendAs: string | null } } = $props()
 
   const qc = useQueryClient()
+  // Seed-once form drafts: the parent gates this section behind the account's
+  // loaded config, so re-seeding on every target refresh would clobber
+  // in-progress edits; `dirty` compares against the live prop instead.
+  // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let drive = $state(targets.driveFolderId ?? '')
+  // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let cal = $state(targets.calendarId ?? '')
+  // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let sendAs = $state(targets.sendAs ?? '')
   const savedFlash = useSavedFlash()
   const dirty = $derived(drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? ''))
@@ -32,18 +38,18 @@
 <div class="mt-4 space-y-3 rounded-md border border-line p-4">
   <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Where agents build</div>
   <div>
-    <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Shared Drive / folder ID</label>
-    <Input size="sm" bind:value={drive} placeholder="Shared Drive or folder ID" />
+    <label for="org-google-drive" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Shared Drive / folder ID</label>
+    <Input id="org-google-drive" size="sm" bind:value={drive} placeholder="Shared Drive or folder ID" />
     <div class="mt-1 text-[11px] text-muted">Files agents create land here (team-owned). Blank = the account’s My Drive. The org account must be a member of the Shared Drive.</div>
   </div>
   <div>
-    <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Calendar ID</label>
-    <Input size="sm" bind:value={cal} placeholder="team@group.calendar.google.com" />
+    <label for="org-google-calendar" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Calendar ID</label>
+    <Input id="org-google-calendar" size="sm" bind:value={cal} placeholder="team@group.calendar.google.com" />
     <div class="mt-1 text-[11px] text-muted">Org events land here. Blank = the account’s primary calendar.</div>
   </div>
   <div>
-    <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Send mail as</label>
-    <Input size="sm" bind:value={sendAs} placeholder="support@yourdomain.com" />
+    <label for="org-google-send-as" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Send mail as</label>
+    <Input id="org-google-send-as" size="sm" bind:value={sendAs} placeholder="support@yourdomain.com" />
     <div class="mt-1 text-[11px] text-muted">A verified send-as alias on the org account for outgoing mail. Blank = the account’s own address.</div>
   </div>
   <div class="flex items-center gap-3">

@@ -59,6 +59,11 @@ pub struct Alert {
 /// is a backlog not moving.
 const OUTBOX_STALE_MS: i64 = 5 * 60_000;
 
+/// Consecutive tool failures before the tool-plane alert fires. Ten is a
+/// full minute of a thrashing agent (the plugin reports one frame per call)
+/// and an ordinary bad tool or two never reaches it.
+pub const TOOL_FAIL_STREAK_ALERT: i64 = 10;
+
 // Polled by /alerts (60s) and Home (30s): a short cache keeps repeat loads
 // instant, and the probes below run in PARALLEL — serially they added up to
 // seconds (docker exec + four network probes).
@@ -100,8 +105,8 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
     let mut alerts: Vec<Alert> = Vec::new();
 
     // ── Fleet: every enabled managed agent should have a running container ─────
-    let managed: Vec<(String, String, String)> = sqlx::query_as(
-        "select slug, department, display_name from agent_defs \
+    let managed: Vec<(String, String, String, String)> = sqlx::query_as(
+        "select slug, department, display_name, model from agent_defs \
          where managed and enabled order by slug",
     )
     .fetch_all(pg)
@@ -130,6 +135,27 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         retrieval_upgrade_status(pg, &qd, &ed).await.ok()
     };
     let brains_fut = fleet_brain_health(pg);
+    // Per-agent consecutive tool-failure streaks, maintained by the
+    // tool-events route (`agent-tools:<model>:fail-streak`). None-value per
+    // agent = no streak key = tools healthy or silent; the alert below says
+    // which of those it is not.
+    let streak_keys: Vec<String> = managed
+        .iter()
+        .map(|m| format!("agent-tools:{}:fail-streak", m.3))
+        .collect();
+    let toolplane_fut = async {
+        if streak_keys.is_empty() {
+            Vec::new()
+        } else if let Ok(mut conn) = state.redis().await {
+            redis::cmd("MGET")
+                .arg(&streak_keys)
+                .query_async::<Vec<Option<i64>>>(&mut conn)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
     let cost_fut = cost_overview(pg);
     let vis = board_visibility_sql("$1", "$2", false);
     let stuck_sql = format!(
@@ -148,7 +174,7 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
     .bind(user_id)
     .bind(user_id)
     .fetch_all(pg);
-    let (states, manifest_count, preflight, mcp_up, rag, upgrade, brains, cost, stuck) = tokio::join!(
+    let (states, manifest_count, preflight, mcp_up, rag, upgrade, brains, cost, stuck, toolplane) = tokio::join!(
         states_fut,
         manifest_count_fut,
         preflight_fut,
@@ -157,7 +183,8 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         upgrade_fut,
         brains_fut,
         cost_fut,
-        stuck_fut
+        stuck_fut,
+        toolplane_fut
     );
     let stuck = stuck.unwrap_or_default();
     let cost = cost.ok();
@@ -165,7 +192,7 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
     if !managed.is_empty()
         && let Some(states) = states.as_ref()
     {
-        for (_, department, display_name) in &managed {
+        for (_, department, display_name, _) in &managed {
             let st = states
                 .iter()
                 .find(|s| &s.department == department)
@@ -233,6 +260,26 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         });
     }
 
+    // ── Tool plane: a failing tool streak the green dashboards never show ─────
+    // This is the 2026-09-22 rot detector: a persona whose every tool call
+    // fails sits "healthy" on every state-only surface while its sessions
+    // burn turns on retries. Warning, not Critical: the agent is alive and
+    // a roll fixes it; the sentence says exactly that.
+    for (streak, (_, _, display_name, _)) in toolplane.iter().zip(&managed) {
+        let Some(streak) = streak else { continue };
+        if *streak >= TOOL_FAIL_STREAK_ALERT {
+            alerts.push(Alert {
+                severity: AlertSeverity::Warning,
+                title: format!("{display_name}'s tools are failing"),
+                detail: format!(
+                    "{streak} consecutive tool calls have failed. The agent keeps answering while \
+                     every tool errors — sessions on it will thrash. Roll the agent from /agents \
+                     (or stop its work) and check its container logs for the sqlite/fd cascade.",
+                ),
+                href: "/agents",
+            });
+        }
+    }
     // ── Retrieval plane: Qdrant + embeddings must be up or the brains starve ────
     if !rag.qdrant || !rag.embeddings {
         let down = [

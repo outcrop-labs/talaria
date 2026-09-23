@@ -65,6 +65,10 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   [`docs/api/`](./docs/api/README.md) both come out of the generator behind
   `bun run check` — change the source, run `bun run docs:api`.
 - `bun run verify` green before every push, every time.
+- Do not report dev work done while its open pull request has failing checks, pending
+  checks, or merge conflicts against `rc`. Local gates cannot see that. The watcher is
+  [`scripts/hooks/pr-watch.mjs`](./scripts/hooks/pr-watch.mjs); the procedure is
+  [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md).
 
 ## Environment facts
 
@@ -100,7 +104,7 @@ situation matches.
 |---|---|
 | [`dev-loop`](./.claude/skills/dev-loop/SKILL.md) | starting or restarting the stack, choosing worktree vs devbox, seeding data, or deciding which command verifies which surface |
 | [`repo-traps`](./.claude/skills/repo-traps/SKILL.md) | a change that should work fails oddly — a 500, a zombie port, docker DNS, or an API test that needs auth |
-| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, exercising the path, CHANGELOG, commit conventions, and the pull request against `rc` |
+| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, changelog, the PR against `rc`, and the post-PR watcher — do not claim done on red, pending, or a conflict |
 | [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed: the diff-level checks (`scripts/judge-pr.mjs`) and the reading no script can do |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
 
@@ -139,6 +143,10 @@ The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](./sc
 runs [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs) against the refs a push is about to
 send — exit 2, and the push stops with the reason and the way to do it instead.
 
+The stop gate and the pre-push hook see the local tree. After the pull request opens, CI
+and `rc` can still diverge. The watcher above speaks this same contract; it does not edit
+or push.
+
 ## Do not touch
 
 - `apps/leadworks/`, `apps/waypoint/` — gitignored client subrepos with their own history.
@@ -153,13 +161,15 @@ send — exit 2, and the push stops with the reason and the way to do it instead
   [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md)'s "Layout of the
   workspace".
 - `mcp/dist/`, `ui/src/routeTree.gen.ts` — build output.
-- `CHANGELOG.md` is append-only; its links are frozen history.
+- `CHANGELOG.md` is append-only and written only by the roll (`scripts/changelog-roll.mjs`);
+  unreleased entries live as files under `changelog/`, one per change.
 
 ## Conventions
 
 - Commits: `area: lowercase sentence — explanation` (`git log` carries the voice).
-- Every user-visible change appends to [`CHANGELOG.md`](./CHANGELOG.md) — what changed and
-  what you verified.
+- Every user-visible change adds `changelog/YYYY-MM-DD-<slug>.md` — what changed and
+  what you verified, verbatim bullet; `bun run check` fails a hand-appended
+  `[Unreleased]` bullet.
 - Keep this file under ~200 lines: a new invariant earns a line here; a new procedure earns
   a skill.
 

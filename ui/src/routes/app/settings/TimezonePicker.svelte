@@ -52,7 +52,7 @@
 </script>
 
 <div class="mt-5 border-t border-line-subtle pt-4">
-  <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Time zone</label>
+  <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Time zone</span>
   {#if loading}
     <Skeleton class="h-11 w-full" />
   {:else if prefsQuery.isError}

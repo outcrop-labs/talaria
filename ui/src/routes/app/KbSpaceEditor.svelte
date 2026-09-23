@@ -4,16 +4,14 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import EmojiPicker from '@/components/ui/EmojiPicker.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Input from '@/components/ui/Input.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import RecordTitle from '@/components/ui/RecordTitle.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { copyAppLink, useContextMenu } from '@/components/ui/context-menu.svelte'
-  import { inlineEditKeys } from '@/components/ui/control'
+  import { copyAppLink, copyTextItems, useContextMenu } from '@/components/ui/context-menu.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { updateSpace, useSpace } from '@/lib/kb'
   import { toastError } from '@/lib/toast.svelte'
@@ -99,36 +97,26 @@
 {:else}
   <div class={editorShell(fullscreen)}>
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
-      <div class="shrink-0">
-        <EmojiPicker
-          onPick={(e) => {
-            void save({ icon: e })
-          }}
-          onClear={() => {
-            void save({ icon: null })
-          }}
-        >
-          {#snippet trigger()}
-            <button type="button" class="rounded-md px-1 text-xl leading-none transition-colors dither-fill" title="Set icon">
-              {space.icon ?? '📚'}
-            </button>
-          {/snippet}
-        </EmojiPicker>
-      </div>
-      {#if mode === 'edit'}
-        <Input
-          bind:value={name}
-          onblur={() => name.trim() && name !== space.name && void save({ name: name.trim() })}
-          onkeydown={inlineEditKeys(() => (name = space.name))}
-          class="min-w-0 flex-1 border-0 bg-transparent text-xl font-semibold focus:border-0"
-          placeholder="Space name"
-        />
-      {:else}
-        <div class="min-w-0 flex-1">
-          <h1 class="truncate font-sans text-lg font-semibold text-fg">{space.name}</h1>
+      <!-- Read mode shows the record (with its space-overview line), edit mode
+           the buffer — the space's own save path and commit rule stay here.
+           Spaces run their editable title one step up (text-xl). -->
+      <RecordTitle
+        icon={space.icon}
+        iconFallback="📚"
+        onIconPick={(e) => void save({ icon: e })}
+        onIconClear={() => void save({ icon: null })}
+        value={mode === 'edit' ? name : space.name}
+        onInput={(v) => (name = v)}
+        onCommit={() => name.trim() && name !== space.name && void save({ name: name.trim() })}
+        onCancel={() => (name = space.name)}
+        editing={mode === 'edit'}
+        placeholder="Space name"
+        class="text-xl"
+      >
+        {#snippet meta()}
           <div class="truncate font-mono text-[10px] uppercase tracking-[0.05em] text-muted">space overview</div>
-        </div>
-      {/if}
+        {/snippet}
+      </RecordTitle>
       <Chip class="font-normal">Folder</Chip>
       <Segmented
         size="xs"
@@ -250,7 +238,7 @@
             oncontextmenu={(e) => {
               const sel = window.getSelection()?.toString().trim() ?? ''
               spaceMenu.openMenu(e, [
-                { label: 'Copy text', disabled: !sel && !space.body, onSelect: () => void navigator.clipboard.writeText(sel || space.body) },
+                ...copyTextItems(sel || space.body),
                 { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${spaceId}`) },
                 ...(sel ? [{ label: 'Ask Muse about selection', onSelect: () => (museSel = { text: sel, source: 'read' as const }) }] : []),
               ])

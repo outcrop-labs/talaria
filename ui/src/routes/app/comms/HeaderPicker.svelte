@@ -52,7 +52,7 @@
     {label} <span class="opacity-60">▾</span>
   </button>
   {#if open}
-    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -- reason: click-outside scrim that closes the picker, not a control -->
     <div class="fixed inset-0 z-10" onclick={() => (open = false)}></div>
     <div
       in:pop={POPOVER}

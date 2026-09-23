@@ -1,19 +1,19 @@
 [package]
 name = "talaria-update-render"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-serde_yaml_ng = "0.10"
-talaria-update-docker = { path = "../talaria-update-docker" }
-talaria-update-layout = { path = "../talaria-update-layout" }
-talaria-yaml11 = { path = "../talaria-yaml11" }
-tokio = { version = "1", features = ["fs", "io-util"] }
-tracing = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+talaria-update-docker = { workspace = true }
+talaria-update-layout = { workspace = true }
+talaria-yaml11 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

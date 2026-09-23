@@ -12,7 +12,7 @@
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Button from '@/components/ui/Button.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { listStagger, slide } from '@/lib/motion'
   import { GROUP_LABELS, useClearSecret, useSecretHealth, type SecretGroup, type SecretRow } from '@/lib/secrets'
@@ -23,7 +23,6 @@
 
   const query = useSecretHealth()
   const data = $derived(query.data)
-  const isPending = $derived(query.isPending)
   const clear = useClearSecret()
   let busy = $state(false)
   let msg = $state<string | null>(null)
@@ -81,26 +80,22 @@
     info="Every credential this instance holds, wherever it was entered. Values are never shown: sealed secrets cannot be read back, only replaced. Each row says what it unlocks and whether this instance can still decrypt it."
   />
 
-  {#if isPending}
-    <div class="space-y-3">
-      <Skeleton class="h-16 w-full rounded-md" />
-      {#each Array.from({ length: 5 }) as _, i (i)}
-        <div class="space-y-1.5 py-1">
-          <Skeleton class="h-3 w-48 rounded-full" />
-          <Skeleton class="h-2.5 w-72 rounded-full" />
-        </div>
-      {/each}
-    </div>
-  {:else if !data}
+  <QueryState query={query} errorTitle="Could not load the secrets inventory" errorVariant="compact">
+    {#snippet skeleton()}
+      <div class="space-y-3">
+        <Skeleton class="h-16 w-full rounded-md" />
+        {#each Array.from({ length: 5 }) as _, i (i)}
+          <div class="space-y-1.5 py-1">
+            <Skeleton class="h-3 w-48 rounded-full" />
+            <Skeleton class="h-2.5 w-72 rounded-full" />
+          </div>
+        {/each}
+      </div>
+    {/snippet}
+    {#snippet children(data)}
     <!-- An empty inventory over a failed read would read as "this instance
-         holds nothing" — the most reassuring possible way to be wrong. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load the secrets inventory"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+         holds nothing" — the most reassuring possible way to be wrong, so
+         QueryState's error branch owns that. -->
     <div class="space-y-5">
       <RootCard root={data.root} />
 
@@ -148,5 +143,6 @@
         </p>
       {/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

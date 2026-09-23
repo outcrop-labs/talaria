@@ -6,11 +6,10 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
-  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+  import { errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { listStagger, slide } from '@/lib/motion'
-  import { type CronJob } from './agent-crons'
+  import { type CronJob, useCronMutations } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronListSkeleton from './CronListSkeleton.svelte'
   import CronRow from './CronRow.svelte'
@@ -70,30 +69,13 @@
     }
   }
 
-  const act = async (agentId: string, jobId: string, action: 'pause' | 'resume' | 'run' | 'remove') => {
-    if (action === 'remove' && !(await confirm({ title: 'Delete scheduled job', message: 'Delete this scheduled job?', confirmLabel: 'Delete', danger: true }))) return
-    try {
-      if (action === 'remove') await delJson(`/api/fleet/agents/${agentId}/crons/${jobId}`)
-      else await postJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, { action })
-    } catch (e) {
-      // Row actions are fire-and-forget here (CronRow doesn't render an error
-      // slot in the fleet tab) — a toast is where a failed one gets said.
-      toastError(`${action.charAt(0).toUpperCase()}${action.slice(1)} failed`, e)
-    }
-    await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
-  }
-
-  const edit = async (agentId: string, jobId: string, patch: { name: string; schedule: string; prompt: string }): Promise<boolean> => {
-    let saved = true
-    try {
-      await putJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, patch)
-    } catch (e) {
-      saved = false
-      toastError('Save failed', e)
-    }
-    await qc.invalidateQueries({ queryKey: ['fleet-crons'] })
-    return saved
-  }
+  const { edit, act } = useCronMutations({
+    // Row actions are fire-and-forget here (CronRow doesn't render an error
+    // slot in the fleet tab) — a toast is where a failed one gets said.
+    onError: (e, what) =>
+      toastError(what === 'edit' ? 'Save failed' : `${what.charAt(0).toUpperCase()}${what.slice(1)} failed`, e),
+    invalidate: () => qc.invalidateQueries({ queryKey: ['fleet-crons'] }),
+  })
 
   const withJobs = $derived(agents.flatMap((a) => a.jobs.map((j) => ({ agent: a, job: j }))))
 </script>

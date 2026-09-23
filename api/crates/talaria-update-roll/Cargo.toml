@@ -1,28 +1,28 @@
 [package]
 name = "talaria-update-roll"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-fleet-docker = { path = "../talaria-fleet-docker" }
-talaria-runs-lease = { path = "../talaria-runs-lease" }
-talaria-update-docker = { path = "../talaria-update-docker" }
-talaria-update-layout = { path = "../talaria-update-layout" }
-talaria-update-mode = { path = "../talaria-update-mode" }
-talaria-update-registry = { path = "../talaria-update-registry" }
-talaria-update-render = { path = "../talaria-update-render" }
-talaria-update-state = { path = "../talaria-update-state" }
-talaria-yaml11 = { path = "../talaria-yaml11" }
-tokio = { version = "1", features = ["fs", "time", "macros", "process"] }
-tracing = "0.1"
-redis = { version = "1", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-fleet-docker = { workspace = true }
+talaria-runs-lease = { workspace = true }
+talaria-update-docker = { workspace = true }
+talaria-update-layout = { workspace = true }
+talaria-update-mode = { workspace = true }
+talaria-update-registry = { workspace = true }
+talaria-update-render = { workspace = true }
+talaria-update-state = { workspace = true }
+talaria-yaml11 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+redis = { workspace = true }

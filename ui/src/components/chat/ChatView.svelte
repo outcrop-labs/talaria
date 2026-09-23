@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import { copyTextItems, useContextMenu } from '@/components/ui/context-menu.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import TierPicker from '@/components/chat/TierPicker.svelte'
-  import EffortPicker from '@/components/chat/EffortPicker.svelte'
+  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import { type Mentionable } from '@/components/chat/mentions.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
   import { bottomStick } from '@/lib/stick-to-bottom'
@@ -190,6 +189,24 @@
     }
   })
 
+  // ── The two rail chips' shapes ─────────────────────────────────────────────
+  // The chips are one component now, so the shape each one renders is spelled
+  // here: its rows, the trigger's readout, and the rung the pick sits on. The
+  // tier chip's empty value IS its bottom rung — 'main' on the chip, 'main
+  // model' in the row it stands on — while the effort chip's empty value means
+  // the model's own default: no rung at all, and an ingress row that says so.
+  const tierOptions = $derived([
+    { value: '', label: 'main model' },
+    ...tiers.map((name) => ({ value: name, label: name })),
+  ])
+  const tierMeter = $derived({
+    total: tierOptions.length,
+    lit: Math.max(0, tierOptions.findIndex((o) => o.value === tier)) + 1,
+  })
+  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
+  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effort) + 1) })
+  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
+
   // Load an existing conversation when the selection changes.
   $effect(() => {
     if (!conversationId || conversationId === convId) return
@@ -347,8 +364,33 @@
     if (res && convId === id) messages = res.messages.map(toDisplay)
   }
 
+  // Chips land on the streaming row from a different request (the agent's
+  // tool call), so the SSE the speaker is watching never carries them.
+  // Merge chips onto the live turn without replacing the prose the stream
+  // is still writing.
+  $effect(() => {
+    if (!streaming) return
+    const id = convId
+    if (!id) return
+    let stop = false
+    const iv = setInterval(async () => {
+      if (stop) return
+      const res = await loadConversation(id)
+      const remote = res?.messages.filter((m) => m.role === 'assistant').at(-1)
+      if (stop || !remote?.chips?.length) return
+      messages = messages.map((m, i) =>
+        i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
+      )
+    }, 1000)
+    return () => {
+      stop = true
+      clearInterval(iv)
+    }
+  })
+
   // The surface's nudge — see the prop. Same last-signal guard the doc panes
   // use, so the effect only fires on a real bump.
+  // svelte-ignore state_referenced_locally -- reason: the last-seen-signal guard's baseline; the effect below updates it on every real bump
   let lastSync = syncSignal
   $effect(() => {
     if (syncSignal === lastSync) return
@@ -506,9 +548,7 @@
   })
 
   const copyMenu = (m: DisplayMessage) => (e: MouseEvent) =>
-    menu.openMenu(e, [
-      { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
-    ])
+    menu.openMenu(e, copyTextItems(m.content))
 </script>
 
 <!-- The transcript owns the whole surface and the composer FLOATS over it.
@@ -585,7 +625,15 @@
         {#if m.role === 'user'}
           <!-- Flattened user turn (spec §10) — the author name keeps the
               multiplayer voices apart on shared plans. -->
-          <UserTurn content={m.content} attachments={m.attachments} author={m.authorLabel ?? null} onContextMenu={copyMenu(m)} />
+          <UserTurn
+            content={m.content}
+            attachments={m.attachments}
+            chips={m.chips}
+            author={m.authorLabel ?? null}
+            onContextMenu={copyMenu(m)}
+            onInvoke={(text) => void send(text)}
+            onDecided={() => void syncFromServer()}
+          />
         {:else}
           <AssistantTurn
             message={m}
@@ -594,6 +642,8 @@
             {agentLabel}
             live={(streaming || resuming) && i === messages.length - 1}
             onContextMenu={copyMenu(m)}
+            onInvoke={(text) => void send(text)}
+            onDecided={() => void syncFromServer()}
           />
         {/if}
       {/each}
@@ -685,13 +735,44 @@
                too — the surface's chrome owns the model, and its contract is
                exactly attach, text, and submit. -->
           {#if !minimal}
-            {#if tiers.length > 0}<TierPicker {tiers} value={tier} onChange={(t) => (tier = t)} />{/if}
+            {#if tiers.length > 0}
+              <ComposerPicker
+                icon="✳"
+                chipVariant="primary"
+                value={tier}
+                label={tier || 'main'}
+                options={tierOptions}
+                meter={tierMeter}
+                searchPlaceholder="Search tiers"
+                menuClass="min-w-44"
+                title="Model tier for this chat"
+                menuLabel="Model tier"
+                onChange={(t) => (tier = t)}
+              />
+            {/if}
             <!-- Effort sits immediately left of the send tile, and only when the
                  routed model's metadata vouches for levels — a model with no
                  published ladder shows no chip and its requests carry no effort.
-                 Not disabled while streaming (TierPicker isn't either): a
+                 Not disabled while streaming (the tier chip isn't either): a
                  queued message picks up the level set when it is sent. -->
-            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => { effort = v; effortPristine = false }} />{/if}
+            {#if efforts.length > 0}
+              <ComposerPicker
+                chipVariant="primary"
+                value={effort}
+                label={effort || 'auto'}
+                options={effortOptions}
+                autoOption={effortAuto}
+                meter={effortMeter}
+                searchable={false}
+                menuClass="min-w-48"
+                title="Reasoning effort for this reply"
+                menuLabel="Reasoning effort"
+                onChange={(v) => {
+                  effort = v
+                  effortPristine = false
+                }}
+              />
+            {/if}
           {/if}
         {/snippet}
       </ChatComposer>

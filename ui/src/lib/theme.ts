@@ -1,6 +1,7 @@
 // Mercury theme — Talaria's two-mode design system (dark + light).
 // Mirrors hermes-workspace's data-theme + .dark/.light contract so component
 // lifts behave identically, but ships only the Mercury identity.
+import { readText, writeText } from '@/lib/persist'
 
 export type ThemeId = 'mercury' | 'mercury-light'
 
@@ -41,8 +42,7 @@ export function toggleVariant(theme: ThemeId): ThemeId {
 }
 
 export function getStoredTheme(): ThemeId {
-  if (typeof window === 'undefined') return DEFAULT_THEME
-  const stored = window.localStorage.getItem(STORAGE_KEY)
+  const stored = readText(STORAGE_KEY)
   return isValidTheme(stored) ? stored : DEFAULT_THEME
 }
 
@@ -54,7 +54,7 @@ export function applyTheme(theme: ThemeId): void {
   root.classList.remove('light', 'dark')
   root.classList.add(mode)
   root.style.setProperty('color-scheme', mode)
-  if (typeof window !== 'undefined') window.localStorage.setItem(STORAGE_KEY, theme)
+  writeText(STORAGE_KEY, theme)
 }
 
 /**

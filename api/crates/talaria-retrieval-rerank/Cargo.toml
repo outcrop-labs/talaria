@@ -1,23 +1,23 @@
 [package]
 name = "talaria-retrieval-rerank"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-body = { path = "../talaria-body" }
-talaria-config = { path = "../talaria-config" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-retrieval-http = { path = "../talaria-retrieval-http" }
-talaria-state = { path = "../talaria-state" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-body = { workspace = true }
+talaria-config = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-retrieval-http = { workspace = true }
+talaria-state = { workspace = true }
 
 [dev-dependencies]
-futures-util = "0.3"
-tokio = { version = "1", features = ["macros", "rt"] }
+futures-util = { workspace = true }
+tokio = { workspace = true }

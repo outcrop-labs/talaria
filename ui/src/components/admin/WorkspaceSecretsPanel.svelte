@@ -21,7 +21,7 @@
   import SecretEntriesEditor, { emptySecretEntry, type SecretEntry } from '@/components/ui/SecretEntriesEditor.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { listStagger, slide } from '@/lib/motion'
@@ -123,11 +123,9 @@
     info="Credentials an agent can USE without ever reading one. The value is sealed here and substituted at the boundary that spends it (a tool call, a push), so it never enters a model's context and never reaches a provider. Values are write-only: nothing on this page, and no API, can show one again."
   />
 
-  {#if query.isPending}
-    <Skeleton class="h-24" />
-  {:else if query.isError}
-    <QueryError error={query.error} />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load your agent credentials">
+    {#snippet skeleton()}<Skeleton class="h-24" />{/snippet}
+    {#snippet children(_data)}
     {#if secrets.length === 0}
       <EmptyState
         variant="compact"
@@ -275,7 +273,8 @@
         </div>
       {/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
 
   {#if msg}<p class="mt-2 font-sans text-xs text-danger">{msg}</p>{/if}
 </Panel>

@@ -1,21 +1,21 @@
 [package]
 name = "talaria-runs-plan-draft"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-channel-plan = { path = "../talaria-channel-plan" }
-talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-state = { path = "../talaria-state" }
-tokio = { version = "1", features = ["macros"] }
-axum = { version = "0.8", features = ["multipart"] }
-futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-channel-plan = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-runs-define = { workspace = true }
+talaria-state = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }

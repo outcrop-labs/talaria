@@ -1,22 +1,22 @@
 [package]
 name = "talaria-home"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-activity = { path = "../talaria-activity" }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-boards = { path = "../talaria-boards" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-org = { path = "../talaria-org" }
-talaria-state = { path = "../talaria-state" }
-tokio = { version = "1", features = ["macros"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+futures-util = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+talaria-activity = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-org = { workspace = true }
+talaria-state = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }

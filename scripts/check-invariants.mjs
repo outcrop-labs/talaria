@@ -1911,6 +1911,93 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE POST-PR WATCHER IS THE GATE THE STOP GATE CANNOT BE.
+//
+// AGENTS.md says an agent may not report done while its open pull request has
+// failing checks, pending checks, or merge conflicts against rc. The stop gate
+// sees the local tree. What makes the sentence true is scripts/hooks/pr-watch.mjs
+// (the exit) and the ship-a-change skill (the procedure that runs it and fixes).
+// Delete either, or stop the script from blocking on a red check and a conflict,
+// and the rule becomes a paragraph that passes every other check.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: red'", 'a failing check blocks; it is not a pass'],
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: conflict'", 'a merge conflict blocks; it is not a pass'],
+    ['scripts/hooks/pr-watch.mjs', 'MERGEABLE', 'a pass requires GitHub to have computed mergeable, not an empty rollup'],
+    ['AGENTS.md', 'scripts/hooks/pr-watch.mjs', 'the no-done rule points at the gate'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'scripts/hooks/pr-watch.mjs', 'the procedure runs the gate'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'pr-watch-anchors',
+      what: 'the post-PR watcher and the no-done rule have drifted apart',
+      fix: [
+        'AGENTS.md forbids reporting dev work done while an open PR has failing checks, pending',
+        'checks, or merge conflicts against rc. scripts/hooks/pr-watch.mjs is the gate (exit 2',
+        'on red and on conflict; exit 0 only when checks are green and mergeable). The procedure',
+        'is .claude/skills/ship-a-change/SKILL.md. If one of them moved, update this check in the',
+        'same commit — an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
+//
+// `cli/src/ports.ts` is the cli's single source for the host-port defaults, but
+// each value is also spelled where it is USED: the compose file's
+// `${VAR:-default}`, the Rust api's `DEFAULT_PORT`, the Dockerfile's `ENV PORT`.
+// No import reaches across those, so this is a pin — it reads the cli's table
+// and each authority's own spelling and fails when one moves without the others.
+// A drifted port is a stack that half-boots: the app publishes 5273 while its
+// healthcheck probes 5272, and every health gate says "unhealthy" forever.
+{
+  const portsSrc = readFileSync(join(ROOT, 'cli/src/ports.ts'), 'utf8')
+  const cliValue = (name) => new RegExp(`export const ${name} = '([^']+)'`).exec(portsSrc)?.[1]
+  const compose = readFileSync(join(ROOT, 'docker/dev-compose.yml'), 'utf8')
+  const composeDefault = (varName) => new RegExp(`\\$\\{${varName}:-([0-9]+)\\}`).exec(compose)?.[1]
+  const configSrc = readFileSync(join(ROOT, 'api/crates/talaria-config/src/lib.rs'), 'utf8')
+  const rustDefault = /pub const DEFAULT_PORT: u16 = (\d+)/.exec(configSrc)?.[1]
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8')
+  const envPort = /^ENV PORT=(\d+)/m.exec(dockerfile)?.[1]
+
+  const checks = [
+    ['API_PORT', cliValue('API_PORT'), rustDefault, 'api/crates/talaria-config/src/lib.rs DEFAULT_PORT'],
+    ['APP_PORT', cliValue('APP_PORT'), envPort, "the Dockerfile's ENV PORT"],
+    ['PG_PORT', cliValue('PG_PORT'), composeDefault('TALARIA_PG_PORT'), 'docker/dev-compose.yml'],
+    ['REDIS_PORT', cliValue('REDIS_PORT'), composeDefault('TALARIA_REDIS_PORT'), 'docker/dev-compose.yml'],
+    ['MINIO_PORT', cliValue('MINIO_PORT'), composeDefault('TALARIA_MINIO_PORT'), 'docker/dev-compose.yml'],
+    ['SEARCH_PORT', cliValue('SEARCH_PORT'), composeDefault('TALARIA_SEARCH_PORT'), 'docker/dev-compose.yml'],
+  ]
+  const problems = checks
+    .filter(([, a, b]) => a === undefined || b === undefined || a !== b)
+    .map(([name, a, b, where]) => `  ${name}: cli/src/ports.ts says ${a ?? '(missing)'}, ${where} says ${b ?? '(not found)'}`)
+  if (problems.length) {
+    failures.push({
+      id: 'dev-port-drift',
+      what: 'a dev stack port disagrees between the cli and the file that uses it',
+      fix: [
+        'Change the value in BOTH places — `cli/src/ports.ts` is the cli\'s single source, and',
+        'the file named above is the authority for what actually binds. If a port moved on',
+        'purpose, move it here too and update this check only if a NEW file became the owner.',
+        ...problems,
+      ],
+      found: [],
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

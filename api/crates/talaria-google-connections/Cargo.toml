@@ -1,22 +1,22 @@
 [package]
 name = "talaria-google-connections"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", default-features = false }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-google-client = { path = "../talaria-google-client" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-tracing = "0.1"
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-url = "2"
+axum = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-google-client = { workspace = true }
+talaria-secretbox = { workspace = true }
+tracing = { workspace = true }
+talaria-agent-auth = { workspace = true }
+url = { workspace = true }

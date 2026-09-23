@@ -32,7 +32,9 @@
   const isAdmin = $derived(session?.role === 'admin')
   const canManage = $derived(team.role === 'owner')
 
+  // svelte-ignore state_referenced_locally -- reason: per-team drafts; the view remounts per team selection
   let name = $state(team.name)
+  // svelte-ignore state_referenced_locally -- reason: per-team drafts; the view remounts per team selection
   let description = $state(team.description ?? '')
 
   const agentsList = listQuery(useTeamAgents(() => team.id), {

@@ -28,7 +28,9 @@
   // is written until the record's one Save — a rename, a guidance edit and a
   // skeleton edit land as one write, the way the record's schema takes them.
   // Seeded null-safe: the null frame (see the prop) never touches these.
+  // svelte-ignore state_referenced_locally -- reason: record editor fields, one Save per record; the view remounts per selected record
   let name = $state(template?.name ?? '')
+  // svelte-ignore state_referenced_locally -- reason: record editor fields, one Save per record; the view remounts per selected record
   let guidance = $state(template?.guidance ?? '')
   let busy = $state(false)
 

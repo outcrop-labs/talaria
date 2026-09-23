@@ -18,7 +18,7 @@
   import SendButton from '@/components/chat/SendButton.svelte'
   import AgentPicker from '@/components/chat/AgentPicker.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu, openCopyItems, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import Materialize from '@/components/ui/Materialize.svelte'
@@ -221,8 +221,7 @@
             onclick={() => setSelectedId(r.id)}
             oncontextmenu={(e) =>
               menu.openMenu(e, [
-                { label: 'Open', onSelect: () => setSelectedId(r.id) },
-                { label: 'Copy link', onSelect: () => copyAppLink(`/research/${r.id}`) },
+                ...openCopyItems(`/research/${r.id}`, () => setSelectedId(r.id)),
                 ...(canDelete(r)
                   ? (['sep', { label: 'Remove', danger: true, onSelect: () => void remove(r) }] as ContextMenuEntry[])
                   : []),

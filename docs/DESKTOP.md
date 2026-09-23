@@ -66,8 +66,12 @@ children can be misplaced ([tauri#10420]) and `auto_resize` breaks across resize
 ([tauri#10131]) — and in practice the two webviews have even been observed STACKING
 VERTICALLY in the GTK container. The design leans on none of it: exactly ONE webview is
 visible at a time (`hide()`/`show()` decide who renders; bounds calls are belt-and-suspenders
-in logical units, recomputed on every `WindowEvent::Resized`), so there is no side-by-side
-layout to get wrong. `tauri` is exact-pinned (`=2.11.5`) in `desktop/src-tauri/Cargo.toml` —
+in logical units, applied once at the end of setup and again on every `WindowEvent::Resized`),
+so there is no side-by-side layout to get wrong. The setup pass matters: the first resize can
+arrive before shell state exists, and a missed `set_bounds` leaves the launcher webview at
+WebKitGTK's default 1×1. An undecorated window that never paints is not mapped on Wayland —
+the process is alive and the launch looks silent. `tauri` is exact-pinned (`=2.11.5`) in
+`desktop/src-tauri/Cargo.toml` —
 unstable features are semver-exempt, so upgrades are deliberate.
 
 [tauri#10420]: https://github.com/tauri-apps/tauri/issues/10420

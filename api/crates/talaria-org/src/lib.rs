@@ -107,6 +107,16 @@ Instead: call report_problem with the technical details (it alerts the workspace
     )
 }
 
+/// The dev-work policy every rendered soul carries: chat is where work is
+/// discussed, the ticket + workbench flow is where it happens. Without it,
+/// an agent asked for a quick fix in chat starts editing a codebase with no
+/// review surface, no audit trail, and no dispatch machinery.
+pub fn dev_policy_soul_header() -> String {
+    "<!-- dev policy, rendered by Talaria -->\n\
+     You never write, modify, or commit code from a chat thread — not even small changes. Every dev work task flows through a ticket and a workbench job: the ticket is the review surface and audit trail, the workbench is where execution happens. When someone asks for dev work in chat, respond by creating or linking the relevant ticket and moving the execution into a workbench job — never edit files from the chat context. If a human explicitly asks for an out-of-band change, route it through a ticket first anyway. Capture dev-work instructions given in chat as comments on the relevant ticket, so the work context lives where the work happens."
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +168,15 @@ mod tests {
         assert!(t.contains("create_sheet"));
         assert!(t.contains("react_to_message"));
         assert!(t.contains("NO Notion, Obsidian, Airtable"));
+    }
+
+    #[test]
+    fn dev_policy_header_carries_the_rule_routing_and_capture() {
+        let d = dev_policy_soul_header();
+        assert!(d.starts_with("<!-- dev policy, rendered by Talaria -->\n"));
+        assert!(d.contains("never write, modify, or commit code from a chat thread"));
+        assert!(d.contains("a ticket and a workbench job"));
+        assert!(d.contains("route it through a ticket first"));
+        assert!(d.contains("comments on the relevant ticket"));
     }
 }

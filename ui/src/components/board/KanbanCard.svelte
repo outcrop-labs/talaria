@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { MessageSquare, GitBranch } from '@lucide/svelte'
+  import { Eye, MessageSquare, GitBranch } from '@lucide/svelte'
   import CopyLinkButton from '@/components/ui/CopyLinkButton.svelte'
+  import DitherBorder from '@/components/ui/DitherBorder.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
-  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import AssigneesPill from './AssigneesPill.svelte'
   import DuePill from './DuePill.svelte'
@@ -64,16 +64,32 @@
   oncontextmenu={onContextMenu}
   class={cn('group relative cursor-grab active:cursor-grabbing', dim && 'opacity-40')}
 >
-  <!-- The copy button gives its corner to the watch affordance while work is
-       live — it only appears on hover anyway, and it slides left rather than
-       stacking on the spinner. -->
-  <CopyLinkButton
-    path={`/boards/${task.boardId}/${task.id}`}
-    class={cn(
-      'absolute top-2 z-10 bg-raised opacity-0 shadow-[var(--theme-shadow-1)] group-hover:opacity-100',
-      session ? 'right-16' : 'right-2',
-    )}
-  />
+  <!-- Hover corners: the copy affordance and — while work is live or queued
+       on this ticket — the watch EYE directly beside it, same reveal, same
+       grammar. The eye replaces the old sliding mono 'watch' chip: the copy
+       button no longer needs to move, and a queued ticket shows the eye
+       disabled (no run to open until packing frees a slot). -->
+  <div class="absolute right-2 top-2 z-10 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+    {#if session || wait}
+      <button
+        type="button"
+        title="Watch the work"
+        aria-label="Watch the work"
+        disabled={!session}
+        onclick={(e) => {
+          e.stopPropagation()
+          onWatch?.()
+        }}
+        class="flex items-center rounded-md bg-raised p-1 text-accent shadow-[var(--theme-shadow-1)] transition-colors hover:text-fg disabled:opacity-50"
+      >
+        <Eye size={13} />
+      </button>
+    {/if}
+    <CopyLinkButton
+      path={`/boards/${task.boardId}/${task.id}`}
+      class="bg-raised shadow-[var(--theme-shadow-1)]"
+    />
+  </div>
   <!-- div, not <button>: the pills inside are buttons themselves. -->
   <div
     role="button"
@@ -102,26 +118,29 @@
         maxAlpha={0.26}
       />
     </div>
+    <!-- The trace: while a session is LIVE, the same field the wash renders
+         is masked to a hairline ring around the panel — the edge that reads
+         even where the wash is too faint. Additive with the overlay above;
+         the watch eye in the corner is the affordance now. -->
     {#if session}
-    <button
-      type="button"
-      class="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
-      title="watch the work — turn {session.turn ?? '…'}"
-      onclick={(e) => {
-        e.stopPropagation()
-        onWatch?.()
-      }}
-    >
-      <WaitingMark site="ticket/work-watch" size={11} />
-      watch
-    </button>
-    {:else if wait}
-    <span
-      class="absolute right-2 top-2 z-10 max-w-[10rem] truncate rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-muted"
-      title="{wait.phase} — {wait.reason}"
-    >
-      queued
-    </span>
+      <DitherBorder
+        sources={[
+          { id: 'trace', kind: 'edge', side: 'top', depth: 30, strength: 0.22 },
+          { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 200, speed: 12, strength: 0.5 },
+        ]}
+        pitch={4}
+        dot={1.4}
+        alphaFloor={0.06}
+        maxAlpha={0.5}
+      />
+    {/if}
+    {#if wait}
+      <span
+        class="absolute right-14 top-2 z-10 max-w-[10rem] truncate rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-muted"
+        title="{wait.phase} — {wait.reason}"
+      >
+        queued
+      </span>
     {/if}
   {/if}
     <!-- Color-code stripe (ticket color, when set). -->

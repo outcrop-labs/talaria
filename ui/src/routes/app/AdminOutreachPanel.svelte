@@ -3,7 +3,7 @@
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -52,35 +52,31 @@
     title="Proactive outreach"
     info="Opted-in agents get a periodic check-in: a look at their stale or blocked work, and the chance to act through their normal tools (a ticket comment, a channel post, or a direct message to your inbox). Everything stays attributed and board-policy-gated; DMs are capped per person per day. Off by default."
   />
-  {#if query.isPending}
-    <!-- Controls, agent chips, and the recent list all seed from the query —
-         hold their footprint so the toggle never flashes unchecked. -->
-    <div class="flex flex-wrap items-center gap-4">
-      <Skeleton class="h-4 w-44 rounded-full" />
-      <Skeleton class="h-8 w-32" />
-      <Skeleton class="h-8 w-28" />
-    </div>
-    <div class="mt-3">
-      <Skeleton class="mb-2 h-2.5 w-28 rounded-full" />
-      <div class="flex flex-wrap gap-x-4 gap-y-1.5">
-        {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
-          <Skeleton class="h-4 w-28 rounded-full" />
-        {/each}
+  <QueryState query={query} errorTitle="Could not load outreach settings" errorVariant="compact">
+    {#snippet skeleton()}
+      <!-- Controls, agent chips, and the recent list all seed from the query —
+           hold their footprint so the toggle never flashes unchecked. -->
+      <div class="flex flex-wrap items-center gap-4">
+        <Skeleton class="h-4 w-44 rounded-full" />
+        <Skeleton class="h-8 w-32" />
+        <Skeleton class="h-8 w-28" />
       </div>
-    </div>
-    <div class="mt-4">
-      <SkeletonRows rows={3} />
-    </div>
-  {:else if !data}
-    <!-- Same shape as the guard panel: an unchecked toggle and an empty agent
-         list are this component's defaults, not the org's actual policy. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load outreach settings"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+      <div class="mt-3">
+        <Skeleton class="mb-2 h-2.5 w-28 rounded-full" />
+        <div class="flex flex-wrap gap-x-4 gap-y-1.5">
+          {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
+            <Skeleton class="h-4 w-28 rounded-full" />
+          {/each}
+        </div>
+      </div>
+      <div class="mt-4">
+        <SkeletonRows rows={3} />
+      </div>
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- QueryState's error branch holds a failed read: an unchecked toggle and
+         an empty agent list are this component's defaults, not the org's
+         actual policy. -->
     <div class="flex flex-wrap items-center gap-4">
       <Checkbox
         class="gap-2"
@@ -145,5 +141,6 @@
         </div>
       </div>
     {/if}
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>
