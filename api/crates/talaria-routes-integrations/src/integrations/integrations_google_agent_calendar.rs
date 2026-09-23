@@ -119,6 +119,27 @@ pub async fn post(
             ));
         }
     };
+    let talking_to = match super::integrations_google_agent_queue::streaming_conversation_user(
+        &state.pg,
+        &agent_model,
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/agent] conversation owner read failed",
+                e,
+            ));
+        }
+    };
+    if let Some(reason) = super::integrations_google_agent_queue::conversation_owner_conflict(
+        &principal,
+        talking_to.as_deref(),
+    ) {
+        return Ok(house_error(StatusCode::CONFLICT, &reason));
+    }
+
     // The payload IS the validated draft, stored exactly as drafted and
     // executed as stored at approve time — optional members ride only when
     // the request carried them.
@@ -165,35 +186,42 @@ pub async fn post(
         && let Some(owner) = principal.owner_user_id.as_deref()
     {
         let sb = state.secretbox().await.unwrap_or_default();
-        let _ = talaria_api_facades::google::pending_actions::decide_action(
-            &state.pg,
-            &sb,
-            &queued.action.id,
-            owner,
-            false,
-            "approve",
-            talaria_agent_auth::now_ms(),
-        )
-        .await;
-        return Ok(Json(json!({
-            "pending": { "id": queued.action.id, "status": "executed" },
-            "message": "Created — this conversation already unlocked draft_calendar_event.",
-        }))
-        .into_response());
+        let id = queued.action.id.clone();
+        return Ok(
+            match talaria_api_facades::google::pending_actions::decide_action(
+                &state.pg,
+                &sb,
+                &id,
+                owner,
+                false,
+                "approve",
+                talaria_agent_auth::now_ms(),
+            )
+            .await
+            {
+                Ok(Some(outcome)) => super::integrations_google_agent_queue::answer_executed(
+                    &id,
+                    &outcome.status,
+                    "Created — this conversation already unlocked draft_calendar_event.",
+                    "Unlocked draft_calendar_event did not create the event",
+                ),
+                Ok(None) => house_error(
+                    StatusCode::CONFLICT,
+                    "unlocked event disappeared before it could be created — do not report it as created",
+                ),
+                Err(e) => internal("[integrations/google/agent] unlocked event failed", e),
+            },
+        );
     }
     // Calendar has no signature in the dedupe yet, so `already_pending` is
     // false from this route today — the wording branch exists so the kind
     // cannot join the dedupe without answering what its message says.
-    let message = if queued.already_pending {
-        "An identical event is already waiting for approval — nothing new queued."
-    } else if principal.is_org {
-        "Drafted — waiting for an admin to approve."
-    } else {
-        "Drafted — waiting for the owner to approve."
-    };
-    Ok(Json(json!({
-        "pending": { "id": queued.action.id, "status": "pending" },
-        "message": message,
-    }))
-    .into_response())
+    Ok(super::integrations_google_agent_queue::answer_queued(
+        &state.pg,
+        queued,
+        "An identical event is already waiting for approval — nothing new queued.",
+        "Drafted — waiting for the owner to approve.",
+        "Drafted — waiting for an admin to approve.",
+    )
+    .await)
 }

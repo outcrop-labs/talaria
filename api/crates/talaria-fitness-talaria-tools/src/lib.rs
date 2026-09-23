@@ -12,7 +12,8 @@
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
-//     hermes      61 tools, over MCP, inside the agent container   THIS FILE
+//     hermes      63 tools, over MCP, inside the agent container   THIS FILE
+
 //     platform     handed to a model by a harness via `toolDefs`   research.rs (search)
 //
 // WHY A COPY AND NOT AN IMPORT. The real registrations live in `mcp/src/index.ts`,
@@ -729,7 +730,8 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "draft_calendar_event",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Google,
-            description: "Draft a Google Calendar event (on your owner's calendar, or the shared org calendar). It is NOT created immediately — it's queued for a human to approve in Talaria first (confirm-sends). Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
+            description: "Draft a Google Calendar event (on your owner's calendar, or the shared org calendar). It is NOT created immediately — it's queued for a human to approve in Talaria first (confirm-sends). The call is not proof it landed: confirm with list_pending_sends and see the id before telling anyone it is ready. Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
+
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -812,12 +814,31 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "draft_email",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Google,
-            description: "Draft an email to send (AS your owner, or from the shared org account). It is NOT sent immediately — it's queued for a human to approve in Talaria first (confirm-sends). Use this to prepare correspondence; a human reviews and sends with one click.",
+            description: "Draft an email to send (AS your owner, or from the shared org account). It is NOT sent immediately — it's queued for a human to approve in Talaria first (confirm-sends). The call is not proof the draft landed: a success names the approver, and you MUST call list_pending_sends and see that id before telling anyone it is ready. If this errors, say it failed — never report a draft that is not in the queue.",
+
             parameters: json!({
                 "type": "object",
                 "properties": { "to": str_schema("Recipient email(s), comma-separated"), "subject": str_schema("Subject line"), "body": str_schema("Plain-text body"), "cc": str_schema("Cc"), "bcc": str_schema("Bcc") },
                 "required": ["to"],
             }),
+            assistant_only: false,
+            needs_google: true,
+        },
+        SandboxTool {
+            name: "list_pending_sends",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Google,
+            description: "List the confirm-sends queue your approver actually sees — your owner's, if you are a personal assistant, otherwise the org queue an admin approves. Each row is an email or calendar event still waiting. Call this after draft_email or draft_calendar_event and do not tell anyone a draft is ready unless its id is in this list. whoami.agent.owner.id is the personal approver; the response's approver.userId must be that person.",
+            parameters: json!({ "type": "object", "properties": {}, "required": [] }),
+            assistant_only: false,
+            needs_google: true,
+        },
+        SandboxTool {
+            name: "read_pending_send",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Google,
+            description: "Read one confirm-send by the id draft_email or draft_calendar_event returned. 404 means it is not in the approver's queue — do not report it as ready. The payload is the exact outbound draft.",
+            parameters: json!({ "type": "object", "properties": { "id": str_schema("Pending id from draft_email or draft_calendar_event") }, "required": ["id"] }),
             assistant_only: false,
             needs_google: true,
         },
@@ -1424,9 +1445,9 @@ mod tests {
     fn the_catalog_carries_sixty_one_distinct_tools() {
         // A name that appeared twice would shadow itself in `tools_named` and
         // hand a harness the wrong entry.
-        assert_eq!(TALARIA_TOOLS.len(), 61);
+        assert_eq!(TALARIA_TOOLS.len(), 63);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 61);
+        assert_eq!(names.len(), 63);
     }
 
     #[test]

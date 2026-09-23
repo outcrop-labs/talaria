@@ -353,6 +353,87 @@ pub async fn list_pending(
         )
         .collect())
 }
+/// The confirm-sends queue the approver of this draft actually opens.
+///
+/// Personal → `list_pending(owner, admin=false)`, the same read the owner's
+/// Inbox and brief use. The admin arm stays off: being an admin is not what
+/// puts a personal draft in front of its owner.
+///
+/// Org → the org arm of that same predicate (`is_org` and pending), which is
+/// what every admin's list includes for these rows. The nil user id cannot
+/// match a personal row; the `is_org` filter drops anything else.
+pub async fn list_for_approver(
+    pg: &PgPool,
+    owner_user_id: Option<&str>,
+    is_org: bool,
+) -> Result<Vec<PendingAction>, sqlx::Error> {
+    if is_org {
+        let rows = list_pending(pg, "00000000-0000-0000-0000-000000000000", true).await?;
+        return Ok(rows.into_iter().filter(|action| action.is_org).collect());
+    }
+    match owner_user_id {
+        Some(owner) => list_pending(pg, owner, false).await,
+        None => Ok(Vec::new()),
+    }
+}
+
+/// `id` is in the approver's queue only when that queue returned it still
+/// pending. The insert's RETURNING row is not that proof.
+pub fn queued_in(id: &str, listed: &[PendingAction]) -> bool {
+    listed
+        .iter()
+        .any(|action| action.id == id && action.status == "pending")
+}
+
+/// Why a just-queued row must not be reported as ready. `Ok(None)` means the
+/// approver's queue contains it.
+pub async fn queue_proof_failure(
+    pg: &PgPool,
+    action: &PendingAction,
+) -> Result<Option<String>, String> {
+    if action.status != "pending" {
+        return Ok(Some(format!(
+            "draft {} is {}, not pending — it is not in the confirm-sends queue. Do not report it as ready.",
+            action.id, action.status
+        )));
+    }
+    if !action.is_org && action.owner_user_id.is_none() {
+        return Ok(Some(format!(
+            "draft {} has no owner — a personal confirm-send with no owner is visible to nobody. Do not report it as ready.",
+            action.id
+        )));
+    }
+    let listed = list_for_approver(pg, action.owner_user_id.as_deref(), action.is_org)
+        .await
+        .map_err(|e| format!("confirm-sends queue read failed: {e}"))?;
+    if queued_in(&action.id, &listed) {
+        return Ok(None);
+    }
+    let who = if action.is_org {
+        "an admin".to_string()
+    } else {
+        format!(
+            "owner {}",
+            action.owner_user_id.as_deref().unwrap_or("unknown")
+        )
+    };
+    Ok(Some(format!(
+        "draft {} is not in the confirm-sends queue {who} sees — nothing should be reported as ready.",
+        action.id
+    )))
+}
+
+/// Drop a row we just inserted that the approver's queue does not show.
+/// Only a still-pending row: a decision that landed between the proof and
+/// the discard is not ours to delete.
+pub async fn discard_unproven(pg: &PgPool, id: &str) -> Result<(), String> {
+    sqlx::query("delete from google_pending_actions where id = $1::uuid and status = 'pending'")
+        .bind(id)
+        .execute(pg)
+        .await
+        .map_err(|e| format!("discard unproven draft: {e}"))?;
+    Ok(())
+}
 
 /// What a decision produced. `{status, message?}` — message present only on
 /// the not-connected/failed statuses.
@@ -760,6 +841,31 @@ mod tests {
         assert_eq!(
             agent_from_address("triage", Some("   "), Some("jon@x.com")).as_deref(),
             Some("jon+triage@x.com")
+        );
+    }
+
+    #[test]
+    fn queued_in_requires_the_same_pending_id() {
+        let listed = vec![PendingAction {
+            id: "p-1".into(),
+            kind: "gmail_send".into(),
+            summary: None,
+            payload: json!({}),
+            agent_model: None,
+            owner_user_id: Some("owner".into()),
+            is_org: false,
+            status: "pending".into(),
+            created_ms: 0,
+        }];
+        assert!(queued_in("p-1", &listed));
+        assert!(!queued_in("p-2", &listed));
+        let decided = PendingAction {
+            status: "executed".into(),
+            ..listed[0].clone()
+        };
+        assert!(
+            !queued_in("p-1", &[decided]),
+            "a decided row is not in the confirm-sends queue"
         );
     }
 }

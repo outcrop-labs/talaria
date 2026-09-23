@@ -70,9 +70,24 @@ pub async fn post(
         let chips = talaria_chips::chips_from_tool(&tool, args, result);
         if !chips.is_empty() {
             let redis = state.redis().await.ok();
-            if let Err(e) =
-                talaria_chips::surface_tool_chips(&state.pg, redis, &caller.model, None, chips)
-                    .await
+            // The chip's decide gate is owner-or-admin. Passing no owner made
+            // a personal confirm-send invisible to the person it was drafted
+            // for, while draft_email had already returned success.
+            let owner = talaria_api_facades::google::agent::resolve_agent_principal(
+                &state.pg,
+                &caller.model,
+            )
+            .await
+            .ok()
+            .and_then(|principal| principal.owner_user_id);
+            if let Err(e) = talaria_chips::surface_tool_chips(
+                &state.pg,
+                redis,
+                &caller.model,
+                owner.as_deref(),
+                chips,
+            )
+            .await
             {
                 tracing::warn!("[tool-events] chip surface failed: {e}");
             }
