@@ -532,65 +532,66 @@
                       </td>
                     {/each}
                     <td></td>
-                    {#if working(t.id) || queued(t.id)}
-                      <tr class="dither-fill" onclick={(e) => e.stopPropagation()}>
-                        <td></td>
-                        <td colspan={cols.length + 1} class="!py-1">
-                          <div class="relative flex items-center gap-2 overflow-hidden rounded-md border border-line-subtle px-2 py-1">
-                            <!-- The trace: the strip's own field masked to a
-                                 hairline ring while a session is LIVE —
-                                 additive with the wash, same z, under the
-                                 row's controls. -->
-                            {#if working(t.id)}
-                              <DitherBorder
-                                radius="rounded-md"
-                                sources={[
-                                  { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.3 },
-                                  { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.6 },
-                                ]}
-                                pitch={3}
-                                dot={1.2}
-                                alphaFloor={0.08}
-                                maxAlpha={0.55}
-                              />
-                            {/if}
-                            <DitherLayer
+                  </tr>
+                  {#if working(t.id) || queued(t.id)}
+                    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -- reason: click-stopPropagation only, so the strip's watch button works without opening the ticket -->
+                    <tr class="dither-fill" onclick={(e) => e.stopPropagation()}>
+                      <td></td>
+                      <td colspan={cols.length + 1} class="!py-1">
+                        <div class="relative flex items-center gap-2 overflow-hidden rounded-md border border-line-subtle px-2 py-1">
+                          <!-- The trace: the strip's own field masked to a
+                               hairline ring while a session is LIVE —
+                               additive with the wash, same z, under the
+                               row's controls. -->
+                          {#if working(t.id)}
+                            <DitherBorder
+                              radius="rounded-md"
                               sources={[
-                                { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.4 },
-                                { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
+                                { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.3 },
+                                { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.6 },
                               ]}
                               pitch={3}
                               dot={1.2}
-                              alphaFloor={0.06}
-                              maxAlpha={0.4}
+                              alphaFloor={0.08}
+                              maxAlpha={0.55}
                             />
-                            <div class="relative flex min-w-0 flex-1 items-center gap-2">
-                              {#if working(t.id)}
-                                <span class="truncate text-xs text-fg">
-                                  {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
-                                  {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
-                                </span>
-                              {:else if queued(t.id)}
-                                <span class="truncate text-xs text-fg">
-                                  {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
-                                  <span class="text-muted"> · {queued(t.id)!.phase}</span>
-                                </span>
-                              {/if}
-                            </div>
+                          {/if}
+                          <DitherLayer
+                            sources={[
+                              { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.4 },
+                              { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
+                            ]}
+                            pitch={3}
+                            dot={1.2}
+                            alphaFloor={0.06}
+                            maxAlpha={0.4}
+                          />
+                          <div class="relative flex min-w-0 flex-1 items-center gap-2">
                             {#if working(t.id)}
-                            <button
-                              type="button"
-                              class="relative rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
-                              onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
-                            >
-                              watch
-                            </button>
+                              <span class="truncate text-xs text-fg">
+                                {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
+                                {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
+                              </span>
+                            {:else if queued(t.id)}
+                              <span class="truncate text-xs text-fg">
+                                {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
+                                <span class="text-muted"> · {queued(t.id)!.phase}</span>
+                              </span>
                             {/if}
                           </div>
-                        </td>
-                      </tr>
-                    {/if}
-                  </tr>
+                          {#if working(t.id)}
+                          <button
+                            type="button"
+                            class="relative rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
+                            onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
+                          >
+                            watch
+                          </button>
+                          {/if}
+                        </div>
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               {/if}
             </tbody>

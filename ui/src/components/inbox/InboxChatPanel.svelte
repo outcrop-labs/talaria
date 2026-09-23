@@ -521,6 +521,7 @@
     style:--aside-w="min({panelWidth}px, calc(100vw - 44px))"
     aria-label="Assistant conversation"
   >
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -- reason: ARIA adjustable separator (aria-valuenow, onkeydown) — legitimately interactive per ARIA -->
     <div
       role="separator"
       aria-label="Resize assistant conversation"

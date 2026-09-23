@@ -93,7 +93,7 @@
 </script>
 
 <!-- Rendered prose is a READING surface — sans (code re-asserts mono). -->
-<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -- reason: delegated click-to-copy on code blocks inside {@html}; the copy button itself is a real button -->
 <div bind:this={container} class={cn('select-text space-y-2 break-words font-sans', className)} onclick={oncopy}>
   {@html html}
 </div>

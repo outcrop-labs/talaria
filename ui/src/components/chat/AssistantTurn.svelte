@@ -48,6 +48,7 @@
   )
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the message context menu has no keyboard path -->
 <div in:fade={{ duration: 150 }} class="flex gap-2.5" oncontextmenu={onContextMenu}>
   <MessageAvatar name={agentLabel} class="mt-0.5" />
   <div class="min-w-0 flex-1 space-y-2">
