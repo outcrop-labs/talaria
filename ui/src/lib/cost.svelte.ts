@@ -20,6 +20,7 @@ export interface CostOverview {
     estimatedShare: number
     split: { local: number; cloud: number; other: number }
     unpricedCloudTokens: number
+    providerReported?: { cost: number; source: string; fetchedAt: string | null }
   }
   perModel: Array<{ llmModel: string | null; endpointClass: 'local' | 'cloud' | null; tokens: number; cost: number | null }>
   perAgent: Array<CostTotals & { agentModel: string; lastUsed: string | null; cost: number; localShare: number | null }>

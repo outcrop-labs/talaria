@@ -3084,6 +3084,56 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now()
    )`,
   `create index if not exists work_wait_agent_time on work_wait (agent_model, queued_at)`,
+  // Provider-reported spend. Additive only: a rolling deploy still has the
+  // previous release reading model_prices / price_in/out / auto_prices, so
+  // those columns stay. This release does not treat them as a source of truth.
+  `alter table usage_events add column if not exists provider_cost numeric`,
+  `alter table usage_events add column if not exists cost_source text`,
+  `alter table usage_events add column if not exists cost_provider text`,
+  `alter table usage_events add column if not exists cost_variant text`,
+  `alter table usage_events add column if not exists cost_fetched_at timestamptz`,
+  `alter table usage_events add column if not exists generation_id text`,
+  `create index if not exists usage_events_unpriced_generation_idx on usage_events(generation_id) where generation_id is not null and provider_cost is null`,
+  `create table if not exists provider_spend (
+     id uuid primary key default gen_random_uuid(),
+     endpoint_id uuid not null references llm_endpoints(id) on delete cascade,
+     provider text not null,
+     variant text not null default '',
+     model text not null default '',
+     window_start timestamptz not null,
+     window_end timestamptz not null,
+     cost_usd numeric not null,
+     prompt_tokens bigint,
+     completion_tokens bigint,
+     requests integer,
+     source text not null,
+     fetched_at timestamptz not null default now(),
+     unique (endpoint_id, source, window_start, model, variant)
+   )`,
+  `create index if not exists provider_spend_window_idx on provider_spend(window_start, endpoint_id)`,
+  `create table if not exists provider_prices (
+     id uuid primary key default gen_random_uuid(),
+     endpoint_id uuid not null references llm_endpoints(id) on delete cascade,
+     provider text not null,
+     model text not null,
+     variant text not null default '',
+     price_in_per_mtok numeric,
+     price_out_per_mtok numeric,
+     source text not null,
+     fetched_at timestamptz not null default now(),
+     unique (endpoint_id, model, variant)
+   )`,
+  `alter table llm_endpoints add column if not exists archived_prices jsonb`,
+  // One-shot copy of the editable rate card. Does not clear the live columns.
+  `update llm_endpoints set archived_prices = jsonb_build_object(
+     'priceInPerMtok', price_in_per_mtok,
+     'priceOutPerMtok', price_out_per_mtok,
+     'modelPrices', model_prices,
+     'autoPrices', auto_prices,
+     'archivedAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+   ) where archived_prices is null
+     and (price_in_per_mtok is not null or price_out_per_mtok is not null
+          or model_prices <> '{}'::jsonb or auto_prices <> '{}'::jsonb)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -42,7 +42,8 @@ use talaria_api_facades::gateway::registry::resolve_route;
 use talaria_api_facades::gateway::settings::get_setting_hot;
 use talaria_api_facades::gateway::upstream::{Reply, build_upstream, fetch_upstream, js_truthy};
 use talaria_api_facades::gateway::usage::{
-    TokenCounts, estimate_tokens, normalize_usage, record_gateway_usage,
+    ReportedSpend, TokenCounts, estimate_tokens, normalize_usage, record_gateway_usage_with_spend,
+    reported_spend,
 };
 use talaria_auth::{authenticate_key, bearer_secret};
 use talaria_error::{
@@ -262,6 +263,7 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
         caller: caller.clone(),
         endpoint: route.endpoint.name.clone(),
         endpoint_class: route.endpoint.class.clone(),
+        provider: route.endpoint.provider.clone(),
         upstream_model: route.upstream_model.clone(),
         prompt_chars,
         skip: skip_meter,
@@ -282,7 +284,8 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
             if let Ok(j) = serde_json::from_str::<Value>(&text)
                 && let Some(reported) = normalize_usage(j.get("usage"))
             {
-                ledger.spawn(reported, false);
+                let spend = reported_spend(&ledger.provider, &j);
+                ledger.spawn(reported, false, &spend);
             }
             return fixed_json(status, &sanitized_upstream_body(status, &text));
         }
@@ -292,7 +295,8 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                 .unwrap_or_default()
                 .to_string();
             let counts = normalize_usage(j.get("usage"));
-            ledger.maybe_spawn(counts, content.encode_utf16().count());
+            let spend = reported_spend(&ledger.provider, &j);
+            ledger.maybe_spawn(counts, content.encode_utf16().count(), &spend);
             if may_annotate && !content.is_empty() {
                 // Nothing has been relayed yet, so annotate/strict can act on
                 // the body itself: strict redacts leaked secrets, and any
@@ -418,6 +422,7 @@ struct Ledger {
     caller: String,
     endpoint: String,
     endpoint_class: String,
+    provider: String,
     upstream_model: String,
     prompt_chars: usize,
     skip: bool,
@@ -425,8 +430,14 @@ struct Ledger {
 
 impl Ledger {
     /// Known usage books as reported; absent usage falls back to the chars/4
-    /// estimate over prompt + completion.
-    fn maybe_spawn(&self, counts: Option<TokenCounts>, content_chars: usize) {
+    /// estimate over prompt + completion. Provider cost rides along when the
+    /// body had one.
+    fn maybe_spawn(
+        &self,
+        counts: Option<TokenCounts>,
+        content_chars: usize,
+        spend: &ReportedSpend,
+    ) {
         if self.skip {
             return;
         }
@@ -441,16 +452,17 @@ impl Ledger {
                 true,
             ),
         };
-        self.spawn(counts, estimated);
+        self.spawn(counts, estimated, spend);
     }
 
-    fn spawn(&self, counts: TokenCounts, estimated: bool) {
+    fn spawn(&self, counts: TokenCounts, estimated: bool, spend: &ReportedSpend) {
         if self.skip {
             return;
         }
         let l = self.clone();
+        let spend = spend.clone();
         tokio::spawn(async move {
-            if let Err(e) = record_gateway_usage(
+            if let Err(e) = record_gateway_usage_with_spend(
                 &l.pg,
                 &l.caller,
                 &l.endpoint,
@@ -458,6 +470,7 @@ impl Ledger {
                 &l.upstream_model,
                 &counts,
                 estimated,
+                Some(&spend),
             )
             .await
             {
@@ -531,6 +544,7 @@ struct MeteredStream {
     buf: Vec<u8>,
     content: String,
     usage: Option<Value>,
+    generation_id: Option<String>,
     settled: bool,
     ledger: Ledger,
     mode: MeterMode,
@@ -572,6 +586,7 @@ impl MeteredStream {
             buf: Vec::new(),
             content: String::new(),
             usage: None,
+            generation_id: None,
             settled: false,
             ledger,
             mode,
@@ -597,6 +612,11 @@ impl MeteredStream {
         }; // partial line — ignore
         if j.get("usage").map(|u| !u.is_null()).unwrap_or(false) {
             self.usage = j.get("usage").cloned();
+        }
+        if let Some(id) = j.get("id").and_then(Value::as_str)
+            && (id.starts_with("gen-") || self.ledger.provider == "openrouter")
+        {
+            self.generation_id = Some(id.to_string());
         }
         if let Some(delta) = j["choices"][0]["delta"]["content"].as_str() {
             self.content.push_str(delta);
@@ -646,9 +666,24 @@ impl MeteredStream {
             return;
         }
         self.settled = true;
+        let spend = match &self.usage {
+            Some(usage) => {
+                let mut body = serde_json::json!({ "usage": usage });
+                if let Some(id) = &self.generation_id {
+                    body["id"] = serde_json::Value::String(id.clone());
+                }
+                reported_spend(&self.ledger.provider, &body)
+            }
+            None => ReportedSpend {
+                generation_id: self.generation_id.clone(),
+                provider: Some(self.ledger.provider.clone()),
+                ..ReportedSpend::default()
+            },
+        };
         self.ledger.maybe_spawn(
             normalize_usage(self.usage.as_ref()),
             self.content.encode_utf16().count(),
+            &spend,
         );
     }
 }
@@ -753,6 +788,7 @@ mod tests {
             caller: "api:test".into(),
             endpoint: "e".into(),
             endpoint_class: "cloud".into(),
+            provider: "openrouter".into(),
             upstream_model: "m".into(),
             prompt_chars: 0,
             skip: true,

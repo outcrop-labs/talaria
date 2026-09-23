@@ -1649,10 +1649,12 @@ async fn endpoints_for(pg: &PgPool, model: &str) -> Vec<PoolEndpoint> {
     let names: Vec<String> = route.endpoints.iter().map(|ep| ep.name.clone()).collect();
     let prices: HashMap<String, (Option<f64>, Option<f64>)> =
         sqlx::query_as::<_, (String, Option<f64>, Option<f64>)>(
-            "select name, \
-             coalesce(model_prices->$2->>'in', auto_prices->$2->>'in', price_in_per_mtok::text)::float8 as in_tok, \
-             coalesce(model_prices->$2->>'out', auto_prices->$2->>'out', price_out_per_mtok::text)::float8 as out_tok \
-             from llm_endpoints where name = any($1)",
+            "select e.name, \
+             (select max(p.price_in_per_mtok)::float8 from provider_prices p \
+              where p.endpoint_id = e.id and p.model = $2), \
+             (select max(p.price_out_per_mtok)::float8 from provider_prices p \
+              where p.endpoint_id = e.id and p.model = $2) \
+             from llm_endpoints e where e.name = any($1)",
         )
         .bind(&names)
         .bind(&route.upstream_model)

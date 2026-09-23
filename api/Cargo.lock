@@ -5937,6 +5937,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-gateway",
  "talaria-scheduler",
+ "talaria-state",
  "tokio",
  "tracing",
 ]

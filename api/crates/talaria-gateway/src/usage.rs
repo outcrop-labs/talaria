@@ -98,30 +98,57 @@ pub struct SpendWindow {
     pub unpriced_tokens: i64,
 }
 
-// The priced view: cloud rows get $ from the user's
-// per-model override, else the auto-fetched public rate, else the endpoint
-// default; local rows are $0; cloud rows with no price at all get NULL cost
-// so they can be surfaced as "unpriced". Multipliers per input KIND — they
-// are VALUES interpolated into this text, not binds: the view is spliced
-// into larger statements whose callers bind their own $1/$2, and a bound
-// multiplier here would collide with those placeholders and leave the
-// statement unpreparable (a failure budget.rs's `.ok()?` swallows as "no
-// spend data").
+// The priced view. Local rows are $0. A provider-reported dollar amount on the
+// row wins — that is the charge, including whichever upstream endpoint served
+// an OpenRouter call. Otherwise a cloud row is derived from `provider_prices`
+// (the provider's published rate, stored with source and fetched-at). Editable
+// `model_prices` / `price_in_per_mtok` / `auto_prices` are not read.
+//
+// OpenRouter publishes a different price per endpoint and that price moves.
+// A derived fallback there requires the variant that served the call. A
+// model-level published price (variant '') is a fallback only for providers
+// that do not route across priced endpoints.
+//
+// Multipliers per input KIND are VALUES interpolated into this text, not
+// binds: the view is spliced into larger statements whose callers bind their
+// own $1/$2.
 static PRICED_STR: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     format!(
         "select u.*, \
         case \
           when u.endpoint_class = 'local' then 0 \
-          when u.endpoint_class = 'cloud' then \
+          when u.provider_cost is not null then u.provider_cost \
+          when u.endpoint_class = 'cloud' \
+               and pp.in_tok is not null and pp.out_tok is not null then \
             ((u.prompt_tokens + u.cache_write_tokens * {CACHE_WRITE_MULTIPLIER} + u.cache_read_tokens * {CACHE_READ_MULTIPLIER}) \
-           * coalesce((e.model_prices->u.llm_model->>'in')::numeric, \
-                      (e.auto_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok) \
-         + u.completion_tokens * coalesce((e.model_prices->u.llm_model->>'out')::numeric, \
-                                          (e.auto_prices->u.llm_model->>'out')::numeric, e.price_out_per_mtok)) / 1e6 \
-      else null \
-    end as cost \
-  from usage_events u \
-  left join llm_endpoints e on e.name = u.endpoint"
+           * pp.in_tok + u.completion_tokens * pp.out_tok) / 1e6 \
+          else null \
+        end as cost, \
+        case \
+          when u.endpoint_class = 'local' then 'local' \
+          when u.provider_cost is not null then 'provider' \
+          when u.endpoint_class = 'cloud' \
+               and pp.in_tok is not null and pp.out_tok is not null then 'derived' \
+          else null \
+        end as cost_basis \
+      from usage_events u \
+      left join llm_endpoints e on e.name = u.endpoint \
+      left join lateral ( \
+        select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok \
+        from provider_prices p \
+        where p.endpoint_id = e.id \
+          and p.model = u.llm_model \
+          and ( \
+            (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant) \
+            or ( \
+              coalesce(u.cost_variant, '') = '' \
+              and p.variant = '' \
+              and e.provider is distinct from 'openrouter' \
+            ) \
+          ) \
+        order by p.fetched_at desc \
+        limit 1 \
+      ) pp on true"
     )
 });
 
@@ -197,6 +224,18 @@ pub struct CostTotals {
     pub estimated_share: serde_json::Number,
     pub split: CostSplit,
     pub unpriced_cloud_tokens: i64,
+    /// Provider activity/cost-report total for the last 30 days, when a
+    /// provider returned one. The month tile uses this number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_reported: Option<ProviderReported>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderReported {
+    pub cost: serde_json::Number,
+    pub source: String,
+    pub fetched_at: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -408,6 +447,21 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     let (today, week, month) = (today?, week?, month?);
     let (est, split, (unpriced,), per_model, per_agent, per_day) =
         (est?, split?, unpriced?, per_model?, per_agent?, per_day?);
+    let activity: (i32, f64, Option<String>, Option<String>) = sqlx::query_as(
+        "select count(*)::int, coalesce(sum(cost_usd), 0)::float8, max(source), \
+         to_char(max(fetched_at) at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+         from provider_spend \
+         where source in ('openrouter.activity', 'openai.costs', 'anthropic.cost_report') \
+           and window_start > now() - make_interval(days => $1)",
+    )
+    .bind(30)
+    .fetch_one(pg)
+    .await?;
+    let provider_reported = (activity.0 > 0).then(|| ProviderReported {
+        cost: js_num(activity.1),
+        source: activity.2.unwrap_or_else(|| "provider".to_string()),
+        fetched_at: activity.3,
+    });
     let w =
         |(prompt, completion, cache, generations, cost): (i32, i32, i32, i32, f64)| CostWindow {
             prompt,
@@ -416,12 +470,15 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
             generations,
             cost: js_num(cost),
         };
+    let mut month = w(month);
+    if let Some(reported) = &provider_reported {
+        month.cost = reported.cost.clone();
+    }
     Ok(CostOverview {
         totals: CostTotals {
             today: w(today),
             week: w(week),
-            month: w(month),
-            // 0..1 of the month's generations that are estimates.
+            month,
             estimated_share: js_num(if est.1 != 0 {
                 f64::from(est.0) / f64::from(est.1)
             } else {
@@ -433,6 +490,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
                 other: split.2,
             },
             unpriced_cloud_tokens: unpriced,
+            provider_reported,
         },
         per_model,
         per_agent,
@@ -534,6 +592,67 @@ fn k(v: i64) -> i64 {
     v.max(0)
 }
 
+/// Dollars the provider reported for one call, captured off the completion
+/// body. Absent when the provider sent no cost — the row stays unpriced until
+/// a generation lookup or a published-price derivation fills it.
+#[derive(Debug, Clone, Default)]
+pub struct ReportedSpend {
+    pub cost_usd: Option<f64>,
+    pub provider: Option<String>,
+    pub variant: Option<String>,
+    pub generation_id: Option<String>,
+}
+
+/// Pull a provider-reported cost and generation id out of a completion body.
+/// `usage.cost` is the charge (OpenRouter always sends it). A `gen-` id is
+/// OpenRouter's generation id, kept so a later lookup can fill a missing cost
+/// and the upstream endpoint that served the call.
+pub fn reported_spend(provider: &str, body: &Value) -> ReportedSpend {
+    let usage = body.get("usage").filter(|u| !u.is_null());
+    let cost_usd = usage
+        .and_then(|u| json_f64(u.get("cost")))
+        .filter(|n| n.is_finite() && *n >= 0.0);
+    let generation_id = body
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| id.starts_with("gen-") || provider == "openrouter")
+        .map(str::to_string);
+    let variant = body
+        .get("provider")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("provider_name").and_then(Value::as_str))
+        .map(str::to_string);
+    ReportedSpend {
+        cost_usd,
+        provider: (!provider.is_empty()).then(|| provider.to_string()),
+        variant,
+        generation_id,
+    }
+}
+
+fn json_f64(v: Option<&Value>) -> Option<f64> {
+    match v? {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Whether a published price row may price this call. A known serving variant
+/// matches only that row. With no variant, a model-level published price is a
+/// derived fallback — except OpenRouter, whose catalog price is not the
+/// endpoint that served the call.
+pub fn published_price_applies(
+    provider: &str,
+    served_variant: Option<&str>,
+    price_variant: &str,
+) -> bool {
+    if let Some(served) = served_variant.filter(|v| !v.is_empty()) {
+        return price_variant == served;
+    }
+    price_variant.is_empty() && provider != "openrouter"
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn record_gateway_usage(
     pg: &PgPool,
@@ -544,11 +663,40 @@ pub async fn record_gateway_usage(
     counts: &TokenCounts,
     estimated: bool,
 ) -> Result<(), sqlx::Error> {
+    record_gateway_usage_with_spend(
+        pg,
+        caller,
+        endpoint_name,
+        endpoint_class,
+        upstream_model,
+        counts,
+        estimated,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn record_gateway_usage_with_spend(
+    pg: &PgPool,
+    caller: &str,
+    endpoint_name: &str,
+    endpoint_class: &str,
+    upstream_model: &str,
+    counts: &TokenCounts,
+    estimated: bool,
+    spend: Option<&ReportedSpend>,
+) -> Result<(), sqlx::Error> {
+    let spend = spend.cloned().unwrap_or_default();
+    let source = spend.cost_usd.map(|_| "provider");
     sqlx::query(
         "insert into usage_events (agent_model, source, prompt_tokens, completion_tokens, \
                                   cache_write_tokens, cache_read_tokens, reasoning_tokens, \
-                                  estimated, endpoint_class, llm_model, endpoint) \
-         values ($1, 'gateway', $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                                  estimated, endpoint_class, llm_model, endpoint, \
+                                  provider_cost, cost_source, cost_provider, cost_variant, \
+                                  cost_fetched_at, generation_id) \
+         values ($1, 'gateway', $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+                 $11, $12, $13, $14, case when $11::numeric is null then null else now() end, $15)",
     )
     .bind(caller)
     .bind(k(counts.prompt_tokens))
@@ -560,6 +708,11 @@ pub async fn record_gateway_usage(
     .bind(endpoint_class)
     .bind(upstream_model)
     .bind(endpoint_name)
+    .bind(spend.cost_usd)
+    .bind(source)
+    .bind(spend.provider)
+    .bind(spend.variant.filter(|v| !v.is_empty()))
+    .bind(spend.generation_id)
     .execute(pg)
     .await
     .map(|_| ())
@@ -745,9 +898,10 @@ pub async fn record_usage(pg: &PgPool, u: &UsageInput<'_>) -> Result<(), sqlx::E
         let model = cls.llm_model.clone();
         tokio::spawn(async move {
             let priced = sqlx::query(
-                "select 1 as ok from llm_endpoints \
-                 where name = $1 \
-                   and (model_prices ? $2 or auto_prices ? $2 or price_in_per_mtok is not null)",
+                "select 1 as ok from provider_prices p \
+                 join llm_endpoints e on e.id = p.endpoint_id \
+                 where e.name = $1 and p.model = $2 \
+                   and (p.variant <> '' or e.provider is distinct from 'openrouter')",
             )
             .bind(&endpoint)
             .bind(&model)
@@ -838,5 +992,33 @@ mod tests {
         assert_eq!(estimate_tokens(1), 1);
         assert_eq!(estimate_tokens(8), 2);
         assert_eq!(estimate_tokens(9), 3);
+    }
+    #[test]
+    fn reported_spend_reads_the_provider_charge_not_a_local_rate() {
+        let body = json!({
+            "id": "gen-abc",
+            "provider": "Anthropic",
+            "usage": { "prompt_tokens": 10, "completion_tokens": 2, "cost": 0.0015 }
+        });
+        let spend = reported_spend("openrouter", &body);
+        assert_eq!(spend.cost_usd, Some(0.0015));
+        assert_eq!(spend.generation_id.as_deref(), Some("gen-abc"));
+        assert_eq!(spend.variant.as_deref(), Some("Anthropic"));
+    }
+
+    #[test]
+    fn openrouter_without_a_serving_variant_does_not_take_a_model_level_price() {
+        assert!(!published_price_applies("openrouter", None, ""));
+        assert!(published_price_applies(
+            "openrouter",
+            Some("Infermatic"),
+            "Infermatic"
+        ));
+        assert!(!published_price_applies(
+            "openrouter",
+            Some("Infermatic"),
+            "OpenAI"
+        ));
+        assert!(published_price_applies("openai", None, ""));
     }
 }

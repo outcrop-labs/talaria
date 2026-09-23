@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 talaria-gateway = { path = "../talaria-gateway" }
+talaria-state = { path = "../talaria-state" }
 talaria-scheduler = { path = "../talaria-scheduler" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 tokio = { version = "1", features = ["sync", "time", "macros"] }

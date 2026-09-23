@@ -95,6 +95,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    let spend_state = state.clone();
+    let _ = talaria_price_oracle::LOAD_SPEND_KEYS.set(std::sync::Arc::new(move || {
+        let state = spend_state.clone();
+        Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
+    }));
     talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));

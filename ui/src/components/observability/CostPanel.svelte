@@ -126,7 +126,9 @@
         <StatCard
           label="Cloud spend · 30 days"
           value={formatCost(t?.month.cost ?? 0)}
-          sub={`today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`}
+          sub={t?.providerReported
+            ? `${t.providerReported.source}${t.providerReported.fetchedAt ? ` · ${t.providerReported.fetchedAt}` : ''}`
+            : `today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`}
         />
       </div>
 
@@ -134,8 +136,8 @@
            reserved for real failures (spec §1 semantics). -->
       {#if (t?.unpricedCloudTokens ?? 0) > 0}
         <p transition:slide={{ duration: 150 }} class="text-xs text-warning">
-          {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no price configured. Set per-model pricing on
-          the Models page so spend is complete.
+          {formatTokens(t!.unpricedCloudTokens)} cloud tokens have no provider-reported charge and no published
+          price for the endpoint that served them.
         </p>
       {/if}
 
@@ -195,8 +197,9 @@
         </p>
       {/if}
       <p class="text-xs text-muted">
-        Dollar figures are rate-card estimates — your configured prices, else fetched public rates — not provider
-        invoices. Cache tokens are priced at their own rates (writes 1.25x input, reads 0.1x).
+        Dollars are the provider's reported charge when they send one. Otherwise they are derived from that
+        provider's published price and labeled as such — never an editable rate. OpenRouter's charge follows the
+        endpoint that served the call.
       </p>
     {/if}
     </Materialize>

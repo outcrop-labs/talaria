@@ -622,7 +622,8 @@ CREATE TABLE public.llm_endpoints (
     request_defaults jsonb DEFAULT '{}'::jsonb NOT NULL,
     api_key_cipher text,
     model_efforts jsonb DEFAULT '{}'::jsonb NOT NULL,
-    anthropic_base text
+    anthropic_base text,
+    archived_prices jsonb
 );
 CREATE TABLE public.mcp_oauth_states (
     state text NOT NULL,
@@ -747,6 +748,32 @@ CREATE TABLE public.plan_drafts (
     note text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.provider_prices (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    endpoint_id uuid NOT NULL,
+    provider text NOT NULL,
+    model text NOT NULL,
+    variant text DEFAULT ''::text NOT NULL,
+    price_in_per_mtok numeric,
+    price_out_per_mtok numeric,
+    source text NOT NULL,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.provider_spend (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    endpoint_id uuid NOT NULL,
+    provider text NOT NULL,
+    variant text DEFAULT ''::text NOT NULL,
+    model text DEFAULT ''::text NOT NULL,
+    window_start timestamp with time zone NOT NULL,
+    window_end timestamp with time zone NOT NULL,
+    cost_usd numeric NOT NULL,
+    prompt_tokens bigint,
+    completion_tokens bigint,
+    requests integer,
+    source text NOT NULL,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.push_subscriptions (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1035,7 +1062,13 @@ CREATE TABLE public.usage_events (
     task_id uuid,
     cache_write_tokens integer DEFAULT 0 NOT NULL,
     cache_read_tokens integer DEFAULT 0 NOT NULL,
-    reasoning_tokens integer DEFAULT 0 NOT NULL
+    reasoning_tokens integer DEFAULT 0 NOT NULL,
+    provider_cost numeric,
+    cost_source text,
+    cost_provider text,
+    cost_variant text,
+    cost_fetched_at timestamp with time zone,
+    generation_id text
 );
 CREATE TABLE public.user_agent_access (
     user_id uuid NOT NULL,
@@ -1352,6 +1385,14 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.provider_prices
+    ADD CONSTRAINT provider_prices_endpoint_id_model_variant_key UNIQUE (endpoint_id, model, variant);
+ALTER TABLE ONLY public.provider_prices
+    ADD CONSTRAINT provider_prices_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.provider_spend
+    ADD CONSTRAINT provider_spend_endpoint_id_source_window_start_model_varian_key UNIQUE (endpoint_id, source, window_start, model, variant);
+ALTER TABLE ONLY public.provider_spend
+    ADD CONSTRAINT provider_spend_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.push_subscriptions
     ADD CONSTRAINT push_subscriptions_endpoint_key UNIQUE (endpoint);
 ALTER TABLE ONLY public.push_subscriptions
@@ -1506,6 +1547,7 @@ CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_
 CREATE INDEX notifications_user_idx ON public.notifications USING btree (user_id, created_at DESC);
 CREATE INDEX outreach_events_agent_idx ON public.outreach_events USING btree (agent_model, kind, created_at DESC);
 CREATE INDEX plan_drafts_conversation_idx ON public.plan_drafts USING btree (conversation_id, created_at DESC);
+CREATE INDEX provider_spend_window_idx ON public.provider_spend USING btree (window_start, endpoint_id);
 CREATE INDEX push_subscriptions_user_idx ON public.push_subscriptions USING btree (user_id);
 CREATE INDEX research_runs_conversation_idx ON public.research_runs USING btree (conversation_id);
 CREATE INDEX research_runs_created_idx ON public.research_runs USING btree (created_at DESC);
@@ -1521,6 +1563,7 @@ CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
 CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (created_at DESC);
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);
+CREATE INDEX usage_events_unpriced_generation_idx ON public.usage_events USING btree (generation_id) WHERE ((generation_id IS NOT NULL) AND (provider_cost IS NULL));
 CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 ALTER TABLE ONLY public.agent_defs
@@ -1705,6 +1748,10 @@ ALTER TABLE ONLY public.outreach_events
     ADD CONSTRAINT outreach_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.plan_drafts
     ADD CONSTRAINT plan_drafts_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.provider_prices
+    ADD CONSTRAINT provider_prices_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES public.llm_endpoints(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.provider_spend
+    ADD CONSTRAINT provider_spend_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES public.llm_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.push_subscriptions
     ADD CONSTRAINT push_subscriptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.quality_reviews
