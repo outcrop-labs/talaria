@@ -99,7 +99,13 @@ async fn sid(state: &AppState, user: &SessionUser) -> String {
     create_session(state, user).await.unwrap()
 }
 
-async fn call(state: &AppState, session: &str, method: &str, uri: &str, body: Option<&str>) -> (u16, String) {
+async fn call(
+    state: &AppState,
+    session: &str,
+    method: &str,
+    uri: &str,
+    body: Option<&str>,
+) -> (u16, String) {
     let builder = Request::builder()
         .method(method)
         .uri(uri)
@@ -176,7 +182,14 @@ async fn an_owner_archives_a_plan_and_a_collaborator_cannot() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(archived_flag(&state.pg, &id).await, Some(true));
 
-    let (_, live) = call(&state, &owner_sid, "GET", "/api/conversations?kind=plan", None).await;
+    let (_, live) = call(
+        &state,
+        &owner_sid,
+        "GET",
+        "/api/conversations?kind=plan",
+        None,
+    )
+    .await;
     assert!(!live.contains(&id), "archived plans leave the live list");
     let (_, retired) = call(
         &state,
@@ -220,7 +233,14 @@ async fn an_owner_archives_a_plan_and_a_collaborator_cannot() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(archived_flag(&state.pg, &id).await, Some(false));
-    let (_, live) = call(&state, &owner_sid, "GET", "/api/conversations?kind=plan", None).await;
+    let (_, live) = call(
+        &state,
+        &owner_sid,
+        "GET",
+        "/api/conversations?kind=plan",
+        None,
+    )
+    .await;
     assert!(live.contains(&id), "restore puts it back on the live list");
 
     reset(&state.pg, tag).await;
@@ -353,11 +373,12 @@ async fn a_renamed_research_title_is_not_clobbered() {
         .execute(&state.pg)
         .await
         .unwrap();
-    let title: Option<String> = sqlx::query_scalar("select title from research_runs where id = $1::uuid")
-        .bind(&id)
-        .fetch_one(&state.pg)
-        .await
-        .unwrap();
+    let title: Option<String> =
+        sqlx::query_scalar("select title from research_runs where id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
     assert_eq!(title.as_deref(), Some("Tariff note"));
 
     let (status, _) = call(
