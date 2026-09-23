@@ -154,8 +154,8 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // pre-extraction logic (get_doc → effective_doc_perms → can_read,
     // teams for grant matching); fails closed like every other rung: a
     // perms read that errors answers false.
-    let _ = talaria_uploads::KB_DOC_ALLOWS_READ.set(std::sync::Arc::new(
-        |pg, doc_id, user_id, who| {
+    let _ =
+        talaria_uploads::KB_DOC_ALLOWS_READ.set(std::sync::Arc::new(|pg, doc_id, user_id, who| {
             Box::pin(async move {
                 let Ok(Some(doc)) = talaria_kb::get_doc(&pg, &doc_id).await else {
                     return false;
@@ -174,8 +174,7 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                     &team_ids,
                 )
             })
-        },
-    ));
+        }));
     talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));
