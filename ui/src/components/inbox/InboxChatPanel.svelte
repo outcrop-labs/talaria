@@ -148,7 +148,10 @@
   // adopter below in refetch races (adopt → list lands without it → deselect
   // → adopt → …) and the oscillation took the whole panel down with an
   // unhandled effect loop.
-  const conversation = useInboxFocusConversation(chatId)
+  // Getter, not a value: the drawer mounts once in AppLayout (a peer of the
+  // nav rail), so an eager `chatId` would pin the thread to mount time and a
+  // picker switch would only swap the header. The query key must stay live.
+  const conversation = useInboxFocusConversation(() => chatId)
   // ADOPT, DON'T ASK. With nothing selected, the server answers from the most
   // recent instance (creating nothing) — and the picker should name whatever
   // is actually on screen, so the resolved id becomes the selection. This is
