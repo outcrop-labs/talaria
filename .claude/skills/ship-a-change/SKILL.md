@@ -79,6 +79,10 @@ by hand.
 
 ## 6. After the PR opens — watch, then fix, then claim done
 
+Before you claim done, remove what this task created. The convention and the command are
+the [cleanup](../cleanup/SKILL.md) skill. The stop gate runs the sweep and blocks if disk
+pressure or stale artifacts are over the line — forgetting is how the disk fills.
+
 The stop gate and the pre-push hook saw the local tree. CI runs the full tree, and `rc`
 can move under the branch while the PR waits (a sibling merge is the usual way it
 conflicts). Start the watcher before you claim completion, and cite only a state it

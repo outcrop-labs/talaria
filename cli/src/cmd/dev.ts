@@ -160,6 +160,22 @@ async function hasCargo(ctx: Ctx): Promise<boolean> {
   }
 }
 
+
+/** One line when the disk is over the sweep's line. Never blocks boot —
+ *  the stack may be what the task needs in order to finish and free the space.
+ *  The policy is scripts/cleanup-sweep.mjs; a probe that cannot run is silence. */
+async function warnDiskPressure(ctx: Ctx): Promise<void> {
+  try {
+    const r = await ctx.exec(process.execPath, [join(ctx.root, 'scripts/cleanup-sweep.mjs'), '--pressure'], {
+      timeoutMs: 5_000,
+    })
+    const line = `${r.stdout}${r.stderr}`.trim()
+    if (line) ctx.log.warn(line)
+  } catch {
+    // a probe that cannot run must not stop the stack
+  }
+}
+
 export async function runDev(ctx: Ctx): Promise<number> {
   const uiEnvPath = join(ctx.root, 'ui/.env')
   if (!existsSync(uiEnvPath)) ctx.log.die('ui/.env missing — run `bun talaria setup` first')
@@ -176,6 +192,8 @@ export async function runDev(ctx: Ctx): Promise<number> {
         '  Create isolated worktrees with:  bun talaria worktree <name>   (see docs/WORKTREES.md)',
     )
   }
+
+  await warnDiskPressure(ctx)
 
   // Inside a devbox (docs/DEVBOX.md): the box compose owns the infra —
   // sidecars are up, healthy, and reachable by service DNS, and ui/.env

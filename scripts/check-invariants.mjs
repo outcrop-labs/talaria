@@ -1998,6 +1998,43 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// AGENT CLEANUP RUNS AT THE STOP GATE, NOT FROM MEMORY.
+//
+// AGENTS.md tells a finished task to remove what it created. What makes that
+// true is the stop gate running scripts/cleanup-sweep.mjs --gate, and the
+// cleanup skill being the procedure the index points at. Delete the call, or
+// the skill, and the disk fills again while every other check stays green.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['scripts/hooks/stop-check.mjs', 'cleanup-sweep.mjs', 'the stop gate runs the sweep'],
+    ['scripts/hooks/stop-check.mjs', '--gate', 'the stop gate uses the non-surprise mode'],
+    ['scripts/cleanup-sweep.mjs', 'export const POLICY', 'the thresholds have one home'],
+    ['.claude/skills/cleanup/SKILL.md', 'Use when', 'the procedure carries its trigger'],
+    ['AGENTS.md', '.claude/skills/cleanup/SKILL.md', 'the invariant points at the skill'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) found.push({ path: file, line: 0, text: 'missing' })
+    else if (!text.includes(needle)) found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+  }
+  if (found.length) {
+    failures.push({
+      id: 'cleanup-sweep-anchors',
+      what: 'the artifact sweep and the stop gate have drifted apart',
+      fix: [
+        'A finished dev task removes what it created. scripts/hooks/stop-check.mjs runs',
+        'scripts/cleanup-sweep.mjs --gate after bun run check, and exits 2 when disk use or',
+        'the removable set is over the line. The procedure is .claude/skills/cleanup/SKILL.md,',
+        'indexed from AGENTS.md. If one of them moved, update this check in the same commit —',
+        'an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)
