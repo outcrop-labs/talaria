@@ -169,8 +169,21 @@ describe('autoLayout', () => {
     ] as Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>
     const layout = autoLayout(steps, [wire('a', 'b'), wire('b', 'c')])
     expect(layout.get('a')).toEqual({ x: 500, y: 300 })
-    expect(layout.get('b')).toEqual({ x: 0, y: 0 })
+    expect(layout.get('b')).toEqual({ x: 208 + 64, y: 0 }) // a column right of its placed predecessor — no longer stacked at the origin
     expect(layout.get('c')).toEqual({ x: layout.get('b')!.x + 208 + 64, y: 0 })
+  })
+
+  it('an unplaced branch off a placed step lands a column right, not at the origin', () => {
+    const steps = [
+      { taskId: 'a', x: 40, y: 60, position: 0 },
+      { taskId: 'b', x: 320, y: 60, position: 1 },
+      { taskId: 'c', x: null, y: null, position: 2 },
+    ] as Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>
+    const layout = autoLayout(steps, [wire('a', 'b'), wire('a', 'c')])
+    expect(layout.get('a')).toEqual({ x: 40, y: 60 })
+    expect(layout.get('b')).toEqual({ x: 320, y: 60 })
+    expect(layout.get('c')).not.toEqual({ x: 0, y: 0 }) // not stacked on whatever sits at the origin
+    expect(layout.get('c')!.x).toBeGreaterThan(208) // a column right of its placed predecessor
   })
 
   it('a fan-out lays the branches in rows of one column', () => {
