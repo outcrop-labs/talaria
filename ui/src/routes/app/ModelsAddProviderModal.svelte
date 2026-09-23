@@ -64,7 +64,7 @@
 <Modal {open} {onClose} title="Add provider">
   <div class="space-y-4">
     <div>
-      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</label>
+      <span class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</span>
       <Combobox
         options={PROVIDER_PRESETS.map((p) => ({
           value: p.key,
@@ -78,21 +78,21 @@
       />
     </div>
     <div>
-      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-      <Input autofocus bind:value={name} placeholder={preset.key} />
+      <label for="models-name" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
+      <Input id="models-name" autofocus bind:value={name} placeholder={preset.key} />
     </div>
     {#if preset.configurableUrl}
       <div>
-        <label class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+        <label for="models-base-url" class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
           Base URL
           <InfoTip text="LAN and loopback hosts count as self-hosted in the cost split, inferred automatically." />
         </label>
-        <Input bind:value={baseUrl} placeholder={preset.baseUrl ?? 'https://host/v1'} />
+        <Input id="models-base-url" bind:value={baseUrl} placeholder={preset.baseUrl ?? 'https://host/v1'} />
       </div>
     {/if}
     <div>
-      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
-      <Input type="password" bind:value={apiKey} placeholder="paste the provider key" autocomplete="off" />
+      <label for="models-api-key" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
+      <Input id="models-api-key" type="password" bind:value={apiKey} placeholder="paste the provider key" autocomplete="off" />
       <InfoTip class="mt-1" text="Stored encrypted at rest (AES-256-GCM), never written to a config file or shown again." />
     </div>
     <details>

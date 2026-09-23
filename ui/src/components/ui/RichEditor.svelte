@@ -90,6 +90,7 @@
     class?: string
   } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: dirty-detection baseline captured at mount; save() keeps it current — deliberately not reactive
   let lastSaved = value
   let saveTimer: ReturnType<typeof setTimeout> | null = null
 

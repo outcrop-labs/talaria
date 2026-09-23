@@ -28,8 +28,14 @@
 
   let expanded = $state(false)
   let editing = $state(false)
+  // Draft state: seeded by startEdit() right before the edit form opens, so
+  // these initializers are placeholders. The template only shows them while
+  // editing is on — startEdit is the real seed.
+  // svelte-ignore state_referenced_locally -- reason: edit drafts, re-seeded by startEdit() before they are ever shown
   let name = $state(job.name)
+  // svelte-ignore state_referenced_locally -- reason: edit drafts, re-seeded by startEdit() before they are ever shown
   let sched = $state<Sched>(parseSchedule(job.schedule))
+  // svelte-ignore state_referenced_locally -- reason: edit drafts, re-seeded by startEdit() before they are ever shown
   let prompt = $state(job.prompt)
   const paused = $derived(!job.enabled || job.state === 'paused')
 

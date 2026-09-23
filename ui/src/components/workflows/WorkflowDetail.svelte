@@ -29,8 +29,14 @@
   const rawSkillOwners = $derived(libraryList.rows)
   // Platform plumbing skills aren't bindable flow content — hide them here too.
   const skillOwners = $derived(rawSkillOwners.map((o) => ({ ...o, skills: o.skills.filter((sk) => !sk.platform) })))
+  // Edit drafts: keyed remount per workflow ({#key openWorkflow.id} at the
+  // call site), and drafts deliberately survive the onChanged refetch —
+  // clobbering in-progress edits would be the bug.
+  // svelte-ignore state_referenced_locally -- reason: edit drafts; keyed remount per workflow, and drafts must survive the refetch
   let name = $state(workflow.name)
+  // svelte-ignore state_referenced_locally -- reason: edit drafts; keyed remount per workflow, and drafts must survive the refetch
   let description = $state(workflow.description)
+  // svelte-ignore state_referenced_locally -- reason: edit drafts; keyed remount per workflow, and drafts must survive the refetch
   let toolkitsText = $state(
     workflow.toolkits.map((t) => (t.tools?.length ? `${t.server}: ${t.tools.join(', ')}` : t.server)).join('\n'),
   )

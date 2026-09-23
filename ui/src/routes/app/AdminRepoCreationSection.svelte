@@ -19,6 +19,7 @@
 
   const qc = useQueryClient()
   const cfgOrgs = $derived(status.repoCreationOrgs ?? [])
+  // svelte-ignore state_referenced_locally -- reason: seed-once form draft; the parent gates this section on the loaded status
   let orgs = $state((status.repoCreationOrgs ?? []).join(', '))
   interface RepoReq {
     id: string

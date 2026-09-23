@@ -99,8 +99,9 @@
     </p>
     <div class="flex flex-wrap items-end gap-3">
       <div class="min-w-[16rem] flex-1">
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New root secret (optional)</label>
+        <label for="encryption-new-root" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">New root secret (optional)</label>
         <Input
+          id="encryption-new-root"
           type="password"
           bind:value={newRoot}
           placeholder="leave blank to keep the current root"

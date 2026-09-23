@@ -64,8 +64,9 @@
     />
     <div class="space-y-3">
       <div class="flex items-center gap-3">
-        <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</label>
+        <label for="email-provider" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</label>
         <Select
+          id="email-provider"
           size="sm"
           value={data.provider ?? ''}
           onchange={(e) => void post({ provider: (e.currentTarget.value || null) as 'smtp' | 'resend' | null })}
@@ -78,8 +79,9 @@
       </div>
       {#if data.provider}
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">From</label>
+          <label for="email-from" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">From</label>
           <Input
+            id="email-from"
             size="sm"
             value={data.from}
             onblur={(e) => e.currentTarget.value !== data.from && void post({ from: e.currentTarget.value })}
@@ -90,8 +92,8 @@
       {/if}
       {#if data.provider === 'smtp'}
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Host / port</label>
-          <Input size="sm" value={data.smtp.host} onblur={(e) => void post({ smtp: { host: e.currentTarget.value } })} placeholder="smtp.gmail.com" class="w-56" />
+          <label for="email-host" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Host / port</label>
+          <Input id="email-host" size="sm" value={data.smtp.host} onblur={(e) => void post({ smtp: { host: e.currentTarget.value } })} placeholder="smtp.gmail.com" class="w-56" />
           <Input size="sm" value={String(data.smtp.port)} onblur={(e) => void post({ smtp: { port: Number(e.currentTarget.value) || 587 } })} class="w-20" />
           <Checkbox
             title="TLS from the first byte (port 465). Off = STARTTLS (587)."
@@ -101,8 +103,8 @@
           />
         </div>
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">User</label>
-          <Input size="sm" value={data.smtp.user} onblur={(e) => void post({ smtp: { user: e.currentTarget.value } })} placeholder="talaria@yourcompany.com" class="w-56" />
+          <label for="email-user" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">User</label>
+          <Input id="email-user" size="sm" value={data.smtp.user} onblur={(e) => void post({ smtp: { user: e.currentTarget.value } })} placeholder="talaria@yourcompany.com" class="w-56" />
           <Input
             size="sm"
             type="password"
@@ -126,8 +128,9 @@
       {/if}
       {#if data.provider === 'resend'}
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
+          <label for="email-api-key" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
           <Input
+            id="email-api-key"
             size="sm"
             type="password"
             bind:value={secret}

@@ -143,6 +143,7 @@
       bind:this={panelEl}
       use:portal
       role="menu"
+      tabindex="-1"
       style={pos}
       onclick={(e) => e.stopPropagation()}
       class={cn(

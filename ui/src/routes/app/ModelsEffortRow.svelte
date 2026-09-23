@@ -34,6 +34,7 @@
 
   // Uncontrolled, like the pricing inputs beside this section: seeded from
   // the stored declaration, committed on blur/Enter.
+  // svelte-ignore state_referenced_locally -- reason: uncontrolled input seeded from the stored declaration, committed on blur/Enter
   let value = $state(declared?.join(', ') ?? '')
 
   const parse = (raw: string): string[] | null => {

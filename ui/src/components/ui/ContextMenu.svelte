@@ -97,6 +97,7 @@
     bind:this={el}
     use:portal
     role="menu"
+    tabindex="-1"
     style="position: fixed; left: {st.x}px; top: {st.y}px; z-index: 80"
     class={cn(popPanel, 'min-w-44 origin-top-left')}
     oncontextmenu={(e) => e.preventDefault()}

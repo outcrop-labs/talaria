@@ -15,6 +15,7 @@
   const cfg = $derived(def.latest?.config)
   const fleetQuery = useFleet()
   const stat = $derived(fleetQuery.data?.agents.find((a) => a.id === def.model))
+  // svelte-ignore state_referenced_locally -- reason: seed-once meta drafts; the refetch after save must not clobber in-progress edits
   let role = $state(def.role ?? '')
   const saveRole = async () => {
     if (role.trim() === (def.role ?? '')) return
@@ -26,6 +27,7 @@
   // (org+slug@domain); an override must be an address Gmail will accept
   // (a verified send-as on the org account).
   const isOrg = $derived(def.ownerUserId === null)
+  // svelte-ignore state_referenced_locally -- reason: seed-once meta drafts; the refetch after save must not clobber in-progress edits
   let alias = $state(def.emailAlias ?? '')
   const saveAlias = async () => {
     if (alias.trim() === (def.emailAlias ?? '')) return

@@ -37,6 +37,7 @@
     editor?: RichEditorHandle | null
   } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: seed-once draft; the rev counter remounts the other instance with fresh content instead of re-seeding
   let draft = $state(value)
   let reading = $state(false)
   // Bumped on every save so the other (unfocused) editor instance remounts with

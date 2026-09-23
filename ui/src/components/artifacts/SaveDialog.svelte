@@ -16,9 +16,11 @@
   // so the image was filed at the root and the owner had no idea their folders
   // were simply unreadable at that moment.
   const folders = listQuery(useFolders(), { title: 'Could not load your folders', variant: 'inline' })
+  // svelte-ignore state_referenced_locally -- reason: the dialog mounts per image ({#if open} at the call site); src is fixed per mount and only parsed once
   const url = new URL(src, window.location.origin)
   const path = url.searchParams.get('path') ?? ''
   const model = decodeURIComponent(url.pathname.split('/').pop() ?? '')
+  // svelte-ignore state_referenced_locally -- reason: seeded once from the image src; the dialog mounts per image
   let title = $state(path.split('/').pop() ?? 'image')
   let folderId = $state('')
   let busy = $state(false)
@@ -62,15 +64,15 @@
   {:else}
     <div class="space-y-3">
       <div>
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Title</label>
-        <Input size="sm" autofocus bind:value={title} />
+        <label for="save-title" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Title</label>
+        <Input id="save-title" size="sm" autofocus bind:value={title} />
       </div>
       <div>
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Folder</label>
+        <label for="save-folder" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Folder</label>
         {#if folders.pending}
           <Skeleton class="h-9 w-full" />
         {:else}
-          <Select size="sm" bind:value={folderId} class="w-full">
+          <Select id="save-folder" size="sm" bind:value={folderId} class="w-full">
             <option value="">No folder (root)</option>
             {#each folders.rows as f (f.id)}
               <option value={f.id}>{f.name}</option>
