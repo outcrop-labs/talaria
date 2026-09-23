@@ -12,6 +12,7 @@ workspace = true
 talaria-agent-auth = { path = "../talaria-agent-auth" }
 talaria-agent-crons = { path = "../talaria-agent-crons" }
 talaria-agent-defs = { path = "../talaria-agent-defs" }
+talaria-chips = { path = "../talaria-chips" }
 talaria-agent-mcp = { path = "../talaria-agent-mcp" }
 talaria-agent-role-templates = { path = "../talaria-agent-role-templates" }
 talaria-agent-secrets = { path = "../talaria-agent-secrets" }

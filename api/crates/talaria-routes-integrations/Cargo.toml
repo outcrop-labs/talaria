@@ -15,6 +15,7 @@ talaria-audit = { path = "../talaria-audit" }
 talaria-auth-config = { path = "../talaria-auth-config" }
 talaria-body = { path = "../talaria-body" }
 talaria-claim = { path = "../talaria-claim" }
+talaria-chips = { path = "../talaria-chips" }
 talaria-error = { path = "../talaria-error" }
 talaria-github = { path = "../talaria-github" }
 talaria-invites = { path = "../talaria-invites" }

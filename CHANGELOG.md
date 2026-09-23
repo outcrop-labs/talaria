@@ -4,6 +4,9 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+- **Chat chips.** Platform links in a message (a board, ticket, knowledge doc, document, or channel) render as a chip with an icon and a title, not a raw URL. Unrecognized URLs stay links. When an agent tool creates something, or tries a protected action that leaves the chat (send email, move a ticket, anything gated), the live turn gets the chip automatically: a link chip for what was made, an approval chip with approve and deny for what would leave. Approving names the tools that approval unlocked, and a later send in that conversation uses the grant instead of asking again. Tools can be exposed in the thread; opening one shows its inputs, and Run hands them to the agent.
+  Verified: `bun run verify` (ui typecheck, ui tests, mcp typecheck) and `bun run api:check`. Chip classification and markdown rendering tests, plus the chips crate's unit tests for link extraction, approval extraction, and unlock names.
+
 - **Desktop's typechecker can see the dither engine — CI on main goes green.**
   The dither merge (#410) taught `desktop/vite.config.ts` an `@dither` alias
   into `ui/src/lib/dither-engine.ts`, but a vite-only alias is invisible to

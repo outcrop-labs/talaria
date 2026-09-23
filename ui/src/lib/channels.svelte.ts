@@ -1,4 +1,5 @@
 // Group-chat client: queries + mutations + live SSE refresh.
+import type { ChatChip } from '@/lib/chips'
 import { openStream } from '@/lib/sse'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
@@ -57,6 +58,7 @@ export interface ChannelMessage {
   attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
   /** Confab-guard findings pinned to an agent reply (annotate/strict modes). */
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
+  chips?: ChatChip[]
 }
 
 /** A reactive argument: pass a plain value, or a getter for values that change

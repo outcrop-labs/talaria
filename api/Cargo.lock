@@ -4272,6 +4272,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-chips"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-notify",
+ "talaria-realtime",
+ "tokio",
+]
+
+[[package]]
 name = "talaria-claim"
 version = "0.1.0"
 dependencies = [
@@ -6324,6 +6337,7 @@ dependencies = [
  "talaria-channel-replies",
  "talaria-channels",
  "talaria-chat-persist",
+ "talaria-chips",
  "talaria-comms-decay",
  "talaria-conversations",
  "talaria-daily-brief",
@@ -6388,6 +6402,7 @@ dependencies = [
  "talaria-body",
  "talaria-brain-health",
  "talaria-channels",
+ "talaria-chips",
  "talaria-error",
  "talaria-gaps",
  "talaria-harness-defs",
@@ -6438,6 +6453,7 @@ dependencies = [
  "talaria-audit",
  "talaria-auth-config",
  "talaria-body",
+ "talaria-chips",
  "talaria-claim",
  "talaria-error",
  "talaria-github",

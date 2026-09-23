@@ -157,6 +157,30 @@ pub async fn post(
         Ok(q) => q,
         Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
+    if !principal.is_org
+        && let Ok(Some(conv)) = talaria_chips::live_conversation_id(&state.pg, &agent_model).await
+        && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_calendar_event")
+            .await
+            .unwrap_or(false)
+        && let Some(owner) = principal.owner_user_id.as_deref()
+    {
+        let sb = state.secretbox().await.unwrap_or_default();
+        let _ = talaria_api_facades::google::pending_actions::decide_action(
+            &state.pg,
+            &sb,
+            &queued.action.id,
+            owner,
+            false,
+            "approve",
+            talaria_agent_auth::now_ms(),
+        )
+        .await;
+        return Ok(Json(json!({
+            "pending": { "id": queued.action.id, "status": "executed" },
+            "message": "Created — this conversation already unlocked draft_calendar_event.",
+        }))
+        .into_response());
+    }
     // Calendar has no signature in the dedupe yet, so `already_pending` is
     // false from this route today — the wording branch exists so the kind
     // cannot join the dedupe without answering what its message says.

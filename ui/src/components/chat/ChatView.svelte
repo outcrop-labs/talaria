@@ -347,6 +347,30 @@
     if (res && convId === id) messages = res.messages.map(toDisplay)
   }
 
+  // Chips land on the streaming row from a different request (the agent's
+  // tool call), so the SSE the speaker is watching never carries them.
+  // Merge chips onto the live turn without replacing the prose the stream
+  // is still writing.
+  $effect(() => {
+    if (!streaming) return
+    const id = convId
+    if (!id) return
+    let stop = false
+    const iv = setInterval(async () => {
+      if (stop) return
+      const res = await loadConversation(id)
+      const remote = res?.messages.filter((m) => m.role === 'assistant').at(-1)
+      if (stop || !remote?.chips?.length) return
+      messages = messages.map((m, i) =>
+        i === messages.length - 1 && m.role === 'assistant' ? { ...m, chips: remote.chips, seq: remote.seq } : m,
+      )
+    }, 1000)
+    return () => {
+      stop = true
+      clearInterval(iv)
+    }
+  })
+
   // The surface's nudge — see the prop. Same last-signal guard the doc panes
   // use, so the effect only fires on a real bump.
   let lastSync = syncSignal
@@ -585,7 +609,15 @@
         {#if m.role === 'user'}
           <!-- Flattened user turn (spec §10) — the author name keeps the
               multiplayer voices apart on shared plans. -->
-          <UserTurn content={m.content} attachments={m.attachments} author={m.authorLabel ?? null} onContextMenu={copyMenu(m)} />
+          <UserTurn
+            content={m.content}
+            attachments={m.attachments}
+            chips={m.chips}
+            author={m.authorLabel ?? null}
+            onContextMenu={copyMenu(m)}
+            onInvoke={(text) => void send(text)}
+            onDecided={() => void syncFromServer()}
+          />
         {:else}
           <AssistantTurn
             message={m}
@@ -594,6 +626,8 @@
             {agentLabel}
             live={(streaming || resuming) && i === messages.length - 1}
             onContextMenu={copyMenu(m)}
+            onInvoke={(text) => void send(text)}
+            onDecided={() => void syncFromServer()}
           />
         {/if}
       {/each}

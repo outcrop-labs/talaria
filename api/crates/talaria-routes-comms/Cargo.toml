@@ -19,6 +19,7 @@ talaria-body = { path = "../talaria-body" }
 talaria-channel-replies = { path = "../talaria-channel-replies" }
 talaria-channels = { path = "../talaria-channels" }
 talaria-chat-persist = { path = "../talaria-chat-persist" }
+talaria-chips = { path = "../talaria-chips" }
 talaria-comms-decay = { path = "../talaria-comms-decay" }
 talaria-conversations = { path = "../talaria-conversations" }
 talaria-daily-brief = { path = "../talaria-daily-brief" }

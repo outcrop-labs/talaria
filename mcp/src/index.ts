@@ -1226,6 +1226,28 @@ server.registerTool(
   async ({ boardId, add, remove }) => ok(await api('PUT', `/api/boards/${encodeURIComponent(boardId)}/agents`, { add, remove })),
 )
 
+server.registerTool(
+  'expose_tools',
+  {
+    description:
+      'Show platform tools in the current chat as chips the person can open and run. Use this when they should see a tool and its inputs without you calling it yourself. Pass the tool names you want on screen, and any inputs you already know.',
+    inputSchema: {
+      tools: z
+        .array(
+          z.object({
+            name: z.string().describe('Platform tool name, e.g. create_ticket'),
+            label: z.string().optional(),
+            description: z.string().optional(),
+            inputs: z.record(z.string(), z.any()).optional(),
+          }),
+        )
+        .min(1)
+        .max(12),
+    },
+  },
+  async ({ tools }) => ok(await api('POST', '/api/agent/chips', { tools })),
+)
+
   auditRefusalProse(gaps, scope)
   return server
 }

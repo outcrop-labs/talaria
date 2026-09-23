@@ -7,13 +7,14 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-17 routes.
+18 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | GET | `session` + `perm:agents.manage` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | PUT | `admin` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | DELETE | `admin` |
+| [`/api/agent/chips`](#apiagentchips) | POST | `agent` |
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
@@ -59,6 +60,26 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_role_templates.rs`](.
 | `department` | `kebab()` |  |
 | `description` | `string(0, 300)` |  |
 | `soul` | `string(1, 20000)` |  |
+
+## `/api/agent/chips`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/chips_expose.rs`](../../api/crates/talaria-routes-comms/src/comms/chips_expose.rs)
+
+> POST /api/agent/chips — an agent exposes tools as chips on the turn it is
+> writing. The platform also calls the same landing path when a tool result
+> produces a link or a protected action.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentchips-body) | `{ok}` | 200 | — |
+
+**POST** — Expose platform tools as chips on the conversation this agent is in.
+
+### POST `/api/agent/chips` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/agent/gap`
 
