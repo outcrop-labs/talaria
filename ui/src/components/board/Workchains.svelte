@@ -28,24 +28,19 @@
   import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
   import { EFFORT_LABEL, type Task } from '@/lib/task-const'
   import type { Board, BoardMember } from '@/lib/boards.svelte'
-  import WorkchainRail from './WorkchainRail.svelte'
   import WorkchainCanvas from './WorkchainCanvas.svelte'
   import { addWorkchainStep, createWorkchain, useBoardWorkchains } from '@/lib/workchain-client'
-  import { chainBranches, chainedTaskIds, type WorkchainStep } from '@/lib/workchain-rules'
+  import { chainedTaskIds, type WorkchainStep } from '@/lib/workchain-rules'
 
   let {
     board,
     tasks,
-    allTasks,
     members = [],
     onOpen,
   }: {
     board: Board
     /** The board's filtered tickets — what this lens draws. */
     tasks: Task[]
-    /** Unfiltered: the picker's pool. The pickable set drawn from it
-     *  excludes archived and already-chained tickets (one chain per task). */
-    allTasks: Task[]
     members?: BoardMember[]
     onOpen: (taskId: string) => void
   } = $props()
@@ -82,9 +77,6 @@
 
   const visibleChains = $derived(chains.filter(railShows))
   const unchained = $derived(tasks.filter((t) => !chained.has(t.id)))
-  /** Pickable = unarchived and in no chain (the v1 invariant is board-wide). */
-  const pickable = $derived(allTasks.filter((t) => !t.archivedAt && !chained.has(t.id)))
-
   // Unchained collapses once chains exist (it is a backlog, not the show);
   // with no chains it is the whole view, so it starts open.
   let unchainedOpen = $state(false)
@@ -146,14 +138,12 @@
       {/if}
     {:else}
       {#each visibleChains as w (w.id)}
-        {#if chainBranches(w)}
-          <!-- A branched chain: the canvas is the honest render (TALA-35).
-               The drag-to-connect wiring editor lands with TALA-34; the
-               canvas here draws the graph with visible ports and wires. -->
-          <WorkchainCanvas workchain={w} {boardStatuses} {agents} {members} {onOpen} onChanged={invalidate} />
-        {:else}
-          <WorkchainRail workchain={w} {boardStatuses} {agents} {members} {pickable} {onOpen} onAdded={invalidate} />
-        {/if}
+        <!-- TALA-34: EVERY chain renders as the node canvas — the wiring
+             editor needs grabbable ports on any chain you want to extend,
+             including a straight one (a rail has no ports, so A→B could
+             never be authored by dragging). The rail leaves the lens; the
+             cheap cousin (moveStepOrder reorder) lives on in TaskDetail. -->
+        <WorkchainCanvas workchain={w} boardId={board.id} {boardStatuses} {agents} {members} {onOpen} onChanged={invalidate} />
       {/each}
       {#if canEdit}
         <button
