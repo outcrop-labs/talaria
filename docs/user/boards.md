@@ -16,7 +16,7 @@ Open: **Work → Boards** in the sidebar. Admins can hide Boards from individual
 | Find a ticket | Type in **Search** (matches title, reference, description, labels), or use the filter pills: **Status · Assignee · Priority · Label · Due** |
 | Save a search | Set the filters you want → **+ Save view** → name it. The view becomes a tab everyone on the board can use |
 | Change columns | Board settings (gear) → **statuses** — add, rename, reorder, recolor, or delete columns |
-| Invite someone | Board settings → **people** → pick a person → choose **Editor** or **Viewer** |
+| Invite someone | Board settings → **people** → pick a person → choose **Owner**, **Editor**, or **Viewer**. An owner can remove another owner; the last owner stays |
 | Allow agents on a board | Board settings → **agents** → pick the agents (or tick **Allow all agents**) → **Save** |
 | Archive what's done | Board: settings → **general** → Danger zone → **Archive**. Ticket: right-click → **Archive** |
 | See archived tickets | Flip the **archived** chip in the toolbar — archived tickets otherwise leave the board |
@@ -100,6 +100,7 @@ The full agent side of this — mentions, chats, credential handoff, the review 
 | Board settings (columns, labels, people, agents) | | ✓ | ✓ |
 | Archive / restore | | ✓ | ✓ |
 | Delete board, move it between teams | | | ✓ |
+| Add or remove an owner | | | ✓ |
 
 Sharing a board requires the person to have signed in once already. Team boards: team members
 are editors, team owners own the board.

@@ -1,27 +1,35 @@
 <script lang="ts">
-  import Button from '@/components/ui/Button.svelte'
+  import { X } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import Select from '@/components/ui/Select.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import UserPicker from '@/components/app/UserPicker.svelte'
   import { shareBoard, unshareBoard, useBoardMembers, type Board } from '@/lib/boards.svelte'
   import { errorMessage } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
   import { toastError } from '@/lib/toast.svelte'
   import { listStagger } from '@/lib/motion'
 
   // The People tab of BoardSettingsModal.svelte.
-  let { board }: { board: Board } = $props()
+  let { board, isOwner }: { board: Board; isOwner: boolean } = $props()
 
   const qc = useQueryClient()
+  const sessionQuery = useSession()
   // This list IS the access-control answer. `= []` under it meant a 500 on
   // /api/boards/:id/members rendered "People with access" over nothing —
   // telling an owner the board is private to them, from a read that failed.
   const membersQuery = useBoardMembers(() => board.id)
   const members = $derived(membersQuery.data ?? [])
   const membersLoading = $derived(membersQuery.isLoading)
-  let role = $state<'editor' | 'viewer'>('editor')
+  const ownerCount = $derived(members.filter((m) => m.role === 'owner').length)
+  // An editor can drop editors and viewers. Only an owner can drop another
+  // owner, and never the last one. The role tag used to paint over the remove
+  // control in this row, so the click never landed.
+  const canRemove = (memberRole: string) => memberRole !== 'owner' || (isOwner && ownerCount > 1)
+  let role = $state<'owner' | 'editor' | 'viewer'>('editor')
   let err = $state<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['board-members', board.id] })
 
@@ -50,6 +58,7 @@
       }}
     />
     <Select bind:value={role} size="sm" class="shrink-0">
+      {#if isOwner}<option value="owner">Owner</option>{/if}
       <option value="editor">Editor</option>
       <option value="viewer">Viewer</option>
     </Select>
@@ -75,19 +84,19 @@
           {m.name ?? m.email ?? m.userId}
           {#if m.name && m.email}<span class="ml-1.5 font-mono text-[11px] text-muted">{m.email}</span>{/if}
         </span>
-        <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
-        {#if m.role !== 'owner'}
-          <Button
-            variant="ghost"
-            size="xs"
-            class="hover:text-danger"
+        <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
+        {#if canRemove(m.role)}
+          <IconButton
+            size="sm"
+            danger
+            title={m.userId === sessionQuery.data?.id ? 'Leave this board' : `Remove ${m.name ?? m.email ?? 'this person'}`}
             onclick={() =>
               void unshareBoard(board.id, m.userId)
                 .then(refresh)
                 .catch((e) => toastError('Could not remove member', e))}
           >
-            Remove
-          </Button>
+            <X size={14} />
+          </IconButton>
         {/if}
       </div>
     {/each}

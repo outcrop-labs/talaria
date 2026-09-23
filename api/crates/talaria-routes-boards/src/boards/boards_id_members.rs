@@ -106,15 +106,27 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // role: absent shares as an editor; present must name one of the two
-    // non-owner roles.
+    // role: absent shares as an editor. Owner is a real grant — only an
+    // existing owner may hand it out.
     let role = match obj.get("role") {
         None => "editor".to_string(),
-        Some(_) => match enum_member(obj, "role", &["editor", "viewer"]) {
+        Some(_) => match enum_member(obj, "role", &["owner", "editor", "viewer"]) {
             Ok(v) => v,
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
+    if role == "owner" {
+        match board_role(&state.pg, &user.id, &id).await {
+            Ok(Some(r)) if r == "owner" => {}
+            Ok(_) => {
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "only an owner can add an owner",
+                ))
+            }
+            Err(e) => return Ok(internal("[boards] role read on owner share failed", e)),
+        }
+    }
     match share_board(&state.pg, &id, &email, &role).await {
         Ok(ShareOutcome::Shared) => {}
         Ok(ShareOutcome::Refused(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, msg)),
@@ -203,8 +215,33 @@ pub async fn delete(
             "userId or email required",
         ));
     };
-    if let Err(e) = unshare_board(&state.pg, &id, &user_id).await {
-        return Ok(internal("[boards] unshare failed", e));
+    let target_owner: Option<(i32,)> = match sqlx::query_as(
+        "select 1 from board_members where board_id = $1::uuid and user_id = $2::uuid and role = 'owner'",
+    )
+    .bind(&id)
+    .bind(&user_id)
+    .fetch_optional(&state.pg)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return Ok(internal("[boards] owner check on unshare failed", e)),
+    };
+    if target_owner.is_some() {
+        match board_role(&state.pg, &user.id, &id).await {
+            Ok(Some(r)) if r == "owner" => {}
+            Ok(_) => {
+                return Ok(house_error(
+                    StatusCode::FORBIDDEN,
+                    "only an owner can remove an owner",
+                ))
+            }
+            Err(e) => return Ok(internal("[boards] role read on owner unshare failed", e)),
+        }
+    }
+    match unshare_board(&state.pg, &id, &user_id).await {
+        Ok(None) => {}
+        Ok(Some(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        Err(e) => return Ok(internal("[boards] unshare failed", e)),
     }
     log_audit(
         &state.pg,

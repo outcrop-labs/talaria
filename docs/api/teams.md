@@ -115,7 +115,7 @@ Source: [`api/crates/talaria-routes-integrations/src/teams/teams_id_members.rs`]
 > /api/teams/{id}/members. GET → members (any member of the team).
 > POST { email, role? } → add (owner; the role defaults to 'member', and the
 > email rides the audit row exactly as sent). DELETE { userId } → remove
-> (owner; owners are silently kept by the SQL's role guard). Non-uuid {id} →
+> (owner; the last owner is refused, everyone else goes). Non-uuid {id} →
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

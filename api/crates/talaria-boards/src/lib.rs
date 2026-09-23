@@ -463,17 +463,35 @@ pub async fn share_board(
     Ok(ShareOutcome::Shared)
 }
 
-pub async fn unshare_board(pg: &PgPool, board_id: &str, user_id: &str) -> Result<(), sqlx::Error> {
-    // Never remove the owner via unshare.
-    sqlx::query(
-        "delete from board_members \
-         where board_id = $1::uuid and user_id = $2::uuid and role <> 'owner'",
+pub async fn unshare_board(pg: &PgPool, board_id: &str, user_id: &str) -> Result<Option<String>, sqlx::Error> {
+    // The last owner stays. Anyone else — including an owner, once another
+    // owner remains — can be removed. A silent no-op here is what made the
+    // people tab's remove control look broken.
+    let others: (i64,) = sqlx::query_as(
+        "select count(*) from board_members \
+         where board_id = $1::uuid and role = 'owner' and user_id <> $2::uuid",
     )
     .bind(board_id)
     .bind(user_id)
-    .execute(pg)
+    .fetch_one(pg)
     .await?;
-    Ok(())
+    let target_owner: Option<(i32,)> = sqlx::query_as(
+        "select 1 from board_members \
+         where board_id = $1::uuid and user_id = $2::uuid and role = 'owner'",
+    )
+    .bind(board_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    if target_owner.is_some() && others.0 == 0 {
+        return Ok(Some("A board needs an owner".into()));
+    }
+    sqlx::query("delete from board_members where board_id = $1::uuid and user_id = $2::uuid")
+        .bind(board_id)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
+    Ok(None)
 }
 
 /// The ensure-time half of org-wide access.
