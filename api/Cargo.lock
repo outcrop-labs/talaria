@@ -5468,6 +5468,7 @@ dependencies = [
  "talaria-secretbox",
  "talaria-state",
  "talaria-tasks",
+ "talaria-tasks-types",
  "talaria-teams",
  "talaria-update-job",
  "talaria-uploads",
