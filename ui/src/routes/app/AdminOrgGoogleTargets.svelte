@@ -11,8 +11,14 @@
   let { targets }: { targets: { driveFolderId: string | null; calendarId: string | null; sendAs: string | null } } = $props()
 
   const qc = useQueryClient()
+  // Seed-once form drafts: the parent gates this section behind the account's
+  // loaded config, so re-seeding on every target refresh would clobber
+  // in-progress edits; `dirty` compares against the live prop instead.
+  // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let drive = $state(targets.driveFolderId ?? '')
+  // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let cal = $state(targets.calendarId ?? '')
+  // svelte-ignore state_referenced_locally -- reason: seed-once form drafts; parent gates on loaded data, dirty tracks the live prop
   let sendAs = $state(targets.sendAs ?? '')
   const savedFlash = useSavedFlash()
   const dirty = $derived(drive !== (targets.driveFolderId ?? '') || cal !== (targets.calendarId ?? '') || sendAs !== (targets.sendAs ?? ''))

@@ -50,6 +50,7 @@
   const templates = $derived(templatesList.rows)
   const boardsLoading = $derived(boardsList.pending)
   const templatesLoading = $derived(templatesList.pending)
+  // svelte-ignore state_referenced_locally -- reason: picker default seeded from the roster once at mount; the user's own selection is the live state
   let agentModel = $state(agents[0]?.id ?? '')
   let tier = $state('')
   let boardId = $state('')

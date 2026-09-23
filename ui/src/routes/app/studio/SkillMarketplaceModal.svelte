@@ -35,7 +35,9 @@
   const destinations = $derived(owners.filter((o) => o.canEdit))
   // From the PROP, not the derived: an initial value read once is the
   // point, and reading `owners` here keeps that obvious.
+  // svelte-ignore state_referenced_locally -- reason: initial-value read once is the point (the derived `destinations` tracks the live list); see the note above
   const editable = owners.filter((o) => o.canEdit)
+  // svelte-ignore state_referenced_locally -- reason: destination draft seeded once at mount; the modal mounts per open
   let destination = $state(editable.some((o) => o.owner === owner) ? owner : (editable[0]?.owner ?? 'shared'))
   let q = $state('')
   let error = $state<string | null>(null)

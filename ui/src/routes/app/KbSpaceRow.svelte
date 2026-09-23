@@ -18,6 +18,7 @@
   } = $props()
 
   let editing = $state(false)
+  // svelte-ignore state_referenced_locally -- reason: seed-once draft; the $effect below re-syncs it on every space change
   let name = $state(space.name)
   $effect(() => {
     name = space.name

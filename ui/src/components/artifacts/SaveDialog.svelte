@@ -16,9 +16,11 @@
   // so the image was filed at the root and the owner had no idea their folders
   // were simply unreadable at that moment.
   const folders = listQuery(useFolders(), { title: 'Could not load your folders', variant: 'inline' })
+  // svelte-ignore state_referenced_locally -- reason: the dialog mounts per image ({#if open} at the call site); src is fixed per mount and only parsed once
   const url = new URL(src, window.location.origin)
   const path = url.searchParams.get('path') ?? ''
   const model = decodeURIComponent(url.pathname.split('/').pop() ?? '')
+  // svelte-ignore state_referenced_locally -- reason: seeded once from the image src; the dialog mounts per image
   let title = $state(path.split('/').pop() ?? 'image')
   let folderId = $state('')
   let busy = $state(false)

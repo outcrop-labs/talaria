@@ -42,6 +42,7 @@
   })
   const missingArgs = $derived(argFields.some((f) => !(argValues[f.index] ?? '').trim()))
   let acknowledged = $state(false)
+  // svelte-ignore state_referenced_locally -- reason: defaults seeded once from the selected server's declared fields; the dialog mounts per install
   let values = $state<Record<string, string>>(
     Object.fromEntries(fields.filter((f) => f.default).map((f) => [f.key, f.default!])),
   )
