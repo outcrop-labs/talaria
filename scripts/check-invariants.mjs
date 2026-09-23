@@ -1911,6 +1911,233 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE POST-PR WATCHER IS THE GATE THE STOP GATE CANNOT BE.
+//
+// AGENTS.md says an agent may not report done while its open pull request has
+// failing checks, pending checks, or merge conflicts against rc. The stop gate
+// sees the local tree. What makes the sentence true is scripts/hooks/pr-watch.mjs
+// (the exit) and the ship-a-change skill (the procedure that runs it and fixes).
+// Delete either, or stop the script from blocking on a red check and a conflict,
+// and the rule becomes a paragraph that passes every other check.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: red'", 'a failing check blocks; it is not a pass'],
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: conflict'", 'a merge conflict blocks; it is not a pass'],
+    ['scripts/hooks/pr-watch.mjs', 'MERGEABLE', 'a pass requires GitHub to have computed mergeable, not an empty rollup'],
+    ['AGENTS.md', 'scripts/hooks/pr-watch.mjs', 'the no-done rule points at the gate'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'scripts/hooks/pr-watch.mjs', 'the procedure runs the gate'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'pr-watch-anchors',
+      what: 'the post-PR watcher and the no-done rule have drifted apart',
+      fix: [
+        'AGENTS.md forbids reporting dev work done while an open PR has failing checks, pending',
+        'checks, or merge conflicts against rc. scripts/hooks/pr-watch.mjs is the gate (exit 2',
+        'on red and on conflict; exit 0 only when checks are green and mergeable). The procedure',
+        'is .claude/skills/ship-a-change/SKILL.md. If one of them moved, update this check in the',
+        'same commit — an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE LOCAL COMPILE GATE IS SCOPED, AND CARGO IS CAPPED.
+//
+// AGENTS.md says the local pre-push gate is `bun run gate`, and that a workspace
+// cargo is not it: that locks api/target and pins the machine. What makes the
+// sentence true is scripts/gate.mjs (it never compiles the workspace), the two
+// cargo configs (`jobs = 2`), and the CI lifts that keep a dedicated runner from
+// inheriting the cap. Delete any of them and the next agent runs api:check on a
+// laptop again.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['AGENTS.md', 'bun run gate', 'the local pre-push command'],
+    ['AGENTS.md', 'Do not run a workspace cargo', 'the prohibition agents keep re-learning the hard way'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'bun run gate', 'the procedure runs the scoped gate'],
+    ['scripts/gate.mjs', 'not a workspace compile', 'the script states what it refuses to run'],
+    ['api/.cargo/config.toml', 'jobs = 2', 'the local cpu and ram cap'],
+    ['desktop/src-tauri/.cargo/config.toml', 'jobs = 2', 'the desktop workspace does not inherit the api cap'],
+    ['.github/actions/setup-runtime/action.yml', 'CARGO_BUILD_JOBS', 'CI lifts the cap, or the api job inherits 2 and times out'],
+    ['api/package.Dockerfile', 'ARG CARGO_BUILD_JOBS=2', 'a package build without the lift stays capped'],
+    ['.github/workflows/api-package.yml', 'CARGO_BUILD_JOBS=$(nproc)', 'the package workflow is the lift'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'scoped-gate-anchors',
+      what: 'the local compile gate and the cargo job cap have drifted apart',
+      fix: [
+        'AGENTS.md says the local pre-push gate is `bun run gate`, and that a workspace cargo',
+        '(`api:check`, `desktop:check`, `cargo test` without `-p`) is not it — that locks',
+        'api/target and pins the machine. scripts/gate.mjs is the gate. jobs = 2 in both cargo',
+        'configs is the cap. setup-runtime and api-package.yml lift it for dedicated runners.',
+        'If one of them moved, update this check in the same commit — an anchor that points at',
+        'nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
+//
+// `cli/src/ports.ts` is the cli's single source for the host-port defaults, but
+// each value is also spelled where it is USED: the compose file's
+// `${VAR:-default}`, the Rust api's `DEFAULT_PORT`, the Dockerfile's `ENV PORT`.
+// No import reaches across those, so this is a pin — it reads the cli's table
+// and each authority's own spelling and fails when one moves without the others.
+// A drifted port is a stack that half-boots: the app publishes 5273 while its
+// healthcheck probes 5272, and every health gate says "unhealthy" forever.
+{
+  const portsSrc = readFileSync(join(ROOT, 'cli/src/ports.ts'), 'utf8')
+  const cliValue = (name) => new RegExp(`export const ${name} = '([^']+)'`).exec(portsSrc)?.[1]
+  const compose = readFileSync(join(ROOT, 'docker/dev-compose.yml'), 'utf8')
+  const composeDefault = (varName) => new RegExp(`\\$\\{${varName}:-([0-9]+)\\}`).exec(compose)?.[1]
+  const configSrc = readFileSync(join(ROOT, 'api/crates/talaria-config/src/lib.rs'), 'utf8')
+  const rustDefault = /pub const DEFAULT_PORT: u16 = (\d+)/.exec(configSrc)?.[1]
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8')
+  const envPort = /^ENV PORT=(\d+)/m.exec(dockerfile)?.[1]
+
+  const checks = [
+    ['API_PORT', cliValue('API_PORT'), rustDefault, 'api/crates/talaria-config/src/lib.rs DEFAULT_PORT'],
+    ['APP_PORT', cliValue('APP_PORT'), envPort, "the Dockerfile's ENV PORT"],
+    ['PG_PORT', cliValue('PG_PORT'), composeDefault('TALARIA_PG_PORT'), 'docker/dev-compose.yml'],
+    ['REDIS_PORT', cliValue('REDIS_PORT'), composeDefault('TALARIA_REDIS_PORT'), 'docker/dev-compose.yml'],
+    ['MINIO_PORT', cliValue('MINIO_PORT'), composeDefault('TALARIA_MINIO_PORT'), 'docker/dev-compose.yml'],
+    ['SEARCH_PORT', cliValue('SEARCH_PORT'), composeDefault('TALARIA_SEARCH_PORT'), 'docker/dev-compose.yml'],
+  ]
+  const problems = checks
+    .filter(([, a, b]) => a === undefined || b === undefined || a !== b)
+    .map(([name, a, b, where]) => `  ${name}: cli/src/ports.ts says ${a ?? '(missing)'}, ${where} says ${b ?? '(not found)'}`)
+  if (problems.length) {
+    failures.push({
+      id: 'dev-port-drift',
+      what: 'a dev stack port disagrees between the cli and the file that uses it',
+      fix: [
+        'Change the value in BOTH places — `cli/src/ports.ts` is the cli\'s single source, and',
+        'the file named above is the authority for what actually binds. If a port moved on',
+        'purpose, move it here too and update this check only if a NEW file became the owner.',
+        ...problems,
+      ],
+      found: [],
+    })
+  }
+}
+
+// AGENT CLEANUP RUNS AT THE STOP GATE, NOT FROM MEMORY.
+//
+// AGENTS.md tells a finished task to remove what it created. What makes that
+// true is the stop gate running scripts/cleanup-sweep.mjs --gate, and the
+// cleanup skill being the procedure the index points at. Delete the call, or
+// the skill, and the disk fills again while every other check stays green.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['scripts/hooks/stop-check.mjs', 'cleanup-sweep.mjs', 'the stop gate runs the sweep'],
+    ['scripts/hooks/stop-check.mjs', '--gate', 'the stop gate uses the non-surprise mode'],
+    ['scripts/cleanup-sweep.mjs', 'export const POLICY', 'the thresholds have one home'],
+    ['.claude/skills/cleanup/SKILL.md', 'Use when', 'the procedure carries its trigger'],
+    ['AGENTS.md', '.claude/skills/cleanup/SKILL.md', 'the invariant points at the skill'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) found.push({ path: file, line: 0, text: 'missing' })
+    else if (!text.includes(needle)) found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+  }
+  if (found.length) {
+    failures.push({
+      id: 'cleanup-sweep-anchors',
+      what: 'the artifact sweep and the stop gate have drifted apart',
+      fix: [
+        'A finished dev task removes what it created. scripts/hooks/stop-check.mjs runs',
+        'scripts/cleanup-sweep.mjs --gate after bun run check, and exits 2 when disk use or',
+        'the removable set is over the line. The procedure is .claude/skills/cleanup/SKILL.md,',
+        'indexed from AGENTS.md. If one of them moved, update this check in the same commit —',
+        'an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR THREE HOMES.
+//
+// GH #308 shipped exactly this way: /studio was added to nav.ts's
+// MANAGE_VIEWS (what Admin → People offers) but not to the TS server's
+// MANAGE_VIEW_ROUTES (the SPA's gate) nor the Rust const of the same name
+// (the api's authority) — a grant an admin could make that stopped working
+// at the door. No import reaches across any two of the three, so this is a
+// pin: read each list's own spelling and fail when one moves without the
+// others.
+{
+  const navSrc = readFileSync(join(ROOT, 'ui/src/lib/nav.ts'), 'utf8')
+  const navBlock = /export const MANAGE_VIEWS[^\n]*= \[([\s\S]*?)\n\]/.exec(navSrc)?.[1]
+  const navRoutes = [...(navBlock ?? '').matchAll(/to: '([^']+)'/g)].map((m) => m[1])
+  const usersSrc = readFileSync(join(ROOT, 'ui/src/server/users.ts'), 'utf8')
+  const tsBlock = /const MANAGE_VIEW_ROUTES = \[([^\]]*)\]/.exec(usersSrc)?.[1]
+  const tsRoutes = [...(tsBlock ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
+  const rustSrc = readFileSync(join(ROOT, 'api/crates/talaria-users/src/lib.rs'), 'utf8')
+  const rustBlock = /pub const MANAGE_VIEW_ROUTES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(rustSrc)?.[1]
+  const rustRoutes = [...(rustBlock ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
+
+  const homes = [
+    ["ui/src/lib/nav.ts MANAGE_VIEWS (the UI's offer list)", navRoutes],
+    ["ui/src/server/users.ts MANAGE_VIEW_ROUTES (the TS gate's mirror)", tsRoutes],
+    ["api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES (the api's authority)", rustRoutes],
+  ]
+  const canonical = navRoutes
+  const problems = []
+  if (!navRoutes.length) {
+    problems.push('  ui/src/lib/nav.ts: the MANAGE_VIEWS array was not found — this check now guards nothing')
+  }
+  for (const [where, routes] of homes.slice(1)) {
+    const missing = canonical.filter((r) => !routes.includes(r))
+    const extra = routes.filter((r) => !canonical.includes(r))
+    if (missing.length || extra.length || (!routes.length && canonical.length)) {
+      problems.push(
+        `  ${where}: says [${routes.join(', ') || '(not found)'}] — nav.ts says [${canonical.join(', ') || '(not found)'}]`,
+      )
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'manage-view-route-drift',
+      what: 'the manage-section view routes disagree between the UI list, the TS gate, and the Rust api',
+      fix: [
+        'Add or remove the route in ALL THREE places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
+        "UI's offer list, ui/src/server/users.ts MANAGE_VIEW_ROUTES the TS gate's mirror, and",
+        "api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's authority (bump its",
+        '[&str; N] to match). A view on one list but not the others is a grant that cannot be',
+        'offered, or one that stops working at the door.',
+        ...problems,
+      ],
+      found: [],
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

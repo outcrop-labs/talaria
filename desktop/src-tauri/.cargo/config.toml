@@ -1,0 +1,6 @@
+# Same local compile budget as api/.cargo/config.toml, and the same number on
+# purpose. Cargo reads this file for the desktop workspace; it does not walk
+# over to api/ to find the other one. The rationale — why 2, why it is also
+# the RAM cap, why CI lifts it — lives there. Do not raise this alone.
+[build]
+jobs = 2

@@ -16,7 +16,7 @@ Open: **Work → Boards** in the sidebar. Admins can hide Boards from individual
 | Find a ticket | Type in **Search** (matches title, reference, description, labels), or use the filter pills: **Status · Assignee · Priority · Label · Due** |
 | Save a search | Set the filters you want → **+ Save view** → name it. The view becomes a tab everyone on the board can use |
 | Change columns | Board settings (gear) → **statuses** — add, rename, reorder, recolor, or delete columns |
-| Invite someone | Board settings → **people** → pick a person → choose **Editor** or **Viewer** |
+| Invite someone | Board settings → **people** → pick a person → choose **Owner**, **Editor**, or **Viewer**. An owner can remove another owner; the last owner stays |
 | Allow agents on a board | Board settings → **agents** → pick the agents (or tick **Allow all agents**) → **Save** |
 | Archive what's done | Board: settings → **general** → Danger zone → **Archive**. Ticket: right-click → **Archive** |
 | See archived tickets | Flip the **archived** chip in the toolbar — archived tickets otherwise leave the board |
@@ -57,8 +57,10 @@ tells you exactly what's stuck and how to fix it.
 
 ## Ticket details
 
-Open a ticket (click a card) for the full detail: description, attachments, and comments
-with `@`mentions — mentioned people get an inbox item. The properties rail carries the rest:
+Open a ticket (click a card). The description stays put at the top. Under it, tabs:
+**Discussion** (the ticket's room — `@`mentions notify people), **Attachments** (files,
+knowledge docs, and artifacts), and **Activity**. A ticket in a workchain also has a
+**Workchain** tab; one with an agent result has a **Result** tab. The properties rail carries the rest:
 status, priority, color, assignees, effort, estimate, time spent, tokens (what the agent's
 work cost), dates, parent/sub-tasks, dependencies (**Blocked by / Blocks**), labels, and
 watchers (**Watch** to follow a ticket).
@@ -100,6 +102,7 @@ The full agent side of this — mentions, chats, credential handoff, the review 
 | Board settings (columns, labels, people, agents) | | ✓ | ✓ |
 | Archive / restore | | ✓ | ✓ |
 | Delete board, move it between teams | | | ✓ |
+| Add or remove an owner | | | ✓ |
 
 Sharing a board requires the person to have signed in once already. Team boards: team members
 are editors, team owners own the board.

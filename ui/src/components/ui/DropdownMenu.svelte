@@ -1,3 +1,28 @@
+<script lang="ts" module>
+  // Menus that share a group are exclusive: opening one closes the others.
+  // The board filter bar is the case — Status and Assignee must not stack.
+  const menuGroups = new Map<string, Set<() => void>>()
+
+  function joinMenuGroup(group: string, close: () => void): () => void {
+    let set = menuGroups.get(group)
+    if (!set) {
+      set = new Set()
+      menuGroups.set(group, set)
+    }
+    set.add(close)
+    return () => {
+      set.delete(close)
+      if (set.size === 0) menuGroups.delete(group)
+    }
+  }
+
+  function closeMenuGroup(group: string, except: () => void) {
+    const set = menuGroups.get(group)
+    if (!set) return
+    for (const close of set) if (close !== except) close()
+  }
+</script>
+
 <script lang="ts">
   import { outsidePointer } from '@/lib/outside-click'
   import type { Snippet } from 'svelte'
@@ -20,6 +45,7 @@
     footer,
     content,
     onWillOpen,
+    group,
   }: {
     /** Renders the trigger; the `open` param lets it style its active state. */
     trigger: Snippet<[boolean]>
@@ -36,6 +62,8 @@
     content?: Snippet<[() => void]>
     /** Runs before the panel opens (e.g. refresh a live list). */
     onWillOpen?: () => void | Promise<void>
+    /** Opening this menu closes every other open menu in the same group. */
+    group?: string
   } = $props()
 
   let open = $state(false)
@@ -51,8 +79,14 @@
     open = false
   }
 
+  $effect(() => {
+    if (!group) return
+    return joinMenuGroup(group, close)
+  })
+
   async function toggle() {
     if (open) return close()
+    if (group) closeMenuGroup(group, close)
     await onWillOpen?.()
     const r = ref?.getBoundingClientRect()
     if (!r) return
@@ -109,6 +143,7 @@
       bind:this={panelEl}
       use:portal
       role="menu"
+      tabindex="-1"
       style={pos}
       onclick={(e) => e.stopPropagation()}
       class={cn(

@@ -1,7 +1,14 @@
 // /api/research/{id}.
 // GET → one run + its citation registry (owner / shared member / org runs).
+// PATCH { title } → rename (owner or admin). The list renders the title when
+// it is set and the question when it is null. The Titler's own write is
+// `where title is null`, so a rename is not overwritten by the sweep or by
+// the fire-and-forget name that may still be in flight.
 // DELETE → owner/admin, cancelling the run first so the driver stops
 // spending on a report nobody will open.
+//
+// No archive. A run is ephemeral: delete is its stop, and a second state
+// beside queued/running/awaiting/done/error would be a list nobody reads.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -9,7 +16,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
-use talaria_error::{house_error, internal};
+use talaria_body::trimmed_string_member;
+use talaria_error::{house_error, internal, object_or_400};
 use talaria_research::{delete_research_run, get_research_run, research_role};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -76,6 +84,46 @@ pub async fn delete(
     // a run clears the queue entry, not the knowledge.
     if let Err(e) = delete_research_run(&state, &id).await {
         return Ok(internal("[research] delete failed", e));
+    }
+    Ok(Json(json!({ "ok": true })).into_response())
+}
+
+pub async fn patch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("research", "PATCH run", &id) {
+        return Ok(gate);
+    }
+    // Same gate as DELETE: the run must exist, and only its owner (or an
+    // admin) may name it. A stranger who guesses an id gets 403, not a
+    // title write — matching the sibling, which already confirmed the row.
+    let found = match get_research_run(&state.pg, &id).await {
+        Ok(v) => v,
+        Err(e) => return Ok(internal("[research] run read on rename failed", e)),
+    };
+    let Some((run, _)) = found else {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
+    };
+    if run.owner_user_id.as_deref() != Some(user.id.as_str()) && user.role != "admin" {
+        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    let parsed = talaria_body::parse(&body);
+    let obj = object_or_400(&parsed)?;
+    let title = match trimmed_string_member(obj, "title", 1, 120) {
+        Ok(t) => t,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    if let Err(e) = sqlx::query("update research_runs set title = $1 where id = $2::uuid")
+        .bind(&title)
+        .bind(&id)
+        .execute(&state.pg)
+        .await
+    {
+        return Ok(internal("[research] rename failed", e));
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }

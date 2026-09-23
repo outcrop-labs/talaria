@@ -1,8 +1,10 @@
-// The application menu — three mental modes. WORK is where everyone gets
-// things done (chat, channels, boards, inbox); MANAGE is the control plane for
-// the people running the platform (fleet, models, compute, cost, audit);
-// SYSTEM holds Settings (everyone) and Admin (role-locked) — moved out of the
-// user menu into the sidebar per the Mercury design (spec §5).
+// The application menu. Views speak for themselves: the Work section has no
+// header above it (the views are self-explanatory), Manage keeps one because
+// it is the control plane. The top strip's System breadcrumb for
+// settings/admin is TopStrip's own doctrine and lives there. Sections carry
+// stable `id`s that consumers branch on — Apps slotting, app-manage slotting;
+// `title` is display-only and optional, and a section without one renders as
+// a bare list (NavRail).
 
 import type { LucideIcon } from '@lucide/svelte'
 import {
@@ -63,7 +65,12 @@ export const MANAGE_VIEWS: { to: string; label: string }[] = [
 ]
 
 export interface NavSection {
-  title: string
+  /** Stable identity consumers branch on — never the display string, which
+   *  may not exist at all. */
+  id: string
+  /** Optional display header. A section without one renders as a bare list:
+   *  the Work views need no label above them, the views are the label. */
+  title?: string
   items: NavItem[]
   /** The whole section is role-gated (hidden + route-bounced for members). */
   adminOnly?: boolean
@@ -71,7 +78,7 @@ export interface NavSection {
 
 export const NAV: NavSection[] = [
   {
-    title: 'Work',
+    id: 'work',
     items: [
       // `/home`, not `/`. The rail entry names the CONTAINER, so every tab
       // inside it (`/home/inbox`, `/home/boards`, `/home/fleet`) lights this
@@ -88,6 +95,7 @@ export const NAV: NavSection[] = [
     ],
   },
   {
+    id: 'manage',
     // Not a blanket admin section anymore: members see whichever Manage views
     // they've been granted (deniedViews computes the default-denied set).
     title: 'Manage',

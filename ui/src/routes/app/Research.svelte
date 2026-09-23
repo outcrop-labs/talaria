@@ -18,13 +18,14 @@
   import SendButton from '@/components/chat/SendButton.svelte'
   import AgentPicker from '@/components/chat/AgentPicker.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { useContextMenu, copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import { researchRowMenu } from '@/components/record-menus'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import Materialize from '@/components/ui/Materialize.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
+
   import QueryError from '@/components/ui/QueryError.svelte'
   import { useAgents } from '@/lib/agents'
   import { useHasPerm, useSession } from '@/lib/session'
@@ -32,8 +33,10 @@
   import { relativeTime } from '@/lib/fleet'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
   import {
-    deleteResearch,
     MODE_META,
+    removeResearch,
+    renameResearch,
+    researchLabel,
     startResearch,
     useResearchRuns,
     type ResearchMode,
@@ -101,11 +104,18 @@
     }
   }
 
-  const remove = async (run: ResearchRun) => {
-    if (!(await confirm({ title: 'Remove run', message: `Remove "${run.question.slice(0, 80)}" from the list? The report document (if any) stays in Artifacts.`, confirmLabel: 'Remove' }))) return
-    await deleteResearch(run.id)
-    if (selectedId === run.id) setSelectedId(null)
-    void qc.invalidateQueries({ queryKey: ['research-runs'] })
+  const refreshRuns = () => void qc.invalidateQueries({ queryKey: ['research-runs'] })
+  const remove = (run: ResearchRun) => {
+    void removeResearch(run).then((ok) => {
+      if (!ok) return
+      if (selectedId === run.id) setSelectedId(null)
+      refreshRuns()
+    })
+  }
+  const rename = (run: ResearchRun) => {
+    void renameResearch(run.id, researchLabel(run)).then((ok) => {
+      if (ok) refreshRuns()
+    })
   }
 
   const canDelete = (run: ResearchRun) => run.ownerUserId === session?.id || session?.role === 'admin'
@@ -127,7 +137,7 @@
   // without remounting.
   $effect(() => {
     if (!selected) return
-    const name = selected.title ?? selected.question
+    const name = researchLabel(selected)
     claimViewTitle(name, { trail: [name] })
   })
 </script>
@@ -145,6 +155,13 @@
         <Plus size={13} /> New
       </button>
       {#if canDelete(selected)}
+        <button
+          type="button"
+          onclick={() => selected && rename(selected)}
+          class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
+        >
+          Rename
+        </button>
         <DangerLink onClick={() => selected && void remove(selected)}>Remove</DangerLink>
       {/if}
     {/snippet}
@@ -220,13 +237,13 @@
             type="button"
             onclick={() => setSelectedId(r.id)}
             oncontextmenu={(e) =>
-              menu.openMenu(e, [
-                { label: 'Open', onSelect: () => setSelectedId(r.id) },
-                { label: 'Copy link', onSelect: () => copyAppLink(`/research/${r.id}`) },
-                ...(canDelete(r)
-                  ? (['sep', { label: 'Remove', danger: true, onSelect: () => void remove(r) }] as ContextMenuEntry[])
-                  : []),
-              ])}
+              menu.openMenu(
+                e,
+                researchRowMenu(r.id, () => setSelectedId(r.id), canDelete(r), {
+                  rename: () => rename(r),
+                  remove: () => remove(r),
+                }),
+              )}
             class={cn(
               'group block w-full rounded-md px-2 py-1.5 text-left transition-colors dither-fill',
               selectedId === r.id ? 'bg-card' : '',
@@ -234,7 +251,7 @@
           >
             <div class="flex items-center gap-2">
               <StatusDot status={STATUS_DOT[r.status]} pulse={r.status === 'running'} class="h-1.5 w-1.5" />
-              <span class="min-w-0 flex-1 truncate text-sm text-fg">{r.title ?? r.question}</span>
+              <span class="min-w-0 flex-1 truncate text-sm text-fg">{researchLabel(r)}</span>
               {#if canDelete(r)}
                 <Trash2
                   size={13}

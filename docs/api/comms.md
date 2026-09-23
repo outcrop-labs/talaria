@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-17 routes.
+19 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -35,9 +35,12 @@
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | POST | `session` |
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | DELETE | `session` |
 | [`/api/chat`](#apichat) | POST | `session` + `perm:plans.create` |
+| [`/api/chat/chips/approvals/{id}`](#apichatchipsapprovalsid) | POST | `session` |
+| [`/api/chat/chips/resolve`](#apichatchipsresolve) | POST | `session` |
 | [`/api/conversations`](#apiconversations) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | PATCH | `session` |
+| [`/api/conversations/{id}`](#apiconversationsid) | DELETE | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
@@ -175,7 +178,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_messages.rs`](..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{messages}` | 200, 403 | — |
+| GET | `dual` | — | `{messages}` | 200, 400, 403 | — |
 | POST | `dual` | [body](#post-apichannelsidmessages-body) | `{message}` | 200, 400, 403 | — |
 
 ### POST `/api/channels/{id}/messages` body
@@ -327,12 +330,54 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
 
+## `/api/chat/chips/approvals/{id}`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/chips_approvals_id.rs`](../../api/crates/talaria-routes-comms/src/comms/chips_approvals_id.rs)
+
+> POST /api/chat/chips/approvals/{id} — approve or deny a chip.
+> Google sends execute through the existing confirm-send. Ticket moves apply
+> as the person who approved. Either way the chip that follows names the
+> tools that approval unlocked.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apichatchipsapprovalsid-body) | `{status, tools}` | 200, 400, 403, 404, 502 | — |
+
+**POST** — Approve or deny a protected action surfaced as a chip in the thread.
+
+### POST `/api/chat/chips/approvals/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `decision` | `enum(approve|reject)` |  |
+
+## `/api/chat/chips/resolve`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/chips.rs`](../../api/crates/talaria-routes-comms/src/comms/chips.rs)
+
+> POST /api/chat/chips/resolve — titles for platform links pasted in chat.
+> A link the caller cannot read comes back without a title: the chip shows
+> the kind, not the name.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apichatchipsresolve-body) | `{chips}` | 200, 400 | — |
+
+**POST** — Titles for platform links pasted in chat. A link the caller cannot read comes back without a title — the chip shows the kind, not the name.
+
+### POST `/api/chat/chips/resolve` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
 ## `/api/conversations`
 
 Source: [`api/crates/talaria-routes-comms/src/comms/conversations.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations.rs)
 
 > /api/conversations. GET
 > ?kind=plan → the user's plan conversations; anything else → their chats.
+> ?archived=1 → the retired set (exact string '1'); everything else is live.
 > Newest activity first; the client groups them by agent.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -352,13 +397,15 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id.rs`](../../
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 404 | — |
-| PATCH | `session` | [body](#patch-apiconversationsid-body) | `…` | 200, 400, 404 | — |
+| PATCH | `session` | [body](#patch-apiconversationsid-body) | `…` | 200, 400, 403, 404 | — |
+| DELETE | `session` | — | `…` | 200, 403, 404 | — |
 
 ### PATCH `/api/conversations/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `title` | `string trimmed(1, 120)` |  |
+| `archived` | `bool?` |  |
 
 ## `/api/conversations/{id}/read`
 

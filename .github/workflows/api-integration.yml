@@ -1,0 +1,150 @@
+# Live-database api tests — the ignored integration suite, run in CI.
+#
+# WHAT THIS DOES
+#   On pull requests and pushes that touch the api or the schema it runs
+#   against:
+#     - boots scratch postgres:16-alpine and redis:7-alpine containers
+#     - replays the full TS MIGRATIONS array into the postgres (so the suite
+#       meets the exact schema a deployed instance would — and the replay
+#       doubles as the snapshot check)
+#     - runs every #[ignore]d integration binary in api/tests/ with --ignored:
+#       the live-DB suites (runs_run, runs_decide, realtime, typed_binds'
+#       siblings…) that prove the runtime sqlx queries, the bind casts and the
+#       store engines against the real schema — the exact class the unit suite
+#       cannot see (rule 9 in docs/RUST-MIGRATION.md)
+#     - sweeps the #[ignore]d in-crate unit tests across the workspace too
+#
+# WHY A SEPARATE FILE (not a job in ci.yml). ci.yml's contract is service-free
+#   and dependency-free, and release.yml runs its jobs via workflow_call as
+#   the publish gate — bolting a database onto that call would silently change
+#   what a publish costs and checks (migrations.yml's header says the same
+#   about itself). This job is its own contract.
+#
+# WHY THIS STAYS OUT OF THE REQUIRED-CHECKS LIST. The workflow is filtered by
+#   `paths:`, and a required check whose workflow is filtered out reports
+#   NOTHING for the pushes that do not match, which branch protection reads as
+#   "pending" for ever (docs/BRANCHES.md → The required settings). The
+#   required `fmt + clippy + test (api)` stays ci.yml's; this is the depth
+#   gate behind it.
+#
+# WHAT CANNOT RUN HERE (and stays local-only):
+#   - typed_binds needs the dev retrieval containers (qdrant + TEI
+#     embeddings); too heavy for a per-push tripwire.
+#   - update_live reads the real ghcr.io registry; a network-dependent suite
+#     has no place in a gate.
+#   - llm_models' minted_key_lists_the_catalog needs a minted tlk_ test key
+#     (TALARIA_LLM_TEST_KEY) this job does not create.
+name: api-integration
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'ui/src/server/db/**'
+      - 'ui/scripts/check-migrations.ts'
+      - 'ui/package.json'
+      - '.github/workflows/api-integration.yml'
+      - '.github/actions/**'
+  push:
+    branches: [main, rc]
+    paths:
+      - 'api/**'
+      - 'ui/src/server/db/**'
+      - 'ui/scripts/check-migrations.ts'
+      - 'ui/package.json'
+      - '.github/workflows/api-integration.yml'
+      - '.github/actions/**'
+
+concurrency:
+  group: api-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-tests:
+    runs-on: ubuntu-latest
+    # The cold run is the whole budget: ~200 test binaries link after clippy's
+    # check-only artifacts prove unusable for cargo test (the api job's header
+    # notes the same). rust-cache makes reruns minutes.
+    timeout-minutes: 45
+
+    env:
+      DATABASE_URL: postgres://talaria:talaria@127.0.0.1:55441/talaria
+      # 6399, the dev port, not 6379: fitness_arming and llm_models fall back
+      # to redis://127.0.0.1:6399 when REDIS_URL is unset, and mapping the
+      # host port to the dev number makes even those fallbacks correct.
+      REDIS_URL: redis://127.0.0.1:6399
+      # The secretbox load demands a key; never a real one — these containers
+      # die with the job.
+      TALARIA_SECRET_KEY: ci-scratch-key
+      CARGO_INCREMENTAL: '0'
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Rust for cargo, bun for the migration replay (check-migrations.ts),
+      # and the ui install for its postgres driver. No node needed.
+      - uses: ./.github/actions/setup-runtime
+        with:
+          node: ''
+          install-dir: ui
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+
+      # api/.cargo/config.toml passes -fuse-ld=mold on gnu linux; the package
+      # is the missing binary on the runner.
+      - name: mold
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+
+      # The container MUST be named talaria-mig-pg: check-migrations.ts's
+      # PG_DUMP default is `docker exec talaria-mig-pg pg_dump -U talaria`, so
+      # the bootstrap below doubles as the schema-snapshot check with no extra
+      # wiring. Same image as prod sidecars and migrations.yml.
+      - name: Start scratch postgres 16
+        run: |
+          docker run -d --name talaria-mig-pg \
+            -e POSTGRES_USER=talaria -e POSTGRES_PASSWORD=talaria -e POSTGRES_DB=talaria \
+            -p 127.0.0.1:55441:5432 postgres:16-alpine
+          for i in $(seq 1 30); do
+            docker exec talaria-mig-pg pg_isready -h 127.0.0.1 -U talaria -q && echo "postgres ready" && exit 0
+            sleep 1
+          done
+          echo "postgres never became ready"; docker logs talaria-mig-pg; exit 1
+
+      - name: Start scratch redis 7
+        run: docker run -d --name talaria-ci-redis -p 127.0.0.1:6399:6379 redis:7-alpine
+
+      - name: Bootstrap schema (full migration replay + snapshot check)
+        working-directory: ui
+        run: bun run migrations:check
+
+      - name: Run the ignored live-DB tests
+        working-directory: api
+        run: |
+          set -eu
+          # Self-maintaining: every integration binary in api/tests/ runs with
+          # --ignored, so a new tests/<file>.rs is picked up automatically.
+          # The only committed knowledge is what CANNOT run here — each
+          # exclusion says why, at the exclusion. (`--skip` filters by test
+          # NAME, not by binary, which is why the exclusions live here rather
+          # than on one cargo line.)
+          for t in $(/bin/ls tests/*.rs | sed 's|^tests/||; s|\.rs$||'); do
+            case "$t" in
+              # typed_binds: needs the dev retrieval containers (qdrant + TEI
+              # embeddings). Stays a local suite against talaria dev infra.
+              typed_binds) continue ;;
+              # update_live: reads the real ghcr.io registry — network-shaped,
+              # not a per-push gate.
+              update_live) continue ;;
+            esac
+            skips=""
+            # llm_models/minted_key_lists_the_catalog wants a minted tlk_ key
+            # (TALARIA_LLM_TEST_KEY) this job does not create.
+            [ "$t" = "llm_models" ] && skips="--skip minted_key_lists_the_catalog"
+            echo "== $t =="
+            cargo test --quiet --test "$t" -- --ignored $skips
+          done
+          # Ignored in-crate unit tests (workspace-wide: e.g. talaria-runs-store)
+          # ride the same containers.
+          cargo test --workspace --quiet --lib -- --ignored

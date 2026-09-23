@@ -121,7 +121,7 @@
     {@render trigger(open)}
   </span>
   {#if open && pos}
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -- reason: click-outside scoping only (stopPropagation), not a control -->
     <div
       bind:this={panelEl}
       use:portal

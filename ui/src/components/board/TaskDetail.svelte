@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, ArchiveRestore, Trash2 } from '@lucide/svelte'
+  import { Archive, ArchiveRestore, Eye, Trash2 } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -14,12 +14,14 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import CopyLinkButton from '@/components/ui/CopyLinkButton.svelte'
+  import Tabs from '@/components/ui/Tabs.svelte'
+  import type { TabItem } from '@/components/ui/tabs'
   import Select from '@/components/ui/Select.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import LabelPicker from '@/components/board/LabelPicker.svelte'
   import ChannelView from '@/components/chat/ChannelView.svelte'
   import { useAgents } from '@/lib/agents'
-  import { formatCost, formatTokens } from '@/lib/cost.svelte'
+  import { fmtDuration, formatTokens, formatUsd } from '@/lib/format'
   import { useSession } from '@/lib/session'
   import {
     addDependency,
@@ -74,6 +76,9 @@
   import TicketMuseBar from './TicketMuseBar.svelte'
   import WorkbenchJobsStrip from './WorkbenchJobsStrip.svelte'
   import WorkbenchTicker from './WorkbenchTicker.svelte'
+  import WorkLogStrip from './WorkLogStrip.svelte'
+  import RunDetailModal from './RunDetailModal.svelte'
+  import { useWorkSession } from '@/lib/work-session.svelte'
 
   const MOVE: TaskStatus[] = [...TASK_STATUSES, ...OFF_BOARD_STATUSES]
 
@@ -141,8 +146,8 @@
   ])
 
   let title = $state('')
-  let tab = $state<'discussion' | 'activity'>('discussion')
-  const tabs = ['discussion', 'activity'] as const
+  type TicketTab = 'discussion' | 'attachments' | 'activity' | 'workchain' | 'result'
+  let tab = $state<TicketTab>('discussion')
   let descEditor = $state<RichEditorHandle | null>(null)
   // DescriptionSection's read/edit mode is OURS now (it binds up): the muse
   // bar below gates on "the description is being edited".
@@ -225,16 +230,34 @@
   // parent; a child shows its parent with a promote control.
   const parentTask = $derived(t?.parentId ? boardTasks.find((bt) => bt.id === t.parentId) : undefined)
   const subTasks = $derived(t ? boardTasks.filter((bt) => bt.parentId === t.id) : [])
+  const hasResult = $derived(!!(t && (t.outcome || t.resolution || t.errorMessage)))
+  // Discussion, then Attachments — the two things a reader comes here for —
+  // then Activity. Chain and Result appear only when the ticket has them,
+  // so an empty tab is not another thing to miss.
+  const tabItems = $derived.by((): TabItem<TicketTab>[] => {
+    const items: TabItem<TicketTab>[] = [
+      { id: 'discussion', label: `Discussion (${t?.commentCount ?? 0})` },
+      { id: 'attachments', label: `Attachments (${t?.attachments.length ?? 0})` },
+      { id: 'activity', label: 'Activity' },
+    ]
+    if (myChain) items.push({ id: 'workchain', label: 'Workchain' })
+    if (hasResult) items.push({ id: 'result', label: 'Result' })
+    return items
+  })
+  // A sibling jump, or a chain/result that goes away, must not leave the
+  // strip pointing at a tab that is no longer rendered.
+  $effect(() => {
+    if (!tabItems.some((item) => item.id === tab)) tab = 'discussion'
+  })
 
-  /** Accumulated agent time → compact "2h 15m" / "45m" / "30s" / "—". */
-  function formatDuration(seconds: number): string {
-    if (!seconds) return '—'
-    const h = Math.floor(seconds / 3600)
-    const m = Math.floor((seconds % 3600) / 60)
-    if (h) return m ? `${h}h ${m}m` : `${h}h`
-    if (m) return `${m}m`
-    return `${seconds}s`
-  }
+  // ── Watching the work ──────────────────────────────────────────────────
+  // The header eye and the work log's View-log buttons share ONE run-detail
+  // modal; `watchRun` is whichever run it is open on. The live-session read
+  // is the same query the ticker holds (same key), so this adds no fetch.
+  const workSession = useWorkSession(() => taskId)
+  const live = $derived(workSession.data?.session ?? null)
+  const queuedWait = $derived(workSession.data?.wait ?? null)
+  let watchRun = $state<string | null>(null)
 </script>
 
 <!-- The one Modal primitive (fixed height + unpadded): the ticket detail is
@@ -263,12 +286,13 @@
         </EmptyState>
       </div>
     {:else if !t}
-      <div class="flex h-full w-full gap-6 p-6">
-        <div class="min-w-0 flex-1 space-y-4">
-          <Skeleton class="h-5 w-2/3 rounded-full" />
-          <SkeletonRows rows={5} />
+      <div class="flex h-full w-full">
+        <div class="flex min-w-0 flex-1 flex-col gap-4 px-5 py-4">
+          <Skeleton class="h-7 w-2/3 rounded-md" />
+          <Skeleton class="h-[clamp(9rem,24vh,14rem)] w-full rounded-lg" />
+          <SkeletonRows rows={4} />
         </div>
-        <div class="w-56 shrink-0 space-y-3">
+        <div class="w-60 shrink-0 space-y-3 border-l border-line-subtle p-4">
           <SkeletonRows rows={6} />
         </div>
       </div>
@@ -287,16 +311,35 @@
               Archived
             </span>
           {/if}
+          {#if live || queuedWait}
+            <!-- The header eye — the same watch affordance the board surfaces
+                 carry, opening the run-detail modal on the LIVE run. It sits
+                 beside the copy link and, like the card corner's, waits
+                 disabled while work is only queued (no run yet). -->
+            <button
+              type="button"
+              title="Watch the work"
+              aria-label="Watch the work"
+              disabled={!live}
+              onclick={() => live && (watchRun = live.runId)}
+              class="ml-auto flex items-center rounded-md p-1 text-accent transition-colors hover:text-fg disabled:opacity-50"
+            >
+              <Eye size={13} />
+            </button>
+          {/if}
           <CopyLinkButton
             path={`/boards/${board.id}/${taskId}`}
             label="Copy link"
             title="Copy link to this ticket"
-            class="ml-auto px-1.5 py-0.5 text-xs"
+            class={live || queuedWait ? 'px-1.5 py-0.5 text-xs' : 'ml-auto px-1.5 py-0.5 text-xs'}
           />
         </div>
 
-        <!-- Details — scrolls independently, capped so discussion gets room -->
-        <div class="max-h-[46%] shrink-0 space-y-5 overflow-y-auto px-5 py-4">
+        <!-- Title, then the description as a fixed anchor. Status banners sit
+             above the description and scroll in their own cap, so a long work
+             log cannot push the description off screen. Nothing stacks under
+             the description — that zone is the tab pane. -->
+        <div class="shrink-0 px-5 pt-4">
           <Input
             bind:value={title}
             disabled={!canEdit}
@@ -304,38 +347,44 @@
             onkeydown={inlineEditKeys(() => (title = t!.title))}
             class="border-0 bg-transparent px-0 font-sans text-lg font-semibold focus:border-0"
           />
+          <div class="mt-4 max-h-36 space-y-3 overflow-y-auto empty:hidden">
+            <!-- QA judge verdict (advisory) — most recent first -->
+            {#if t.status === 'quality_review' && data?.judgeReviews?.[0]}<JudgeVerdict review={data.judgeReviews[0]} />{/if}
 
-          <!-- QA judge verdict (advisory) — most recent first -->
-          {#if t.status === 'quality_review' && data?.judgeReviews?.[0]}<JudgeVerdict review={data.judgeReviews[0]} />{/if}
-
-          <!-- Approval gate -->
-          {#if t.status === 'quality_review' && canEdit}
-            <div
-              transition:slide={{ duration: 150 }}
-              class="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 font-sans text-sm"
-            >
-              <span class="flex-1 text-fg">Ready for review. Approve to complete.</span>
-              <Button
-                size="sm"
-                onclick={async () => {
-                  await reviewTask(taskId, 'approved')
-                  refresh()
-                }}>Approve</Button
+            <!-- Approval gate -->
+            {#if t.status === 'quality_review' && canEdit}
+              <div
+                transition:slide={{ duration: 150 }}
+                class="flex items-center gap-2 rounded-lg border border-[color:var(--theme-accent-border)] bg-accent-soft p-2 font-sans text-sm"
               >
-              <Button
-                variant="outline"
-                size="sm"
-                onclick={async () => {
-                  await reviewTask(taskId, 'rejected')
-                  refresh()
-                }}>Request changes</Button
-              >
-            </div>
-          {/if}
+                <span class="flex-1 text-fg">Ready for review. Approve to complete.</span>
+                <Button
+                  size="sm"
+                  onclick={async () => {
+                    await reviewTask(taskId, 'approved')
+                    refresh()
+                  }}>Approve</Button
+                >
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onclick={async () => {
+                    await reviewTask(taskId, 'rejected')
+                    refresh()
+                  }}>Request changes</Button
+                >
+              </div>
+            {/if}
 
-          <WorkbenchTicker {taskId} />
-          <WorkbenchJobsStrip {taskId} {canEdit} />
+            <WorkbenchTicker {taskId} />
+            <!-- The record under the live strip: every session this ticket has
+                 seen, each row opening the shared run-detail modal. -->
+            <WorkLogStrip {taskId} onView={(runId) => (watchRun = runId)} />
+            <WorkbenchJobsStrip {taskId} {canEdit} />
+          </div>
+        </div>
 
+        <div class="shrink-0 px-5 pb-4 pt-4">
           {#key `ds-${t.id}`}
             <DescriptionSection
               bind:mode={descMode}
@@ -353,47 +402,14 @@
               }}
             />
           {/key}
-
-          <AttachmentsSection task={t} {canEdit} onSaved={() => qc.invalidateQueries({ queryKey: ['task', taskId] })} />
-
-          <WorkchainSection
-            chain={myChain}
-            step={myStep}
-            {canEdit}
-            onChanged={() => {
-              void qc.invalidateQueries({ queryKey: ['board-workchains', board.id] })
-              void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
-            }}
-          />
-
-          <!-- Agent-reported result -->
-          {#if t.outcome || t.resolution || t.errorMessage}
-            <Section label="Result">
-              {#if t.outcome}<ResultBlock title="Outcome">{t.outcome}</ResultBlock>{/if}
-              {#if t.resolution}<ResultBlock title="Resolution">{t.resolution}</ResultBlock>{/if}
-              {#if t.errorMessage}<ResultBlock title="Error" danger>{t.errorMessage}</ResultBlock>{/if}
-            </Section>
-          {/if}
         </div>
 
-        <!-- Discussion — the ticket's chat room / Activity tabs. The count is
-             the room's message count, and the room itself is ChannelView:
-             same composer, edits, reactions, threads, attachments and
-             @mention-driven agent replies as every other channel, because it
-             IS every other channel. -->
+        <!-- Tabs fill whatever the description does not. The room itself is
+             ChannelView: same composer, edits, reactions, threads, and
+             @mention-driven agent replies as every other channel. -->
         <div class="flex min-h-0 flex-1 flex-col border-t border-line-subtle">
-          <div class="flex items-center gap-1 px-5 pt-3">
-            {#each tabs as tb (tb)}
-              <button
-                onclick={() => (tab = tb)}
-                class={cn(
-                  'rounded-md px-3 py-1 font-mono text-[10px] font-medium uppercase tracking-[0.05em] transition-colors',
-                  tab === tb ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
-                )}
-              >
-                {tb === 'discussion' ? `Discussion (${t.commentCount})` : 'Activity'}
-              </button>
-            {/each}
+          <div class="px-5 pt-3">
+            <Tabs items={tabItems} value={tab} onChange={(id) => (tab = id)} />
           </div>
 
           {#if tab === 'discussion'}
@@ -418,6 +434,28 @@
                 The discussion could not be opened for this ticket.
               </div>
             {/if}
+          {:else if tab === 'attachments'}
+            <AttachmentsSection task={t} {canEdit} onSaved={() => qc.invalidateQueries({ queryKey: ['task', taskId] })} />
+          {:else if tab === 'workchain'}
+            <div class="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+              <WorkchainSection
+                chain={myChain}
+                step={myStep}
+                {canEdit}
+                onChanged={() => {
+                  void qc.invalidateQueries({ queryKey: ['board-workchains', board.id] })
+                  void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+                }}
+              />
+            </div>
+          {:else if tab === 'result'}
+            <div class="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+              <Section label="Result">
+                {#if t.outcome}<ResultBlock title="Outcome">{t.outcome}</ResultBlock>{/if}
+                {#if t.resolution}<ResultBlock title="Resolution">{t.resolution}</ResultBlock>{/if}
+                {#if t.errorMessage}<ResultBlock title="Error" danger>{t.errorMessage}</ResultBlock>{/if}
+              </Section>
+            </div>
           {:else}
             <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3" use:listStagger>
               {#each data!.activity as a (a.id)}
@@ -534,7 +572,7 @@
           </div>
           <div class="grid grid-cols-2 gap-2">
             <Prop label="Time spent">
-              <div class="flex h-9 items-center text-sm text-fg">{formatDuration(t.timeSpentSeconds)}</div>
+              <div class="flex h-9 items-center text-sm text-fg">{fmtDuration(t.timeSpentSeconds)}</div>
             </Prop>
           </div>
           <!-- Agent-reported token spend (MCP log_usage) — priced like the ledger. -->
@@ -543,13 +581,13 @@
               <div class="space-y-1 text-sm text-fg">
                 <div>
                   {formatTokens(data!.usage.promptTokens + data!.usage.completionTokens)}
-                  {#if data!.usage.cost > 0}<span class="text-muted"> · {formatCost(data!.usage.cost)}</span>{/if}
+                  {#if data!.usage.cost > 0}<span class="text-muted"> · {formatUsd(data!.usage.cost)}</span>{/if}
                   {#if data!.usage.unpricedTokens > 0}<span class="text-muted"> · partly unpriced</span>{/if}
                 </div>
                 {#each data!.usage.perModel as m (m.llmModel ?? '?')}
                   <div class="truncate text-xs text-muted">
                     {m.llmModel ?? 'unattributed'} · {formatTokens(m.tokens)}
-                    {m.cost !== null && m.cost > 0 ? ` · ${formatCost(m.cost)}` : ''}
+                    {m.cost !== null && m.cost > 0 ? ` · ${formatUsd(m.cost)}` : ''}
                   </div>
                 {/each}
               </div>
@@ -759,4 +797,11 @@
       </aside>
     {/if}
   </div>
+
+<!-- The one shared run-detail modal: the header eye (the live run) and the
+     work log's View-log buttons (any retained run) both land here. Modal
+     portals itself, so nesting inside the ticket modal's tree is safe. -->
+{#if watchRun}
+  <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} onEnded={() => (watchRun = null)} />
+{/if}
 </Modal>

@@ -22,13 +22,12 @@ use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 use talaria_api_facades::model::access::gateway_models;
 use talaria_api_facades::model::efforts::efforts_for_model;
-use talaria_api_facades::model::roles::{
-    MODEL_ROLES, get_model_roles, role_assignment_issues, set_model_role,
-};
+use talaria_api_facades::model::roles::{MODEL_ROLES, get_model_roles, set_model_role};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     enum_member, parse, present_nullable_max_string_member, present_nullable_string_member,
 };
+use talaria_capability_reach::role_assignment_issues_reached;
 use talaria_effort_prefs::{get_effort_prefs, role_slot, set_effort_pref};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_admin};
@@ -84,7 +83,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         Err(e) => return Ok(internal("[model-roles] gateway catalog read failed", e)),
     };
     let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-    let issues: Vec<Value> = role_assignment_issues(&state.pg)
+    let issues: Vec<Value> = role_assignment_issues_reached(&state.pg)
         .await
         .iter()
         .map(|i| i.to_json())
@@ -230,7 +229,7 @@ pub async fn put(
 }
 
 async fn finish(state: &AppState) -> Response {
-    let issues: Vec<Value> = role_assignment_issues(&state.pg)
+    let issues: Vec<Value> = role_assignment_issues_reached(&state.pg)
         .await
         .iter()
         .map(|i| i.to_json())

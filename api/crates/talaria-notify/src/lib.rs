@@ -1574,6 +1574,22 @@ pub fn fan_conversation_event(deps: NotifyDeps, conversation_id: String) {
     });
 }
 
+/// Fan a conversation event to an audience already resolved. Hard delete uses
+/// this: the usual fan reads the row, and that row is about to be gone.
+pub fn fan_known_conversation(deps: NotifyDeps, conversation_id: String, user_ids: Vec<String>) {
+    tokio::spawn(async move {
+        for id in user_ids {
+            publish_user(
+                &deps.realtime,
+                &id,
+                &UserEvent::Conversation {
+                    conversation_id: conversation_id.clone(),
+                },
+            );
+        }
+    });
+}
+
 /// Where a conversation's notifications point: the thread itself for a chat,
 /// the plan for a plan, and for a research discussion the RUN — opening the
 /// run is research's seen gesture (it marks this href read), so the bell row

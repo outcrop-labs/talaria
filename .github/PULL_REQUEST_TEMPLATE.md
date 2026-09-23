@@ -9,7 +9,7 @@ against `main`; one that does gets retargeted, and the branch-flow guard
 ## Checklist
 
 - [ ] This PR targets `rc`.
-- [ ] `bun run verify` is green locally, and `bun run api:check` too if `api/` changed.
+- [ ] `bun run gate` is green locally. It compiles only what this diff touches; CI runs the full surface job.
 - [ ] I exercised the changed path in the running app; the steps are under **Verified**.
 - [ ] [`CHANGELOG.md`](../CHANGELOG.md) carries what changed and what was verified.
 - [ ] Generated files were regenerated, not hand-edited —
@@ -27,7 +27,7 @@ against `main`; one that does gets retargeted, and the branch-flow guard
 - **Gate:**
 - **Exercised:**
 
-The gates run on the whole tree, so a failure can predate your branch. That failure is not
+`bun run check` (which `gate` always runs) sees the whole tree, so a failure can predate your branch. That failure is not
 yours to fix here, but it is yours to name: reproduce it on a clean `rc` checkout, quote that
 under **Gate**, and say so. An absorbed failure hides a broken tree from every PR after this
 one ([`AGENTS.md`](../AGENTS.md) — "Parallel sessions share working trees").

@@ -14,9 +14,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
+import { COMPOSE_BASE, composeFileArgs, composeFileEnv } from '../../compose'
 import { dockerEnvFile, runUp, socketGid } from '../deploy/actions'
 import {
-  COMPOSE_FILE,
   HOST,
   UNIT_NAME,
   type HostPaths,
@@ -64,9 +64,14 @@ export async function runInstall(ctx: Ctx, o: InstallOpts = {}): Promise<number>
   } catch {
     ctx.log.die('docker is required')
   }
-  if (!existsSync(join(ctx.root, COMPOSE_FILE))) {
-    ctx.log.die(`no ${COMPOSE_FILE} here — \`service install\` runs from a deploy checkout`)
+  if (!existsSync(join(ctx.root, COMPOSE_BASE))) {
+    ctx.log.die(`no ${COMPOSE_BASE} here — \`service install\` runs from a deploy checkout`)
   }
+  // The unit BAKES the operator's COMPOSE_FILE in (unitText): resolve it
+  // here so a fragment-less export is repaired — and the notice printed —
+  // before anything privileged, and the unit captures the corrected list,
+  // not the one docker would reject per-service at boot.
+  composeFileEnv(ctx)
 
   // The unit's up argv: --wait only on a compose new enough not to hang on
   // the one-shot init container (see shared.upArgsFor).
@@ -125,9 +130,9 @@ export async function runInstall(ctx: Ctx, o: InstallOpts = {}): Promise<number>
   // in journald's first boot.
   let running = ''
   try {
-    // Same law as the deploy wrappers: an explicit -f would beat the
-    // operator's COMPOSE_FILE env, so drop it when that env is set.
-    const fileArgs = ctx.env.COMPOSE_FILE?.trim() ? [] : ['-f', COMPOSE_FILE]
+    // Same law as the deploy wrappers (compose.ts): an explicit -f would beat
+    // the operator's COMPOSE_FILE env, so drop it when that env is set.
+    const fileArgs = composeFileArgs(composeFileEnv(ctx), COMPOSE_BASE)
     running = (await ctx.exec('docker', ['compose', ...fileArgs, 'ps', '--quiet', '--status', 'running'], { cwd: ctx.root })).stdout.trim()
   } catch {
     // compose too old for --status — treat as not running and let up decide
@@ -144,7 +149,7 @@ export async function runInstall(ctx: Ctx, o: InstallOpts = {}): Promise<number>
   if (dockerBin === null) ctx.log.die(`docker not on PATH — the unit needs its absolute path (PATH=${ctx.env.PATH ?? 'unset'})`)
   if (/\s/.test(dockerBin)) ctx.log.die(`${dockerBin} contains whitespace — systemd's ExecStart splits on it; move docker to a path without spaces`)
 
-  const text = unitText({ root: ctx.root, dockerBin, upArgs, composeFile: ctx.env.COMPOSE_FILE?.trim() || undefined })
+  const text = unitText({ root: ctx.root, dockerBin, upArgs, composeFile: composeFileEnv(ctx) ?? undefined })
   if (existsSync(unitPath(host))) ctx.log.say('a talaria.service already exists — overwriting (re-install)')
   ctx.log.raw(text)
 

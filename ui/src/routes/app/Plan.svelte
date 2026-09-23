@@ -7,6 +7,10 @@
   import { LayoutTemplate, ListChecks } from '@lucide/svelte'
   import ConversationSidebar from '@/components/chat/ConversationSidebar.svelte'
   import type { SidebarFailure } from '@/components/chat/conversation-sidebar'
+  import ContextMenu from '@/components/ui/ContextMenu.svelte'
+  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
+  import { planRowMenu } from '@/components/record-menus'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Stage from '@/components/app/Stage.svelte'
   import StageHeader from '@/components/app/StageHeader.svelte'
@@ -15,7 +19,6 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import PlanDoc from '@/components/chat/PlanDoc.svelte'
   import PlanDocSkeleton from '@/components/chat/PlanDocSkeleton.svelte'
-  import TierPicker from '@/components/chat/TierPicker.svelte'
   import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -26,7 +29,15 @@
   import { useTemplates } from '@/lib/templates'
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
-  import { usePlanMembers, useConversations, type Conversation } from '@/lib/conversations.svelte'
+  import {
+    archiveConversation,
+    deleteConversation,
+    renameConversation,
+    restoreConversation,
+    useConversations,
+    usePlanMembers,
+    type Conversation,
+  } from '@/lib/conversations.svelte'
   import PlanMembers from './plan/PlanMembers.svelte'
 
   // Plan surface: think through the work with an agent, then draft tickets and
@@ -43,6 +54,8 @@
   const agents = $derived(fleetQuery.data?.agents ?? [])
   const conversationsQuery = useConversations('plan')
   const conversations = $derived(conversationsQuery.data ?? [])
+  const archivedQuery = useConversations('plan', true)
+  const archived = $derived(archivedQuery.data ?? [])
   const conversationsLoading = $derived(conversationsQuery.isLoading)
   // Stale beats blank: a failed BACKGROUND refetch still has good data to show,
   // so only a failure with nothing behind it becomes a visible failure.
@@ -54,6 +67,11 @@
   const conversationsFailure: SidebarFailure = $derived(
     conversationsQuery.isError && conversationsQuery.data === undefined
       ? { error: conversationsQuery.error, retry: () => void conversationsQuery.refetch() }
+      : null,
+  )
+  const archivedFailure: SidebarFailure = $derived(
+    archivedQuery.isError && archivedQuery.data === undefined
+      ? { error: archivedQuery.error, retry: () => void archivedQuery.refetch() }
       : null,
   )
   const sticky = useStickyAgent('plan', () => agents)
@@ -122,13 +140,77 @@
   // align the agent once the plan list resolves (URL itself stays put).
   $effect(() => {
     if (!selectedConversationId) return
-    const target = conversations.find((c) => c.id === selectedConversationId)
+    const target = [...conversations, ...archived].find((c) => c.id === selectedConversationId)
     if (target && target.agentModel !== sticky.selected) pickAgent(target.agentModel)
   })
 
   const current = $derived(agents.find((a) => a.id === selectedAgent))
 
-  const selected = $derived(conversations.find((c) => c.id === selectedConversationId) ?? null)
+  // The tier chip's shape. This view lifts the pick out of its (minimal)
+  // composer, so it spells out what the chip renders: '' is the agent's main
+  // model and the chip's bottom rung — 'main' on the chip, 'main model' in the
+  // row it stands on.
+  const tierNames = $derived(current?.tiers ?? [])
+  const tierOptions = $derived([
+    { value: '', label: 'main model' },
+    ...tierNames.map((name) => ({ value: name, label: name })),
+  ])
+  const tierMeter = $derived({
+    total: tierOptions.length,
+    lit: Math.max(0, tierOptions.findIndex((o) => o.value === planTier)) + 1,
+  })
+
+  const selected = $derived(
+    conversations.find((c) => c.id === selectedConversationId) ??
+      archived.find((c) => c.id === selectedConversationId) ??
+      null,
+  )
+  const selectedIsArchived = $derived.by(() => {
+    const current = selected
+    return current != null && !conversations.some((c) => c.id === current.id)
+  })
+  const menu = useContextMenu()
+  const quiet =
+    'flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg'
+  const refreshPlans = () => void qc.invalidateQueries({ queryKey: ['conversations'] })
+  const renamePlan = (c: Conversation) => {
+    void renameConversation(c.id, c.title).then((ok) => {
+      if (ok) refreshPlans()
+    })
+  }
+  const archivePlan = (c: Conversation) => {
+    void archiveConversation(c.id).then((ok) => {
+      if (!ok) return
+      refreshPlans()
+      if (c.id === selectedConversationId) setSelectedConversationId(null)
+    })
+  }
+  const restorePlan = (c: Conversation) => {
+    void restoreConversation(c.id).then((ok) => {
+      if (ok) refreshPlans()
+    })
+  }
+  const deletePlan = (c: Conversation) => {
+    void deleteConversation(c.id, c.title).then((ok) => {
+      if (!ok) return
+      refreshPlans()
+      if (c.id === selectedConversationId) setSelectedConversationId(null)
+    })
+  }
+  const openPlanMenu = (e: MouseEvent, c: Conversation, archivedRow: boolean) => {
+    menu.openMenu(
+      e,
+      planRowMenu(c, {
+        path: `/plan/${c.id}`,
+        open: () => selectConversation(c),
+        archived: archivedRow,
+        onRename: () => renamePlan(c),
+        onArchive: () => archivePlan(c),
+        onRestore: () => restorePlan(c),
+        onDelete: () => deletePlan(c),
+      }),
+    )
+  }
 
   // The selected plan's ticket-draft job, if any — drafts PAIR to the plan,
   // so drafting (and the review that lands after it) survives leaving the
@@ -169,6 +251,16 @@
   <div class="flex items-center gap-3">
     {#if selectedConversationId}
       <PlanMembers planId={selectedConversationId} />
+      {#if selected}
+        {@const plan = selected}
+        <button type="button" class={quiet} onclick={() => renamePlan(plan)}>Rename</button>
+        {#if plan.role === 'owner'}
+          <button type="button" class={quiet} onclick={() => (selectedIsArchived ? restorePlan(plan) : archivePlan(plan))}>
+            {selectedIsArchived ? 'Restore' : 'Archive'}
+          </button>
+          <DangerLink onClick={() => deletePlan(plan)}>Delete</DangerLink>
+        {/if}
+      {/if}
     {:else if templatesLoading}
       <!-- Hold the template picker's spot so the header doesn't
            re-layout when templates land. -->
@@ -180,7 +272,7 @@
       {#if templatesList.notice}<QueryError {...templatesList.notice} />{/if}
     {:else if planTemplates.length > 0}
       <!-- The template pick in the header's own language — the §7 chip
-           TierPicker beside it already speaks. It was a native <select> under
+           beside it already speaks. It was a native <select> under
            a mono label: its fixed-width trigger overflowed on long template
            names and its OS-drawn option list clashed with everything around
            it. The chip truncates instead, and the popover opens DOWN
@@ -196,10 +288,22 @@
         placement="bottom"
       />
     {/if}
-    {#if (current?.tiers ?? []).length > 0}
+    {#if tierNames.length > 0}
       <!-- The harness sits beside the view's other model-level controls, not
            in the composer. -->
-      <TierPicker tiers={current!.tiers ?? []} value={planTier} onChange={(t) => (planTier = t)} />
+      <ComposerPicker
+        icon="✳"
+        chipVariant="primary"
+        value={planTier}
+        label={planTier || 'main'}
+        options={tierOptions}
+        meter={tierMeter}
+        searchPlaceholder="Search tiers"
+        menuClass="min-w-44"
+        title="Model tier for this chat"
+        menuLabel="Model tier"
+        onChange={(t) => (planTier = t)}
+      />
     {/if}
     <!-- The payoff, dressed like it: this surface exists to turn planning
          into tickets, so the action takes the gold primary (spec §8) and
@@ -240,15 +344,18 @@
   <ConversationSidebar
     {agents}
     {conversations}
+    {archived}
     {selectedAgent}
     {selectedConversationId}
     {agentsLoading}
     {conversationsLoading}
     {agentsFailure}
     {conversationsFailure}
+    {archivedFailure}
     onSelectAgent={selectAgent}
     onSelectConversation={selectConversation}
     onNewChat={newPlan}
+    onRowMenu={openPlanMenu}
   />
 
   <Stage header={stageHeader}>
@@ -335,4 +442,5 @@
       agents={[current]}
     />
   {/if}
+  <ContextMenu {menu} />
 </RailSurface>

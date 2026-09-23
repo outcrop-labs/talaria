@@ -1,0 +1,123 @@
+# The runtime every CI job needs, in one place.
+#
+# WHAT THIS IS. Every job in this repo's workflows opens the same way: check out
+# the repo, install the Rust toolchain (some of them), install Bun, install Node,
+# then run `bun install --frozen-lockfile` in a workspace. This composite action
+# is everything after the checkout, and it is where the three VERSION PINS live:
+#
+#   bun   1.4.0    also root package.json's `packageManager` field — move together
+#   node  22.x     a hard floor, not a preference: vite 7 declares
+#                  `^20.19.0 || >=22.12.0`. (Add a .nvmrc at the repo root and
+#                  switch this to a node-version-file input, not a second pin.)
+#   rust  1.97.1   also api/rust-toolchain.toml, desktop/src-tauri/
+#                  rust-toolchain.toml and the rustup line in
+#                  docker/devbox.Dockerfile — the sqlx 0.9 MSRV floor. Pinning
+#                  rather than tracking stable is what keeps devbox/CI/host one
+#                  toolchain. The crates' own rust-toolchain.toml files are the
+#                  source of truth cargo honors; this pin is what puts the same
+#                  toolchain on a runner before cargo first runs.
+#
+# WHY IT IS NOT ALSO THE CHECKOUT. A composite action in the same repository is
+# read from the workspace at `.github/actions/...`, so the repository has to
+# exist before the runner can resolve the `uses: ./...` that refers to it —
+# `actions/checkout` must run as a step of the JOB, and no step of this action
+# can be it. Every caller therefore still writes its own checkout (the ref
+# differs per workflow: the triggering ref for a PR, `fetch-depth: 0` for the
+# diff in ci.yml's `changes`) and then one line here for everything after.
+#
+# WHY EVERY INPUT DEFAULTS TO THE PIN. The pins are the point: a job that wants
+# the ordinary runtime passes nothing, and a job that wants a subset says so
+# with an empty string (`node: ''`, `rust: ''`) rather than by writing a version
+# of its own. `1.4.0` / `22.x` / `1.97.1` then exist in exactly one file, and a
+# version bump is a one-line edit here.
+#
+# WHY dtolnay's action IS `@master` HERE. `uses:` cannot contain an expression,
+# so a toolchain that arrives as an input has to be passed through the action's
+# `toolchain:` input, and dtolnay's README names `@master` as the revision to
+# use when you pass one. The pin that matters — the toolchain itself — is
+# unchanged and still lives here; this is also the same action, at the same
+# effective version, that the jobs used to reference as `@1.97.1`.
+#
+# COMPONENTS ARE ALWAYS INSTALLED. The api and desktop jobs gate on
+# `cargo fmt --check` and `cargo clippy -D warnings`, so rustfmt and clippy are
+# not optional for the Rust jobs here; the installer jobs in
+# desktop-package.yml carry them along unused rather than earning a fifth input.
+name: setup-runtime
+description: >-
+  Install the pinned Rust/Bun/Node toolchains and, optionally, run the frozen
+  lockfile install. Any toolchain whose version input is empty is skipped.
+
+inputs:
+  rust:
+    description: 'Rust toolchain (dtolnay/rust-toolchain, plus rustfmt and clippy). Empty skips Rust.'
+    required: false
+    default: '1.97.1'
+
+  bun:
+    description: 'Bun version (oven-sh/setup-bun). Empty skips Bun.'
+    required: false
+    default: '1.4.0'
+
+  node:
+    description: 'Node version (actions/setup-node). Empty skips Node.'
+    required: false
+    default: '22.x'
+
+  install-dir:
+    description: 'Workspace to run `bun install --frozen-lockfile` in. Empty skips the install.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Rust first, matching the order the jobs used before this action existed:
+    # every job that wants a toolchain wants this one before the others, and
+    # before the rust-cache step callers keep of their own (rust-cache has to
+    # run after the toolchain and before the first cargo command).
+    - if: inputs.rust != ''
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ inputs.rust }}
+        components: rustfmt, clippy
+
+    # Local cargo is capped at 2 jobs (api/.cargo/config.toml and
+    # desktop/src-tauri/.cargo/config.toml) so a shared dev machine stays
+    # usable. A runner is dedicated — lift the cap to its core count, or the
+    # api job's cold compile blows the timeout it was sized against. A host
+    # this step cannot count keeps the cap: slow, not a failed job.
+    - if: inputs.rust != ''
+      name: Lift the local cargo job cap
+      shell: bash
+      run: |
+        jobs=""
+        if jobs=$(nproc 2>/dev/null) && [ -n "$jobs" ]; then
+          :
+        elif jobs=$(sysctl -n hw.logicalcpu 2>/dev/null) && [ -n "$jobs" ]; then
+          :
+        elif [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then
+          jobs=$NUMBER_OF_PROCESSORS
+        else
+          echo "setup-runtime: could not count CPUs; leaving the local cargo job cap in place"
+          exit 0
+        fi
+        echo "CARGO_BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
+    - if: inputs.bun != ''
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun }}
+
+    # No `cache:` on purpose — bun owns the install; npm has nothing installed
+    # and nothing to cache.
+    - if: inputs.node != ''
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node }}
+
+    # `--frozen-lockfile` so bun.lock is authoritative: a drifting package.json
+    # fails here instead of silently resolving to something else.
+    - if: inputs.install-dir != ''
+      name: Install
+      shell: bash
+      working-directory: ${{ inputs.install-dir }}
+      run: bun install --frozen-lockfile

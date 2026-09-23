@@ -1,6 +1,6 @@
 // Shared helpers for <ChannelView> and its message rows (see
 // ChannelView.svelte / MessageRow.svelte / ThreadPanel.svelte).
-import { copyAppLink, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+import { copyAppLink, copyTextItems, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { deleteChannelMessage, type ChannelMessage } from '@/lib/channels.svelte'
 
@@ -20,7 +20,7 @@ export const actorLabel = (ctx: MessageCtx, actor: string, actorType: string) =>
 export function rowMenuEntries(m: ChannelMessage, ctx: MessageCtx, openThread: () => void): ContextMenuEntry[] {
   const own = m.authorType === 'user' && m.author === ctx.me
   return [
-    { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
+    ...copyTextItems(m.content),
     { label: 'Copy link', onSelect: () => copyAppLink(`/comms/channel/${ctx.channelId}`) },
     ...(m.threadRootId
       ? []

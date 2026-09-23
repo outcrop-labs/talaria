@@ -83,7 +83,7 @@
   {#if openForm}
     <div transition:slide={{ duration: 150 }} class="mt-3 space-y-3">
       <div>
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Callback URL (register this with the provider)</label>
+        <span class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Callback URL (register this with the provider)</span>
         <div class="flex items-center gap-2">
           <code class="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-xs text-fg">{callback}</code>
           <CopyButton value={callback} label="Copy" class="shrink-0 text-xs" />
@@ -91,12 +91,12 @@
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
-          <Input bind:value={clientId} autocomplete="off" />
+          <label for={`oauth-client-id-${serverId}`} class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
+          <Input id={`oauth-client-id-${serverId}`} bind:value={clientId} autocomplete="off" />
         </div>
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
-          <Input type="password" bind:value={clientSecret} autocomplete="off" />
+          <label for={`oauth-client-secret-${serverId}`} class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
+          <Input id={`oauth-client-secret-${serverId}`} type="password" bind:value={clientSecret} autocomplete="off" />
         </div>
       </div>
       {#if error}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</div>{/if}

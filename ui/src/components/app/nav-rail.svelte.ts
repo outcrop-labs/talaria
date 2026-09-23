@@ -7,19 +7,15 @@
 // client snapshot in an `$effect` (post-hydration), so the server markup and
 // the client's first paint always agree. NavRail and the AppLayout loading
 // skeleton share this one module state so both frames always agree.
+import { readFlag, writeFlag } from '@/lib/persist'
+
 const NAV_COLLAPSED_KEY = 'talaria:nav-collapsed'
 
 // In-memory fallback so the toggle still works when localStorage is
-// unavailable (private mode) — the choice simply won't persist.
+// unavailable (private mode) — the choice simply won't persist. It is also the
+// answer for "nothing stored yet", which is the same thing on a first visit:
+// nobody has asked for a collapsed rail.
 let collapsedFallback = false
-
-function readNavCollapsed(): boolean {
-  try {
-    return window.localStorage.getItem(NAV_COLLAPSED_KEY) === '1'
-  } catch {
-    return collapsedFallback
-  }
-}
 
 // The shared slot. The React version fanned writes out to subscribers through
 // a window event; a single reactive module state IS that channel now.
@@ -28,11 +24,7 @@ const store = $state({ collapsed: false })
 function toggleCollapsed(): void {
   const next = !store.collapsed
   collapsedFallback = next
-  try {
-    window.localStorage.setItem(NAV_COLLAPSED_KEY, next ? '1' : '0')
-  } catch {
-    /* private mode — state simply won't persist */
-  }
+  writeFlag(NAV_COLLAPSED_KEY, next)
   store.collapsed = next
 }
 
@@ -41,9 +33,9 @@ function toggleCollapsed(): void {
 export function useNavCollapsed(): { readonly collapsed: boolean; toggleCollapsed: () => void } {
   $effect(() => {
     // Post-hydration: adopt the persisted choice, then follow other tabs.
-    store.collapsed = readNavCollapsed()
+    store.collapsed = readFlag(NAV_COLLAPSED_KEY, collapsedFallback)
     const onStorage = () => {
-      store.collapsed = readNavCollapsed()
+      store.collapsed = readFlag(NAV_COLLAPSED_KEY, collapsedFallback)
     }
     window.addEventListener('storage', onStorage) // sync across tabs
     return () => window.removeEventListener('storage', onStorage)

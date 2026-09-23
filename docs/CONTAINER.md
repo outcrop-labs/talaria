@@ -1,11 +1,13 @@
 # Running Talaria as a container
 
-One app image, one compose file, one command:
+One app image, one stack, one command (the second `-f` is the shared sidecar
+plane — Postgres, Redis, Qdrant, embeddings, MinIO, SearXNG — defined once for
+every stack in `docker/sidecars.compose.yml`):
 
 ```bash
 git clone https://github.com/outcrop-labs/talaria && cd talaria
 DOCKER_GID=$(stat -c %g /var/run/docker.sock) \
-  docker compose -f docker/compose.yml up -d --build
+  docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --build
 ```
 
 The stack comes up with zero configuration: secrets the environment doesn't
@@ -63,7 +65,8 @@ the image builds from the repo; bun is the only extra prerequisite):
 
 ```bash
 bun talaria deploy up       # the one command at the top of this page
-bun talaria deploy update   # git pull --ff-only, api package pull, then up -d --build
+bun talaria deploy up --branch rc   # pin the checkout; later updates follow origin/rc only
+bun talaria deploy update   # ff-only the pin, or git pull --ff-only; then redeploy
 bun talaria deploy down     # stop (--volumes also deletes the data — careful)
 bun talaria deploy logs     # follow every service's logs
 bun talaria deploy creds    # the 'Sign in' block from the logs
@@ -135,8 +138,8 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=<your checkout>
-ExecStart=/usr/bin/docker compose -f docker/compose.yml up -d --wait
-ExecStop=/usr/bin/docker compose -f docker/compose.yml down
+ExecStart=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --wait
+ExecStop=/usr/bin/docker compose -f docker/sidecars.compose.yml -f docker/compose.yml down
 TimeoutStartSec=20min
 Restart=on-failure
 RestartSec=10s
@@ -177,14 +180,16 @@ compose view.
 | File | What |
 |---|---|
 | [`Dockerfile`](../Dockerfile) (repo root) | Multi-stage build: toolchain → pruned prod deps → a bun + docker-cli + git runtime. No config inside. |
-| [`docker/compose.yml`](../docker/compose.yml) | The instance: the app plus postgres, redis, qdrant, embeddings (TEI), minio, searxng. |
+| [`docker/compose.yml`](../docker/compose.yml) | The instance: the app, the SearXNG settings render, and the wiring (networks, state mounts, sidecar env) — the sidecars themselves are the shared plane below, layered in front of it. |
+| [`docker/sidecars.compose.yml`](../docker/sidecars.compose.yml) | The shared sidecar plane: postgres, redis, qdrant, embeddings (TEI), minio, searxng — images, healthchecks, data volumes and env defaults, defined once and layered in front of every stack (`docker/compose.yml`, `docker/dev-compose.yml`, a devbox). |
 | [`docker/entrypoint.sh`](../docker/entrypoint.sh) | Secrets bootstrap, fleet config seeds, dependency gate — the container's first boot. |
 | [`docker/await-deps.mjs`](../docker/await-deps.mjs) | Waits for postgres + redis before the server starts. |
 
 The app container is deliberately *not* the whole product. Talaria spawns
 agent containers through the host's docker daemon (the fleet), and its
 stateful sidecars are separate services — so the unit of deployment is this
-compose file, with the app image as its centerpiece.
+compose stack (the instance file plus the shared sidecar plane), with the app
+image as its centerpiece.
 
 ## The env-var contract
 
@@ -208,7 +213,7 @@ Set through compose interpolation (`${VAR:-default}` — override by exporting
 | `TALARIA_EMBED_MODEL` | `BAAI/bge-small-en-v1.5` | The TEI model (changing it means re-backfilling) |
 | `TALARIA_FLEET_NETWORK` | `talaria` | Shared fleet network name (per-instance on shared hosts) |
 | `TALARIA_DNS_1` / `TALARIA_DNS_2` | `1.1.1.1` / `1.0.0.1` | SearXNG's upstream resolvers |
-| `TALARIA_PG_POOL_MAX` | `40` | The api's postgres pool ceiling (postgres sidecar runs default `max_connections=100`; api + ui + migration ≈ 61) |
+| `TALARIA_PG_POOL_MAX` | `64` | The api's postgres pool ceiling. Sidecar `max_connections=200` (restart to apply; image default is 100). 64+20+1 also fits the old 100, so a partial restart cannot exhaust postgres. Raise toward 120 on a busy fleet after postgres is at 200 |
 | `TALARIA_PG_ACQUIRE_TIMEOUT_MS` | `15000` | How long a db-bound request queues before failing — bursts wait instead of 500ing |
 | `TALARIA_UI_PG_POOL_MAX` | `20` | The UI's own postgres pool ceiling |
 
@@ -265,11 +270,14 @@ Two docker networks, one socket — this is the "right shape"
     host docker daemon ── runs the fleet's compose project
 ```
 
-- **Agents → app**: the fleet's rendered configs point at
-  `TALARIA_MCP_GW_URL` / `TALARIA_GATEWAY_SELF_URL`, which the compose sets to
-  the app's service name (`http://talaria:5273/...`). Container→container on
-  the shared network — **no host firewall rule needed**, which is the entire
-  point: the dev/host install needs an INPUT-chain rule for exactly this hop.
+- **Agents → app**: MCP gateway (app servers stay in the UI process) is
+  `TALARIA_MCP_GW_URL` (`http://talaria:5273/api/mcp/gw`). LLM, git credential,
+  and tool-events are `TALARIA_GATEWAY_SELF_URL`
+  (`http://talaria:5274/api/llm/v1`) — the API, bound on the container network
+  (`TALARIA_API_BIND=0.0.0.0`) and not published to the host. The UI hop in
+  front of every agent stream was one thread queueing a multi-core box.
+  Container→container, no host firewall rule. A rendered fleet keeps the old
+  URL until the next render and roll.
 - **App → agents**: `TALARIA_AGENT_DIAL=container` makes the fleet manifest
   ([`api/crates/talaria-fleet-render/src/lib.rs`](../api/crates/talaria-fleet-render/src/lib.rs)) dial agents by their
   compose service names (`agent-<dept>:8642`, slot-aware) instead of the
@@ -391,6 +399,21 @@ of downtime on schema changes; the health check covers the window — a FAILED
 pass reports `migrations: !ok` on `/api/healthz` and flips the container
 unhealthy, instead of a green container whose table queries all 500).
 
+**Pin a checkout to one branch** with `talaria deploy up --branch rc` (or
+`deploy update --branch rc`). The pin is `TALARIA_DEPLOY_BRANCH` in
+`docker/.env` — gitignored, so it survives the fast-forwards. From then on
+`talaria deploy update` runs `git fetch origin rc` and
+`git merge --ff-only origin/rc` instead of `git pull`: it follows that branch
+and not whatever HEAD happens to track, and it will not merge or reset a
+diverged checkout. Pass `--branch` again to repin. With no pin, update stays
+`git pull --ff-only` of the current upstream. A plain `deploy up` does not
+fetch — restarting is not an update.
+
+The checkout has to be able to fast-forward onto that ref. A worktree created
+from it can (`git worktree add -b deploy/rc ../talaria-rc origin/rc` — `rc`
+itself may already be checked out elsewhere); a branch that has diverged
+cannot, and the command stops before it builds.
+
 **There is no manual post-deploy step, ever.** Every schema change and every
 one-time data operation (a backfill, a watermark reset, a repair) ships as an
 appended statement in the `MIGRATIONS` array (`ui/src/server/db/pg.ts`) and
@@ -454,8 +477,8 @@ Running one is an override file layered on the base compose (the base stays
 checkout-build; this never edits it):
 
 ```bash
-docker compose -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
-docker compose -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
+docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
+docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
 ```
 
 Pin the channel in `docker/.env` (`TALARIA_CHANNEL=0.2.0-rc.1`; unset means
@@ -469,14 +492,24 @@ present. Updating is the same two commands again.
 The deploy wrappers honor docker's own `COMPOSE_FILE` env: export the layered
 file list and every wrapper (up/update/down/logs/status) drops its explicit
 `-f` so the env decides what runs — an explicit `-f` would beat it, which is
-exactly why the CLI steps aside. Registry mode changes two behaviors on
-purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
+exactly why the CLI steps aside. Because it steps aside entirely, the shared
+sidecar plane has to be IN that list (first): the wrappers' own `-f` pair is
+`docker/sidecars.compose.yml` then the base, and the env replaces both.
+An export that omits the fragment is repaired, not rejected: the wrapper
+prepends `docker/sidecars.compose.yml`, warns once with the corrected export
+spelled out, and re-exports the repaired list for the docker child — so an
+export made before the fragment existed keeps working, and `service
+install` captures the corrected list into the unit. Left to docker, the
+omission answers per-service (`service "postgres" has neither an image nor
+a build context`) beside a pull command, which reads like a reachability
+problem — which is why the CLI never leaves that error to speak for itself.
+Registry mode changes two behaviors on purpose: `up`/`update` pull `talaria searxng-config` first (fail-fast, like
 the api-package pull) and `up` runs WITHOUT `--build` — the override swaps
 the image but cannot remove the base's `build:` key, so a build would tag the
 checkout AS the registry ref.
 
 ```bash
-export COMPOSE_FILE=docker/compose.yml:docker/compose.registry.yml   # shell or profile
+export COMPOSE_FILE=docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml   # shell or profile
 bun talaria deploy update    # git pull --ff-only → compose pull → up -d
 ```
 

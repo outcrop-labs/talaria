@@ -1,19 +1,19 @@
 [package]
 name = "talaria-update-registry"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-talaria-update-layout = { path = "../talaria-update-layout" }
-talaria-update-state = { path = "../talaria-update-state" }
-tracing = "0.1"
-base64 = "0.23"
-url = "2"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+talaria-update-layout = { workspace = true }
+talaria-update-state = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+url = { workspace = true }

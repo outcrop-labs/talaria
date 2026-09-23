@@ -105,15 +105,33 @@ const finding = (severity, id, what, detail, fix) =>
 const touched = (re) => changed.filter((f) => re.test(f))
 const anyTouched = (...res) => res.some((re) => changed.some((f) => re.test(f)))
 
-/** The changelog's added lines, which is where the claim lives. */
+/** The changelog's added lines, which is where the claim lives. An entry is
+ *  an added file under changelog/ (the post-cutover shape) or — only for the
+ *  pre-cutover history this judge no longer expects — lines in CHANGELOG.md. */
 const changelogAdditions = (() => {
-  if (!changed.includes('CHANGELOG.md')) return null
-  return git('diff', '-U0', range, '--', 'CHANGELOG.md')
-    .split('\n')
-    .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-    .map((l) => l.slice(1))
+  const additions = []
+  if (changed.includes('CHANGELOG.md'))
+    additions.push(
+      ...git('diff', '-U0', range, '--', 'CHANGELOG.md')
+        .split('\n')
+        .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+        .map((l) => l.slice(1)),
+    )
+  if (changed.some((f) => f.startsWith('changelog/')))
+    additions.push(
+      ...git('diff', '-U0', range, '--', 'changelog')
+        .split('\n')
+        .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+        .map((l) => l.slice(1)),
+    )
+  return additions.length ? additions : null
 })()
 const changelogText = changelogAdditions ? changelogAdditions.join('\n') : ''
+// Bullets appended straight into CHANGELOG.md after the entry-file cutover:
+// the exact conflict surface the files exist to end.
+const appendedToChangelog = changelogAdditions !== null &&
+  changed.includes('CHANGELOG.md') &&
+  changelogAdditions.some((l) => /^-\s+\*\*/.test(l))
 
 // ── 1. the flow: what this pull request is aimed at ────────────────────────
 //
@@ -221,15 +239,29 @@ if (userVisible.length) {
     finding(
       'must',
       'no-changelog',
-      'a user-visible change with no CHANGELOG.md entry',
+      'a user-visible change with no changelog entry',
       userVisible.map(([, what]) => `  this change touches ${what}`),
       [
-        'Append to the `[Unreleased]` section: what changed, in a bold lead sentence, and what you',
-        'verified — the gate you ran and how you exercised the path (CONTRIBUTING.md step 3). The',
-        'changelog is the record reviewers and release-notes readers actually have.',
+        'Add changelog/YYYY-MM-DD-<slug>.md containing the entry: what changed, in a bold lead',
+        'sentence, and what you verified — the gate you ran and how you exercised the path',
+        '(CONTRIBUTING.md step 3). The changelog is the record reviewers and release-notes',
+        'readers actually have; one file per entry is what keeps two open PRs from colliding.',
       ]
     )
   } else {
+    if (appendedToChangelog) {
+      finding(
+        'must',
+        'changelog-not-a-file',
+        'the entry was appended into CHANGELOG.md instead of landing as an entry file',
+        [],
+        [
+          'Move it to changelog/YYYY-MM-DD-<slug>.md, verbatim, and leave `## [Unreleased]` empty —',
+          'appending at the same anchor as every other open PR is the merge-conflict surface the',
+          'entry files exist to end (`bun scripts/changelog-roll.mjs --check` fails this too).',
+        ]
+      )
+    }
     if (!/^-\s+\*\*/m.test(changelogText)) {
       finding(
         'should',
@@ -257,12 +289,15 @@ if (userVisible.length) {
 
 /** What a change to each surface has to have named, and where that comes from:
  *  CONTRIBUTING.md's "Before you send a PR" and the dev-loop skill's gate table.
- *  The judge holds the claim to the SAME commands, never to a second opinion. */
+ *  The local command is `bun run gate` — it runs the surface's compile only when
+ *  the diff touches it. The full CI commands (`verify`, `api:check`,
+ *  `desktop:check`) still count if someone actually ran them. The judge holds
+ *  the claim to those commands, never to a second opinion. */
 const CLAIMS = [
-  { re: /^ui\//, needs: /bun run (verify|typecheck|test)|svelte-check/i, what: 'ui/', gate: 'bun run verify' },
-  { re: /^mcp\//, needs: /bun run (verify|typecheck)|mcp/i, what: 'mcp/', gate: 'bun run verify' },
-  { re: /^api\//, needs: /api:check/i, what: 'api/', gate: 'bun run api:check' },
-  { re: /^desktop\//, needs: /desktop:check/i, what: 'desktop/', gate: 'bun run desktop:check' },
+  { re: /^ui\//, needs: /bun run (gate|verify|typecheck|test)|svelte-check/i, what: 'ui/', gate: 'bun run gate' },
+  { re: /^mcp\//, needs: /bun run (gate|verify|typecheck)|mcp/i, what: 'mcp/', gate: 'bun run gate' },
+  { re: /^api\//, needs: /bun run gate|api:check/i, what: 'api/', gate: 'bun run gate' },
+  { re: /^desktop\//, needs: /bun run gate|desktop:check/i, what: 'desktop/', gate: 'bun run gate' },
 ]
 
 if (changelogAdditions !== null) {
@@ -279,19 +314,18 @@ if (changelogAdditions !== null) {
     }
   }
 
-  // The cli suite is the one surface `bun run verify` does NOT cover — it runs
-  // check + ui/mcp typecheck + the ui suite. A cli change whose only stated
-  // evidence is `verify` is an unverified change, and this is exactly the kind
-  // of gap a judge can see and CI's green tick hides.
-  if (anyTouched(/^cli\//) && !/cli|bun test/i.test(changelogText)) {
+  // `bun run verify` does not run the cli suite (check + ui/mcp typecheck + the
+  // ui suite). `bun run gate` does, when the diff touches cli/. A cli change
+  // whose only stated evidence is `verify` is an unverified change.
+  if (anyTouched(/^cli\//) && !/bun run gate|cli|bun test/i.test(changelogText)) {
     finding(
       'ask',
       'cli-suite-not-covered-by-verify',
       'this change touches `cli/`, which `bun run verify` does not test',
       [],
       [
-        '`bun run verify` is check + typecheck (ui, mcp) + the ui suite; the CLI\'s own tests are',
-        '`cd cli && bun test`. Name that (or say CI covers it) so the claim matches the command.',
+        '`bun run gate` runs the cli typecheck and `bun test` when `cli/` moved.',
+        '`bun run verify` does not. Name `gate` (or the cli suite) so the claim matches the command.',
       ]
     )
   }

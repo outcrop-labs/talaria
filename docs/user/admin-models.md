@@ -30,8 +30,10 @@ Self-hosted hardware and cloud keys sit in separate sections.
 - **Available models** — trim the list to what you actually carry; add from the provider's
   live catalog.
 - **Reasoning effort** — declare the levels each model accepts; they're sent verbatim.
-- **Pricing · $/1M tokens (in / out)** — cloud only. Fill the endpoint default as fallback,
-  then per-model rows; unpriced models show as `auto` and stay unattributed in the ledger.
+- **Pricing** — cloud only, read-only. Rates come from the provider, with the source and when
+  they were fetched. Spend uses the provider's reported charge when they send one; a published
+  price is a labeled fallback, never an editable number. OpenRouter shows each endpoint's price,
+  because the same model can cost a different amount depending on which endpoint served the call.
 - **Remove provider** — cascades: every agent on it gets new versions, a re-render, and a
   restart.
 

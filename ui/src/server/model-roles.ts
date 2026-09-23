@@ -9,14 +9,16 @@
 // never silently break a subsystem. Unset = auto.
 //
 // AUDIT 1.6: routable is not the same as FIT. Routability was the only check
-// here, so an admin could point `research-recon` at a model with no web search,
-// `planSearch` would hand it to the search stages, and the run would come
-// back a confident, uncited, hallucinated brief with nothing anywhere reporting
-// a problem. Each role now DECLARES the capabilities its work needs, and
-// `roleAssignmentIssues` reports the assignments a model is known not to be able
-// to serve. It reports; it does not drop. Silently ignoring an admin's explicit
-// pick would trade one invisible failure for another, and the admin may well
-// know something the probe suite does not.
+// here, so an admin could point `research-recon` at a model with no native
+// browser, `planSearch` would hand it to the search stages, and the run would
+// come back a confident, uncited brief with nothing anywhere reporting a
+// problem. Each role DECLARES the capabilities its work needs, and
+// `roleAssignmentIssues` reports the assignments a model is known not to be
+// able to serve — except `search`, which a harness tool can supply. The model
+// flag stays; the warning asks whether the run can fetch. It reports; it does
+// not drop. Silently ignoring an admin's explicit pick would trade one
+// invisible failure for another, and the admin may well know something the
+// probe suite does not.
 import { getSetting, setSetting } from './audit'
 import { resolveRoute, routingFor } from './llm-gateway'
 import { capabilityKey, missingCapabilities, type Capability } from './harness/capability'
@@ -49,11 +51,13 @@ export const MODEL_ROLES: Array<{
   {
     role: 'research-recon',
     label: 'Research · Recon',
-    hint: 'Search stage for quick Recon passes. Needs a web-search-capable model. Auto: sonar.',
+    hint: 'Search stage for quick Recon passes. Fetches through a web-search tool the harness supplies, or a model that browses natively. Auto: sonar.',
     wired: true,
-    // The research pipeline's search stages are the whole point of these three
-    // roles: a model without live search answers them from memory, in the same
-    // confident shape, and the citations come out invented.
+    // The research pipeline's search stages need live pages. That is a
+    // property of the RUN, not of the weights: a harness tool (`web_search`,
+    // Hermes or the Talaria toolkit) fetches the same passages a sonar model
+    // would. `requires` stays `search` so the model flag is still recorded;
+    // `roleAssignmentIssues` asks reach before it warns.
     requires: ['search'],
   },
   {
@@ -178,19 +182,26 @@ export async function resolveRoleModel(role: ModelRole): Promise<string | null> 
 // ── Fitness (audit 1.6) ──────────────────────────────────────────────────────
 
 /** Plain words for what the admin loses, one clause per capability, written to
- *  slot after the model id: "gpt-4o-mini has no web search, so …".
+ *  slot after the model id.
  *
  *  Partial on purpose. A capability no role requires needs no sentence, and the
  *  fallback below stays truthful for one added later — a stale, confidently
- *  wrong sentence would be worse than a plain one. */
+ *  wrong sentence would be worse than a plain one.
+ *
+ *  `search` names the missing tool, not a missing browser in the weights. A
+ *  harness tool that supplies search never reaches this sentence. */
 const CONSEQUENCE: Partial<Record<Capability, string>> = {
-  search: 'has no web search, so research runs will answer from memory and the citations will be invented',
+  search:
+    'cannot browse on its own, and no web-search tool is available here, so research runs have nothing to fetch with and will answer from memory',
   tools: 'cannot call tools, so a coding run cannot read or edit a single file',
   code: 'is not a coder, so its patches will need more repair than they save',
   vision: 'cannot read images, so anything sent to this slot comes back described from nothing',
 }
 
 const consequenceOf = (cap: Capability): string => CONSEQUENCE[cap] ?? `is known not to support ${cap}`
+
+const assignmentNote = (model: string, missing: readonly string[]): string =>
+  `${model} ${missing.map((c) => consequenceOf(c as Capability)).join(', and ')}. The assignment stands; set the role back to Auto if that is not what you meant.`
 
 /** Capabilities the assigned model is KNOWN to lack for this role. Empty when
  *  the role requires nothing, when nothing routes the model, or — the important
@@ -240,8 +251,15 @@ export interface RoleAssignmentIssue {
  *  Reserved (`wired: false`) roles are included. Their surfaces do not exist
  *  yet, so nothing is broken today, but telling an admin now that their pick
  *  cannot see is strictly more useful than telling them the week the feature
- *  ships — and the row already carries a "reserved" chip saying it is inert. */
-export async function roleAssignmentIssues(): Promise<RoleAssignmentIssue[]> {
+ *  ships — and the row already carries a "reserved" chip saying it is inert.
+ *
+ *  THE PANEL DOES NOT CALL THIS. `/api/admin/model-roles` is the Rust twin
+ *  (`role_assignment_issues_reached`), which asks reach before it warns.
+ *  `searchReach` is the same question, injected so this copy cannot drift
+ *  from that one: a harness `web_search` (Talaria toolkit or Hermes) that
+ *  reaches search is not a gap. Omit it and the note names the missing tool
+ *  rather than a browser the weights do not have. */
+export async function roleAssignmentIssues(searchReach?: (model: string) => Promise<SearchReach | null>): Promise<RoleAssignmentIssue[]> {
   const assignments = await getModelRoles()
   // Concurrent because there are eleven roles and each gap check is two small
   // reads: serially that is an admin page load waiting out twenty-two
@@ -255,14 +273,37 @@ export async function roleAssignmentIssues(): Promise<RoleAssignmentIssue[]> {
       if (!model) return null
       const missing = await roleModelGaps(spec.role, model)
       if (missing.length === 0) return null
-      const issue: RoleAssignmentIssue = {
-        role: spec.role,
-        model,
-        missing,
-        note: `${model} ${missing.map(consequenceOf).join(', and ')}. The assignment stands; set the role back to Auto if that is not what you meant.`,
-      }
-      return issue
+      const reach = missing.includes('search') && searchReach ? await searchReach(model) : null
+      return issueFor(spec.role, model, missing, reach)
     }),
   )
   return checked.filter((i): i is RoleAssignmentIssue => i !== null)
+}
+
+/** What reach said about search, narrowed to the fields the warning uses. */
+export interface SearchReach {
+  reached: boolean
+  detail: string
+}
+
+function issueFor(role: ModelRole, model: string, missing: Capability[], reach: SearchReach | null): RoleAssignmentIssue | null {
+  if (!missing.includes('search') || !reach) {
+    return { role, model, missing, note: assignmentNote(model, missing) }
+  }
+  if (reach.reached) {
+    // Native, or a harness tool fetches. The model flag stays on the chip.
+    // This warning would say the run cannot search, which is the lie.
+    const rest = missing.filter((c) => c !== 'search')
+    if (rest.length === 0) return null
+    return { role, model, missing: rest, note: assignmentNote(model, rest) }
+  }
+  if (reach.detail.includes('unable to call tools')) {
+    return {
+      role,
+      model,
+      missing,
+      note: `${reach.detail.replace(/\.$/, '')}. The assignment stands; set the role back to Auto if that is not what you meant.`,
+    }
+  }
+  return { role, model, missing, note: assignmentNote(model, missing) }
 }

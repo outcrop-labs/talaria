@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-9 routes.
+11 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -21,8 +21,8 @@
 | [`/api/notifications`](#apinotifications) | PUT | `session` |
 | [`/api/notifications`](#apinotifications) | PATCH | `session` |
 | [`/api/push/key`](#apipushkey) | GET | `session` |
-| [`/api/push/key`](#apipushkey) | POST | `session` |
-| [`/api/push/key`](#apipushkey) | POST | `session` |
+| [`/api/push/subscribe`](#apipushsubscribe) | POST | `session` |
+| [`/api/push/unsubscribe`](#apipushunsubscribe) | POST | `session` |
 | [`/api/unreads`](#apiunreads) | GET | `session` |
 
 ## `/api/activity`
@@ -140,16 +140,42 @@ Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crate
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{publicKey}` | 200 | — |
-| POST | `session` | [body](#post-apipushkey-body) | `{ok}` | 200, 400 | — |
-| POST | `session` | [body](#post-apipushkey-body) | `{ok}` | 200, 400 | — |
 
-### POST `/api/push/key` body
+## `/api/push/subscribe`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crates/talaria-routes-comms/src/activity/push.rs)
+
+> /api/push — the browser's half of the closed-tab plane. GET /key hands the
+> instance's VAPID public key (what pushManager.subscribe wants as
+> applicationServerKey); POST /subscribe files a device browser's
+> subscription (the push service's endpoint plus the two key halves RFC 8291
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apipushsubscribe-body) | `{ok}` | 200, 400 | — |
+
+### POST `/api/push/subscribe` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `endpoint` | `string(1)` |  |
 
-### POST `/api/push/key` body
+## `/api/push/unsubscribe`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crates/talaria-routes-comms/src/activity/push.rs)
+
+> /api/push — the browser's half of the closed-tab plane. GET /key hands the
+> instance's VAPID public key (what pushManager.subscribe wants as
+> applicationServerKey); POST /subscribe files a device browser's
+> subscription (the push service's endpoint plus the two key halves RFC 8291
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apipushunsubscribe-body) | `{ok}` | 200, 400 | — |
+
+### POST `/api/push/unsubscribe` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |

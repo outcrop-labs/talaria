@@ -1788,33 +1788,10 @@ pub async fn price_of(model: &str, deps: &SurfaceDeps) -> Result<Option<ModelPri
     if route.endpoints.is_empty() {
         return Ok(None);
     }
-    let at = |map: &Value, upstream: &str| -> Option<f64> {
-        map.get(upstream)?.as_object()?.get("in")?.as_f64()
-    };
-    let out = |map: &Value, upstream: &str| -> Option<f64> {
-        map.get(upstream)?.as_object()?.get("out")?.as_f64()
-    };
-    let priced: Vec<ModelPrice> = route
-        .endpoints
-        .iter()
-        .filter_map(|ep| {
-            let in_tok = at(&ep.model_prices, &route.upstream_model)
-                .or_else(|| at(&ep.auto_prices, &route.upstream_model))
-                .or(ep.price_in_per_mtok);
-            let out_tok = out(&ep.model_prices, &route.upstream_model)
-                .or_else(|| out(&ep.auto_prices, &route.upstream_model))
-                .or(ep.price_out_per_mtok);
-            Some(ModelPrice {
-                in_per_mtok: in_tok?,
-                out_per_mtok: out_tok?,
-            })
-        })
-        .collect();
-    Ok(priced.into_iter().max_by(|a, b| {
-        (a.in_per_mtok + a.out_per_mtok)
-            .partial_cmp(&(b.in_per_mtok + b.out_per_mtok))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }))
+    // Editable endpoint rates are not a spend source. The pre-run estimate
+    // stays unpriced until a published provider price is what this reads.
+    let _ = route;
+    Ok(None)
 }
 
 pub fn usd_of(
@@ -4792,15 +4769,11 @@ mod tests {
         let t = &est.tiers[0];
         assert_eq!((t.prompt_tokens, t.completion_tokens), (400, 100));
         assert_eq!(t.basis, EstimateBasis::Measured);
-        // 400 * $1/MTok + 100 * $4/MTok.
-        let want = (400.0 * 1.0 + 100.0 * 4.0) / 1e6;
-        assert!((t.usd.unwrap() - want).abs() < 1e-12);
-        // `t` has fixtures and no budget row; `empty` has no fixtures and is
-        // not a gap — counting it would make the "figure is a floor" warning
-        // permanent on a registry that will always have unfixtured harnesses.
+        // The editable card is not a price. Tokens are still estimated.
+        assert_eq!(t.usd, None);
+        assert!(!est.priced);
         assert_eq!(est.unmeasured_harnesses, 1);
         assert!(t.note.contains("floor"));
-        assert!(est.priced);
     }
 
     #[tokio::test]
@@ -4856,7 +4829,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn estimate_counts_adversary_calls_and_prices_both_at_the_dearer_rate() {
+    async fn estimate_counts_adversary_calls_without_pricing_the_editable_card() {
         let quoted: Arc<Mutex<Option<f64>>> = Arc::new(Mutex::new(None));
         let mut d = estimate_deps();
         d.routing = Arc::new(|model| {
@@ -4910,10 +4883,9 @@ mod tests {
         .unwrap();
         // Candidate + adversary, both counted: the run pays for both.
         assert_eq!(est.tiers[0].calls, 24);
-        // Priced at the DEAR model's rate — a ceiling, never a surprise upward.
+        // The editable card is not a price, so the quote stays empty.
         let q = *quoted.lock().unwrap();
-        assert!(q.is_some());
-        assert!((q.unwrap() - 10.0).abs() < 1e-12);
+        assert!(q.is_none());
         assert!(est.tiers[0].note.contains("ceiling"));
     }
 
@@ -5003,9 +4975,9 @@ mod tests {
         );
         // 9 probe calls + (2 fixtures + 2 repairs) + 12 provocations.
         assert_eq!(priced.calls, 25);
-        let evals_usd = (200.0 * 2.0 + 40.0 * 2.0) / 1e6;
-        let want = 0.001 + evals_usd + 0.02;
-        assert!((priced.usd.unwrap() - want).abs() < 1e-12);
+        // Evals has no published price, so the combined figure stays unpriced
+        // rather than mixing an editable rate into the total.
+        assert_eq!(priced.usd, None);
 
         let mut un = d.clone();
         un.estimate_adversarial = Arc::new(|_, _| {
@@ -5053,7 +5025,7 @@ mod tests {
     // ── Pricing ──────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn price_of_takes_the_dearest_endpoint_in_the_pool_not_the_average() {
+    async fn price_of_does_not_price_from_the_editable_card() {
         let mut d = panic_deps();
         d.routing = Arc::new(|model| {
             Box::pin(async move {
@@ -5069,19 +5041,11 @@ mod tests {
                 })
             })
         });
-        // An estimate the round-robin can exceed is not an estimate an admin
-        // can act on.
-        assert_eq!(
-            price_of("m", &d).await.unwrap(),
-            Some(ModelPrice {
-                in_per_mtok: 5.0,
-                out_per_mtok: 9.0
-            })
-        );
+        assert_eq!(price_of("m", &d).await.unwrap(), None);
     }
 
     #[tokio::test]
-    async fn price_of_prefers_the_admin_override_over_the_auto_catalog_rate() {
+    async fn price_of_ignores_admin_overrides() {
         let mut d = panic_deps();
         d.routing = Arc::new(|_| {
             Box::pin(async move {
@@ -5096,13 +5060,7 @@ mod tests {
                 })
             })
         });
-        assert_eq!(
-            price_of("m", &d).await.unwrap(),
-            Some(ModelPrice {
-                in_per_mtok: 3.0,
-                out_per_mtok: 7.0
-            })
-        );
+        assert_eq!(price_of("m", &d).await.unwrap(), None);
     }
 
     #[tokio::test]

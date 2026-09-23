@@ -1146,13 +1146,21 @@ pub async fn cancel_run(
     deps: &RunDeps,
 ) -> Result<CancelOutcome, sqlx::Error> {
     let res = deps.store.cancel(run_id, reason).await?;
-    if matches!(res, CancelOutcome::Cancelled { .. })
-        && let Some(run) = deps.store.get(run_id).await?
-    {
-        (deps.publish)(
-            RunEvent::transition(&run.id, &run.kind, run.state, &run.phase),
-            run.owner_user_id.as_deref(),
-        );
+    if matches!(res, CancelOutcome::Cancelled { .. }) {
+        // THE LOCAL DRIVER MUST HEAR IT. Flipping the row alone leaves a
+        // driver in this process mid-send — a step that can legitimately
+        // stream for hours — and the person who pressed stop watches
+        // nothing happen until the step's own idle clock gives up. The
+        // abort ends the in-flight call at its next await; a driver on
+        // another instance (or none at all) simply misses the signal, and
+        // the row state remains the truth.
+        talaria_runs_drivers::fire(run_id);
+        if let Some(run) = deps.store.get(run_id).await? {
+            (deps.publish)(
+                RunEvent::transition(&run.id, &run.kind, run.state, &run.phase),
+                run.owner_user_id.as_deref(),
+            );
+        }
     }
     Ok(res)
 }

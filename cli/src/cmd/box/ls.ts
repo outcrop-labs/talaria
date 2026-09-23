@@ -1,11 +1,12 @@
 // `talaria box ls` — the registry: every box with box.env, its branch, its
 // host port, and whether the container is up. Port of scripts/devbox `ls`.
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { envValue } from '../../envfile'
+import { containerState } from '../../containers'
+import { readEnvFile } from '../../envfile'
 import { devboxes } from './shared'
 
 export async function runLs(ctx: Ctx): Promise<number> {
@@ -16,21 +17,17 @@ export async function runLs(ctx: Ctx): Promise<number> {
       if (!e.isDirectory()) continue
       const envPath = join(home, e.name, 'box.env')
       if (!existsSync(envPath)) continue
-      const env = readFileSync(envPath, 'utf8')
-      const name = envValue(env, 'BOX_NAME') ?? e.name
-      const port = envValue(env, 'APP_PORT') ?? '?'
+      const env = readEnvFile(ctx, envPath)
+      const name = env.BOX_NAME ?? e.name
+      const port = env.APP_PORT ?? '?'
       let branch = '?'
       try {
         branch = (await ctx.exec('git', ['-C', join(home, e.name, 'talaria'), 'branch', '--show-current'])).stdout.trim() || '?'
       } catch {
         /* detached or gone — '?' */
       }
-      let status = 'gone'
-      try {
-        status = (await ctx.exec('docker', ['inspect', '-f', '{{.State.Status}}', `devbox-${name}`])).stdout.trim()
-      } catch {
-        /* not created / daemon off — 'gone' */
-      }
+      // not created / daemon off → null → 'gone'
+      const status = (await containerState(ctx, `devbox-${name}`)) ?? 'gone'
       rows.push([name, branch, port, status])
     }
   }

@@ -4,7 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -37,7 +37,6 @@
     queryFn: (): Promise<{ keys: ApiKey[]; canMint: boolean }> => getJson<{ keys: ApiKey[]; canMint: boolean }>('/api/keys'),
   }))
   const data = $derived(query.data)
-  const isLoading = $derived(query.isLoading)
   let name = $state('')
   let minted = $state<string | null>(null)
   let err = $state<string | null>(null)
@@ -118,22 +117,22 @@
     info={`Connect external tools to the org's model stack: base URL ${baseUrl}, any model from /models (or endpoint/model to pin a backend).`}
   />
 
-  {#if isLoading}
-    <!-- Hold BOTH the key list and the canMint branch — flashing "API keys
-         are not enabled for your account" mid-load is actively wrong. -->
-    <div aria-hidden="true">
-      <SkeletonRows rows={2} class="mb-4" />
-      <div class="flex items-center gap-2">
-        <Skeleton class="h-9 flex-1" />
-        <Skeleton class="h-9 w-24" />
+  <QueryState query={query} errorTitle="Could not load your API keys" errorVariant="compact">
+    {#snippet skeleton()}
+      <!-- Hold BOTH the key list and the canMint branch — flashing "API keys
+           are not enabled for your account" mid-load is actively wrong. -->
+      <div aria-hidden="true">
+        <SkeletonRows rows={2} class="mb-4" />
+        <div class="flex items-center gap-2">
+          <Skeleton class="h-9 flex-1" />
+          <Skeleton class="h-9 w-24" />
+        </div>
       </div>
-    </div>
-  {:else if !data}
-    <!-- The skeleton comment above holds after load too: "API keys are not
-         enabled for your account" is a permission verdict, and a failed
-         /api/keys never delivered one. -->
-    <QueryError variant="compact" error={query.error} title="Could not load your API keys" onRetry={() => void query.refetch()} />
-  {:else}
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- The comment above holds after load too: "API keys are not enabled for
+         your account" is a permission verdict, and a failed /api/keys never
+         delivered one — QueryState's error branch owns it. -->
     {#if keys.length > 0}
       <div class="mb-4 divide-y divide-line-subtle">
         {#each keys as k (k.id)}
@@ -196,7 +195,8 @@
     {:else}
       <div class="text-xs text-muted">API keys are not enabled for your account. Ask an admin.</div>
     {/if}
-  {/if}
+    {/snippet}
+  </QueryState>
   {#if minted}
     <div transition:slide={{ duration: 150 }} class="mt-3 rounded-md border border-accent/40 bg-raised p-3">
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-warning">Copy it now: it won't be shown again</div>

@@ -27,9 +27,10 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "GET work-session", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let user = require_user(&state, &headers).await?;
     // The task's board decides, exactly like every other read of the ticket.
     let board: Option<(String,)> =

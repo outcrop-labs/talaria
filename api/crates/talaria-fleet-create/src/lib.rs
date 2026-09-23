@@ -62,6 +62,7 @@ replace this section with a real personality and operating principles.)
 
 ## How you work
 - Keep humans in the loop: create and triage tickets, never assign or close them.
+- Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.
 - Prefer the local model tier for routine work; escalate deliberately.
 - When unsure, ask in the channel instead of guessing.
 "
@@ -431,5 +432,6 @@ mod tests {
         assert!(soul.starts_with("# Sloane — customer success\n"));
         assert!(soul.contains("You are Sloane, the customer success agent."));
         assert!(soul.contains("- Keep humans in the loop"));
+        assert!(soul.contains("- Never do dev work in chat"));
     }
 }

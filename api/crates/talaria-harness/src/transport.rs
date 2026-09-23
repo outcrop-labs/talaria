@@ -621,7 +621,9 @@ pub fn replays_tools(req: &TransportRequest) -> bool {
 use futures_util::StreamExt;
 use talaria_gateway::registry::resolve_route;
 use talaria_gateway::upstream::{Reply, build_upstream, fetch_upstream};
-use talaria_gateway::usage::{TokenCounts, estimate_tokens, record_gateway_usage};
+use talaria_gateway::usage::{
+    ReportedSpend, TokenCounts, estimate_tokens, record_gateway_usage_with_spend, reported_spend,
+};
 use talaria_state::AppState;
 
 /// `gateway completion {status}: {body}` — the failure sentence both blocking
@@ -641,6 +643,7 @@ fn meter(
     usage: Option<TokenPair>,
     prompt_chars: usize,
     text_chars: usize,
+    spend: ReportedSpend,
 ) {
     let pg = state.pg.clone();
     let counts = match usage {
@@ -661,7 +664,7 @@ fn meter(
     let endpoint_class = route.endpoint.class.clone();
     let upstream_model = route.upstream_model.clone();
     tokio::spawn(async move {
-        let _ = record_gateway_usage(
+        let _ = record_gateway_usage_with_spend(
             &pg,
             &caller,
             &endpoint_name,
@@ -669,6 +672,7 @@ fn meter(
             &upstream_model,
             &counts,
             estimated,
+            Some(&spend),
         )
         .await;
     });
@@ -819,6 +823,7 @@ pub async fn gateway_tool_turn(
         usage,
         req.prompt_chars(),
         text_chars,
+        reported_spend(&route.endpoint.provider, &j),
     );
     Ok(TransportReply {
         kind: TransportKind::Gateway,
@@ -919,6 +924,7 @@ pub async fn gateway_transport(
         usage,
         req.prompt_chars(),
         text_chars,
+        reported_spend(&route.endpoint.provider, &j),
     );
     // The ledger row meters with the real usage; the runner sees none of it —
     // the plain path has always been chars-estimated, and that is the number
@@ -1008,6 +1014,7 @@ pub async fn gateway_stream(
 
     let mut text = String::new();
     let mut usage: Option<TokenPair> = None;
+    let mut spend_body = serde_json::json!({});
     let mut buffered = String::new();
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -1036,6 +1043,10 @@ pub async fn gateway_stream(
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0),
                 });
+                spend_body["usage"] = u.clone();
+            }
+            if let Some(id) = frame.get("id").and_then(|v| v.as_str()) {
+                spend_body["id"] = serde_json::Value::String(id.to_string());
             }
             if let Some(piece) = frame
                 .pointer("/choices/0/delta/content")
@@ -1055,6 +1066,7 @@ pub async fn gateway_stream(
         usage,
         req.prompt_chars(),
         text_chars,
+        reported_spend(&route.endpoint.provider, &spend_body),
     );
     Ok(TransportReply {
         kind: TransportKind::Gateway,
@@ -1544,6 +1556,7 @@ pub async fn gateway_image_turn(
         usage,
         prompt_chars,
         talaria_body::utf16_len(&text),
+        reported_spend(&route.endpoint.provider, &j),
     );
     Ok(text)
 }

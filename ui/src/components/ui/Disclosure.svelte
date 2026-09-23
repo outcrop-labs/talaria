@@ -20,6 +20,7 @@
     children: Snippet
   } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: initial open state per mount; callers wanting a different default remount the instance
   let open = $state(defaultOpen)
 </script>
 

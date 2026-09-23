@@ -54,11 +54,25 @@ export function useTeamsAll() {
   }))
 }
 
-/** Id + name + counts for share pickers — any signed-in caller. */
-export function useTeamDirectory() {
+/** Teams by id + name + counts for share pickers — any signed-in caller.
+ *
+ *  One hook, one cache entry, one shape: five surfaces hand-rolled this read
+ *  and each declared a different slice of the row (`{ teams: [{ id, name }] }`
+ *  in channel settings, `{ id, name, memberCount }` in KB sharing, the whole
+ *  row for MCP access) under a single `['teams-directory']` key — the same
+ *  entry typed three ways. The key hangs off `['teams']` so the membership
+ *  writes that invalidate the team lists invalidate this with them.
+ *
+ *  `enabled` follows `useTeamAccess`: a picker that only reads while its modal
+ *  is open passes that gate, rather than the hook guessing on its behalf.
+ *  30s stale mirrors `useUsers` — the directory moves only on a membership
+ *  write, which is rare next to a modal reopen. */
+export function useTeamsDirectory(enabled: MaybeGetter<boolean> = true) {
   return createQuery(() => ({
     queryKey: ['teams', 'directory'],
+    enabled: resolve(enabled),
     queryFn: (): Promise<TeamDirectoryEntry[]> => getList<TeamDirectoryEntry>('/api/teams/directory', 'teams'),
+    staleTime: 30_000,
   }))
 }
 

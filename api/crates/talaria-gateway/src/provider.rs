@@ -167,6 +167,30 @@ pub async fn resolve_endpoint_key(
     resolved
 }
 
+/// Open one endpoint's provider key for a background fetch (activity, generation
+/// backfill). Sealed DB key first, then the endpoint's env fallback.
+pub async fn open_stored_key(
+    state: &AppState,
+    endpoint_id: &str,
+    provider: &str,
+    api_key_env: Option<&str>,
+) -> Option<String> {
+    let cipher: Option<String> =
+        sqlx::query_scalar("select api_key_cipher from llm_endpoints where id::text = $1")
+            .bind(endpoint_id)
+            .fetch_optional(&state.pg)
+            .await
+            .ok()
+            .flatten();
+    if let Some(token) = cipher
+        && let Ok(sb) = state.secretbox().await
+        && let Ok(key) = sb.open(&token)
+    {
+        return Some(key);
+    }
+    resolve_key(api_key_env.or_else(|| default_key_env(provider))).await
+}
+
 /// Drop an endpoint's key entry — or, with no id, the whole map (the boot
 /// migration's shape). Every writer of `api_key_cipher` calls this: the
 /// admin key write in registry.rs, `migrate_env_keys_to_cipher` here, and

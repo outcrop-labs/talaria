@@ -782,6 +782,8 @@ pub async fn start_research(
     // its only output is one idempotent column write that nothing waits on,
     // and a step would put another billable call in the run's critical path
     // (and in the set of calls a reclaim repeats) to save a title.
+    // `title is null` is the idempotence: a person who renamed the run before
+    // this landed keeps their title. The sweep asks the same question.
     let question = input.question.clone();
     let run_id = id.clone();
     let st = state.clone();
@@ -789,11 +791,13 @@ pub async fn start_research(
         if let Some(t) =
             talaria_titler::generate_title(&st, talaria_titler::TitleKind::Research, &question)
                 .await
-            && let Err(e) = sqlx::query("update research_runs set title = $1 where id = $2::uuid")
-                .bind(&t)
-                .bind(&run_id)
-                .execute(&st.pg)
-                .await
+            && let Err(e) = sqlx::query(
+                "update research_runs set title = $1 where id = $2::uuid and title is null",
+            )
+            .bind(&t)
+            .bind(&run_id)
+            .execute(&st.pg)
+            .await
         {
             tracing::error!("[research] title write failed for {run_id}: {e}");
         }

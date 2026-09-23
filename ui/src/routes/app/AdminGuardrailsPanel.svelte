@@ -2,7 +2,7 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Select from '@/components/ui/Select.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -48,36 +48,31 @@
     title="Confab guard"
     info={"A structural check on every model output at the gateway: fabricated tool claims, invented links, outage stories, leaked secrets and PII. Observe records findings; annotate flags the reply; strict also redacts. Flagged content never re-enters an agent’s context."}
   />
-  {#if query.isPending}
-    <!-- Everything here seeds from the query (mode, slider, coach toggle,
-         rules) — hold the full control area so no false defaults flash. -->
-    <div class="flex flex-wrap items-center gap-4">
-      <Skeleton class="h-8 w-40" />
-      <Skeleton class="h-4 w-40 rounded-full" />
-      <Skeleton class="h-4 w-44 rounded-full" />
-    </div>
-    <div class="mt-3 space-y-1.5">
-      {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
-        <div class="flex items-center gap-2 py-0.5">
-          <Skeleton class="h-4 w-4" />
-          <Skeleton class="h-3 w-48 rounded-full" />
-        </div>
-      {/each}
-    </div>
-    <div class="mt-4">
-      <SkeletonRows rows={3} />
-    </div>
-  {:else if !data}
-    <!-- "0 findings" and mode=observe are both defaults this component
-         invents when `data` is missing — over a failed read that reads as a
-         guard that is quietly running and finding nothing. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load the guardrail configuration"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load the guardrail configuration" errorVariant="compact">
+    {#snippet skeleton()}
+      <!-- Everything here seeds from the query (mode, slider, coach toggle,
+           rules) — hold the full control area so no false defaults flash. -->
+      <div class="flex flex-wrap items-center gap-4">
+        <Skeleton class="h-8 w-40" />
+        <Skeleton class="h-4 w-40 rounded-full" />
+        <Skeleton class="h-4 w-44 rounded-full" />
+      </div>
+      <div class="mt-3 space-y-1.5">
+        {#each Array.from({ length: 6 }, (_, i) => i) as i (i)}
+          <div class="flex items-center gap-2 py-0.5">
+            <Skeleton class="h-4 w-4" />
+            <Skeleton class="h-3 w-48 rounded-full" />
+          </div>
+        {/each}
+      </div>
+      <div class="mt-4">
+        <SkeletonRows rows={3} />
+      </div>
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- "0 findings" and mode=observe are both defaults this component invents
+         when the read failed — over a failure that reads as a guard quietly
+         running and finding nothing. QueryState's error branch holds it. -->
     <div class="flex flex-wrap items-center gap-4">
       <div class="flex items-center gap-2">
         <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
@@ -138,5 +133,6 @@
         </div>
       </div>
     {/if}
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

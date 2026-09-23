@@ -16,11 +16,13 @@ import type { Effort, TaskStatus } from '@/lib/task-const'
 /** A reactive argument: pass a plain value, or a getter for values that
  *  change over a component's life (route params). */
 
-/** The derived step state — assigned by the api from the chain's read
- *  (api/src/workchains.rs): the first non-archived step whose task is not
- *  terminal is 'head', terminal steps are 'done', the rest wait, and an
+/** The derived step state — assigned by the api from the chain's graph read
+ *  (api/crates/talaria-workchains): terminal steps are 'done', a step with
+ *  no predecessors is 'head', one whose predecessors are ALL satisfied is
+ *  'ready' (only branches produce it — the fan-out made it this step's
+ *  turn), the rest are 'blocked' (the v1 wire said 'waiting'), and an
  *  archived ticket keeps 'archived' (the chain reads past it). */
-export type WorkchainState = 'done' | 'head' | 'waiting' | 'archived'
+export type WorkchainState = 'done' | 'head' | 'ready' | 'blocked' | 'archived'
 
 export interface WorkchainStep {
   taskId: string
@@ -33,6 +35,14 @@ export interface WorkchainStep {
   dueDate: string | null
   status: TaskStatus
   archived: boolean
+  /** Free canvas placement (TALA-35), null on both = the view lays out. */
+  x: number | null
+  y: number | null
+}
+
+export interface WorkchainEdge {
+  fromTaskId: string
+  toTaskId: string
 }
 
 export interface Workchain {
@@ -45,6 +55,8 @@ export interface Workchain {
   createdAt: string
   updatedAt: string
   steps: WorkchainStep[]
+  /** The graph: wires as task-id pairs, from → to (TALA-35). */
+  edges: WorkchainEdge[]
 }
 
 /** The board's workchains with their steps and derived states. Any member. */
@@ -63,11 +75,18 @@ export function useBoardWorkchains(boardId: MaybeGetter<string | null>) {
 export const createWorkchain = (boardId: string, name: string) =>
   postJson<{ workchain: Workchain }>(`/api/boards/${boardId}/workchains`, { name })
 
-/** Rename, pause/unpause, or reorder. `positions` is the FULL intended
- *  order; every taskId must already be a step of this chain. */
+/** Rename, pause/unpause, reorder (a linear rebuild over edges), or move
+ *  canvas nodes. `positions` is the FULL intended order; every taskId must
+ *  already be a step of this chain. `nodes` moves steps on the canvas
+ *  (TALA-35) — a node may carry x, y, or both. */
 export const updateWorkchain = (
   id: string,
-  patch: { name?: string; paused?: boolean; positions?: Array<{ taskId: string; position: number }> },
+  patch: {
+    name?: string
+    paused?: boolean
+    positions?: Array<{ taskId: string; position: number }>
+    nodes?: Array<{ taskId: string; x?: number; y?: number }>
+  },
 ) => patchJson<{ ok: true }>(`/api/workchains/${id}`, patch)
 
 /** Append a step (or wedge it after the named step). 409 when the ticket is
@@ -81,3 +100,13 @@ export const removeWorkchainStep = (id: string, taskId: string) =>
 
 /** Delete the chain. Its tickets are unlinked, never deleted. */
 export const deleteWorkchain = (id: string) => delJson<{ ok: true }>(`/api/workchains/${id}`)
+
+/** Draw a wire (an edge) between two steps of the chain — the canvas's
+ *  connect verb's write half (the drag interaction itself is TALA-34). 400
+ *  when an endpoint is not a step, or when the wire would close a cycle. */
+export const addWorkchainEdge = (id: string, fromTaskId: string, toTaskId: string) =>
+  postJson<{ ok: true }>(`/api/workchains/${id}/edges`, { fromTaskId, toTaskId })
+
+/** Cut a wire. A miss is a quiet ok. */
+export const removeWorkchainEdge = (id: string, fromTaskId: string, toTaskId: string) =>
+  delJson<{ ok: true }>(`/api/workchains/${id}/edges/${fromTaskId}/${toTaskId}`)

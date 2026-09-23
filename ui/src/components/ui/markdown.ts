@@ -1,3 +1,4 @@
+import { classifyPlatformHref, findPlatformLinks } from '@/lib/chips'
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
@@ -6,6 +7,8 @@ import remarkRehype from 'remark-rehype'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeStringify from 'rehype-stringify'
 import { cn } from '@/lib/cn'
+import { parseAttachmentHref } from '@/lib/attachment-token'
+import { formatBytes } from '@/lib/format'
 import { focusGold } from '@/components/chat/chat-chrome'
 
 // Markdown → HTML for Markdown.svelte: GFM (tables, task lists, strikethrough,
@@ -62,6 +65,41 @@ function remarkMentions() {
   }
 }
 
+// Bare platform paths (`/boards/…`) are not GFM autolinks. Wrap the ones that
+// classify so rehypeMercury can paint them as chips. Already-linked URLs are
+// left for the hast pass — descending into a link would nest one.
+function remarkPlatformLinks() {
+  return (tree: unknown) => {
+    const walk = (node: MdNode): void => {
+      if (!node.children) return
+      const next: MdNode[] = []
+      for (const child of node.children) {
+        if (child.type === 'text' && child.value && child.value.includes('/')) {
+          const hits = findPlatformLinks(child.value)
+          if (hits.length) {
+            let cursor = 0
+            for (const hit of hits) {
+              if (hit.start > cursor) next.push({ type: 'text', value: child.value.slice(cursor, hit.start) })
+              next.push({
+                type: 'link',
+                url: hit.link.href,
+                children: [{ type: 'text', value: child.value.slice(hit.start, hit.end) }],
+              })
+              cursor = hit.end
+            }
+            if (cursor < child.value.length) next.push({ type: 'text', value: child.value.slice(cursor) })
+            continue
+          }
+        }
+        if (child.type !== 'link') walk(child)
+        next.push(child)
+      }
+      node.children = next
+    }
+    walk(tree as MdNode)
+  }
+}
+
 // ── Mercury element styling (a hast pass) ───────────────────────────────────
 
 interface HastNode {
@@ -84,6 +122,8 @@ const text = (value: string): HastNode => ({ type: 'text', value })
 // `javascript:` and friends. The unified pipeline has no such default, so it
 // is done here.
 const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i
+// Inline KB attachments ride `upload:<id>` URLs (see the img/a cases below).
+const KB_UPLOAD_PROTOCOL = /^upload:[a-z0-9-]+$/i
 function safeUrl(value: string): string {
   const colon = value.indexOf(':')
   const questionMark = value.indexOf('?')
@@ -178,9 +218,61 @@ function transformNode(node: HastNode): HastNode | null {
       if (href.startsWith('mention:')) {
         return el('span', { className: 'rounded bg-accent-soft px-1 font-medium text-accent' }, node.children ?? [])
       }
+      // An inline attachment chip (the editor's AttachmentChip token): a
+      // download anchor styled as the chat surface's file chip. The raw
+      // attachment: href is NEVER passed through safeUrl — it would be
+      // blanked (unknown scheme); the id it carries becomes the real,
+      // /-relative serving URL, and THAT goes through the gate. Regex miss
+      // → fall through to the ordinary link path (safeUrl blanks it).
+      if (href.startsWith('attachment://')) {
+        const t = parseAttachmentHref(href)
+        if (t) {
+          return el(
+            'a',
+            {
+              href: safeUrl(`/api/uploads/${t.id}`),
+              download: '',
+              className:
+                'inline-flex max-w-full items-center gap-2 rounded-md border border-line bg-raised px-2.5 py-1.5 font-sans text-fg transition-colors hover:border-line-strong',
+            },
+            [
+              el('span', { className: 'min-w-0 truncate' }, node.children ?? []),
+              el(
+                'span',
+                { className: 'shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted' },
+                [text(formatBytes(t.size))],
+              ),
+            ],
+          )
+        }
+      }
+      const platform = classifyPlatformHref(href)
+      if (platform) {
+        // Markdown.svelte mounts PlatformLinkChip into this placeholder.
+        // The raw URL does not survive into the anchor — unrecognized URLs
+        // take the branch below.
+        return el('span', { dataPlatformChip: '', dataHref: platform.href, dataEntity: platform.entity }, [])
+      }
       props.href = safeUrl(href)
       props.target = '_blank'
       props.rel = 'noopener noreferrer'
+      // Inline KB attachment placeholder: `[filename|size](upload:<id>)` — a
+      // non-image file renders as a chip that opens the file viewer (click
+      // handled by Markdown.svelte's delegated handler).
+      if (KB_UPLOAD_PROTOCOL.test(href)) {
+        const label = (node.children ?? [])
+          .map((c) => (c.type === 'text' ? c.value : ''))
+          .join('')
+          .trim()
+        const bar = label.lastIndexOf('|')
+        const filename = bar > 0 ? label.slice(0, bar) : label || 'file'
+        const size = bar > 0 ? label.slice(bar + 1) : ''
+        return el(
+          'span',
+          { dataKbUpload: href.slice('upload:'.length), dataFilename: filename, dataSize: size, className: 'kb-upload-chip' },
+          [],
+        )
+      }
       props.className =
         'text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 transition-colors duration-[120ms] hover:decoration-accent'
       return node
@@ -189,9 +281,23 @@ function transformNode(node: HastNode): HastNode | null {
     // save-to-artifacts affordance — Markdown.svelte mounts AgentMediaImage
     // into this placeholder post-render; ordinary images render plain.
     case 'img': {
-      const src = safeUrl(String(props.src ?? ''))
-      if (!src) return null
+      const rawSrc = String(props.src ?? '')
       const alt = String(props.alt ?? '')
+      // Inline KB attachment placeholder: `![filename|size](upload:<id>)` —
+      // renders in place as the file itself. The image form hydrates through
+      // the placeholder span like agent media does (click → file viewer).
+      if (KB_UPLOAD_PROTOCOL.test(rawSrc)) {
+        const bar = alt.lastIndexOf('|')
+        const filename = bar > 0 ? alt.slice(0, bar) : alt || 'file'
+        const size = bar > 0 ? alt.slice(bar + 1) : ''
+        return el(
+          'span',
+          { dataKbUpload: rawSrc.slice('upload:'.length), dataFilename: filename, dataSize: size, className: 'kb-upload-chip' },
+          [],
+        )
+      }
+      const src = safeUrl(rawSrc)
+      if (!src) return null
       if (src.startsWith('/api/agent-media/')) {
         return el('span', { dataAgentMedia: '', dataSrc: src, dataAlt: alt }, [])
       }
@@ -222,6 +328,7 @@ const processor = unified()
   .use(remarkGfm)
   .use(remarkBreaks)
   .use(remarkMentions)
+  .use(remarkPlatformLinks)
   .use(remarkRehype)
   // detect covers unlabeled fences; unknown languages are skipped by default.
   .use(rehypeHighlight, { detect: true })

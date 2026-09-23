@@ -2,11 +2,12 @@
   import StaleBoardNotice from '@/components/board/StaleBoardNotice.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
+  import DitherBorder from '@/components/ui/DitherBorder.svelte'
   import DitherLayer from '@/components/ui/DitherLayer.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
-  import { useBoardWorkSessions } from '@/lib/work-session.svelte'
+  import { Eye } from '@lucide/svelte'
+  import { useBoardWorkSessions, useStopWorkSession } from '@/lib/work-session.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronUp, ChevronDown } from '@lucide/svelte'
   import { useAgents } from '@/lib/agents'
   import { archiveTask, prefetchTask, updateTask, useBoardLabels, type BoardMember } from '@/lib/boards.svelte'
   import { assigneeInfo, userAssignee } from '@/lib/assignees'
@@ -28,6 +29,7 @@
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import SortHeader from '@/components/ui/SortHeader.svelte'
   import { cn } from '@/lib/cn'
   import { warmRoute } from '@/lib/warm-route'
   import { fade, listStagger, QUICK } from '@/lib/motion'
@@ -79,6 +81,7 @@
   // Live work per card: one board-wide read; the working rows wear the
   // dither and carry the watch affordance.
   const work = useBoardWorkSessions(() => boardId)
+  const stopWork = useStopWorkSession()
   let watchTask = $state<{ id: string; runId: string } | null>(null)
   const working = (id: string) => work.data?.sessions?.[id] ?? null
   const queued = (id: string) => work.data?.waits?.[id] ?? null
@@ -116,6 +119,8 @@
         onOpen: () => onOpen(t.id),
         onPatch: (p) => void patch(t.id, p),
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+        working: !!working(t.id),
+        onStop: () => void stopWork(t.id),
       }),
     )
   const label = (id: string) => assigneeInfo(id, fleetQuery.data?.agents ?? [], members).label
@@ -408,19 +413,14 @@
               </th>
               {#each cols as c (c.key)}
                 <th class={cn('px-3 py-2 font-medium', c.align === 'right' ? 'text-right' : 'text-left')}>
-                  <button
+                  <SortHeader
+                    active={sort.key === c.key}
+                    dir={sort.dir}
+                    class={cn('inline-flex', c.align === 'right' && 'flex-row-reverse')}
                     onclick={() => onSort(c.key)}
-                    class={cn(
-                      'inline-flex items-center gap-1 uppercase tracking-[0.08em] transition-colors hover:text-fg',
-                      sort.key === c.key ? 'text-fg' : 'text-ink-dim',
-                      c.align === 'right' && 'flex-row-reverse',
-                    )}
                   >
                     {c.label}
-                    {#if sort.key === c.key}
-                      {#if sort.dir === 'asc'}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
-                    {/if}
-                  </button>
+                  </SortHeader>
                 </th>
               {/each}
               <th class="w-8 py-1 pr-2 text-right">
@@ -505,6 +505,24 @@
                           class={cn('transition-opacity', sel.size === 0 && 'opacity-0 group-hover:opacity-100')}
                         />
                       {:else}
+                        <!-- The watch eye joins the copy affordance in its hover
+                             corner — while work is live or queued on the row.
+                             Disabled while merely queued: no run to open yet. -->
+                        {#if working(t.id) || queued(t.id)}
+                          <button
+                            type="button"
+                            title="Watch the work"
+                            aria-label="Watch the work"
+                            disabled={!working(t.id)}
+                            onclick={() => {
+                              const s = working(t.id)
+                              if (s) watchTask = { id: t.id, runId: s.runId }
+                            }}
+                            class="flex items-center rounded-md p-1 text-accent opacity-0 transition-colors hover:text-fg group-hover:opacity-100 disabled:opacity-50"
+                          >
+                            <Eye size={13} />
+                          </button>
+                        {/if}
                         <CopyLinkButton path={`/boards/${t.boardId}/${t.id}`} class="opacity-0 group-hover:opacity-100" />
                       {/if}
                     </td>
@@ -514,48 +532,66 @@
                       </td>
                     {/each}
                     <td></td>
-                    {#if working(t.id) || queued(t.id)}
-                      <tr class="dither-fill" onclick={(e) => e.stopPropagation()}>
-                        <td></td>
-                        <td colspan={cols.length + 1} class="!py-1">
-                          <div class="relative flex items-center gap-2 overflow-hidden rounded-md border border-line-subtle px-2 py-1">
-                            <DitherLayer
+                  </tr>
+                  {#if working(t.id) || queued(t.id)}
+                    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -- reason: click-stopPropagation only, so the strip's watch button works without opening the ticket -->
+                    <tr class="dither-fill" onclick={(e) => e.stopPropagation()}>
+                      <td></td>
+                      <td colspan={cols.length + 1} class="!py-1">
+                        <div class="relative flex items-center gap-2 overflow-hidden rounded-md border border-line-subtle px-2 py-1">
+                          <!-- The trace: the strip's own field masked to a
+                               hairline ring while a session is LIVE —
+                               additive with the wash, same z, under the
+                               row's controls. -->
+                          {#if working(t.id)}
+                            <DitherBorder
+                              radius="rounded-md"
                               sources={[
-                                { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.4 },
-                                { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
+                                { id: 'trace', kind: 'edge', side: 'left', depth: 22, strength: 0.3 },
+                                { id: 'trace-drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.6 },
                               ]}
                               pitch={3}
                               dot={1.2}
-                              alphaFloor={0.06}
-                              maxAlpha={0.4}
+                              alphaFloor={0.08}
+                              maxAlpha={0.55}
                             />
-                            <div class="relative flex min-w-0 flex-1 items-center gap-2">
-                              {#if working(t.id)}
-                                <span class="truncate text-xs text-fg">
-                                  {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
-                                  {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
-                                </span>
-                              {:else if queued(t.id)}
-                                <span class="truncate text-xs text-fg">
-                                  {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
-                                  <span class="text-muted"> · {queued(t.id)!.phase}</span>
-                                </span>
-                              {/if}
-                            </div>
+                          {/if}
+                          <DitherLayer
+                            sources={[
+                              { id: 'lull', kind: 'edge', side: 'left', depth: 26, strength: 0.4 },
+                              { id: 'drift', kind: 'wave', axis: 'x', wavelength: 160, speed: 12, strength: 0.5 },
+                            ]}
+                            pitch={3}
+                            dot={1.2}
+                            alphaFloor={0.06}
+                            maxAlpha={0.4}
+                          />
+                          <div class="relative flex min-w-0 flex-1 items-center gap-2">
                             {#if working(t.id)}
-                            <button
-                              type="button"
-                              class="relative rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
-                              onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
-                            >
-                              watch
-                            </button>
+                              <span class="truncate text-xs text-fg">
+                                {(working(t.id)!.agentModel ?? 'agent').split('-')[0]} is working
+                                {#if working(t.id)!.turn}<span class="text-muted"> · turn {working(t.id)!.turn}</span>{/if}
+                              </span>
+                            {:else if queued(t.id)}
+                              <span class="truncate text-xs text-fg">
+                                {(queued(t.id)!.agentModel ?? 'agent').split('-')[0]} is queued
+                                <span class="text-muted"> · {queued(t.id)!.phase}</span>
+                              </span>
                             {/if}
                           </div>
-                        </td>
-                      </tr>
-                    {/if}
-                  </tr>
+                          {#if working(t.id)}
+                          <button
+                            type="button"
+                            class="relative rounded-md border border-line bg-raised/80 px-1.5 py-0.5 font-mono text-[10px] text-accent hover:text-fg"
+                            onclick={() => (watchTask = { id: t.id, runId: working(t.id)!.runId })}
+                          >
+                            watch
+                          </button>
+                          {/if}
+                        </div>
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               {/if}
             </tbody>

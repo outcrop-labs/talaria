@@ -36,11 +36,14 @@ pub const MODEL_ROLES: [RoleSpec; 11] = [
     RoleSpec {
         role: "research-recon",
         label: "Research · Recon",
-        hint: "Search stage for quick Recon passes. Needs a web-search-capable model. Auto: sonar.",
+        hint: "Search stage for quick Recon passes. Fetches through a web-search tool the harness supplies, or a model that browses natively. Auto: sonar.",
         wired: true,
-        // The research pipeline's search stages are the whole point of these
-        // three roles: a model without live search answers them from memory,
-        // in the same confident shape, and the citations come out invented.
+        // The research pipeline's search stages need live pages. That is a
+        // property of the RUN, not of the weights: a harness tool
+        // (`web_search`, Hermes or the Talaria toolkit) fetches the same
+        // passages a sonar model would. `requires` stays `search` so the
+        // model flag is still recorded; the panel's reached wrapper decides
+        // whether the missing flag is actually a gap.
         requires: &["search"],
     },
     RoleSpec {
@@ -193,20 +196,41 @@ pub async fn resolve_role_model(pg: &PgPool, role: &str) -> Result<Option<String
 // ── Fitness (audit 1.6) ──────────────────────────────────────────────────────
 
 /// Plain words for what the admin loses, one clause per capability, written to
-/// slot after the model id: "gpt-4o-mini has no web search, so …".
+/// slot after the model id: "gpt-4o-mini cannot browse on its own, and …".
 ///
 /// Partial on purpose. A capability no role requires needs no sentence, and
 /// the fallback below stays truthful for one added later — a stale,
 /// confidently wrong sentence would be worse than a plain one.
+///
+/// `search` names the missing TOOL, not a missing browser in the weights.
+/// Native search and a harness web-search tool are different facts; the
+/// model flag stays on the capability chip, and this clause is what the
+/// panel says when nothing on the install can fetch. A tool that does
+/// supply search never reaches this sentence — see
+/// `role_assignment_issues_reached`.
 pub fn consequence_of(cap: &str) -> String {
     match cap {
-        "search" => "has no web search, so research runs will answer from memory and the citations will be invented",
+        "search" => "cannot browse on its own, and no web-search tool is available here, so research runs have nothing to fetch with and will answer from memory",
         "tools" => "cannot call tools, so a coding run cannot read or edit a single file",
         "code" => "is not a coder, so its patches will need more repair than they save",
         "vision" => "cannot read images, so anything sent to this slot comes back described from nothing",
         other => return format!("is known not to support {other}"),
     }
     .to_string()
+}
+
+/// The panel sentence: model id, the clauses, and the "assignment stands"
+/// close. One spelling, so the reached wrapper and the raw builder cannot
+/// drift.
+pub fn assignment_note(model: &str, missing: &[&str]) -> String {
+    format!(
+        "{model} {}. The assignment stands; set the role back to Auto if that is not what you meant.",
+        missing
+            .iter()
+            .map(|c| consequence_of(c))
+            .collect::<Vec<_>>()
+            .join(", and ")
+    )
 }
 
 /// Capabilities the assigned model is KNOWN to lack for this role. Empty when
@@ -293,28 +317,23 @@ pub async fn role_assignment_issues(pg: &PgPool) -> Vec<RoleAssignmentIssue> {
         // move` block would consume `assignments` on the first call.
         let assignments = &assignments;
         async move {
-        // Unset = auto, and the auto chains already reason about fitness (the
-        // sonar preference scan, the utility fall-down). Nothing to warn about.
-        let model = assignments.get(spec.role).and_then(|v| v.as_str())?;
-        let missing = role_model_gaps(pg, spec.role, model).await;
-        if missing.is_empty() {
-            return None;
-        }
-        let note = format!(
-            "{} {}. The assignment stands; set the role back to Auto if that is not what you meant.",
-            model,
-            missing
-                .iter()
-                .map(|c| consequence_of(c))
-                .collect::<Vec<_>>()
-                .join(", and ")
-        );
-        Some(RoleAssignmentIssue {
-            role: spec.role.to_string(),
-            model: model.to_string(),
-            missing,
-            note,
-        })
+            // Unset = auto, and the auto chains already reason about fitness (the
+            // sonar preference scan, the utility fall-down). Nothing to warn about.
+            let model = assignments.get(spec.role).and_then(|v| v.as_str())?;
+            let missing = role_model_gaps(pg, spec.role, model).await;
+            if missing.is_empty() {
+                return None;
+            }
+            let note = assignment_note(
+                model,
+                &missing.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            Some(RoleAssignmentIssue {
+                role: spec.role.to_string(),
+                model: model.to_string(),
+                missing,
+                note,
+            })
         }
     }))
     .await;
@@ -340,29 +359,19 @@ mod tests {
     fn consequences_name_the_capability_as_plain_words() {
         assert_eq!(
             consequence_of("search"),
-            "has no web search, so research runs will answer from memory and the citations will be invented"
+            "cannot browse on its own, and no web-search tool is available here, so research runs have nothing to fetch with and will answer from memory"
         );
         // A capability added to the union later gets a truthful plain sentence.
         assert_eq!(
             consequence_of("long-context"),
             "is known not to support long-context"
         );
-        let note = |missing: &[&str]| {
-            format!(
-                "gpt-4o-mini {}. The assignment stands; set the role back to Auto if that is not what you meant.",
-                missing
-                    .iter()
-                    .map(|c| consequence_of(c))
-                    .collect::<Vec<_>>()
-                    .join(", and ")
-            )
-        };
         assert_eq!(
-            note(&["search"]),
-            "gpt-4o-mini has no web search, so research runs will answer from memory and the citations will be invented. The assignment stands; set the role back to Auto if that is not what you meant."
+            assignment_note("gpt-4o-mini", &["search"]),
+            "gpt-4o-mini cannot browse on its own, and no web-search tool is available here, so research runs have nothing to fetch with and will answer from memory. The assignment stands; set the role back to Auto if that is not what you meant."
         );
         assert_eq!(
-            note(&["code", "tools"]),
+            assignment_note("gpt-4o-mini", &["code", "tools"]),
             "gpt-4o-mini is not a coder, so its patches will need more repair than they save, and cannot call tools, so a coding run cannot read or edit a single file. The assignment stands; set the role back to Auto if that is not what you meant."
         );
     }

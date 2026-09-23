@@ -277,6 +277,7 @@
       </div>
 
       <!-- ── Rows (also the drop target for scheduling) ── -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -- reason: drag-drop drop target; drag-and-drop is a pointer paradigm with no keyboard equivalent here -->
       <div bind:this={rowsEl} use:listStagger class="relative flex-1" ondragover={onChartDragOver} ondragleave={() => (dropDay = null)} ondrop={onChartDrop}>
         <!-- Grid scaffolding (weekend shading, today line) is not a row — the
              cascade skips it so the chart frame never shifts. -->

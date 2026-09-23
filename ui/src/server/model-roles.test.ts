@@ -164,8 +164,9 @@ describe('roleAssignmentIssues', () => {
     expect(issues[0]?.role).toBe('research-recon')
     expect(issues[0]?.model).toBe('qwen3-14b')
     expect(issues[0]?.missing).toEqual(['search'])
-    expect(issues[0]?.note).toContain('qwen3-14b')
-    expect(issues[0]?.note).toContain('no web search')
+    expect(issues[0]?.note).toContain('no web-search tool is available here')
+    expect(issues[0]?.note).not.toContain('has no web search')
+    expect(issues[0]?.note).not.toContain('citations will be invented')
     // It says the assignment stands. This is a sentence, not a rejection.
     expect(issues[0]?.note).toMatch(/stands/)
   })
@@ -192,5 +193,30 @@ describe('roleAssignmentIssues', () => {
     expect(await roleAssignmentIssues()).toHaveLength(1)
     await setModelRole('research-recon', null)
     expect(await roleAssignmentIssues()).toEqual([])
+  })
+
+  it('does not warn when a harness web-search tool can fetch', async () => {
+    serves('deepseek-flash', ['openrouter'])
+    await knows('openrouter', 'deepseek-flash', 'search', false)
+    await setModelRole('research-recon', 'deepseek-flash')
+    const issues = await roleAssignmentIssues(async () => ({
+      reached: true,
+      detail: "the model calls 'talaria.web_search' for it",
+    }))
+    expect(issues).toEqual([])
+  })
+
+  it('names the tool when the model cannot call the one that would fetch', async () => {
+    serves('qwen3-14b', ['pl-main'])
+    await knows('pl-main', 'qwen3-14b', 'search', false)
+    await setModelRole('research-recon', 'qwen3-14b')
+    const issues = await roleAssignmentIssues(async () => ({
+      reached: false,
+      detail: "'talaria.web_search' could supply 'search', but this model is recorded as unable to call tools.",
+    }))
+    expect(issues).toHaveLength(1)
+    expect(issues[0]?.note).toContain('unable to call tools')
+    expect(issues[0]?.note).toContain('talaria.web_search')
+    expect(issues[0]?.note).not.toContain('has no web search')
   })
 })

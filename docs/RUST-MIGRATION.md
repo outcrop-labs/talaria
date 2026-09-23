@@ -41,6 +41,15 @@ polled without blocking the app; `TALARIA_API=off` opts out), and `healthz`
 reports the effective api URL and probes it. A devbox carries the whole
 toolchain (`docker/devbox.Dockerfile`, pinned like `api/rust-toolchain.toml`).
 
+Local cargo is capped at 2 jobs — `api/.cargo/config.toml`, and the same number
+in `desktop/src-tauri/.cargo/config.toml`. That cap is the CPU cap and the RAM
+cap: each rustc is a multi-GB process on cargo's jobserver, and an uncapped
+workspace `cargo test` pins the host. Agents run `bun run gate`, which compiles
+only the packages the diff touches, and do not lift the cap. CI lifts it
+(`CARGO_BUILD_JOBS` from `setup-runtime`, and the same build-arg on the package
+image). `bun run api:check` remains the CI api job's local spelling, not the
+command an agent runs before a pull request.
+
 ## The rules
 
 1. **The schema is owned by the TS `MIGRATIONS` array — the api issues no DDL.**
@@ -85,10 +94,13 @@ toolchain (`docker/devbox.Dockerfile`, pinned like `api/rust-toolchain.toml`).
 8. **Upstream error text dies at the boundary.** The gateway relays status
    codes and fixed sentences, never a provider's prose (`api/src/error.rs`).
 9. **The unit suites are pure.** No test in `api/` needs a service in CI; the
-   `#[ignore]`d integration tests that touch the dev DB run locally with
-   `cargo test -- --ignored`. `bun run verify` never scans `api/`; the crate's
-   gates are `bun run api:check` (fmt + clippy `-D warnings` + test) and the
-   `api` CI job.
+   `#[ignore]`d integration tests that touch a live DB run in
+   `api-integration.yml` against scratch containers (`cargo test -- --ignored`
+   still works locally against `talaria dev` infra — that is where
+   `typed_binds` and `update_live`, which need more than Postgres+Redis, stay).
+   `bun run verify` never scans `api/`; the CI gate is `bun run
+   api:check` (fmt + clippy `-D warnings` + test) and the `api` CI job, with
+   `api-integration.yml` the depth gate behind them. Locally that command is not the one to run — `bun run gate` compiles the packages the diff touches, under the job cap above.
 10. **App modules are customer code, never port surface.** Building a microapp
     with the SDK stays a TS/node experience: an app's internal APIs are the
     author's own code, talking to the host through the same `/api` and UI
@@ -181,9 +193,10 @@ composition root that wires the cross-crate seams.
 ### Where new code goes
 
 1. **A new domain gets a new crate** — `api/crates/talaria-<domain>/`, one
-   concern, `[lints] workspace = true`, registered in the members list of
-   `api/Cargo.toml`. Crate-per-domain is the point of the split; do not grow a
-   grab-bag crate.
+   concern, deps declared as `{ workspace = true }` from
+   `[workspace.dependencies]` (membership is the `crates/*` glob, so the
+   directory IS the registration). Crate-per-domain is the point of the split;
+   do not grow a grab-bag crate.
 2. **Dependencies point DOWN only** — leaf crates (config, db, error, body,
    secretbox, state, realtime…) at the bottom; platform crates (gateway);
    engines above them; `talaria-api-routes` and the binary at the top. If a

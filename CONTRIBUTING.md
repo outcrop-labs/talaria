@@ -22,18 +22,22 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
 
 ## Before you send a PR
 
-1. **Verify.** `bun run verify` from the repo root (typecheck + tests + invariants + the docs
-   and generated-reference drift checks). Green before you push, every time. Touched `api/`?
-   `bun run api:check` too; touched `desktop/`? `bun run desktop:check`.
+1. **Verify, scoped.** `bun run gate` from the repo root. It runs `check`, then compiles and tests only the surfaces and packages this diff touches. That is the local gate. Do not run a workspace cargo (`bun run api:check`, `bun run desktop:check`, `cargo test` / `clippy` without `-p`) to be safe — those lock `api/target` and pin the machine for everyone else in the checkout. CI runs the full surface job; a red CI log names the crate, and `cargo test -p <that crate>` reproduces it.
 2. **Exercise the path you changed** in the running app (`bun talaria dev` →
    <http://localhost:5273>) — typecheck alone doesn't prove a surface works.
-3. **Update [`CHANGELOG.md`](./CHANGELOG.md)** with what changed and what you verified.
+3. **Add a changelog entry file** — `changelog/YYYY-MM-DD-<slug>.md`, the bullet verbatim
+   (bold lead, what changed, what you verified). One file per change; the release roll
+   folds them into [`CHANGELOG.md`](./CHANGELOG.md).
 4. **Commit in the repo's style:** `area: lowercase sentence — explanation`, one change per
    commit, the changelog entry riding with the change it describes. `git log` carries the
    voice; the em-dash clause says why, not what.
 5. **Open the pull request against `rc`** with a body that mirrors the changelog entry: what
    changed, and what you verified. If a whole-tree gate failed on something that predates your
    change (several sessions share this tree), say so rather than absorbing it silently.
+6. **Watch the pull request until it is actually green.** Do not call the work done while its
+   checks are failing, still pending, or the PR conflicts with `rc`.
+   `node scripts/hooks/pr-watch.mjs` is that gate; the procedure is
+   [`.claude/skills/ship-a-change/SKILL.md`](./.claude/skills/ship-a-change/SKILL.md).
 
 A test earns its place only where a plausible bug would fail it. Behaviour, boundaries,
 invariants, transitions, real errors — not wiring, defaults, or the shape of the source.

@@ -17,6 +17,10 @@
 // plain node environment, which has no Svelte plugin and cannot load
 // `@tanstack/svelte-query`.
 import type { ChipTone } from '@/components/ui/chip'
+// The ONE value import here, and it is safe for the reason the header gives:
+// `@/lib/format` imports nothing at all, so it drags no driver, no database and
+// no harness runner into the browser — only the shared spellings.
+import { formatUsd } from '@/lib/format'
 import type { Capability } from '@/server/harness/capability'
 // The wire types, straight from the module that shapes them: `fitness-wire`
 // holds the contract the Rust twin serves (RUST-MIGRATION.md, R21).
@@ -58,8 +62,9 @@ import type {
  *  whole point of the header above: a value import from the sweep engine drags
  *  the driver — and with it the database, the harness runner and the guard
  *  registry — into the browser bundle. The Models route stopped loading the
- *  moment one appeared. Every other import in this file is `import type` for
- *  that reason.
+ *  moment one appeared. Every import of the sweep engine in this file is
+ *  `import type` for that reason; the lone value import, `@/lib/format`, pulls
+ *  in nothing of its own.
  *
  *  The authority is the Rust twin (`api/src/fitness/evals.rs`), which pins the
  *  value in its own tests; this copy is what the modal opens with. */
@@ -386,10 +391,13 @@ export interface AssignmentNotice {
 /** What to say under a slot whose assigned model tested badly for it.
  *
  *  Two independent sources, and they are kept apart on purpose. `capabilityNote`
- *  is `roleAssignmentIssues` on the server — a capability recorded FALSE, which
- *  is a fact about the MODEL. The band is a fact about the RUN. A model can be
- *  unfit for either reason and the sentence should say which; when both fire,
- *  the capability is the more actionable and goes first. */
+ *  is the role-assignment issue — a gap the RUN cannot close. For search that
+ *  is "no web-search tool is available here", not "the model has no browser":
+ *  a harness tool that fetches means there is no issue, and the capability
+ *  chip still shows the model cannot browse on its own. The band is a fact
+ *  about the last run. A model can be unfit for either reason and the
+ *  sentence should say which; when both fire, the capability note is the
+ *  more actionable and goes first. */
 export function assignmentNotice(args: {
   entry: FitnessIndexEntry | undefined
   slotKey: string
@@ -405,6 +413,16 @@ export function assignmentNotice(args: {
       ? `${reason} You can still assign it; this is what the last test found, not a rule.`
       : 'This model tested Not a fit for this slot. You can still assign it; this is what the last test found, not a rule.',
   }
+}
+
+/** The mixed case, said in the slot rather than only on the chip hover.
+ *  The model cannot browse; a harness tool can fetch. Not a warning — the
+ *  assignment works here, and would not on an install without that tool. */
+export function suppliedSearchNote(row: ModelRow | undefined): string | null {
+  const view = row?.capabilities.find((c) => c.cap === 'search' && c.state === 'supplied')
+  if (!view) return null
+  const via = view.via ? `${view.via.server}.${view.via.tool}` : 'a harness web-search tool'
+  return `This model cannot browse on its own, but ${via} can fetch. Research runs use that tool; citations come from what it returns, not from the model's memory.`
 }
 
 // ── Case categories ──────────────────────────────────────────────────────────
@@ -494,14 +512,14 @@ export function speedTitle(s: SpeedReading | null): string {
     .join('\n')
 }
 
-/** Dollars at a scale a fitness run actually costs. A run is often cents, and
- *  "$0.00" for a real four-cent spend is the kind of rounding that makes an
- *  admin distrust every other number on the page. */
+/** Dollars at a scale a fitness run actually costs. The spelling is shared
+ *  (`formatUsd` in `@/lib/format`); the model surfaces take its
+ *  `unpricedAsWord` variant, where an unpriced model reads as a word and a
+ *  sub-cent spend floors at "<$0.01" rather than printing four decimals. Kept
+ *  as its own exported name because three panels and this module's test import
+ *  it that way — and the flag is why it cannot be a plain alias. */
 export function usd(n: number | null): string {
-  if (n === null) return 'unpriced'
-  if (n === 0) return '$0'
-  if (n < 0.01) return '<$0.01'
-  return `$${n.toFixed(2)}`
+  return formatUsd(n, { unpricedAsWord: true })
 }
 
 export const TIER_META: Record<TierId, { label: string; blurb: string }> = {

@@ -14,6 +14,7 @@
 // when a Talaria window is visible) and rule 1 doubly (subscription happens
 // in the settings toggle's click, after the grant).
 import { getJson, postJson } from '@/lib/fetch-json'
+import { readText, writeText } from '@/lib/persist'
 
 const PREF_KEY = 'talaria.browserNotify'
 
@@ -24,29 +25,19 @@ export function permissionState(): PermissionState {
   return Notification.permission
 }
 
-/** The person's own off switch. Revoking browser permission means digging
- *  through browser site settings; a pref makes "stop showing these" one
- *  click while the grant stands. Default on: the grant IS the opt-in. */
-function browserNotifyPrefOn(): boolean {
-  try {
-    return localStorage.getItem(PREF_KEY) !== 'off'
-  } catch {
-    return true // private mode and friends — the grant still decides
-  }
-}
-
+/** Set the person's own off switch. Revoking browser permission means digging
+ *  through browser site settings; this makes "stop showing these" one click
+ *  while the grant stands. */
 export function setBrowserNotifyPref(on: boolean): void {
-  try {
-    localStorage.setItem(PREF_KEY, on ? 'on' : 'off')
-  } catch {
-    // No storage available: the permission alone carries the setting.
-  }
+  writeText(PREF_KEY, on ? 'on' : 'off')
 }
 
 /** The effective answer: nothing fires unless the browser granted it AND the
- *  person hasn't switched it off here. */
+ *  person hasn't switched it off here. Default on: the grant IS the opt-in, and
+ *  storage that refuses access (private mode) answers the same way — the grant
+ *  still decides. */
 export function browserNotifyEnabled(): boolean {
-  return permissionState() === 'granted' && browserNotifyPrefOn()
+  return permissionState() === 'granted' && readText(PREF_KEY) !== 'off'
 }
 
 /** Ask. Must run inside a click handler (rule 1 above). */

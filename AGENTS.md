@@ -31,15 +31,16 @@ Bun is the runner for the whole repo (the root `package.json` is the hub):
 | `bun run dev` | full dev stack → <http://localhost:5273> |
 | `bun run api` | the Rust api (`cargo run`, :5274) |
 | `bun run check` | invariants + doc links + generated-reference drift — seconds, **needs no install** |
-| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — the CI api job |
+| `bun run gate` | local pre-push — `check`, then compile/test only what the diff touches |
+| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — the CI api job, not the local default |
 | `bun run desktop` | Talaria Desktop (`tauri dev`) — run on the **host**, never in a box (no display); `docs/DESKTOP.md` |
-| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — the CI desktop job |
-| `bun run verify` | check + typecheck + test — the PR gate |
+| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — the CI desktop job, not the local default |
+| `bun run verify` | check + typecheck + ui test — CI's ui/mcp coverage, not the local default |
 | `bun run test` / `typecheck` / `build` / `start` | the ui/ scripts (typecheck is svelte-check) |
 | `bun run docs:api` | regenerate the generated references |
 
-The `talaria` CLI drives everything else — setup, dev, boxes, worktrees, resets, backups,
-deploys. The full command table is generated at
+The `talaria` CLI drives everything else — setup, dev, boxes, worktrees, cleanup, resets,
+backups, deploys. The full command table is generated at
 [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md).
 
 Ports: dev UI **5273**, Rust api **5274**. Worktree stacks get deterministic per-name ports
@@ -64,7 +65,11 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md) and
   [`docs/api/`](./docs/api/README.md) both come out of the generator behind
   `bun run check` — change the source, run `bun run docs:api`.
-- `bun run verify` green before every push, every time.
+- Local pre-push is `bun run gate` ([`scripts/gate.mjs`](./scripts/gate.mjs)): `check` always; compile and test only the surfaces and packages the diff touches. Do not run a workspace cargo (`api:check`, `desktop:check`, `cargo test` / `clippy` without `-p`) — it locks `api/target` and pins the machine. CI runs the full surface job.
+- Do not report dev work done while its open pull request has failing checks, pending
+  checks, or merge conflicts against `rc`. Local gates cannot see that. The watcher is
+  [`scripts/hooks/pr-watch.mjs`](./scripts/hooks/pr-watch.mjs); the procedure is
+  [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md).
 
 ## Environment facts
 
@@ -78,6 +83,10 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
 - Parallel *agent* sessions: devboxes give each task a container with the agent CLIs inside
   ([`docs/DEVBOX.md`](./docs/DEVBOX.md)). Never share a host `~/.claude` across concurrent
   CLIs — it corrupts `.claude.json`.
+- **Clean up what the task created.** A finished task removes its worktree, devbox, scratch
+  checkout, and throwaway download. Shared caches stay. The stop gate runs the sweep and
+  blocks when disk use or stale artifacts cross the line; the procedure is the
+  [`cleanup`](./.claude/skills/cleanup/SKILL.md) skill.
 
 ## Parallel sessions share working trees
 
@@ -100,9 +109,10 @@ situation matches.
 |---|---|
 | [`dev-loop`](./.claude/skills/dev-loop/SKILL.md) | starting or restarting the stack, choosing worktree vs devbox, seeding data, or deciding which command verifies which surface |
 | [`repo-traps`](./.claude/skills/repo-traps/SKILL.md) | a change that should work fails oddly — a 500, a zombie port, docker DNS, or an API test that needs auth |
-| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, exercising the path, CHANGELOG, commit conventions, and the pull request against `rc` |
+| [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, changelog, the PR against `rc`, and the post-PR watcher — do not claim done on red, pending, or a conflict |
 | [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed: the diff-level checks (`scripts/judge-pr.mjs`) and the reading no script can do |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
+| [`cleanup`](./.claude/skills/cleanup/SKILL.md) | a dev task is finished, or the stop gate blocked on disk pressure or stale artifacts — remove what the task created, leave shared caches |
 
 ## Known traps
 
@@ -118,6 +128,7 @@ One line each — the full symptom → check → fix procedure is the
 - Docker builds fail resolving hosts → the daemon's resolver config; builds may need
   `--network=host`.
 - Authed curl without a browser → mint a Redis session directly.
+- A cargo test or clippy pins the machine and locks `api/target` → `bun run gate`, never a workspace cargo. The cap is `api/.cargo/config.toml`.
 
 ## The stop gate
 
@@ -130,7 +141,10 @@ contract, so any harness, git hook, or shell can invoke it:
 - **any other exit** — the gate could not run: a non-blocking error, never a pass.
 
 It always runs, on the whole tree, with no diff fast path — a seconds-long, dependency-free
-check is cheaper than the scope-matching that would skip it. Wiring per harness (Claude
+check is cheaper than the scope-matching that would skip it. After that check passes it runs
+[`scripts/cleanup-sweep.mjs`](./scripts/cleanup-sweep.mjs) `--gate`: exit 2 means disk pressure
+or stale artifacts, and the way through is `bun talaria cleanup --apply`. That scan is not part
+of `bun run check` — CI has no one's worktrees. Wiring per harness (Claude
 Code's tracked [`settings.json`](./.claude/settings.json) Stop hook, the git pre-push
 recipe, CI): [`scripts/hooks/README.md`](./scripts/hooks/README.md). No permissions are
 tracked anywhere — personal allowlists live in `.claude/settings.local.json`, untracked.
@@ -138,6 +152,10 @@ tracked anywhere — personal allowlists live in `.claude/settings.local.json`, 
 The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](./scripts/hooks/pre-push)
 runs [`scripts/flow-guard.mjs`](./scripts/flow-guard.mjs) against the refs a push is about to
 send — exit 2, and the push stops with the reason and the way to do it instead.
+
+The stop gate and the pre-push hook see the local tree. After the pull request opens, CI
+and `rc` can still diverge. The watcher above speaks this same contract; it does not edit
+or push.
 
 ## Do not touch
 
@@ -153,13 +171,15 @@ send — exit 2, and the push stops with the reason and the way to do it instead
   [`docs/RUST-MIGRATION.md`](./docs/RUST-MIGRATION.md)'s "Layout of the
   workspace".
 - `mcp/dist/`, `ui/src/routeTree.gen.ts` — build output.
-- `CHANGELOG.md` is append-only; its links are frozen history.
+- `CHANGELOG.md` is append-only and written only by the roll (`scripts/changelog-roll.mjs`);
+  unreleased entries live as files under `changelog/`, one per change.
 
 ## Conventions
 
 - Commits: `area: lowercase sentence — explanation` (`git log` carries the voice).
-- Every user-visible change appends to [`CHANGELOG.md`](./CHANGELOG.md) — what changed and
-  what you verified.
+- Every user-visible change adds `changelog/YYYY-MM-DD-<slug>.md` — what changed and
+  what you verified, verbatim bullet; `bun run check` fails a hand-appended
+  `[Unreleased]` bullet.
 - Keep this file under ~200 lines: a new invariant earns a line here; a new procedure earns
   a skill.
 

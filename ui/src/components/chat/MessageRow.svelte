@@ -8,6 +8,7 @@
   import ChatWaiting from './ChatWaiting.svelte'
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
+  import ChatChips from './ChatChips.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { cn } from '@/lib/cn'
   import { fade, QUICK } from '@/lib/motion'
@@ -22,6 +23,8 @@
     inThread = false,
     onOpenThread,
     onContextMenu,
+    onInvoke,
+    onDecided,
   }: {
     message: ChannelMessage
     ctx: MessageCtx
@@ -29,6 +32,8 @@
     inThread?: boolean
     onOpenThread?: () => void
     onContextMenu?: (e: MouseEvent) => void
+    onInvoke?: (text: string) => void
+    onDecided?: () => void
   } = $props()
 
   const name = $derived(m.authorType === 'agent' ? ctx.labelFor(m.author) : ctx.userLabel(m.author))
@@ -98,6 +103,7 @@
         <ChatWaiting id={m.id} role="submitting" class="my-1" />
       {/if}
       {#if m.attachments && m.attachments.length > 0}<MessageAttachments items={m.attachments} />{/if}
+      <ChatChips chips={m.chips} content={m.content} {onInvoke} {onDecided} />
       <!-- Mounted unconditionally (findings nulled while live) so the caveat's
           slide fires on the live→settled flip; behind an `{#if !live}` the
           local transition would be suppressed by the ancestor block toggling. -->

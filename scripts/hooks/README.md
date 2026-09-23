@@ -22,17 +22,26 @@ knowing: **git refuses a push on any non-zero hook exit**, so exit 1 from
 decides for itself what exit 1 means. Neither ever treats "could not run" as a pass — that
 is the part that matters.
 
-Two entry points today:
+Three entry points:
 
 - [`stop-check.mjs`](./stop-check.mjs) — runs `bun run check` (invariants + doc links +
-  generated-reference drift) under this contract, on the whole tree, with no fast path — see
-  its header for why.
+  generated-reference drift) and then [`../cleanup-sweep.mjs`](../cleanup-sweep.mjs) `--gate`
+  (disk pressure and stale dev artifacts). Both under this contract, on the whole tree, with
+  no fast path — see its header for why the check has no skip list, and why the sweep is not
+  part of `bun run check`.
 - [`pre-push`](./pre-push) — the branch-flow guard. Git invokes it with one line per ref about
   to leave the machine (`<local ref> <local sha> <remote ref> <remote sha>`) and forwards each
   to [`../flow-guard.mjs`](../flow-guard.mjs), the same policy
   [`../../.github/workflows/flow.yml`](../../.github/workflows/flow.yml) runs server-side. A
   push to `main` or `rc` that the model does not allow stops here with the reason; the model
   is [`../../docs/BRANCHES.md`](../../docs/BRANCHES.md).
+- [`pr-watch.mjs`](./pr-watch.mjs) — after a pull request is open. Polls check runs and
+  mergeable state. Exit 0 only when checks are green and the PR is mergeable against `rc`;
+  exit 2 names `red`, `conflict`, `pending`, `timeout`, `closed`, or `base` on stderr. It
+  does not edit or push. Not wired as a Stop hook — [`ship-a-change`](../../.claude/skills/ship-a-change/SKILL.md)
+  runs it, because whether a harness should spawn it on its own is an open call. Exit 0
+  prints one proof line to stdout (the state an agent may cite); every other rule of this
+  contract holds, including "could not run is not a pass".
 
 ## Wiring it
 
@@ -41,7 +50,7 @@ Two entry points today:
 | Claude Code | already wired — the tracked [`../../.claude/settings.json`](../../.claude/settings.json) Stop hook |
 | git (works under any harness) | `talaria setup` sets `core.hooksPath` to this directory, which is what makes [`pre-push`](./pre-push) run; per-clone by hand: `git config core.hooksPath scripts/hooks` |
 | CI | nothing to do — [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs `bun run check` itself, and [`../../.github/workflows/flow.yml`](../../.github/workflows/flow.yml) runs the branch policy |
-| anything else | run the script at your "about to claim done" moment and honor exit 2 |
+| anything else | run [`stop-check.mjs`](./stop-check.mjs) at your "about to claim done" moment and [`pr-watch.mjs`](./pr-watch.mjs) after the PR opens; honor exit 2 |
 
 A git hook is bypassable (`git push --no-verify`) and a stop gate is not a wall either; both
 are there so the right thing is the easy thing. What makes the branch model hold is the

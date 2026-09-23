@@ -14,7 +14,7 @@
   import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
-  import { filtersActive, type BoardFilters } from '@/components/board/filter-bar'
+  import { BOARD_MENU_GROUP, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -50,6 +50,7 @@
   import { useBoardStatuses, type BoardStatus } from '@/lib/statuses'
   import type { Task } from '@/lib/task-const'
   import { isClosedStatus } from '@/components/board/field-pills'
+  import { readFlag, readText, writeFlag, writeText } from '@/lib/persist'
 
   // All view state lives in the URL (deep-link convention): view, group, q, and
   // the filter facets (comma-multi within a facet: OR inside, AND across).
@@ -176,18 +177,10 @@
   // in list mode, empty ones included, as drop lanes.
   let showEmptyGroups = $state(false)
   $effect(() => {
-    try {
-      showEmptyGroups = localStorage.getItem('talaria:list-empty-groups') === '1'
-    } catch {
-      /* ignore */
-    }
+    showEmptyGroups = readFlag('talaria:list-empty-groups')
   })
   const toggleEmptyGroups = () => {
-    try {
-      localStorage.setItem('talaria:list-empty-groups', showEmptyGroups ? '0' : '1')
-    } catch {
-      /* ignore */
-    }
+    writeFlag('talaria:list-empty-groups', !showEmptyGroups)
     showEmptyGroups = !showEmptyGroups
   }
   const viewsList = listQuery(useBoardViews(() => (board ? boardId : null)), { title: 'Could not load your saved views', variant: 'inline' })
@@ -320,11 +313,7 @@
   // named lens you apply deliberately — so one of those is never overridden.
   const viewPrefKey = (id: string) => `talaria:board-view:${id}`
   const setView = (next: 'board' | 'list' | 'gantt' | 'workchains') => {
-    try {
-      localStorage.setItem(viewPrefKey(boardId), next)
-    } catch {
-      /* private mode: the URL still carries this session's choice */
-    }
+    writeText(viewPrefKey(boardId), next)
     setSearch({ view: next === 'board' ? undefined : next })
   }
   // Restore once per board. Keyed on the id rather than a boolean so that
@@ -338,12 +327,7 @@
     // An explicit `?view=` or a saved view already answers the question, and a
     // pasted link must survive: only a bare board URL is ours to fill in.
     if (untrack(() => search.view || search.v)) return
-    let saved: string | null = null
-    try {
-      saved = localStorage.getItem(viewPrefKey(id))
-    } catch {
-      /* ignore */
-    }
+    const saved = readText(viewPrefKey(id))
     if (saved === 'list' || saved === 'gantt' || saved === 'workchains') setSearch({ view: saved }, true)
   })
 
@@ -520,6 +504,7 @@
         {#if view === 'list'}
           <DropdownMenu
             align="right"
+            group={BOARD_MENU_GROUP}
             items={[
               ...(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
                 label: g === 'none' ? 'No grouping' : g,
@@ -553,7 +538,7 @@
       {:else if view === 'gantt'}
         <Gantt {board} {tasks} onOpen={openTicket} />
       {:else if view === 'workchains'}
-        <Workchains {board} {tasks} allTasks={allTasks} {members} onOpen={openTicket} />
+        <Workchains {board} {tasks} {members} onOpen={openTicket} />
       {:else}
         <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} />
       {/if}

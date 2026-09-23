@@ -91,13 +91,13 @@ pub async fn get(
     Path(id): Path<String>,
     uri: Uri,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate("boards", "GET tasks", &id) {
+        return Ok(gate);
+    }
     let who = match task_actor(&state, &headers, &id, false, "GET board tasks").await {
         Ok(w) => w,
         Err(gate) => return Err(gate),
     };
-    if let Some(gate) = talaria_params::uuid_gate("boards", "GET tasks", &id) {
-        return Ok(gate);
-    }
     // The archived tail is asked for by name, and only by humans — an agent
     // has no business trawling retired work.
     let include_archived = match &who {
@@ -127,13 +127,13 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate("boards", "POST tasks", &id) {
+        return Ok(gate);
+    }
     let who = match task_actor(&state, &headers, &id, true, "POST board tasks").await {
         Ok(w) => w,
         Err(gate) => return Ok(gate),
     };
-    if let Some(gate) = talaria_params::uuid_gate("boards", "POST tasks", &id) {
-        return Ok(gate);
-    }
     let (is_agent, actor, session_user) = match who {
         TaskActor::Agent { model } => (true, model, None),
         TaskActor::Human { actor, user } => (false, actor, Some(user)),

@@ -81,17 +81,18 @@
 
   <div class="grid gap-4 sm:grid-cols-2">
     <div>
-      <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-      <Input bind:value={name} placeholder="weekly-recap" maxlength={80} />
+      <label for="cron-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
+      <Input id="cron-name" bind:value={name} placeholder="weekly-recap" maxlength={80} />
     </div>
   </div>
   <div>
-    <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">When</label>
+    <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">When</span>
     <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
   </div>
   <div>
-    <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What it does</label>
+    <label for="cron-prompt" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What it does</label>
     <Textarea
+      id="cron-prompt"
       autoGrow
       rows={3}
       bind:value={prompt}

@@ -136,6 +136,22 @@ must survive its own death:
    handover anyway heals to `done` on the next reconcile. No install spins
    forever, and no landing is lost to a wrong close.
 
+8. **The fleet** — once that landing is real, every *running* agent rolls
+   blue/green, one at a time, the same roll a config edit uses: the
+   replacement comes up healthy before the old container is retired, and an
+   unhealthy replacement never takes over. Stopped agents stay stopped — they
+   read the new render on next start. An adopted install rolls only from the
+   container that *is* the pin (green during blue's drain is not a second
+   deploy). An unadopted image install (dokploy, plain compose) does the same
+   when its container comes up on a digest the fleet has not been rolled for;
+   a restart of the same image is not a deploy. Checkout and dev installs do
+   not roll the fleet from here — they have no image digest, and a dev
+   restart is not a fleet event. The roll is detached from the reconcile tick
+   (a fleet outlives two minutes) and held on its own redis lease, so two
+   replicas do not roll the same fleet twice. A roll that dies mid-way does
+   not record the digest, so the next tick retries.
+
+
 The traffic edge is a pinned traefik container (`talaria-edge`) that owns the
 host port the app used to hold; both slots merge into one health-gated service
 behind it, so "which slot is live" is a routing fact, not a port reshuffle.
@@ -209,7 +225,8 @@ stops the old one and the run lands done. Push v2 as `:main`, `POST check`,
 healthcheck cannot pass — leaves the old container serving and the panel
 showing the failure sentence. The rollback test — a green that 500s a route —
 round-trips through `POST rollback`. And the untouched-default contract: a
-plain `docker compose -f docker/compose.yml up` (no adoption, no registry)
+plain `docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up` (no adoption,
+no registry)
 boots and serves exactly as it always did.
 
 ## The overlap contract — and the rule it imposes on migrations

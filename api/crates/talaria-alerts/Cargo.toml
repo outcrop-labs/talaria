@@ -1,29 +1,30 @@
 [package]
 name = "talaria-alerts"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-serde = { version = "1", features = ["derive"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-boards = { path = "../talaria-boards" }
-talaria-brain-health = { path = "../talaria-brain-health" }
-talaria-fleet-agents = { path = "../talaria-fleet-agents" }
-talaria-fleet-docker = { path = "../talaria-fleet-docker" }
-talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-mcp-service = { path = "../talaria-mcp-service" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-host-metrics = { path = "../talaria-host-metrics" }
-talaria-retrieval = { path = "../talaria-retrieval" }
-talaria-scheduler = { path = "../talaria-scheduler" }
-talaria-state = { path = "../talaria-state" }
-tokio = { version = "1", features = ["macros"] }
-tracing = "0.1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+talaria-agent-auth = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-brain-health = { workspace = true }
+talaria-fleet-agents = { workspace = true }
+talaria-fleet-docker = { workspace = true }
+talaria-fleet-preflight = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-host-metrics = { workspace = true }
+talaria-mcp-service = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-retrieval = { workspace = true }
+talaria-scheduler = { workspace = true }
+talaria-state = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }

@@ -13,7 +13,7 @@ Two halves, and the split is the point.
 - **You read the change against the application.** That is the rest of this file, and it is why
   a judge is a person or an agent rather than a script.
 
-Neither half replaces the gates. A judge measures; `bun run verify` and CI block.
+Neither half replaces the gates. A judge measures; `bun run gate` locally and CI block.
 
 ## 1. Run the measurable half first
 
