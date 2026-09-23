@@ -36,6 +36,10 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
 5. **Open the pull request against `rc`** with a body that mirrors the changelog entry: what
    changed, and what you verified. If a whole-tree gate failed on something that predates your
    change (several sessions share this tree), say so rather than absorbing it silently.
+6. **Watch the pull request until it is actually green.** Do not call the work done while its
+   checks are failing, still pending, or the PR conflicts with `rc`.
+   `node scripts/hooks/pr-watch.mjs` is that gate; the procedure is
+   [`.claude/skills/ship-a-change/SKILL.md`](./.claude/skills/ship-a-change/SKILL.md).
 
 A test earns its place only where a plausible bug would fail it. Behaviour, boundaries,
 invariants, transitions, real errors — not wiring, defaults, or the shape of the source.
