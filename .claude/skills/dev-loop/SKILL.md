@@ -59,12 +59,20 @@ Never two servers on one database — a stale encryption key re-seals secrets wr
 - **Worktree** (host, light): `bun talaria worktree <name>` (alias `git wt <name>`) — own
   git worktree at `../talaria-<name>`, own Postgres + Redis on deterministic ports, a
   pg_dump-seeded DB, `node_modules` symlinked from main. Teardown:
-  `docker compose -p talaria-wt-<name> down -v && git worktree remove ../talaria-<name> && git branch -D wt/<name>`.
-  Full rules: docs/WORKTREES.md.
+  `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>`.
+  Run that from the primary checkout, not from inside the worktree. Full rules: docs/WORKTREES.md.
 - **Devbox** (container, heavy): `bun talaria box new <name>` — a full stack per task with
   the agent CLIs pinned inside. Use for parallel *agent* sessions; never share a host
-  `~/.claude` across concurrent CLIs (it corrupts `.claude.json`). Full guide:
-  docs/DEVBOX.md.
+  `~/.claude` across concurrent CLIs (it corrupts `.claude.json`). Tear it down with
+  `bun talaria box rm <name>`. Full guide: docs/DEVBOX.md.
+
+## When the task ends
+
+Remove what this task created before you claim done. The convention — what goes, what stays,
+and the command — is the [cleanup](../cleanup/SKILL.md) skill. Scratch checkouts and throwaway
+downloads go under `/tmp/talaria-<name>` so the sweep can see them. `bun talaria cleanup`
+reports what is still there; the stop gate runs the sweep and blocks when disk use or the
+stale set crosses the line.
 
 ## When something fails oddly
 

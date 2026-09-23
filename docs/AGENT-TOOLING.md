@@ -60,6 +60,11 @@ with the reason on stderr, anything else a non-blocking error). It always runs o
 whole tree, no diff fast path: the check is seconds and dependency-free, and scope-skipping
 is a second place for checker scope to rot. Because parallel sessions share working trees,
 a gate failure may predate your change — the block message says what to do about that.
+After the check passes, the same gate runs
+[`scripts/cleanup-sweep.mjs`](../scripts/cleanup-sweep.mjs) `--gate`. Exit 2 then means disk
+pressure or stale dev artifacts; the procedure is the
+[cleanup](../.claude/skills/cleanup/SKILL.md) skill. That scan is not part of `bun run check`:
+a CI runner has no one's worktrees, and a disk reading is not an invariant of the tree.
 
 The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](../scripts/hooks/pre-push)
 forwards the refs a push is about to send to
