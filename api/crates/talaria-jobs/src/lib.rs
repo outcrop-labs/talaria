@@ -89,6 +89,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
         Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
     }));
+    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
+        Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
+    }));
     // THE ROLL'S OWN TWO EDGES. `roll_agent` reaches the renderer through
     // them — a roll renders the incoming slot, brings it up, flips the
     // manifest, then re-renders — and an edge nothing sets is a roll that
@@ -371,6 +374,10 @@ mod tests {
         assert!(
             talaria_fleet_reconcile::NEXT_FREE_PORT.get().is_some(),
             "the roll's port allocator fell out of the boot wiring — every roll would silently do nothing"
+        );
+        assert!(
+            talaria_update_job::ROLL_FLEET.get().is_some(),
+            "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
         );
     }
 

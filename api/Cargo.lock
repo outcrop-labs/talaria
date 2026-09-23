@@ -7180,12 +7180,16 @@ dependencies = [
 name = "talaria-update-job"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-runs-lease",
  "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-settings",
  "talaria-state",
  "talaria-update-mode",
  "talaria-update-registry",
