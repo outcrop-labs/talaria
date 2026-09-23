@@ -192,6 +192,7 @@ members = [
     "crates/talaria-workchains",
     "crates/talaria-retrieval",
     "crates/talaria-alerts",
+    "crates/talaria-host-metrics",
     "crates/talaria-google-pending",
     "crates/talaria-inbox-focus",
     "crates/talaria-runs-plan-draft",

@@ -1434,6 +1434,10 @@ pub fn router(state: AppState) -> Router {
             "/api/inference",
             get(talaria_routes_fleet::models::inference::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        .route(
+            "/api/host",
+            get(talaria_routes_fleet::models::host::get).fallback(|| async { method_not_allowed("GET") }),
+        )
         // Multiplayer plans: the living document and the member roster.
         .route(
             "/api/plans/{id}/doc",

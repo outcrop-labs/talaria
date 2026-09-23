@@ -4,6 +4,7 @@
 export const OBS_TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'compute', label: 'Compute' },
+  { id: 'host', label: 'Host' },
   { id: 'cost', label: 'Cost' },
   { id: 'audit', label: 'Audit' },
   { id: 'alerts', label: 'Alerts' },

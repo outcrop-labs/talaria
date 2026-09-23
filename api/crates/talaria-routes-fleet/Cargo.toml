@@ -26,6 +26,7 @@ talaria-body = { path = "../talaria-body" }
 talaria-brain-health = { path = "../talaria-brain-health" }
 talaria-channels = { path = "../talaria-channels" }
 talaria-error = { path = "../talaria-error" }
+talaria-host-metrics = { path = "../talaria-host-metrics" }
 talaria-gaps = { path = "../talaria-gaps" }
 talaria-harness-defs = { path = "../talaria-harness-defs" }
 talaria-harness-model = { path = "../talaria-harness-model" }

@@ -33,16 +33,17 @@ local process can't be one-click added.
 
 ## Observability
 
-Open: **Manage → Observability** — tabs **Overview · Compute · Cost · Audit · Alerts**.
+Open: **Manage → Observability** — tabs **Overview · Compute · Host · Cost · Audit · Alerts**.
 The overview cross-sections the rest: what's generating now, gateway health over 15 minutes,
-spend today, the audit pulse, and any alerts.
+spend today, the host (CPU and the fullest mount), the audit pulse, and any alerts.
 
 | Tab | What it shows |
 | :--- | :--- |
 | **Compute** | Self-hosted usage: tokens today and over 30 days, generations, which backends served them |
+| **Host** | The machine: CPU and load, memory, swap, disk per mount (fullest first), and the processes using them. Refreshes every few seconds. A container deploy shows the host, not the container, once the host mounts are in place |
 | **Cost** | Tokens per day (last 14), spend by agent (30 days), and the self-hosted vs cloud split |
 | **Audit** | The record, filterable by kind |
-| **Alerts** | What needs a person: agents down, gateway trouble, unpriced ledger, stuck work |
+| **Alerts** | What needs a person: agents down, gateway trouble, unpriced ledger, stuck work, a filling disk or a box out of memory |
 
 The all-clear reads: *agents running, gateway answering, ledger priced, no stuck work* —
 each alert deep-links to its fix.

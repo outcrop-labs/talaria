@@ -77,6 +77,18 @@ services:
       # break every agent spawn.
       - ${TALARIA_STATE_DIR:-/var/lib/talaria}:${TALARIA_STATE_DIR:-/var/lib/talaria}
       - /var/run/docker.sock:/var/run/docker.sock
+      # Host metrics. /proc is the machine's process table. / is bind-mounted
+      # rslave so separate disks show up under /host — without it, statvfs
+      # would report the overlay and call it the host. Read-only. The api
+      # never reads file contents through /host. systemd hosts share / as
+      # rshared, which is what rslave requires.
+      - /proc:/host/proc:ro
+      - type: bind
+        source: /
+        target: /host
+        read_only: true
+        bind:
+          propagation: rslave
     # The socket's group on the HOST — find yours with:
     #   DOCKER_GID=$(stat -c %g /var/run/docker.sock)
     group_add:
@@ -159,6 +171,11 @@ services:
       TALARIA_PG_POOL_MAX: ${TALARIA_PG_POOL_MAX:-40}
       TALARIA_PG_ACQUIRE_TIMEOUT_MS: ${TALARIA_PG_ACQUIRE_TIMEOUT_MS:-15000}
       TALARIA_UI_PG_POOL_MAX: ${TALARIA_UI_PG_POOL_MAX:-20}
+      # Point the api at the mounts above. Unset on a host-run api (dev):
+      # /proc is already the machine. A container without these says so
+      # instead of reporting its own cgroup.
+      TALARIA_HOST_PROC: /host/proc
+      TALARIA_HOST_ROOT: /host
     networks:
       - internal
       - talaria

@@ -20,6 +20,7 @@ talaria-fleet-preflight = { path = "../talaria-fleet-preflight" }
 talaria-gateway = { path = "../talaria-gateway" }
 talaria-mcp-service = { path = "../talaria-mcp-service" }
 talaria-notify = { path = "../talaria-notify" }
+talaria-host-metrics = { path = "../talaria-host-metrics" }
 talaria-retrieval = { path = "../talaria-retrieval" }
 talaria-scheduler = { path = "../talaria-scheduler" }
 talaria-state = { path = "../talaria-state" }
