@@ -219,27 +219,27 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "start_job",
-            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — and returns an authenticated clone URL. Work ONLY on that branch; commit and push to it as you go. For feature-scale work, write your plan first (it is recorded and rides into the PR). One job per ticket at a time.",
+            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — and returns a clone URL plus workdir. Work ONLY in that workdir, on that branch; commit and push there as you go. Omitting effort defaults to standard. standard and heavy are refused without `plan` (approach, files, test strategy) — pass plan on the first call; retrying without it does not pass. One job per ticket. A live-job cap refusal lists each live jobId; finish_job or abandon one of those before starting another.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "taskId": { "type": "string", "description": "The ticket this job implements — id or ref (PLAT-118), from list_tickets or the assignment title. A bare number is not an id. ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board. Ask for it to be reopened, or work the follow-up ticket." },
                     "repo": { "type": "string", "description": "owner/name — must be one of your granted repos" },
-                    "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is — routes tooling and review weight" },
-                    "plan": { "type": "string", "description": "Your implementation plan: approach, files touched, test strategy. Required for standard/heavy." },
+                    "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is. Omitted means standard. standard and heavy require `plan` and are refused without it; light does not. heavy then waits for human approval before a clone URL exists." },
+                    "plan": { "type": "string", "description": "Required unless effort is light. Approach, files touched, test strategy. Omitting effort counts as standard, so a call with no plan is refused." },
                 },
                 "required": ["repo"],
             },
         }),
         json!({
             "name": "job_status",
-            "description": "Your workbench jobs (optionally one by id): branch, status, PR link.",
-            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string" } } },
+            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours.",
+            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
         }),
         json!({
             "name": "merge_to_testing",
             "description": "Merge a job's branch into the repo's TESTING branch for integration testing (only when the repo has one configured). The PR to the base branch stays open and unmerged — testing is a sideline, never the way work ships.",
-            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string" } }, "required": ["jobId"] },
+            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
         }),
         json!({
             "name": "request_repo",
@@ -258,11 +258,11 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "finish_job",
-            "description": "Finish a job: Talaria verifies the branch has commits and opens the pull request with the ticket-linked body. Returns the PR URL — put it in your outcome report. Use abandon:true to close out a job that produced nothing. Either way the job closes out; the ticket only gets an audit line if it is still open to you (a ticket closed or archived while you worked takes no further agent writes), so report the PR URL yourself.",
+            "description": "Finish a job: Talaria verifies the job branch has commits in its workdir and opens the pull request with the ticket-linked body. A no-commits refusal names that workdir, branch, and refs/heads/… — push there, or abandon:true. Returns the PR URL — put it in your outcome report. Either way the job closes out; the ticket only gets an audit line if it is still open to you (a ticket closed or archived while you worked takes no further agent writes), so report the PR URL yourself.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "jobId": { "type": "string" },
+                    "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." },
                     "summary": { "type": "string", "description": "What the change does — becomes the PR body core" },
                     "abandon": { "type": "boolean" },
                 },
@@ -685,8 +685,8 @@ async fn call_tool(
             // Pack against host RAM. A started job is a clone + harness in
             // this agent's one container; awaiting_approval never counts.
             // The 16-job figure is a runaway guard, not a desk size.
-            let live: Vec<(String, String)> = match sqlx::query_as(
-                "select branch, repo from workbench_jobs \
+            let live: Vec<(String, String, String)> = match sqlx::query_as(
+                "select id::text, repo, branch from workbench_jobs \
                  where agent_id = $1::uuid and status = 'started' order by created_at",
             )
             .bind(&agent.id)
@@ -697,18 +697,7 @@ async fn call_tool(
                 Err(e) => return thrown(format!("job count: {e}")),
             };
             if live.len() >= MAX_CONCURRENT_JOBS_PER_AGENT {
-                let list = live
-                    .iter()
-                    .map(|(branch, repo)| format!("{repo}#{branch}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return CallOutcome::Fail(format!(
-                    "you already have {} live job(s) — the runaway cap is {}. \
-                     Finish one (finish_job) or close a dead one (abandon) before starting \
-                     new work. Live jobs: {list}",
-                    live.len(),
-                    MAX_CONCURRENT_JOBS_PER_AGENT,
-                ));
+                return CallOutcome::Fail(live_cap_error(&live, MAX_CONCURRENT_JOBS_PER_AGENT));
             }
             if let Err(reason) =
                 talaria_fleet_budget::admit_work(talaria_fleet_budget::effort_reserve(&effort))
@@ -1070,6 +1059,11 @@ async fn call_tool(
                 .get("jobId")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty());
+            if let Some(id) = job_id
+                && let Some(error) = bad_job_id(id)
+            {
+                return CallOutcome::Fail(error);
+            }
             let rows: Result<Vec<JobRow>, sqlx::Error> = match job_id {
                 Some(job_id) => sqlx::query_as(sqlx::AssertSqlSafe(format!(
                     "select {JOB_COLS} from workbench_jobs where id = $1::uuid and agent_id = $2::uuid"
@@ -1116,6 +1110,9 @@ async fn call_tool(
 
         "merge_to_testing" => {
             let job_id = arg_str(args, "jobId");
+            if let Some(error) = bad_job_id(&job_id) {
+                return CallOutcome::Fail(error);
+            }
             let rows: Vec<JobRow> = match sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {JOB_COLS} from workbench_jobs where id = $1::uuid and agent_id = $2::uuid"
             )))
@@ -1232,6 +1229,9 @@ async fn call_tool(
 
         "finish_job" => {
             let job_id = arg_str(args, "jobId");
+            if let Some(error) = bad_job_id(&job_id) {
+                return CallOutcome::Fail(error);
+            }
             let rows: Vec<JobRow> = match sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {JOB_COLS} from workbench_jobs where id = $1::uuid and agent_id = $2::uuid"
             )))
@@ -1307,9 +1307,7 @@ async fn call_tool(
                 Err(e) => return thrown(e),
             };
             if ahead == 0 {
-                return CallOutcome::Fail(
-                    "the branch has no commits yet — commit and push your work to this job's branch first (or finish with abandon:true)".into(),
-                );
+                return CallOutcome::Fail(empty_branch_error(&job.id, &job.repo, &job.branch));
             }
             // The ticket ref and TITLE go into a PUBLIC PR title and body, so
             // the board check is re-run at the disclosure point rather than
@@ -1426,6 +1424,68 @@ fn arg_str(args: &Map<String, Value>, key: &str) -> String {
         .to_string()
 }
 
+/// A non-uuid job id is not a lookup. Binding it as `$1::uuid` is a Postgres
+/// 500 (`invalid input syntax for type uuid`) — the same class as a ticket
+/// ref sent where a uuid is required. Say so before the query.
+fn bad_job_id(id: &str) -> Option<String> {
+    if talaria_body::zod_uuid_ok(id) {
+        None
+    } else {
+        Some(format!(
+            "jobId {id:?} is not a job id — job ids are uuids from start_job. \
+             Call job_status with no jobId to list yours."
+        ))
+    }
+}
+
+/// Cap refusal the agent can act on. The sentence names the move; the JSON
+/// line is the payload (`jobId` is what finish_job takes). Harnesses surface
+/// the error text, not a side channel, so both ride the same string.
+fn live_cap_error(live: &[(String, String, String)], cap: usize) -> String {
+    let jobs: Vec<Value> = live
+        .iter()
+        .map(|(id, repo, branch)| {
+            json!({
+                "jobId": id,
+                "repo": repo,
+                "branch": branch,
+                "workdir": format!("/opt/data/workbench/jobs/{id}"),
+            })
+        })
+        .collect();
+    let payload = json!({
+        "code": "live_job_cap",
+        "cap": cap,
+        "liveJobs": jobs,
+    });
+    format!(
+        "you already have {} live job(s) — the runaway cap is {cap}. \
+         These are your jobs: finish_job one (or finish_job with abandon:true) \
+         before starting new work.\n{payload}",
+        live.len()
+    )
+}
+
+/// finish_job saw zero commits. Name the workdir and ref the check used —
+/// "this job's branch" is not a place an agent can push to.
+fn empty_branch_error(job_id: &str, repo: &str, branch: &str) -> String {
+    let workdir = format!("/opt/data/workbench/jobs/{job_id}");
+    let expected = format!("refs/heads/{branch}");
+    let payload = json!({
+        "code": "branch_empty",
+        "jobId": job_id,
+        "repo": repo,
+        "branch": branch,
+        "workdir": workdir,
+        "expectedRef": expected,
+    });
+    format!(
+        "the branch has no commits yet — commit and push in {workdir} on branch {branch} \
+         (repo {repo}, ref {expected}), then finish_job again. \
+         Or finish_job with abandon:true.\n{payload}"
+    )
+}
+
 /// `String(args.name ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g,
 /// '-').slice(0, 100)` — the repo-name normalizer.
 fn sanitize_repo_name(v: &str) -> String {
@@ -1459,9 +1519,11 @@ fn random_base36(len: usize) -> String {
 ///
 /// The prefix is NORMALIZED here even though the config route also trims it:
 /// rows written before that guard (a prefix typed as "agent/") minted
-/// `agent//tala-…`, which sails through `push_allowed` (`starts_with`) and
-/// dies at GitHub's ref validation with a 422 — the start_job failure Doug
-/// reported on TALA-35. The mint is the last line; it reads what is stored.
+/// `agent//tala-…` AND `agent//job-<repo>-<suffix>` — the ticketless shape
+/// from the Sep logs. Both stems come through this join; a second composer
+/// is how the 422 comes back. `//` is collapsed so a slash that survives
+/// slugify cannot mint a ref GitHub rejects while `push_allowed` (a
+/// `starts_with` on the raw prefix) still says yes.
 fn composed_job_branch(
     prefix: Option<&str>,
     repo: &str,
@@ -1473,16 +1535,62 @@ fn composed_job_branch(
         .map(|p| p.trim_matches('/'))
         .filter(|p| !p.is_empty());
     let stem = if ticket_ref.is_empty() {
-        format!("job-{}-{}", slugify(repo), random_base36(6))
+        let repo_slug = slugify(repo);
+        let repo_slug = if repo_slug.is_empty() {
+            "repo".to_string()
+        } else {
+            repo_slug
+        };
+        format!("job-{repo_slug}-{}", random_base36(6))
     } else {
-        format!("{}-{}", ticket_ref.to_lowercase(), title_slug)
+        let r = slugify(ticket_ref);
+        let r = if r.is_empty() {
+            "ticket".to_string()
+        } else {
+            r
+        };
+        let s = slugify(title_slug);
+        let s = if s.is_empty() { "work".to_string() } else { s };
+        format!("{r}-{s}")
     };
     let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.chars().count() + 1));
-    let body = truncate_utf16(&stem, budget).to_string();
-    match prefix {
-        Some(p) => format!("{p}/{body}"),
-        None => format!("talaria/{body}"),
+    let body = truncate_utf16(&stem, budget).trim_matches('/').to_string();
+    let body = if body.is_empty() {
+        "work".to_string()
+    } else {
+        body
+    };
+    join_branch(prefix, &body)
+}
+
+/// The one branch join. Trims a stored `agent/` and collapses `//` so the
+/// ref GitHub receives is the ref `push_allowed` already accepted.
+fn join_branch(prefix: Option<&str>, body: &str) -> String {
+    let prefix = prefix
+        .map(str::trim)
+        .map(|p| p.trim_matches('/'))
+        .filter(|p| !p.is_empty());
+    let body = body.trim_matches('/');
+    let joined = match (prefix, body.is_empty()) {
+        (Some(p), false) => format!("{p}/{body}"),
+        (Some(p), true) => p.to_string(),
+        (None, false) => format!("talaria/{body}"),
+        (None, true) => "talaria/work".to_string(),
+    };
+    let mut out = String::with_capacity(joined.len());
+    let mut prev_slash = false;
+    for c in joined.chars() {
+        if c == '/' {
+            if prev_slash {
+                continue;
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+        }
+        out.push(c);
     }
+    out.trim_matches('/').to_string()
 }
 
 async fn job_branch_name(
@@ -1766,10 +1874,24 @@ mod tests {
         // The old shape fails that same law — the bug this closes.
         gh::push_allowed(&rule, "main", "refs/heads/talaria/tala-37-fix-the-thing")
             .expect_err("a talaria/* branch under an agent/* rule is the dead end");
+        // Ticketless mint under a stored "agent/" — the Sep log shape
+        // `agent//job-outcrop-labs-talaria-…`. Same join as the ticket slug.
+        let job = composed_job_branch(Some("agent/"), "outcrop-labs/talaria", "", "");
+        assert!(job.starts_with("agent/job-outcrop-labs-talaria-"), "{job}");
+        assert!(!job.contains("//"), "{job}");
+        let slashed = gh::RepoRule {
+            repo: "outcrop-labs/talaria".into(),
+            base_branch: None,
+            push_mode: "branches_only".into(),
+            branch_prefix: Some("agent/".into()),
+        };
+        gh::push_allowed(&slashed, "main", &format!("refs/heads/{job}"))
+            .expect("a ticketless mint under agent/ must pass the stored prefix");
         // Ticketless mint keeps the random suffix and the 80-char budget.
         let job = composed_job_branch(Some("agent"), "o/some-repo", "", "");
         assert!(job.starts_with("agent/job-o-some-repo-"));
         assert!(job.chars().count() <= 80);
+        assert!(!job.contains("//"));
     }
 
     #[test]
@@ -1780,6 +1902,65 @@ mod tests {
         // The class keeps dots, underscores, and dashes as-is.
         assert_eq!(sanitize_repo_name("a.b_c-d"), "a.b_c-d");
         assert_eq!(sanitize_repo_name(""), "");
+    }
+
+    #[test]
+    fn cap_and_empty_branch_errors_name_the_job_the_agent_can_act_on() {
+        let cap = live_cap_error(
+            &[(
+                "11111111-1111-1111-1111-111111111111".into(),
+                "outcrop-labs/talaria".into(),
+                "agent/tala-35-work".into(),
+            )],
+            3,
+        );
+        let (sentence, payload) = cap.split_once('\n').expect("sentence then JSON");
+        assert!(sentence.contains("finish_job"));
+        let payload: Value = serde_json::from_str(payload).expect("machine-readable payload");
+        assert_eq!(payload["code"], "live_job_cap");
+        assert_eq!(payload["cap"], 3);
+        assert_eq!(
+            payload["liveJobs"][0]["jobId"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(
+            payload["liveJobs"][0]["workdir"],
+            "/opt/data/workbench/jobs/11111111-1111-1111-1111-111111111111"
+        );
+
+        let empty = empty_branch_error(
+            "22222222-2222-2222-2222-222222222222",
+            "outcrop-labs/talaria",
+            "agent/tala-35-work",
+        );
+        let (_, payload) = empty.split_once('\n').expect("sentence then JSON");
+        assert!(empty.contains("/opt/data/workbench/jobs/22222222-2222-2222-2222-222222222222"));
+        assert!(empty.contains("refs/heads/agent/tala-35-work"));
+        let payload: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(payload["code"], "branch_empty");
+        assert_eq!(payload["expectedRef"], "refs/heads/agent/tala-35-work");
+    }
+
+    #[test]
+    fn a_ticket_ref_is_not_a_job_id() {
+        assert!(bad_job_id("omp-tala35").is_some());
+        assert!(bad_job_id("x").is_some());
+        assert!(bad_job_id("").is_some());
+        assert!(bad_job_id("11111111-1111-1111-1111-111111111111").is_none());
+    }
+
+    #[test]
+    fn join_branch_never_emits_an_empty_component() {
+        assert_eq!(
+            join_branch(Some("agent/"), "job-o-r-abcdef"),
+            "agent/job-o-r-abcdef"
+        );
+        assert_eq!(
+            join_branch(Some("agent//"), "tala-35-work"),
+            "agent/tala-35-work"
+        );
+        assert!(!join_branch(Some("agent/"), "").contains("//"));
+        assert!(!join_branch(None, "a//b").contains("//"));
     }
 
     #[test]

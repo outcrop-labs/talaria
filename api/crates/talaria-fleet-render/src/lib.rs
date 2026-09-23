@@ -698,6 +698,13 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "# are no-ops because we ARE the store, and forgetting is done by revoking\n",
     "# the grant rather than by anything git says.\n",
     "[ \"$1\" = \"get\" ] || exit 0\n",
+    "decline() {\n",
+    "  if [ -z \"$path\" ]; then\n",
+    "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. Do not run git credential fill; it prints the token.\" >&2\n",
+    "  fi\n",
+    "  echo \"talaria: no credential for $host${path:+/$path}\" >&2\n",
+    "  exit 0\n",
+    "}\n",
     "host=\"\"; proto=\"\"; path=\"\"\n",
     "while IFS=\"=\" read -r k v; do\n",
     "  [ \"$k\" = \"host\" ] && host=\"$v\"\n",
@@ -707,6 +714,14 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  [ \"$k\" = \"path\" ] && path=\"$v\"\n",
     "done\n",
     "[ -n \"$host\" ] || exit 0\n",
+    "# Git omits path unless useHttpPath is on. A checkout outside the job\n",
+    "# workdir then asks for the host alone, and an unscoped answer is a token\n",
+    "# for every repo. Read origin instead — still one repo, still the grant\n",
+    "# check. credential.helper= so this read cannot call us back.\n",
+    "if [ -z \"$path\" ]; then\n",
+    "  origin=$(git -c credential.helper= config --get remote.origin.url 2>/dev/null || true)\n",
+    "  path=$(printf %s \"$origin\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
+    "fi\n",
     "# TALARIA_API_URL is the app as this container reaches it (rendered from\n",
     "# the app's own view of itself); TALARIA_AGENT_KEY is THIS agent's own\n",
     "# credential — the one /api/secrets/git-credential authenticates. The\n",
@@ -718,7 +733,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  resp=$(curl -sS --fail -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) \\\n",
-    "    || { echo \"talaria: no credential for $host${path:+/$path}\" >&2; exit 0; }\n",
+    "    || decline\n",
     "elif command -v wget >/dev/null 2>&1; then\n",
     "  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived\n",
     "  # harness image) takes --post-data; GNU wget takes --body-data with\n",
@@ -731,7 +746,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  [ -n \"$resp\" ] || resp=$(wget -qO- --method=POST --body-data=\"$body\" \\\n",
     "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    --header=\"content-type: application/json\" \"$url\" 2>/dev/null) \\\n",
-    "    || { echo \"talaria: no credential for $host${path:+/$path}\" >&2; exit 0; }\n",
+    "    || decline\n",
     "else\n",
     "  echo \"talaria: no curl or wget in this image — cannot fetch a credential for $host\" >&2\n",
     "  exit 0\n",
@@ -2335,6 +2350,8 @@ empty_list: []
             "wget -qO- --method=POST --body-data=\"$body\" \\\n",
             "no curl or wget in this image",
             "no credential for $host${path:+/$path}",
+            "git -c credential.helper= config --get remote.origin.url",
+            "Do not run git credential fill",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
         ] {
             assert!(
@@ -2368,6 +2385,117 @@ empty_list: []
         let mode = std::fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "helper must be executable");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_git_helper_reads_origin_when_git_omits_the_path() {
+        fn run(with_origin: bool, curl_ok: bool) -> (i32, String, String, String) {
+            let dir = std::env::temp_dir().join(format!(
+                "talaria-cred-{}-{}-{}",
+                std::process::id(),
+                u8::from(with_origin),
+                u8::from(curl_ok)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("stub")).unwrap();
+            let repo = dir.join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let helper = dir.join("helper");
+            std::fs::write(&helper, GIT_CREDENTIAL_HELPER).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let exec = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&helper, exec.clone()).unwrap();
+            let capture = dir.join("body");
+            let curl = if curl_ok {
+                format!(
+                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s' '{{\"username\":\"x-access-token\",\"password\":\"sekret\"}}'\n",
+                    capture.display()
+                )
+            } else {
+                "#!/bin/sh\nexit 1\n".to_string()
+            };
+            let curl_path = dir.join("stub/curl");
+            std::fs::write(&curl_path, curl).unwrap();
+            std::fs::set_permissions(&curl_path, exec).unwrap();
+            if with_origin {
+                assert!(
+                    std::process::Command::new("git")
+                        .args(["init", "-q"])
+                        .current_dir(&repo)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                assert!(
+                    std::process::Command::new("git")
+                        .args([
+                            "remote",
+                            "add",
+                            "origin",
+                            "https://github.com/outcrop-labs/talaria.git",
+                        ])
+                        .current_dir(&repo)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let mut child = std::process::Command::new("sh")
+                .arg(&helper)
+                .arg("get")
+                .current_dir(&repo)
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        dir.join("stub").display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("TALARIA_API_URL", "http://talaria.test")
+                .env("TALARIA_AGENT_KEY", "tak_test")
+                .env("API_SERVER_MODEL_NAME", "engineer-engineering")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"protocol=https\nhost=github.com\n\n")
+                .unwrap();
+            let out = child.wait_with_output().unwrap();
+            let body = std::fs::read_to_string(&capture).unwrap_or_default();
+            let _ = std::fs::remove_dir_all(&dir);
+            (
+                out.status.code().unwrap_or(1),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+                body,
+            )
+        }
+
+        let (code, stdout, stderr, body) = run(true, true);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("username=x-access-token"), "{stdout}");
+        assert!(
+            body.contains("outcrop-labs/talaria"),
+            "pathless ask must be scoped to origin, got {body}"
+        );
+        assert!(!stderr.contains("no credential"), "{stderr}");
+
+        let (code, stdout, stderr, _) = run(false, false);
+        assert_eq!(code, 0, "a decline must not hang git: {stderr}");
+        assert!(
+            stdout.is_empty(),
+            "a decline must not print a token: {stdout}"
+        );
+        assert!(stderr.contains("no credential for github.com"), "{stderr}");
+        assert!(stderr.contains("did not name a repository"), "{stderr}");
+        assert!(stderr.contains("git credential fill"), "{stderr}");
     }
 
     #[test]
