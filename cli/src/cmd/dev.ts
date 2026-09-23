@@ -100,8 +100,11 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // `off`.) SEARXNG_URL rides so the cargo child sees the same value the
   // vite process does (vite loads ui/.env itself) — the Rust read of it
   // decides whether search is env-pinned, and the two views must agree.
+  // TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
+  // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
+  // reach the renderer, and agents keep queueing on the UI hop.
   const env: Record<string, string> = {}
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL']) {
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }

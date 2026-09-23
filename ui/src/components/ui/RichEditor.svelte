@@ -89,10 +89,23 @@
 
   let editor = $state() as Readable<Editor>
 
-  const insertImageFile = async (file: File) => {
-    const { uploadFile } = await import('@/lib/attachments')
+  // Upload + insert one pasted/dropped/picked file at the caret. Images embed
+  // as image nodes (markdown round-trips `![alt](/api/uploads/<id>)`); every
+  // other file becomes the inline-attachment placeholder text
+  // `[name|size](upload:<id>)` (TALA-2), which the read renderer turns into a
+  // chip. Plain text in the body, so save/load and re-ordering can't orphan it.
+  const insertFile = async (file: File) => {
+    const { uploadFile, humanSize } = await import('@/lib/attachments')
     const r = await uploadFile(file)
-    if ('id' in r) $editor?.chain().focus().setImage({ src: `/api/uploads/${r.id}`, alt: file.name }).run()
+    if (!('id' in r)) return
+    if (file.type.startsWith('image/')) {
+      $editor?.chain().focus().setImage({ src: `/api/uploads/${r.id}`, alt: file.name }).run()
+    } else {
+      // A space keeps the chip out of an adjacent word; the link syntax
+      // needs the filename bracket-escaped so `]` can't close it early.
+      const name = file.name.replace(/([\[\]])/g, '\\$1')
+      $editor?.chain().focus().insertContent(`[${name}|${humanSize(r.size)}](upload:${r.id}) `).run()
+    }
   }
 
   onMount(() => {
@@ -123,20 +136,22 @@
       // anywhere in the empty area focuses and places the caret.
       editorProps: {
         attributes: { class: 'tiptap px-3 py-2 text-sm', style: `min-height:${fill ? '100%' : minHeight}` },
-        // Images paste/drop straight in: upload → insert the served URL as an
-        // image node (markdown round-trips it as ![alt](url)).
+        // Files paste/drop straight in: upload → insert. Images embed as
+        // image nodes (markdown round-trips ![alt](url)); every other file
+        // becomes the inline-attachment placeholder `[name|size](upload:<id>)`
+        // (TALA-2) — plain text in the body, so save/load round-trips keep it.
         handlePaste: (_view, event) => {
-          const files = Array.from(event.clipboardData?.files ?? []).filter((f) => f.type.startsWith('image/'))
+          const files = Array.from(event.clipboardData?.files ?? [])
           if (files.length === 0) return false
           event.preventDefault()
-          for (const f of files) void insertImageFile(f)
+          for (const f of files) void insertFile(f)
           return true
         },
         handleDrop: (_view, event) => {
-          const files = Array.from(event.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'))
+          const files = Array.from(event.dataTransfer?.files ?? [])
           if (files.length === 0) return false
           event.preventDefault()
-          for (const f of files) void insertImageFile(f)
+          for (const f of files) void insertFile(f)
           return true
         },
       },

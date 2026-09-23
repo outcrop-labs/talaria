@@ -59,7 +59,9 @@ pub async fn get(
     let since = if since.is_finite() { since } else { -1.0 };
     let thread = query("thread");
 
-    // Agents in the channel can read it (elevated assistants: any non-DM).
+    if let Some(resp) = message_query_gate(since, thread.as_deref()) {
+        return Ok(resp);
+    }
     let caller = match agent_caller(&state.pg, &headers).await {
         Ok(Some(c)) => c,
         Ok(None) => return get_as_user(&state, &headers, &id, since, thread).await,
@@ -104,6 +106,9 @@ async fn get_as_user(
     since: f64,
     thread: Option<String>,
 ) -> Result<Response, Response> {
+    if let Some(resp) = message_query_gate(since, thread.as_deref()) {
+        return Ok(resp);
+    }
     let user = match require_user(state, headers).await {
         Ok(u) => u,
         Err(gate) => return Err(gate),
@@ -117,6 +122,21 @@ async fn get_as_user(
         Ok(messages) => Json(json!({ "messages": messages })).into_response(),
         Err(e) => internal("[channels] message page read failed", e),
     })
+}
+
+fn message_query_gate(since: f64, thread: Option<&str>) -> Option<Response> {
+    if let Some(root) = thread
+        && let Some(gate) = talaria_params::uuid_gate_404(root)
+    {
+        return Some(gate);
+    }
+    if since.fract() != 0.0 {
+        return Some(house_error(
+            StatusCode::BAD_REQUEST,
+            "since must be a whole number",
+        ));
+    }
+    None
 }
 
 async fn page(

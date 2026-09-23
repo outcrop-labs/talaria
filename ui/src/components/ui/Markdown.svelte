@@ -2,6 +2,7 @@
   import { mount, unmount } from 'svelte'
   import { cn } from '@/lib/cn'
   import AgentMediaImage from '@/components/artifacts/AgentMediaImage.svelte'
+  import KbInlineAttachment from '@/components/kb/KbInlineAttachment.svelte'
   import { renderMarkdown } from './markdown'
 
   // Full markdown for chat — the unified pipeline + Mercury element styling
@@ -24,6 +25,32 @@
     const instances: Record<string, unknown>[] = []
     for (const slot of container.querySelectorAll<HTMLElement>('[data-agent-media]')) {
       instances.push(mount(AgentMediaImage, { target: slot, props: { src: slot.dataset.src ?? '', alt: slot.dataset.alt ?? '' } }))
+    }
+    return () => {
+      for (const i of instances) unmount(i)
+    }
+  })
+
+  // Inline KB attachments (TALA-2): the pipeline leaves a placeholder span
+  // per `![name|size](upload:<id>)` / `[name|size](upload:<id>)`; we hydrate
+  // each with the real chip — image thumbnails render the bytes inline, other
+  // files a labeled chip. Click opens the shared file viewer (preview +
+  // download inside our chrome), never target=_blank.
+  $effect(() => {
+    void html
+    if (!container) return
+    const instances: Record<string, unknown>[] = []
+    for (const slot of container.querySelectorAll<HTMLElement>('[data-kb-upload]')) {
+      instances.push(
+        mount(KbInlineAttachment, {
+          target: slot,
+          props: {
+            id: slot.dataset.kbUpload ?? '',
+            filename: slot.dataset.filename ?? 'file',
+            size: slot.dataset.size ?? '',
+          },
+        }),
+      )
     }
     return () => {
       for (const i of instances) unmount(i)

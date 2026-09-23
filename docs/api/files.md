@@ -166,7 +166,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{artifact, editors}` | 200, 403, 404 | — |
+| GET | `dual` | — | `{artifact, editors}` | 200, 403, 404, 500 | — |
 | PUT | `dual` | [body](#put-apiartifactsid-body) | `{artifact, editors}` | 200, 400, 403, 404 | audit |
 | DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
 

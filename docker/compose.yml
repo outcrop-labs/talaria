@@ -138,11 +138,17 @@ services:
       TALARIA_S3_BUCKET: ${TALARIA_S3_BUCKET:-talaria}
       TALARIA_S3_ACCESS_KEY: ${TALARIA_S3_ACCESS_KEY:-talaria}
       TALARIA_S3_SECRET_KEY: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
-      # Container-mode fleet wiring: agents reach the app by its service name
-      # on the shared network, and the app dials agents by theirs
-      # (ui/src/server/fleet-render.ts writeFleetManifest).
+      # Container-mode fleet wiring. Agents reach the app by its service name
+      # on the shared network. LLM, git credential, and tool-events dial the
+      # API (:5274) directly — the UI hop in front of every agent stream was
+      # one thread queueing a multi-core box. App MCP stays on the UI (:5273):
+      # those servers are TypeScript and Rust answers a fixed sentence if hit
+      # directly. The API binds the container network and is not published to
+      # the host. A rendered fleet keeps the old URL until the next render
+      # and roll.
+      TALARIA_API_BIND: ${TALARIA_API_BIND:-0.0.0.0}
       TALARIA_MCP_GW_URL: ${TALARIA_MCP_GW_URL:-http://talaria:5273/api/mcp/gw}
-      TALARIA_GATEWAY_SELF_URL: ${TALARIA_GATEWAY_SELF_URL:-http://talaria:5273/api/llm/v1}
+      TALARIA_GATEWAY_SELF_URL: ${TALARIA_GATEWAY_SELF_URL:-http://talaria:5274/api/llm/v1}
       TALARIA_AGENT_DIAL: ${TALARIA_AGENT_DIAL:-container}
       # The fleet's compose project (container names, volumes, reconcile
       # scope). Second instance on this host? It needs its own value here AND
@@ -156,12 +162,13 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-}
       AUTH_PUBLIC_URL: ${AUTH_PUBLIC_URL:-}
       TALARIA_TRUST_PROXY: ${TALARIA_TRUST_PROXY:-}
-      # Postgres pool ceilings — the api's and the UI's own pools, sharing one
-      # postgres (default max_connections=100; api 40 + ui 20 + migration 1 =
-      # 61). Raised from the inherited 10: agent fleets and parallel tasks
-      # queue on the api pool otherwise; the acquire timeout keeps bursts
-      # queueing instead of 500ing.
-      TALARIA_PG_POOL_MAX: ${TALARIA_PG_POOL_MAX:-40}
+      # Postgres pool ceilings. The sidecar starts with max_connections=200
+      # (a restart applies it; the image default is 100). 64 + UI 20 +
+      # migration 1 = 85, which also fits the old 100 including the 3
+      # superuser-reserved slots — an API restart that lands first cannot
+      # exhaust postgres. A busier fleet raises TALARIA_PG_POOL_MAX after
+      # postgres is at 200 (clamp 1–200; leave the UI's 20 and a reserve).
+      TALARIA_PG_POOL_MAX: ${TALARIA_PG_POOL_MAX:-64}
       TALARIA_PG_ACQUIRE_TIMEOUT_MS: ${TALARIA_PG_ACQUIRE_TIMEOUT_MS:-15000}
       TALARIA_UI_PG_POOL_MAX: ${TALARIA_UI_PG_POOL_MAX:-20}
     networks:

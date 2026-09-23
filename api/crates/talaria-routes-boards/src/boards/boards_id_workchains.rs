@@ -93,6 +93,7 @@ pub async fn post(
             created_at: talaria_agent_auth::epoch_ms_to_iso(created_ms),
             updated_at: talaria_agent_auth::epoch_ms_to_iso(updated_ms),
             steps: vec![],
+            edges: vec![],
         }
     }))
     .into_response())
