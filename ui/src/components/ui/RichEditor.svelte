@@ -34,6 +34,7 @@
   import type { Mentionable } from '@/components/chat/mentions.svelte'
   import { cn } from '@/lib/cn'
   import EditorToolbar from './EditorToolbar.svelte'
+  import { AttachmentChip } from './attachment-chip'
   import type { DocSearchFn } from './rich-editor'
 
   // WYSIWYG editor for normies; markdown under the hood (agents write/read markdown
@@ -55,6 +56,7 @@
     docSearch,
     slash = false,
     mentions,
+    attachments = false,
     prose = false,
     autosave = false,
     class: className,
@@ -76,6 +78,10 @@
     /** Enable "@" people-mention autocomplete with these candidates — pass the
      *  people a mention will actually notify (board/plan members, not the org). */
     mentions?: Mentionable[]
+    /** Accept non-image files as inline attachment chips (KB docs). Default
+     *  false: composers stay image-only — a chip pasted there has no
+     *  body-reach in can_access_upload. */
+    attachments?: boolean
     /** Flush, page-like surface: no box/border, text wrapped to a comfortable
      *  centered measure. For full-panel document editors. */
     prose?: boolean
@@ -89,22 +95,23 @@
 
   let editor = $state() as Readable<Editor>
 
-  // Upload + insert one pasted/dropped/picked file at the caret. Images embed
-  // as image nodes (markdown round-trips `![alt](/api/uploads/<id>)`); every
-  // other file becomes the inline-attachment placeholder text
-  // `[name|size](upload:<id>)` (TALA-2), which the read renderer turns into a
-  // chip. Plain text in the body, so save/load and re-ordering can't orphan it.
+  // Insert a pasted/dropped/attached file at the cursor. Images keep their
+  // existing path (upload → image node, ![alt](/api/uploads/<id>)); every
+  // other file becomes an inline attachment chip whose markdown token
+  // round-trips on load. Resolve-only envelope on purpose — the door's
+  // rejection (oversize, no perm) reads as a silent skip, same as the
+  // image-only path before it.
   const insertFile = async (file: File) => {
-    const { uploadFile, humanSize } = await import('@/lib/attachments')
+    const { uploadFile, isImage } = await import('@/lib/attachments')
     const r = await uploadFile(file)
     if (!('id' in r)) return
-    if (file.type.startsWith('image/')) {
+    if (isImage(r.mime)) {
       $editor?.chain().focus().setImage({ src: `/api/uploads/${r.id}`, alt: file.name }).run()
     } else {
-      // A space keeps the chip out of an adjacent word; the link syntax
-      // needs the filename bracket-escaped so `]` can't close it early.
-      const name = file.name.replace(/([\[\]])/g, '\\$1')
-      $editor?.chain().focus().insertContent(`[${name}|${humanSize(r.size)}](upload:${r.id}) `).run()
+      $editor?.chain().focus().insertContent({
+        type: 'attachmentChip',
+        attrs: { id: r.id, filename: r.filename, mime: r.mime, size: r.size },
+      }).run()
     }
   }
 
@@ -122,6 +129,7 @@
         TableHeader,
         TableCell,
         Image.configure({ inline: false, allowBase64: false }),
+        AttachmentChip,
         Placeholder.configure({
           placeholder: ({ node }) =>
             slash && node.type.name === 'paragraph' ? (placeholder ? `${placeholder}  ·  type “/” for blocks` : 'Type “/” for blocks, or just write') : (placeholder ?? ''),
@@ -136,19 +144,21 @@
       // anywhere in the empty area focuses and places the caret.
       editorProps: {
         attributes: { class: 'tiptap px-3 py-2 text-sm', style: `min-height:${fill ? '100%' : minHeight}` },
-        // Files paste/drop straight in: upload → insert. Images embed as
-        // image nodes (markdown round-trips ![alt](url)); every other file
-        // becomes the inline-attachment placeholder `[name|size](upload:<id>)`
-        // (TALA-2) — plain text in the body, so save/load round-trips keep it.
+        // Files paste/drop straight in: upload → image node or attachment
+        // chip. `attachments` surfaces (KB docs) take EVERY file; composers
+        // (chat, tickets) keep the image-only filter — a non-image pasted
+        // there must not become a chip (no body-reach in can_access_upload).
         handlePaste: (_view, event) => {
-          const files = Array.from(event.clipboardData?.files ?? [])
+          const all = Array.from(event.clipboardData?.files ?? [])
+          const files = attachments ? all : all.filter((f) => f.type.startsWith('image/'))
           if (files.length === 0) return false
           event.preventDefault()
           for (const f of files) void insertFile(f)
           return true
         },
         handleDrop: (_view, event) => {
-          const files = Array.from(event.dataTransfer?.files ?? [])
+          const all = Array.from(event.dataTransfer?.files ?? [])
+          const files = attachments ? all : all.filter((f) => f.type.startsWith('image/'))
           if (files.length === 0) return false
           event.preventDefault()
           for (const f of files) void insertFile(f)
@@ -276,7 +286,12 @@
   }}
 >
   {#if editable}
-    <EditorToolbar {editor} {onSubmit} {docSearch} />
+    <EditorToolbar
+      {editor}
+      {onSubmit}
+      {docSearch}
+      onAttachFiles={attachments ? (files: FileList) => void Array.from(files).forEach((f) => void insertFile(f)) : undefined}
+    />
   {/if}
   <EditorContent editor={$editor} class={fill ? 'min-h-0 flex-1 overflow-y-auto [&>.tiptap]:min-h-full' : undefined} />
 </div>

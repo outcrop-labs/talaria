@@ -20,6 +20,7 @@
     FileText,
     SendHorizontal,
     type LucideIcon as IconType,
+    Paperclip,
   } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
@@ -35,10 +36,14 @@
     editor,
     onSubmit,
     docSearch,
+    onAttachFiles,
   }: {
     editor: Readable<Editor>
     onSubmit?: () => void
     docSearch?: DocSearchFn
+    /** RichEditor passes its insertFile only when its `attachments` prop is
+     *  on — the paperclip (file picker → insert at cursor) shows exactly there. */
+    onAttachFiles?: (files: FileList) => void
   } = $props()
 
   // Active state per mark/node. The svelte-tiptap store emits on every
@@ -104,6 +109,15 @@
   }
 
   const c = () => $editor.chain().focus()
+
+  let attachRef = $state<HTMLInputElement | null>(null)
+
+  const pickAttach = (files: FileList | null) => {
+    if (files?.length) onAttachFiles?.(files)
+    // Reset so picking the same file again still fires onchange —
+    // AttachButton.svelte's hidden-input pattern.
+    if (attachRef) attachRef.value = ''
+  }
 </script>
 
 {#snippet btn(icon: IconType, title: string, active: boolean, action: () => void)}
@@ -142,6 +156,9 @@
 {/snippet}
 
 {#if $editor}
+<!-- A plain multi-file picker; upload + insert branch on each file's mime
+     (RichEditor's insertFile) — the toolbar only picks. -->
+<input bind:this={attachRef} type="file" multiple hidden onchange={(e) => pickAttach(e.currentTarget.files)} />
   <div class="flex flex-wrap items-center gap-0.5 border-b border-line-subtle px-2 py-1">
     <Modal open={linkOpen} onClose={() => (linkOpen = false)} title={s.link ? 'Edit link' : 'Add link'}>
       <form
@@ -209,6 +226,9 @@
       imgUrl = ''
       imgOpen = true
     })}
+    {#if onAttachFiles}
+      {@render btn(Paperclip, 'Attach file', false, () => attachRef?.click())}
+    {/if}
     {@render btn(LinkIcon, 'Link', s.link, openLinkModal)}
     {#if docSearch}
       <!-- The span is the popover's anchor: the panel portals to <body>, so it
