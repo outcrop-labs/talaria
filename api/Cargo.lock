@@ -5377,6 +5377,7 @@ dependencies = [
  "talaria-scheduler",
  "talaria-secretbox",
  "talaria-state",
+ "talaria-tasks-types",
  "talaria-update-job",
  "talaria-web-search",
  "talaria-work-dispatch",

@@ -45,6 +45,7 @@ talaria-runs-work-session = { path = "../talaria-runs-work-session" }
 talaria-scheduler = { path = "../talaria-scheduler" }
 talaria-secretbox = { path = "../talaria-secretbox" }
 talaria-state = { path = "../talaria-state" }
+talaria-tasks-types = { path = "../talaria-tasks-types" }
 talaria-update-job = { path = "../talaria-update-job" }
 talaria-work-dispatch = { path = "../talaria-work-dispatch" }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

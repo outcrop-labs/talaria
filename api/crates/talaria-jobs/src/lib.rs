@@ -95,6 +95,13 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
+    // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
+    // `real_run_deps` — the same assembly agent-hire calls directly) both
+    // existed; this wiring did not, so every plan-draft POST answered 500
+    // "could not start the plan draft" — `BUILD_DISPATCH.get()` is None on
+    // every install. Research start and guided reindex die the same way.
+    let _ = talaria_tasks_types::BUILD_DISPATCH.set(Arc::new(talaria_work_dispatch::dispatch_deps));
     talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));
@@ -305,6 +312,15 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::UpdateReconcile),
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
+        );
+        // THE RUN ASSEMBLY request-path enqueues use. Unset, every plan-draft
+        // POST is a 500 ("dispatch not wired" → "could not start the plan
+        // draft"), and research start and guided reindex die the same way.
+        // Nothing else in the crate graph runs boot, so this is the only
+        // place the absence can be caught before drafting tickets does nothing.
+        assert!(
+            talaria_tasks_types::BUILD_DISPATCH.get().is_some(),
+            "BUILD_DISPATCH fell out of the boot wiring — plan drafts, research, and reindex cannot enqueue"
         );
     }
 
