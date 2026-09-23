@@ -1,3 +1,4 @@
+import { classifyPlatformHref, findPlatformLinks } from '@/lib/chips'
 import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
@@ -53,6 +54,41 @@ function remarkMentions() {
           }
         }
         // Don't descend into links — a nested link is invalid mdast.
+        if (child.type !== 'link') walk(child)
+        next.push(child)
+      }
+      node.children = next
+    }
+    walk(tree as MdNode)
+  }
+}
+
+// Bare platform paths (`/boards/…`) are not GFM autolinks. Wrap the ones that
+// classify so rehypeMercury can paint them as chips. Already-linked URLs are
+// left for the hast pass — descending into a link would nest one.
+function remarkPlatformLinks() {
+  return (tree: unknown) => {
+    const walk = (node: MdNode): void => {
+      if (!node.children) return
+      const next: MdNode[] = []
+      for (const child of node.children) {
+        if (child.type === 'text' && child.value && child.value.includes('/')) {
+          const hits = findPlatformLinks(child.value)
+          if (hits.length) {
+            let cursor = 0
+            for (const hit of hits) {
+              if (hit.start > cursor) next.push({ type: 'text', value: child.value.slice(cursor, hit.start) })
+              next.push({
+                type: 'link',
+                url: hit.link.href,
+                children: [{ type: 'text', value: child.value.slice(hit.start, hit.end) }],
+              })
+              cursor = hit.end
+            }
+            if (cursor < child.value.length) next.push({ type: 'text', value: child.value.slice(cursor) })
+            continue
+          }
+        }
         if (child.type !== 'link') walk(child)
         next.push(child)
       }
@@ -180,6 +216,13 @@ function transformNode(node: HastNode): HastNode | null {
       if (href.startsWith('mention:')) {
         return el('span', { className: 'rounded bg-accent-soft px-1 font-medium text-accent' }, node.children ?? [])
       }
+      const platform = classifyPlatformHref(href)
+      if (platform) {
+        // Markdown.svelte mounts PlatformLinkChip into this placeholder.
+        // The raw URL does not survive into the anchor — unrecognized URLs
+        // take the branch below.
+        return el('span', { dataPlatformChip: '', dataHref: platform.href, dataEntity: platform.entity }, [])
+      }
       props.href = safeUrl(href)
       props.target = '_blank'
       props.rel = 'noopener noreferrer'
@@ -255,6 +298,7 @@ const processor = unified()
   .use(remarkGfm)
   .use(remarkBreaks)
   .use(remarkMentions)
+  .use(remarkPlatformLinks)
   .use(remarkRehype)
   // detect covers unlabeled fences; unknown languages are skipped by default.
   .use(rehypeHighlight, { detect: true })

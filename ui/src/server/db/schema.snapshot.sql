@@ -292,7 +292,8 @@ CREATE TABLE public.channel_messages (
     thread_root_id uuid,
     edited_at timestamp with time zone,
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
-    guard jsonb
+    guard jsonb,
+    chips jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 CREATE TABLE public.channel_teams (
     channel_id uuid NOT NULL,
@@ -311,6 +312,22 @@ CREATE TABLE public.channels (
     kind text DEFAULT 'channel'::text NOT NULL,
     dm_key text,
     task_id uuid
+);
+CREATE TABLE public.chat_approvals (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    kind text NOT NULL,
+    summary text DEFAULT ''::text NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    external_id text,
+    agent_model text,
+    owner_user_id uuid,
+    conversation_id uuid,
+    channel_id uuid,
+    message_id uuid,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    decided_at timestamp with time zone
 );
 CREATE TABLE public.conversation_members (
     conversation_id uuid NOT NULL,
@@ -337,7 +354,8 @@ CREATE TABLE public.conversations (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     archived boolean DEFAULT false NOT NULL,
     kind text DEFAULT 'chat'::text NOT NULL,
-    plan_template_id uuid
+    plan_template_id uuid,
+    unlocked_tools jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 CREATE TABLE public.daily_brief_entries (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -698,7 +716,8 @@ CREATE TABLE public.messages (
     author_user_id uuid,
     guard jsonb,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    streamed_at timestamp with time zone DEFAULT now() NOT NULL
+    streamed_at timestamp with time zone DEFAULT now() NOT NULL,
+    chips jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 CREATE TABLE public.model_blurbs (
     model_id text NOT NULL,
@@ -1267,6 +1286,8 @@ ALTER TABLE ONLY public.channel_teams
     ADD CONSTRAINT channel_teams_pkey PRIMARY KEY (channel_id, team_id);
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.chat_approvals
+    ADD CONSTRAINT chat_approvals_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversation_reads
@@ -1491,6 +1512,8 @@ CREATE INDEX channel_messages_streaming_idx ON public.channel_messages USING btr
 CREATE INDEX channel_messages_thread_idx ON public.channel_messages USING btree (thread_root_id) WHERE (thread_root_id IS NOT NULL);
 CREATE UNIQUE INDEX channels_dm_key_idx ON public.channels USING btree (dm_key) WHERE (dm_key IS NOT NULL);
 CREATE UNIQUE INDEX channels_task_idx ON public.channels USING btree (task_id) WHERE (task_id IS NOT NULL);
+CREATE UNIQUE INDEX chat_approvals_external_idx ON public.chat_approvals USING btree (external_id) WHERE ((external_id IS NOT NULL) AND (status = 'pending'::text));
+CREATE INDEX chat_approvals_pending_idx ON public.chat_approvals USING btree (status, created_at DESC);
 CREATE INDEX conversations_user_agent_idx ON public.conversations USING btree (user_id, agent_model, updated_at DESC);
 CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING btree (brief_id, batch);
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
@@ -1624,6 +1647,14 @@ ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.chat_approvals
+    ADD CONSTRAINT chat_approvals_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES public.channels(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.chat_approvals
+    ADD CONSTRAINT chat_approvals_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.chat_approvals
+    ADD CONSTRAINT chat_approvals_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.chat_approvals
+    ADD CONSTRAINT chat_approvals_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members

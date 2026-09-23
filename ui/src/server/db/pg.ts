@@ -3122,6 +3122,30 @@ alter table tasks drop column if exists conversation_id`,
      add column if not exists canvas_x integer`,
   `alter table task_workchain_steps
      add column if not exists canvas_y integer`,
+  // Chat chips: links an agent produced, tools it exposed, and the approval
+  // a protected action is waiting on. unlocked_tools is the grant an approval
+  // leaves on the conversation — the unlock chip is the visible half.
+  `alter table messages add column if not exists chips jsonb not null default '[]'`,
+  `alter table channel_messages add column if not exists chips jsonb not null default '[]'`,
+  `alter table conversations add column if not exists unlocked_tools jsonb not null default '[]'`,
+  `create table if not exists chat_approvals (
+     id uuid primary key default gen_random_uuid(),
+     kind text not null,
+     summary text not null default '',
+     payload jsonb not null default '{}',
+     external_id text,
+     agent_model text,
+     owner_user_id uuid references users(id) on delete set null,
+     conversation_id uuid references conversations(id) on delete cascade,
+     channel_id uuid references channels(id) on delete cascade,
+     message_id uuid,
+     status text not null default 'pending',
+     decided_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     decided_at timestamptz
+   )`,
+  `create unique index if not exists chat_approvals_external_idx on chat_approvals(external_id) where external_id is not null and status = 'pending'`,
+  `create index if not exists chat_approvals_pending_idx on chat_approvals(status, created_at desc)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -287,6 +287,8 @@
               message={m}
               {ctx}
               onOpenThread={() => (threadRoot = m.threadRootId ?? m.id)}
+              onInvoke={(text) => void send(text, [])}
+              onDecided={() => void messagesQuery.refetch()}
               onContextMenu={(e) => menu.openMenu(e, rowMenuEntries(m, ctx, () => (threadRoot = m.id)))}
             />
           {/each}
