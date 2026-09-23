@@ -60,6 +60,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 # build-base + cmake: aws-lc-sys — the TLS stack's C half, the same reason
 # the devbox image carries build-essential — compiles C here, in CI, once.
 FROM docker.io/library/rust:1.97.1-alpine3.21 AS deps
+# Local cargo is capped at 2 jobs (api/.cargo/config.toml) so a shared machine
+# stays usable. This stage cooks from recipe.json alone and does not have that
+# file, so the cap has to be an env var here — otherwise a laptop `docker build`
+# of the package takes every core. A dedicated runner passes CARGO_BUILD_JOBS
+# (api-package.yml passes nproc); the default keeps 2. The build stage inherits
+# this ENV, which also wins over the config file copied in with the source.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN apk add --no-cache build-base cmake
 RUN cargo install cargo-chef --locked
 WORKDIR /repo/api

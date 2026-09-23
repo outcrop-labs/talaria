@@ -172,14 +172,8 @@ export async function updateEndpoint(
   if (patch.class) await sql`update llm_endpoints set class = ${patch.class}, updated_at = now() where id = ${id}`
   if (patch.requestDefaults)
     await sql`update llm_endpoints set request_defaults = ${sql.json(patch.requestDefaults as never)}, updated_at = now() where id = ${id}`
-  if (patch.priceInPerMtok !== undefined)
-    await sql`update llm_endpoints set price_in_per_mtok = ${patch.priceInPerMtok}, updated_at = now() where id = ${id}`
-  if (patch.priceOutPerMtok !== undefined)
-    await sql`update llm_endpoints set price_out_per_mtok = ${patch.priceOutPerMtok}, updated_at = now() where id = ${id}`
   if (patch.models)
     await sql`update llm_endpoints set models = ${sql.json(patch.models)}, updated_at = now() where id = ${id}`
-  if (patch.modelPrices)
-    await sql`update llm_endpoints set model_prices = ${sql.json(patch.modelPrices)}, updated_at = now() where id = ${id}`
   if (patch.modelEfforts)
     await sql`update llm_endpoints set model_efforts = ${sql.json(patch.modelEfforts as never)}, updated_at = now() where id = ${id}`
 }
@@ -201,7 +195,7 @@ export async function createEndpoint(e: {
   const rows = await sql`
     insert into llm_endpoints (name, provider, base_url, class, api_key_env, api_key_cipher, models, model_prices)
     values (${e.name}, ${e.provider}, ${e.baseUrl ?? null}, ${e.class}, ${e.apiKeyEnv ?? null}, ${cipher},
-            ${sql.json(e.models ?? [])}, ${sql.json(e.modelPrices ?? {})})
+            ${sql.json(e.models ?? [])}, ${sql.json({})})
     returning id
   `
   return (rows[0] as { id: string }).id

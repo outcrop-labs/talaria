@@ -60,6 +60,11 @@ with the reason on stderr, anything else a non-blocking error). It always runs o
 whole tree, no diff fast path: the check is seconds and dependency-free, and scope-skipping
 is a second place for checker scope to rot. Because parallel sessions share working trees,
 a gate failure may predate your change — the block message says what to do about that.
+After the check passes, the same gate runs
+[`scripts/cleanup-sweep.mjs`](../scripts/cleanup-sweep.mjs) `--gate`. Exit 2 then means disk
+pressure or stale dev artifacts; the procedure is the
+[cleanup](../.claude/skills/cleanup/SKILL.md) skill. That scan is not part of `bun run check`:
+a CI runner has no one's worktrees, and a disk reading is not an invariant of the tree.
 
 The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](../scripts/hooks/pre-push)
 forwards the refs a push is about to send to
@@ -69,7 +74,18 @@ sets `core.hooksPath`, so it is on by default in any clone that has been set up.
 therefore learns "pull requests target `rc`, and `main` takes the promotion of a verified `rc`"
 from a refused push — the message names the rule and the way to do it instead — rather than from
 a document it may not have read. The model:
-[`docs/BRANCHES.md`](../docs/BRANCHES.md).
+[`docs/BRANCHES.md`](./BRANCHES.md).
+
+## Local compiles
+
+The stop gate does not compile. The local pre-push compile is
+[`scripts/gate.mjs`](../scripts/gate.mjs) (`bun run gate`): `check` always, then
+typecheck, tests, clippy and `cargo test` only for the surfaces and packages the
+diff touches. It is not a workspace cargo. `api:check`, `desktop:check` and
+`verify` are what CI's jobs run; an agent that runs them locally locks
+`api/target` and pins the machine. The job cap that keeps a compile that *does*
+run from taking every core lives in `api/.cargo/config.toml`. CI lifts it. The
+procedure is [`ship-a-change`](../.claude/skills/ship-a-change/SKILL.md).
 
 ## After the pull request opens
 

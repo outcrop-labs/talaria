@@ -265,18 +265,16 @@ struct ValidatedPatch {
     rotates_key: bool,
 }
 
-/// The PUT patch: every member optional; priceIn/Out nonneg nullish;
-/// modelPrices/modelEfforts records; requestDefaults a permissive record;
-/// apiKey raw ('' clears, omitted leaves); force the double opt-in.
+/// The PUT patch: every member optional. Price fields are ignored — spend
+/// comes from the provider, not an admin-typed rate card.
 fn validate_patch(obj: &serde_json::Map<String, Value>) -> Result<ValidatedPatch, String> {
     let class = talaria_body::optional_enum_member(obj, "class", &["local", "cloud"])?;
-    let price_in = nullish_nonneg(obj, "priceInPerMtok")?;
-    let price_out = nullish_nonneg(obj, "priceOutPerMtok")?;
+    let _ = nullish_nonneg(obj, "priceInPerMtok")?;
+    let _ = nullish_nonneg(obj, "priceOutPerMtok")?;
     let models = optional_string_array_member(obj, "models", 1, 120, 100)?;
-    let model_prices = match obj.get("modelPrices") {
-        None => None,
-        Some(v) => Some(price_record(v, 120)?),
-    };
+    if let Some(v) = obj.get("modelPrices") {
+        let _ = price_record(v, 120)?;
+    }
     // Admin-declared effort ladders for models whose catalog publishes none
     // (or publishes wrong ones). Levels are the provider's own spellings,
     // sent verbatim — the picker must never rename a level into one the model
@@ -309,10 +307,10 @@ fn validate_patch(obj: &serde_json::Map<String, Value>) -> Result<ValidatedPatch
     Ok(ValidatedPatch {
         endpoint: EndpointPatch {
             class,
-            price_in_per_mtok: price_in,
-            price_out_per_mtok: price_out,
+            price_in_per_mtok: None,
+            price_out_per_mtok: None,
             models: models.clone(),
-            model_prices,
+            model_prices: None,
             model_efforts,
             request_defaults,
             api_key,

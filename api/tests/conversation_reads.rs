@@ -46,7 +46,7 @@ async fn land(
 }
 
 async fn unread(pg: &PgPool, user: &str, kind: &str, conversation: &str) -> i32 {
-    list_conversations(pg, user, kind)
+    list_conversations(pg, user, kind, false)
         .await
         .unwrap()
         .into_iter()
@@ -144,7 +144,7 @@ async fn unreads_count_whose_turns_and_cursors_only_advance() {
     // label survives on the collaborator's row.
     mark_conversation_read(&pg, &plan, &owner, 1).await.unwrap();
     assert_eq!(unread(&pg, &owner, "plan", &plan).await, 0);
-    let row = list_conversations(&pg, &owner, "plan")
+    let row = list_conversations(&pg, &owner, "plan", false)
         .await
         .unwrap()
         .into_iter()

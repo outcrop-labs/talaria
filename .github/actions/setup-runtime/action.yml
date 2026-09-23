@@ -81,6 +81,27 @@ runs:
         toolchain: ${{ inputs.rust }}
         components: rustfmt, clippy
 
+    # Local cargo is capped at 2 jobs (api/.cargo/config.toml and
+    # desktop/src-tauri/.cargo/config.toml) so a shared dev machine stays
+    # usable. A runner is dedicated — lift the cap to its core count, or the
+    # api job's cold compile blows the timeout it was sized against. A host
+    # this step cannot count keeps the cap: slow, not a failed job.
+    - if: inputs.rust != ''
+      name: Lift the local cargo job cap
+      shell: bash
+      run: |
+        jobs=""
+        if jobs=$(nproc 2>/dev/null) && [ -n "$jobs" ]; then
+          :
+        elif jobs=$(sysctl -n hw.logicalcpu 2>/dev/null) && [ -n "$jobs" ]; then
+          :
+        elif [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then
+          jobs=$NUMBER_OF_PROCESSORS
+        else
+          echo "setup-runtime: could not count CPUs; leaving the local cargo job cap in place"
+          exit 0
+        fi
+        echo "CARGO_BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
     - if: inputs.bun != ''
       uses: oven-sh/setup-bun@v2
       with:

@@ -78,7 +78,16 @@ export interface LlmEndpoint {
   /** Admin-declared reasoning-effort ladders, for models whose catalog
    *  publishes none — the endpoint modal's effort editor writes here. */
   modelEfforts?: Record<string, string[]>
-  /** Auto-fetched $/MTok (public OpenRouter catalog); overrides win. */
+  /** Published provider rates. Read-only. Not a spend source when the provider reports a charge. */
+  providerPrices?: Array<{
+    model: string
+    variant: string
+    in: number | null
+    out: number | null
+    source: string
+    fetchedAt: string
+  }>
+  /** Fetched catalog rates. Not a spend source. */
   autoPrices?: Record<string, { in: number; out: number }>
   /** Extra request-body defaults merged into gateway/agent calls (e.g. the
    *  OpenRouter no-train provider allowlist). */

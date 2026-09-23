@@ -26,9 +26,10 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use talaria_capability::{CapabilityFact, get_capabilities};
+use talaria_capability::{CapabilityFact, capability_key, get_capabilities};
+use talaria_gateway::registry::routing_for;
 use talaria_gateway::settings::get_setting;
-use talaria_model_roles::resolve_role_model;
+use talaria_model_roles::{RoleAssignmentIssue, assignment_note, resolve_role_model};
 
 /// How a capability is satisfied for one run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -560,6 +561,91 @@ pub async fn reach_for_keys(
     reach_for(&DbReach { pg }, keys, wanted).await
 }
 
+/// THE PANEL'S QUESTION, which is not the model's. `role_assignment_issues`
+/// reports a capability the weights are known to lack. For `search` that
+/// fact is not the run: a harness tool (`web_search` on the Talaria toolkit
+/// or Hermes, or any registered web-search server) fetches the same pages.
+/// This drops the warning when the run can reach search that way, and
+/// rewrites it when the gap is a tool the model cannot call.
+///
+/// A failed routing read is not evidence either way — the issue stays as
+/// the raw builder wrote it, which names the missing tool rather than
+/// inventing a browser the weights do not have.
+pub async fn role_assignment_issues_reached(pg: &PgPool) -> Vec<RoleAssignmentIssue> {
+    let issues = talaria_model_roles::role_assignment_issues(pg).await;
+    let mut reach_of: HashMap<String, Option<Reach>> = HashMap::new();
+    for issue in &issues {
+        if !issue.missing.iter().any(|c| c == "search") || reach_of.contains_key(&issue.model) {
+            continue;
+        }
+        let keys = model_capability_keys(pg, &issue.model).await;
+        if keys.is_empty() {
+            reach_of.insert(issue.model.clone(), None);
+            continue;
+        }
+        let reach = reach_for_keys(pg, &keys, &["search"]).await;
+        reach_of.insert(issue.model.clone(), reach.get("search").cloned());
+    }
+    adjust_search_issues(issues, &reach_of)
+}
+
+async fn model_capability_keys(pg: &PgPool, model: &str) -> Vec<String> {
+    let Ok(routing) = routing_for(pg, model).await else {
+        return Vec::new();
+    };
+    routing
+        .endpoints
+        .iter()
+        .map(|ep| capability_key(&ep.name, &routing.upstream_model))
+        .collect()
+}
+
+/// `reach_of` is keyed by the assigned model id. `None` means the lookup
+/// could not be asked — leave the raw issue, which already names the tool
+/// gap. `Some` is what `reach_for` said about `search`.
+pub fn adjust_search_issues(
+    issues: Vec<RoleAssignmentIssue>,
+    reach_of: &HashMap<String, Option<Reach>>,
+) -> Vec<RoleAssignmentIssue> {
+    let mut out = Vec::with_capacity(issues.len());
+    for mut issue in issues {
+        if !issue.missing.iter().any(|c| c == "search") {
+            out.push(issue);
+            continue;
+        }
+        // Not consulted, or the routing read failed: the raw note already
+        // names the missing tool. A reached search — native or a harness
+        // tool — is not a gap; the model flag stays on the chip.
+        let Some(Some(reach)) = reach_of.get(&issue.model) else {
+            out.push(issue);
+            continue;
+        };
+        if reach.reached {
+            issue.missing.retain(|c| c != "search");
+            if issue.missing.is_empty() {
+                continue;
+            }
+            issue.note = assignment_note(
+                &issue.model,
+                &issue.missing.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            out.push(issue);
+            continue;
+        }
+        if reach.detail.contains("unable to call tools") {
+            // A tool is there. The model cannot drive it. That is a real
+            // gap, and it is not "the model has no web search".
+            issue.note = format!(
+                "{}. The assignment stands; set the role back to Auto if that is not what you meant.",
+                reach.detail.trim_end_matches('.')
+            );
+        }
+        // Otherwise nothing fetches. The raw note already says so.
+        out.push(issue);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,5 +1059,94 @@ mod tests {
         assert!(name_matches("web_search_pro", &["web_search"]));
         assert!(!name_matches("search_knowledge", &["web_search"]));
         assert!(!name_matches("websearching", &["web_search"]));
+    }
+
+    fn search_issue() -> RoleAssignmentIssue {
+        RoleAssignmentIssue {
+            role: "research-recon".into(),
+            model: "openrouter/~deepseek/deepseek-flash-latest".into(),
+            missing: vec!["search".into()],
+            note: assignment_note("openrouter/~deepseek/deepseek-flash-latest", &["search"]),
+        }
+    }
+
+    fn reach(reached: bool, via: Option<ReachVia>, detail: &str) -> Reach {
+        Reach {
+            capability: "search".into(),
+            reached,
+            via,
+            supplier: if reached && via == Some(ReachVia::Tool) {
+                Some(Supplier {
+                    server: "talaria".into(),
+                    tool: "web_search".into(),
+                })
+            } else {
+                None
+            },
+            detail: detail.into(),
+        }
+    }
+
+    #[test]
+    fn a_harness_web_tool_is_not_a_missing_browser() {
+        // THE WARNING THIS FIXES. deepseek-flash has no native search. The
+        // toolkit's web_search (and Hermes's) fetches anyway. Claiming the
+        // run will invent citations steers the admin off a model that works.
+        let mut map = HashMap::new();
+        map.insert(
+            search_issue().model.clone(),
+            Some(reach(
+                true,
+                Some(ReachVia::Tool),
+                "the model calls 'talaria.web_search' for it",
+            )),
+        );
+        assert!(adjust_search_issues(vec![search_issue()], &map).is_empty());
+    }
+
+    #[test]
+    fn no_web_tool_names_the_tool_not_the_weights() {
+        let mut map = HashMap::new();
+        map.insert(
+            search_issue().model.clone(),
+            Some(reach(false, None, "nothing here reaches 'search'")),
+        );
+        let out = adjust_search_issues(vec![search_issue()], &map);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].note.contains("no web-search tool is available here"));
+        assert!(!out[0].note.contains("has no web search"));
+        assert!(!out[0].note.contains("citations will be invented"));
+    }
+
+    #[test]
+    fn a_tool_the_model_cannot_call_stays_a_warning() {
+        let detail = "'talaria.web_search' could supply 'search', but this model is recorded as unable to call tools.";
+        let mut map = HashMap::new();
+        map.insert(
+            search_issue().model.clone(),
+            Some(reach(false, None, detail)),
+        );
+        let out = adjust_search_issues(vec![search_issue()], &map);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].note.contains("unable to call tools"));
+        assert!(out[0].note.contains("talaria.web_search"));
+        assert!(!out[0].note.contains("has no web search"));
+    }
+
+    #[test]
+    fn a_non_search_gap_is_left_alone() {
+        let note = assignment_note("gpt-4o-mini", &["code", "tools"]);
+        let issue = RoleAssignmentIssue {
+            role: "code-heavy".into(),
+            model: "gpt-4o-mini".into(),
+            missing: vec!["code".into(), "tools".into()],
+            note: note.clone(),
+        };
+        let out = adjust_search_issues(vec![issue], &HashMap::new());
+        assert_eq!(out[0].note, note);
+        assert_eq!(
+            out[0].missing,
+            vec!["code".to_string(), "tools".to_string()]
+        );
     }
 }

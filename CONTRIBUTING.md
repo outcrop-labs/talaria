@@ -22,9 +22,7 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
 
 ## Before you send a PR
 
-1. **Verify.** `bun run verify` from the repo root (typecheck + tests + invariants + the docs
-   and generated-reference drift checks). Green before you push, every time. Touched `api/`?
-   `bun run api:check` too; touched `desktop/`? `bun run desktop:check`.
+1. **Verify, scoped.** `bun run gate` from the repo root. It runs `check`, then compiles and tests only the surfaces and packages this diff touches. That is the local gate. Do not run a workspace cargo (`bun run api:check`, `bun run desktop:check`, `cargo test` / `clippy` without `-p`) to be safe — those lock `api/target` and pin the machine for everyone else in the checkout. CI runs the full surface job; a red CI log names the crate, and `cargo test -p <that crate>` reproduces it.
 2. **Exercise the path you changed** in the running app (`bun talaria dev` →
    <http://localhost:5273>) — typecheck alone doesn't prove a surface works.
 3. **Add a changelog entry file** — `changelog/YYYY-MM-DD-<slug>.md`, the bullet verbatim

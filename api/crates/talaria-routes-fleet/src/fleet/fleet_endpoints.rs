@@ -134,10 +134,9 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<Validated, String> {
     // returned in the clear.
     let api_key = optional_max_string_member(obj, "apiKey", 400)?;
     let models = optional_string_array_member(obj, "models", 1, 120, 100)?.unwrap_or_default();
-    let model_prices = match obj.get("modelPrices") {
-        None => json!({}),
-        Some(v) => price_record(v, 120)?,
-    };
+    if let Some(v) = obj.get("modelPrices") {
+        let _ = price_record(v, 120)?;
+    }
     Ok(Validated {
         name,
         provider,
@@ -146,7 +145,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<Validated, String> {
         api_key_env,
         api_key,
         models,
-        model_prices,
+        model_prices: json!({}),
     })
 }
 
