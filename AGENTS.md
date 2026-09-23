@@ -31,10 +31,11 @@ Bun is the runner for the whole repo (the root `package.json` is the hub):
 | `bun run dev` | full dev stack → <http://localhost:5273> |
 | `bun run api` | the Rust api (`cargo run`, :5274) |
 | `bun run check` | invariants + doc links + generated-reference drift — seconds, **needs no install** |
-| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — the CI api job |
+| `bun run gate` | local pre-push — `check`, then compile/test only what the diff touches |
+| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — the CI api job, not the local default |
 | `bun run desktop` | Talaria Desktop (`tauri dev`) — run on the **host**, never in a box (no display); `docs/DESKTOP.md` |
-| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — the CI desktop job |
-| `bun run verify` | check + typecheck + test — the PR gate |
+| `bun run desktop:check` | fmt + clippy + cargo tests + svelte-check — the CI desktop job, not the local default |
+| `bun run verify` | check + typecheck + ui test — CI's ui/mcp coverage, not the local default |
 | `bun run test` / `typecheck` / `build` / `start` | the ui/ scripts (typecheck is svelte-check) |
 | `bun run docs:api` | regenerate the generated references |
 
@@ -64,7 +65,7 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   [`docs/CLI-REFERENCE.md`](./docs/CLI-REFERENCE.md) and
   [`docs/api/`](./docs/api/README.md) both come out of the generator behind
   `bun run check` — change the source, run `bun run docs:api`.
-- `bun run verify` green before every push, every time.
+- Local pre-push is `bun run gate` ([`scripts/gate.mjs`](./scripts/gate.mjs)): `check` always; compile and test only the surfaces and packages the diff touches. Do not run a workspace cargo (`api:check`, `desktop:check`, `cargo test` / `clippy` without `-p`) — it locks `api/target` and pins the machine. CI runs the full surface job.
 - Do not report dev work done while its open pull request has failing checks, pending
   checks, or merge conflicts against `rc`. Local gates cannot see that. The watcher is
   [`scripts/hooks/pr-watch.mjs`](./scripts/hooks/pr-watch.mjs); the procedure is
@@ -127,6 +128,7 @@ One line each — the full symptom → check → fix procedure is the
 - Docker builds fail resolving hosts → the daemon's resolver config; builds may need
   `--network=host`.
 - Authed curl without a browser → mint a Redis session directly.
+- A cargo test or clippy pins the machine and locks `api/target` → `bun run gate`, never a workspace cargo. The cap is `api/.cargo/config.toml`.
 
 ## The stop gate
 

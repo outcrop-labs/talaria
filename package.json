@@ -19,7 +19,8 @@
     "desktop:check": "cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --check && cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path desktop/src-tauri/Cargo.toml --quiet && cd desktop && bun run typecheck",
     "api:vectors": "bun scripts/gen-secretbox-vectors.mjs && bun scripts/gen-yaml-vectors.mjs",
     "api:vectors:check": "bun scripts/gen-secretbox-vectors.mjs --check && bun scripts/gen-yaml-vectors.mjs --check",
-    "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs && bun scripts/gen-docs.mjs --check && bun scripts/check-mcp-routes.mjs && bun scripts/changelog-roll.mjs --check && bun scripts/cleanup-sweep.test.mjs",
+    "check": "bun scripts/check-invariants.mjs && bun scripts/check-docs.mjs && bun scripts/gen-docs.mjs --check && bun scripts/check-mcp-routes.mjs && bun scripts/changelog-roll.mjs --check && bun scripts/cleanup-sweep.test.mjs && bun scripts/gate.mjs --self-test",
+    "gate": "bun scripts/gate.mjs",
     "verify": "bun run check && bun run typecheck && bun run test"
   }
 }

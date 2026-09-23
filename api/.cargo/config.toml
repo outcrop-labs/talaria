@@ -7,3 +7,19 @@
 # find 'ld'". musl/package image stays on the default linker until proven.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# Local compile budget. Cargo's default is one rustc job per logical CPU, and
+# each rustc is a multi-GB process that joins the same jobserver — so an
+# uncapped `cargo test` or clippy takes every core and a matching pile of RAM.
+# On a shared dev machine that pins the host: the checkout's `api/target` lock
+# blocks every other cargo, and the other boxes on the machine stop responding.
+#
+# 2 is the cap, not a suggestion. It is the memory cap as well as the CPU cap:
+# peak RAM tracks the number of concurrent rustc processes. Raise it only for a
+# dedicated build, with `CARGO_BUILD_JOBS` (that env var wins over this file) —
+# never from an agent, and never by editing this number to make a laptop "faster".
+# CI lifts it on purpose: setup-runtime writes `CARGO_BUILD_JOBS=$(nproc)`, and
+# api/package.Dockerfile takes the same var as a build-arg. A runner that forgets
+# the lift compiles at 2. Slow, not a pinned laptop. That is the right failure.
+[build]
+jobs = 2

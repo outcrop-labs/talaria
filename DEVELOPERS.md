@@ -84,9 +84,7 @@ one Talaria-owned chassis when you design an agent in the app. Don't edit it by 
 
 ## Dev loop
 
-1. Make the change, verify it: `bun run typecheck` in `ui/` (and `bun run build` where
-   relevant), `bun run api:check` when the change touches the Rust side (fmt + clippy
-   `-D warnings` + tests — the same gates the CI `api` job runs).
+1. Make the change, verify it with `bun run gate` — `check`, then compile and test only the surfaces and packages the diff touches. Do not run a workspace `cargo test` or `bun run api:check` locally; CI's api job is that gate, and it locks `api/target` while it runs.
 2. Exercise the affected path in the running app (`bun talaria dev` → <http://localhost:5273>).
 3. Update `CHANGELOG.md` and include what you verified with the change
    ([`CONTRIBUTING.md`](./CONTRIBUTING.md)), then open the pull request **against `rc`** —
