@@ -9,6 +9,7 @@
   import AgentPicker from '@/components/chat/AgentPicker.svelte'
   import SessionRowBody from '@/components/chat/SessionRowBody.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
+  import GroupHeader from '@/components/app/GroupHeader.svelte'
   import Rail from '@/components/app/Rail.svelte'
   import RailRow from '@/components/app/RailRow.svelte'
   import RailSection from '@/components/app/RailSection.svelte'
@@ -21,27 +22,34 @@
   let {
     agents,
     conversations,
+    archived = [],
     selectedAgent,
     selectedConversationId,
     agentsLoading,
     conversationsLoading,
     agentsFailure = null,
     conversationsFailure = null,
+    archivedFailure = null,
     onSelectAgent,
     onSelectConversation,
     onNewChat,
+    onRowMenu,
   }: {
     agents: AgentModel[]
     conversations: Conversation[]
+    /** Retired plans — the way back after Archive. Same membership as the live list. */
+    archived?: Conversation[]
     selectedAgent: string | null
     selectedConversationId: string | null
     agentsLoading?: boolean
     conversationsLoading?: boolean
     agentsFailure?: SidebarFailure
     conversationsFailure?: SidebarFailure
+    archivedFailure?: SidebarFailure
     onSelectAgent: (agentModel: string) => void
     onSelectConversation: (conv: Conversation) => void
     onNewChat: () => void
+    onRowMenu?: (e: MouseEvent, conv: Conversation, archived: boolean) => void
   } = $props()
 
   const canCreatePlans = useHasPerm('plans.create')
@@ -49,6 +57,8 @@
   const sharedElsewhere = $derived(
     conversations.filter((c) => c.role === 'collaborator' && c.agentModel !== selectedAgent),
   )
+  // Collapsed until asked. An archived plan is not the work; it is the way back.
+  let archivedOpen = $state(false)
 </script>
 
 <Rail>
@@ -87,7 +97,7 @@
     <!-- div, not ul: RailRow renders div rows. -->
     <div class="space-y-0.5" use:listStagger>
       {#each agentConvs as c (c.id)}
-        <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)}>
+        <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)} oncontextmenu={(e) => onRowMenu?.(e, c, false)}>
           <SessionRowBody conv={c} active={c.id === selectedConversationId} />
         </RailRow>
       {/each}
@@ -99,11 +109,34 @@
     <div class="mt-4">
       <RailSection label="Shared with you">
         {#each sharedElsewhere as c (c.id)}
-          <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)}>
+          <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)} oncontextmenu={(e) => onRowMenu?.(e, c, false)}>
             <SessionRowBody conv={c} active={c.id === selectedConversationId} />
           </RailRow>
         {/each}
       </RailSection>
+    </div>
+  {/if}
+  {#if archivedFailure}
+    <QueryError
+      variant="inline"
+      class="mt-3 px-2"
+      error={archivedFailure.error}
+      title="Could not load archived"
+      onRetry={archivedFailure.retry}
+    />
+  {/if}
+  {#if archived.length > 0}
+    <div class="mt-4">
+      <GroupHeader label="Archived" count={archived.length} open={archivedOpen} onToggle={() => (archivedOpen = !archivedOpen)} />
+      {#if archivedOpen}
+        <div class="space-y-0.5">
+          {#each archived as c (c.id)}
+            <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)} oncontextmenu={(e) => onRowMenu?.(e, c, true)}>
+              <SessionRowBody conv={c} active={c.id === selectedConversationId} />
+            </RailRow>
+          {/each}
+        </div>
+      {/if}
     </div>
   {/if}
 </Rail>

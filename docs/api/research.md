@@ -14,6 +14,7 @@
 | [`/api/research`](#apiresearch) | GET | `dual` |
 | [`/api/research`](#apiresearch) | POST | `dual` |
 | [`/api/research/{id}`](#apiresearchid) | GET | `dual` |
+| [`/api/research/{id}`](#apiresearchid) | PATCH | `session` |
 | [`/api/research/{id}`](#apiresearchid) | DELETE | `session` |
 | [`/api/research/{id}/conversation`](#apiresearchidconversation) | POST | `session` |
 | [`/api/research/{id}/decide`](#apiresearchiddecide) | POST | `session` |
@@ -52,13 +53,21 @@ Source: [`api/crates/talaria-routes-workbench/src/research/research_id.rs`](../.
 
 > /api/research/{id}.
 > GET → one run + its citation registry (owner / shared member / org runs).
-> DELETE → owner/admin, cancelling the run first so the driver stops
-> spending on a report nobody will open.
+> PATCH { title } → rename (owner or admin). The list renders the title when
+> it is set and the question when it is null. The Titler's own write is
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{run, sources}` | 200, 404 | — |
+| PATCH | `session` | [body](#patch-apiresearchid-body) | `{ok}` | 200, 400, 403, 404 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
+
+### PATCH `/api/research/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `title` | `string trimmed(1, 120)` |  |
 
 ## `/api/research/{id}/conversation`
 

@@ -7,6 +7,10 @@
   import { LayoutTemplate, ListChecks } from '@lucide/svelte'
   import ConversationSidebar from '@/components/chat/ConversationSidebar.svelte'
   import type { SidebarFailure } from '@/components/chat/conversation-sidebar'
+  import ContextMenu from '@/components/ui/ContextMenu.svelte'
+  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
+  import { planRowMenu } from '@/components/record-menus'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Stage from '@/components/app/Stage.svelte'
   import StageHeader from '@/components/app/StageHeader.svelte'
@@ -26,7 +30,15 @@
   import { useTemplates } from '@/lib/templates'
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
-  import { usePlanMembers, useConversations, type Conversation } from '@/lib/conversations.svelte'
+  import {
+    archiveConversation,
+    deleteConversation,
+    renameConversation,
+    restoreConversation,
+    useConversations,
+    usePlanMembers,
+    type Conversation,
+  } from '@/lib/conversations.svelte'
   import PlanMembers from './plan/PlanMembers.svelte'
 
   // Plan surface: think through the work with an agent, then draft tickets and
@@ -43,6 +55,8 @@
   const agents = $derived(fleetQuery.data?.agents ?? [])
   const conversationsQuery = useConversations('plan')
   const conversations = $derived(conversationsQuery.data ?? [])
+  const archivedQuery = useConversations('plan', true)
+  const archived = $derived(archivedQuery.data ?? [])
   const conversationsLoading = $derived(conversationsQuery.isLoading)
   // Stale beats blank: a failed BACKGROUND refetch still has good data to show,
   // so only a failure with nothing behind it becomes a visible failure.
@@ -54,6 +68,11 @@
   const conversationsFailure: SidebarFailure = $derived(
     conversationsQuery.isError && conversationsQuery.data === undefined
       ? { error: conversationsQuery.error, retry: () => void conversationsQuery.refetch() }
+      : null,
+  )
+  const archivedFailure: SidebarFailure = $derived(
+    archivedQuery.isError && archivedQuery.data === undefined
+      ? { error: archivedQuery.error, retry: () => void archivedQuery.refetch() }
       : null,
   )
   const sticky = useStickyAgent('plan', () => agents)
@@ -122,13 +141,63 @@
   // align the agent once the plan list resolves (URL itself stays put).
   $effect(() => {
     if (!selectedConversationId) return
-    const target = conversations.find((c) => c.id === selectedConversationId)
+    const target = [...conversations, ...archived].find((c) => c.id === selectedConversationId)
     if (target && target.agentModel !== sticky.selected) pickAgent(target.agentModel)
   })
 
   const current = $derived(agents.find((a) => a.id === selectedAgent))
 
-  const selected = $derived(conversations.find((c) => c.id === selectedConversationId) ?? null)
+  const selected = $derived(
+    conversations.find((c) => c.id === selectedConversationId) ??
+      archived.find((c) => c.id === selectedConversationId) ??
+      null,
+  )
+  const selectedIsArchived = $derived.by(() => {
+    const current = selected
+    return current != null && !conversations.some((c) => c.id === current.id)
+  })
+  const menu = useContextMenu()
+  const quiet =
+    'flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg'
+  const refreshPlans = () => void qc.invalidateQueries({ queryKey: ['conversations'] })
+  const renamePlan = (c: Conversation) => {
+    void renameConversation(c.id, c.title).then((ok) => {
+      if (ok) refreshPlans()
+    })
+  }
+  const archivePlan = (c: Conversation) => {
+    void archiveConversation(c.id).then((ok) => {
+      if (!ok) return
+      refreshPlans()
+      if (c.id === selectedConversationId) setSelectedConversationId(null)
+    })
+  }
+  const restorePlan = (c: Conversation) => {
+    void restoreConversation(c.id).then((ok) => {
+      if (ok) refreshPlans()
+    })
+  }
+  const deletePlan = (c: Conversation) => {
+    void deleteConversation(c.id, c.title).then((ok) => {
+      if (!ok) return
+      refreshPlans()
+      if (c.id === selectedConversationId) setSelectedConversationId(null)
+    })
+  }
+  const openPlanMenu = (e: MouseEvent, c: Conversation, archivedRow: boolean) => {
+    menu.openMenu(
+      e,
+      planRowMenu(c, {
+        path: `/plan/${c.id}`,
+        open: () => selectConversation(c),
+        archived: archivedRow,
+        onRename: () => renamePlan(c),
+        onArchive: () => archivePlan(c),
+        onRestore: () => restorePlan(c),
+        onDelete: () => deletePlan(c),
+      }),
+    )
+  }
 
   // The selected plan's ticket-draft job, if any — drafts PAIR to the plan,
   // so drafting (and the review that lands after it) survives leaving the
@@ -169,6 +238,16 @@
   <div class="flex items-center gap-3">
     {#if selectedConversationId}
       <PlanMembers planId={selectedConversationId} />
+      {#if selected}
+        {@const plan = selected}
+        <button type="button" class={quiet} onclick={() => renamePlan(plan)}>Rename</button>
+        {#if plan.role === 'owner'}
+          <button type="button" class={quiet} onclick={() => (selectedIsArchived ? restorePlan(plan) : archivePlan(plan))}>
+            {selectedIsArchived ? 'Restore' : 'Archive'}
+          </button>
+          <DangerLink onClick={() => deletePlan(plan)}>Delete</DangerLink>
+        {/if}
+      {/if}
     {:else if templatesLoading}
       <!-- Hold the template picker's spot so the header doesn't
            re-layout when templates land. -->
@@ -240,15 +319,18 @@
   <ConversationSidebar
     {agents}
     {conversations}
+    {archived}
     {selectedAgent}
     {selectedConversationId}
     {agentsLoading}
     {conversationsLoading}
     {agentsFailure}
     {conversationsFailure}
+    {archivedFailure}
     onSelectAgent={selectAgent}
     onSelectConversation={selectConversation}
     onNewChat={newPlan}
+    onRowMenu={openPlanMenu}
   />
 
   <Stage header={stageHeader}>
@@ -335,4 +417,5 @@
       agents={[current]}
     />
   {/if}
+  <ContextMenu {menu} />
 </RailSurface>

@@ -296,11 +296,15 @@ pub struct ConversationListRow {
 
 /// The user's conversations of a given kind, newest activity first. Plans
 /// are multiplayer: your own AND
-/// ones shared with you; chats stay strictly your own.
+/// ones shared with you; chats stay strictly your own. `archived` selects
+/// the retired set (`true`) or the live one (`false`) — the same flag the
+/// list has always filtered, now a parameter so a plan the owner archived
+/// can be found again. Decay only ever sets it on kind = 'chat'.
 pub async fn list_conversations(
     pg: &PgPool,
     user_id: &str,
     kind: &str,
+    archived: bool,
 ) -> Result<Vec<ConversationListRow>, sqlx::Error> {
     #[allow(clippy::type_complexity)] // the select's own columns, one each
     type Row = (
@@ -339,7 +343,7 @@ pub async fn list_conversations(
          from conversations c \
          join users o on o.id = c.user_id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
-         where c.archived = false and c.kind = $2 \
+         where c.archived = $3 and c.kind = $2 \
            and (c.user_id = $1::uuid or ($2 = 'plan' and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
@@ -350,6 +354,7 @@ pub async fn list_conversations(
     )
     .bind(user_id)
     .bind(kind)
+    .bind(archived)
     .fetch_all(pg)
     .await?;
     Ok(rows

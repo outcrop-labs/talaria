@@ -1,7 +1,8 @@
-// Research client: runs list + detail, mode catalog, start/delete.
+// Research client: runs list + detail, mode catalog, start/rename/delete.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { delJson, errorMessage, getJson, getList, postJson, postJsonOr } from '@/lib/fetch-json'
+import { delJson, errorMessage, getJson, getList, patchJson, postJson, postJsonOr } from '@/lib/fetch-json'
+import { confirm, prompt } from '@/components/ui/confirm.svelte'
 import { toastError } from '@/lib/toast.svelte'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -104,14 +105,54 @@ export async function startResearch(question: string, mode: ResearchMode, agentM
   return j.run
 }
 
-export async function deleteResearch(id: string): Promise<void> {
+/** What a row shows: the person's title when they set one, otherwise the question. */
+export function researchLabel(run: { title: string | null; question: string }): string {
+  return run.title?.trim() || run.question
+}
+
+export async function renameResearch(id: string, current: string): Promise<boolean> {
+  const name = await prompt({
+    title: 'Rename run',
+    defaultValue: current,
+    placeholder: 'Run name',
+    confirmLabel: 'Rename',
+  })
+  const next = name?.trim()
+  if (!next || next === current.trim()) return false
+  try {
+    await patchJson(`/api/research/${id}`, { title: next })
+    return true
+  } catch (e) {
+    toastError('Rename failed', e)
+    return false
+  }
+}
+
+export async function deleteResearch(id: string): Promise<boolean> {
   try {
     await delJson<{ ok: true }>(`/api/research/${id}`)
+    return true
   } catch (e) {
-    // The rail's remove flow has no error state of its own, and its caller
-    // does not catch — the toast is the only place a refused delete gets said.
+    // The rail's remove flow has no error state of its own — the toast is
+    // the only place a refused delete gets said.
     toastError('Delete failed', e)
+    return false
   }
+}
+
+/** The confirm the list and the run page share. Returns whether the row went. */
+export async function removeResearch(run: { id: string; title: string | null; question: string }): Promise<boolean> {
+  const name = researchLabel(run).slice(0, 80)
+  if (
+    !(await confirm({
+      title: 'Remove run',
+      message: `Remove "${name}" from the list? The report document, if any, stays in Artifacts.`,
+      confirmLabel: 'Remove',
+      danger: true,
+    }))
+  )
+    return false
+  return deleteResearch(run.id)
 }
 
 /** ANSWER THE QUESTION A RUN IS PARKED ON. The run resumes on the server the
