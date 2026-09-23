@@ -40,7 +40,7 @@ use talaria_price_oracle::PriceRefreshDeps;
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_decide::assembly::real_run_deps;
 use talaria_runs_define::run_definition;
-use talaria_runs_reclaim::{drive_fn, due_fn, ReclaimDeps};
+use talaria_runs_reclaim::{ReclaimDeps, drive_fn, due_fn};
 use talaria_runs_run::RunDeps;
 use talaria_scheduler as scheduler;
 use talaria_scheduler::REQUIRED_JOBS;
