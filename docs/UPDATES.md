@@ -136,6 +136,10 @@ must survive its own death:
    handover anyway heals to `done` on the next reconcile. No install spins
    forever, and no landing is lost to a wrong close.
 
+8. **Exercise seed** — this paragraph sits where `rc` records the fleet roll,
+   on purpose, so a pull request against `rc` conflicts here and nowhere else.
+   It is not product text. The watcher exercise resolves it by keeping `rc`.
+
 The traffic edge is a pinned traefik container (`talaria-edge`) that owns the
 host port the app used to hold; both slots merge into one health-gated service
 behind it, so "which slot is live" is a routing fact, not a port reshuffle.
