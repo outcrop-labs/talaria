@@ -49,6 +49,7 @@
   } = $props()
 
   const qc = useQueryClient()
+  // svelte-ignore state_referenced_locally -- reason: opening step chosen from the preselect once at mount; the modal remounts per open
   let step = $state<'describe' | 'review'>(preselect ? 'review' : 'describe')
 
   // Describe → generate. There is no token stream to show any more: an agent
@@ -70,6 +71,7 @@
   let soul = $state('')
   let soulRev = $state(0)
   let skills = $state<AgentDraft['skills']>([])
+  // svelte-ignore state_referenced_locally -- reason: chassis pick seeded from the preselect/roster once at mount; the modal remounts per open
   let templateId = $state(preselect ?? templates[0]?.id ?? '') // '' = platform defaults
   // Role templates, as a query (cached across opens, no hand-rolled fetch to
   // silently fail). Choosing one FILLS the fields rather than binding to them
