@@ -13,6 +13,7 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+futures-util = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-state = { workspace = true }
@@ -22,4 +23,7 @@ talaria-update-state = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-update-roll = { workspace = true }
+talaria-runs-lease = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-settings = { workspace = true }
 

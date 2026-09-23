@@ -17,23 +17,59 @@
 // a stranded cutover has not raised — green publishes no port of its
 // own). A cutover that outlives its armed helper must not wait hours for
 // a reader: every minute, whichever replica holds the tick reconciles.
-// Idle, that is one settings-row read.
+// Idle, that is one settings-row read, plus — when this container's image
+// digest is one the fleet has not been rolled for — arming the fleet roll.
+// The roll itself is detached: a fleet of agents outlives this tick.
 //
 // The auto half's consent story is exactly two switches, both off until
 // a human: adoption (migrated — the engine refuses instances it never
 // adopted) and the toggle (auto_update — default false). A registry that
-// moved is never, by itself, a reason anything changed on a host.
+// moved is never, by itself, a reason anything changed on a host. The
+// fleet roll is not a third switch: it is the deploy finishing. The
+// consent was the apply (or the orchestrator that replaced the image).
 
-use std::sync::Arc;
 
+use std::sync::{Arc, OnceLock};
+
+use futures_util::future::BoxFuture;
 use talaria_scheduler::{JobName, JobSpec};
+use talaria_secretbox::SecretBox;
 use talaria_state::AppState;
 
 use talaria_agent_auth::now_ms;
+use talaria_runs_lease::{AcquireResult, RedisLeases, acquire_lease, keep_lease_alive, lease_key, release_lease};
 use talaria_update_mode::{InstallMode, install_mode};
 use talaria_update_registry::resolve_latest;
-use talaria_update_roll::{reconcile_boot, roll, run_in_flight, tidy};
+use talaria_update_roll::{reconcile_boot, roll, run_in_flight, self_image_digest, tidy};
 use talaria_update_state::{Pin, RunBy, load, patch};
+
+/// Wired from the api binary. This crate does not depend on fleet reconcile;
+/// an unwired edge is a sentence, and the digest stays unrecorded so the
+/// next tick retries rather than pretending the fleet moved.
+pub static ROLL_FLEET: OnceLock<
+    Arc<
+        dyn Fn(
+                sqlx::PgPool,
+                SecretBox,
+            ) -> BoxFuture<'static, Result<(Vec<String>, Vec<String>), String>>
+            + Send
+            + Sync,
+    >,
+> = OnceLock::new();
+
+/// The digest the fleet was last rolled onto. Separate from the update row
+/// so the panel's wire shape does not grow a bookkeeping field.
+const FLEET_ROLLED_KEY: &str = "update.fleet_rolled_digest";
+
+/// Own lease, not the app roll's. That lock is never released (the roller
+/// stops its own container), so sharing it would hold the fleet roll for
+/// the whole TTL after every cutover.
+const FLEET_ROLL_LEASE: &str = "fleet-roll";
+const FLEET_ROLL_TTL_MS: u64 = 20 * 60_000;
+
+fn fleet_roll_lease_key() -> String {
+    lease_key("update", FLEET_ROLL_LEASE)
+}
 
 pub const UPDATE_CHECK_EVERY_MS: u64 = 6 * 60 * 60_000;
 pub const UPDATE_CHECK_FIRST_RUN_DELAY_MS: u64 = 5 * 60_000;
@@ -71,6 +107,141 @@ pub fn should_auto_apply(
     auto_update && migrated && !run_in_flight && pinned.is_some_and(|p| p != available)
 }
 
+/// The digest this process should roll the fleet onto, if any.
+///
+/// Image installs only. A run in flight is the app's own cutover — the
+/// fleet waits until that lands. An adopted install rolls only from the
+/// container that IS the pin (green); blue during its drain is not a second
+/// deploy. An unadopted image install rolls when its own digest is not the
+/// one the fleet was last rolled for — a restart of the same image is not
+/// a deploy. Checkout and dev never reach this with `image_install`.
+pub fn fleet_roll_digest<'a>(
+    image_install: bool,
+    run_in_flight: bool,
+    migrated: bool,
+    self_digest: Option<&'a str>,
+    pinned_digest: Option<&str>,
+    already_rolled: Option<&str>,
+) -> Option<&'a str> {
+    if !image_install || run_in_flight {
+        return None;
+    }
+    let ours = self_digest.filter(|d| !d.is_empty())?;
+    if migrated && pinned_digest != Some(ours) {
+        return None;
+    }
+    if already_rolled == Some(ours) {
+        return None;
+    }
+    Some(ours)
+}
+
+async fn recorded_fleet_digest(pg: &sqlx::PgPool) -> Option<String> {
+    let v = talaria_settings::get_setting(pg, FLEET_ROLLED_KEY, serde_json::Value::Null).await;
+    v.as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+async fn record_fleet_rolled(pg: &sqlx::PgPool, digest: &str) -> Result<(), String> {
+    talaria_settings::set_setting(pg, FLEET_ROLLED_KEY, &serde_json::json!(digest))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Arm the fleet roll when [`fleet_roll_digest`] says this container is a
+/// deploy the fleet has not caught up to. Detached: the reconcile tick must
+/// not wait on a fleet. The digest is recorded only when the roll returns,
+/// so a death mid-roll retries on the next tick instead of looking done.
+/// A lease keeps two replicas from rolling the same fleet twice. Failures
+/// are logged, never the caller's error — a fleet that could not roll must
+/// not fail the cutover reconcile that just landed.
+async fn note_fleet_roll(state: &AppState) {
+    match arm_fleet_roll(state).await {
+        Ok(Some(line)) => tracing::info!("[update] {line}"),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("[update] fleet roll not armed: {e}"),
+    }
+}
+
+async fn arm_fleet_roll(state: &AppState) -> Result<Option<String>, String> {
+    if install_mode() != InstallMode::Image {
+        return Ok(None);
+    }
+    let row = load(&state.pg).await;
+    let in_flight = row.last_run.as_ref().is_some_and(run_in_flight);
+    let self_digest = self_image_digest().await;
+    let already = recorded_fleet_digest(&state.pg).await;
+    let Some(digest) = fleet_roll_digest(
+        true,
+        in_flight,
+        row.migrated,
+        self_digest.as_deref(),
+        row.pinned.as_ref().map(|p| p.digest.as_str()),
+        already.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    let digest = digest.to_string();
+
+    let roll = ROLL_FLEET
+        .get()
+        .cloned()
+        .ok_or_else(|| "fleet roll not wired".to_string())?;
+    let sb = state.secretbox().await?;
+
+    let conn = state
+        .redis()
+        .await
+        .map_err(|e| format!("redis unreachable for the fleet roll: {e}"))?;
+    let mut backend = RedisLeases::new(conn.clone());
+    let token = match acquire_lease(&mut backend, &fleet_roll_lease_key(), FLEET_ROLL_TTL_MS).await
+    {
+        AcquireResult::Acquired(t) => t,
+        // Quiet: the minute tick will see this for as long as the roll
+        // runs. The arm that took the lease already said so.
+        AcquireResult::Held => return Ok(None),
+        AcquireResult::Unavailable(e) => {
+            return Err(format!("the fleet-roll lock could not be taken: {e}"));
+        }
+    };
+
+    let pg = state.pg.clone();
+    let release_conn = conn.clone();
+    let beat_conn = conn;
+    let beat_token = token.clone();
+    let digest_for_roll = digest.clone();
+    tokio::spawn(async move {
+        let beat = keep_lease_alive(beat_conn, beat_token, FLEET_ROLL_TTL_MS, Default::default());
+        match roll(pg.clone(), sb).await {
+            Ok((rolled, warnings)) => {
+                if let Err(e) = record_fleet_rolled(&pg, &digest_for_roll).await {
+                    tracing::warn!(
+                        "[update] the fleet roll landed but the digest did not record: {e}"
+                    );
+                } else {
+                    tracing::info!(
+                        "[update] rolled {} agent(s) onto the deployed image",
+                        rolled.len()
+                    );
+                }
+                for w in warnings {
+                    tracing::warn!("[update] fleet roll: {w}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[update] the fleet roll after the deploy failed — it will retry: {e}"
+                );
+            }
+        }
+        drop(beat);
+        let mut backend = RedisLeases::new(release_conn);
+        let _ = release_lease(&mut backend, &token).await;
+    });
+    Ok(Some(format!("rolling the fleet onto {digest}")))
+}
+
 pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
     JobSpec {
         name: JobName::UpdateCheck,
@@ -96,6 +267,7 @@ pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
                 if let Some(line) = reconcile_boot(&pg).await? {
                     tracing::info!("[update] {line}");
                 }
+                note_fleet_roll(&deps.state).await;
 
                 if install_mode() != InstallMode::Image {
                     // The dormant installs (checkout, dev, off): the honest
@@ -182,11 +354,13 @@ pub fn update_check_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
     }
 }
 
-/// The minute hand: reconcile, nothing else. reconcile_boot self-gates —
-/// a settings row with no in-flight run is the whole idle cost — and its
-/// own sentences (the holds, the landings, the heal) are the job's whole
-/// output. NOT per_instance for the same reason as the check: one actor
-/// per tick is enough, and any replica can be that actor.
+/// The minute hand: reconcile, then arm the fleet roll when this container
+/// is a deploy the fleet has not caught up to. reconcile_boot self-gates —
+/// a settings row with no in-flight run is the idle cost — and its own
+/// sentences (the holds, the landings, the heal) are the job's whole
+/// output. The fleet roll is detached and does not replace that sentence.
+/// NOT per_instance for the same reason as the check: one actor per tick
+/// is enough, and any replica can be that actor.
 pub fn update_reconcile_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
     JobSpec {
         name: JobName::UpdateReconcile,
@@ -196,7 +370,11 @@ pub fn update_reconcile_job_spec(deps: Arc<UpdateDeps>) -> JobSpec {
         per_instance: false,
         run: Arc::new(move || {
             let deps = deps.clone();
-            Box::pin(async move { reconcile_boot(&deps.state.pg).await })
+            Box::pin(async move {
+                let line = reconcile_boot(&deps.state.pg).await?;
+                note_fleet_roll(&deps.state).await;
+                Ok(line)
+            })
         }),
     }
 }
@@ -235,5 +413,59 @@ mod tests {
         // The same digest (an unpinned-but-current or a re-check): no.
         assert!(!should_auto_apply(true, true, false, Some(&a), &a2));
         assert!(!should_auto_apply(true, true, false, None, &a));
+    }
+    #[test]
+    fn the_fleet_rolls_only_for_a_deploy_it_has_not_caught() {
+        let deployed = "sha256:abc";
+        let older = "sha256:old";
+        // Adopted green, pin matches, fleet still on the previous digest.
+        assert_eq!(
+            fleet_roll_digest(true, false, true, Some(deployed), Some(deployed), Some(older)),
+            Some(deployed)
+        );
+        // Already rolled onto this digest: a restart is not a deploy.
+        assert_eq!(
+            fleet_roll_digest(
+                true,
+                false,
+                true,
+                Some(deployed),
+                Some(deployed),
+                Some(deployed)
+            ),
+            None
+        );
+        // Blue during the drain is not the pin. It must not roll the fleet
+        // onto the image that is about to stop.
+        assert_eq!(
+            fleet_roll_digest(true, false, true, Some(older), Some(deployed), None),
+            None
+        );
+        // The app's own cutover is still in flight.
+        assert_eq!(
+            fleet_roll_digest(true, true, true, Some(deployed), Some(deployed), None),
+            None
+        );
+        // Checkout and dev are not image installs.
+        assert_eq!(
+            fleet_roll_digest(false, false, false, Some(deployed), None, None),
+            None
+        );
+        // Unadopted image install (dokploy, compose): own digest moved.
+        assert_eq!(
+            fleet_roll_digest(true, false, false, Some(deployed), None, Some(older)),
+            Some(deployed)
+        );
+        // Same image, restarted: not a deploy.
+        assert_eq!(
+            fleet_roll_digest(true, false, false, Some(deployed), None, Some(deployed)),
+            None
+        );
+        // No digest at all (a dev box that somehow asked).
+        assert_eq!(fleet_roll_digest(true, false, false, None, None, None), None);
+        assert_eq!(
+            fleet_roll_digest(true, false, false, Some(""), None, None),
+            None
+        );
     }
 }
