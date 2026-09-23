@@ -12,6 +12,8 @@
 //   - binds: same-path state + the docker socket, verbatim — the fleet
 //     renderer's absolute-host-path rule depends on the state bind staying
 //     same-path, and the socket is how the app spawns anything at all.
+//     The render also ensures the read-only host observability mounts
+//     (/host/proc, /host with rslave) so a roll cannot drop them.
 //   - dns / group_add / security_opt: verbatim (the stub-resolver and
 //     docker-gid problems the base compose solves don't vanish).
 //   - healthcheck: byte-identical to the base compose's — /api/healthz,
@@ -67,7 +69,13 @@ pub struct SlotSpec {
     /// bindings) — the EDGE publishes it; the slots never do.
     pub host_port: String,
     /// Verbatim `HostConfig.Binds` (same-path state bind + docker.sock).
+    /// The render also ensures the read-only host mounts observability
+    /// needs; those are not part of this field.
     pub binds: Vec<String>,
+    /// Destination → propagation, only when inspect's Mounts say it is not
+    /// the default rprivate. Short-form bind strings cannot carry rslave,
+    /// and a roll that drops it makes /host a root-only view.
+    pub propagations: Vec<(String, String)>,
     /// Verbatim `HostConfig.GroupAdd` (the docker socket's host gid).
     pub group_add: Vec<String>,
     /// Verbatim `HostConfig.Dns`.
@@ -166,6 +174,7 @@ pub fn slot_spec_from_inspect(
     Ok(SlotSpec {
         host_port,
         binds: lines(host.get("Binds")),
+        propagations: propagations_of(host),
         group_add: lines(host.get("GroupAdd")),
         dns: lines(host.get("Dns")),
         security_opt: lines(host.get("SecurityOpt")),
@@ -173,6 +182,85 @@ pub fn slot_spec_from_inspect(
         fleet_network,
         env,
     })
+}
+
+fn propagations_of(host: &Value) -> Vec<(String, String)> {
+    host.get("Mounts")
+        .and_then(Value::as_array)
+        .map(|mounts| {
+            mounts
+                .iter()
+                .filter_map(|m| {
+                    let prop = m.get("Propagation").and_then(Value::as_str)?;
+                    if prop.is_empty() || prop == "rprivate" || prop == "private" {
+                        return None;
+                    }
+                    let dest = m.get("Destination").and_then(Value::as_str)?;
+                    Some((dest.to_string(), prop.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// source, destination, read-only. Linux bind strings are `source:dest` or
+/// `source:dest:mode`. A mode segment has no slash; a path does.
+fn bind_parts(bind: &str) -> Option<(&str, &str, bool)> {
+    let parts: Vec<&str> = bind.split(':').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let (source, dest, mode) = if parts.len() >= 3 && !parts[parts.len() - 1].contains('/') {
+        (parts[0], parts[1], Some(parts[2]))
+    } else {
+        (parts[0], parts[1], None)
+    };
+    let ro = mode.is_some_and(|m| m.split(',').any(|p| p == "ro"));
+    Some((source, dest, ro))
+}
+
+fn has_dest(binds: &[String], dest: &str) -> bool {
+    binds
+        .iter()
+        .any(|b| bind_parts(b).is_some_and(|(_, d, _)| d == dest))
+}
+
+/// The observability mounts are not optional on a roll. An adopted install
+/// never re-reads compose.yml, so a slot that omitted them would keep
+/// reporting the container. `/host` is read-only and rslave so separate
+/// disks propagate; `/host/proc` is the machine's process table.
+fn ensure_host_observability_mounts(binds: &mut Vec<String>, props: &mut Vec<(String, String)>) {
+    if !has_dest(binds, "/host/proc") {
+        binds.push("/proc:/host/proc:ro".into());
+    }
+    if !has_dest(binds, "/host") {
+        binds.push("/:/host:ro".into());
+    }
+    if !props.iter().any(|(d, _)| d == "/host") {
+        props.push(("/host".into(), "rslave".into()));
+    }
+}
+
+fn volume_value(bind: &str, props: &[(String, String)]) -> Value {
+    if let Some((source, dest, ro)) = bind_parts(bind)
+        && let Some((_, prop)) = props.iter().find(|(d, _)| d == dest)
+    {
+        return json!({
+            "type": "bind",
+            "source": source,
+            "target": dest,
+            "read_only": ro,
+            "bind": { "propagation": prop },
+        });
+    }
+    json!(bind)
+}
+
+fn observability_volumes(binds: &[String], props: &[(String, String)]) -> Vec<Value> {
+    let mut binds = binds.to_vec();
+    let mut props = props.to_vec();
+    ensure_host_observability_mounts(&mut binds, &mut props);
+    binds.iter().map(|b| volume_value(b, &props)).collect()
 }
 
 /// The image reference for a digest in this install's tracked repo —
@@ -233,8 +321,9 @@ pub fn render_update_compose(
             "networks": ["internal"],
         });
         let obj = service.as_object_mut().expect("the service literal");
-        if !spec.binds.is_empty() {
-            obj.insert("volumes".into(), json!(spec.binds));
+        let volumes = observability_volumes(&spec.binds, &spec.propagations);
+        if !volumes.is_empty() {
+            obj.insert("volumes".into(), serde_json::Value::Array(volumes));
         }
         if !spec.group_add.is_empty() {
             obj.insert("group_add".into(), json!(spec.group_add));
@@ -499,6 +588,10 @@ mod tests {
                 slot["volumes"][1],
                 "/var/run/docker.sock:/var/run/docker.sock"
             );
+            assert_eq!(slot["volumes"][2], "/proc:/host/proc:ro");
+            assert_eq!(slot["volumes"][3]["target"], "/host");
+            assert_eq!(slot["volumes"][3]["bind"]["propagation"], "rslave");
+            assert_eq!(slot["volumes"][3]["read_only"], true);
             assert_eq!(slot["group_add"][0], "994");
             assert_eq!(slot["dns"][0], "1.1.1.1");
             // Its own env file, per slot.

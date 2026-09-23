@@ -11,6 +11,7 @@
   import { getJson, getList } from '@/lib/fetch-json'
   import { formatTokens } from '@/lib/cost.svelte'
   import ActivityRow from '@/components/app/ActivityRow.svelte'
+  import { useHost } from '@/components/observability/host'
   import type { ObsTab } from './observability'
 
   // ── Overview: the cross-section — worst news first ──────────────────────────
@@ -77,6 +78,16 @@
       : null,
   )
   const problems = $derived((alerts ?? []).filter((a) => a.severity !== 'info'))
+  const hostQuery = useHost()
+  const host = $derived(hostQuery.data)
+  const hostSub = $derived.by(() => {
+    if (!host) return hostQuery.isError ? 'could not read' : undefined
+    if (!host.available) return 'not visible from this process'
+    const disk = host.mounts[0]
+    const mem = host.memory ? `mem ${Math.round(host.memory.percent)}%` : null
+    const diskPart = disk ? `${disk.mount} ${Math.round(disk.percent)}%` : null
+    return [diskPart, mem].filter(Boolean).join(' · ') || undefined
+  })
 </script>
 
 <!-- data-obs-sections: the hook Observability's data-stagger-items selector
@@ -119,7 +130,7 @@
     {/if}
   </Panel>
 
-  <div class="grid gap-4 sm:grid-cols-3">
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
     <!-- §8 stat blocks: big sans numeral + 10px mono uppercase label. Each tile
          is a doorway into the section it summarizes — THE URL IS THE TAB, so
          the card is an anchor to it (StatCard's href form), not a button that
@@ -151,6 +162,18 @@
     >
       {#snippet value()}
         {#if cost}${cost.totals.today.cost.toFixed(2)}{:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+      {/snippet}
+    </StatCard>
+    <StatCard
+      label="Host"
+      href={p('/observability/:tab', { params: { tab: 'host' } })}
+      sub={hostSub}
+    >
+      {#snippet value()}
+        {#if host?.cpu}{Math.round(host.cpu.percent)}%
+        {:else if host && !host.available}—
+        {:else if hostQuery.isError}—
+        {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
       {/snippet}
     </StatCard>
   </div>
