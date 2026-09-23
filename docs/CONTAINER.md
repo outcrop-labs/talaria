@@ -343,6 +343,18 @@ checkout-driven hosts.
   proxy (e.g. tecnativa/docker-socket-proxy) allowing only the endpoints the
   fleet touches (containers, images, networks, volumes), placed between the
   app and the socket.
+- **Host metrics are a read-only bind, not a sidecar.** Observability's Host
+  tab reads the machine's `/proc` and `statvfs`s its mounts. The api binary is
+  musl-static and has no exporter to scrape, so the compose bind-mounts host
+  `/proc` at `/host/proc` and host `/` at `/host` (read-only, `rslave`) and sets
+  `TALARIA_HOST_PROC` / `TALARIA_HOST_ROOT`. `rslave` is what makes a separate
+  `/var` or data disk show up; without it the tab would report the overlay and
+  call it the host. The api reads comm, rss, and filesystem sizes through those
+  mounts — never command lines, never environ, never file contents. A container
+  without the mounts says so on the tab instead of guessing. Dev runs the api
+  on the host, so it needs neither variable. An in-app roll keeps the mounts:
+  the slot render adds them if the live container didn't have them, and keeps
+  `rslave` because a short-form bind string cannot.
 - The app container otherwise runs unprivileged: uid 10001, no capabilities
   beyond its groups, `no-new-privileges`.
 - Sidecar ports are published **nowhere**. The dev stack published each to

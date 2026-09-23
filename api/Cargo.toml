@@ -36,6 +36,9 @@ axum = { version = "0.8", default-features = false, features = ["form", "http1",
 # serialization of capability-store writes.
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 
+# Host metrics' statvfs. Not a feature of another crate.
+libc = "0.2"
+
 tower = { version = "0.5" }
 
 # No `cors` feature on purpose: same-origin throughout (the repo's
@@ -339,6 +342,8 @@ talaria-harness-schema = { path = "crates/talaria-harness-schema" }
 talaria-harness-text = { path = "crates/talaria-harness-text" }
 
 talaria-hermes-skills = { path = "crates/talaria-hermes-skills" }
+
+talaria-host-metrics = { path = "crates/talaria-host-metrics" }
 
 talaria-home = { path = "crates/talaria-home" }
 
