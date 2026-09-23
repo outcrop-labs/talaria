@@ -19,6 +19,7 @@ talaria-body = { workspace = true }
 talaria-channel-replies = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-chat-persist = { workspace = true }
+talaria-chips = { workspace = true }
 talaria-comms-decay = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-daily-brief = { workspace = true }
@@ -28,6 +29,7 @@ talaria-home = { workspace = true }
 talaria-inbox-focus = { workspace = true }
 talaria-internal-history = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
 talaria-permissions = { workspace = true }
 talaria-persona = { workspace = true }
 talaria-personal-agent = { workspace = true }

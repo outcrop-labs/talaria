@@ -196,6 +196,7 @@ that's a signal the kit needs a variant, not more overrides.
   status→color mapping inside).
 - Micro-labels (section headers, chips): `text-[10px] font-semibold uppercase
   tracking-wide text-muted` — one size, not 9/10/11px per screen.
+- Chat chips are not `<Chip>`. A platform link, an exposed tool, a protected-action approval, and the tools that approval unlocked render through `ChatChips` / `PlatformLinkChip` (`components/chat/`). Don't paint a raw in-app URL in a message, and don't invent a second approval control for an action that already has a chip.
 
 ## Icon language
 

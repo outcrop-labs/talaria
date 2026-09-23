@@ -15,6 +15,7 @@ talaria-audit = { workspace = true }
 talaria-auth-config = { workspace = true }
 talaria-body = { workspace = true }
 talaria-claim = { workspace = true }
+talaria-chips = { workspace = true }
 talaria-error = { workspace = true }
 talaria-github = { workspace = true }
 talaria-invites = { workspace = true }

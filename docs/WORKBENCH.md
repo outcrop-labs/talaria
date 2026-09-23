@@ -2,6 +2,8 @@
 
 The Workbench is how Talaria's agents do **real execution work** — starting with software development — inside sandboxes scoped to their role, under lifecycle rules the platform owns. The persona (a Hermes agent) stays the judgment layer: it reads tickets, plans, communicates, and reviews. The workbench is its power tool.
 
+The routing rule that makes the workbench the only path: **agents never do dev work in chat**. Code changes — writing, modifying, or committing code, however small — require a ticket and a workbench job. When dev work is asked for in a chat, the agent's job is to create or link the ticket, post the chat's instructions to it as comments, and move execution into a workbench; even an explicit out-of-band request routes through a ticket first.
+
 It's a **reproducible methodology**, not a dev-only feature. Every workbench is the same six pieces; the dev workbench is simply the first instance (data, design, publishing, and web-operator workbenches ride the same chassis later):
 
 1. **A runtime profile** — image + env + mounts + preinstalled harnesses, composed into the agent's container by the fleet renderer.
@@ -48,6 +50,8 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 Dispatch is not a single exchange. When a ticket enters an agent-start column with an agent assigned, Talaria pushes the work and then **keeps the session going** — continuation turns carrying live ticket status, up to 12 turns with 10 minutes of listening each — until the ticket reaches review/blocked/done. Agents work like a developer at a desk: run the harness, read its structured result, steer, test, repeat. UI work is verified **in a real browser** (Playwright) with screenshot evidence — "a UI change without a browser check is unverified" (see the `workbench-driving` canonical skill).
 
 Behind the session sit the quality gates: plans (and the heavy-effort approval), the **QA judge** (enforcing by default when enabled — revise verdicts bounce the ticket straight back to the agent with the issues, capped at 3 revisions before a human takes over; pass/escalate always reach a human), and human sign-off as the only path to done.
+
+The chat boundary is policy, not habit: agents never write, modify, or commit code from a chat thread, no exceptions for small changes. Dev work requires a ticket and a workbench job — a dev-work request in chat is answered by creating or linking the ticket and moving execution into the workbench, even when a human explicitly asks for an out-of-band change, and dev-work instructions given in chat are captured as comments on the relevant ticket. The rule ships in every rendered soul (the dev-policy header) and in the fleet-wide talaria-toolkit skill.
 
 ### Concurrency and queueing
 

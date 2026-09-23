@@ -4,8 +4,11 @@
   // cards are SUMMARIES off the chain read, not full Task rows — so this file
   // renders Avatar/StatusDot/due text directly rather than through the pills,
   // which want a Task and a mutation context. Derived states wear the styling:
-  // done fades with a check, head carries the accent ring, waiting stays
-  // quiet, archived strikes through. Clicking a card opens the ticket.
+  // done fades with a check, head carries the accent ring, blocked/ready stay
+  // quiet ('ready' only ever arrives from a branched chain — a straight line
+  // never produces it here), archived strikes through. Clicking a card opens
+  // the ticket. Branched chains do not render here at all: Workchains.svelte
+  // hands them to WorkchainCanvas (TALA-35).
   import { Check, ChevronRight, Pause, Play, Plus } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -14,6 +17,7 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { assigneeInfo, type AssigneeInfo } from '@/lib/assignees'
   import { cn } from '@/lib/cn'
+  import { formatShortDate } from '@/lib/format'
   import { toastError } from '@/lib/toast.svelte'
   import { EFFORT_LABEL, type Task } from '@/lib/task-const'
   import { statusColorOf, type BoardStatus } from '@/lib/statuses'
@@ -45,12 +49,6 @@
 
   const infos = (step: (typeof workchain.steps)[number]): AssigneeInfo[] =>
     step.assignees.map((a) => assigneeInfo(a, agents, members))
-
-  const fmtDue = (iso: string) => {
-    const d = new Date(iso)
-    const sameYear = d.getFullYear() === new Date().getFullYear()
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) })
-  }
 
   const failure = (what: string) => (e: unknown) =>
     toastError(`${what} failed`, e)
@@ -195,7 +193,7 @@
             {#if step.dueDate}
               {@const overdue = isOverdueTask({ dueDate: step.dueDate, status: step.status }, boardStatuses)}
               <span class={cn('font-mono text-[10px] tracking-[0.05em]', overdue ? 'font-medium text-danger' : 'text-muted')}>
-                {fmtDue(step.dueDate)}
+                {formatShortDate(step.dueDate)}
               </span>
             {/if}
             {#if step.assignees.length > 0}

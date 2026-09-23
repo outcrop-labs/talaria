@@ -184,6 +184,16 @@ dispatch with `version` and `release_tag` filled in — also the way to finish a
 mint whose run was cancelled mid-attach; `--clobber` makes either idempotent.
 A plain dispatch without `publish` builds artifacts only, nothing minted.
 
+A published stable release — `desktop-v*` or a suffix-free `v*` — also opens
+a pull request on [omapak](https://github.com/outcrop-labs/omapak) that moves
+`app.talaria.desktop` to that tag and regenerates the vendored cargo and bun
+sources (`omapak-submit.yml`). The store judge still scores it; the workflow
+does not merge. That needs a repository secret `OMAPAK_SUBMIT_TOKEN` (a
+fine-grained PAT or GitHub App token with contents and pull-requests write
+on `outcrop-labs/omapak`). Without it the job fails on purpose: a rolled
+release that never reaches the store is a red run, not a quiet success.
+RCs do not submit.
+
 Nothing is signed or notarized yet. That is a provisioning decision, not an
 oversight: it takes an Apple Developer certificate and a Windows signing key.
 Until then macOS needs a right-click → Open the first time (Gatekeeper) and

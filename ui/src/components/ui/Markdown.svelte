@@ -2,6 +2,9 @@
   import { mount, unmount } from 'svelte'
   import { cn } from '@/lib/cn'
   import AgentMediaImage from '@/components/artifacts/AgentMediaImage.svelte'
+  import PlatformLinkChip from '@/components/chat/PlatformLinkChip.svelte'
+  import KbInlineAttachment from '@/components/kb/KbInlineAttachment.svelte'
+  import { resolveChipTitles, type ChipEntity } from '@/lib/chips'
   import { renderMarkdown } from './markdown'
 
   // Full markdown for chat — the unified pipeline + Mercury element styling
@@ -15,15 +18,52 @@
 
   let container = $state<HTMLDivElement | null>(null)
 
-  // Agent-produced images (served out of an agent container) get the
-  // save-to-artifacts affordance: the pipeline leaves a placeholder span that
-  // we hydrate with a real <AgentMediaImage> after every render.
+  // Agent-produced images and platform-link chips are placeholders the
+  // pipeline cannot express as static HTML. Hydrate both after every render.
   $effect(() => {
-    void html // re-run after {@html} has replaced the DOM
+    void html
     if (!container) return
     const instances: Record<string, unknown>[] = []
+    let cancelled = false
     for (const slot of container.querySelectorAll<HTMLElement>('[data-agent-media]')) {
       instances.push(mount(AgentMediaImage, { target: slot, props: { src: slot.dataset.src ?? '', alt: slot.dataset.alt ?? '' } }))
+    }
+    const chips = [...container.querySelectorAll<HTMLElement>('[data-platform-chip]')]
+    const hrefs = chips.map((slot) => slot.dataset.href ?? '').filter(Boolean)
+    void resolveChipTitles(hrefs).then((titles) => {
+      if (cancelled) return
+      for (const slot of chips) {
+        const href = slot.dataset.href ?? ''
+        const entity = (slot.dataset.entity || 'board') as ChipEntity
+        instances.push(mount(PlatformLinkChip, { target: slot, props: { href, entity, title: titles[href] || undefined } }))
+      }
+    })
+    return () => {
+      cancelled = true
+      for (const i of instances) unmount(i)
+    }
+  })
+
+  // Inline KB attachments (TALA-2): the pipeline leaves a placeholder span
+  // per `![name|size](upload:<id>)` / `[name|size](upload:<id>)`; we hydrate
+  // each with the real chip — image thumbnails render the bytes inline, other
+  // files a labeled chip. Click opens the shared file viewer (preview +
+  // download inside our chrome), never target=_blank.
+  $effect(() => {
+    void html
+    if (!container) return
+    const instances: Record<string, unknown>[] = []
+    for (const slot of container.querySelectorAll<HTMLElement>('[data-kb-upload]')) {
+      instances.push(
+        mount(KbInlineAttachment, {
+          target: slot,
+          props: {
+            id: slot.dataset.kbUpload ?? '',
+            filename: slot.dataset.filename ?? 'file',
+            size: slot.dataset.size ?? '',
+          },
+        }),
+      )
     }
     return () => {
       for (const i of instances) unmount(i)

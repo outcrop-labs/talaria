@@ -1911,6 +1911,48 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE POST-PR WATCHER IS THE GATE THE STOP GATE CANNOT BE.
+//
+// AGENTS.md says an agent may not report done while its open pull request has
+// failing checks, pending checks, or merge conflicts against rc. The stop gate
+// sees the local tree. What makes the sentence true is scripts/hooks/pr-watch.mjs
+// (the exit) and the ship-a-change skill (the procedure that runs it and fixes).
+// Delete either, or stop the script from blocking on a red check and a conflict,
+// and the rule becomes a paragraph that passes every other check.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: red'", 'a failing check blocks; it is not a pass'],
+    ['scripts/hooks/pr-watch.mjs', "'pr-watch: conflict'", 'a merge conflict blocks; it is not a pass'],
+    ['scripts/hooks/pr-watch.mjs', 'MERGEABLE', 'a pass requires GitHub to have computed mergeable, not an empty rollup'],
+    ['AGENTS.md', 'scripts/hooks/pr-watch.mjs', 'the no-done rule points at the gate'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'scripts/hooks/pr-watch.mjs', 'the procedure runs the gate'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'pr-watch-anchors',
+      what: 'the post-PR watcher and the no-done rule have drifted apart',
+      fix: [
+        'AGENTS.md forbids reporting dev work done while an open PR has failing checks, pending',
+        'checks, or merge conflicts against rc. scripts/hooks/pr-watch.mjs is the gate (exit 2',
+        'on red and on conflict; exit 0 only when checks are green and mergeable). The procedure',
+        'is .claude/skills/ship-a-change/SKILL.md. If one of them moved, update this check in the',
+        'same commit — an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
 //
 // `cli/src/ports.ts` is the cli's single source for the host-port defaults, but

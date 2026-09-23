@@ -7,13 +7,14 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-18 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | GET | `session` + `perm:agents.manage` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | PUT | `admin` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | DELETE | `admin` |
+| [`/api/agent/chips`](#apiagentchips) | POST | `agent` |
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
@@ -33,8 +34,8 @@
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | PUT | `session` |
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | DELETE | `session` |
 | [`/api/skills/marketplace`](#apiskillsmarketplace) | GET | `session` |
-| [`/api/skills/marketplace`](#apiskillsmarketplace) | GET | `session` |
-| [`/api/skills/marketplace`](#apiskillsmarketplace) | POST | `session` |
+| [`/api/skills/marketplace/detail`](#apiskillsmarketplacedetail) | GET | `session` |
+| [`/api/skills/marketplace/install`](#apiskillsmarketplaceinstall) | POST | `session` |
 | [`/api/vision/describe`](#apivisiondescribe) | POST | `dual` |
 
 ## `/api/agent-role-templates`
@@ -63,6 +64,26 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_role_templates.rs`](.
 | `description` | `string(0, 300)` |  |
 | `soul` | `string(1, 20000)` |  |
 
+## `/api/agent/chips`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/chips_expose.rs`](../../api/crates/talaria-routes-comms/src/comms/chips_expose.rs)
+
+> POST /api/agent/chips — an agent exposes tools as chips on the turn it is
+> writing. The platform also calls the same landing path when a tool result
+> produces a link or a protected action.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentchips-body) | `{ok}` | 200 | — |
+
+**POST** — Expose platform tools as chips on the conversation this agent is in.
+
+### POST `/api/agent/chips` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
 ## `/api/agent/gap`
 
 Source: [`api/crates/talaria-routes-fleet/src/agents/agent_gap.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_gap.rs)
@@ -82,7 +103,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_gap.rs`](../../api/cr
 | `kind` | `string(2, 80)` |  |
 | `missing` | `string(5, 300)` |  |
 | `needs` | `string?(5000)` |  |
-| `taskId` | `uuid?` |  |
+| `taskId` | `string?(200)` |  |
 
 ## `/api/agent/message-user`
 
@@ -125,7 +146,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../ap
 | `summary` | `string(5, 300)` |  |
 | `details` | `string?(20000)` |  |
 | `context` | `string?(500)` | what the agent was trying to do |
-| `taskId` | `uuid?` | the ticket the agent was working when it broke |
+| `taskId` | `string?(200)` | the ticket the agent was working when it broke |
 
 ## `/api/agent/whoami`
 
@@ -331,10 +352,36 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{entries}` | 200, 502 | — |
-| GET | `session` | — | `{repo, skills}` | 200, 400, 502 | — |
-| POST | `session` | [body](#post-apiskillsmarketplace-body) | `{ok, owner, repo, results}` | 200, 400, 403, 502 | — |
 
-### POST `/api/skills/marketplace` body
+## `/api/skills/marketplace/detail`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
+
+> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
+> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
+> repo's discovered skills), POST install (write them into an owner's skill
+> root). Reads are any member's (the Studio is a member surface, like the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{repo, skills}` | 200, 400, 502 | — |
+
+## `/api/skills/marketplace/install`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs`](../../api/crates/talaria-routes-fleet/src/agents/skills_marketplace.rs)
+
+> /api/skills/marketplace — the Hermes Atlas skill catalog for the Studio's
+> picker: GET ?q= (the ranked list, filtered), GET detail?repo= (one GitHub
+> repo's discovered skills), POST install (write them into an owner's skill
+> root). Reads are any member's (the Studio is a member surface, like the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiskillsmarketplaceinstall-body) | `{ok, owner, repo, results}` | 200, 400, 403, 502 | — |
+
+### POST `/api/skills/marketplace/install` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |

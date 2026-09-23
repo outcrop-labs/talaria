@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+26 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -27,12 +27,12 @@
 | [`/api/integrations/google/callback`](#apiintegrationsgooglecallback) | GET | `public` |
 | [`/api/integrations/google/connect`](#apiintegrationsgoogleconnect) | GET | `session` |
 | [`/api/integrations/google/drive/browse`](#apiintegrationsgoogledrivebrowse) | GET | `session` |
+| [`/api/integrations/google/drive/create-folder`](#apiintegrationsgoogledrivecreate-folder) | POST | `admin` |
 | [`/api/integrations/google/drive/drives`](#apiintegrationsgoogledrivedrives) | GET | `session` |
 | [`/api/integrations/google/drive/import`](#apiintegrationsgoogledriveimport) | POST | `session` |
+| [`/api/integrations/google/drive/move`](#apiintegrationsgoogledrivemove) | POST | `admin` |
 | [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
-| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
-| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
-| [`/api/integrations/google/drive/rename`](#apiintegrationsgoogledriverename) | POST | `admin` |
+| [`/api/integrations/google/drive/trash`](#apiintegrationsgoogledrivetrash) | POST | `admin` |
 | [`/api/integrations/google/gmail/messages`](#apiintegrationsgooglegmailmessages) | GET | `session` |
 | [`/api/integrations/google/gmail/send`](#apiintegrationsgooglegmailsend) | POST | `session` |
 | [`/api/integrations/google/org`](#apiintegrationsgoogleorg) | GET | `admin` |
@@ -246,6 +246,24 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{files, nextPageToken, path}` | 200, 400 | — |
 
+## `/api/integrations/google/drive/create-folder`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs)
+
+> /api/integrations/google/drive/{rename,move,trash,create-folder}. The
+> Drive place's management verbs — all POST, all audited (a Drive write is a
+> cross-boundary mutation: Google's Drive is not ours, and the audit log is
+> where "who moved this" answers from).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apiintegrationsgoogledrivecreate-folder-body) | `{file}` | 200, 400 | audit |
+
+### POST `/api/integrations/google/drive/create-folder` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
+
 ## `/api/integrations/google/drive/drives`
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_drives.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_drives.rs)
@@ -277,6 +295,24 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | :--- | :--- | :--- |
 | `fileId` | `string(1)` | fileId: min 1, no max. |
 
+## `/api/integrations/google/drive/move`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs)
+
+> /api/integrations/google/drive/{rename,move,trash,create-folder}. The
+> Drive place's management verbs — all POST, all audited (a Drive write is a
+> cross-boundary mutation: Google's Drive is not ours, and the audit log is
+> where "who moved this" answers from).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apiintegrationsgoogledrivemove-body) | `{ok}` | 200, 400 | audit |
+
+### POST `/api/integrations/google/drive/move` body
+
+Body schema `Value` is not an object literal in the route file — see the route source.
+
 ## `/api/integrations/google/drive/rename`
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs)
@@ -290,23 +326,26 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{file}` | 200, 400 | audit |
-| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{ok}` | 200, 400 | audit |
-| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{ok}` | 200, 400 | audit |
-| POST | `admin` | [body](#post-apiintegrationsgoogledriverename-body) | `{file}` | 200, 400 | audit |
 
 ### POST `/api/integrations/google/drive/rename` body
 
 Body schema `Value` is not an object literal in the route file — see the route source.
 
-### POST `/api/integrations/google/drive/rename` body
+## `/api/integrations/google/drive/trash`
 
-Body schema `Value` is not an object literal in the route file — see the route source.
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_drive_manage.rs)
 
-### POST `/api/integrations/google/drive/rename` body
+> /api/integrations/google/drive/{rename,move,trash,create-folder}. The
+> Drive place's management verbs — all POST, all audited (a Drive write is a
+> cross-boundary mutation: Google's Drive is not ours, and the audit log is
+> where "who moved this" answers from).
+> …
 
-Body schema `Value` is not an object literal in the route file — see the route source.
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apiintegrationsgoogledrivetrash-body) | `{ok}` | 200, 400 | audit |
 
-### POST `/api/integrations/google/drive/rename` body
+### POST `/api/integrations/google/drive/trash` body
 
 Body schema `Value` is not an object literal in the route file — see the route source.
 

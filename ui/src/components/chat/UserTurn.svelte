@@ -2,6 +2,8 @@
   import MessageAvatar from './MessageAvatar.svelte'
   import MessageAttachments from '@/components/chat/MessageAttachments.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
+  import ChatChips from './ChatChips.svelte'
+  import type { ChatChip } from '@/lib/chips'
   import { fade } from '@/lib/motion'
   import type { Attachment } from '@/lib/attachments'
 
@@ -10,13 +12,19 @@
   let {
     content,
     attachments,
+    chips,
     author,
     onContextMenu,
+    onInvoke,
+    onDecided,
   }: {
     content: string
     attachments?: Attachment[]
+    chips?: ChatChip[]
     author?: string | null
     onContextMenu?: (e: MouseEvent) => void
+    onInvoke?: (text: string) => void
+    onDecided?: () => void
   } = $props()
 
   const name = $derived(author ?? 'You')
@@ -33,6 +41,7 @@
           one bubble still rendering raw text. -->
       <Markdown children={content} />
       {#if attachments && attachments.length > 0}<MessageAttachments items={attachments} />{/if}
+      <ChatChips {chips} {content} {onInvoke} {onDecided} />
     </div>
   </div>
 </div>

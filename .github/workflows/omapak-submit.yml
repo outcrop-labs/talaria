@@ -1,0 +1,96 @@
+# Submit the desktop shell to Omapak when a release rolls.
+#
+# desktop-package.yml mints desktop-v* (the live updater feed) and release.yml
+# publishes stable v* tags. Either one is a new desktop source. This opens a
+# pull request on outcrop-labs/omapak that moves apps/app.talaria.desktop to
+# that tag and regenerates the vendored cargo/bun sources the offline build
+# consumes. The judge still scores it — nothing here merges.
+#
+# Needs a repository secret OMAPAK_SUBMIT_TOKEN: a fine-grained PAT or GitHub
+# App token with contents:write and pull-requests:write on outcrop-labs/omapak.
+# GITHUB_TOKEN cannot open a pull request on another repository. A missing
+# secret fails the job rather than skipping: a rolled release that never
+# reaches the store is a red run, not a quiet success.
+name: omapak-submit
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: open the omapak submission
+    # Stable only. desktop-v* is never a prerelease; v* RCs are, and must not
+    # move the store pin.
+    if: >-
+      github.event.release.prerelease == false &&
+      (startsWith(github.event.release.tag_name, 'desktop-v') ||
+       startsWith(github.event.release.tag_name, 'v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require the omapak token
+        env:
+          TOKEN: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::OMAPAK_SUBMIT_TOKEN is not set — a fine-grained PAT or GitHub App token with contents and pull-requests write on outcrop-labs/omapak. See RELEASING.md."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - uses: actions/checkout@v5
+        with:
+          repository: outcrop-labs/omapak
+          token: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
+          path: omapak
+          ref: main
+
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          # release events set github.sha to the default branch, not the tag.
+          COMMIT=$(git rev-parse HEAD)
+          branch="submit/app.talaria.desktop-${TAG}"
+          git -C omapak config user.name "talaria-release"
+          git -C omapak config user.email "talaria-release@users.noreply.github.com"
+          git -C omapak fetch origin main
+          # Always from main, so a re-run of the same tag replaces the branch
+          # instead of stacking a second edit on the previous attempt.
+          git -C omapak checkout -B "$branch" origin/main
+          node scripts/omapak-desktop-submit.mjs \
+            --talaria . \
+            --omapak omapak \
+            --tag "$TAG" \
+            --commit "$COMMIT" \
+            --fetch-shas
+          git -C omapak add apps/app.talaria.desktop
+          if git -C omapak diff --cached --quiet; then
+            echo "submission already matches $TAG"
+            exit 0
+          fi
+          git -C omapak commit -m "app.talaria.desktop: track ${TAG}
+
+          Automated submission from the Talaria release. The judge still scores
+          this; nothing merges from here."
+          git -C omapak push --force-with-lease -u origin "$branch"
+          body="Moves \`app.talaria.desktop\` to \`${TAG}\` (\`${COMMIT}\`).
+
+          Vendored cargo and bun sources were regenerated from that tag's lockfiles, and the rust/bun dist pins follow \`rust-toolchain.toml\` and \`setup-runtime\`. The judge scores this like any other submission — merging is still a person's call."
+          existing=$(gh pr list --repo outcrop-labs/omapak --head "$branch" --json number --jq '.[0].number')
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh pr edit "$existing" --repo outcrop-labs/omapak --title "app.talaria.desktop: ${TAG}" --body "$body"
+            echo "updated PR #$existing"
+          else
+            gh pr create --repo outcrop-labs/omapak --base main --head "$branch" \
+              --title "app.talaria.desktop: ${TAG}" --body "$body"
+          fi

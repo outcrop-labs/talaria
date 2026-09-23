@@ -61,6 +61,23 @@ pub async fn post(
             ));
         }
     };
+    // Chips are not the run watch. A chat turn has no work-session run, and
+    // dropping the frame there used to drop the link and the approval with
+    // it. Surface first, then land the watch frame if a run is live.
+    if status == "completed" {
+        let args = parsed.get("args").and_then(|v| v.as_str()).unwrap_or("");
+        let result = parsed.get("result").and_then(|v| v.as_str()).unwrap_or("");
+        let chips = talaria_chips::chips_from_tool(&tool, args, result);
+        if !chips.is_empty() {
+            let redis = state.redis().await.ok();
+            if let Err(e) =
+                talaria_chips::surface_tool_chips(&state.pg, redis, &caller.model, None, chips)
+                    .await
+            {
+                tracing::warn!("[tool-events] chip surface failed: {e}");
+            }
+        }
+    }
     // THE FLEET'S ONLY FAILURE SIGNAL. A persona tool failing is invisible to
     // every other surface — the model stream says "completed", container
     // health stays green, stats look idle (the 2026-09-22 rot: half an hour

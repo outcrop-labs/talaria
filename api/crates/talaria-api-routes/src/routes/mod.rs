@@ -278,6 +278,16 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("DELETE") }),
         )
         .route(
+            "/api/workchains/{id}/edges",
+            axum::routing::post(talaria_routes_boards::workchains::workchains_id::post_edge)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workchains/{id}/edges/{fromTaskId}/{toTaskId}",
+            axum::routing::delete(talaria_routes_boards::workchains::workchains_id::delete_edge)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
+        .route(
             "/api/keys/{id}",
             axum::routing::delete(talaria_routes_fleet::models::keys_id::delete)
                 .put(talaria_routes_fleet::models::keys_id::put)
@@ -429,6 +439,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/chat",
             post(talaria_routes_comms::comms::chat::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/chat/chips/resolve",
+            post(talaria_routes_comms::comms::chips::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/chat/chips/approvals/{id}",
+            post(talaria_routes_comms::comms::chips_approvals_id::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/conversations",
@@ -1425,6 +1443,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agent/whoami",
             get(talaria_routes_fleet::agents::agent_whoami::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/agent/chips",
+            post(talaria_routes_comms::comms::chips_expose::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/gap",

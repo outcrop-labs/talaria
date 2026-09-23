@@ -25,6 +25,7 @@ talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
 talaria-brain-health = { workspace = true }
 talaria-channels = { workspace = true }
+talaria-chips = { workspace = true }
 talaria-error = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-harness-defs = { workspace = true }

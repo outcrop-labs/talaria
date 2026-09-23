@@ -37,7 +37,9 @@ pub async fn pg() -> PgPool {
 /// `register_all` sets it in production — same closure, same target. Today
 /// that is the attribution ladder's CONVERSATION_OWNER (the chatter rung is
 /// silently skipped when it is unset, which is precisely how it went dead in
-/// production for as long as it did).
+/// production for as long as it did) — and uploads' KB_DOC_ALLOWS_READ,
+/// which went dead the same way and was only caught by review (the
+/// kb-body-embedded upload read answered 404 for every non-owner reader).
 pub fn wire_boot_seams() {
     let _ = talaria_api::attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_api::conversations::conversation_owner(&pg, &id).await })
@@ -48,6 +50,27 @@ pub fn wire_boot_seams() {
     let _ = talaria_inbox_focus::GET_TASK.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
     }));
+    let _ =
+        talaria_uploads::KB_DOC_ALLOWS_READ.set(std::sync::Arc::new(|pg, doc_id, user_id, who| {
+            Box::pin(async move {
+                let Ok(Some(doc)) = talaria_kb::get_doc(&pg, &doc_id).await else {
+                    return false;
+                };
+                let Ok(effective) = talaria_kb::effective_doc_perms(&pg, &doc).await else {
+                    return false;
+                };
+                let team_ids = talaria_teams::team_ids_for_user(&pg, &user_id)
+                    .await
+                    .unwrap_or_default();
+                talaria_kb_perms::can_read(
+                    &effective.perms,
+                    Some(&user_id),
+                    who.as_deref(),
+                    &effective.grants,
+                    &team_ids,
+                )
+            })
+        }));
 }
 
 /// A member user row, with the sub/email/name the caller names.

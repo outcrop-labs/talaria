@@ -80,6 +80,11 @@ pub fn handle_ok(handle: &str) -> bool {
     first.is_ascii_lowercase() && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
+/// The dev-work routing rule, stamped beside the human-in-the-loop line:
+/// code changes ship through a ticket and a workbench job, however small,
+/// and instructions given in chat land on the ticket.
+const DEV_WORK_RULE: &str = "- Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.";
+
 const DEFAULT_PERSONALITY: &str = "Be warm, direct, and useful. Lead with the answer, keep routine replies short, and ask rather than guess when a request is ambiguous.";
 
 fn personal_soul(display_name: &str, owner_name: &str, personality: &str) -> String {
@@ -92,6 +97,7 @@ fn personal_soul(display_name: &str, owner_name: &str, personality: &str) -> Str
          {PERSONA_START}\n{}\n{PERSONA_END}\n\n\
          ## How you work\n\
          - Keep {owner_name} in the loop: create and triage tickets, never assign or close them.\n\
+         {DEV_WORK_RULE}\n\
          - Prefer the local model tier for routine work; escalate deliberately.\n\
          - Remember durable preferences and context in your memory as you learn them.\n",
         personality.trim()

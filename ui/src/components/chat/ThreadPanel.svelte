@@ -109,7 +109,7 @@
       {#key rootId}
         {#each messages as m, i (m.id)}
           <div>
-            <MessageRow message={m} {ctx} inThread />
+            <MessageRow message={m} {ctx} inThread onInvoke={(text) => void send(text, [])} />
             {#if i === 0 && messages.length > 1}
               <div class="mt-3 border-t border-line pt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">
                 {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}

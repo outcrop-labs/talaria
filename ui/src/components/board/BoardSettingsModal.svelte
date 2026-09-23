@@ -35,7 +35,7 @@
   const tabs: Tab[] = ['general', 'statuses', 'labels', 'people', 'agents']
 </script>
 
-<Modal {open} {onClose} title="Board settings" width="max-w-xl">
+<Modal {open} {onClose} title="Board settings" width="max-w-3xl" height="min-h-[32rem]">
   <!-- NOT `<Tabs>` — the parity rule in docs/UI-CONVENTIONS.md, not an oversight.
        This strip is one bordered GROUP of five EQUAL cells (`flex-1`) spanning
        the modal; Tabs lays its cells out at content width with no group frame,
@@ -60,6 +60,6 @@
   {/if}
   {#if tab === 'statuses'}<StatusesTab {board} />{/if}
   {#if tab === 'labels'}<LabelsTab {board} />{/if}
-  {#if tab === 'people'}<PeopleTab {board} />{/if}
+  {#if tab === 'people'}<PeopleTab {board} {isOwner} />{/if}
   {#if tab === 'agents'}<AgentsTab {board} {canEdit} />{/if}
 </Modal>

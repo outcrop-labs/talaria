@@ -44,9 +44,9 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id.rs`](../../api/cra
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200, 403, 404 | — |
-| PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
+| GET | `dual` | — | `…` | 200, 403, 404, 409 | — |
+| PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403, 404, 409 | — |
 
 ### PUT `/api/tasks/{id}` body
 
@@ -97,8 +97,8 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_comments.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{comments}` | 200, 403, 404 | — |
-| POST | `dual` | [body](#post-apitasksidcomments-body) | `{comment}` | 200, 400, 403, 404 | — |
+| GET | `dual` | — | `{comments}` | 200, 403, 404, 409 | — |
+| POST | `dual` | [body](#post-apitasksidcomments-body) | `{comment}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/comments` body
 
@@ -118,20 +118,20 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 400, 403 | — |
+| POST | `dual` | [body](#post-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dependsOnId` | `uuid` |  |
+| `dependsOnId` | `string(1, 200)` |  |
 
 ### DELETE `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dependsOnId` | `uuid` |  |
+| `dependsOnId` | `string(1, 200)` |  |
 
 ## `/api/tasks/{id}/review`
 
@@ -143,7 +143,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apitasksidreview-body) | `{task}` | 200, 400, 403, 404 | — |
+| POST | `session` | [body](#post-apitasksidreview-body) | `{task}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/review` body
 
@@ -163,8 +163,8 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs`](../../a
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200, 403, 404 | — |
-| POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404 | — |
+| GET | `dual` | — | `…` | 200, 403, 404, 409 | — |
+| POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/usage` body
 
@@ -187,8 +187,8 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_watchers.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | [body](#delete-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404 | — |
+| POST | `session` | [body](#post-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | [body](#delete-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/watchers` body
 
@@ -214,7 +214,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{session, wait}` | 200, 403, 404 | — |
+| GET | `session` | — | `{session, wait}` | 200, 403, 404, 409 | — |
 
 ## `/api/tasks/{id}/work-session/stop`
 

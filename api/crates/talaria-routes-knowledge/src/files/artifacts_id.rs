@@ -68,21 +68,43 @@ fn not_found() -> Response {
     house_error(StatusCode::NOT_FOUND, "not found")
 }
 
+/// Wire sentence for a transient failure on GET /api/artifacts/{id}.
+/// A missing row is `not_found` (404). This is only the Err arms. The
+/// engine error stays in the log — artifact id, arm, and the error — and
+/// never reaches the wire. `list_documents` returns every readable artifact
+/// with its full body, which is how a single-read failure is recovered.
+const READ_RETRYABLE: &str =
+    "artifact exists, read failed — retryable. Recover the body with list_documents.";
+
+fn read_failed(id: &str, arm: &str, e: impl std::fmt::Display) -> Response {
+    tracing::error!("[artifacts] {arm} artifact={id} arm={arm}: {e}");
+    house_error(StatusCode::INTERNAL_SERVER_ERROR, READ_RETRYABLE)
+}
+
+/// Write-method arms on this route. Same log contract (id, arm, error);
+/// the wire stays the bare 500 those callers already match.
+fn arm_failed(context: &str, id: &str, arm: &str, e: impl std::fmt::Display) -> Response {
+    internal(&format!("{context} artifact={id} arm={arm}"), e)
+}
+
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => return Ok(internal("[artifacts] read failed", e)),
+        Err(e) => return Ok(read_failed(&id, "read failed", e)),
     };
     let Some(artifact) = artifact else {
         return Ok(not_found());
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
+        Err(e) => return Ok(read_failed(&artifact.id, "grants read failed", e)),
     };
     // Agents (over MCP) read org/public artifacts, ones granted to them, and —
     // for a personal assistant — its owner's own (can_read_agent's owner arm).
@@ -95,11 +117,17 @@ pub async fn get(
         .await
         {
             Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] owner resolve failed", e)),
+            Err(e) => return Ok(read_failed(&artifact.id, "owner resolve failed", e)),
         };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &reader.model).await {
             Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
+            Err(e) => {
+                return Ok(read_failed(
+                    &artifact.id,
+                    "team membership read failed (agent)",
+                    e,
+                ));
+            }
         };
         if !can_read_agent(
             &guarded(&artifact),
@@ -118,7 +146,13 @@ pub async fn get(
     let user = require_user(&state, &headers).await?;
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
+        Err(e) => {
+            return Ok(read_failed(
+                &artifact.id,
+                "team membership read failed (user)",
+                e,
+            ));
+        }
     };
     if !can_read(
         &guarded(&artifact),
@@ -138,9 +172,19 @@ pub async fn put(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => return Ok(internal("[artifacts] read failed", e)),
+        Err(e) => {
+            return Ok(arm_failed(
+                "[artifacts] read failed",
+                &id,
+                "artifact-row",
+                e,
+            ));
+        }
     };
     let Some(artifact) = artifact else {
         return Ok(not_found());
@@ -153,7 +197,14 @@ pub async fn put(
     };
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
+        Err(e) => {
+            return Ok(arm_failed(
+                "[artifacts] grants read failed",
+                &artifact.id,
+                "grants",
+                e,
+            ));
+        }
     };
     let g = guarded(&artifact);
 
@@ -166,11 +217,25 @@ pub async fn put(
         let elevated = artifact.visibility != "private"
             && match is_elevated_assistant(&state.pg, &AgentSubject::Caller(agent)).await {
                 Ok(v) => v,
-                Err(e) => return Ok(internal("[artifacts] elevation read failed", e)),
+                Err(e) => {
+                    return Ok(arm_failed(
+                        "[artifacts] elevation read failed",
+                        &artifact.id,
+                        "elevation",
+                        e,
+                    ));
+                }
             };
         let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
             Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
+            Err(e) => {
+                return Ok(arm_failed(
+                    "[artifacts] team membership read failed",
+                    &artifact.id,
+                    "team-membership-agent",
+                    e,
+                ));
+            }
         };
         let may_edit = can_edit_agent(&name, &editors, &team_ids) || elevated;
         if !may_edit {
@@ -187,7 +252,14 @@ pub async fn put(
         let who = who_of(&user);
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
+            Err(e) => {
+                return Ok(arm_failed(
+                    "[artifacts] team membership read failed",
+                    &artifact.id,
+                    "team-membership-user",
+                    e,
+                ));
+            }
         };
         if !can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
             return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
@@ -204,7 +276,14 @@ pub async fn put(
         // owners' to govern.
         owner = match can_govern(&state.pg, &g, &user.id, &user.role, who.as_deref()).await {
             Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] govern check failed", e)),
+            Err(e) => {
+                return Ok(arm_failed(
+                    "[artifacts] govern check failed",
+                    &artifact.id,
+                    "govern",
+                    e,
+                ));
+            }
         };
         if body.visibility.as_deref() == Some("public")
             && !matches!(
@@ -242,7 +321,12 @@ pub async fn put(
         && let Some(editors) = &body.editors
         && let Err(e) = set_editors(&state.pg, ITEM_ARTIFACT, &id, editors).await
     {
-        return Ok(internal("[knowledge] set_editors failed", e));
+        return Ok(arm_failed(
+            "[knowledge] set_editors failed",
+            &id,
+            "set-editors",
+            e,
+        ));
     }
     let mut updated = match save_artifact(
         &state.pg,
@@ -265,7 +349,7 @@ pub async fn put(
     {
         Ok(Some(a)) => a,
         Ok(None) => return Ok(not_found()),
-        Err(e) => return Ok(internal("[artifacts] save failed", e)),
+        Err(e) => return Ok(arm_failed("[artifacts] save failed", &id, "save", e)),
     };
     if let Some(official) = body.official
         && official != updated.official
@@ -282,7 +366,14 @@ pub async fn put(
         {
             Ok(Some(a)) => a,
             Ok(None) => updated,
-            Err(e) => return Ok(internal("[artifacts] officialize failed", e)),
+            Err(e) => {
+                return Ok(arm_failed(
+                    "[artifacts] officialize failed",
+                    &id,
+                    "officialize",
+                    e,
+                ));
+            }
         };
         let (pg, actor_, action, target_id, target_label) = (
             state.pg.clone(),
@@ -359,7 +450,14 @@ pub async fn put(
     }
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &id).await {
         Ok(e) => e,
-        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
+        Err(e) => {
+            return Ok(arm_failed(
+                "[artifacts] grants read failed",
+                &id,
+                "grants",
+                e,
+            ));
+        }
     };
     Ok(Json(json!({ "artifact": updated, "editors": editors_json(&editors) })).into_response())
 }
@@ -371,7 +469,14 @@ pub async fn delete(
 ) -> Result<Response, Response> {
     let artifact = match get_artifact(&state.pg, &id).await {
         Ok(a) => a,
-        Err(e) => return Ok(internal("[artifacts] read failed", e)),
+        Err(e) => {
+            return Ok(arm_failed(
+                "[artifacts] read failed",
+                &id,
+                "artifact-row",
+                e,
+            ));
+        }
     };
     let Some(artifact) = artifact else {
         return Ok(not_found());
@@ -379,11 +484,25 @@ pub async fn delete(
     let user = require_user(&state, &headers).await?;
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &artifact.id).await {
         Ok(e) => e,
-        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
+        Err(e) => {
+            return Ok(arm_failed(
+                "[artifacts] grants read failed",
+                &artifact.id,
+                "grants",
+                e,
+            ));
+        }
     };
     let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
         Ok(v) => v,
-        Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
+        Err(e) => {
+            return Ok(arm_failed(
+                "[artifacts] team membership read failed",
+                &artifact.id,
+                "team-membership-user",
+                e,
+            ));
+        }
     };
     if !can_edit_human(
         &guarded(&artifact),
@@ -396,7 +515,35 @@ pub async fn delete(
     }
     if let Err(e) = delete_artifact(&state.pg, &qdrant::real_deps(), &embed::real_deps(), &id).await
     {
-        return Ok(internal("[artifacts] delete failed", e));
+        return Ok(arm_failed("[artifacts] delete failed", &id, "delete", e));
     }
     Ok(Json(json!({ "ok": true })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn transient_read_names_the_recovery_and_hides_the_engine_error() {
+        let res = read_failed(
+            "b0bf7d8f-3820-402d-a9e6-8f305607d616",
+            "grants read failed",
+            "pool timed out waiting for connection",
+        );
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(
+            text,
+            "{\"error\":\"artifact exists, read failed — retryable. Recover the body with list_documents.\"}"
+        );
+        assert!(!text.contains("pool timed out"));
+    }
 }
