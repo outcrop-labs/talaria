@@ -14,7 +14,7 @@
   import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
-  import { filtersActive, type BoardFilters } from '@/components/board/filter-bar'
+  import { BOARD_MENU_GROUP, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -504,6 +504,7 @@
         {#if view === 'list'}
           <DropdownMenu
             align="right"
+            group={BOARD_MENU_GROUP}
             items={[
               ...(['status', 'priority', 'assignee', 'label', 'none'] as GroupByKey[]).map((g) => ({
                 label: g === 'none' ? 'No grouping' : g,

@@ -19,6 +19,7 @@ talaria-body = { workspace = true }
 talaria-channel-replies = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-chat-persist = { workspace = true }
+talaria-chips = { workspace = true }
 talaria-comms-decay = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-daily-brief = { workspace = true }

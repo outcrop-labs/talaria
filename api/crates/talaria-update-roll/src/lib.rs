@@ -175,6 +175,18 @@ pub fn digest_suffix(reference: &str) -> Option<&str> {
         .filter(|d| is_digest(d))
 }
 
+/// This process's image digest, when it is running in a container whose
+/// image reference carries one. A dev box and a tag-only image are `None` —
+/// neither is a deploy the fleet should roll for.
+pub async fn self_image_digest() -> Option<String> {
+    let doc = inspect_self().await.ok()?;
+    let reference = doc
+        .get("Config")
+        .and_then(|c| c.get("Image"))
+        .and_then(|i| i.as_str())?;
+    digest_suffix(reference).map(str::to_string)
+}
+
 /// Write the compose file (both slots, flip-rendered) and both slot env
 /// files from a spec read off the LIVE container. Called by every roll —
 /// drift between rolls cannot survive it.

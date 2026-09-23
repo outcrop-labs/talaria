@@ -40,7 +40,7 @@ use talaria_price_oracle::PriceRefreshDeps;
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_decide::assembly::real_run_deps;
 use talaria_runs_define::run_definition;
-use talaria_runs_reclaim::{ReclaimDeps, drive_fn, due_fn};
+use talaria_runs_reclaim::{drive_fn, due_fn, ReclaimDeps};
 use talaria_runs_run::RunDeps;
 use talaria_scheduler as scheduler;
 use talaria_scheduler::REQUIRED_JOBS;
@@ -88,6 +88,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     }));
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
         Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
+    }));
+    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
+        Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
     }));
     // THE ROLL'S OWN TWO EDGES. `roll_agent` reaches the renderer through
     // them — a roll renders the incoming slot, brings it up, flips the
@@ -401,6 +404,10 @@ mod tests {
         assert!(
             talaria_fleet_reconcile::NEXT_FREE_PORT.get().is_some(),
             "the roll's port allocator fell out of the boot wiring — every roll would silently do nothing"
+        );
+        assert!(
+            talaria_update_job::ROLL_FLEET.get().is_some(),
+            "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
         );
     }
 

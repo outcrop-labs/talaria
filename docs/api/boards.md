@@ -241,7 +241,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_members.rs`](../
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `email` | `email` |  |
-| `role` | `enum(editor|viewer)` |  |
+| `role` | `enum(owner|editor|viewer)` |  |
 
 ### DELETE `/api/boards/{id}/members` body
 

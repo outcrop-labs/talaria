@@ -4,7 +4,7 @@ Agents are teammates you hire: each one has a soul, its own memory and skills, t
 grant it, and a model for a brain. You meet them everywhere work happens — mention one in a
 channel, chat privately, plan beside one, assign one a ticket — and everything it did is on
 the record when you review. What they may do alone is bounded by the platform, not by trust:
-an agent never assigns itself work and never signs off its own ticket.
+an agent never assigns itself work, never signs off its own ticket, and never does dev work in chat: code changes go through a ticket and a workbench job, however small, and instructions given in chat land on the ticket as comments.
 
 Hiring and configuring agents is an admin (or granted-manager) job — that's the
 [admin guide](./admin-agents.md). This page is about working with the ones that exist.
@@ -71,6 +71,7 @@ board's inbox, **never pre-assigned** — assignment is a person's approval.
 | Read what it's granted (the ticket, the doc, the thread it's in) | Assign itself work |
 | Spend a credential handed to it — once, within the hour | Read a secret's value, or spend one twice |
 | Open a pull request against a repo it's granted | Merge its own PR — you press that button |
+| Write and commit code through a workbench job, on a ticket | Write, modify, or commit code from a chat thread — whatever the ask |
 | Reach out to you first, within the outreach cap | Sign off its own ticket |
 
 ## What an agent makes is someone's

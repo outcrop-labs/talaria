@@ -448,6 +448,7 @@ pub struct MessageRow {
     pub attachments: Value,
     pub guard: Option<Value>,
     pub metadata: Value,
+    pub chips: Value,
     pub author_user_id: Option<String>,
     pub author_label: Option<String>,
 }
@@ -520,12 +521,13 @@ pub async fn get_conversation(
         Value,
         Option<Value>,
         Value,
+        Value,
         Option<String>,
         Option<String>,
     );
     let messages: Vec<MessageSelRow> = sqlx::query_as(
         "select m.role, m.content, m.reasoning, m.tools, m.status, m.seq, \
-                    m.attachments, m.guard, m.metadata, \
+                    m.attachments, m.guard, m.metadata, m.chips, \
                     m.author_user_id::text, coalesce(u.name, u.email) \
              from messages m left join users u on u.id = m.author_user_id \
              where m.conversation_id = $1::uuid order by m.seq asc",
@@ -554,6 +556,7 @@ pub async fn get_conversation(
                     attachments,
                     guard,
                     metadata,
+                    chips,
                     author_user_id,
                     author_label,
                 )| {
@@ -569,6 +572,7 @@ pub async fn get_conversation(
                         metadata,
                         author_user_id,
                         author_label,
+                        chips,
                     }
                 },
             )

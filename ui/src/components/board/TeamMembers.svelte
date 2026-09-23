@@ -1,8 +1,9 @@
 <script lang="ts">
-  import Button from '@/components/ui/Button.svelte'
+  import { X } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import Select from '@/components/ui/Select.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -21,6 +22,8 @@
   const membersList = listQuery(useTeamMembers(() => teamId), { title: 'Could not load this team’s members', variant: 'compact' })
   const members = $derived(membersList.rows)
   const membersLoading = $derived(membersList.pending)
+  const ownerCount = $derived(members.filter((m) => m.role === 'owner').length)
+  const canRemove = (memberRole: string) => canManage && (memberRole !== 'owner' || ownerCount > 1)
   let role = $state<TeamRole>('member')
   let err = $state<string | null>(null)
   const refresh = () => qc.invalidateQueries({ queryKey: ['team-members', teamId] })
@@ -66,11 +69,11 @@
           {m.name ?? m.email ?? m.userId}
           {#if m.name && m.email}<span class="ml-1.5 font-mono text-[11px] text-muted">{m.email}</span>{/if}
         </span>
-        <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
-        {#if canManage && m.role !== 'owner'}
-          <Button variant="ghost" size="xs" class="hover:text-danger" onclick={() => void removeTeamMember(teamId, m.userId).then(refresh)}>
-            Remove
-          </Button>
+        <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{m.role}</span>
+        {#if canRemove(m.role)}
+          <IconButton size="sm" danger title={`Remove ${m.name ?? m.email ?? 'this person'}`} onclick={() => void removeTeamMember(teamId, m.userId).then(refresh)}>
+            <X size={14} />
+          </IconButton>
         {/if}
       </li>
     {/each}

@@ -3,6 +3,7 @@ import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
 import { toastError } from '@/lib/toast.svelte'
 import type { ToolCall } from '@/lib/sse-parse'
+import type { ChatChip } from '@/lib/chips'
 
 export interface Conversation {
   id: string
@@ -36,6 +37,7 @@ export interface StoredMessage {
   /** Row-level stamps; `resumed` marks a turn the server auto-resumed after
    *  its stream died mid-flight. */
   metadata?: { resumed?: boolean } | null
+  chips?: ChatChip[]
 }
 
 export interface PlanMember {

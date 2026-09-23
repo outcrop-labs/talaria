@@ -441,6 +441,14 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::chat::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/chat/chips/resolve",
+            post(talaria_routes_comms::comms::chips::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/chat/chips/approvals/{id}",
+            post(talaria_routes_comms::comms::chips_approvals_id::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/conversations",
             get(talaria_routes_comms::comms::conversations::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -1435,6 +1443,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agent/whoami",
             get(talaria_routes_fleet::agents::agent_whoami::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/agent/chips",
+            post(talaria_routes_comms::comms::chips_expose::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agent/gap",

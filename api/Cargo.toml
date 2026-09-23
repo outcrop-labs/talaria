@@ -222,6 +222,8 @@ talaria-channels = { path = "crates/talaria-channels" }
 
 talaria-chat-persist = { path = "crates/talaria-chat-persist" }
 
+talaria-chips = { path = "crates/talaria-chips" }
+
 talaria-claim = { path = "crates/talaria-claim" }
 
 talaria-collate = { path = "crates/talaria-collate" }
@@ -648,8 +650,8 @@ talaria-channel-plan = { workspace = true }
 talaria-channel-replies = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-chat-persist = { workspace = true }
+talaria-chips = { workspace = true }
 talaria-claim = { workspace = true }
-talaria-collate = { workspace = true }
 talaria-comms-decay = { workspace = true }
 talaria-config = { workspace = true }
 talaria-conversations = { workspace = true }

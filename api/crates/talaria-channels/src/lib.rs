@@ -986,6 +986,7 @@ pub struct ChannelMessageWire {
     pub guard: Option<Value>,
     pub thread_root_id: Option<String>,
     pub edited_at: Option<String>,
+    pub chips: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reactions: Option<Vec<ReactionRollup>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1002,6 +1003,7 @@ pub fn inserted_wire(m: &ChannelMessageWire) -> Value {
     if let Some(obj) = v.as_object_mut() {
         obj.remove("guard");
         obj.remove("editedAt");
+        obj.remove("chips");
     }
     v
 }
@@ -1030,17 +1032,17 @@ pub struct ThreadRollup {
 // column order; `msg_wire` maps rows in exactly that order.
 const MSG_PAGE_MAIN_FLOW: &str = "select id::text, seq, author_type, author, content, status, \
      (trunc(extract(epoch from created_at) * 1000))::bigint, attachments, guard, \
-     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint \
+     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint, chips \
      from channel_messages where channel_id = $1::uuid and seq > $2 \
      and thread_root_id is null order by seq desc limit $3";
 const MSG_PAGE_ALL: &str = "select id::text, seq, author_type, author, content, status, \
      (trunc(extract(epoch from created_at) * 1000))::bigint, attachments, guard, \
-     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint \
+     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint, chips \
      from channel_messages where channel_id = $1::uuid and seq > $2 \
      order by seq desc limit $3";
 const MSG_PAGE_THREAD: &str = "select id::text, seq, author_type, author, content, status, \
      (trunc(extract(epoch from created_at) * 1000))::bigint, attachments, guard, \
-     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint \
+     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint, chips \
      from channel_messages where channel_id = $1::uuid \
      and (id = $2::uuid or thread_root_id = $2::uuid) order by seq asc limit 300";
 
@@ -1056,6 +1058,7 @@ type MsgRow = (
     Option<Value>,
     Option<String>,
     Option<i64>,
+    Value,
 );
 
 fn msg_wire(
@@ -1071,6 +1074,7 @@ fn msg_wire(
         guard,
         thread_root_id,
         edited_ms,
+        chips,
     ): MsgRow,
 ) -> ChannelMessageWire {
     ChannelMessageWire {
@@ -1085,6 +1089,7 @@ fn msg_wire(
         guard,
         thread_root_id,
         edited_at: edited_ms.map(epoch_ms_to_iso),
+        chips,
         reactions: None,
         thread: None,
     }
@@ -1305,6 +1310,7 @@ pub async fn insert_channel_message(
         guard: None,
         thread_root_id: row.8,
         edited_at: None,
+        chips: serde_json::json!([]),
         reactions: None,
         thread: None,
     };
@@ -1606,6 +1612,7 @@ mod tests {
             guard: None,
             thread_root_id: None,
             edited_at: None,
+            chips: serde_json::json!([]),
             reactions: None,
             thread: None,
         };
@@ -1633,6 +1640,7 @@ mod tests {
             guard: None,
             thread_root_id: None,
             edited_at: Some("2026-08-29T11:00:00.000Z".into()),
+            chips: serde_json::json!([]),
             reactions: Some(vec![ReactionRollup {
                 emoji: "🎉".into(),
                 actors: vec!["a@x".into()],
@@ -1666,6 +1674,7 @@ mod tests {
                 "guard",
                 "threadRootId",
                 "editedAt",
+                "chips",
                 "reactions",
                 "thread"
             ]

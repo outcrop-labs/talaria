@@ -1,0 +1,18 @@
+[package]
+name = "talaria-chips"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-realtime = { workspace = true }
+tokio = { workspace = true }

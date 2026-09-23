@@ -3765,8 +3765,8 @@ dependencies = [
  "talaria-channel-replies",
  "talaria-channels",
  "talaria-chat-persist",
+ "talaria-chips",
  "talaria-claim",
- "talaria-collate",
  "talaria-comms-decay",
  "talaria-config",
  "talaria-conversations",
@@ -4341,6 +4341,19 @@ dependencies = [
  "talaria-workspace-handles",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-chips"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-notify",
+ "talaria-realtime",
+ "tokio",
 ]
 
 [[package]]
@@ -6405,6 +6418,7 @@ dependencies = [
  "talaria-channel-replies",
  "talaria-channels",
  "talaria-chat-persist",
+ "talaria-chips",
  "talaria-comms-decay",
  "talaria-conversations",
  "talaria-daily-brief",
@@ -6470,6 +6484,7 @@ dependencies = [
  "talaria-body",
  "talaria-brain-health",
  "talaria-channels",
+ "talaria-chips",
  "talaria-error",
  "talaria-gaps",
  "talaria-harness-defs",
@@ -6521,6 +6536,7 @@ dependencies = [
  "talaria-audit",
  "talaria-auth-config",
  "talaria-body",
+ "talaria-chips",
  "talaria-claim",
  "talaria-error",
  "talaria-github",
@@ -7184,12 +7200,16 @@ dependencies = [
 name = "talaria-update-job"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-runs-lease",
  "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-settings",
  "talaria-state",
  "talaria-update-mode",
  "talaria-update-registry",

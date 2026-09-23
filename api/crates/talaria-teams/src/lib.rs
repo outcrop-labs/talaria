@@ -324,22 +324,38 @@ pub async fn add_team_member(
     Ok(None)
 }
 
-/// Remove a member — never an owner (the `role <> 'owner'` guard makes it a
-/// silent no-op).
+/// Remove a member. An owner goes too, unless they are the last one — a team
+/// with nobody who can govern it is not a team. Ok(Some(sentence)) is the 400.
 pub async fn remove_team_member(
     pg: &PgPool,
     team_id: &str,
     user_id: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "delete from team_members \
-         where team_id = $1::uuid and user_id = $2::uuid and role <> 'owner'",
+) -> Result<Option<String>, sqlx::Error> {
+    let others: (i64,) = sqlx::query_as(
+        "select count(*) from team_members \
+         where team_id = $1::uuid and role = 'owner' and user_id <> $2::uuid",
     )
     .bind(team_id)
     .bind(user_id)
-    .execute(pg)
+    .fetch_one(pg)
     .await?;
-    Ok(())
+    let target_owner: Option<(i32,)> = sqlx::query_as(
+        "select 1 from team_members \
+         where team_id = $1::uuid and user_id = $2::uuid and role = 'owner'",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    if target_owner.is_some() && others.0 == 0 {
+        return Ok(Some("A team needs an owner".into()));
+    }
+    sqlx::query("delete from team_members where team_id = $1::uuid and user_id = $2::uuid")
+        .bind(team_id)
+        .bind(user_id)
+        .execute(pg)
+        .await?;
+    Ok(None)
 }
 
 pub async fn list_team_agents(pg: &PgPool, team_id: &str) -> Result<Vec<TeamAgent>, sqlx::Error> {

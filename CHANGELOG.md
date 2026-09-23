@@ -4,6 +4,7 @@ All notable changes to Talaria. Milestone labels refer to the historical plan, [
 
 ## [Unreleased]
 
+
 ## Phase 7 — self-contained under Talaria (2026-07-09)
 
 Everything routes through Talaria, on one network, with no Dockerfiles and
