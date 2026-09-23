@@ -691,6 +691,17 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/integrations/google/agent/pending",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_pending::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/pending/{id}",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_pending::get_one)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+
+        .route(
             "/api/integrations/google/agent/gmail/labels",
             get(talaria_routes_integrations::integrations::integrations_google_agent_gmail_labels::get)
                 .post(talaria_routes_integrations::integrations::integrations_google_agent_gmail_labels::post)

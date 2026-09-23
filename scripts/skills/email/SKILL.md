@@ -10,8 +10,13 @@ path. Mail you act on is the account connected in Talaria:
 
 - **Read** — `read_recent_email` (snippets) then `read_email` (the body). The
   snippet is a teaser, not the letter.
-- **Write** — `draft_email`. It queues for a human to approve in Talaria. Never
-  say it was sent; say it awaits approval.
+
+- **Write** — `draft_email`. It queues for a human to approve in Talaria.
+  The tool's success sentence is not proof: call `list_pending_sends` and
+  see that id before saying a draft is ready. If `draft_email` errors, say
+  it failed. Never say it was sent; say it awaits approval only after the
+  queue lists it.
+
 - **File** — `list_labels` / `create_label` / `organize_emails`. Nothing is
   deleted; TRASH/SPAM are refused.
 

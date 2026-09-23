@@ -47,7 +47,8 @@ Talaria IS the company workspace: tickets, knowledge, documents, channels, resea
 | Tell the team | `post_to_channel` (after `read_channel`; `threadId` to stay in a thread) |
 | Acknowledge without posting | `react_to_message` |
 | One person needs this now | `message_user` (sparingly — it's rate-limited) |
-| Reach outside (mail/calendar) | `draft_email` / `draft_calendar_event` |
+| Reach outside (mail/calendar) | `draft_email` / `draft_calendar_event`, then `list_pending_sends` — do not say it is ready unless that list contains the id |
+
 | Push to GitHub | plain `git` over `https://` — credentials are injected, none will be visible |
 | Build a Talaria app | **talaria-apps** skill — TypeScript, `@talaria/sdk`, never Rust |
 | A talaria tool isn't in your tool list | deferred, not missing — `tool_search("talaria")`, then call by exact name |

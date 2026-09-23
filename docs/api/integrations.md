@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+28 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -22,6 +22,8 @@
 | [`/api/integrations/google/agent/gmail/labels`](#apiintegrationsgoogleagentgmaillabels) | GET | `agent` |
 | [`/api/integrations/google/agent/gmail/labels`](#apiintegrationsgoogleagentgmaillabels) | POST | `agent` |
 | [`/api/integrations/google/agent/gmail/organize`](#apiintegrationsgoogleagentgmailorganize) | POST | `agent` |
+| [`/api/integrations/google/agent/pending`](#apiintegrationsgoogleagentpending) | GET | `agent` |
+| [`/api/integrations/google/agent/pending/{id}`](#apiintegrationsgoogleagentpendingid) | GET | `agent` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | GET | `session` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | POST | `session` |
 | [`/api/integrations/google/callback`](#apiintegrationsgooglecallback) | GET | `public` |
@@ -71,7 +73,7 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `{events}` | 200, 409 | — |
-| POST | `agent` | [body](#post-apiintegrationsgoogleagentcalendar-body) | `{pending, message}` | 200, 400 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentcalendar-body) | `…` | 200, 400, 409 | — |
 
 ### POST `/api/integrations/google/agent/calendar` body
 
@@ -111,7 +113,7 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `{messages}` | 200, 409 | — |
-| POST | `agent` | [body](#post-apiintegrationsgoogleagentgmail-body) | `{pending, message}` | 200, 400 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentgmail-body) | `…` | 200, 400, 409 | — |
 
 ### POST `/api/integrations/google/agent/gmail` body
 
@@ -178,6 +180,34 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | `ids` | `string[](1, 128, 1, 100)` | ids is required: at least one, each 1–128 chars, 1–100 of them. |
 | `addLabels` | `string[]?(1, 120, 10)` |  |
 | `removeLabels` | `string[]?(1, 120, 10)` |  |
+
+## `/api/integrations/google/agent/pending`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_pending.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_pending.rs)
+
+> /api/integrations/google/agent/pending — the confirm-sends queue the
+> calling agent's approver actually opens. Personal assistant → its owner's
+> personal queue (admin arm off). General agent → the org arm an admin sees.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `{pending, approver}` | 200 | — |
+
+## `/api/integrations/google/agent/pending/{id}`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_pending.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_pending.rs)
+
+> /api/integrations/google/agent/pending — the confirm-sends queue the
+> calling agent's approver actually opens. Personal assistant → its owner's
+> personal queue (admin arm off). General agent → the org arm an admin sees.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `{pending, approver}` | 200, 404 | — |
 
 ## `/api/integrations/google/calendar/events`
 

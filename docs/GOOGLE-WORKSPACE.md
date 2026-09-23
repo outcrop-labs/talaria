@@ -57,7 +57,10 @@ multi-account setup path.
 - **Agent Calendar & Gmail (confirm-sends):** an agent can `read_calendar` /
   `read_recent_email` freely, but `draft_calendar_event` / `draft_email` do
   **not** act immediately — they queue a **pending action** a human approves on
-  Home (**Needs your approval**). On approve it runs; reject drops it.
+  Home (**Needs your approval**). The draft call is not proof it landed: the
+  agent confirms with `list_pending_sends` (the same queue) before saying it
+  is ready. On approve it runs; reject drops it.
+
   - A **personal assistant** reads/drafts on **its owner's** Google — the
     **owner** approves.
   - A **general agent** reads/drafts on the **shared org** Google — an **admin**

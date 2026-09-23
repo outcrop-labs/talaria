@@ -1241,6 +1241,7 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
 
         "draft_email" => {
             google_only(w, "draft_email")?;
+            let id = next_id("pending", w.email_drafts.len());
             w.email_drafts.push(SandboxEmailDraft {
                 to: req_str(&a["to"], "to")?.to_string(),
                 subject: opt_str(&a["subject"]).map(str::to_string),
@@ -1248,8 +1249,49 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 cc: opt_str(&a["cc"]).map(str::to_string),
                 bcc: opt_str(&a["bcc"]).map(str::to_string),
             });
-            Ok(json!({ "ok": true, "queued": true,
-                "note": "drafted — a human approves and sends it in Talaria; nothing has been sent" }))
+            Ok(json!({
+                "pending": { "id": id, "status": "pending" },
+                "message": "Drafted — waiting for the owner to approve before it sends. Confirm with list_pending_sends before telling anyone it is ready.",
+                "note": "drafted — a human approves and sends it in Talaria; nothing has been sent"
+            }))
+        }
+
+        "list_pending_sends" => {
+            google_only(w, "list_pending_sends")?;
+            let mut pending: Vec<Value> = w.email_drafts.iter().enumerate().map(|(i, d)| json!({
+                "id": format!("pending-{}", i + 1),
+                "kind": "gmail_send",
+                "status": "pending",
+                "summary": format!("Email to {}", d.to),
+                "payload": { "to": d.to, "subject": d.subject, "body": d.body, "cc": d.cc, "bcc": d.bcc },
+            })).collect();
+            pending.extend(w.event_drafts.iter().enumerate().map(|(i, d)| {
+                json!({
+                    "id": format!("event-{}", i + 1),
+                    "kind": "calendar_create",
+                    "status": "pending",
+                    "summary": d.summary,
+                    "payload": { "summary": d.summary, "start": d.start, "end": d.end },
+                })
+            }));
+            Ok(json!({ "pending": pending, "approver": { "queue": "owner" } }))
+        }
+
+        "read_pending_send" => {
+            google_only(w, "read_pending_send")?;
+            let id = req_str(&a["id"], "id")?;
+            let listed = handle("list_pending_sends", &json!({}), w)?;
+            let found = listed["pending"].as_array().and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+                    .cloned()
+            });
+            match found {
+                Some(row) => Ok(json!({ "pending": row })),
+                None => Err(refuse(
+                    "not in the confirm-sends queue this agent's approver sees",
+                )),
+            }
         }
 
         // ── Research ─────────────────────────────────────────────────────────
@@ -1566,6 +1608,8 @@ pub const BACKED_TOOLS: &[&str] = &[
     "organize_emails",
     "search_drive",
     "draft_email",
+    "list_pending_sends",
+    "read_pending_send",
     // ── Research ─────────────────────────────────────────────────────────
     "research",
     "list_research",
@@ -2761,7 +2805,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            61,
+            63,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }
