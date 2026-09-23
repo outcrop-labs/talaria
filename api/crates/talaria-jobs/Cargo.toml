@@ -22,6 +22,8 @@ talaria-conversations = { workspace = true }
 talaria-inbox-focus = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-workchains = { workspace = true }
+talaria-kb = { workspace = true }
+talaria-kb-perms = { workspace = true }
 talaria-daily-brief = { workspace = true }
 talaria-digest = { workspace = true }
 talaria-fleet-preflight = { workspace = true }
@@ -50,7 +52,9 @@ talaria-runs-work-session = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-state = { workspace = true }
+talaria-teams = { workspace = true }
 talaria-update-job = { workspace = true }
+talaria-uploads = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

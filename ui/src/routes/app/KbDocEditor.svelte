@@ -423,6 +423,7 @@
               onSave={() => void saveBody()}
               placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents' : 'Write'}
               fill
+              attachments
               class="min-w-0 flex-1"
             />
           {/key}

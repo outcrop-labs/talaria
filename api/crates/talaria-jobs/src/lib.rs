@@ -145,6 +145,37 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_inbox_focus::GET_TASK.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
     }));
+    // THE KB-BODY RUNG — same disease, found before it bit this time. The
+    // seam (uploads' KB_DOC_ALLOWS_READ) shipped in the extraction commit
+    // with its resolver never registered, so can_access_upload's "an upload
+    // embedded in a KB doc is readable by whoever can read the doc" branch
+    // read an unset OnceLock and fell through to the reach query — every
+    // non-owner reader of an embedded image got a 404. Mirrors the
+    // pre-extraction logic (get_doc → effective_doc_perms → can_read,
+    // teams for grant matching); fails closed like every other rung: a
+    // perms read that errors answers false.
+    let _ = talaria_uploads::KB_DOC_ALLOWS_READ.set(std::sync::Arc::new(
+        |pg, doc_id, user_id, who| {
+            Box::pin(async move {
+                let Ok(Some(doc)) = talaria_kb::get_doc(&pg, &doc_id).await else {
+                    return false;
+                };
+                let Ok(effective) = talaria_kb::effective_doc_perms(&pg, &doc).await else {
+                    return false;
+                };
+                let team_ids = talaria_teams::team_ids_for_user(&pg, &user_id)
+                    .await
+                    .unwrap_or_default();
+                talaria_kb_perms::can_read(
+                    &effective.perms,
+                    Some(&user_id),
+                    who.as_deref(),
+                    &effective.grants,
+                    &team_ids,
+                )
+            })
+        },
+    ));
     talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));

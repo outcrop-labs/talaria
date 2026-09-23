@@ -6,6 +6,8 @@ import remarkRehype from 'remark-rehype'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeStringify from 'rehype-stringify'
 import { cn } from '@/lib/cn'
+import { parseAttachmentHref } from '@/lib/attachment-token'
+import { formatBytes } from '@/lib/format'
 import { focusGold } from '@/components/chat/chat-chrome'
 
 // Markdown → HTML for Markdown.svelte: GFM (tables, task lists, strikethrough,
@@ -177,6 +179,34 @@ function transformNode(node: HastNode): HastNode | null {
       // Mentions render as a styled span — never a navigable link.
       if (href.startsWith('mention:')) {
         return el('span', { className: 'rounded bg-accent-soft px-1 font-medium text-accent' }, node.children ?? [])
+      }
+      // An inline attachment chip (the editor's AttachmentChip token): a
+      // download anchor styled as the chat surface's file chip. The raw
+      // attachment: href is NEVER passed through safeUrl — it would be
+      // blanked (unknown scheme); the id it carries becomes the real,
+      // /-relative serving URL, and THAT goes through the gate. Regex miss
+      // → fall through to the ordinary link path (safeUrl blanks it).
+      if (href.startsWith('attachment://')) {
+        const t = parseAttachmentHref(href)
+        if (t) {
+          return el(
+            'a',
+            {
+              href: safeUrl(`/api/uploads/${t.id}`),
+              download: '',
+              className:
+                'inline-flex max-w-full items-center gap-2 rounded-md border border-line bg-raised px-2.5 py-1.5 font-sans text-fg transition-colors hover:border-line-strong',
+            },
+            [
+              el('span', { className: 'min-w-0 truncate' }, node.children ?? []),
+              el(
+                'span',
+                { className: 'shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted' },
+                [text(formatBytes(t.size))],
+              ),
+            ],
+          )
+        }
       }
       props.href = safeUrl(href)
       props.target = '_blank'
