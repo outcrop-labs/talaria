@@ -19,18 +19,18 @@ use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_tasks::{AgentIntent, AgentWriteTarget, agent_ticket_refusal, get_task, log_activity};
 
-// This route gates its id with a 404, not the house uuid_gate's 500: agents
-// pass taskId verbatim, and "not found" is the honest answer for a malformed
-// one — not a server fault.
+// Ticket address is a uuid or the board ref (`PLAT-118`). A miss is 404,
+// never the house uuid_gate 500 — agents pass the ref the assignment showed.
 
 pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -73,9 +73,10 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

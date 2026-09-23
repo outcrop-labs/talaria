@@ -9,12 +9,15 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, require_agent};
 use talaria_boards::board_allows_agent;
-use talaria_body::{optional_max_string_member, optional_uuid_member, parse, string_member};
+use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{remember_ticket_refusal, report_gap, report_gap::GapInput};
 use talaria_notify::NotifyDeps;
 use talaria_state::AppState;
-use talaria_tasks::{AgentIntent, AgentWriteTarget, agent_ticket_refusal, get_task, log_activity};
+use talaria_tasks::{
+    AgentIntent, AgentWriteTarget, ResolvedTaskId, agent_ticket_refusal, get_task, log_activity,
+    resolve_task_id,
+};
 
 pub async fn post(
     State(state): State<AppState>,
@@ -40,9 +43,23 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let task_id = match optional_uuid_member(obj, "taskId") {
+    let named = match optional_max_string_member(obj, "taskId", 200) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // A ref (PLAT-118) is the address the assignment showed. Resolving it
+    // here keeps the uuid cast off the read — a ref used to 500, then the
+    // refusal below never ran.
+    let (task_id, task) = match named.as_deref() {
+        None => (None, None),
+        Some(raw) => match resolve_task_id(&state.pg, raw).await {
+            Ok(ResolvedTaskId::One(id)) => match get_task(&state.pg, &id).await {
+                Ok(t) => (Some(id), t),
+                Err(e) => return Ok(internal("[agent.gap] ticket read failed", e)),
+            },
+            Ok(_) => (Some(raw.to_string()), None),
+            Err(e) => return Ok(internal("[agent.gap] ticket lookup failed", e)),
+        },
     };
 
     // `taskId` arrives from the agent, so it is AUTHORISED, never taken on
@@ -61,13 +78,6 @@ pub async fn post(
     // report arrives with no ticket on it. An agent that names no ticket and
     // was refused nothing is making a genuinely org-wide claim and is
     // unaffected.
-    let task = match task_id.as_deref() {
-        Some(id) => match get_task(&state.pg, id).await {
-            Ok(t) => t,
-            Err(e) => return Ok(internal("[agent.gap] ticket read failed", e)),
-        },
-        None => None,
-    };
     if let Some(task_id) = task_id.as_deref() {
         // Unknown and not-allowed refuse identically.
         let refuse = || {

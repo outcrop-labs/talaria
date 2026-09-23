@@ -22,9 +22,10 @@ pub async fn post(
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "POST review", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

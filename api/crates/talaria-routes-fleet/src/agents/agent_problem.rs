@@ -38,13 +38,14 @@ use talaria_approvals::audience_for;
 use talaria_boards::{
     create_board, join_everyone_to_board, list_all_boards, set_board_agent_config,
 };
-use talaria_body::{optional_max_string_member, optional_uuid_member, parse, string_member};
+use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_gaps::{agent_text_authority, remember_ticket_refusal};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 use talaria_state::AppState;
 use talaria_tasks::{
-    AgentIntent, AgentWriteTarget, NewTask, TaskDeps, agent_ticket_refusal, create_task, get_task,
+    AgentIntent, AgentWriteTarget, NewTask, ResolvedTaskId, TaskDeps, agent_ticket_refusal,
+    create_task, get_task, resolve_task_id,
 };
 use talaria_teams::create_team;
 
@@ -126,22 +127,22 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    let label = describe_agent(&agent).label;
     // the ticket the agent was working when it broke
-    let task_id = match optional_uuid_member(obj, "taskId") {
+    let named = match optional_max_string_member(obj, "taskId", 200) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let label = describe_agent(&agent).label;
-
-    // NEVER tell a refused agent to drop `taskId` and retry, and do not
-    // leave the retry working in silence either: each refusal is remembered
-    // against the caller and `agentTextAuthority` reads that memo below.
-    let task = match task_id.as_deref() {
-        Some(id) => match get_task(&state.pg, id).await {
-            Ok(t) => t,
-            Err(e) => return Ok(internal("[agent.problem] ticket read failed", e)),
+    let (task_id, task) = match named.as_deref() {
+        None => (None, None),
+        Some(raw) => match resolve_task_id(&state.pg, raw).await {
+            Ok(ResolvedTaskId::One(id)) => match get_task(&state.pg, &id).await {
+                Ok(t) => (Some(id), t),
+                Err(e) => return Ok(internal("[agent.problem] ticket read failed", e)),
+            },
+            Ok(_) => (Some(raw.to_string()), None),
+            Err(e) => return Ok(internal("[agent.problem] ticket lookup failed", e)),
         },
-        None => None,
     };
     if let Some(task_id) = task_id.as_deref() {
         let refuse = || {

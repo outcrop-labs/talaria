@@ -83,3 +83,9 @@ apps/waypoint/
 logs/
 ui/dist-next/
 ui/dist-prev/
+
+# Throwaway browser-verification harnesses, named for the ticket that spawned
+# them (stub config + vite config per surface): real chrome against /api/*
+# fixtures, never committed. Evidence and drivers live outside the repo.
+ui/vite.api-stub.tala*.ts
+ui/vite.tala*.config.ts

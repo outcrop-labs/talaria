@@ -1099,16 +1099,18 @@ const table = parseRouterTable(modText, warnings)
 
 // Group the table's entries per path (a path's methods may live in several
 // modules in principle; in practice one — but the grouping makes that
-// explicit rather than assumed).
-const byModule = new Map()
+// explicit rather than assumed). The KEY IS THE PATH: several paths may be
+// served by handlers in one module file (workchains_id.rs serves /steps AND
+// /edges), and keying on the module would fold them onto the first-seen
+// path's section.
+const byPath = new Map()
 for (const t of table) {
-  const key = t.entries.map((e) => moduleFile(e.fnPath)).join('|')
-  if (!byModule.has(key)) byModule.set(key, { file: key.split('|')[0], entries: [], path: t.path })
-  byModule.get(key).entries.push(...t.entries)
+  if (!byPath.has(t.path)) byPath.set(t.path, { entries: [] })
+  byPath.get(t.path).entries.push(...t.entries)
 }
-
 const routes = []
-for (const { file, entries, path } of byModule.values()) {
+for (const [path, { entries }] of byPath) {
+  const file = moduleFile(entries[0].fnPath)
   const abs = join(ROOT, file)
   if (!existsSync(abs)) throw new Error(`router names ${file} but no such module file exists`)
   const r = extractRustRoute(abs, entries)

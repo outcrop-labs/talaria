@@ -5,7 +5,7 @@ import Suggestion, { type SuggestionOptions } from '@tiptap/suggestion'
 import { PluginKey } from '@tiptap/pm/state'
 import {
   Heading1, Heading2, Heading3, List, ListOrdered, ListChecks, Quote,
-  SquareCode, Table as TableIcon, Image as ImageIcon, Minus, Type,
+  SquareCode, Table as TableIcon, Image as ImageIcon, Minus, Type, Paperclip,
   type LucideIcon as IconType,
 } from '@lucide/svelte'
 import SlashMenu from './SlashMenu.svelte'
@@ -39,6 +39,25 @@ const ITEMS: SlashItem[] = [
     const chain = e.chain().focus().deleteRange(r)
     if (url) chain.setImage({ src: url }).run()
     else chain.run()
+  } },
+  { title: 'Attach file', hint: 'Upload a file inline at the cursor', icon: Paperclip, keywords: ['file', 'attach', 'upload', 'attachment', 'pdf'], run: (e, r) => {
+    // The menu closes and the range is claimed synchronously; the upload
+    // lands at the caret when it finishes (TALA-2 inline attachments).
+    e.chain().focus().deleteRange(r).run()
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.onchange = () => {
+      const f = input.files?.[0]
+      if (!f) return
+      void import('@/lib/attachments').then(({ uploadFile, humanSize }) =>
+        uploadFile(f).then((res) => {
+          if (!('id' in res)) return
+          const name = f.name.replace(/[\[\]]/g, '\\$1')
+          e.chain().focus().insertContent(`[${name}|${humanSize(res.size)}](upload:${res.id}) `).run()
+        }),
+      )
+    }
+    input.click()
   } },
 ]
 

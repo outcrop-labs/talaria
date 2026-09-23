@@ -78,3 +78,11 @@ export function fmtDuration(seconds: number): string {
   if (m) return `${m}m`
   return `${seconds}s`
 }
+
+/** The shared short-date spelling; the workchain rail and canvas render due
+ *  dates through it. */
+export function formatShortDate(iso: string): string {
+  const d = new Date(iso)
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) })
+}

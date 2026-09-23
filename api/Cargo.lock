@@ -6414,6 +6414,7 @@ dependencies = [
  "talaria-inbox-focus",
  "talaria-internal-history",
  "talaria-notify",
+ "talaria-params",
  "talaria-permissions",
  "talaria-persona",
  "talaria-personal-agent",
