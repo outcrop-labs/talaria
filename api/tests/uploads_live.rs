@@ -159,8 +159,8 @@ async fn a_kb_body_embedded_upload_reads_as_the_doc_does() {
     .await
     .unwrap();
     let (priv_doc,): (String,) = sqlx::query_as(
-        "insert into kb_docs (space_id, title, body, kind, created_by, updated_by, owner_user_id, visibility) \
-         values ($1::uuid, 'private doc', $2, 'human', $3, $3, $3::uuid, 'private') returning id::text",
+        "insert into kb_docs (space_id, title, body, kind, created_by, updated_by, owner_user_id, visibility, perms_inherited) \
+         values ($1::uuid, 'private doc', $2, 'human', $3, $3, $3::uuid, 'private', false) returning id::text",
     )
     .bind(&space)
     .bind(&doc_body)
