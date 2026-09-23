@@ -28,7 +28,6 @@
 // fleet roll is not a third switch: it is the deploy finishing. The
 // consent was the apply (or the orchestrator that replaced the image).
 
-
 use std::sync::{Arc, OnceLock};
 
 use futures_util::future::BoxFuture;
@@ -37,7 +36,9 @@ use talaria_secretbox::SecretBox;
 use talaria_state::AppState;
 
 use talaria_agent_auth::now_ms;
-use talaria_runs_lease::{AcquireResult, RedisLeases, acquire_lease, keep_lease_alive, lease_key, release_lease};
+use talaria_runs_lease::{
+    AcquireResult, RedisLeases, acquire_lease, keep_lease_alive, lease_key, release_lease,
+};
 use talaria_update_mode::{InstallMode, install_mode};
 use talaria_update_registry::resolve_latest;
 use talaria_update_roll::{reconcile_boot, roll, run_in_flight, self_image_digest, tidy};
@@ -138,9 +139,7 @@ pub fn fleet_roll_digest<'a>(
 
 async fn recorded_fleet_digest(pg: &sqlx::PgPool) -> Option<String> {
     let v = talaria_settings::get_setting(pg, FLEET_ROLLED_KEY, serde_json::Value::Null).await;
-    v.as_str()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    v.as_str().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 async fn record_fleet_rolled(pg: &sqlx::PgPool, digest: &str) -> Result<(), String> {
@@ -420,7 +419,14 @@ mod tests {
         let older = "sha256:old";
         // Adopted green, pin matches, fleet still on the previous digest.
         assert_eq!(
-            fleet_roll_digest(true, false, true, Some(deployed), Some(deployed), Some(older)),
+            fleet_roll_digest(
+                true,
+                false,
+                true,
+                Some(deployed),
+                Some(deployed),
+                Some(older)
+            ),
             Some(deployed)
         );
         // Already rolled onto this digest: a restart is not a deploy.
@@ -462,7 +468,10 @@ mod tests {
             None
         );
         // No digest at all (a dev box that somehow asked).
-        assert_eq!(fleet_roll_digest(true, false, false, None, None, None), None);
+        assert_eq!(
+            fleet_roll_digest(true, false, false, None, None, None),
+            None
+        );
         assert_eq!(
             fleet_roll_digest(true, false, false, Some(""), None, None),
             None
