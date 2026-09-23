@@ -1,6 +1,6 @@
 ---
 name: repo-traps
-description: The repo's known operational traps, each "if you see X, check Y" — Rust bind-cast 500s, vite serving a stale negative after a bad import, a killed api still ticking its scheduler, docker daemon DNS, and minting a Redis session for authed curl. Use when a change that should work fails oddly, a port or process misbehaves, or an API-level test needs authentication.
+description: The repo's known operational traps, each "if you see X, check Y" — Rust bind-cast 500s, vite serving a stale negative after a bad import, a killed api still ticking its scheduler, docker daemon DNS, minting a Redis session for authed curl, and a cargo test that pins the machine. Use when a change that should work fails oddly, a port or process misbehaves, or an API-level test needs authentication.
 ---
 
 # Repo traps
@@ -108,7 +108,13 @@ only has an `int4` signature. It's trap 1's cousin: the inferred param type, not
 **Fix:** spell the interval arithmetic instead — `now() - ($1::int * interval '1 minute')`
 with an `i32` bind (or an explicit `::int` cast). Same for `days`.
 
----
+## 8. A cargo test or clippy pins the machine, and other agents can't build
+
+**Symptom:** the box (or the whole host) goes unresponsive the moment an agent runs gates before a PR, or a `cargo test` / `cargo clippy`. Other cargo in the same checkout waits. Other devboxes on the host stall with it.
+
+**Check:** a workspace cargo — `bun run api:check`, `bun run desktop:check`, `cargo test` or `cargo clippy` without `-p`. Those take an exclusive lock on `api/target` for the whole workspace, and an uncapped cargo takes every core and a matching pile of RAM (each rustc is a multi-GB process on the same jobserver).
+
+**Fix:** stop it. The local gate is `bun run gate`, which compiles only the packages the diff touches. Reproduce a CI failure with `cargo test -p <the crate the log names>`, never the workspace. The cap is `jobs = 2` in `api/.cargo/config.toml` (and the desktop workspace's copy); do not raise it, and do not set `CARGO_BUILD_JOBS`, to make a compile faster. CI lifts the cap on dedicated runners. A human alone on a build machine may export `CARGO_BUILD_JOBS` for that one shell; an agent may not.
 
 **Maintenance rule:** this list is earned experience, not theory. When you hit a NEW trap
 with a generalizable check, add it here — symptom, check, fix — and keep the incident

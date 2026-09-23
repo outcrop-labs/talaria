@@ -1953,6 +1953,53 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE LOCAL COMPILE GATE IS SCOPED, AND CARGO IS CAPPED.
+//
+// AGENTS.md says the local pre-push gate is `bun run gate`, and that a workspace
+// cargo is not it: that locks api/target and pins the machine. What makes the
+// sentence true is scripts/gate.mjs (it never compiles the workspace), the two
+// cargo configs (`jobs = 2`), and the CI lifts that keep a dedicated runner from
+// inheriting the cap. Delete any of them and the next agent runs api:check on a
+// laptop again.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['AGENTS.md', 'bun run gate', 'the local pre-push command'],
+    ['AGENTS.md', 'Do not run a workspace cargo', 'the prohibition agents keep re-learning the hard way'],
+    ['.claude/skills/ship-a-change/SKILL.md', 'bun run gate', 'the procedure runs the scoped gate'],
+    ['scripts/gate.mjs', 'not a workspace compile', 'the script states what it refuses to run'],
+    ['api/.cargo/config.toml', 'jobs = 2', 'the local cpu and ram cap'],
+    ['desktop/src-tauri/.cargo/config.toml', 'jobs = 2', 'the desktop workspace does not inherit the api cap'],
+    ['.github/actions/setup-runtime/action.yml', 'CARGO_BUILD_JOBS', 'CI lifts the cap, or the api job inherits 2 and times out'],
+    ['api/package.Dockerfile', 'ARG CARGO_BUILD_JOBS=2', 'a package build without the lift stays capped'],
+    ['.github/workflows/api-package.yml', 'CARGO_BUILD_JOBS=$(nproc)', 'the package workflow is the lift'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) {
+      found.push({ path: file, line: 0, text: 'missing' })
+    } else if (!text.includes(needle)) {
+      found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+    }
+  }
+  if (found.length) {
+    failures.push({
+      id: 'scoped-gate-anchors',
+      what: 'the local compile gate and the cargo job cap have drifted apart',
+      fix: [
+        'AGENTS.md says the local pre-push gate is `bun run gate`, and that a workspace cargo',
+        '(`api:check`, `desktop:check`, `cargo test` without `-p`) is not it — that locks',
+        'api/target and pins the machine. scripts/gate.mjs is the gate. jobs = 2 in both cargo',
+        'configs is the cap. setup-runtime and api-package.yml lift it for dedicated runners.',
+        'If one of them moved, update this check in the same commit — an anchor that points at',
+        'nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
 // THE DEV STACK'S PORTS, PINNED TO THE FILES THAT SPELL THEM.
 //
 // `cli/src/ports.ts` is the cli's single source for the host-port defaults, but
