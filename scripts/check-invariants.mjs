@@ -2035,6 +2035,62 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR THREE HOMES.
+//
+// GH #308 shipped exactly this way: /studio was added to nav.ts's
+// MANAGE_VIEWS (what Admin → People offers) but not to the TS server's
+// MANAGE_VIEW_ROUTES (the SPA's gate) nor the Rust const of the same name
+// (the api's authority) — a grant an admin could make that stopped working
+// at the door. No import reaches across any two of the three, so this is a
+// pin: read each list's own spelling and fail when one moves without the
+// others.
+{
+  const navSrc = readFileSync(join(ROOT, 'ui/src/lib/nav.ts'), 'utf8')
+  const navBlock = /export const MANAGE_VIEWS[^\n]*= \[([\s\S]*?)\n\]/.exec(navSrc)?.[1]
+  const navRoutes = [...(navBlock ?? '').matchAll(/to: '([^']+)'/g)].map((m) => m[1])
+  const usersSrc = readFileSync(join(ROOT, 'ui/src/server/users.ts'), 'utf8')
+  const tsBlock = /const MANAGE_VIEW_ROUTES = \[([^\]]*)\]/.exec(usersSrc)?.[1]
+  const tsRoutes = [...(tsBlock ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
+  const rustSrc = readFileSync(join(ROOT, 'api/crates/talaria-users/src/lib.rs'), 'utf8')
+  const rustBlock = /pub const MANAGE_VIEW_ROUTES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(rustSrc)?.[1]
+  const rustRoutes = [...(rustBlock ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
+
+  const homes = [
+    ["ui/src/lib/nav.ts MANAGE_VIEWS (the UI's offer list)", navRoutes],
+    ["ui/src/server/users.ts MANAGE_VIEW_ROUTES (the TS gate's mirror)", tsRoutes],
+    ["api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES (the api's authority)", rustRoutes],
+  ]
+  const canonical = navRoutes
+  const problems = []
+  if (!navRoutes.length) {
+    problems.push('  ui/src/lib/nav.ts: the MANAGE_VIEWS array was not found — this check now guards nothing')
+  }
+  for (const [where, routes] of homes.slice(1)) {
+    const missing = canonical.filter((r) => !routes.includes(r))
+    const extra = routes.filter((r) => !canonical.includes(r))
+    if (missing.length || extra.length || (!routes.length && canonical.length)) {
+      problems.push(
+        `  ${where}: says [${routes.join(', ') || '(not found)'}] — nav.ts says [${canonical.join(', ') || '(not found)'}]`,
+      )
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'manage-view-route-drift',
+      what: 'the manage-section view routes disagree between the UI list, the TS gate, and the Rust api',
+      fix: [
+        'Add or remove the route in ALL THREE places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
+        "UI's offer list, ui/src/server/users.ts MANAGE_VIEW_ROUTES the TS gate's mirror, and",
+        "api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's authority (bump its",
+        '[&str; N] to match). A view on one list but not the others is a grant that cannot be',
+        'offered, or one that stops working at the door.',
+        ...problems,
+      ],
+      found: [],
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

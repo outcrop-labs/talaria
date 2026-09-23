@@ -233,12 +233,13 @@ pub async fn list_users(
 /// Manage-section routes: default DENIED for members, granted explicitly via
 /// allowed_manage_views. Enabled apps extend this set with EVERY app view
 /// (work and manage) — apps are explicit-grant only.
-pub const MANAGE_VIEW_ROUTES: [&str; 7] = [
+pub const MANAGE_VIEW_ROUTES: [&str; 8] = [
     "/agents",
     "/teams",
     "/models",
     "/mcp",
     "/templates",
+    "/studio",
     "/observability",
     "/apps",
 ];
