@@ -538,7 +538,7 @@
       {:else if view === 'gantt'}
         <Gantt {board} {tasks} onOpen={openTicket} />
       {:else if view === 'workchains'}
-        <Workchains {board} {tasks} allTasks={allTasks} {members} onOpen={openTicket} />
+        <Workchains {board} {tasks} {members} onOpen={openTicket} />
       {:else}
         <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} />
       {/if}
