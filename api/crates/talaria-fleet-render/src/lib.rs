@@ -873,13 +873,16 @@ pub async fn render_fleet(
 
     let chassis = read_chassis().await?;
 
-    // Every rendered soul opens with the toolkit contract (always) and the
-    // organization context (when configured).
+    // Every rendered soul opens with the toolkit contract (always), the
+    // dev-work policy (always): dev work flows through a ticket and a
+    // workbench, never from a chat thread — and the organization context
+    // (when configured).
     let org_header = talaria_org::org_soul_header(&talaria_org::org_profile(pg).await);
     let soul_header = [
         org_header.as_deref(),
         Some(talaria_org::voice_soul_header().as_str()),
         Some(talaria_org::toolkit_soul_header().as_str()),
+        Some(talaria_org::dev_policy_soul_header().as_str()),
     ]
     .into_iter()
     .flatten()
