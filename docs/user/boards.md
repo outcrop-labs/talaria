@@ -57,8 +57,10 @@ tells you exactly what's stuck and how to fix it.
 
 ## Ticket details
 
-Open a ticket (click a card) for the full detail: description, attachments, and comments
-with `@`mentions — mentioned people get an inbox item. The properties rail carries the rest:
+Open a ticket (click a card). The description stays put at the top. Under it, tabs:
+**Discussion** (the ticket's room — `@`mentions notify people), **Attachments** (files,
+knowledge docs, and artifacts), and **Activity**. A ticket in a workchain also has a
+**Workchain** tab; one with an agent result has a **Result** tab. The properties rail carries the rest:
 status, priority, color, assignees, effort, estimate, time spent, tokens (what the agent's
 work cost), dates, parent/sub-tasks, dependencies (**Blocked by / Blocks**), labels, and
 watchers (**Watch** to follow a ticket).

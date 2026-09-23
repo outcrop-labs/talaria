@@ -8,7 +8,6 @@
   import Markdown from '@/components/ui/Markdown.svelte'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
   import { fly } from '@/lib/motion'
-  import { cn } from '@/lib/cn'
 
   // Description with a Read (rendered markdown) / Edit (WYSIWYG) toggle plus an
   // expand button for comfortable full-screen reading. Keeps a local draft so the
@@ -64,24 +63,14 @@
   {/if}
 {/snippet}
 
-{#snippet body(minHeight: string, readMax?: string)}
-  {#if mode === 'edit' && canEdit}
-    {#key rev}
-      <RichEditor bind:this={editor} value={draft} editable {mentions} onSave={save} placeholder="Add detail" {minHeight} />
-    {/key}
-  {:else if draft}
-    <div class={cn('rounded-lg border border-line bg-card px-4 py-3 font-sans text-sm leading-relaxed', readMax && `${readMax} overflow-y-auto`)}>
-      <Markdown children={draft} />
-    </div>
-  {:else}
-    <div class="rounded-lg border border-dashed border-line px-4 py-6 text-center font-sans text-xs text-muted">
-      No description{canEdit ? '. Switch to Edit to add one.' : '.'}
-    </div>
-  {/if}
-{/snippet}
-
-<div>
-  <div class="mb-2 flex items-center gap-2">
+<!-- The inline description is a fixed anchor: one height whether the text is
+     a line or a page, scrolling inside the box. Long reading uses Expand.
+     The height is a viewport clamp, not a share of whatever sits below, so
+     tab content cannot resize it. The expand sheet is a sibling of the
+     scroller (not a child) so this box's overflow does not clip it — it
+     still covers the modal, whose panel is the positioned ancestor. -->
+<div class="flex h-[clamp(9rem,24vh,14rem)] shrink-0 flex-col">
+  <div class="mb-2 flex shrink-0 items-center gap-2">
     <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</div>
     <div class="ml-auto flex items-center gap-1">
       {@render modeToggle()}
@@ -97,7 +86,21 @@
     </div>
   </div>
 
-  {@render body('16rem')}
+  <div class="min-h-0 flex-1 overflow-hidden">
+    {#if mode === 'edit' && canEdit}
+      {#key rev}
+        <RichEditor bind:this={editor} class="h-full" value={draft} editable fill {mentions} onSave={save} placeholder="Add detail" />
+      {/key}
+    {:else if draft}
+      <div class="h-full overflow-y-auto rounded-lg border border-line bg-card px-4 py-3 font-sans text-sm leading-relaxed">
+        <Markdown children={draft} />
+      </div>
+    {:else}
+      <div class="grid h-full place-items-center rounded-lg border border-dashed border-line px-4 text-center font-sans text-xs text-muted">
+        No description{canEdit ? '. Switch to Edit to add one.' : '.'}
+      </div>
+    {/if}
+  </div>
 
   <!-- Expanded view — slides in over the whole ticket modal (no stacked modal).
        The modal panel is `relative`, so inset-0 covers it edge to edge.
