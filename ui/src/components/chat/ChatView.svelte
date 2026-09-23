@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import { copyTextItems, useContextMenu } from '@/components/ui/context-menu.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import TierPicker from '@/components/chat/TierPicker.svelte'
-  import EffortPicker from '@/components/chat/EffortPicker.svelte'
+  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import { type Mentionable } from '@/components/chat/mentions.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
   import { bottomStick } from '@/lib/stick-to-bottom'
@@ -189,6 +188,24 @@
       if (effort !== next) effort = next
     }
   })
+
+  // ── The two rail chips' shapes ─────────────────────────────────────────────
+  // The chips are one component now, so the shape each one renders is spelled
+  // here: its rows, the trigger's readout, and the rung the pick sits on. The
+  // tier chip's empty value IS its bottom rung — 'main' on the chip, 'main
+  // model' in the row it stands on — while the effort chip's empty value means
+  // the model's own default: no rung at all, and an ingress row that says so.
+  const tierOptions = $derived([
+    { value: '', label: 'main model' },
+    ...tiers.map((name) => ({ value: name, label: name })),
+  ])
+  const tierMeter = $derived({
+    total: tierOptions.length,
+    lit: Math.max(0, tierOptions.findIndex((o) => o.value === tier)) + 1,
+  })
+  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
+  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effort) + 1) })
+  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
 
   // Load an existing conversation when the selection changes.
   $effect(() => {
@@ -530,9 +547,7 @@
   })
 
   const copyMenu = (m: DisplayMessage) => (e: MouseEvent) =>
-    menu.openMenu(e, [
-      { label: 'Copy text', disabled: !m.content, onSelect: () => void navigator.clipboard.writeText(m.content) },
-    ])
+    menu.openMenu(e, copyTextItems(m.content))
 </script>
 
 <!-- The transcript owns the whole surface and the composer FLOATS over it.
@@ -719,13 +734,44 @@
                too — the surface's chrome owns the model, and its contract is
                exactly attach, text, and submit. -->
           {#if !minimal}
-            {#if tiers.length > 0}<TierPicker {tiers} value={tier} onChange={(t) => (tier = t)} />{/if}
+            {#if tiers.length > 0}
+              <ComposerPicker
+                icon="✳"
+                chipVariant="primary"
+                value={tier}
+                label={tier || 'main'}
+                options={tierOptions}
+                meter={tierMeter}
+                searchPlaceholder="Search tiers"
+                menuClass="min-w-44"
+                title="Model tier for this chat"
+                menuLabel="Model tier"
+                onChange={(t) => (tier = t)}
+              />
+            {/if}
             <!-- Effort sits immediately left of the send tile, and only when the
                  routed model's metadata vouches for levels — a model with no
                  published ladder shows no chip and its requests carry no effort.
-                 Not disabled while streaming (TierPicker isn't either): a
+                 Not disabled while streaming (the tier chip isn't either): a
                  queued message picks up the level set when it is sent. -->
-            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => { effort = v; effortPristine = false }} />{/if}
+            {#if efforts.length > 0}
+              <ComposerPicker
+                chipVariant="primary"
+                value={effort}
+                label={effort || 'auto'}
+                options={effortOptions}
+                autoOption={effortAuto}
+                meter={effortMeter}
+                searchable={false}
+                menuClass="min-w-48"
+                title="Reasoning effort for this reply"
+                menuLabel="Reasoning effort"
+                onChange={(v) => {
+                  effort = v
+                  effortPristine = false
+                }}
+              />
+            {/if}
           {/if}
         {/snippet}
       </ChatComposer>

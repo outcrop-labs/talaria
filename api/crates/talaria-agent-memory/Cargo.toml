@@ -1,17 +1,17 @@
 [package]
 name = "talaria-agent-memory"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls"] }
-talaria-fleet-docker = { path = "../talaria-fleet-docker" }
-talaria-internal-history = { path = "../talaria-internal-history" }
-tokio = { version = "1", features = ["fs", "process", "io-util"] }
-tracing = "0.1"
+sqlx = { workspace = true }
+talaria-fleet-docker = { workspace = true }
+talaria-internal-history = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 

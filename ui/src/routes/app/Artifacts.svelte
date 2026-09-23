@@ -23,6 +23,7 @@
   import { useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
 import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { cn } from '@/lib/cn'
+  import { readText, writeText } from '@/lib/persist'
   import { pushToast, toastError } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useUsers } from '@/lib/users'
@@ -297,12 +298,12 @@ import ContextMenu from '@/components/ui/ContextMenu.svelte'
   // View mode is a preference, not a selection — it belongs to the person, not
   // to the link they might paste to someone else.
   $effect(() => {
-    const saved = localStorage.getItem('files:view')
+    const saved = readText('files:view')
     if (saved === 'grid' || saved === 'list') view = saved
   })
   const setView = (v: 'list' | 'grid') => {
     view = v
-    localStorage.setItem('files:view', v)
+    writeText('files:view', v)
   }
   const onSort = (k: SortKey) => {
     if (sortKey === k) sortDir = sortDir === 'asc' ? 'desc' : 'asc'

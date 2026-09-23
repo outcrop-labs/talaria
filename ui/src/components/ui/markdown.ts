@@ -120,6 +120,8 @@ const text = (value: string): HastNode => ({ type: 'text', value })
 // `javascript:` and friends. The unified pipeline has no such default, so it
 // is done here.
 const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i
+// Inline KB attachments ride `upload:<id>` URLs (see the img/a cases below).
+const KB_UPLOAD_PROTOCOL = /^upload:[a-z0-9-]+$/i
 function safeUrl(value: string): string {
   const colon = value.indexOf(':')
   const questionMark = value.indexOf('?')
@@ -224,6 +226,23 @@ function transformNode(node: HastNode): HastNode | null {
       props.href = safeUrl(href)
       props.target = '_blank'
       props.rel = 'noopener noreferrer'
+      // Inline KB attachment placeholder: `[filename|size](upload:<id>)` — a
+      // non-image file renders as a chip that opens the file viewer (click
+      // handled by Markdown.svelte's delegated handler).
+      if (KB_UPLOAD_PROTOCOL.test(href)) {
+        const label = (node.children ?? [])
+          .map((c) => (c.type === 'text' ? c.value : ''))
+          .join('')
+          .trim()
+        const bar = label.lastIndexOf('|')
+        const filename = bar > 0 ? label.slice(0, bar) : label || 'file'
+        const size = bar > 0 ? label.slice(bar + 1) : ''
+        return el(
+          'span',
+          { dataKbUpload: href.slice('upload:'.length), dataFilename: filename, dataSize: size, className: 'kb-upload-chip' },
+          [],
+        )
+      }
       props.className =
         'text-accent underline decoration-[var(--theme-accent-border)] underline-offset-2 transition-colors duration-[120ms] hover:decoration-accent'
       return node
@@ -232,9 +251,23 @@ function transformNode(node: HastNode): HastNode | null {
     // save-to-artifacts affordance — Markdown.svelte mounts AgentMediaImage
     // into this placeholder post-render; ordinary images render plain.
     case 'img': {
-      const src = safeUrl(String(props.src ?? ''))
-      if (!src) return null
+      const rawSrc = String(props.src ?? '')
       const alt = String(props.alt ?? '')
+      // Inline KB attachment placeholder: `![filename|size](upload:<id>)` —
+      // renders in place as the file itself. The image form hydrates through
+      // the placeholder span like agent media does (click → file viewer).
+      if (KB_UPLOAD_PROTOCOL.test(rawSrc)) {
+        const bar = alt.lastIndexOf('|')
+        const filename = bar > 0 ? alt.slice(0, bar) : alt || 'file'
+        const size = bar > 0 ? alt.slice(bar + 1) : ''
+        return el(
+          'span',
+          { dataKbUpload: rawSrc.slice('upload:'.length), dataFilename: filename, dataSize: size, className: 'kb-upload-chip' },
+          [],
+        )
+      }
+      const src = safeUrl(rawSrc)
+      if (!src) return null
       if (src.startsWith('/api/agent-media/')) {
         return el('span', { dataAgentMedia: '', dataSrc: src, dataAlt: alt }, [])
       }

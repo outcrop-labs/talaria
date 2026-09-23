@@ -1,61 +1,62 @@
 [package]
 name = "talaria-routes-comms"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-activity = { path = "../talaria-activity" }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-agent-defs = { path = "../talaria-agent-defs" }
-talaria-alerts = { path = "../talaria-alerts" }
-talaria-artifacts = { path = "../talaria-artifacts" }
-talaria-audit = { path = "../talaria-audit" }
-talaria-body = { path = "../talaria-body" }
-talaria-channel-replies = { path = "../talaria-channel-replies" }
-talaria-channels = { path = "../talaria-channels" }
-talaria-chat-persist = { path = "../talaria-chat-persist" }
-talaria-chips = { path = "../talaria-chips" }
-talaria-comms-decay = { path = "../talaria-comms-decay" }
-talaria-conversations = { path = "../talaria-conversations" }
-talaria-daily-brief = { path = "../talaria-daily-brief" }
-talaria-error = { path = "../talaria-error" }
-talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-home = { path = "../talaria-home" }
-talaria-inbox-focus = { path = "../talaria-inbox-focus" }
-talaria-internal-history = { path = "../talaria-internal-history" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-permissions = { path = "../talaria-permissions" }
-talaria-persona = { path = "../talaria-persona" }
-talaria-personal-agent = { path = "../talaria-personal-agent" }
-talaria-plan-doc = { path = "../talaria-plan-doc" }
-talaria-plan-drafts = { path = "../talaria-plan-drafts" }
-talaria-push = { path = "../talaria-push" }
-talaria-realtime-watch = { path = "../talaria-realtime-watch" }
-talaria-refs = { path = "../talaria-refs" }
-talaria-research = { path = "../talaria-research" }
-talaria-research-origin = { path = "../talaria-research-origin" }
-talaria-session = { path = "../talaria-session" }
-talaria-state = { path = "../talaria-state" }
-talaria-task-const = { path = "../talaria-task-const" }
-talaria-tasks = { path = "../talaria-tasks" }
-talaria-teams = { path = "../talaria-teams" }
-talaria-ticket-chat = { path = "../talaria-ticket-chat" }
-talaria-titler = { path = "../talaria-titler" }
-talaria-uploads = { path = "../talaria-uploads" }
-talaria-workspace-handles = { path = "../talaria-workspace-handles" }
-talaria-yaml = { path = "../talaria-yaml" }
-axum = { version = "0.8", features = ["multipart"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json", "derive"] }
-futures-util = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "process"] }
-tracing = "0.1"
-url = "2"
-base64 = "0.23"
-talaria-api-facades = { path = "../talaria-api-facades" }
+talaria-activity = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-agent-defs = { workspace = true }
+talaria-alerts = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-audit = { workspace = true }
+talaria-body = { workspace = true }
+talaria-channel-replies = { workspace = true }
+talaria-channels = { workspace = true }
+talaria-chat-persist = { workspace = true }
+talaria-chips = { workspace = true }
+talaria-comms-decay = { workspace = true }
+talaria-conversations = { workspace = true }
+talaria-daily-brief = { workspace = true }
+talaria-error = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-home = { workspace = true }
+talaria-inbox-focus = { workspace = true }
+talaria-internal-history = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-params = { workspace = true }
+talaria-permissions = { workspace = true }
+talaria-persona = { workspace = true }
+talaria-personal-agent = { workspace = true }
+talaria-plan-doc = { workspace = true }
+talaria-plan-drafts = { workspace = true }
+talaria-push = { workspace = true }
+talaria-realtime-watch = { workspace = true }
+talaria-refs = { workspace = true }
+talaria-research = { workspace = true }
+talaria-research-origin = { workspace = true }
+talaria-session = { workspace = true }
+talaria-state = { workspace = true }
+talaria-task-const = { workspace = true }
+talaria-tasks = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-ticket-chat = { workspace = true }
+talaria-titler = { workspace = true }
+talaria-uploads = { workspace = true }
+talaria-workspace-handles = { workspace = true }
+talaria-yaml = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+base64 = { workspace = true }
+talaria-api-facades = { workspace = true }

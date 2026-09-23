@@ -105,15 +105,33 @@ const finding = (severity, id, what, detail, fix) =>
 const touched = (re) => changed.filter((f) => re.test(f))
 const anyTouched = (...res) => res.some((re) => changed.some((f) => re.test(f)))
 
-/** The changelog's added lines, which is where the claim lives. */
+/** The changelog's added lines, which is where the claim lives. An entry is
+ *  an added file under changelog/ (the post-cutover shape) or — only for the
+ *  pre-cutover history this judge no longer expects — lines in CHANGELOG.md. */
 const changelogAdditions = (() => {
-  if (!changed.includes('CHANGELOG.md')) return null
-  return git('diff', '-U0', range, '--', 'CHANGELOG.md')
-    .split('\n')
-    .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-    .map((l) => l.slice(1))
+  const additions = []
+  if (changed.includes('CHANGELOG.md'))
+    additions.push(
+      ...git('diff', '-U0', range, '--', 'CHANGELOG.md')
+        .split('\n')
+        .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+        .map((l) => l.slice(1)),
+    )
+  if (changed.some((f) => f.startsWith('changelog/')))
+    additions.push(
+      ...git('diff', '-U0', range, '--', 'changelog')
+        .split('\n')
+        .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
+        .map((l) => l.slice(1)),
+    )
+  return additions.length ? additions : null
 })()
 const changelogText = changelogAdditions ? changelogAdditions.join('\n') : ''
+// Bullets appended straight into CHANGELOG.md after the entry-file cutover:
+// the exact conflict surface the files exist to end.
+const appendedToChangelog = changelogAdditions !== null &&
+  changed.includes('CHANGELOG.md') &&
+  changelogAdditions.some((l) => /^-\s+\*\*/.test(l))
 
 // ── 1. the flow: what this pull request is aimed at ────────────────────────
 //
@@ -221,15 +239,29 @@ if (userVisible.length) {
     finding(
       'must',
       'no-changelog',
-      'a user-visible change with no CHANGELOG.md entry',
+      'a user-visible change with no changelog entry',
       userVisible.map(([, what]) => `  this change touches ${what}`),
       [
-        'Append to the `[Unreleased]` section: what changed, in a bold lead sentence, and what you',
-        'verified — the gate you ran and how you exercised the path (CONTRIBUTING.md step 3). The',
-        'changelog is the record reviewers and release-notes readers actually have.',
+        'Add changelog/YYYY-MM-DD-<slug>.md containing the entry: what changed, in a bold lead',
+        'sentence, and what you verified — the gate you ran and how you exercised the path',
+        '(CONTRIBUTING.md step 3). The changelog is the record reviewers and release-notes',
+        'readers actually have; one file per entry is what keeps two open PRs from colliding.',
       ]
     )
   } else {
+    if (appendedToChangelog) {
+      finding(
+        'must',
+        'changelog-not-a-file',
+        'the entry was appended into CHANGELOG.md instead of landing as an entry file',
+        [],
+        [
+          'Move it to changelog/YYYY-MM-DD-<slug>.md, verbatim, and leave `## [Unreleased]` empty —',
+          'appending at the same anchor as every other open PR is the merge-conflict surface the',
+          'entry files exist to end (`bun scripts/changelog-roll.mjs --check` fails this too).',
+        ]
+      )
+    }
     if (!/^-\s+\*\*/m.test(changelogText)) {
       finding(
         'should',

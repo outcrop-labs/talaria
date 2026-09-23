@@ -1,6 +1,7 @@
 // Shared bits of the list-view split (BoardList.svelte + ColumnsMenu.svelte):
 // the column registry, per-board localStorage persistence, sort ranks, and
 // the grouping types.
+import { readStored } from '@/lib/persist'
 import type { Task } from '@/lib/task-const'
 
 export type ColumnKey = 'ticket' | 'title' | 'status' | 'priority' | 'effort' | 'estimate' | 'assignees' | 'due' | 'time' | 'labels' | 'updated' | 'created'
@@ -34,19 +35,15 @@ export const orderKey = (boardId: string) => `talaria:list-order:${boardId}`
 
 /** Stored order, merged with any columns added since (appended, none dropped). */
 export function loadOrder(boardId: string): ColumnKey[] {
-  try {
-    const raw = localStorage.getItem(orderKey(boardId))
-    if (raw) {
-      const arr = JSON.parse(raw) as unknown
-      if (Array.isArray(arr)) {
-        const kept = arr.filter((k): k is ColumnKey => ALL_KEYS.includes(k as ColumnKey))
-        return [...kept, ...ALL_KEYS.filter((k) => !kept.includes(k))]
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return ALL_KEYS
+  return readStored<ColumnKey[]>(
+    orderKey(boardId),
+    (value) => {
+      if (!Array.isArray(value)) return null
+      const kept = value.filter((k): k is ColumnKey => ALL_KEYS.includes(k as ColumnKey))
+      return [...kept, ...ALL_KEYS.filter((k) => !kept.includes(k))]
+    },
+    ALL_KEYS,
+  )
 }
 
 export const PRIORITY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, urgent: 3 }
@@ -59,39 +56,28 @@ export interface SortState {
 }
 
 export function loadSort(boardId: string): SortState {
-  try {
-    const raw = localStorage.getItem(sortKey(boardId))
-    if (raw) {
-      const s = JSON.parse(raw) as SortState
-      if (s && (s.key === null || LIST_COLUMNS.some((c) => c.key === s.key))) return s
-    }
-  } catch {
-    /* ignore */
-  }
-  return { key: null, dir: 'asc' }
+  return readStored<SortState>(
+    sortKey(boardId),
+    (value) => {
+      const s = value as SortState | null
+      return s && (s.key === null || LIST_COLUMNS.some((c) => c.key === s.key)) ? s : null
+    },
+    { key: null, dir: 'asc' },
+  )
 }
 
 export function loadColumns(boardId: string): ColumnKey[] {
-  try {
-    const raw = localStorage.getItem(storeKey(boardId))
-    if (raw) {
-      const arr = JSON.parse(raw) as unknown
-      if (Array.isArray(arr)) return arr.filter((k): k is ColumnKey => LIST_COLUMNS.some((c) => c.key === k))
-    }
-  } catch {
-    /* ignore */
-  }
-  return DEFAULT_COLUMNS
+  return readStored<ColumnKey[]>(
+    storeKey(boardId),
+    (value) => (Array.isArray(value) ? value.filter((k): k is ColumnKey => LIST_COLUMNS.some((c) => c.key === k)) : null),
+    DEFAULT_COLUMNS,
+  )
 }
 
-export function fmtTime(s: number): string {
-  if (!s) return '—'
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  if (h) return m ? `${h}h ${m}m` : `${h}h`
-  if (m) return `${m}m`
-  return `${s}s`
-}
+/** The list's Time column, in the spelling the ticket detail also renders.
+ *  Shared now — `fmtDuration` in `@/lib/format`, which takes SECONDS — and
+ *  re-exported under the name BoardList already imports it by. */
+export { fmtDuration as fmtTime } from '@/lib/format'
 
 export type GroupByKey = 'status' | 'priority' | 'assignee' | 'label' | 'none'
 

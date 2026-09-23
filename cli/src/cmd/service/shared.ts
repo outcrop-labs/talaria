@@ -12,7 +12,6 @@ import { delimiter, join } from 'node:path'
 import type { Ctx } from '../../ctx'
 
 export const UNIT_NAME = 'talaria.service'
-export const COMPOSE_FILE = 'docker/compose.yml'
 
 /** The host paths the guards and privileged steps touch. */
 export type HostPaths = { systemdDir: string; runSystemd: string }

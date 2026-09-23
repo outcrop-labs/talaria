@@ -5,6 +5,7 @@
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
   import { getJson } from '@/lib/fetch-json'
+  import { readText, writeText } from '@/lib/persist'
   import { relativeTime } from '@/lib/fleet'
   import { refineToAnnounce, snapshotBody, summarize, viewerStamp } from '@/lib/agent-refine'
   import { cn } from '@/lib/cn'
@@ -75,20 +76,6 @@
   // doesn't re-announce a refine already seen. The key carries the viewer
   // identity, so two people sharing a browser share nothing.
   const seenKey = () => `agent-refine-seen:${kind}:${id}:${who ?? '?'}`
-  const seenAt = (): string | null => {
-    try {
-      return localStorage.getItem(seenKey())
-    } catch {
-      return null
-    }
-  }
-  const markSeen = (createdAt: string) => {
-    try {
-      localStorage.setItem(seenKey(), createdAt)
-    } catch {
-      /* private mode — the notice just re-announces on the next mount */
-    }
-  }
 
   // The ANNOUNCED revision — by id, at/by for the headline. Every fetch below
   // goes through this id: a newer revision landing while the notice is open
@@ -139,7 +126,7 @@
   $effect(() => {
     const revs = revisions
     if (refined) return // already announcing this one
-    const next = refineToAnnounce(revs, who, seenAt())
+    const next = refineToAnnounce(revs, who, readText(seenKey()))
     if (!next) return
     beforeText = current?.() ?? null
     savedText = null
@@ -173,14 +160,14 @@
         return
       }
       onLoad?.(savedText)
-      markSeen(refined.at)
+      writeText(seenKey(), refined.at)
       refined = null
     }
     void run()
   }
 
   const dismiss = () => {
-    if (refined) markSeen(refined.at)
+    if (refined) writeText(seenKey(), refined.at)
     refined = null
   }
 </script>

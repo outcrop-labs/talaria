@@ -177,7 +177,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_messages.rs`](..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{messages}` | 200, 403 | — |
+| GET | `dual` | — | `{messages}` | 200, 400, 403 | — |
 | POST | `dual` | [body](#post-apichannelsidmessages-body) | `{message}` | 200, 400, 403 | — |
 
 ### POST `/api/channels/{id}/messages` body

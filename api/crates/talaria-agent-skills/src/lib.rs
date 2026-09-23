@@ -109,6 +109,63 @@ pub async fn write_skill(
     Ok(())
 }
 
+/// Write a whole skill directory in one shot — the marketplace install
+/// path: SKILL.md plus support files at their relative paths. NEVER
+/// clobbers: a dir that already exists answers Ok(false) and the caller
+/// reports "already present" (delete or rename it first — the same rule
+/// copy_skill applies). Each relative path is re-validated here because
+/// the bytes come from a third-party tarball: no `..`, no absolute
+/// components, no dotfiles, and SKILL.md itself comes from the `skill_md`
+/// argument so the wire's claim and the disk's content are one write.
+pub async fn install_skill_dir(
+    pg: &PgPool,
+    owner: &str,
+    name: &str,
+    skill_md: &str,
+    files: &[(String, Vec<u8>)],
+    author: Option<&str>,
+) -> Result<bool, String> {
+    let root = owner_root(pg, owner).await?;
+    let dir = safe_join(&root, name)?;
+    if tokio::fs::try_exists(&dir).await.unwrap_or(false) {
+        return Ok(false);
+    }
+    for (rel, _) in files {
+        let parts: Vec<&str> = rel.split('/').collect();
+        if parts.is_empty()
+            || parts.len() > 16
+            || parts
+                .iter()
+                .any(|p| p.is_empty() || *p == ".." || p.starts_with('.'))
+        {
+            return Err(format!("refusing support file path \"{rel}\""));
+        }
+    }
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("skill dir unwritable ({}): {e}", dir.display()))?;
+    for (rel, blob) in files {
+        if rel == "SKILL.md" {
+            continue;
+        }
+        let dest = dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("skill dir unwritable ({}): {e}", parent.display()))?;
+        }
+        tokio::fs::write(&dest, blob)
+            .await
+            .map_err(|e| format!("{} unwritable: {e}", dest.display()))?;
+    }
+    let md = dir.join("SKILL.md");
+    tokio::fs::write(&md, skill_md)
+        .await
+        .map_err(|e| format!("SKILL.md unwritable ({}): {e}", md.display()))?;
+    let _ = snapshot(pg, "skill", &format!("{owner}/{name}"), skill_md, author).await;
+    Ok(true)
+}
+
 // ── The read half ────────────────────────────────────────────────────────────
 
 /// One owner as the listing shows it.
@@ -204,21 +261,40 @@ pub struct OwnerSkills {
     pub skills: Vec<SkillSummary>,
 }
 
-/// Mechanical fallback while the Summarizer hasn't produced a line yet: the
-/// first prose line of SKILL.md, with a frontmatter `description:` winning.
+/// Mechanical fallback while the Summarizer hasn't produced a line yet.
+/// agentskills.io frontmatter (a leading `---` fence) is parsed as such:
+/// its `description:` wins and its other keys (`name:` especially) are
+/// never prose. Without frontmatter, the first prose line wins, with a
+/// bare `description:` line still honored anywhere else in the body.
 pub fn summarize_fallback(md: &str) -> String {
-    for line in md.split('\n') {
+    let mut lines = md.split('\n');
+    // A free peek — split is lazy, so this never advances `lines` — and
+    // the matching next() consumes the opening fence itself.
+    if md.split('\n').next().map(str::trim) == Some("---") {
+        lines.next();
+        for line in lines.by_ref() {
+            let t = line.trim();
+            if t == "---" {
+                break;
+            }
+            if let Some(rest) = t.strip_prefix("description:").map(str::trim_start)
+                && !rest.is_empty()
+            {
+                return rest.chars().take(160).collect();
+            }
+        }
+    }
+    for line in lines {
         let t = line.trim();
         if t.is_empty() || t.starts_with('#') || t.starts_with("---") {
             continue;
         }
-        // `^description:\s*(.+)$`
-        let stripped = t.strip_prefix("description:").map(|rest| rest.trim_start());
+        let stripped = t.strip_prefix("description:").map(str::trim_start);
         let picked = match stripped {
-            // strip_prefix already guarantees the ':' — an EMPTY remainder is
-            // `description:` with nothing after, which the picker's grammar
-            // does not match (it needs one non-newline char), so only a
-            // non-empty remainder wins.
+            // strip_prefix already guarantees the ':' — an EMPTY remainder
+            // is `description:` with nothing after, which the picker's
+            // grammar does not match (it needs one non-newline char), so
+            // only a non-empty remainder wins.
             Some(rest) if !rest.is_empty() => Some(rest.to_string()),
             _ => None,
         };
@@ -588,6 +664,37 @@ mod tests {
         assert_eq!(safe_join(root, "../etc").unwrap_err(), "invalid skill name");
         assert_eq!(safe_join(root, "").unwrap_err(), "invalid skill name");
         assert_eq!(safe_join(root, "a\\b").unwrap_err(), "invalid skill name");
+    }
+
+    #[test]
+    fn the_fallback_reads_frontmatter_as_frontmatter() {
+        // agentskills.io shape: description wins, name: is never prose.
+        let md = "---\nname: airtable\ndescription: Airtable is not a system of record here.\n---\n\n# Airtable\n\nThere is no base.\n";
+        assert_eq!(
+            summarize_fallback(md),
+            "Airtable is not a system of record here."
+        );
+        // Frontmatter WITHOUT a description: the fence is skipped whole,
+        // the first prose line after the title wins.
+        let no_desc = "---\nname: x\n---\n# Title\n\nFirst prose line.\n";
+        assert_eq!(summarize_fallback(no_desc), "First prose line.");
+        // An unclosed fence consumes the document — the honest empty,
+        // not a leaked `name:`.
+        assert_eq!(summarize_fallback("---\nname: x\n"), "");
+    }
+
+    #[test]
+    fn the_fallback_without_frontmatter_still_reads_line_one() {
+        // No fence: line one IS a candidate — the peek must not have eaten
+        // it — and a bare description: line anywhere still wins.
+        assert_eq!(
+            summarize_fallback("Prose from the very first line.\n# later"),
+            "Prose from the very first line."
+        );
+        assert_eq!(
+            summarize_fallback("# T\ndescription: mid-body wins"),
+            "mid-body wins"
+        );
     }
 
     #[test]

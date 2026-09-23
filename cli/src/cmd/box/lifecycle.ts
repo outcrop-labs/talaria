@@ -5,8 +5,8 @@ import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { compose } from '../../compose'
-import { boxComposeSpec, boxDir, IMAGE, requireBox } from './shared'
+import { compose, stackComposeFiles } from '../../compose'
+import { boxComposeSpec, boxDir, boxFleetNetwork, IMAGE, requireBox } from './shared'
 import { runBuild } from './new'
 
 export function runStop(ctx: Ctx, name: string): Promise<number> {
@@ -18,7 +18,7 @@ export async function runStart(ctx: Ctx, name: string): Promise<number> {
   requireBox(ctx, name)
   // The shared stateless services are outside this project — nudge them (the
   // box would run degraded without them, but that's the `talaria dev` posture).
-  const devSpec = { files: [join(ctx.root, 'docker/dev-compose.yml')] }
+  const devSpec = { files: stackComposeFiles(ctx.root, 'docker/dev-compose.yml') }
   for (const svc of ['embeddings', 'searxng']) {
     if ((await compose(ctx, devSpec, ['up', '-d', svc])) !== 0) {
       ctx.log.warn(`${svc} didn't start — box runs degraded without it`)
@@ -63,12 +63,12 @@ push them (or --force to discard)`)
   // on a half-torn-down box — must not shield the rest.
   await compose(ctx, boxComposeSpec(ctx, name), ['down', '-v', '--remove-orphans']).catch(() => {})
   await ctx
-    .exec('docker', ['compose', '-p', `devbox-${name}-fleet`, 'down', '-v', '--remove-orphans'])
+    .exec('docker', ['compose', '-p', boxFleetNetwork(name), 'down', '-v', '--remove-orphans'])
     .catch(() => {})
   // The fleet network outlives both projects: the box project can't remove it
   // while fleet containers hold endpoints on it, and the fleet compose declares
   // it EXTERNAL (the renderer's shape) so its own `down` never touches it.
-  await ctx.exec('docker', ['network', 'rm', `devbox-${name}-fleet`]).catch(() => {})
+  await ctx.exec('docker', ['network', 'rm', boxFleetNetwork(name)]).catch(() => {})
   rmSync(box, { recursive: true, force: true })
   ctx.log.ok('gone')
   return 0

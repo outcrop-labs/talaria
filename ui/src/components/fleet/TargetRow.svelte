@@ -1,7 +1,7 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import EffortPicker from '@/components/chat/EffortPicker.svelte'
+  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import ModelPicker from '@/components/fleet/ModelPicker.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
   import type { LlmEndpoint, ModelTarget } from '@/lib/fleet-defs'
@@ -45,6 +45,14 @@
   $effect(() => {
     if (allowEffort && value.effort && !efforts.includes(value.effort)) onChange({ ...value, effort: null })
   })
+
+  // The effort chip's shape: its rows, the rung the saved level sits on ('' is
+  // the model's own default — no rung at all), and the ingress row that clears
+  // the setting.
+  const effort = $derived(value.effort ?? '')
+  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
+  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effort) + 1) })
+  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
 </script>
 
 <div class="flex items-center gap-2">
@@ -57,7 +65,19 @@
          with the agent (base or this tier) start from when nobody chose one.
          Same chip + ladder the composers use, so the setting and the thing it
          sets look like one feature. -->
-    <EffortPicker {efforts} value={value.effort ?? ''} onChange={(v) => onChange({ ...value, effort: v || null })} />
+    <ComposerPicker
+      chipVariant="primary"
+      value={effort}
+      label={effort || 'auto'}
+      options={effortOptions}
+      autoOption={effortAuto}
+      meter={effortMeter}
+      searchable={false}
+      menuClass="min-w-48"
+      title="Reasoning effort for this reply"
+      menuLabel="Reasoning effort"
+      onChange={(v) => onChange({ ...value, effort: v || null })}
+    />
   {/if}
   <span class={`w-10 shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] ${epClass === 'local' ? 'text-success' : 'text-accent'}`}>
     {epClass}

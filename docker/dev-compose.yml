@@ -3,116 +3,73 @@
 # host (`bun talaria dev` → vite on :5273); agents render into fleet/ and run
 # under the separate `talaria-fleet` compose project.
 #
+# The sidecar DEFINITIONS — images, restart, data volumes, env defaults,
+# healthchecks — are in docker/sidecars.compose.yml, which every compose
+# invocation layers IN FRONT of this file (`-f docker/sidecars.compose.yml -f
+# docker/dev-compose.yml`, so this file's keys win). What is left here is what
+# only the dev loop decides: the loopback publishing and the dev container
+# names.
+#
 # Every published port binds 127.0.0.1 on purpose: these carry dev-default
 # credentials (talaria/talaria) and, in Qdrant's and TEI's case, no auth at all,
 # so a bare '<port>:<port>' would hand the whole dev stack — and the org's KB
 # vectors — to anyone on the laptop's network. The env overrides still work;
 # they only choose the host port.
 #
-# Every image below is FULLY QUALIFIED (docker.io/...). A short name like
-# `redis:7-alpine` is resolved by whatever unqualified-search registries the
-# local engine is configured with (Podman, Rancher Desktop, corporate mirrors,
-# a containerd namespace), which on some hosts lands on a different image
-# entirely or on one with no arm64 manifest. Spelling out the registry makes
-# the pull identical on every machine — keep new services qualified too.
+# Every image is FULLY QUALIFIED (docker.io/...), in this file and in
+# sidecars.compose.yml. A short name like `redis:7-alpine` is resolved by
+# whatever unqualified-search registries the local engine is configured with
+# (Podman, Rancher Desktop, corporate mirrors, a containerd namespace), which
+# on some hosts lands on a different image entirely or on one with no arm64
+# manifest. Spelling out the registry makes the pull identical on every
+# machine — keep new services qualified too.
+
 name: talaria-dev
 services:
   postgres:
-    image: docker.io/library/postgres:16-alpine
     container_name: ${TALARIA_PG_CONTAINER:-talaria-postgres-dev}
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: talaria
-      POSTGRES_PASSWORD: talaria
-      POSTGRES_DB: talaria
     ports:
       - '127.0.0.1:${TALARIA_PG_PORT:-5544}:5432'
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
-      interval: 3s
-      timeout: 3s
-      retries: 20
+    environment:
+      # Literal on purpose: the shared default interpolates POSTGRES_PASSWORD,
+      # which a deploy checkout's docker/.env can set — the dev app connects
+      # with the fixed talaria:talaria in ui/.env.
+      POSTGRES_PASSWORD: talaria
+
   redis:
-    image: docker.io/library/redis:7-alpine
     container_name: ${TALARIA_REDIS_CONTAINER:-talaria-redis-dev}
-    restart: unless-stopped
     ports:
       - '127.0.0.1:${TALARIA_REDIS_PORT:-6399}:6379'
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 3s
-      timeout: 3s
-      retries: 20
+
   qdrant:
-    image: docker.io/qdrant/qdrant:latest
     container_name: ${TALARIA_QDRANT_CONTAINER:-talaria-qdrant-dev}
-    restart: unless-stopped
     ports:
       - '127.0.0.1:${TALARIA_QDRANT_PORT:-6333}:6333'
-    volumes:
-      - qdrant-data:/qdrant/storage
-    healthcheck:
-      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/6333"']
-      interval: 5s
-      timeout: 3s
-      retries: 30
-  # Native embeddings — a small model on CPU is a rounding error for this
-  # workload (index on write + one vector per query). Swap the model via env;
-  # changing models means re-running the backfill (dimensions change).
+
+  # The native embedding model (see docker/sidecars.compose.yml for the model
+  # and platform notes) on a loopback port, so Admin → Retrieval can be pointed
+  # at it by hand.
   embeddings:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    # TEI publishes amd64-only CPU images (no arm64 manifest — see #151), so
-    # pin the platform: on Apple Silicon Docker Desktop runs it via Rosetta,
-    # which handles this small dev workload fine. On amd64 hosts it's a no-op.
-    platform: linux/amd64
     container_name: ${TALARIA_EMBED_CONTAINER:-talaria-embeddings-dev}
-    restart: unless-stopped
-    command: ['--model-id', '${TALARIA_EMBED_MODEL:-BAAI/bge-small-en-v1.5}']
     ports:
       - '127.0.0.1:${TALARIA_EMBED_PORT:-8055}:80'
-    volumes:
-      - tei-cache:/data
-    healthcheck:
-      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/80"']
-      interval: 5s
-      timeout: 3s
-      retries: 60
-  # Built-in object storage — a MinIO container so uploads can live in a real
-  # S3-compatible bucket with no cloud account (Admin → Storage → "Built-in
-  # bucket"). The same panel can replicate every blob to an external provider
-  # (AWS/Backblaze/R2/...). Creds must match the app's TALARIA_S3_* env — both
-  # default to the same dev values; `talaria setup` generates a random secret.
+
   minio:
-    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
-    # quay's latest is digest-identical to the last Hub-published build.
-    # Freshness of quay's images is tracked in issue #366.
-    image: quay.io/minio/minio:latest
     container_name: ${TALARIA_MINIO_CONTAINER:-talaria-minio-dev}
-    restart: unless-stopped
-    command: ['server', '/data']
-    environment:
-      MINIO_ROOT_USER: ${TALARIA_S3_ACCESS_KEY:-talaria}
-      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-dev-secret}
     ports:
       - '127.0.0.1:${TALARIA_MINIO_PORT:-9010}:9000'
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
-      interval: 5s
-      timeout: 3s
-      retries: 30
+    environment:
+      # The root pair must match the app's TALARIA_S3_* env — `talaria setup`
+      # generates a random secret into ui/.env, which the CLI lifts into this
+      # interpolation.
+      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-dev-secret}
 
   # OPTIONAL native reranker — uncomment to self-host the precision stage
   # (then set provider "Self-hosted (TEI)" + url http://localhost:8056 in
   # Admin → Retrieval). Cloud rerank providers need no container.
   # reranker:
   #   image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-  #   platform: linux/amd64  # same amd64-only image as embeddings (see above)
+  #   platform: linux/amd64  # same amd64-only image as embeddings (sidecars.compose.yml)
   #   container_name: ${TALARIA_RERANK_CONTAINER:-talaria-reranker-dev}
   #   restart: unless-stopped
   #   command: ['--model-id', '${TALARIA_RERANK_MODEL:-BAAI/bge-reranker-base}']
@@ -121,28 +78,14 @@ services:
   #   volumes:
   #     - tei-cache:/data
   # LIVE WEB SEARCH — SearXNG, a metasearch aggregator that fans one query
-  # across dozens of engines. No API key, no per-query bill, and no query leaves
-  # this machine. Talaria's own `web_search` tool talks to its JSON API; see
-  # ui/src/server/search.ts for why the client is ours rather than a third-party
-  # MCP bridge.
-  #
-  # ITS OWN CONTAINER, AND THAT IS A LICENCE DECISION. Talaria is MIT; SearXNG is
-  # AGPL-3.0. Vendoring AGPL source into an MIT codebase propagates the terms, so
-  # it runs as a separate process reached over HTTP — the same arrangement as the
-  # fleet MCP service. DO NOT PATCH IT: unmodified upstream means AGPL §13's
-  # source-offer obligation is satisfied by pointing at the upstream repository.
+  # across dozens of engines. Talaria's own `web_search` tool talks to its JSON
+  # API; see ui/src/server/search.ts for why the client is ours rather than a
+  # third-party MCP bridge. The container itself (image, healthcheck, and the
+  # AGPL reasoning that keeps it unmodified upstream) is in
+  # docker/sidecars.compose.yml; the dev loop adds the loopback port, the base
+  # URL the HOST-side app dials, and its rendered settings file.
   searxng:
-    image: docker.io/searxng/searxng:latest
     container_name: ${TALARIA_SEARCH_CONTAINER:-talaria-searxng-dev}
-    restart: unless-stopped
-    # Explicit DNS, same reason as the agent chassis: a metasearch engine is
-    # nothing but external name lookups, and docker's default upstream is
-    # whatever the host's /etc/resolv.conf named when the network was created —
-    # a loopback stub or a LAN resolver that refuses docker subnets leaves this
-    # container "healthy" and unable to resolve a single engine host.
-    dns:
-      - ${TALARIA_DNS_1:-1.1.1.1}
-      - ${TALARIA_DNS_2:-1.0.0.1}
     ports:
       # LOOPBACK ONLY, like minio. This instance has no authentication of any
       # kind — that is the point of an internal metasearch — so the control that
@@ -151,27 +94,15 @@ services:
       - '127.0.0.1:${TALARIA_SEARCH_PORT:-8888}:8080'
     environment:
       # SearXNG builds absolute URLs from this; it must match how Talaria
-      # reaches it or the JSON payload carries links nobody can follow.
+      # reaches it or the JSON payload carries links nobody can follow. The dev
+      # app runs on the host, so its URL is loopback (prod dials searxng:8080).
       SEARXNG_BASE_URL: http://localhost:${TALARIA_SEARCH_PORT:-8888}/
     volumes:
-      # SETTINGS COME FROM A MOUNTED FILE, not from environment variables, and
-      # that was learned the hard way: SearXNG honours env only for a short
-      # allow-list (base URL, secret), so `SEARXNG_SEARCH_FORMATS` was silently
-      # ignored and the JSON API kept answering 403. Everything this instance
-      # needs — the JSON format above all — is in docker/searxng/settings.yml.
       # The RENDERED file (settings.local.yml), not the template: the secret is
       # generated per install and substituted by `talaria dev`.
       - ../docker/searxng/settings.local.yml:/etc/searxng/settings.yml:ro
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
-      interval: 10s
-      timeout: 5s
-      retries: 20
 
 volumes:
-  pg-data:
-  redis-data:
-  qdrant-data:
-  tei-cache:
-  minio-data:
-  searxng-data:
+  # The sidecars' five data volumes are declared in docker/sidecars.compose.yml
+  # (the services there reference them).
+  searxng-data: {}

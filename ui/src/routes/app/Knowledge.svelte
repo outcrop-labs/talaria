@@ -12,7 +12,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { openCopyItems, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { navigate } from '@/router'
   import { fade, slide } from '@/lib/motion'
   import { isUnder } from '@/lib/route-tabs'
@@ -228,8 +228,7 @@
     setLoc(sid, doc.id)
   })
   const spaceMenu = (s: KbSpace): ContextMenuEntry[] => [
-    { label: 'Open', onSelect: () => setLoc(s.id, null) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${s.id}`) },
+    ...openCopyItems(`/knowledge?space=${s.id}`, () => setLoc(s.id, null)),
     { label: 'New doc', onSelect: () => void newDocIn(s.id) },
     'sep',
     {
@@ -242,8 +241,7 @@
     },
   ]
   const docMenu = (d: KbDocMeta): ContextMenuEntry[] => [
-    { label: 'Open', onSelect: () => setLoc(d.spaceId, d.id) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?space=${d.spaceId}&doc=${d.id}`) },
+    ...openCopyItems(`/knowledge?space=${d.spaceId}&doc=${d.id}`, () => setLoc(d.spaceId, d.id)),
     'sep',
     {
       label: 'Delete document',

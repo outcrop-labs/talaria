@@ -6,10 +6,9 @@
   import Materialize from '@/components/ui/Materialize.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { confirm } from '@/components/ui/confirm.svelte'
-  import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
+  import { getList } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { type CronJob } from './agent-crons'
+  import { type CronJob, type CronMutationState, useCronMutations } from './agent-crons'
   import CronForm from './CronForm.svelte'
   import CronRow from './CronRow.svelte'
 
@@ -25,57 +24,20 @@
     queryKey: key(),
     queryFn: (): Promise<CronJob[]> => getList<CronJob>(`/api/fleet/agents/${agentId}/crons`, 'jobs'),
   }))
-  let busy = $state(false)
-  let err = $state<string | null>(null)
-  const refresh = () => qc.invalidateQueries({ queryKey: key() })
 
-  const create = async (input: { name: string; schedule: string; prompt: string }): Promise<boolean> => {
-    busy = true
-    err = null
-    try {
-      await postJson(`/api/fleet/agents/${agentId}/crons`, input)
-      await refresh()
-      return true
-    } catch (e) {
-      err = errorMessage(e)
-      return false
-    } finally {
-      busy = false
-    }
-  }
-
-  const edit = async (jobId: string, patch: { name: string; schedule: string; prompt: string }): Promise<boolean> => {
-    busy = true
-    err = null
-    try {
-      await putJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, patch)
-      await refresh()
-      return true
-    } catch (e) {
-      err = errorMessage(e)
-      return false
-    } finally {
-      busy = false
-    }
-  }
-
-  const act = async (jobId: string, action: 'pause' | 'resume' | 'run' | 'remove') => {
-    if (action === 'remove' && !(await confirm({ title: 'Delete scheduled job', message: 'Delete this scheduled job?', confirmLabel: 'Delete', danger: true }))) return
-    busy = true
-    err = null
-    try {
-      if (action === 'remove') await delJson(`/api/fleet/agents/${agentId}/crons/${jobId}`)
-      else await postJson(`/api/fleet/agents/${agentId}/crons/${jobId}`, { action })
-      await refresh()
-    } catch (e) {
-      err = errorMessage(e)
-      // The list is re-read on failure too, as it always was — a rejected
-      // action may still have partly applied server-side.
-      await refresh()
-    } finally {
-      busy = false
-    }
-  }
+  // What this panel renders about a mutation: the error inline under the rows,
+  // and `busy` on every control. The hook drives both.
+  const ui = $state<CronMutationState>({ err: null, busy: false })
+  const { create, edit, act } = useCronMutations({
+    state: ui,
+    invalidate: (what, failed) => {
+      // A rejected row action re-reads the list — it may still have partly
+      // applied server-side. A rejected create/edit changed nothing, and was
+      // never re-read here.
+      if (failed && (what === 'create' || what === 'edit')) return
+      return qc.invalidateQueries({ queryKey: key() })
+    },
+  })
 </script>
 
 {#snippet calendarIcon()}<CalendarClock size={22} />{/snippet}
@@ -116,11 +78,11 @@
       {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled" hint="Give it a recurring job below." />{/snippet}
       {#snippet children(jobs)}
         {#each jobs as j (j.id)}
-          <CronRow job={j} {busy} onAction={(a) => void act(j.id, a)} onEdit={(patch) => edit(j.id, patch)} />
+          <CronRow job={j} busy={ui.busy} onAction={(a) => void act(agentId, j.id, a)} onEdit={(patch) => edit(agentId, j.id, patch)} />
         {/each}
       {/snippet}
     </QueryState>
   </Materialize>
-  <CronForm onCreate={create} {busy} />
-  {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+  <CronForm onCreate={(input) => create(agentId, input)} busy={ui.busy} />
+  {#if ui.err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{ui.err}</p>{/if}
 </div>

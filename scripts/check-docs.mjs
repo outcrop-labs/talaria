@@ -74,7 +74,11 @@ for (const file of files) {
       target = target.split('#')[0] // drop a file#anchor suffix
       if (!target) continue // was only ever an anchor
       linksChecked++
-      if (!existsSync(join(dirname(file), target))) {
+      // Entry files under changelog/ resolve against the REPO ROOT, their
+      // post-roll home: the roll folds them into CHANGELOG.md at the root, so
+      // a `./docs/…` link is wrong at rest but right the moment it ships.
+      const base = file.startsWith(join(ROOT, 'changelog') + '/') ? ROOT : dirname(file)
+      if (!existsSync(join(base, target))) {
         failures.push({
           path: rel,
           line: i + 1,

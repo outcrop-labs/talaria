@@ -326,6 +326,14 @@ pub fn fill_harness_cmd(
     s
 }
 
+/// Where Pi and Oh My Pi keep config, auth, and sessions. On the department
+/// state volume so a session persists and a department-mate can resume it.
+/// omp relocates `~/.omp/agent` here when `PI_CODING_AGENT_DIR` is set — which
+/// is why both builtins set it, not only Pi. Docker creates this directory as
+/// root when the render bind-mounts policy files into it; the fleet render's
+/// cont-init hook chowns it back to the runtime user.
+pub const PI_CODING_AGENT_DIR: &str = "/opt/data/workbench/harness/pi";
+
 /// The three builtin definitions — one json! per harness because each wire
 /// carries its OWN key order. The struct is derived from these, so there is
 /// exactly one place a builtin is spelled.
@@ -348,7 +356,7 @@ fn builtin_wires() -> Vec<Value> {
             "slug": "pi",
             "label": "Pi",
             "auth": "gateway",
-            "env": { "PI_CODING_AGENT_DIR": "/opt/data/workbench/harness/pi" },
+            "env": { "PI_CODING_AGENT_DIR": PI_CODING_AGENT_DIR },
             "invoke": "npx -y @earendil-works/pi-coding-agent@latest -p -a --session-dir <sessionDir> --provider talaria --model <model> \"<task>\"",
             "jsonInvoke": "npx -y @earendil-works/pi-coding-agent@latest --mode json -a --session-dir <sessionDir> --provider talaria --model <model> \"<task>\"",
             "continueInvoke": "npx -y @earendil-works/pi-coding-agent@latest -p -a --session-dir <sessionDir> -c --provider talaria --model <model> \"<task>\"",
@@ -362,6 +370,7 @@ fn builtin_wires() -> Vec<Value> {
             "slug": "oh-my-pi",
             "label": "Oh My Pi",
             "auth": "gateway",
+            "env": { "PI_CODING_AGENT_DIR": PI_CODING_AGENT_DIR },
             "modelPrefix": "talaria/",
             "invoke": "npx -y @oh-my-pi/pi-coding-agent@latest -p --auto-approve --session-dir <sessionDir> --model <model> \"<task>\"",
             "jsonInvoke": "npx -y @oh-my-pi/pi-coding-agent@latest --mode json --auto-approve --session-dir <sessionDir> --model <model> \"<task>\"",
@@ -612,6 +621,7 @@ mod tests {
                 "slug",
                 "label",
                 "auth",
+                "env",
                 "modelPrefix",
                 "invoke",
                 "jsonInvoke",
@@ -622,6 +632,22 @@ mod tests {
                 "install",
                 "guide"
             ]
+        );
+    }
+
+    #[test]
+    fn omp_and_pi_share_the_persistent_config_dir() {
+        // omp honors PI_CODING_AGENT_DIR and relocates ~/.omp/agent there.
+        // If the two builtins diverge, the render mounts policy files where
+        // one of them does not look, and that harness starts unconfigured.
+        let wires = builtin_wires();
+        assert_eq!(
+            wires[1]["env"]["PI_CODING_AGENT_DIR"],
+            serde_json::json!(PI_CODING_AGENT_DIR)
+        );
+        assert_eq!(
+            wires[2]["env"]["PI_CODING_AGENT_DIR"],
+            wires[1]["env"]["PI_CODING_AGENT_DIR"]
         );
     }
 

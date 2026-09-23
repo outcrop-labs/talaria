@@ -3,6 +3,11 @@
 # `--env-file <devboxes>/<name>/compose.env` and `-p devbox-<name>`. It is not
 # meant to be run by hand. Full story: docs/DEVBOX.md.
 #
+# The sidecars' DEFINITIONS — images, restart, data volumes, env defaults,
+# healthchecks — are docker/sidecars.compose.yml, layered IN FRONT of this file
+# by `talaria box …`. What is left below is the box's own part: per-box
+# container names, the seeded minio pair, and the two services RESET out.
+#
 # Three networks, the production shape (docker/compose.yml) applied to dev:
 #   default (this project's own)  devbox + postgres + redis + qdrant + minio;
 #                                 nothing published; the app reaches its
@@ -101,70 +106,41 @@ services:
       minio:
         condition: service_healthy
 
-  # ── Sidecars: the stateful plane, ported from docker/dev-compose.yml with
-  # healthchecks intact and published ports REMOVED — in-container DNS replaces
-  # the dev stack's loopback publishing, and several of these (qdrant, minio)
-  # are unauthenticated; the box network is the boundary.
+  # ── Sidecars: the stateful plane, defined in docker/sidecars.compose.yml and
+  # layered IN FRONT of this file. A box adds only what is its own: the per-box
+  # container names and the seeded minio pair. Published ports stay REMOVED —
+  # in-container DNS replaces the dev stack's loopback publishing, and several
+  # of these (qdrant, minio) are unauthenticated; the box network is the
+  # boundary.
   postgres:
-    image: docker.io/library/postgres:16-alpine
     container_name: devbox-${BOX_NAME}-postgres
-    restart: unless-stopped
     environment:
-      POSTGRES_USER: talaria
+      # Literal, like the primary dev stack: the box app's DATABASE_URL carries
+      # the fixed talaria:talaria the seed mirror was taken with.
       POSTGRES_PASSWORD: talaria
-      POSTGRES_DB: talaria
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
-      interval: 3s
-      timeout: 3s
-      retries: 20
 
   redis:
-    image: docker.io/library/redis:7-alpine
     container_name: devbox-${BOX_NAME}-redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 3s
-      timeout: 3s
-      retries: 20
 
   qdrant:
-    image: docker.io/qdrant/qdrant:latest
     container_name: devbox-${BOX_NAME}-qdrant
-    restart: unless-stopped
-    volumes:
-      - qdrant-data:/qdrant/storage
-    healthcheck:
-      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/6333"']
-      interval: 5s
-      timeout: 3s
-      retries: 30
 
   minio:
-    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
-    # quay's latest is digest-identical to the last Hub-published build.
-    # Freshness of quay's images is tracked in issue #366.
-    image: quay.io/minio/minio:latest
     container_name: devbox-${BOX_NAME}-minio
-    restart: unless-stopped
-    command: ['server', '/data']
     environment:
       # The app and this container share the pair; `talaria box new` lifts
       # the values from the primary ui/.env so the seed mirror is pure bytes.
       MINIO_ROOT_USER: ${BOX_S3_ACCESS_KEY:-talaria}
       MINIO_ROOT_PASSWORD: ${BOX_S3_SECRET_KEY:-talaria-dev-secret}
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
-      interval: 5s
-      timeout: 3s
-      retries: 30
+
+  # RESET, not overridden: a box runs NO retrieval plane of its own. TEI and
+  # SearXNG are stateless and identical for every box, so the primary dev stack
+  # hosts them once and every box dials them by container name — on the shared
+  # `talaradev` network below (TALARIA_EMBED_URL / SEARXNG_URL in compose.env).
+  # `!reset` drops the two services the shared file defines; without it a box
+  # would pull a second model and run a SearXNG carrying none of its settings.
+  embeddings: !reset null
+  searxng: !reset null
 
 networks:
   # The primary dev stack's network, joined read-only in spirit: boxes only
@@ -183,7 +159,7 @@ networks:
 
 volumes:
   home: {}
-  pg-data: {}
-  redis-data: {}
-  qdrant-data: {}
-  minio-data: {}
+  # The sidecars' four data volumes come from docker/sidecars.compose.yml. Its
+  # fifth (tei-cache) belongs to the service this file resets out, so it goes
+  # with it — a box must not carry another stack's cache.
+  tei-cache: !reset null

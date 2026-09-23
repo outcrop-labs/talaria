@@ -4,7 +4,7 @@
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import CopyButton from '@/components/ui/CopyButton.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -243,11 +243,9 @@
     info="Keep this Talaria current from right here. An update rolls: the new container comes up beside the live one, takes traffic once healthy, and the old one drains. No server shell needed."
   />
 
-  {#if query.isPending}
-    <Skeleton class="h-4 w-64" />
-  {:else if status === undefined}
-    <QueryError variant="inline" error={query.error} title="Could not load update status" onRetry={() => void query.refetch()} />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load update status" errorVariant="inline">
+    {#snippet skeleton()}<Skeleton class="h-4 w-64" />{/snippet}
+    {#snippet children(status)}
     <div class="space-y-3">
       {#if status.mode !== 'image'}
         <!-- The engine's own refusal sentence IS the panel text — checkout,
@@ -386,5 +384,6 @@
         <p class="text-sm text-danger">{error}</p>
       {/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

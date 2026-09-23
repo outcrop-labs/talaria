@@ -111,6 +111,8 @@ export const WAITING_SITES = {
   'mcp/search': { role: 'tool', slot: 'inline', note: 'Marketplace search in flight.' },
   'mcp/install': { role: 'submitting', slot: 'button', note: 'Installing a server from the marketplace.' },
   'mcp/server-refresh': { role: 'tool', slot: 'button', note: 'Re-probing a server card for its tool list.' },
+  'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
+  'skills/marketplace-install': { role: 'submitting', slot: 'button', note: 'Reading a repo or writing its skills into a destination.' },
 
   /* ── The brief ────────────────────────────────────────────────────────── */
   'brief/writing': { role: 'reasoning', slot: 'inline', note: 'The daily brief being opened for this reader — lede first, then the day.' },

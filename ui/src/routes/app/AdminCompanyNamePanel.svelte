@@ -4,7 +4,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
@@ -15,7 +15,7 @@
   const qc = useQueryClient()
   // `null` is a real answer (no name configured); undefined means the read
   // failed, and a failed read must not render as "no name" the way a Save
-  // could then quietly overwrite nothing — the QueryError arm holds it.
+  // could then quietly overwrite nothing — QueryState's error branch holds it.
   const query = createQuery(() => ({
     queryKey: ['company-name'],
     queryFn: async (): Promise<string | null> =>
@@ -59,16 +59,9 @@
     title="Company name"
     info="Names this workspace in people's browser tabs: the tab reads 'Talaria' until you set a name, then 'Talaria - <your name>'. Cosmetic — nothing else derives from it."
   />
-  {#if query.isPending}
-    <SkeletonRows rows={1} />
-  {:else if data === undefined}
-    <QueryError
-      variant="inline"
-      error={query.error}
-      title="Could not load the company name"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load the company name" errorVariant="inline">
+    {#snippet skeleton()}<SkeletonRows rows={1} />{/snippet}
+    {#snippet children(data)}
     <div class="flex items-center gap-2">
       <Input
         size="sm"
@@ -91,7 +84,8 @@
         </button>
       {/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
   {#if error}
     <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">
       {error}

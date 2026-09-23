@@ -933,12 +933,21 @@ CREATE TABLE public.task_watchers (
     watcher text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_workchain_edges (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    workchain_id uuid NOT NULL,
+    from_step uuid NOT NULL,
+    to_step uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_workchain_steps (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     workchain_id uuid NOT NULL,
     task_id uuid NOT NULL,
     "position" integer DEFAULT 0 NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    canvas_x integer,
+    canvas_y integer
 );
 CREATE TABLE public.task_workchains (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1421,6 +1430,10 @@ ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_pkey PRIMARY KEY (task_id, watcher);
+ALTER TABLE ONLY public.task_workchain_edges
+    ADD CONSTRAINT task_workchain_edges_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.task_workchain_edges
+    ADD CONSTRAINT task_workchain_edges_workchain_id_from_step_to_step_key UNIQUE (workchain_id, from_step, to_step);
 ALTER TABLE ONLY public.task_workchain_steps
     ADD CONSTRAINT task_workchain_steps_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.task_workchain_steps
@@ -1537,6 +1550,8 @@ CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_k
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
+CREATE INDEX task_workchain_edges_from ON public.task_workchain_edges USING btree (workchain_id, from_step);
+CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree (workchain_id, to_step);
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
@@ -1782,6 +1797,12 @@ ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_watchers
     ADD CONSTRAINT task_watchers_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_workchain_edges
+    ADD CONSTRAINT task_workchain_edges_from_step_fkey FOREIGN KEY (from_step) REFERENCES public.task_workchain_steps(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_workchain_edges
+    ADD CONSTRAINT task_workchain_edges_to_step_fkey FOREIGN KEY (to_step) REFERENCES public.task_workchain_steps(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_workchain_edges
+    ADD CONSTRAINT task_workchain_edges_workchain_id_fkey FOREIGN KEY (workchain_id) REFERENCES public.task_workchains(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_workchain_steps
     ADD CONSTRAINT task_workchain_steps_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_workchain_steps

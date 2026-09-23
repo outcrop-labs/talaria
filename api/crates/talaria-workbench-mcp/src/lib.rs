@@ -48,8 +48,8 @@ use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::run_definition;
 use talaria_secretbox::SecretBox;
 use talaria_tasks::{
-    AgentIntent, AgentWriteTarget, TaskActor, TaskDeps, TaskPatch, add_comment,
-    agent_ticket_refusal, get_task, log_activity, update_task,
+    AgentIntent, AgentWriteTarget, ResolvedTaskId, TaskActor, TaskDeps, TaskPatch, add_comment,
+    agent_ticket_refusal, get_task, log_activity, resolve_task_id, update_task,
 };
 use talaria_workbench::resolve_workbench;
 use talaria_workbench_harnesses::{
@@ -223,7 +223,7 @@ pub fn workbench_tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "taskId": { "type": "string", "description": "The ticket this job implements — ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board. Ask for it to be reopened, or work the follow-up ticket." },
+                    "taskId": { "type": "string", "description": "The ticket this job implements — id or ref (PLAT-118), from list_tickets or the assignment title. A bare number is not an id. ALWAYS pass it when the work came from a ticket; it links the branch, audit trail, plan gate, and PR to the ticket. Refused if that ticket is one you may not work: a board you are not allowed on, a closed ticket (done / failed / cancelled), an archived ticket, or a ticket on an archived board. Ask for it to be reopened, or work the follow-up ticket." },
                     "repo": { "type": "string", "description": "owner/name — must be one of your granted repos" },
                     "effort": { "type": "string", "enum": ["light", "standard", "heavy"], "description": "How hard this work is — routes tooling and review weight" },
                     "plan": { "type": "string", "description": "Your implementation plan: approach, files touched, test strategy. Required for standard/heavy." },
@@ -433,7 +433,20 @@ async fn ticket_arg(
     let Some(task_id) = task_id else {
         return Ok(None);
     };
-    let task_id = task_id.to_string();
+    let raw = task_id.to_string();
+    // The assignment title is PLAT-118. get_ticket accepts that ref; this
+    // door used to treat it as a missing ticket and refuse a job the agent
+    // was allowed to run.
+    let task_id = match resolve_task_id(pg, &raw).await {
+        Ok(ResolvedTaskId::One(id)) => id,
+        Ok(_) => {
+            return Err(format!(
+                "taskId \"{raw}\" is not a ticket you may work — it does not exist, or its board \
+                 does not allow you. Omit taskId, or ask an admin for access to that board."
+            ));
+        }
+        Err(e) => return Err(format!("ticket lookup failed: {e}")),
+    };
     authorize_ticket(pg, &task_id, subject).await?;
     Ok(Some(task_id))
 }
@@ -1443,20 +1456,30 @@ fn random_base36(len: usize) -> String {
 /// pushed, so the mint obeys the rule up front instead of dead-ending
 /// finish_job on a branch git will always refuse. Pure; GitHub is not
 /// consulted.
+///
+/// The prefix is NORMALIZED here even though the config route also trims it:
+/// rows written before that guard (a prefix typed as "agent/") minted
+/// `agent//tala-…`, which sails through `push_allowed` (`starts_with`) and
+/// dies at GitHub's ref validation with a 422 — the start_job failure Doug
+/// reported on TALA-35. The mint is the last line; it reads what is stored.
 fn composed_job_branch(
     prefix: Option<&str>,
     repo: &str,
     ticket_ref: &str,
     title_slug: &str,
 ) -> String {
+    let prefix = prefix
+        .map(str::trim)
+        .map(|p| p.trim_matches('/'))
+        .filter(|p| !p.is_empty());
     let stem = if ticket_ref.is_empty() {
         format!("job-{}-{}", slugify(repo), random_base36(6))
     } else {
         format!("{}-{}", ticket_ref.to_lowercase(), title_slug)
     };
-    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.len() + 1));
+    let budget = 80usize.saturating_sub(prefix.map_or(0, |p| p.chars().count() + 1));
     let body = truncate_utf16(&stem, budget).to_string();
-    match prefix.filter(|p| !p.is_empty()) {
+    match prefix {
         Some(p) => format!("{p}/{body}"),
         None => format!("talaria/{body}"),
     }
@@ -1707,6 +1730,22 @@ mod tests {
         assert_eq!(
             composed_job_branch(Some(""), "o/r", "TALA-9", "x"),
             "talaria/tala-9-x"
+        );
+        // A prefix STORED with slashes (typed "agent/", the TALA-35 shape)
+        // mints the same branch as the trimmed spelling — `agent//<ref>`
+        // passes push_allowed and then dies at GitHub's ref validation.
+        assert_eq!(
+            composed_job_branch(
+                Some("agent/"),
+                "outcrop-labs/talaria",
+                "TALA-35",
+                "workchains-the-node-canvas"
+            ),
+            "agent/tala-35-workchains-the-node-canvas"
+        );
+        assert_eq!(
+            composed_job_branch(Some("/agent/"), "o/r", "TALA-9", "x"),
+            "agent/tala-9-x"
         );
         // The self-referential contract: a minted branch passes the very
         // branch law it was minted for.

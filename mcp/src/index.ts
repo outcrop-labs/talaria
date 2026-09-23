@@ -129,6 +129,10 @@ const OFF_THE_TABLE = 'closed (done / failed / cancelled), ARCHIVED, or on an AR
  *  report_outcome, report_gap's taskId. */
 const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE} refuses this with 403, like every other agent write.`
 
+/** Every ticket door accepts this. The assignment title shows the ref; list_tickets returns both. */
+const TICKET_ADDR =
+  'Ticket id or ref (PLAT-118) — list_tickets returns both as id and ticketRef; the assignment title shows the ref. A bare number is not an id.'
+
 /** The pointer to the escape hatch, with its real limit attached. */
 const COMMENT_INSTEAD =
   'Use comment instead — but only on a CLOSED ticket: comments are your channel on work you can no longer edit, and archival (of the ticket or its board) closes that channel too.'
@@ -344,27 +348,28 @@ server.registerTool(
   'list_tickets',
   {
     description:
-      "List a board's tickets. Each carries status, priority, assignees (agent ids and humans as user:<id>), labels, due date, human estimate (estimatedHours), sub-task parent (parentId), and comment count. Archived tickets are not listed — a person took them off the table and they refuse every agent write. Optional filters narrow the list.",
+      "List a board's tickets. Each has id and ticketRef (PLAT-118) — either opens it on get_ticket, comment, triage_ticket, and the other ticket doors. Also status, priority, assignees (agent ids and humans as user:<id>), labels, due date, human estimate (estimatedHours), sub-task parent (parentId, a ticket id), and comment count. Archived tickets are not listed — a person took them off the table and they refuse every agent write. Optional filters narrow the list. parentId accepts an id or a ref.",
     inputSchema: {
       boardId: z.string().describe('Board id (from list_boards)'),
       status: z.string().optional().describe('Only this status (inbox/assigned/in_progress/blocked/quality_review/done)'),
       assignee: z.string().optional().describe('Only tickets assigned to this agent id or user:<id>'),
       label: z.string().optional().describe('Only tickets carrying this label'),
       overdue: z.boolean().optional().describe('Only tickets past their due date and not done'),
-      parentId: z.string().optional().describe('Only sub-tasks of this ticket'),
+      parentId: z.string().optional().describe('Only sub-tasks of this ticket — id or ref'),
     },
   },
   async ({ boardId, status, assignee, label, overdue, parentId }) => {
     const res = (await api('GET', `/api/boards/${encodeURIComponent(boardId)}/tasks`)) as {
-      tasks: Array<{ status: string; assignees: string[]; tags: string[]; dueDate: string | null; parentId: string | null }>
+      tasks: Array<{ id: string; ticketRef: string | null; status: string; assignees: string[]; tags: string[]; dueDate: string | null; parentId: string | null }>
     }
     const now = Date.now()
+    const parent = parentId?.trim()
     const tasks = res.tasks.filter(
       (t) =>
         (!status || t.status === status) &&
         (!assignee || t.assignees.includes(assignee)) &&
         (!label || t.tags.includes(label)) &&
-        (!parentId || t.parentId === parentId) &&
+        (!parent || t.parentId === parent || t.id === parent || t.ticketRef === parent) &&
         (!overdue || (!!t.dueDate && Date.parse(t.dueDate) < now && !['done', 'cancelled'].includes(t.status))),
     )
     return ok({ tasks })
@@ -376,7 +381,7 @@ server.registerTool(
   {
     description:
       'Get a ticket in full: fields (incl. human estimate, sub-task parentId, mixed assignees — agents by id, humans as user:<id>), comments, activity, watchers, reviews, dependencies. May include `workflows` — how this kind of work is done here; follow their instructions. Tickets may carry an `attachments` array (files + knowledge/artifact refs) — read a file with fetch_attachment.',
-    inputSchema: { taskId: z.string().describe('Ticket id') },
+    inputSchema: { taskId: z.string().describe(TICKET_ADDR) },
   },
   async ({ taskId }) => ok(await api('GET', `/api/tasks/${encodeURIComponent(taskId)}`)),
 )
@@ -434,7 +439,7 @@ server.registerTool(
   'create_ticket',
   {
     description:
-      'Create a ticket on a board. It lands in the inbox for a human to assign — agents cannot assign work, and hour estimates stay human too (use effort for your own sizing). Pass parentId to create it as a SUB-TASK of an existing ticket (work breakdown; one level deep).',
+      'Create a ticket on a board. It lands in the inbox for a human to assign — agents cannot assign work, hour estimates stay human (use effort for your own sizing), and sub-task structure is a human\'s too. A parentId you pass is ignored; file the ticket, then comment the breakdown.',
     inputSchema: {
       boardId: z.string().describe('Board id (from list_boards)'),
       title: z.string().min(1).max(300),
@@ -445,7 +450,6 @@ server.registerTool(
       dueDate: z.string().datetime().optional(),
       startDate: z.string().datetime().optional().describe('When work should begin (Gantt bars run start → due)'),
       color: z.enum(['slate', 'bronze', 'green', 'amber', 'red', 'blue', 'purple', 'teal', 'pink', 'orange', 'lime', 'cyan', 'indigo', 'magenta', 'olive', 'brown']).optional().describe('Color-code the ticket (shows on cards + gantt)'),
-      parentId: z.string().optional().describe('Create as a sub-task of this ticket (same board, one level deep)'),
     },
   },
   async ({ boardId, ...body }) => ok(await api('POST', `/api/boards/${encodeURIComponent(boardId)}/tasks`, body)),
@@ -458,7 +462,7 @@ server.registerTool(
     description:
       `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. So once you have parked or reported, stop moving the ticket. ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
     inputSchema: {
-      taskId: z.string(),
+      taskId: z.string().describe(TICKET_ADDR),
       title: z.string().min(1).max(300).optional(),
       description: z.string().max(20_000).optional(),
       priority: z.enum(PRIORITIES).optional(),
@@ -482,9 +486,9 @@ server.registerTool(
   'comment',
   {
     description:
-      `Comment on a ticket — it lands in the ticket's discussion thread, the room where the assigned agent and the board's humans talk. ${COMMENT_EXEMPTION}`,
+      `Comment on a ticket — it lands in the ticket's discussion thread, the room where the assigned agent and the board's humans talk. ${COMMENT_EXEMPTION} A 409 that the ticket has no owner to hold its room means the board has no member who can own the channel row — report_problem once and stop; retrying will not create it.`,
     inputSchema: {
-      taskId: z.string(),
+      taskId: z.string().describe(TICKET_ADDR),
       content: z.string().min(1).max(20_000).describe('Markdown comment body'),
     },
   },
@@ -497,7 +501,7 @@ server.registerTool(
     description:
       `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${COMMENT_INSTEAD}`,
     inputSchema: {
-      taskId: z.string(),
+      taskId: z.string().describe(TICKET_ADDR),
       outcome: z.string().max(50_000).describe('What was accomplished'),
       resolution: z.string().max(50_000).optional().describe('How it was resolved'),
       errorMessage: z.string().max(50_000).optional().describe('If the work failed, what went wrong'),
@@ -539,7 +543,7 @@ server.registerTool(
       taskId: z
         .string()
         .optional()
-        .describe(`The ticket that surfaced the gap. ${KEEP_THE_SCOPE} Leave it out only for a gap about no ticket at all.`),
+        .describe(`${TICKET_ADDR} ${KEEP_THE_SCOPE} Leave it out only for a gap about no ticket at all.`),
     },
   },
   async (body) => ok(await api('POST', '/api/agent/gap', body)),
@@ -551,7 +555,7 @@ server.registerTool(
     description:
       `Add time spent to a ticket's auto-accumulated total. Log it as you work. ${LIVE_ONLY} Time you never logged before sign-off cannot be added afterwards. Still fine while the ticket sits in blocked or quality_review.`,
     inputSchema: {
-      taskId: z.string(),
+      taskId: z.string().describe(TICKET_ADDR),
       seconds: z.number().int().min(1).max(86_400).describe('Seconds of work to add'),
     },
   },
@@ -1038,7 +1042,7 @@ server.registerTool(
     description:
       `Report the LLM tokens you burned working a ticket. Feeds the ticket's cost rollup and the fleet ledger. Log it as you go: ${LIVE_ONLY} Spend you never reported before sign-off cannot be attached afterwards. Still fine while the ticket sits in blocked or quality review.`,
     inputSchema: {
-      taskId: z.string(),
+      taskId: z.string().describe(TICKET_ADDR),
       promptTokens: z.number().int().min(0).describe('Prompt/input tokens used'),
       completionTokens: z.number().int().min(0).describe('Completion/output tokens used'),
       tier: z.string().optional().describe('Model tier the work ran on (alias name), if not your main model'),
@@ -1054,8 +1058,8 @@ server.registerTool(
     description:
       `Mark a ticket as blocked by another ticket on the same board. The edge lands on BOTH tickets, so BOTH must be live: one that is ${OFF_THE_TABLE} refuses with 403 on either side of the edge, and the error names which. Removing an edge is a human call.`,
     inputSchema: {
-      taskId: z.string().describe('The blocked ticket'),
-      dependsOnId: z.string().describe('The ticket it depends on'),
+      taskId: z.string().describe('The blocked ticket — id or ref (PLAT-118)'),
+      dependsOnId: z.string().describe('The ticket it depends on — id or ref (PLAT-118)'),
     },
   },
   async ({ taskId, dependsOnId }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/dependencies`, { dependsOnId })),
@@ -1096,7 +1100,7 @@ server.registerTool(
       taskId: z
         .string()
         .optional()
-        .describe(`The ticket you were working when it broke. ${KEEP_THE_SCOPE}`),
+        .describe(`${TICKET_ADDR} ${KEEP_THE_SCOPE}`),
     },
   },
   async (args) => ok(await api('POST', '/api/agent/problem', args)),

@@ -214,6 +214,14 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_boards::tasks::tasks_id_work_session::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/tasks/{id}/work-session/stop",
+            post(talaria_routes_boards::tasks::tasks_id_work_session_stop::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/tasks/{id}/work-sessions",
+            get(talaria_routes_boards::tasks::tasks_id_work_sessions::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/tasks/{id}",
             get(talaria_routes_boards::tasks::tasks_id::get)
                 .put(talaria_routes_boards::tasks::tasks_id::put)
@@ -267,6 +275,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/workchains/{id}/steps/{taskId}",
             axum::routing::delete(talaria_routes_boards::workchains::workchains_id::delete_step)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
+        .route(
+            "/api/workchains/{id}/edges",
+            axum::routing::post(talaria_routes_boards::workchains::workchains_id::post_edge)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workchains/{id}/edges/{fromTaskId}/{toTaskId}",
+            axum::routing::delete(talaria_routes_boards::workchains::workchains_id::delete_edge)
                 .fallback(|| async { method_not_allowed("DELETE") }),
         )
         .route(
@@ -1391,6 +1409,24 @@ pub fn router(state: AppState) -> Router {
                 .post(talaria_routes_fleet::agents::skills_owner_name::post)
                 .delete(talaria_routes_fleet::agents::skills_owner_name::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, POST, DELETE") }),
+        )
+        // The skills marketplace (Hermes Atlas's ranked catalog): the list,
+        // one repo's discovered skills, and the per-owner install. Static
+        // "marketplace" segments outrank the {owner}/{name} captures above.
+        .route(
+            "/api/skills/marketplace",
+            get(talaria_routes_fleet::agents::skills_marketplace::get_list)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/skills/marketplace/detail",
+            get(talaria_routes_fleet::agents::skills_marketplace::get_detail)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/skills/marketplace/install",
+            post(talaria_routes_fleet::agents::skills_marketplace::post_install)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         // The agent surface: media reads/writes scoped by model, the two
         // honesty-loop reports (gap, problem), the plain-language

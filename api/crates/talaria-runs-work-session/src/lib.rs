@@ -45,6 +45,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, OnceLock};
 
 use futures_util::future::BoxFuture;
+use futures_util::stream::StreamExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -90,6 +91,45 @@ pub const MAX_SESSION_TURNS: i64 = 12;
 /// default wait) — long enough that the common case has landed, short enough
 /// that a reclaimed session reads as a pause rather than a stall.
 pub const INTERRUPTED_TURN_SETTLE_MS: i64 = 120_000;
+
+/// Consecutive FAILED tool calls before a turn aborts as thrash. This is
+/// the silence rule's complement, not a replacement: "no total timeout on
+/// the turn" stays — frames arriving means the turn runs — but frames that
+/// say every call is FAILING mean the turn is not working, it is burning.
+/// The 2026-09-22 rot ran one turn for half an hour with every tool
+/// erroring while the run read `running` and the lease kept renewing. Ten
+/// failures is a minute of a thrashing agent and never a normal bad patch
+/// or two.
+///
+/// The signal is the talaria-events plugin's `toolfull` frames on the run's
+/// watch channel (status "error", classified at the plugin from the
+/// persona's own error convention). A plugin that reports nothing disables
+/// this guard silently — the known blind spot, on the record here.
+pub const TOOL_FAIL_TURN_ABORT: u32 = 10;
+
+/// One watch frame's effect on the turn's consecutive-failure streak;
+/// `true` when the streak breaches `TOOL_FAIL_TURN_ABORT`. Pure so the law
+/// is testable without a subscriber. Anything unparseable, non-toolfull,
+/// or without a verdict leaves the streak alone.
+pub fn tool_failure_streak(streak: &mut u32, frame: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(frame) else {
+        return false;
+    };
+    if v.get("t").and_then(|t| t.as_str()) != Some("toolfull") {
+        return false;
+    }
+    match v.get("s").and_then(|s| s.as_str()) {
+        Some("error") => {
+            *streak += 1;
+            *streak >= TOOL_FAIL_TURN_ABORT
+        }
+        Some("completed") => {
+            *streak = 0;
+            false
+        }
+        _ => false,
+    }
+}
 
 const LOG: &str = "[work-session]";
 
@@ -525,28 +565,94 @@ async fn real_turn(
         })
         .await;
     }
-    let run = run_harness(
-        &state,
-        &work_session_harness(),
-        &json!({ "prompt": prompt }),
-        RunContext {
-            caller: format!("ticket:{task_id}"),
-            user_id: None,
-            model: Some(agent_model.clone()),
-            step: None,
-            tier: None,
-            effort: None,
-            ledger: Some(RunLedger {
-                source: Some(LedgerSource::Chat),
-                ref_id: Some(task_id.clone()),
-                task_id: Some(task_id.clone()),
-            }),
-            deps: None,
-            liveness,
-            watch: Some(watch.clone()),
-        },
-    )
-    .await;
+    // THE THRASH BRAKE. The turn has no total timeout by law — frames
+    // arriving means the turn runs — but the plugin's toolfull frames carry
+    // the one verdict the stream itself never shows: whether each tool call
+    // SUCCEEDED. A subscriber on this run's watch channel counts
+    // consecutive failures and, at TOOL_FAIL_TURN_ABORT, the select below
+    // drops the harness future mid-await — the same interrupt a stop or a
+    // driver death produces (the persona sees the stream go away and stops
+    // its task).
+    let (breach_tx, mut breach_rx) = tokio::sync::oneshot::channel::<u32>();
+    let thrash_watcher = {
+        let state = state.clone();
+        let channel = watch.clone();
+        tokio::spawn(async move {
+            // A dedicated subscriber connection, the realtime crate's law:
+            // pubsub owns the connection. Any failure here only disables
+            // the brake for this turn — the session still runs, silence
+            // still ends it, and nothing below may fail a turn for wanting
+            // to watch it.
+            let Ok(client) = redis::Client::open(state.cfg.redis_url.as_str()) else {
+                return;
+            };
+            let Ok(mut pubsub) = client.get_async_pubsub().await else {
+                return;
+            };
+            if pubsub.subscribe(&channel).await.is_err() {
+                return;
+            }
+            let mut messages = pubsub.on_message();
+            let mut streak = 0u32;
+            while let Some(msg) = messages.next().await {
+                let Ok(payload) = msg.get_payload::<String>() else {
+                    continue;
+                };
+                if tool_failure_streak(&mut streak, &payload) {
+                    let _ = breach_tx.send(streak);
+                    return;
+                }
+            }
+        })
+    };
+    let turn_harness = work_session_harness();
+    let turn_payload = json!({ "prompt": prompt });
+    let turn_ctx = RunContext {
+        caller: format!("ticket:{task_id}"),
+        user_id: None,
+        model: Some(agent_model.clone()),
+        step: None,
+        tier: None,
+        effort: None,
+        ledger: Some(RunLedger {
+            source: Some(LedgerSource::Chat),
+            ref_id: Some(task_id.clone()),
+            task_id: Some(task_id.clone()),
+        }),
+        deps: None,
+        liveness,
+        watch: Some(watch.clone()),
+    };
+    let run = tokio::select! {
+        r = run_harness(&state, &turn_harness, &turn_payload, turn_ctx) => {
+            thrash_watcher.abort();
+            r
+        }
+        Ok(n) = &mut breach_rx => {
+            // The turn IS still streaming — that is the point. Dropping the
+            // harness future drops the stream, the persona's interrupt; the
+            // transcript of everything the turn did say is captured first
+            // so the abort is reviewable, not a hole in the record.
+            capture_turn_transcript(
+                &state,
+                &run_id,
+                &task_id,
+                &agent_model,
+                &prompt,
+                &watch,
+            )
+            .await;
+            tracing::warn!(
+                "{LOG} {task_id} ({agent_model}): aborting the turn — {n} consecutive tool \
+                 failures; the agent's tool plane is failing on every call"
+            );
+            return Err(format!(
+                "turn aborted after {n} consecutive tool failures — the agent's tools are \
+                 failing on every call (its container likely needs a roll from /agents). This \
+                 session parked instead of thrashing; the ticket is yours to triage."
+            ));
+        }
+    };
     // THE TRANSCRIPT ARTIFACT — this turn's prompt plus the widened watch
     // lines (tool previews carry the harness steering verbatim), persisted
     // for after-the-fact review. Fire-and-forget: a capture failure never
@@ -1581,6 +1687,40 @@ mod tests {
         assert!(scrubbed.contains("ran git push with"));
         // Ordinary prose with underscores must survive.
         assert_eq!(scrub_secrets("a plain sentence"), "a plain sentence");
+    }
+
+    #[test]
+    fn the_thrash_streak_counts_only_toolfull_verdicts() {
+        let f = |s: &str| format!(r#"{{"t":"toolfull","v":"memory","s":"{s}","id":"c1"}}"#);
+        // Nine failures: not yet. The tenth breaches.
+        let mut streak = 0u32;
+        for _ in 0..9 {
+            assert!(!tool_failure_streak(&mut streak, &f("error")));
+        }
+        assert_eq!(streak, 9);
+        assert!(tool_failure_streak(&mut streak, &f("error")));
+        // One success resets the whole streak — a working call between
+        // failures is an agent debugging, not an agent thrashing.
+        let mut streak = 0u32;
+        for _ in 0..9 {
+            tool_failure_streak(&mut streak, &f("error"));
+        }
+        assert!(!tool_failure_streak(&mut streak, &f("completed")));
+        assert_eq!(streak, 0);
+        assert!(!tool_failure_streak(&mut streak, &f("error")));
+        // Stream frames, running frames, junk: none of them move it.
+        let mut streak = 9u32;
+        for frame in [
+            r#"{"t":"d","v":"thinking…"}"#,
+            r#"{"t":"tool","v":"terminal","s":"running"}"#,
+            r#"{"t":"toolfull","v":"terminal","s":"running"}"#,
+            "not json at all",
+        ] {
+            assert!(!tool_failure_streak(&mut streak, frame));
+        }
+        assert_eq!(streak, 9);
+        // And the tenth error after that noise still breaches.
+        assert!(tool_failure_streak(&mut streak, &f("error")));
     }
 
     // Fixed vectors from the original derivation — not re-derived here,

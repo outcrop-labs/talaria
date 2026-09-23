@@ -49,7 +49,7 @@ pub async fn post(
         return Ok(house_error(StatusCode::BAD_REQUEST, "toolName required"));
     }
     let status = match parsed.get("status").and_then(|v| v.as_str()) {
-        Some("running") | Some("completed") => parsed
+        Some("running") | Some("completed") | Some("error") => parsed
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -57,7 +57,7 @@ pub async fn post(
         _ => {
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
-                "status must be running|completed",
+                "status must be running|completed|error",
             ));
         }
     };
@@ -76,6 +76,34 @@ pub async fn post(
             {
                 tracing::warn!("[tool-events] chip surface failed: {e}");
             }
+        }
+    }
+    // THE FLEET'S ONLY FAILURE SIGNAL. A persona tool failing is invisible to
+    // every other surface — the model stream says "completed", container
+    // health stays green, stats look idle (the 2026-09-22 rot: half an hour
+    // of every tool failing while every dashboard read green). The plugin
+    // now reports status "error" for the persona's own error convention,
+    // and this streak — agent-scoped, not run-scoped, so chat and cron
+    // turns count too — is what the alerts surface reads. INCR + 6h EXPIRE
+    // on a failure, DEL on a success: consecutive by construction, and an
+    // idle agent's streak dies with the key instead of alerting forever.
+    if let Ok(mut conn) = state.redis().await {
+        let streak_key = format!("agent-tools:{}:fail-streak", caller.model);
+        if status == "error" {
+            let _: Result<i64, redis::RedisError> = redis::cmd("INCR")
+                .arg(&streak_key)
+                .query_async(&mut conn)
+                .await;
+            let _: Result<(), redis::RedisError> = redis::cmd("EXPIRE")
+                .arg(&streak_key)
+                .arg(21_600)
+                .query_async(&mut conn)
+                .await;
+        } else if status == "completed" {
+            let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+                .arg(&streak_key)
+                .query_async(&mut conn)
+                .await;
         }
     }
     // The newest LIVE work session for this agent — the run whose tail this

@@ -56,7 +56,12 @@ graph LR
 6. **The promotion gate re-checks the evidence.** On the promotion pull request,
    `flow.yml`'s `promotion-gate` reads the Actions API and requires a green CI run
    *and* a green `rc-deploy` run for the head commit — the same query
-   `promote.yml` makes for the body, so the two cannot disagree.
+   `promote.yml` makes for the body, so the two cannot disagree. The pull
+   request's checks fire the moment `rc` is pushed, which is the same moment
+   those two runs *start*, so the gate waits for both to finish rather than
+   failing ahead of its own evidence: a failed required check is never
+   re-evaluated, and a gate that read too early would wedge every promotion
+   until something re-ran it by hand.
 7. **A person merges it** (or auto-merge does, where a bot token opened the pull
    request and `main`'s required checks include the gate). Merge commit only.
    Deliberately not automatic by default: a merge performed with `GITHUB_TOKEN`

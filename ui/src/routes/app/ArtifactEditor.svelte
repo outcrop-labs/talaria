@@ -5,17 +5,15 @@
   import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
-  import EmojiPicker from '@/components/ui/EmojiPicker.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Input from '@/components/ui/Input.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import RecordTitle from '@/components/ui/RecordTitle.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-  import { inlineEditKeys } from '@/components/ui/control'
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
@@ -194,37 +192,21 @@
 {:else}
   <div class={cn('flex min-h-0 flex-col', fullscreen ? 'fixed inset-0 z-50 bg-surface' : 'h-full')}>
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
-      <div class="shrink-0">
-        <EmojiPicker
-          onPick={(e) => {
-            void save({ icon: e })
-          }}
-          onClear={() => {
-            void save({ icon: null })
-          }}
-        >
-          {#snippet trigger()}
-            <button type="button" class="rounded-md px-1 text-xl leading-none transition-colors dither-fill" title="Set icon">
-              {artifact.icon ?? '📄'}
-            </button>
-          {/snippet}
-        </EmojiPicker>
-      </div>
-      {#if mode === 'edit'}
-        <Input
-          value={title}
-          oninput={(e) => {
-            title = e.currentTarget.value
-            dirty = true
-          }}
-          onblur={() => dirty && void saveBody()}
-          onkeydown={inlineEditKeys(() => artifact && (title = artifact.title))}
-          class="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
-          placeholder="Untitled"
-        />
-      {:else}
-        <h1 class="min-w-0 flex-1 truncate font-sans text-lg font-semibold text-fg">{artifact.title}</h1>
-      {/if}
+      <!-- Read mode shows the record, edit mode the buffer — the artifact's own
+           save path and dirty flag stay here. -->
+      <RecordTitle
+        icon={artifact.icon}
+        onIconPick={(e) => void save({ icon: e })}
+        onIconClear={() => void save({ icon: null })}
+        value={mode === 'edit' ? title : artifact.title}
+        onInput={(v) => {
+          title = v
+          dirty = true
+        }}
+        onCommit={() => dirty && void saveBody()}
+        onCancel={() => artifact && (title = artifact.title)}
+        editing={mode === 'edit'}
+      />
       <Chip>{KIND_LABEL[artifact.kind]}</Chip>
       <Segmented
         size="xs"
