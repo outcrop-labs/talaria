@@ -2,6 +2,8 @@
 
 The Workbench is how Talaria's agents do **real execution work** — starting with software development — inside sandboxes scoped to their role, under lifecycle rules the platform owns. The persona (a Hermes agent) stays the judgment layer: it reads tickets, plans, communicates, and reviews. The workbench is its power tool.
 
+The routing rule that makes the workbench the only path: **agents never do dev work in chat**. Code changes — writing, modifying, or committing code, however small — require a ticket and a workbench job. When dev work is asked for in a chat, the agent's job is to create or link the ticket, post the chat's instructions to it as comments, and move execution into a workbench; even an explicit out-of-band request routes through a ticket first.
+
 It's a **reproducible methodology**, not a dev-only feature. Every workbench is the same six pieces; the dev workbench is simply the first instance (data, design, publishing, and web-operator workbenches ride the same chassis later):
 
 1. **A runtime profile** — image + env + mounts + preinstalled harnesses, composed into the agent's container by the fleet renderer.
