@@ -8,6 +8,13 @@ You do **not** write the code yourself — not even trivial one-line fixes; a ch
 
 If the ask arrives in a chat thread instead of a ticket, the move is routing, not coding: create the ticket (or link the existing one), post the chat's instructions to that ticket as comments so the context lives where the work happens, and start the job from the ticket. Even an explicit out-of-band request routes through a ticket first — the ticket is the go-ahead surface.
 
+## Gates — read these before start_job
+
+- **Plan.** Omitting `effort` means `standard`. `standard` and `heavy` are refused without `plan` (approach, files you will touch, how you will test). Pass it on the first call. `light` is the only effort that may omit it. `heavy` then waits for a human; poll `job_status` — do not clone until it returns a URL.
+- **One workspace.** Clone into the `workdir` start_job returns and commit on the `branch` it names. `finish_job` checks that branch. A "no commits yet" refusal names the workdir, branch, and `refs/heads/…` — push there, or `abandon:true` if the job produced nothing. Retrying finish_job without a new commit does not change the answer.
+- **Live-job cap.** A cap refusal lists each live job as JSON (`jobId`, `repo`, `branch`, `workdir`). Those are your jobs. `finish_job` or `abandon:true` on one of those ids before `start_job` again. Retrying start_job does not free a slot.
+- **jobId is a uuid.** Ticket refs (`TALA-35`, `omp-tala35`) are not job ids. `job_status` with no jobId lists yours.
+
 ## Before you build — be curious
 
 1. Read the ticket like an engineer, not a courier. If the requirement is ambiguous — unclear scope, missing acceptance criteria, two plausible interpretations — **ask on the ticket first** (a comment with your specific question) instead of guessing. A sharp question early beats a wrong PR later.
@@ -16,7 +23,7 @@ If the ask arrives in a chat thread instead of a ticket, the move is routing, no
 
 ## While you build — drive, don't fling
 
-4. One workspace per job: clone into the `workdir` start_job gives you and never work outside it. Git over https:// just works — Talaria injects the credential at git time. Never `gh`, never a token in a remote URL, never diagnose access by looking for auth (you will correctly find none).
+4. One workspace per job: clone into the `workdir` start_job gives you and never work outside it. Git over https:// just works there — Talaria injects the credential at git time. If you must use an existing checkout, its origin has to be `https://github.com/<owner>/<repo>.git`; the helper reads that origin when git omits the path. A decline that says `no credential for github.com` with no repo after it means git did not name a repository — fix the origin. Do not run `git credential fill`; it prints the token into your transcript. Never `gh`, never a token in a remote URL, never diagnose access by looking for auth (you will correctly find none).
 5. First turn: `jsonRun` (or `run`) with ONE scoped ask — a function, a failing test, "read src/foo.ts and propose the change". Not the whole ticket. cwd = workdir. Fill `<task>` yourself.
 6. Every later turn: `continueJsonRun` / `continueRun` (or another opencode `run` in the same workdir) against `sessionDir`. That is the conversation. Read the structured result, then steer: "the test failed on X, fix that path", "now add the error case", "git diff looks right, run the suite". If the answer surprises you, dig. Never `--no-session`. Never the TUI.
 7. Test UIs like a user, not a compiler: for anything with a front end, drive it in a real browser with Playwright (`npx playwright`) — load the page, click the flow, assert what a human would see, and screenshot the result as evidence for the ticket. A UI change without a browser check is unverified.

@@ -1998,6 +1998,99 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// AGENT CLEANUP RUNS AT THE STOP GATE, NOT FROM MEMORY.
+//
+// AGENTS.md tells a finished task to remove what it created. What makes that
+// true is the stop gate running scripts/cleanup-sweep.mjs --gate, and the
+// cleanup skill being the procedure the index points at. Delete the call, or
+// the skill, and the disk fills again while every other check stays green.
+{
+  const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
+  const found = []
+  const wired = [
+    ['scripts/hooks/stop-check.mjs', 'cleanup-sweep.mjs', 'the stop gate runs the sweep'],
+    ['scripts/hooks/stop-check.mjs', '--gate', 'the stop gate uses the non-surprise mode'],
+    ['scripts/cleanup-sweep.mjs', 'export const POLICY', 'the thresholds have one home'],
+    ['.claude/skills/cleanup/SKILL.md', 'Use when', 'the procedure carries its trigger'],
+    ['AGENTS.md', '.claude/skills/cleanup/SKILL.md', 'the invariant points at the skill'],
+  ]
+  for (const [file, needle, why] of wired) {
+    const text = read(file)
+    if (text === null) found.push({ path: file, line: 0, text: 'missing' })
+    else if (!text.includes(needle)) found.push({ path: file, line: 0, text: `no longer mentions \`${needle}\` — ${why}` })
+  }
+  if (found.length) {
+    failures.push({
+      id: 'cleanup-sweep-anchors',
+      what: 'the artifact sweep and the stop gate have drifted apart',
+      fix: [
+        'A finished dev task removes what it created. scripts/hooks/stop-check.mjs runs',
+        'scripts/cleanup-sweep.mjs --gate after bun run check, and exits 2 when disk use or',
+        'the removable set is over the line. The procedure is .claude/skills/cleanup/SKILL.md,',
+        'indexed from AGENTS.md. If one of them moved, update this check in the same commit —',
+        'an anchor that points at nothing passes while guarding nothing.',
+      ],
+      found,
+    })
+  }
+}
+
+// THE MANAGE-SECTION VIEW GRANTS, PINNED ACROSS THEIR THREE HOMES.
+//
+// GH #308 shipped exactly this way: /studio was added to nav.ts's
+// MANAGE_VIEWS (what Admin → People offers) but not to the TS server's
+// MANAGE_VIEW_ROUTES (the SPA's gate) nor the Rust const of the same name
+// (the api's authority) — a grant an admin could make that stopped working
+// at the door. No import reaches across any two of the three, so this is a
+// pin: read each list's own spelling and fail when one moves without the
+// others.
+{
+  const navSrc = readFileSync(join(ROOT, 'ui/src/lib/nav.ts'), 'utf8')
+  const navBlock = /export const MANAGE_VIEWS[^\n]*= \[([\s\S]*?)\n\]/.exec(navSrc)?.[1]
+  const navRoutes = [...(navBlock ?? '').matchAll(/to: '([^']+)'/g)].map((m) => m[1])
+  const usersSrc = readFileSync(join(ROOT, 'ui/src/server/users.ts'), 'utf8')
+  const tsBlock = /const MANAGE_VIEW_ROUTES = \[([^\]]*)\]/.exec(usersSrc)?.[1]
+  const tsRoutes = [...(tsBlock ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
+  const rustSrc = readFileSync(join(ROOT, 'api/crates/talaria-users/src/lib.rs'), 'utf8')
+  const rustBlock = /pub const MANAGE_VIEW_ROUTES: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(rustSrc)?.[1]
+  const rustRoutes = [...(rustBlock ?? '').matchAll(/"([^"]+)"/g)].map((m) => m[1])
+
+  const homes = [
+    ["ui/src/lib/nav.ts MANAGE_VIEWS (the UI's offer list)", navRoutes],
+    ["ui/src/server/users.ts MANAGE_VIEW_ROUTES (the TS gate's mirror)", tsRoutes],
+    ["api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES (the api's authority)", rustRoutes],
+  ]
+  const canonical = navRoutes
+  const problems = []
+  if (!navRoutes.length) {
+    problems.push('  ui/src/lib/nav.ts: the MANAGE_VIEWS array was not found — this check now guards nothing')
+  }
+  for (const [where, routes] of homes.slice(1)) {
+    const missing = canonical.filter((r) => !routes.includes(r))
+    const extra = routes.filter((r) => !canonical.includes(r))
+    if (missing.length || extra.length || (!routes.length && canonical.length)) {
+      problems.push(
+        `  ${where}: says [${routes.join(', ') || '(not found)'}] — nav.ts says [${canonical.join(', ') || '(not found)'}]`,
+      )
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'manage-view-route-drift',
+      what: 'the manage-section view routes disagree between the UI list, the TS gate, and the Rust api',
+      fix: [
+        'Add or remove the route in ALL THREE places — ui/src/lib/nav.ts MANAGE_VIEWS is the',
+        "UI's offer list, ui/src/server/users.ts MANAGE_VIEW_ROUTES the TS gate's mirror, and",
+        "api/crates/talaria-users/src/lib.rs MANAGE_VIEW_ROUTES the api's authority (bump its",
+        '[&str; N] to match). A view on one list but not the others is a grant that cannot be',
+        'offered, or one that stops working at the door.',
+        ...problems,
+      ],
+      found: [],
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

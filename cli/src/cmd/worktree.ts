@@ -151,7 +151,8 @@ Worktree "${name}" ready — fully isolated from main.
 
   Tear down when done:
     docker compose -p ${project} down -v
-    git worktree remove ${wt} && git branch -D wt/${name}
+    git worktree remove --force ${wt} && git branch -D wt/${name}
+  Or later, from the primary checkout:  bun talaria cleanup
 `)
   return 0
 }

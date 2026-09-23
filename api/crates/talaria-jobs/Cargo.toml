@@ -21,6 +21,7 @@ talaria-attribution = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-inbox-focus = { workspace = true }
 talaria-tasks = { workspace = true }
+talaria-tasks-types = { workspace = true }
 talaria-workchains = { workspace = true }
 talaria-kb = { workspace = true }
 talaria-kb-perms = { workspace = true }

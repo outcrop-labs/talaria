@@ -186,7 +186,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`docs/DESKTOP.md`](./docs/DESKTOP.md) | Talaria Desktop: the Tauri shell — multitenant webviews, isolation model, security posture, the box-builds/host-runs dev split |
 | [`scripts/skills/`](./scripts/skills) | The repo's agent skills: subagent-driven development (2-stage review), the talaria toolkit playbook, workbench driving |
 | [`AGENTS.md`](./AGENTS.md) | Agent instructions — the canonical file for anyone (or anything) coding here: rules, commands, environment facts, traps; `CLAUDE.md` forwards to it |
-| [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, judge-pr, cut-release — plain markdown, natively discovered by Claude Code and opencode. `judge-pr` carries the reviewing half of the pull-request standards (`scripts/judge-pr.mjs` is the mechanical half) |
+| [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, judge-pr, cut-release, cleanup — plain markdown, natively discovered by Claude Code and opencode. `judge-pr` carries the reviewing half of the pull-request standards (`scripts/judge-pr.mjs` is the mechanical half); `cleanup` is what a finished dev task removes |
 | [`scripts/hooks/`](./scripts/hooks) | The gate-hook library: one contract (silent pass / exit-2 block with reason) any harness, git hook, or CI can invoke |
 
 ### For people who use Talaria, not run it

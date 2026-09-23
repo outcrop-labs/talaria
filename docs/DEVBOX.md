@@ -221,7 +221,10 @@ with no prompt, run it from a TTY.
 
 `bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
-box that can't be recreated.
+box that can't be recreated. A box left behind is the sweep's business too:
+[`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
+untouched for a week, and `--apply` removes it only when the clone is clean and
+pushed. The shared tools layer (`../devboxes/shared`) is a cache — it stays.
 
 ## Troubleshooting
 
