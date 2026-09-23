@@ -82,7 +82,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_gap.rs`](../../api/cr
 | `kind` | `string(2, 80)` |  |
 | `missing` | `string(5, 300)` |  |
 | `needs` | `string?(5000)` |  |
-| `taskId` | `uuid?` |  |
+| `taskId` | `string?(200)` |  |
 
 ## `/api/agent/message-user`
 
@@ -125,7 +125,7 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../ap
 | `summary` | `string(5, 300)` |  |
 | `details` | `string?(20000)` |  |
 | `context` | `string?(500)` | what the agent was trying to do |
-| `taskId` | `uuid?` | the ticket the agent was working when it broke |
+| `taskId` | `string?(200)` | the ticket the agent was working when it broke |
 
 ## `/api/agent/whoami`
 

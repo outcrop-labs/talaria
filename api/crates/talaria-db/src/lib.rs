@@ -11,12 +11,17 @@ use std::str::FromStr;
 use std::time::Duration;
 use talaria_config::Config;
 
-/// Pool ceiling when the env is silent. Each instance's postgres sidecar
-/// ships default `max_connections = 100`; this pool at 40 plus the UI's 20
-/// plus its one-shot migration connection lands ≈ 61 of 100. The inherited
-/// TS ceiling was 10, which agent-fleet load queued into acquire timeouts —
-/// the pool, not any rate limiter, is what throttled the fleet.
-pub const DEFAULT_PG_POOL_MAX: u32 = 40;
+/// Pool ceiling when the env is silent. The sidecar starts postgres with
+/// `max_connections=200` (a restart applies it; the image default is 100).
+/// This pool at 64 plus the UI's 20 plus the one-shot migration connection
+/// is 85 — under the old 100 as well, including the 3 superuser-reserved
+/// slots, so an API restart that lands before the postgres restart still
+/// fits. A 16-core fleet that needs more sets `TALARIA_PG_POOL_MAX` (clamp
+/// 1–200) after postgres is at 200, leaving the UI's 20 and a reserve.
+/// The inherited TS ceiling was 10, which agent-fleet load queued into
+/// acquire timeouts — the pool, not any rate limiter, is what throttles
+/// the fleet.
+pub const DEFAULT_PG_POOL_MAX: u32 = 64;
 
 /// A raw value parsed with a fallback — absent, empty, or garbage keeps the
 /// default, so a typo'd env never takes the process down.
@@ -94,8 +99,9 @@ mod tests {
 
     #[test]
     fn the_ceiling_clamps_into_postgres_scale() {
-        // 0 or a negative selection would refuse every acquire; 200 already
-        // overruns a default postgres — both clamp to something servable.
+        // 0 would refuse every acquire. 200 is the sidecar's max_connections;
+        // a pool at the clamp plus the UI's 20 overruns it, which is why the
+        // default stays well under both.
         assert_eq!("0".parse::<u32>().unwrap().clamp(1, 200), 1);
         assert_eq!("9999".parse::<u32>().unwrap().clamp(1, 200), 200);
     }
