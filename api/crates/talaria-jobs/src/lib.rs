@@ -126,6 +126,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    let spend_state = state.clone();
+    let _ = talaria_price_oracle::LOAD_SPEND_KEYS.set(std::sync::Arc::new(move || {
+        let state = spend_state.clone();
+        Box::pin(async move { talaria_price_oracle::keys_for(&state).await })
+    }));
     // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
     // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
     // `real_run_deps` — the same assembly agent-hire calls directly) both
