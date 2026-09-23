@@ -62,9 +62,9 @@ a link that opens it beside the conversation.
 Every claim in a report carries a `[n]` marker tied to the **Sources** list at the end;
 sources that were consulted but not cited say so. A run that finds nothing citable retries
 the search on its own and, if the web truly has nothing, ends loudly with a sentence in
-the error — it never hands you an invented citation. Research without live search answers
-from memory — and the citations come out invented — so an admin needs to have search
-configured (you'll see the warning in Models if it isn't).
+the error — it never hands you an invented citation. A model that cannot browse on its own is
+fine when a web-search tool can fetch (the harness and Hermes both supply one). The warning
+in Models appears when no such tool is available, not because the model lacks a built-in browser.
 
 ## What happens to the report
 
