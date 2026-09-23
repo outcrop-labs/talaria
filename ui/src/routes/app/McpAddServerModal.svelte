@@ -64,8 +64,8 @@
 <Modal open {onClose} title="Custom MCP server">
   <div class="space-y-4">
     <div>
-      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-      <Input autofocus value={label} oninput={(e) => setLabelAndSlug(e.currentTarget.value)} onkeydown={onEnter} placeholder="GitHub" />
+      <label for="mcp-server-name" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
+      <Input id="mcp-server-name" autofocus value={label} oninput={(e) => setLabelAndSlug(e.currentTarget.value)} onkeydown={onEnter} placeholder="GitHub" />
       {#if name}
         <div class="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-muted">
           agents will know it as
@@ -82,18 +82,18 @@
       {/if}
     </div>
     <div>
-      <label class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+      <label for="mcp-server-url" class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         Server URL
         <InfoTip text="The MCP endpoint (streamable HTTP). Agents never see this address; they go through Talaria's gateway, which enforces the access rules you set here." />
       </label>
-      <Input bind:value={url} onkeydown={onEnter} placeholder="https://mcp.example.com/mcp" />
+      <Input id="mcp-server-url" bind:value={url} onkeydown={onEnter} placeholder="https://mcp.example.com/mcp" />
     </div>
     <div>
-      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</label>
-      <Input bind:value={description} onkeydown={onEnter} placeholder="What agents get from it (shown in pickers)" />
+      <label for="mcp-server-desc" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</label>
+      <Input id="mcp-server-desc" bind:value={description} onkeydown={onEnter} placeholder="What agents get from it (shown in pickers)" />
     </div>
     <div>
-      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Authentication</label>
+      <span class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Authentication</span>
       <Combobox
         options={[
           { value: 'org', label: 'Org account', sub: 'one shared credential for every agent' },
@@ -107,23 +107,23 @@
     {#if authMode === 'org'}
       <div class="grid grid-cols-[10rem_1fr] gap-2">
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Auth header</label>
-          <Input bind:value={headerKey} onkeydown={onEnter} placeholder="Authorization" />
+          <label for="mcp-auth-header" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Auth header</label>
+          <Input id="mcp-auth-header" bind:value={headerKey} onkeydown={onEnter} placeholder="Authorization" />
         </div>
         <div>
-          <label class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+          <label for="mcp-auth-value" class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
             Value
             <InfoTip text="Stored on the server row and spoken only by the gateway; never rendered into an agent config, never echoed back to this UI." />
           </label>
-          <Input type="password" bind:value={headerVal} onkeydown={onEnter} placeholder="Bearer …" autocomplete="off" />
+          <Input id="mcp-auth-value" type="password" bind:value={headerVal} onkeydown={onEnter} placeholder="Bearer …" autocomplete="off" />
         </div>
       </div>
     {/if}
     <details>
       <summary class="cursor-pointer font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors hover:text-muted">Advanced</summary>
       <div class="mt-2">
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Timeout (seconds)</label>
-        <Input value={timeoutSecs} oninput={(e) => (timeoutSecs = e.currentTarget.value.replace(/[^0-9]/g, ''))} placeholder="120" class="w-32" />
+        <label for="mcp-timeout" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Timeout (seconds)</label>
+        <Input id="mcp-timeout" value={timeoutSecs} oninput={(e) => (timeoutSecs = e.currentTarget.value.replace(/[^0-9]/g, ''))} placeholder="120" class="w-32" />
       </div>
     </details>
     {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}

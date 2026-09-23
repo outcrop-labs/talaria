@@ -278,22 +278,22 @@
     <div class="space-y-5">
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-          <Input value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
+          <label for="cam-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
+          <Input id="cam-name" value={displayName} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
         </div>
         <div>
-          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
-          <Input bind:value={slug} placeholder="analyst" />
+          <label for="cam-handle" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
+          <Input id="cam-handle" bind:value={slug} placeholder="analyst" />
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
-          <Input bind:value={role} placeholder="Research Analyst" />
+          <label for="cam-role" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
+          <Input id="cam-role" bind:value={role} placeholder="Research Analyst" />
         </div>
         <div>
-          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-          <Input bind:value={department} placeholder="research" />
+          <label for="cam-department" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
+          <Input id="cam-department" bind:value={department} placeholder="research" />
         </div>
       </div>
       <p class="-mt-2 font-sans text-xs text-muted">
@@ -302,10 +302,10 @@
       </p>
 
       <div>
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+        <label for="cam-template" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
           Chassis template <span class="normal-case">(model tiers, tools, and plugins carry over)</span>
         </label>
-        <Select bind:value={templateId} class="w-full">
+        <Select id="cam-template" bind:value={templateId} class="w-full">
           <option value="">Platform defaults: chassis + first local model</option>
           {#each templates as t (t.id)}
             <option value={t.id}>{t.displayName} · {t.department} (v{t.currentVersion})</option>
@@ -314,7 +314,7 @@
       </div>
 
       <div>
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</label>
+        <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</span>
         {#if soul.trim()}
           <!-- Rich like the post-creation soul editor; autosave keeps `soul`
                fresh for create + refine, reseeded whenever muse redrafts. -->
@@ -330,7 +330,7 @@
 
       {#if skills.length > 0}
         <div in:fade={{ duration: 150 }}>
-          <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</label>
+          <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</span>
           <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
             {#each skills as s (s.name)}
               <SkillPreviewRow skill={s} onRemove={() => (skills = skills.filter((x) => x.name !== s.name))} />

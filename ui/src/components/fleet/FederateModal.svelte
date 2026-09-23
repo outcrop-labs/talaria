@@ -87,8 +87,9 @@
               again. Agents whose handle already exists are skipped.
             </p>
             <div>
-              <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
+              <label for="federate-dir" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Directory on server</label>
               <Input
+                id="federate-dir"
                 bind:value={dir}
                 onkeydown={submitOnEnter(() => {
                   if (!busy && dir.trim()) void federate()

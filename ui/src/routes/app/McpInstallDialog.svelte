@@ -109,11 +109,12 @@
         <div class="mt-3 space-y-3">
           {#each fields as f (f.key)}
             <div>
-              <label class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              <label for={`install-${f.key}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
                 {f.label}
                 {#if f.isRequired}<span class="text-accent">*</span>{/if}
               </label>
               <Input
+                id={`install-${f.key}`}
                 type={f.isSecret ? 'password' : 'text'}
                 value={values[f.key] ?? ''}
                 oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
@@ -129,11 +130,12 @@
         <div class="mt-3 space-y-3">
           {#each argFields as f (f.index)}
             <div>
-              <label class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              <label for={`install-arg-${f.index}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
                 {f.name}
                 <span class="text-accent">*</span>
               </label>
               <Input
+                id={`install-arg-${f.index}`}
                 value={argValues[f.index] ?? ''}
                 oninput={(e) => (argValues = { ...argValues, [f.index]: e.currentTarget.value })}
                 placeholder={f.placeholder ?? ''}
@@ -166,13 +168,13 @@
         <div class="mt-3 space-y-3">
           {#each fields as f (f.key)}
             <div>
-              <label class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              <label for={`install-${f.key}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
                 {f.label}
                 {#if f.isRequired}<span class="text-accent">*</span>{/if}
                 {#if f.header !== f.label}<span class="normal-case text-ink-dim/70">→ {f.header}</span>{/if}
               </label>
               {#if f.choices?.length}
-                <Select size="sm" value={values[f.key] ?? ''} onchange={(e) => (values = { ...values, [f.key]: e.currentTarget.value })} class="w-full">
+                <Select id={`install-${f.key}`} size="sm" value={values[f.key] ?? ''} onchange={(e) => (values = { ...values, [f.key]: e.currentTarget.value })} class="w-full">
                   <option value="">Pick one</option>
                   {#each f.choices as c (c)}
                     <option value={c}>
@@ -182,6 +184,7 @@
                 </Select>
               {:else}
                 <Input
+                  id={`install-${f.key}`}
                   type={f.isSecret ? 'password' : 'text'}
                   value={values[f.key] ?? ''}
                   oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}

@@ -62,15 +62,15 @@
   {:else}
     <div class="space-y-3">
       <div>
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Title</label>
-        <Input size="sm" autofocus bind:value={title} />
+        <label for="save-title" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Title</label>
+        <Input id="save-title" size="sm" autofocus bind:value={title} />
       </div>
       <div>
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Folder</label>
+        <label for="save-folder" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Folder</label>
         {#if folders.pending}
           <Skeleton class="h-9 w-full" />
         {:else}
-          <Select size="sm" bind:value={folderId} class="w-full">
+          <Select id="save-folder" size="sm" bind:value={folderId} class="w-full">
             <option value="">No folder (root)</option>
             {#each folders.rows as f (f.id)}
               <option value={f.id}>{f.name}</option>

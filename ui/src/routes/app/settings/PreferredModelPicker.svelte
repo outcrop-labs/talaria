@@ -79,7 +79,7 @@
 </script>
 
 <div class="mt-5 border-t border-line-subtle pt-4">
-  <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Preferred model</label>
+  <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Preferred model</span>
   {#if catalogLoading || prefsLoading}
     <!-- Mounting the combobox before both queries land makes its value flip
          from Default to the saved pick — hold with a select-shaped shimmer. -->
@@ -120,7 +120,7 @@
          model with no effort setting, and rendering one would promise the
          requests something they cannot carry. -->
     <div class="mt-4">
-      <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Default reasoning effort</label>
+      <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Default reasoning effort</span>
       <ComposerPicker
         chipVariant="primary"
         value={effectiveEffort}
