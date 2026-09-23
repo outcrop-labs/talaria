@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-15 routes.
+19 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -19,9 +19,9 @@
 | [`/api/boards/{id}/agent-requests`](#apiboardsidagent-requests) | POST | `dual` |
 | [`/api/boards/{id}/agent-requests`](#apiboardsidagent-requests) | PUT | `dual` |
 | [`/api/boards/{id}/agents`](#apiboardsidagents) | GET | `session` |
-| [`/api/boards/{id}/agents`](#apiboardsidagents) | POST | `agent` |
 | [`/api/boards/{id}/agents`](#apiboardsidagents) | PUT | `dual` |
-| [`/api/boards/{id}/agents`](#apiboardsidagents) | DELETE | `agent` |
+| [`/api/boards/{id}/agents/self`](#apiboardsidagentsself) | POST | `agent` |
+| [`/api/boards/{id}/agents/self`](#apiboardsidagentsself) | DELETE | `agent` |
 | [`/api/boards/{id}/events`](#apiboardsidevents) | GET | `session` |
 | [`/api/boards/{id}/labels`](#apiboardsidlabels) | GET | `session` |
 | [`/api/boards/{id}/labels`](#apiboardsidlabels) | POST | `session` |
@@ -47,8 +47,10 @@
 | [`/api/boards/{id}/workchains`](#apiboardsidworkchains) | POST | `session` |
 | [`/api/workchains/{id}`](#apiworkchainsid) | PATCH | `session` |
 | [`/api/workchains/{id}`](#apiworkchainsid) | DELETE | `session` |
+| [`/api/workchains/{id}/edges`](#apiworkchainsidedges) | POST | `session` |
+| [`/api/workchains/{id}/edges/{fromTaskId}/{toTaskId}`](#apiworkchainsidedgesfromtaskidtotaskid) | DELETE | `session` |
 | [`/api/workchains/{id}/steps`](#apiworkchainsidsteps) | POST | `session` |
-| [`/api/workchains/{id}/steps`](#apiworkchainsidsteps) | DELETE | `session` |
+| [`/api/workchains/{id}/steps/{taskId}`](#apiworkchainsidstepstaskid) | DELETE | `session` |
 
 ## `/api/boards`
 
@@ -141,9 +143,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs`](../.
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 403 | — |
-| POST | `agent` | — | `…` | 200, 403, 404 | audit |
 | PUT | `dual` | [body](#put-apiboardsidagents-body) | `{allowAll, models}` | 200, 400, 401, 403 | audit |
-| DELETE | `agent` | — | `…` | 200, 403, 404 | audit |
 
 ### PUT `/api/boards/{id}/agents` body
 
@@ -153,6 +153,21 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs`](../.
 | `models` | `string[]?(0, 200, 100)` |  |
 | `add` | `string[]?(0, 200, 100)` |  |
 | `remove` | `string[]?(0, 200, 100)` |  |
+
+## `/api/boards/{id}/agents/self`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_agents.rs)
+
+> /api/boards/{id}/agents. GET → { allowAll, models }. PUT → set the board's
+> agent policy (owner/editor,
+> or a personal assistant acting as its owner): either the full { allowAll,
+> models } shape, or incremental { add, remove } merged onto the current list
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `…` | 200, 403, 404 | audit |
+| DELETE | `agent` | — | `…` | 200, 403, 404 | audit |
 
 ## `/api/boards/{id}/events`
 
@@ -431,6 +446,41 @@ Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../
 | `name` | `string?(120)` |  |
 | `paused` | `bool?` |  |
 
+## `/api/workchains/{id}/edges`
+
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiworkchainsidedges-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/workchains/{id}/edges` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `fromTaskId` | `uuid` |  |
+| `toTaskId` | `uuid` |  |
+
+## `/api/workchains/{id}/edges/{fromTaskId}/{toTaskId}`
+
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| DELETE | `session` | — | `{ok}` | 200, 403 | — |
+
 ## `/api/workchains/{id}/steps`
 
 Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
@@ -444,7 +494,6 @@ Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `session` | [body](#post-apiworkchainsidsteps-body) | `{ok}` | 200, 400, 403, 409 | — |
-| DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
 ### POST `/api/workchains/{id}/steps` body
 
@@ -452,4 +501,18 @@ Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../
 | :--- | :--- | :--- |
 | `taskId` | `uuid` |  |
 | `after` | `uuid?` |  |
+
+## `/api/workchains/{id}/steps/{taskId}`
+
+Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../../api/crates/talaria-routes-boards/src/workchains/workchains_id.rs)
+
+> /api/workchains/{id}. PATCH { name?, paused?, positions? } → rename,
+> pause/unpause, reorder steps. DELETE → remove the chain (its tickets are
+> untouched — the cascade fires the step rows, never the tasks; deleting a
+> chain unlinks, it does not delete work).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
