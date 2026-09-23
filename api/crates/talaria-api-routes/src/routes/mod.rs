@@ -456,7 +456,8 @@ pub fn router(state: AppState) -> Router {
             "/api/conversations/{id}",
             get(talaria_routes_comms::comms::conversations_id::get)
                 .patch(talaria_routes_comms::comms::conversations_id::patch)
-                .fallback(|| async { method_not_allowed("GET, PATCH") }),
+                .delete(talaria_routes_comms::comms::conversations_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
         )
         .route(
             "/api/conversations/{id}/read",
@@ -722,8 +723,9 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/research/{id}",
             get(talaria_routes_workbench::research::research_id::get)
+                .patch(talaria_routes_workbench::research::research_id::patch)
                 .delete(talaria_routes_workbench::research::research_id::delete)
-                .fallback(|| async { method_not_allowed("GET, DELETE") }),
+                .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
         )
         .route(
             "/api/research/{id}/members",

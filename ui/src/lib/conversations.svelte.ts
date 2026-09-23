@@ -1,6 +1,7 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { delJson, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
+import { delJson, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { confirm, prompt } from '@/components/ui/confirm.svelte'
 import { toastError } from '@/lib/toast.svelte'
 import type { ToolCall } from '@/lib/sse-parse'
 import type { ChatChip } from '@/lib/chips'
@@ -120,18 +121,86 @@ export const markConversationRead = async (
     seq === undefined ? {} : { seq },
   )
 
-export function useConversations(kind: MaybeGetter<'chat' | 'plan'> = 'chat') {
+export function useConversations(
+  kind: MaybeGetter<'chat' | 'plan'> = 'chat',
+  archived: MaybeGetter<boolean> = false,
+) {
   return createQuery(() => {
     const k = resolve(kind)
+    const arch = resolve(archived)
     return {
-      queryKey: ['conversations', k],
-      queryFn: (): Promise<Conversation[]> => getList<Conversation>(`/api/conversations?kind=${k}`, 'conversations'),
+      queryKey: ['conversations', k, arch ? 'archived' : 'live'],
+      queryFn: (): Promise<Conversation[]> =>
+        getList<Conversation>(`/api/conversations?kind=${k}${arch ? '&archived=1' : ''}`, 'conversations'),
       // While any thread has a reply in flight, keep the list fresh so the
       // "working" indicator (and the reply's completion) show up on their own.
       refetchInterval: (q: { state: { data?: Conversation[] } }) =>
         q.state.data?.some((c) => c.working) ? 4_000 : false,
     }
   })
+}
+
+
+/** Rename, the same PATCH the Comms rail already sends. Unchanged text is
+ *  not a write. Returns whether the row moved. */
+export async function renameConversation(id: string, current: string | null): Promise<boolean> {
+  const name = await prompt({
+    title: 'Rename plan',
+    defaultValue: current ?? '',
+    placeholder: 'Plan name',
+    confirmLabel: 'Rename',
+  })
+  const next = name?.trim()
+  if (!next || next === (current ?? '').trim()) return false
+  try {
+    await patchJson(`/api/conversations/${id}`, { title: next })
+    return true
+  } catch (e) {
+    toastError('Rename failed', e)
+    return false
+  }
+}
+
+/** Hide the plan. Reversible — the rail's Archived section is the way back. */
+export async function archiveConversation(id: string): Promise<boolean> {
+  try {
+    await delJson(`/api/conversations/${id}`)
+    return true
+  } catch (e) {
+    toastError('Could not archive', e)
+    return false
+  }
+}
+
+export async function restoreConversation(id: string): Promise<boolean> {
+  try {
+    await patchJson(`/api/conversations/${id}`, { archived: false })
+    return true
+  } catch (e) {
+    toastError('Could not restore', e)
+    return false
+  }
+}
+
+/** Hard delete. The living document, if the plan grew one, stays in Artifacts. */
+export async function deleteConversation(id: string, title: string | null): Promise<boolean> {
+  const name = title?.trim() || 'Untitled plan'
+  if (
+    !(await confirm({
+      title: 'Delete plan',
+      message: `Delete "${name}"? The conversation goes away. The living document, if any, stays in Artifacts.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    }))
+  )
+    return false
+  try {
+    await delJson(`/api/conversations/${id}?hard=1`)
+    return true
+  } catch (e) {
+    toastError('Could not delete', e)
+    return false
+  }
 }
 
 // NOT a query function — chat-view drives it imperatively from effects and

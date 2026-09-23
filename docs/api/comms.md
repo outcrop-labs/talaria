@@ -40,6 +40,7 @@
 | [`/api/conversations`](#apiconversations) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | PATCH | `session` |
+| [`/api/conversations/{id}`](#apiconversationsid) | DELETE | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
@@ -376,6 +377,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations.rs`](../../api
 
 > /api/conversations. GET
 > ?kind=plan → the user's plan conversations; anything else → their chats.
+> ?archived=1 → the retired set (exact string '1'); everything else is live.
 > Newest activity first; the client groups them by agent.
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -395,13 +397,15 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id.rs`](../../
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 404 | — |
-| PATCH | `session` | [body](#patch-apiconversationsid-body) | `…` | 200, 400, 404 | — |
+| PATCH | `session` | [body](#patch-apiconversationsid-body) | `…` | 200, 400, 403, 404 | — |
+| DELETE | `session` | — | `…` | 200, 403, 404 | — |
 
 ### PATCH `/api/conversations/{id}` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `title` | `string trimmed(1, 120)` |  |
+| `archived` | `bool?` |  |
 
 ## `/api/conversations/{id}/read`
 

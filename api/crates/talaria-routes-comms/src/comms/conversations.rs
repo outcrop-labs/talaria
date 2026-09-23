@@ -1,5 +1,6 @@
 // /api/conversations. GET
 // ?kind=plan → the user's plan conversations; anything else → their chats.
+// ?archived=1 → the retired set (exact string '1'); everything else is live.
 // Newest activity first; the client groups them by agent.
 
 use axum::Json;
@@ -32,14 +33,27 @@ pub async fn get(
         })
         .unwrap_or_default();
     let kind = if kind == "plan" { "plan" } else { "chat" };
-    Ok(match list_conversations(&state.pg, &user.id, kind).await {
-        Ok(rows) => (
-            StatusCode::OK,
-            Json(ConversationsEnvelope {
-                conversations: rows,
-            }),
-        )
-            .into_response(),
-        Err(e) => internal("[conversations] list failed", e),
-    })
+    // ?archived=1 — the exact string '1' — asks for the retired rows;
+    // everything else sees the live ones. Same spelling as /api/boards.
+    let archived = uri
+        .query()
+        .and_then(|q| {
+            url::form_urlencoded::parse(q.as_bytes())
+                .find(|(key, _)| key == "archived")
+                .map(|(_, v)| v.into_owned())
+        })
+        .as_deref()
+        == Some("1");
+    Ok(
+        match list_conversations(&state.pg, &user.id, kind, archived).await {
+            Ok(rows) => (
+                StatusCode::OK,
+                Json(ConversationsEnvelope {
+                    conversations: rows,
+                }),
+            )
+                .into_response(),
+            Err(e) => internal("[conversations] list failed", e),
+        },
+    )
 }
