@@ -6323,6 +6323,7 @@ dependencies = [
  "talaria-audit",
  "talaria-auth-config",
  "talaria-body",
+ "talaria-capability-reach",
  "talaria-config",
  "talaria-effort-prefs",
  "talaria-email",

@@ -49,3 +49,4 @@ sha2 = { workspace = true }
 getrandom = { workspace = true }
 talaria-api-facades = { workspace = true }
 talaria-routes-integrations = { workspace = true }
+talaria-capability-reach = { workspace = true }

@@ -23,6 +23,7 @@ import {
   estimateSentence,
   reasonOf,
   rowSummary,
+  suppliedSearchNote,
   tagTitle,
   usd,
   usdRate,
@@ -429,6 +430,13 @@ describe('a capability the DEPLOYMENT supplies', () => {
     expect(t).toContain('cannot')
   })
 
+  it('says a harness tool can fetch when the model cannot browse', () => {
+    const line = suppliedSearchNote(row([view({ cap: 'search', state: 'supplied', via: { server: 'talaria', tool: 'web_search' } })]))
+    expect(line).toContain('cannot browse on its own')
+    expect(line).toContain('talaria.web_search')
+    expect(line).not.toMatch(/invented/i)
+    expect(suppliedSearchNote(row([view({ state: 'no', source: 'probe', at: 'now' })]))).toBeNull()
+  })
   it('still reads as a capability the install HAS', () => {
     const t = tagTitle(view({ cap: 'vision', state: 'supplied', via: { server: 'talaria', tool: 'describe_image' } }))
     expect(t).toContain('this deployment can')

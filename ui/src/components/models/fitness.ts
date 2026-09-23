@@ -391,10 +391,13 @@ export interface AssignmentNotice {
 /** What to say under a slot whose assigned model tested badly for it.
  *
  *  Two independent sources, and they are kept apart on purpose. `capabilityNote`
- *  is `roleAssignmentIssues` on the server — a capability recorded FALSE, which
- *  is a fact about the MODEL. The band is a fact about the RUN. A model can be
- *  unfit for either reason and the sentence should say which; when both fire,
- *  the capability is the more actionable and goes first. */
+ *  is the role-assignment issue — a gap the RUN cannot close. For search that
+ *  is "no web-search tool is available here", not "the model has no browser":
+ *  a harness tool that fetches means there is no issue, and the capability
+ *  chip still shows the model cannot browse on its own. The band is a fact
+ *  about the last run. A model can be unfit for either reason and the
+ *  sentence should say which; when both fire, the capability note is the
+ *  more actionable and goes first. */
 export function assignmentNotice(args: {
   entry: FitnessIndexEntry | undefined
   slotKey: string
@@ -410,6 +413,16 @@ export function assignmentNotice(args: {
       ? `${reason} You can still assign it; this is what the last test found, not a rule.`
       : 'This model tested Not a fit for this slot. You can still assign it; this is what the last test found, not a rule.',
   }
+}
+
+/** The mixed case, said in the slot rather than only on the chip hover.
+ *  The model cannot browse; a harness tool can fetch. Not a warning — the
+ *  assignment works here, and would not on an install without that tool. */
+export function suppliedSearchNote(row: ModelRow | undefined): string | null {
+  const view = row?.capabilities.find((c) => c.cap === 'search' && c.state === 'supplied')
+  if (!view) return null
+  const via = view.via ? `${view.via.server}.${view.via.tool}` : 'a harness web-search tool'
+  return `This model cannot browse on its own, but ${via} can fetch. Research runs use that tool; citations come from what it returns, not from the model's memory.`
 }
 
 // ── Case categories ──────────────────────────────────────────────────────────
