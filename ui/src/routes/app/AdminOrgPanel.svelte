@@ -71,12 +71,13 @@
          and rolled the whole fleet onto them. -->
     <div class="space-y-3">
       <div>
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Business name</label>
-        <Input size="sm" value={nameVal} oninput={(e) => (name = e.currentTarget.value)} placeholder="e.g. Outcrop Labs" class="max-w-xs" />
+        <label for="org-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Business name</label>
+        <Input id="org-name" size="sm" value={nameVal} oninput={(e) => (name = e.currentTarget.value)} placeholder="e.g. Outcrop Labs" class="max-w-xs" />
       </div>
       <div>
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What the business does</label>
+        <label for="org-about" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">What the business does</label>
         <Textarea
+          id="org-about"
           rows={2}
           value={aboutVal}
           oninput={(e) => (about = e.currentTarget.value)}

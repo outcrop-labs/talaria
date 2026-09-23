@@ -236,12 +236,13 @@
       <!-- Credentials -->
       <div class="space-y-2">
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
-          <Input size="sm" bind:value={clientId} placeholder="1234567890-abc.apps.googleusercontent.com" class="w-full" />
+          <label for="google-client-id" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
+          <Input id="google-client-id" size="sm" bind:value={clientId} placeholder="1234567890-abc.apps.googleusercontent.com" class="w-full" />
         </div>
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
+          <label for="google-client-secret" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
           <Input
+            id="google-client-secret"
             size="sm"
             type="password"
             bind:value={secret}
@@ -251,8 +252,8 @@
           />
         </div>
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Domain</label>
-          <Input size="sm" bind:value={hd} placeholder="yourcompany.com (optional)" class="w-full" />
+          <label for="google-client-domain" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Domain</label>
+          <Input id="google-client-domain" size="sm" bind:value={hd} placeholder="yourcompany.com (optional)" class="w-full" />
           <InfoTip text="Restricts connect + login to Google accounts on this Workspace domain. Leave blank to allow any Google account." />
         </div>
       </div>

@@ -128,7 +128,7 @@
       <!-- Connect controls — minimal; the guide holds the walkthrough -->
       <div class="space-y-2 rounded-md border border-line bg-raised/40 px-4 py-3">
         <div class="flex items-center gap-3">
-          <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Method</label>
+          <span class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Method</span>
           <Segmented
             options={[
               { id: 'app', label: 'GitHub App' },
@@ -148,14 +148,14 @@
         <div in:fly={{ y: 6, duration: 200 }} class="space-y-2">
         {#if effMode !== 'pat'}
           <div class="flex items-center gap-3">
-            <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">App ID</label>
-            <Input size="sm" bind:value={appId} placeholder={status?.app.appId || 'e.g. 1234567'} class="w-40" />
-            <label class="ml-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key</label>
+            <label for="gh-app-id" class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">App ID</label>
+            <Input id="gh-app-id" size="sm" bind:value={appId} placeholder={status?.app.appId || 'e.g. 1234567'} class="w-40" />
+            <label for="gh-key" class="ml-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Key</label>
             <!-- A TEXTAREA, not a password input: the HTML value sanitizer
                  strips line breaks from single-line inputs on paste, and a
                  .pem pasted as one line is a key nothing can parse. Multi-line
                  paste must survive verbatim. -->
-            <Textarea rows={2} bind:value={privateKey} placeholder={status?.app.keySet ? 'set (paste .pem to replace)' : 'paste the whole .pem'} class="min-w-0 flex-1 font-mono text-xs" />
+            <Textarea id="gh-key" rows={2} bind:value={privateKey} placeholder={status?.app.keySet ? 'set (paste .pem to replace)' : 'paste the whole .pem'} class="min-w-0 flex-1 font-mono text-xs" />
             <Button
               size="sm"
               disabled={busy || (!appId.trim() && !privateKey.trim())}
@@ -169,7 +169,7 @@
             </Button>
           </div>
           <div class="flex items-start gap-3">
-            <label class="w-20 shrink-0 pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Installed on</label>
+            <span class="w-20 shrink-0 pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Installed on</span>
             <div class="flex flex-wrap items-center gap-1.5">
               {#each installations as i (i.id)}
                 {@const selected = (status?.app.installationIds ?? []).includes(String(i.id))}
@@ -211,8 +211,8 @@
           </div>
         {:else}
           <div class="flex items-center gap-3">
-            <label class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Token</label>
-            <Input size="sm" type="password" bind:value={pat} placeholder={status?.patSet ? '••••••••  set (paste to replace)' : 'github_pat_…'} class="min-w-0 flex-1" />
+            <label for="gh-token" class="w-20 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Token</label>
+            <Input id="gh-token" size="sm" type="password" bind:value={pat} placeholder={status?.patSet ? '••••••••  set (paste to replace)' : 'github_pat_…'} class="min-w-0 flex-1" />
             <Button size="sm" disabled={!pat.trim() || busy} onclick={() => void save({ mode: 'pat', pat: { token: pat.trim() } }).then(() => (pat = ''))}>
               Connect
             </Button>
