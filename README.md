@@ -7,7 +7,6 @@
 **The operations platform for companies that run on people *and* agents.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Status](https://img.shields.io/badge/status-early%20development-orange.svg)](./ROADMAP.md)
 [![Self-hostable](https://img.shields.io/badge/self--host-free%20forever-brightgreen.svg)](#quick-start)
 
 **[Join the cloud waitlist](https://talariaworks.ai/#waitlist)** · [What's inside](#one-room) · [Quick start](#quick-start)
