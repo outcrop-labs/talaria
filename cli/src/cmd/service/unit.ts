@@ -10,6 +10,8 @@
 // Restart=on-failure only: systemd rejects Restart=always for a oneshot, and
 // the compose services' own restart policies cover the steady state.
 
+import { COMPOSE_BASE, composeFileArgs } from '../../compose'
+
 export type UnitOpts = { root: string; dockerBin: string; upArgs: string[]; composeFile?: string }
 
 export function unitText(o: UnitOpts): string {
@@ -17,8 +19,8 @@ export function unitText(o: UnitOpts): string {
   // precedence puts an explicit -f ABOVE the env, so honoring the env means
   // dropping the -f and carrying it as a unit Environment instead — the same
   // shape a shell export produces. Unset: byte-identical to the single-file
-  // unit the tests assert.
-  const fileArgs = o.composeFile ? [] : ['-f', 'docker/compose.yml']
+  // unit the tests assert. The `-f` half of that law is compose.ts's.
+  const fileArgs = composeFileArgs(o.composeFile, COMPOSE_BASE)
   const composeEnv = o.composeFile ? [`Environment=COMPOSE_FILE=${o.composeFile}`] : []
   const up = [o.dockerBin, 'compose', ...fileArgs, ...o.upArgs].join(' ')
   const down = [o.dockerBin, 'compose', ...fileArgs, 'down'].join(' ')

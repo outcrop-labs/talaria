@@ -8,16 +8,16 @@
   import QueryError from '@/components/ui/QueryError.svelte'
   import KanbanAddCard from './KanbanAddCard.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
-  import { useBoardWorkSessions } from '@/lib/work-session.svelte'
+  import { useBoardWorkSessions, useStopWorkSession } from '@/lib/work-session.svelte'
   import KanbanCard from './KanbanCard.svelte'
-  import { COL_ACCENT, fmtHours } from './kanban'
+  import { fmtHours } from './kanban'
   import { cn } from '@/lib/cn'
   import { fade, flip, LIST, listStagger, QUICK } from '@/lib/motion'
   import { warmRoute } from '@/lib/warm-route'
   import { useAgents } from '@/lib/agents'
   import { archiveTask, createTask, prefetchTask, updateTask, useBoardLabels, type Board, type BoardMember } from '@/lib/boards.svelte'
   import { OFF_BOARD_STATUSES, STATUS_LABEL, TASK_STATUSES, pgNumOr, type Task, type TaskStatus } from '@/lib/task-const'
-  import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
+  import { STATUS_COLOR, statusColorOf, useBoardStatuses } from '@/lib/statuses'
   import { useSession } from '@/lib/session'
 
   // Kanban board — polished columns, per-column add, drag-and-drop between columns.
@@ -38,6 +38,7 @@
   // Live work per card (one board-wide read) + the shared watch modal.
   const work = useBoardWorkSessions(() => board.id)
   let watchTask = $state<{ id: string; runId: string } | null>(null)
+  const stopWork = useStopWorkSession()
   const working = (id: string) => work.data?.sessions?.[id] ?? null
   const queued = (id: string) => work.data?.waits?.[id] ?? null
   const fleetQuery = useAgents()
@@ -65,9 +66,9 @@
           // that decides which columns exist, sitting eight lines under a comment
           // about work vanishing when a ticket's status has no column.
           ...OFF_BOARD_STATUSES.filter((k) => tasks.some((t) => t.status === k))
-            .map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' })),
+            .map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: STATUS_COLOR[k] ?? 'var(--theme-muted)' })),
         ]
-      : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: COL_ACCENT[k] ?? 'var(--theme-muted)' })),
+      : TASK_STATUSES.map((k) => ({ key: k as string, label: STATUS_LABEL[k] ?? k, color: STATUS_COLOR[k] ?? 'var(--theme-muted)' })),
   )
   const agents = $derived(fleetQuery.data?.agents ?? [])
   const canEdit = $derived(board.role === 'owner' || board.role === 'editor')
@@ -106,9 +107,10 @@
         onOpen: () => onOpen(t.id),
         onPatch: (p) => void patch(t.id, p),
         onArchive: () => void archiveTask(t.id, !t.archivedAt).then(invalidate),
+        working: !!working(t.id),
+        onStop: () => void stopWork(t.id),
       }),
     )
-
   const addTo = async (status: TaskStatus, title: string) => {
     const { task } = (await createTask(board.id, { title })) as { task: Task }
     if (task.status !== status) await updateTask(task.id, { status })
@@ -142,6 +144,7 @@
             PgNumeric), so `s + t.estimatedHours` concatenated — "04.5" — and
             fmtHours then called .toFixed on a string. -->
         {@const colHours = colTasks.reduce((s, t) => s + pgNumOr(t.estimatedHours, 0), 0)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -- reason: drag-drop drop target; drag-and-drop is a pointer paradigm with no keyboard equivalent here -->
         <div
           ondragover={canEdit
             ? (e) => {

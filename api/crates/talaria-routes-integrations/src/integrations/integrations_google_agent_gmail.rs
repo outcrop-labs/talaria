@@ -145,6 +145,32 @@ pub async fn post(
         Ok(q) => q,
         Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
+    // A prior approval in this conversation unlocked draft_email. Execute
+    // the draft now instead of asking again — the unlock chip already said so.
+    if !principal.is_org
+        && let Ok(Some(conv)) = talaria_chips::live_conversation_id(&state.pg, &agent_model).await
+        && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_email")
+            .await
+            .unwrap_or(false)
+        && let Some(owner) = principal.owner_user_id.as_deref()
+    {
+        let sb = state.secretbox().await.unwrap_or_default();
+        let _ = talaria_api_facades::google::pending_actions::decide_action(
+            &state.pg,
+            &sb,
+            &queued.action.id,
+            owner,
+            false,
+            "approve",
+            talaria_agent_auth::now_ms(),
+        )
+        .await;
+        return Ok(Json(json!({
+            "pending": { "id": queued.action.id, "status": "executed" },
+            "message": "Sent — this conversation already unlocked draft_email.",
+        }))
+        .into_response());
+    }
     let message = if queued.already_pending {
         "An identical draft is already waiting for approval — nothing new queued."
     } else if principal.is_org {

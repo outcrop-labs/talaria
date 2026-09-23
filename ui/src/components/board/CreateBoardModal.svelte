@@ -16,7 +16,7 @@
   import { createBoard, setBoardAgents, shareBoard } from '@/lib/boards.svelte'
   import { toastError } from '@/lib/toast.svelte'
 
-  type Invite = { email: string; role: 'editor' | 'viewer' }
+  type Invite = { email: string; role: 'owner' | 'editor' | 'viewer' }
 
   // Create a board and configure everything up front: owner (personal/team),
   // which agents may work it (restrictive by default — opt into "all agents"),
@@ -38,7 +38,7 @@
   let allowAll = $state(false)
   let agents = $state<string[]>([])
   let invites = $state<Invite[]>([])
-  let role = $state<'editor' | 'viewer'>('editor')
+  let role = $state<'owner' | 'editor' | 'viewer'>('editor')
   let busy = $state(false)
 
   const close = () => {
@@ -77,7 +77,7 @@
   }
 </script>
 
-<Modal {open} onClose={close} title="New board" width="max-w-lg">
+<Modal {open} onClose={close} title="New board" width="max-w-2xl">
   {#snippet footer()}
     <div class="flex items-center justify-between">
       <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{allowAll ? 'All agents allowed' : `${agents.length} agents`}</span>
@@ -134,6 +134,7 @@
       <div class="flex items-center gap-2">
         <UserPicker class="min-w-0 flex-1" size="sm" onPick={(u) => u.email && addInvite(u.email)} />
         <Select bind:value={role} size="sm" class="shrink-0">
+          <option value="owner">Owner</option>
           <option value="editor">Editor</option>
           <option value="viewer">Viewer</option>
         </Select>
@@ -141,9 +142,9 @@
       {#if invites.length > 0}
         <div class="mt-2 flex flex-wrap gap-1.5">
           {#each invites as i (i.email)}
-            <span class="flex items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
-              {i.email} · {i.role}
-              <button onclick={() => (invites = invites.filter((x) => x.email !== i.email))} class="transition-colors hover:text-danger">✕</button>
+            <span class="flex max-w-full min-w-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-muted">
+              <span class="min-w-0 truncate">{i.email} · {i.role}</span>
+              <button type="button" aria-label={`Remove ${i.email}`} onclick={() => (invites = invites.filter((x) => x.email !== i.email))} class="relative z-10 shrink-0 leading-none transition-colors hover:text-danger">✕</button>
             </span>
           {/each}
         </div>

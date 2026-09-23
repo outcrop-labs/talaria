@@ -180,6 +180,80 @@ pub async fn list_board_tasks(
     Ok(rows.into_iter().map(Task::from).collect())
 }
 
+/// How a caller named a ticket. The uuid is the row. The ref is what the
+/// board shows and what a work session's title line teaches (`PLAT-118`).
+/// Agents pass that ref to the tools; binding it as `$1::uuid` is a 500
+/// before the access check ever runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TicketAddress {
+    Id(String),
+    Ref { prefix: String, no: i32 },
+    Unknown,
+}
+
+pub fn parse_ticket_address(raw: &str) -> TicketAddress {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return TicketAddress::Unknown;
+    }
+    if uuid::Uuid::parse_str(raw).is_ok() {
+        return TicketAddress::Id(raw.to_string());
+    }
+    let Some((prefix, no)) = raw.rsplit_once('-') else {
+        return TicketAddress::Unknown;
+    };
+    if prefix.is_empty()
+        || !prefix.chars().all(|c| c.is_ascii_alphanumeric())
+        || no.is_empty()
+        || !no.chars().all(|c| c.is_ascii_digit())
+    {
+        return TicketAddress::Unknown;
+    }
+    let Ok(no) = no.parse::<i32>() else {
+        return TicketAddress::Unknown;
+    };
+    TicketAddress::Ref {
+        prefix: prefix.to_string(),
+        no,
+    }
+}
+
+/// One row, none, or more than one board sharing the ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedTaskId {
+    One(String),
+    Missing,
+    Ambiguous,
+}
+
+/// Uuid passes through. `PREFIX-N` resolves against the same expression the
+/// wire uses (`coalesce(ticket_prefix,'TASK') || '-' || ticket_no`). Anything
+/// else is missing — a 404, never a uuid-cast 500.
+pub async fn resolve_task_id(pg: &PgPool, raw: &str) -> Result<ResolvedTaskId, sqlx::Error> {
+    match parse_ticket_address(raw) {
+        TicketAddress::Unknown => Ok(ResolvedTaskId::Missing),
+        TicketAddress::Id(id) => Ok(ResolvedTaskId::One(id)),
+        TicketAddress::Ref { prefix, no } => {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "select t.id::text from tasks t \
+                 join boards b on b.id = t.board_id \
+                 where upper(coalesce(b.ticket_prefix, 'TASK')) = upper($1) \
+                   and t.ticket_no = $2 \
+                 limit 2",
+            )
+            .bind(&prefix)
+            .bind(no)
+            .fetch_all(pg)
+            .await?;
+            Ok(match rows.len() {
+                0 => ResolvedTaskId::Missing,
+                1 => ResolvedTaskId::One(rows.into_iter().next().expect("len checked").0),
+                _ => ResolvedTaskId::Ambiguous,
+            })
+        }
+    }
+}
+
 /// The one-ticket read every write re-reads through.
 pub async fn get_task(pg: &PgPool, id: &str) -> Result<Option<Task>, sqlx::Error> {
     let sql = format!("{TASK_SELECT} where t.id = $1::uuid");
@@ -1378,25 +1452,30 @@ async fn task_thread_owner(pg: &PgPool, head: &ThreadHead) -> Result<Option<Stri
     if let Some(id) = author_user_id(pg, &head.created_by).await? {
         return Ok(Some(id));
     }
+    // A `user:` assignee is only a candidate when the suffix is a uuid.
+    // Emails, names, and model strings used to be bound `$1::uuid` and 500
+    // the first comment before the board-member fallback could run — so a
+    // board that had someone to hold the room still failed.
     let assignees = json_strings(&head.assignees);
-    let candidate = human_assignee_ids(&assignees).into_iter().next();
-    let row: Option<(String,)> = match candidate {
-        Some(id) => {
+    if let Some(id) = human_assignee_ids(&assignees).into_iter().next()
+        && uuid::Uuid::parse_str(&id).is_ok()
+    {
+        let row: Option<(String,)> =
             sqlx::query_as("select id::text from users where id = $1::uuid")
                 .bind(&id)
                 .fetch_optional(pg)
-                .await?
+                .await?;
+        if let Some((id,)) = row {
+            return Ok(Some(id));
         }
-        None => {
-            sqlx::query_as(
-                "select user_id::text from board_members \
-                     where board_id = $1::uuid order by created_at asc limit 1",
-            )
-            .bind(&head.board_id)
-            .fetch_optional(pg)
-            .await?
-        }
-    };
+    }
+    let row: Option<(String,)> = sqlx::query_as(
+        "select user_id::text from board_members \
+             where board_id = $1::uuid order by created_at asc limit 1",
+    )
+    .bind(&head.board_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.map(|(v,)| v))
 }
 
@@ -2400,6 +2479,34 @@ pub async fn assigned_work(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ticket_address_accepts_a_uuid_and_the_board_ref() {
+        assert!(matches!(
+            parse_ticket_address("  3f1c0a2e-7b4d-4e1a-9c88-0a1b2c3d4e5f  "),
+            TicketAddress::Id(_)
+        ));
+        assert_eq!(
+            parse_ticket_address("PLAT-118"),
+            TicketAddress::Ref {
+                prefix: "PLAT".into(),
+                no: 118
+            }
+        );
+        assert_eq!(
+            parse_ticket_address("plat-118"),
+            TicketAddress::Ref {
+                prefix: "plat".into(),
+                no: 118
+            }
+        );
+        // A bare number is not a ref. The prompt's step names the row id;
+        // the title line names PREFIX-N. Guessing "118" would pick a ticket
+        // the caller may not mean.
+        assert_eq!(parse_ticket_address("118"), TicketAddress::Unknown);
+        assert_eq!(parse_ticket_address("PLAT-"), TicketAddress::Unknown);
+        assert_eq!(parse_ticket_address(""), TicketAddress::Unknown);
+        assert_eq!(parse_ticket_address("nope"), TicketAddress::Unknown);
+    }
     use axum::http::StatusCode;
 
     #[test]

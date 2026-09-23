@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -91,33 +91,29 @@
     title="Organization Google account"
     info={"A single shared Google account the team builds in. General agents (no personal owner) create Docs, Sheets, and Drive files here; a personal assistant instead acts as its owner’s own connected Google."}
   />
-  {#if query.isPending}
-    <!-- Never show "Not connected" + Connect while the status is in flight —
-         hold the connection row's shape until it resolves. -->
-    <div class="flex items-center gap-3 rounded-md border border-line p-4">
-      <Skeleton class="h-9 w-9 shrink-0" />
-      <div class="min-w-0 flex-1 space-y-1.5">
-        <Skeleton class="h-3 w-36 rounded-full" />
-        <Skeleton class="h-2.5 w-52 rounded-full" />
+  <QueryState query={query} errorTitle="Could not load the org Google account" errorVariant="compact" isEmpty={(d) => !d.available}>
+    {#snippet skeleton()}
+      <!-- Never show "Not connected" + Connect while the status is in flight —
+           hold the connection row's shape until it resolves. -->
+      <div class="flex items-center gap-3 rounded-md border border-line p-4">
+        <Skeleton class="h-9 w-9 shrink-0" />
+        <div class="min-w-0 flex-1 space-y-1.5">
+          <Skeleton class="h-3 w-36 rounded-full" />
+          <Skeleton class="h-2.5 w-52 rounded-full" />
+        </div>
+        <Skeleton class="h-7 w-24 shrink-0" />
       </div>
-      <Skeleton class="h-7 w-24 shrink-0" />
-    </div>
-  {:else if !data}
-    <!-- Without this branch a failed status read fell through to the row
-         below, which renders "Not connected" and a Connect button — and
-         reconnecting a connection that is already live re-consents the org. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load the org Google account"
-      onRetry={() => void query.refetch()}
-    />
-  {:else if !data.available}
-    <!-- Points at the client panel directly above rather than a dead end —
-         "isn't configured on this server" sent admins to a .env they no
-         longer need to touch. -->
-    <div class="text-xs text-muted">Set up the Google OAuth client above first, then connect the org account here.</div>
-  {:else}
+    {/snippet}
+    {#snippet empty()}
+      <!-- Points at the client panel directly above rather than a dead end —
+           "isn't configured on this server" sent admins to a .env they no
+           longer need to touch. -->
+      <div class="text-xs text-muted">Set up the Google OAuth client above first, then connect the org account here.</div>
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- A failed status read must not reach the row below, which renders "Not
+         connected" and a Connect button — reconnecting a connection that is
+         already live re-consents the org. That is QueryState's error branch. -->
     <div class="flex items-center gap-3 rounded-md border border-line p-4">
       <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">🏢</div>
       <div class="min-w-0 flex-1">
@@ -163,7 +159,8 @@
         {/if}
       </div>
     {/if}
-  {/if}
+    {/snippet}
+  </QueryState>
   {#if data?.connected}<AdminOrgGoogleTargets targets={data.targets} />{/if}
   {#if data?.connected}<AdminOrgGoogleWorkspace />{/if}
   {#if flash}

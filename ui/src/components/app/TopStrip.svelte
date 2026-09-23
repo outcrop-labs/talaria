@@ -40,19 +40,23 @@
   }
 
   // The section the view lives in — the leading breadcrumb segment now that
-  // the view's own name leads as the title. Settings and Admin are not in NAV
+  // the view's own name leads as the title, when the view's section carries
+  // one (Manage, System). Work views stand alone: the section header is gone
+  // from the rail, and repeating an unspoken label here would read as a
+  // wrong caption rather than restraint. Settings and Admin are not in NAV
   // (they live in the user menu), but they are still the SYSTEM bucket of
   // spec §5, and a location line that goes quiet exactly there would read as
   // a gap, not as restraint.
   function viewSection(pathname: string, apps: AppManifest[]): string | undefined {
-    if (pathname === '/' || isUnder(pathname, '/home')) return 'Work'
+    if (pathname === '/' || isUnder(pathname, '/home')) return undefined
     if (pathname === '/settings' || isUnder(pathname, '/settings')) return 'System'
     if (pathname === '/admin' || isUnder(pathname, '/admin')) return 'System'
     const appMatch = /^\/x\/([^/]+)/.exec(pathname)
     if (appMatch) {
       const app = apps.find((a) => a.slug === appMatch[1])
-      // Same manage/work split the rail uses when slotting app surfaces in.
-      return app ? (isUnder(pathname, `/x/${app.slug}/manage`) ? 'Manage' : 'Work') : undefined
+      // Manage surfaces still breadcrumb their section; app work surfaces sit
+      // among the other Work views, which carry no section label.
+      return app && isUnder(pathname, `/x/${app.slug}/manage`) ? 'Manage' : undefined
     }
     const items = NAV.flatMap((s) => s.items).filter((i) => i.to !== '/')
     const active = activeAmong(pathname, items.map((i) => i.to))

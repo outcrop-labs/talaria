@@ -28,6 +28,7 @@
 //   inserted between our read and our write, and what they inserted is a live
 //   session for this exact ticket and agent, so standing down is correct.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
@@ -345,13 +346,47 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
             return;
         }
     };
+    // THE COUNT IS THE DIAGNOSTIC. Offering a ticket whose column is not a
+    // pickup column is a silent no-op inside maybe_dispatch_ticket — and a
+    // sweep that counted those as "re-offered" read, during the 2026-09-22
+    // incident, as "19 tickets moving" while zero were dispatchable and the
+    // real question was why. Pickup keys are read once per board per pass
+    // (the same status_meta the gate itself reads), and only tickets that
+    // pass the column question here are offered and counted; everything
+    // else is reported as parked, which is what it is.
+    let mut pickup_by_board: HashMap<String, Option<Vec<String>>> = HashMap::new();
     let mut offered = 0usize;
+    let mut parked = 0usize;
     for (id, board_id, status, assignees, archived_at) in rows {
         let Some(assignees) = assignees.filter(|v| !v.is_null()) else {
             continue;
         };
         let assignees = tasks::json_strings(&assignees);
         if assignees.is_empty() {
+            continue;
+        }
+        let pickup = match pickup_by_board.entry(board_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => o.get().clone(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let keys = match statuses::status_meta(pg, &board_id).await {
+                    Ok(meta) => Some(meta.pickup_keys),
+                    // A board whose statuses cannot be read is a board whose
+                    // tickets are not dispatched this pass — the same law as
+                    // the gate's own read, said here instead of unsaid.
+                    Err(e) => {
+                        tracing::error!(
+                            "{LOG} {}: could not read the board's statuses, not offering: {e}",
+                            id
+                        );
+                        None
+                    }
+                };
+                v.insert(keys.clone());
+                keys
+            }
+        };
+        if !pickup.is_some_and(|keys| keys.contains(&status)) {
+            parked += 1;
             continue;
         }
         let task = DispatchTicket {
@@ -361,13 +396,18 @@ pub async fn redispatch_agent_work(pg: &PgPool, deps: &RunDeps) {
             assignees,
             archived_at,
         };
-        // Re-offering is the whole point: every internal gate (pickup column,
-        // agent refusal, the generation walk) re-decides from live state.
+        // Re-offering is the whole point: every internal gate (agent
+        // refusal, the generation walk) re-decides from live state.
         maybe_dispatch_ticket(pg, deps, &task, None).await;
         offered += 1;
     }
-    if offered > 0 {
-        tracing::info!("{LOG} sweep re-offered {offered} ticket(s) to their agents");
+    if offered > 0 || parked > 0 {
+        let parked_note = if parked > 0 {
+            format!(" ({parked} parked outside pickup columns)")
+        } else {
+            String::new()
+        };
+        tracing::info!("{LOG} sweep re-offered {offered} ticket(s) to their agents{parked_note}");
     }
 }
 

@@ -51,6 +51,7 @@ on:
       - 'ui/src/server/fleet-docker.ts'
       - 'scripts/workbench.Dockerfile'
       - '.github/workflows/chassis.yml'
+      - '.github/actions/**'
   push:
     branches: [main]
     paths:
@@ -62,6 +63,7 @@ on:
       - 'ui/src/server/fleet-docker.ts'
       - 'scripts/workbench.Dockerfile'
       - '.github/workflows/chassis.yml'
+      - '.github/actions/**'
 
 concurrency:
   group: chassis-${{ github.ref }}
@@ -81,16 +83,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-runtime
         with:
-          bun-version: '1.4.0'
-
-      # The smoke test parses the chassis with the `yaml` package, resolved from
-      # ui/node_modules via createRequire — hand-rolling a YAML parser to avoid
-      # this install would be its own source of bugs. Nothing else here is used.
-      - name: Install (for the yaml parser)
-        run: bun install --frozen-lockfile
-        working-directory: ui
+          # Bun only. The ui install is the `yaml` package the smoke test parses
+          # the chassis with, resolved from ui/node_modules via createRequire —
+          # hand-rolling a YAML parser to avoid it would be its own source of
+          # bugs. Nothing here needs Node or Rust.
+          node: ''
+          rust: ''
+          install-dir: ui
 
       # Pull explicitly rather than letting `compose up` do it, so a registry
       # problem reports as a pull failure instead of as a boot timeout.

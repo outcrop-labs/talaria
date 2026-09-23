@@ -1,0 +1,166 @@
+# The stateful sidecar plane, spelled ONCE. Every Talaria stack layers this
+# file IN FRONT of its own —
+#
+#   docker compose -f docker/sidecars.compose.yml -f docker/<stack>.yml …
+#
+# — so `docker compose config` merges by service name and each stack's own
+# block wins key by key. What must never drift between an operator's instance,
+# the dev loop and a devbox lives here: images, restart policy, data volume,
+# env defaults, healthchecks. What is left in the per-stack files is what only
+# that stack can decide:
+#
+#   ports           prod publishes none (service DNS inside `internal`), a
+#                   devbox publishes none (its sidecars answer on its own
+#                   project network), the dev loop publishes loopback-only
+#                   ports — and none of those ports belongs to a shared default.
+#   networks        prod's sidecars are `internal`-only so agents can never
+#                   reach postgres; a box's join its own project network; the
+#                   dev loop uses the default one.
+#   container_name  dev and a box name theirs after their project
+#                   (talaria-postgres-dev / devbox-<name>-postgres); prod
+#                   leaves docker's default.
+#   depends_on      only prod's searxng waits on the settings render step
+#                   (there is no render step outside prod).
+#   Divergent env   the dev/box minio root pair and the dev postgres password
+#                   are overridden in those files with the WHY at the override.
+#
+# Full story: docs/CONTAINER.md (Networking) and docs/DEVBOX.md.
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: talaria
+      # Pinned by initdb on first boot — a later value the initialized cluster
+      # has never heard of breaks auth. Prod generates this into docker/.env
+      # BEFORE its first `up` (compose interpolates it into the DATABASE_URL
+      # default too); dev and a box override it with the fixed `talaria` their
+      # own DATABASE_URL carries.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-talaria}
+      POSTGRES_DB: talaria
+    # Startup flag, not initdb — a restart applies it to an existing volume.
+    # 200 is the headroom the api pool's clamp assumes. The image default of
+    # 100 is what queued a fleet behind 40 connections.
+    command: ["postgres", "-c", "max_connections=200"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U talaria -d talaria']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: docker.io/qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/6333"']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Native embeddings — a small model on CPU is a rounding error for this
+  # workload (index on write + one vector per query). Swap the model via env;
+  # changing models means re-running the backfill (dimensions change). A devbox
+  # does not run one at all: it dials the primary dev stack's TEI by container
+  # name (docker/devbox.compose.yml resets this service out).
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    # TEI publishes amd64-only CPU images (no arm64 manifest — see #151), so
+    # pin the platform: on arm64 hosts it runs under emulation — fine for this
+    # small model, or point TALARIA_EMBED_URL at an external embeddings
+    # endpoint instead.
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ['--model-id', '${TALARIA_EMBED_MODEL:-BAAI/bge-small-en-v1.5}']
+    volumes:
+      - tei-cache:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'bash -c ":> /dev/tcp/127.0.0.1/80"']
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  # Built-in object storage — a MinIO container so uploads can live in a real
+  # S3-compatible bucket with no cloud account (Admin → Storage → "Built-in
+  # bucket"). The same panel can replicate every blob to an external provider.
+  # The root pair has to reach the app AND this container, so compose cannot
+  # generate it (interpolation happens before any entrypoint runs). The two
+  # defaults below are PROD's pair; the dev loop and a box override whichever
+  # half differs, with the dev-grade values their own apps are handed.
+  minio:
+    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
+    # quay's latest is digest-identical to the last Hub-published build.
+    # Freshness of quay's images is tracked in issue #366.
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: ['server', '/data']
+    environment:
+      MINIO_ROOT_USER: ${TALARIA_S3_ACCESS_KEY:-talaria}
+      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # LIVE WEB SEARCH — SearXNG, a metasearch aggregator that fans one query
+  # across dozens of engines. No API key, no per-query bill, and no query
+  # leaves the machine; Talaria's own `web_search` tool talks to its JSON API.
+  #
+  # ITS OWN CONTAINER, AND THAT IS A LICENCE DECISION. Talaria is MIT; SearXNG
+  # is AGPL-3.0. Vendoring AGPL source into an MIT codebase propagates the
+  # terms, so it runs as a separate process reached over HTTP — the same
+  # arrangement as the fleet MCP service. DO NOT PATCH IT: unmodified upstream
+  # means AGPL §13's source-offer obligation is satisfied by pointing at the
+  # upstream repository.
+  #
+  # SETTINGS COME FROM A MOUNTED FILE, never the env, and that was learned the
+  # hard way: SearXNG honours env only for a short allow-list (base URL,
+  # secret), so `SEARXNG_SEARCH_FORMATS` was silently ignored and the JSON API
+  # kept answering 403. Each stack mounts its own file/volume, and each sets
+  # SEARXNG_BASE_URL to the address its own app reaches it on.
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    # Explicit DNS, same reason as the agent chassis: a metasearch engine is
+    # nothing but external name lookups, and docker's default upstream is
+    # whatever the host's /etc/resolv.conf named when the network was created —
+    # a loopback stub or a LAN resolver that refuses docker subnets leaves this
+    # container "healthy" and unable to resolve a single engine host.
+    dns:
+      - ${TALARIA_DNS_1:-1.1.1.1}
+      - ${TALARIA_DNS_2:-1.0.0.1}
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+# The sidecars' data volumes. Declared here because the services above
+# reference them: `docker compose -f docker/sidecars.compose.yml config` has to
+# stand on its own, and a stack that layers this file must NOT redeclare them
+# (compose merges the two top-level lists, so the project still sees one name
+# each: <project>_pg-data, <project>_redis-data, …).
+volumes:
+  pg-data: {}
+  redis-data: {}
+  qdrant-data: {}
+  tei-cache: {}
+  minio-data: {}

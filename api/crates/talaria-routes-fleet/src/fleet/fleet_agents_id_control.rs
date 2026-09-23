@@ -140,8 +140,35 @@ pub async fn post(
             if let Ok(sb) = state.secretbox().await {
                 let pg = state.pg.clone();
                 let dept = def.department.clone();
+                let target_id = def.id.clone();
+                let label = def.display_name.clone();
+                let actor = actor_of(&user);
                 tokio::spawn(async move {
-                    let _ = roll_agent(&pg, &sb, &dept).await;
+                    // THE VERDICT HAS NOWHERE ELSE TO GO. A roll is detached
+                    // and the caller already got `{"rolling": true}`, so a
+                    // step that throws and a soft refusal both used to
+                    // vanish: the operator saw a roll that never changed
+                    // anything and no reason for it. The audit entry is the
+                    // same shape mcp-apply writes when its own roll fails.
+                    let error = match roll_agent(&pg, &sb, &dept).await {
+                        Ok(None) => return,
+                        Ok(Some(warning)) => warning,
+                        Err(thrown) => thrown,
+                    };
+                    tracing::warn!("[fleet] roll of {label} ({dept}) failed: {error}");
+                    log_audit(
+                        &pg,
+                        AuditEntry {
+                            actor: &actor,
+                            action: "agent.roll_failed",
+                            target_type: "agent",
+                            target_id: Some(&target_id),
+                            target_label: Some(&label),
+                            before: None,
+                            after: Some(json!({ "error": error })),
+                        },
+                    )
+                    .await;
                 });
             }
             Json(json!({ "ok": true, "rolling": true })).into_response()

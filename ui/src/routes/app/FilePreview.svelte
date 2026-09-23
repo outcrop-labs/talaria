@@ -90,6 +90,7 @@
     <audio controls src={url} class="w-full"></audio>
   </div>
 {:else if family === 'video'}
+  <!-- svelte-ignore a11y_media_has_caption -- reason: user-uploaded file preview; no caption track exists for a member's upload -->
   <video controls src={url} class="mx-auto max-h-[70vh] w-full rounded-lg border border-line"></video>
 {:else if family === 'text'}
   {#if textError}

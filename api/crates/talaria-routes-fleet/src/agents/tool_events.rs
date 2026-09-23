@@ -49,7 +49,7 @@ pub async fn post(
         return Ok(house_error(StatusCode::BAD_REQUEST, "toolName required"));
     }
     let status = match parsed.get("status").and_then(|v| v.as_str()) {
-        Some("running") | Some("completed") => parsed
+        Some("running") | Some("completed") | Some("error") => parsed
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -57,10 +57,55 @@ pub async fn post(
         _ => {
             return Ok(house_error(
                 StatusCode::BAD_REQUEST,
-                "status must be running|completed",
+                "status must be running|completed|error",
             ));
         }
     };
+    // Chips are not the run watch. A chat turn has no work-session run, and
+    // dropping the frame there used to drop the link and the approval with
+    // it. Surface first, then land the watch frame if a run is live.
+    if status == "completed" {
+        let args = parsed.get("args").and_then(|v| v.as_str()).unwrap_or("");
+        let result = parsed.get("result").and_then(|v| v.as_str()).unwrap_or("");
+        let chips = talaria_chips::chips_from_tool(&tool, args, result);
+        if !chips.is_empty() {
+            let redis = state.redis().await.ok();
+            if let Err(e) =
+                talaria_chips::surface_tool_chips(&state.pg, redis, &caller.model, None, chips)
+                    .await
+            {
+                tracing::warn!("[tool-events] chip surface failed: {e}");
+            }
+        }
+    }
+    // THE FLEET'S ONLY FAILURE SIGNAL. A persona tool failing is invisible to
+    // every other surface — the model stream says "completed", container
+    // health stays green, stats look idle (the 2026-09-22 rot: half an hour
+    // of every tool failing while every dashboard read green). The plugin
+    // now reports status "error" for the persona's own error convention,
+    // and this streak — agent-scoped, not run-scoped, so chat and cron
+    // turns count too — is what the alerts surface reads. INCR + 6h EXPIRE
+    // on a failure, DEL on a success: consecutive by construction, and an
+    // idle agent's streak dies with the key instead of alerting forever.
+    if let Ok(mut conn) = state.redis().await {
+        let streak_key = format!("agent-tools:{}:fail-streak", caller.model);
+        if status == "error" {
+            let _: Result<i64, redis::RedisError> = redis::cmd("INCR")
+                .arg(&streak_key)
+                .query_async(&mut conn)
+                .await;
+            let _: Result<(), redis::RedisError> = redis::cmd("EXPIRE")
+                .arg(&streak_key)
+                .arg(21_600)
+                .query_async(&mut conn)
+                .await;
+        } else if status == "completed" {
+            let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+                .arg(&streak_key)
+                .query_async(&mut conn)
+                .await;
+        }
+    }
     // The newest LIVE work session for this agent — the run whose tail this
     // frame joins. None live: the frame has nowhere to land (the session
     // ended); dropped quietly, same as the plugin's own failure contract.

@@ -42,6 +42,7 @@
     class?: string
   } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: called during render, so it re-runs with fresh props on every render — nothing is captured
   claimViewTitle(title, { info })
 </script>
 

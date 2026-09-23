@@ -10,7 +10,7 @@
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
   import { alert, confirm, prompt } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { copyAppLink, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { openCopyItems, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
   import Rail from '@/components/app/Rail.svelte'
   import RailRow from '@/components/app/RailRow.svelte'
@@ -241,8 +241,7 @@
   }
 
   const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
-    { label: 'Open', onSelect: () => setSel({ t: 'channel', id: c.id }) },
-    { label: 'Copy link', onSelect: () => copyAppLink(`/comms/channel/${c.id}`) },
+    ...openCopyItems(`/comms/channel/${c.id}`, () => setSel({ t: 'channel', id: c.id })),
     { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
   ]
 
@@ -326,6 +325,7 @@
       {#each rooms as c (c.id)}
         <RailRow active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
           <!-- display:contents wrapper — carries the context menu without touching row layout -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
           <span class="contents" oncontextmenu={(e) => menu.openMenu(e, channelRowMenu(c))}>
             <span class="shrink-0 opacity-60">#</span>
             <span class="min-w-0 flex-1 truncate">{c.name}</span>
@@ -357,6 +357,7 @@
     >
       {#each relays as c (c.id)}
         <RailRow active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
+          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
           <span class="contents" oncontextmenu={(e) => menu.openMenu(e, channelRowMenu(c))}>
             <span class="shrink-0 opacity-60">⇄</span>
             <span class="min-w-0 flex-1 truncate">{c.name}</span>
@@ -390,6 +391,7 @@
           active={sel?.t === 'channel' && sel.id === dm?.id}
           onClick={() => (dm ? setSel({ t: 'channel', id: dm.id }) : void startDm(u.id))}
         >
+          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
           <span
             class="contents"
             oncontextmenu={(e) =>
@@ -434,6 +436,7 @@
           <div class="space-y-0.5">
             <!-- Clicking the agent = its working thread if one is live, else fresh. -->
             <RailRow active={activeAgent && agentSel?.conversationId === null} onClick={() => openAgent(a.id)}>
+              <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
               <span
                 class="contents"
                 oncontextmenu={(e) => menu.openMenu(e, [{ label: 'New thread', onSelect: () => newThread(a.id) }])}
@@ -447,7 +450,7 @@
                   <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">new</span>
                 {/if}
                 {#if agentThreads.length > 0 && !activeAgent}
-                  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -- reason: pointer-only peek at an agent's threads; the RailRow button carries the row's click + keyboard -->
                   <span
                     role="button"
                     title={expanded ? 'Hide threads' : `Show threads (${agentThreads.length})`}
@@ -468,12 +471,12 @@
                 onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
                 class="pl-7"
               >
+                <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
                 <span
                   class="contents"
                   oncontextmenu={(e) =>
                     menu.openMenu(e, [
-                      { label: 'Open', onSelect: () => setSel({ t: 'agent', model: a.id, conversationId: c.id }) },
-                      { label: 'Copy link', onSelect: () => copyAppLink(`/comms/agent/${a.id}/${c.id}`) },
+                      ...openCopyItems(`/comms/agent/${a.id}/${c.id}`, () => setSel({ t: 'agent', model: a.id, conversationId: c.id })),
                       // Clear the pill without opening: an absent seq tells the
                       // server "the thread's latest", so this needs no load —
                       // and that whole-thread read clears the bell rows too.

@@ -1,33 +1,33 @@
 [package]
 name = "talaria-channel-replies"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-body = { path = "../talaria-body" }
-talaria-channels = { path = "../talaria-channels" }
-talaria-fleet-agents = { path = "../talaria-fleet-agents" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-mentions = { path = "../talaria-mentions" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-realtime = { path = "../talaria-realtime" }
-talaria-refs = { path = "../talaria-refs" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-state = { path = "../talaria-state" }
-talaria-ticket-chat = { path = "../talaria-ticket-chat" }
-talaria-uploads = { path = "../talaria-uploads" }
-talaria-users = { path = "../talaria-users" }
-tokio = { version = "1", features = ["macros"] }
-tracing = "0.1"
-regex = "1"
+talaria-agent-auth = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-body = { workspace = true }
+talaria-channels = { workspace = true }
+talaria-fleet-agents = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-mentions = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-refs = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-state = { workspace = true }
+talaria-ticket-chat = { workspace = true }
+talaria-uploads = { workspace = true }
+talaria-users = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+regex = { workspace = true }

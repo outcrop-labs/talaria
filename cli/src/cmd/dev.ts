@@ -7,9 +7,11 @@ import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { compose, waitFor } from '../compose'
+import { compose, stackComposeFiles, waitFor } from '../compose'
+import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
+import { API_PORT } from '../ports'
 import { renderSearxng } from '../searxng'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
@@ -65,7 +67,7 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
 export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   if (ctx.env.TALARIA_API === 'off') return
 
-  const port = ctx.env.TALARIA_API_PORT ?? '5274'
+  const port = ctx.env.TALARIA_API_PORT ?? API_PORT
   const url = `http://127.0.0.1:${port}`
   // The proxy defaults to exactly this loopback address, but lift the env
   // anyway when nothing else names it (the shell first, then ui/.env — the
@@ -98,8 +100,11 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // `off`.) SEARXNG_URL rides so the cargo child sees the same value the
   // vite process does (vite loads ui/.env itself) — the Rust read of it
   // decides whether search is env-pinned, and the two views must agree.
+  // TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
+  // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
+  // reach the renderer, and agents keep queueing on the UI hop.
   const env: Record<string, string> = {}
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL']) {
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }
@@ -155,6 +160,22 @@ async function hasCargo(ctx: Ctx): Promise<boolean> {
   }
 }
 
+
+/** One line when the disk is over the sweep's line. Never blocks boot —
+ *  the stack may be what the task needs in order to finish and free the space.
+ *  The policy is scripts/cleanup-sweep.mjs; a probe that cannot run is silence. */
+async function warnDiskPressure(ctx: Ctx): Promise<void> {
+  try {
+    const r = await ctx.exec(process.execPath, [join(ctx.root, 'scripts/cleanup-sweep.mjs'), '--pressure'], {
+      timeoutMs: 5_000,
+    })
+    const line = `${r.stdout}${r.stderr}`.trim()
+    if (line) ctx.log.warn(line)
+  } catch {
+    // a probe that cannot run must not stop the stack
+  }
+}
+
 export async function runDev(ctx: Ctx): Promise<number> {
   const uiEnvPath = join(ctx.root, 'ui/.env')
   if (!existsSync(uiEnvPath)) ctx.log.die('ui/.env missing — run `bun talaria setup` first')
@@ -171,6 +192,8 @@ export async function runDev(ctx: Ctx): Promise<number> {
         '  Create isolated worktrees with:  bun talaria worktree <name>   (see docs/WORKTREES.md)',
     )
   }
+
+  await warnDiskPressure(ctx)
 
   // Inside a devbox (docs/DEVBOX.md): the box compose owns the infra —
   // sidecars are up, healthy, and reachable by service DNS, and ui/.env
@@ -206,7 +229,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
     if (pgPort) ctx.env.TALARIA_PG_PORT ??= pgPort
     if (redisPort) ctx.env.TALARIA_REDIS_PORT ??= redisPort
     ctx.log.say(`infra (this worktree's postgres + redis — sidecars are the main stack's)`)
-    const code = await compose(ctx, { files: [join(ctx.root, DEV_COMPOSE)], project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
+    const code = await compose(ctx, { files: stackComposeFiles(ctx.root, DEV_COMPOSE), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
     return await waitThenRunApp(ctx, uiEnv)
   }
@@ -221,7 +244,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
   }
 
   ctx.log.say('infra (postgres + redis + qdrant + minio)')
-  const devSpec = { files: [join(ctx.root, DEV_COMPOSE)] }
+  const devSpec = { files: stackComposeFiles(ctx.root, DEV_COMPOSE) }
   if ((await compose(ctx, devSpec, ['up', '-d', 'postgres', 'redis', 'qdrant', 'minio'])) !== 0) {
     ctx.log.die('dev infra failed to start')
   }
@@ -255,7 +278,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
  *  vite process (this function's return IS dev's exit code). */
 async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   ctx.log.say('waiting for postgres…')
-  const pg = ctx.env.TALARIA_PG_CONTAINER ?? 'talaria-postgres-dev'
+  const pg = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
   const pgReady = await waitFor(
     ctx,
     'postgres',
@@ -272,7 +295,7 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   if (!pgReady) ctx.log.die('postgres never became ready')
 
   ctx.log.say('waiting for redis…')
-  const redis = ctx.env.TALARIA_REDIS_CONTAINER ?? 'talaria-redis-dev'
+  const redis = ctx.env.TALARIA_REDIS_CONTAINER ?? REDIS_CONTAINER
   // No death on timeout here, deliberately (parity with dev.sh): redis that
   // is merely slow must not abort the boot; the app retries connections.
   await waitFor(

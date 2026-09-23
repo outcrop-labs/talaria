@@ -333,6 +333,16 @@ export const addDependency = (taskId: string, dependsOnId: string) =>
 export const removeDependency = (taskId: string, dependsOnId: string) =>
   delJson<{ ok: true }>(`/api/tasks/${taskId}/dependencies`, { dependsOnId })
 
+/** Stop the ticket's live work session — the brake. Board-member gated
+ *  server-side and idempotent: a ticket with no live session still answers
+ *  `{ok:true}`, so a double-click or a stale chip costs nothing. Callers
+ *  invalidate the work-session reads (`['work-session', taskId]`, the
+ *  board's `['board-work-sessions']`) once it resolves, as they do for
+ *  every other verb here. */
+export async function stopWorkSession(taskId: string): Promise<void> {
+  await postJson<{ ok: true }>(`/api/tasks/${taskId}/work-session/stop`)
+}
+
 // The patch literal below is the WIRE BODY — the shape routes/api/tasks.$id.ts
 // validates with zod — and not server TaskPatch, deliberately. The two have
 // drifted apart in both directions and each difference is load-bearing:
@@ -373,7 +383,7 @@ export const archiveBoard = (boardId: string, archived: boolean) =>
   patchJson<{ board: Board }>(`/api/boards/${boardId}`, { archived })
 export const deleteBoard = (boardId: string) => delJson<{ ok: true }>(`/api/boards/${boardId}`)
 export const archiveTask = (taskId: string, archived: boolean) => updateTask(taskId, { archived })
-export const shareBoard = (boardId: string, email: string, role: 'editor' | 'viewer') =>
+export const shareBoard = (boardId: string, email: string, role: 'owner' | 'editor' | 'viewer') =>
   postJson<{ ok: true }>(`/api/boards/${boardId}/members`, { email, role })
 export const unshareBoard = (boardId: string, userId: string) =>
   delJson<{ ok: true }>(`/api/boards/${boardId}/members`, { userId })

@@ -3,7 +3,7 @@
   import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -32,7 +32,6 @@
     queryFn: (): Promise<GoogleStatus> => getJson<GoogleStatus>('/api/integrations/google'),
   }))
   const data = $derived(query.data)
-  const isLoading = $derived(query.isLoading)
   // Surface the callback outcome (?google=connected|denied|) once, then clean the URL.
   let flash = $state<string | null>(null)
   $effect(() => {
@@ -74,31 +73,32 @@
     info="Connect your Google Workspace account to give your assistant mail, calendar, and Drive access. It acts as you, and outbound mail and invites wait for your approval."
   />
 
-  {#if isLoading}
-    <!-- Never show "Not connected" + Connect while the status is unknown —
-         that's a false state. Hold the row's shape until the query resolves. -->
-    <div aria-hidden="true" class="flex items-center gap-3 rounded-md border border-line p-4">
-      <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
-      <div class="min-w-0 flex-1 space-y-2">
-        <Skeleton class="h-3 w-40 rounded-full" />
-        <Skeleton class="h-2.5 w-56 rounded-full" />
+  <QueryState
+    query={query}
+    errorTitle="Could not load your connected accounts"
+    errorVariant="compact"
+    isEmpty={(d) => !d.available}
+  >
+    {#snippet skeleton()}
+      <!-- Never show "Not connected" + Connect while the status is unknown —
+           that's a false state. Hold the row's shape until the query resolves. -->
+      <div aria-hidden="true" class="flex items-center gap-3 rounded-md border border-line p-4">
+        <Skeleton class="h-9 w-9 shrink-0 rounded-md" />
+        <div class="min-w-0 flex-1 space-y-2">
+          <Skeleton class="h-3 w-40 rounded-full" />
+          <Skeleton class="h-2.5 w-56 rounded-full" />
+        </div>
+        <Skeleton class="h-9 w-24 rounded-lg" />
       </div>
-      <Skeleton class="h-9 w-24 rounded-lg" />
-    </div>
-  {:else if !data}
-    <!-- Same reason as the skeleton above: "Not connected" is a claim about
-         the account, and a failed status read can't make it. -->
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load your connected accounts"
-      onRetry={() => void query.refetch()}
-    />
-  {:else if !data.available}
-    <!-- An unregistered client is the ADMIN's gap to close — the old copy
-         dead-ended here with no hint of whose fix it was. -->
-    <div class="text-xs text-muted">Google isn’t set up on this server yet. Ask an admin to register the Google client in Admin → Org.</div>
-  {:else}
+    {/snippet}
+    {#snippet empty()}
+      <!-- An unregistered client is the ADMIN's gap to close — the old copy
+           dead-ended here with no hint of whose fix it was. -->
+      <div class="text-xs text-muted">Google isn’t set up on this server yet. Ask an admin to register the Google client in Admin → Org.</div>
+    {/snippet}
+    {#snippet children(_data)}
+    <!-- "Not connected" is a claim about the account, and a failed status read
+         can't make it — QueryState's error branch owns that. -->
     <div class="flex items-center gap-3 rounded-md border border-line p-4">
       <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-line bg-raised text-lg">
         ✉️
@@ -127,7 +127,8 @@
     <p class="mt-2 max-w-prose text-xs text-muted">
       Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you. Every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
     </p>
-  {/if}
+    {/snippet}
+  </QueryState>
 
   {#if flash}
     <div transition:slide={{ duration: 150 }} class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>

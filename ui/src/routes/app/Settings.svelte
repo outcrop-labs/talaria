@@ -132,7 +132,7 @@
             </div>
           {/if}
         </div>
-        <label class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Display name</label>
+        <label for="settings-display-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Display name</label>
         {#if sessionLoading}
           <div class="flex max-w-md items-center gap-2">
             <Skeleton class="h-11 flex-1" />
@@ -141,6 +141,7 @@
         {:else}
           <div class="flex max-w-md items-center gap-2">
             <Input
+              id="settings-display-name"
               bind:value={name}
               onkeydown={(e) => e.key === 'Enter' && void save()}
               placeholder="How teammates and agents see you"

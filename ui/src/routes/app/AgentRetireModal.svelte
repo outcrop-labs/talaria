@@ -19,10 +19,10 @@
       volume (memories, plans) and version history are kept, so it can be brought back later.
     </p>
     <div>
-      <label class="mb-1 block text-xs text-muted">
+      <label for="retire-confirm" class="mb-1 block text-xs text-muted">
         Type <code class="text-fg">{d.slug}</code> to confirm
       </label>
-      <Input bind:value={typed} placeholder={d.slug} autofocus />
+      <Input id="retire-confirm" bind:value={typed} placeholder={d.slug} autofocus />
     </div>
     <div class="flex justify-end gap-2 border-t border-line pt-3">
       <Button variant="ghost" size="sm" onclick={onClose}>

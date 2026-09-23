@@ -78,12 +78,19 @@
 
   let open = $state(false)
   let all = $state<EmojiEntry[]>(CACHE ?? [])
+  // CATEGORIES is module-scope and only reassigned by loadEmoji — snapshot it
+  // here (all's mirror) so the browse view updates when the dataset lands.
+  let categories = $state(CATEGORIES)
   let q = $state('')
 
   // The shell keeps this component mounted, so "first open" is a state change,
   // not a mount: the dataset import stays off the initial bundle.
   $effect(() => {
-    if (open && !CACHE) void loadEmoji().then((v) => (all = v))
+    if (open && !CACHE)
+      void loadEmoji().then((v) => {
+        all = v
+        categories = CATEGORIES
+      })
   })
   // The panel used to unmount on close, which reset the search for free.
   $effect(() => {
@@ -127,7 +134,7 @@
           {@render grid(results, close)}
         {/if}
       {:else}
-        {#each CATEGORIES as cat (cat.id)}
+        {#each categories as cat (cat.id)}
           {@const entries = categoryEntries(cat.ids)}
           {#if entries.length > 0}
             <div class="mb-1">

@@ -4,19 +4,17 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import EmojiPicker from '@/components/ui/EmojiPicker.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Input from '@/components/ui/Input.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import RecordTitle from '@/components/ui/RecordTitle.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { copyAppLink, useContextMenu } from '@/components/ui/context-menu.svelte'
-  import { inlineEditKeys } from '@/components/ui/control'
+  import { copyAppLink, copyTextItems, useContextMenu } from '@/components/ui/context-menu.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import BrainRoutingSelect from '@/components/kb/BrainRoutingSelect.svelte'
@@ -87,8 +85,10 @@
   // Presence drives the multiplayer avatars and the read-mode auto-refresh.
   // Defaulted it says "you are alone in here" during an outage, which is when
   // two people are most likely to overwrite each other.
+  // svelte-ignore state_referenced_locally -- reason: the component is keyed-remounted per doc ({#key docId} at the call site), so docId is fixed per mount
   const presenceList = listQuery(useDocLive(docId, () => mode), { title: 'Could not see who else is here', variant: 'inline' })
   const presence = $derived(presenceList.rows)
+  // svelte-ignore state_referenced_locally -- reason: the component is keyed-remounted per doc ({#key docId} at the call site), so docId is fixed per mount
   const commentsQuery = useDocComments(docId)
   const comments = $derived(commentsQuery.data ?? [])
   const openThreads = $derived(comments.filter((c) => !c.parentId && !c.resolved).length)
@@ -235,47 +235,28 @@
     </div>
 
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-6 py-3">
-      <div class="shrink-0">
-        <EmojiPicker
-          onPick={(e) => {
-            void save({ icon: e })
-          }}
-          onClear={() => {
-            void save({ icon: null })
-          }}
-        >
-          {#snippet trigger()}
-            <button
-              type="button"
-              class="rounded-md px-1 text-xl leading-none transition-colors dither-fill"
-              title="Set icon"
-            >
-              {doc.icon ?? '📄'}
-            </button>
-          {/snippet}
-        </EmojiPicker>
-      </div>
-      {#if mode === 'edit'}
-        <Input
-          value={title}
-          oninput={(e) => {
-            title = e.currentTarget.value
-            dirty = true
-          }}
-          onblur={() => dirty && void saveBody()}
-          onkeydown={inlineEditKeys(() => doc && (title = doc.title))}
-          class="min-w-0 flex-1 border-0 bg-transparent text-lg font-semibold focus:border-0"
-          placeholder="Untitled"
-        />
-      {:else}
-        <div class="min-w-0 flex-1">
-          <h1 class="truncate font-sans text-lg font-semibold text-fg">{doc.title}</h1>
+      <!-- Read mode shows the record (with its edited-at line), edit mode the
+           buffer — the doc's own save path and dirty flag stay here. -->
+      <RecordTitle
+        icon={doc.icon}
+        onIconPick={(e) => void save({ icon: e })}
+        onIconClear={() => void save({ icon: null })}
+        value={mode === 'edit' ? title : doc.title}
+        onInput={(v) => {
+          title = v
+          dirty = true
+        }}
+        onCommit={() => dirty && void saveBody()}
+        onCancel={() => doc && (title = doc.title)}
+        editing={mode === 'edit'}
+      >
+        {#snippet meta()}
           <!-- Timestamp meta rides in the mono chrome voice (spec §2). -->
           <div class="truncate font-mono text-[10px] tracking-[0.05em] text-muted">
             edited {relativeTime(doc.updatedAt)}{doc.updatedBy ? ` by ${doc.updatedBy}` : ''}
           </div>
-        </div>
-      {/if}
+        {/snippet}
+      </RecordTitle>
       {#if doc.okf}
         <Button variant="ghost" size="xs" class="shrink-0 rounded border border-accent/40 bg-accent/10 px-1.5 text-accent hover:bg-accent/20" onclick={() => (okfOpen = true)}
           
@@ -444,6 +425,7 @@
               onSave={() => void saveBody()}
               placeholder={doc.kind === 'agent' ? 'OKF-structured knowledge for agents' : 'Write'}
               fill
+              attachments
               class="min-w-0 flex-1"
             />
           {/key}
@@ -522,7 +504,7 @@
             oncontextmenu={(e) => {
               const sel = window.getSelection()?.toString().trim() ?? ''
               docMenu.openMenu(e, [
-                { label: 'Copy text', disabled: !sel && !doc.body, onSelect: () => void navigator.clipboard.writeText(sel || doc.body) },
+                ...copyTextItems(sel || doc.body),
                 { label: 'Copy link', onSelect: () => copyAppLink(`/knowledge?d=${docId}`) },
                 ...(sel
                   ? [

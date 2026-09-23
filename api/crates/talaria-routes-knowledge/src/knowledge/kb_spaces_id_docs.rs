@@ -33,6 +33,9 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let space = match get_space(&state.pg, &id).await {
         Ok(s) => s,
         Err(e) => return Ok(internal("[kb] space read failed", e)),
@@ -151,6 +154,9 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let title = match optional_max_string_member(obj, "title", 200) {

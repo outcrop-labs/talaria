@@ -30,6 +30,12 @@ pub async fn post(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    if let Some(gate) = talaria_params::uuid_gate_404(&id) {
+        return Ok(gate);
+    }
+    if let Some(gate) = talaria_params::uuid_gate_404(&msg_id) {
+        return Ok(gate);
+    }
     let msg = match get_channel_message(&state.pg, &id, &msg_id).await {
         Ok(m) => m,
         Err(e) => return Ok(internal("[channels] message read on reactions failed", e)),

@@ -1,32 +1,32 @@
 [package]
 name = "talaria-gateway"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["json"] }
-base64 = "0.23"
-futures-util = "0.3"
-regex = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "http2"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-body = { path = "../talaria-body" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-settings = { path = "../talaria-settings" }
-talaria-state = { path = "../talaria-state" }
-talaria-undici = { path = "../talaria-undici" }
-tokio = { version = "1", features = ["sync", "time", "fs", "macros", "rt"] }
-url = "2"
-getrandom = "0.3"
+axum = { workspace = true }
+base64 = { workspace = true }
+futures-util = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-body = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-settings = { workspace = true }
+talaria-state = { workspace = true }
+talaria-undici = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+getrandom = { workspace = true }
 
-tracing = "0.1"
-uuid = { version = "1", features = ["v4"] }
+tracing = { workspace = true }
+uuid = { workspace = true }

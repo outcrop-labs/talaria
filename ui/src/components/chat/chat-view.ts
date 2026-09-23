@@ -3,6 +3,7 @@ import type { ToolCall } from '@/lib/sse-parse'
 import type { StoredMessage } from '@/lib/conversations.svelte'
 import type { Attachment } from '@/lib/attachments'
 import type { GuardFinding } from '@/components/chat/guard-caveat'
+import type { ChatChip } from '@/lib/chips'
 
 export interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -21,6 +22,7 @@ export interface DisplayMessage {
   /** The server auto-resumed this turn after its stream died mid-flight —
    *  shown as a marker on the row, never as a second turn. */
   resumed?: boolean
+  chips?: ChatChip[]
 }
 
 export const toDisplay = (m: StoredMessage): DisplayMessage => ({
@@ -34,4 +36,5 @@ export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   authorLabel: m.authorLabel,
   guard: m.guard,
   resumed: m.metadata?.resumed === true,
+  chips: m.chips,
 })

@@ -5,7 +5,7 @@
   import Input from '@/components/ui/Input.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -118,24 +118,16 @@
   }
 </script>
 
-{#if query.isPending}
-  <Panel class="mt-4">
-    <Skeleton class="mb-3 h-4 w-32 rounded-full" />
-    <SkeletonRows rows={2} />
-  </Panel>
-{:else if !data}
-  <!-- A failed read must not render as "not configured" — that verdict sends
-       an admin to re-enter a client that is already stored. -->
-  <Panel class="mt-4">
-    <QueryError
-      variant="compact"
-      error={query.error}
-      title="Could not load the Google client"
-      onRetry={() => void query.refetch()}
-    />
-  </Panel>
-{:else}
-  <Panel class="mt-4">
+<Panel class="mt-4">
+  <QueryState query={query} errorTitle="Could not load the Google client" errorVariant="compact">
+    {#snippet skeleton()}
+      <Skeleton class="mb-3 h-4 w-32 rounded-full" />
+      <SkeletonRows rows={2} />
+    {/snippet}
+    {#snippet children(data)}
+    <!-- A failed read must not render as "not configured" — that verdict sends
+         an admin to re-enter a client that is already stored. QueryState's
+         error branch holds it. -->
     <SectionHeader
       title="Google Workspace · OAuth client"
       info="The one credential every Google surface runs on: workspace connect (Drive, Docs, Calendar, Gmail) and, when enabled, Google login. Register it here instead of editing ui/.env; the secret is stored encrypted and never shown again."
@@ -244,12 +236,13 @@
       <!-- Credentials -->
       <div class="space-y-2">
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
-          <Input size="sm" bind:value={clientId} placeholder="1234567890-abc.apps.googleusercontent.com" class="w-full" />
+          <label for="google-client-id" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client ID</label>
+          <Input id="google-client-id" size="sm" bind:value={clientId} placeholder="1234567890-abc.apps.googleusercontent.com" class="w-full" />
         </div>
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
+          <label for="google-client-secret" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Client secret</label>
           <Input
+            id="google-client-secret"
             size="sm"
             type="password"
             bind:value={secret}
@@ -259,8 +252,8 @@
           />
         </div>
         <div class="flex items-center gap-3">
-          <label class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Domain</label>
-          <Input size="sm" bind:value={hd} placeholder="yourcompany.com (optional)" class="w-full" />
+          <label for="google-client-domain" class="w-24 shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Domain</label>
+          <Input id="google-client-domain" size="sm" bind:value={hd} placeholder="yourcompany.com (optional)" class="w-full" />
           <InfoTip text="Restricts connect + login to Google accounts on this Workspace domain. Leave blank to allow any Google account." />
         </div>
       </div>
@@ -279,5 +272,6 @@
         {/if}
       </div>
     </div>
-  </Panel>
-{/if}
+    {/snippet}
+  </QueryState>
+</Panel>

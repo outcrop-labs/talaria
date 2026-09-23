@@ -1,7 +1,8 @@
 // Live-DB proof of the workchain routes (cargo test -- --ignored). Every
 // guarantee this file pins is one a unit test cannot vouch for, because it
-// IS a Postgres rule or a router gate, not Rust: the derived head/done/
-// waiting states read the board's real status categories, the one-chain
+// IS a Postgres rule or a router gate, not Rust: the derived
+// done/head/ready/blocked states read the board's real status categories,
+// the one-chain
 // invariant holds under the real unique index, the task-delete cascade
 // removes the step, the cross-board refusal answers 400, the reorder and
 // step-delete keep the chain's order honest, and deleting a chain leaves
@@ -22,9 +23,25 @@ use talaria_api::session::{SessionUser, create_session};
 use talaria_api::state::AppState;
 use tower::ServiceExt; // oneshot
 
+mod support;
+
 /// Real services, the same ones the process boots with — Redis carries the
 /// minted sessions.
 async fn app_state() -> AppState {
+    // The engine's cross-crate edges (GET_TASK) are boot-injected in
+    // production by register_all; a test binary boots none of that, so the
+    // seams are set here, exactly the way the composition root sets them.
+    support::wire_boot_seams();
+    static TRACE: std::sync::Once = std::sync::Once::new();
+    TRACE.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .with_test_writer()
+            .try_init();
+    });
     let cfg = Config::from_parts(
         std::env::var("DATABASE_URL").expect("set DATABASE_URL (source ui/.env)"),
         std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)"),
@@ -291,7 +308,10 @@ async fn create_and_list_with_derived_states() {
     assert_eq!(steps[0]["state"], "done");
     assert_eq!(steps[0]["taskId"], done_task);
     assert_eq!(steps[1]["state"], "head");
-    assert_eq!(steps[2]["state"], "waiting");
+    assert_eq!(
+        steps[2]["state"], "blocked",
+        "a live predecessor blocks its successor — the AND-join waits"
+    );
     // The summaries a chain card renders.
     assert_eq!(steps[1]["title"], "In flight");
     assert_eq!(steps[1]["status"], "in_progress");
@@ -750,18 +770,23 @@ async fn fleet_agent(state: &AppState, board_id: &str, tag: &str) -> (String, St
     let key = talaria_api::agent_auth::rotate_agent_api_key(pg, &sb, &id)
         .await
         .expect("agent key mints");
-    sqlx::query("insert into fleet_agents (name) values ($1)")
-        .bind(&model)
-        .execute(pg)
-        .await
-        .unwrap();
+    let (fleet_id,): (String,) =
+        sqlx::query_as("insert into fleet_agents (name) values ($1) returning id::text")
+            .bind(&model)
+            .fetch_one(pg)
+            .await
+            .expect("fleet_agents row the insert just wrote");
     sqlx::query("insert into board_agents (board_id, agent_model) values ($1::uuid, $2)")
         .bind(board_id)
         .bind(&model)
         .execute(pg)
         .await
-        .unwrap();
-    (id, model, key)
+        .expect("board_agents row");
+    let _ = id;
+    // The heartbeat (and every fleet-plane route) names the agent by
+    // fleet_agents.id — the registry the fleet renders from — not by
+    // agent_defs.id. Heartbeating with the defs id 404s as "unknown agent".
+    (fleet_id, model, key)
 }
 
 /// One heartbeat through the REAL router, with the agent's own key — the
@@ -1003,12 +1028,22 @@ async fn failed_pauses_the_chain_and_tells_its_creator() {
     .await;
     assert_eq!(status, 200, "failed write failed: {body}");
 
-    let paused: Option<(bool,)> =
-        sqlx::query_as("select paused from task_workchains where id = $1::uuid")
+    // The engine runs DETACHED from the status write (a pause may never cost
+    // the ticket write it rode in on), so the pause is awaited by POLLING —
+    // same contract as await_notification below, not a one-shot read racing
+    // the spawned task.
+    let mut paused: Option<(bool,)> = None;
+    for _ in 0..50 {
+        paused = sqlx::query_as("select paused from task_workchains where id = $1::uuid")
             .bind(&chain)
             .fetch_optional(pg)
             .await
-            .unwrap();
+            .expect("chain row survives the failed write");
+        if paused == Some((true,)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(paused, Some((true,)), "the engine paused the chain");
 
     let row = await_notification(pg, &f.owner.id, "workchain_paused").await;
@@ -1045,8 +1080,9 @@ async fn failed_pauses_the_chain_and_tells_its_creator() {
         "'failed' is terminal for the chain"
     );
     assert_eq!(
-        steps[1]["state"], "head",
-        "unpausing derives the same head — nothing auto-advanced"
+        steps[1]["state"], "blocked",
+        "the failed pred is not satisfaction: the successor stays blocked \
+         (the chain paused; unpausing auto-advances nothing)"
     );
     assert_eq!(
         body["workchains"][0]["paused"],
@@ -1103,8 +1139,8 @@ async fn an_archived_step_reads_past_and_the_engine_leaves_it_alone() {
     let steps = body["workchains"][0]["steps"].as_array().expect("steps");
     assert_eq!(steps[0]["state"], "archived");
     assert_eq!(
-        steps[1]["state"], "head",
-        "the head moved past the retired step"
+        steps[1]["state"], "ready",
+        "the chain reads past the retired step: preds satisfied, servable"
     );
 
     let rows: Vec<(String,)> = sqlx::query_as(
@@ -1119,4 +1155,133 @@ async fn an_archived_step_reads_past_and_the_engine_leaves_it_alone() {
     );
 
     reset(pg, "archive").await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_wire_draws_then_refuses_cycles_then_unwires() {
+    let state = app_state().await;
+    let f = fixture(&state, "wires").await;
+    let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
+
+    let a = ticket(pg, &f.board_id, "First", "in_progress").await;
+    let b = ticket(pg, &f.board_id, "Second", "in_progress").await;
+    let c = ticket(pg, &f.board_id, "Third", "in_progress").await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Wire rig").await;
+    for task_id in [&a, &b, &c] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+
+    // Three step-adds arrive PRE-WIRED a→b→c: consecutive adds keep the
+    // v1 linear shape (the canvas rewires from there). Asserting the
+    // auto-wire against a real database pins that compat path.
+    let n: (i64,) = sqlx::query_as(
+        "select count(*)::bigint from task_workchain_edges where workchain_id = $1::uuid",
+    )
+    .bind(&chain)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    assert_eq!(n, (2,), "consecutive step-adds auto-wire the line");
+
+    // A duplicate draw is a quiet ok — the wire's unique index absorbs it.
+    // This POST also drives the would_cycle read (the site that broke CI
+    // with alias rot) against a live database for the first time.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": a, "toTaskId": b })),
+    )
+    .await;
+    assert_eq!(status, 200, "edge draw failed: {body}");
+    let n: (i64,) = sqlx::query_as(
+        "select count(*)::bigint from task_workchain_edges where workchain_id = $1::uuid",
+    )
+    .bind(&chain)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    assert_eq!(n, (2,), "the duplicate wire is absorbed, not duplicated");
+
+    // b → a would close a 2-cycle; the router refuses BEFORE any write.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": b, "toTaskId": a })),
+    )
+    .await;
+    assert_eq!(status, 400, "a back-wire must be refused: {body}");
+    let n: (i64,) = sqlx::query_as(
+        "select count(*)::bigint from task_workchain_edges where workchain_id = $1::uuid",
+    )
+    .bind(&chain)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    assert_eq!(n, (2,), "the refused wire stored nothing");
+
+    // Unwire b→c, then draw a FRESH edge c → a: the insert path (not the
+    // dedup) finally writes.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "DELETE",
+        &format!("/api/workchains/{chain}/edges/{b}/{c}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "edge delete failed: {body}");
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": c, "toTaskId": a })),
+    )
+    .await;
+    assert_eq!(status, 200, "fresh edge draw failed: {body}");
+
+    // Now b → c is the long way round (c → a → b): refused. The walk —
+    // not a two-hop check — sees through the fresh edge.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": b, "toTaskId": c })),
+    )
+    .await;
+    assert_eq!(status, 400, "the long way round is still a cycle: {body}");
+
+    // The wire list echoes what the canvas draws, in draw order.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "GET",
+        &format!("/api/boards/{}/workchains", f.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let edges = body["workchains"][0]["edges"].as_array().expect("edges");
+    assert_eq!(edges.len(), 2, "two wires listed: {edges:?}");
+    assert_eq!(edges[0]["fromTaskId"], a);
+    assert_eq!(edges[0]["toTaskId"], b);
+    assert_eq!(edges[1]["fromTaskId"], c);
+    assert_eq!(edges[1]["toTaskId"], a);
+
+    reset(pg, "wires").await;
 }

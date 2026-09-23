@@ -9,6 +9,7 @@
 | [`talaria setup`](#talaria-setup) | first-run dev bootstrap: secrets, fleet config, images, deps |
 | [`talaria dev`](#talaria-dev) | run the dev stack: infra, readiness waits, then the app on :5273 |
 | [`talaria worktree`](#talaria-worktree) | spin up an isolated worktree stack (own DB seeded from main) |
+| [`talaria cleanup`](#talaria-cleanup) | flag or sweep stale dev artifacts and report disk pressure |
 | [`talaria reset`](#talaria-reset) | destructive resets for a wedged dev stack (typed confirm, no -y by design) |
 | [`talaria box new`](#talaria-box-new) | create a devbox: clone + own sidecars, seeded from the primary stack |
 | [`talaria box ls`](#talaria-box-ls) | list devboxes (branch, port, container status) |
@@ -22,7 +23,7 @@
 | [`talaria app new`](#talaria-app-new) | scaffold a TypeScript app into apps/<slug> |
 | [`talaria deploy up`](#talaria-deploy-up) | build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved |
 | [`talaria deploy down`](#talaria-deploy-down) | stop the stack (--volumes also deletes its data — destructive) |
-| [`talaria deploy update`](#talaria-deploy-update) | git pull --ff-only, pull what the deploy runs on (api package, or the registry images under COMPOSE_FILE), then the redeploy |
+| [`talaria deploy update`](#talaria-deploy-update) | fast-forward the pinned branch (or git pull --ff-only), pull what the deploy runs on, then the redeploy |
 | [`talaria deploy logs`](#talaria-deploy-logs) | follow the stack's logs (Ctrl-C to detach) |
 | [`talaria deploy creds`](#talaria-deploy-creds) | where first-run access lives: the claim screen, not a generated password |
 | [`talaria deploy status`](#talaria-deploy-status) | effective port/state/fleet + compose ps |
@@ -173,8 +174,12 @@ production compose wrappers — up/down/update/logs/creds/status (docs/CONTAINER
 build + start the stack — CONTAINER.md's one command, DOCKER_GID + first-boot secrets resolved
 
 ```
-talaria deploy up
+talaria deploy up [--branch <name>]
 ```
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--branch` | value | — | pin this deploy to a branch on origin; update fast-forwards to that branch only (saved as TALARIA_DEPLOY_BRANCH in docker/.env) |
 
 ### `talaria deploy down`
 
@@ -190,11 +195,15 @@ talaria deploy down [--volumes]
 
 ### `talaria deploy update`
 
-git pull --ff-only, pull what the deploy runs on (api package, or the registry images under COMPOSE_FILE), then the redeploy
+fast-forward the pinned branch (or git pull --ff-only), pull what the deploy runs on, then the redeploy
 
 ```
-talaria deploy update
+talaria deploy update [--branch <name>]
 ```
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--branch` | value | — | pin this deploy to a branch on origin; update fast-forwards to that branch only (saved as TALARIA_DEPLOY_BRANCH in docker/.env) |
 
 ### `talaria deploy logs`
 
@@ -273,6 +282,18 @@ talaria worktree <name> [base-ref]
 ```
 
 Positional `<name>` (required) (takes the rest of the arguments) — then optionally a base ref (default: HEAD)
+
+### `talaria cleanup`
+
+flag or sweep stale dev artifacts and report disk pressure
+
+```
+talaria cleanup [--apply]
+```
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--apply` | bool | — | remove the safe set (stale clean worktrees and boxes, old /tmp/talaria-*, orphan compose projects) |
 
 ### `talaria reset`
 

@@ -1,34 +1,34 @@
 [package]
 name = "talaria-chat-persist"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-body = { path = "../talaria-body" }
-talaria-conversations = { path = "../talaria-conversations" }
-talaria-fleet-agents = { path = "../talaria-fleet-agents" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
-talaria-gateway = { path = "../talaria-gateway" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-plan-doc = { path = "../talaria-plan-doc" }
-talaria-retrieval-embed = { path = "../talaria-retrieval-embed" }
-talaria-retrieval-index = { path = "../talaria-retrieval-index" }
-talaria-retrieval-qdrant = { path = "../talaria-retrieval-qdrant" }
-talaria-retrieval-sources = { path = "../talaria-retrieval-sources" }
-talaria-state = { path = "../talaria-state" }
-talaria-titler = { path = "../talaria-titler" }
-talaria-workspace-handles = { path = "../talaria-workspace-handles" }
-tokio = { version = "1", features = ["macros"] }
-tracing = "0.1"
-axum = { version = "0.8", default-features = false }
-futures-util = "0.3"
-talaria-model-efforts = { path = "../talaria-model-efforts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-body = { workspace = true }
+talaria-conversations = { workspace = true }
+talaria-fleet-agents = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-gateway = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-plan-doc = { workspace = true }
+talaria-retrieval-embed = { workspace = true }
+talaria-retrieval-index = { workspace = true }
+talaria-retrieval-qdrant = { workspace = true }
+talaria-retrieval-sources = { workspace = true }
+talaria-state = { workspace = true }
+talaria-titler = { workspace = true }
+talaria-workspace-handles = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }
+talaria-model-efforts = { workspace = true }

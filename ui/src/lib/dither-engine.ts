@@ -370,8 +370,9 @@ export class DitherEngine {
   //
   // The field is a function of the sources' GEOMETRY, and geometry only moves
   // when a tween is in flight or a wave is travelling. Everything else a frame
-  // touches — the shimmer's re-rolled threshold, the lit/unlit step it may
-  // cause — is a decision per cell, not a re-evaluation of the field. These
+  // touches — the shimmer's re-rolled jitter, the alpha wobble and the
+  // lit/unlit step it may cause — is arithmetic per cell, not a re-evaluation
+  // of the field. These
   // four hold that split: `density`/`ink` are the field itself, `painted` is
   // what is on the canvas cell by cell, and `styles` keeps the colour strings
   // a cell can ask for.
@@ -615,7 +616,7 @@ export class DitherEngine {
         this.lastShimmerBucket = bucket
         this.lastWaveBucket = waveBucket
         // A tween or a travelling wave moves the FIELD under the frame; a
-        // shimmer tick only re-rolls thresholds. Only the first has to
+        // shimmer tick only re-rolls the jitter. Only the first has to
         // re-evaluate the sources.
         this.paint(now, tweening || hasWave)
       }
@@ -630,7 +631,7 @@ export class DitherEngine {
    * One frame. `live` says the field's own geometry is moving under it — a
    * tween mid-flight, or a travelling wave — so density has to be re-evaluated
    * from the sources. Otherwise the field is a cached PICTURE and the frame
-   * only has to decide, cell by cell, which pixels the re-rolled threshold
+   * only has to decide, cell by cell, which pixels the re-rolled jitter
    * changes: those are the only ones it writes.
    *
    * That split is this engine's whole performance story, and it is worth the
@@ -716,8 +717,6 @@ export class DitherEngine {
     const building = !live && !useCache
     const writeDensity = building ? new Float32Array(cells) : null
     const writeInk = building ? new Uint32Array(cells) : null
-    const shimmering = shimmer > 0 && !this.reduced
-    const halfShimmer = shimmer / 2
 
     for (let cy = 0; cy < rows; cy++) {
       const y = cy * pitch - this.fy + pitch / 2
@@ -772,6 +771,15 @@ export class DitherEngine {
           }
         }
 
+        // SHIMMER JITTERS THE DENSITY ITSELF, exactly as the full-repaint loop
+        // always did — the whole field breathes (every cell's alpha wobbles a
+        // level, boundary cells flip), not just isolated twinkles at threshold
+        // edges. What the cached picture buys is that the DENSITY here is read,
+        // not re-evaluated: the jitter is the only per-tick arithmetic.
+        if (shimmer > 0 && !this.reduced && density > 0.03 && density < 0.97) {
+          density += (hash01(gx, gy, bucket) - 0.5) * shimmer
+        }
+
         // Nothing here — a cell that used to hold ink is erased, and the rest
         // are left exactly as they are.
         if (density <= 0.002) {
@@ -798,23 +806,7 @@ export class DitherEngine {
         // A cell with no field on it at all is still skipped: the tier is a
         // floor under the texture, not a wash over the whole surface.
         const threshold = (BAYER[(gy & 7) * 8 + (gx & 7)]! + 0.5) / 64
-
-        // SHIMMER IS A THRESHOLD JITTER, and it is paid for only where a flip
-        // is possible: the jitter moves the threshold by at most half a
-        // shimmer, so a cell further than that from its own threshold cannot
-        // change and neither the hash nor the redraw is spent on it. The ALPHA
-        // deliberately does not ride the jitter — it is a function of density
-        // alone. A jitter that moved every cell's alpha by a level would make
-        // every pixel on the field differ on every tick, which is the cost this
-        // whole frame exists to avoid; the visible sparkle is the lit/unlit
-        // step, which is exactly the part that is kept.
-        const lit =
-          shimmering &&
-          density > 0.03 &&
-          density < 0.97 &&
-          Math.abs(density - threshold) <= halfShimmer
-            ? density > threshold - (hash01(gx, gy, bucket) - 0.5) * shimmer
-            : density > threshold
+        const lit = density > threshold
 
         // The unlit tier is scaled by density rather than lifted off
         // `alphaFloor`, so it fades out exactly where the field does instead of
@@ -826,6 +818,13 @@ export class DitherEngine {
             : maxAlpha * clamp01(density) * OFF_TIER
         const packed = ((ink << 8) | (cover ? 255 : Math.round(alpha * 255))) >>> 0
         if (packed === painted[i]) continue
+        // CLEAR BEFORE FILL — an incremental fill is not an assignment. fillRect
+        // composites source-over, so a dimmer refill over a brighter dot
+        // BRIGHTENS it (0.016 over 0.063 reads 0.078), and every shimmer flip
+        // or passing wave crest stacked another layer: the field crept past its
+        // own maxAlpha into blotch. The clear makes the write absolute — the
+        // same pixels a full clear-and-redraw would have left.
+        ctx.clearRect(cx * pitch - this.fx + off, top, size, size)
         ctx.fillStyle = this.styleOf(packed)
         ctx.fillRect(cx * pitch - this.fx + off, top, size, size)
         painted[i] = packed

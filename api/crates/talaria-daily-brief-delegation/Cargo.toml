@@ -1,22 +1,22 @@
 [package]
 name = "talaria-daily-brief-delegation"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-channels = { path = "../talaria-channels" }
-talaria-harness = { path = "../talaria-harness" }
-talaria-harness-defs = { path = "../talaria-harness-defs" }
-talaria-notify = { path = "../talaria-notify" }
-talaria-state = { path = "../talaria-state" }
-tokio = { version = "1", features = ["macros"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-channels = { workspace = true }
+talaria-harness = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-state = { workspace = true }
+tokio = { workspace = true }
 

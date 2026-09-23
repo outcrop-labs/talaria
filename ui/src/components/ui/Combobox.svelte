@@ -1,3 +1,9 @@
+<script lang="ts" module>
+  // Module-scope counter: every instance's listbox id is unique without
+  // dragging in crypto or a global registry.
+  let seq = 0
+</script>
+
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
@@ -9,8 +15,9 @@
 
   // A searchable dropdown for picking option(s). Fuzzy filter as you type.
   // Single mode: selecting closes + reports the value. Multi: toggles, stays open.
-  // allowCreate: the search text becomes a pickable "Create" row (Enter or comma
-  // commits it) — the tag-input mode.
+  // Keyboard: ↑/↓/Home/End walk a highlight through the filtered rows, Enter
+  // activates it, Tab closes without picking. The Create row (allowCreate)
+  // is never arrow-highlighted — click it or press comma to commit the text.
   let {
     options,
     selected,
@@ -53,6 +60,11 @@
   // dropdown's z-index below the next card. Flips upward near the bottom edge.
   let pos = $state<{ top?: number; bottom?: number; left: number; width: number } | null>(null)
 
+  // Keyboard highlight: an index into `filtered` (the Create row is never in
+  // it — arrows skip it by construction). −1 = nothing highlighted.
+  let hl = $state(-1)
+  const listId = `combo-list-${seq++}`
+
   $effect(() => {
     if (!open) return
     const place = () => {
@@ -79,6 +91,27 @@
     }
   })
 
+  // The highlight re-enters at the top of whatever the filter shows — both
+  // a reopen and every keystroke reset it to the first row.
+  $effect(() => {
+    if (!open) return
+    hl = filtered.length > 0 ? 0 : -1
+  })
+
+  // Focus the search on open. The input's native `autofocus` only fires when
+  // body holds focus (Svelte's own rule); a trigger CLICK leaves focus on the
+  // button, so an explicit focus is what makes typing work on open.
+  $effect(() => {
+    if (!open) return
+    panelRef?.querySelector<HTMLInputElement>('input')?.focus()
+  })
+
+  // Keep the highlighted row scrolled into view — the ul is the scroll box.
+  $effect(() => {
+    if (!open || hl < 0) return
+    panelRef?.querySelector('[data-hl]')?.scrollIntoView({ block: 'nearest' })
+  })
+
   const filtered = $derived(options.filter((o) => fuzzy(q, o.label + ' ' + (o.sub ?? ''))))
   const selectedSet = $derived(new Set(selected))
   const byValue = (v: string) => options.find((o) => o.value === v)
@@ -103,17 +136,53 @@
     q = ''
   }
 
-  const onSearchKeyDown = (e: KeyboardEvent) => {
+  // One keydown handler for both focus homes: the search input (searchable)
+  // and the trigger button (searchable={false} renders no input, so focus
+  // stays on the trigger and the keys arrive there).
+  const onKeydown = (e: KeyboardEvent) => {
+    if (!open) return
     if (e.key === 'Escape') {
       // Close just the dropdown — without this, the event reaches the Modal's
       // document-level listener and closes the whole dialog (losing edits).
       e.preventDefault()
       e.stopPropagation()
       open = false
+      // Keyboard close hands focus back — without this it falls to <body>
+      // and the next Enter/arrows go nowhere.
+      ref?.querySelector('button')?.focus()
       return
     }
-    if (!allowCreate) return
-    if (e.key === 'Enter' || e.key === ',') {
+    // Tab moves focus on — close behind it, activate nothing. Focus first
+    // returns to the trigger so the default Tab action advances from there.
+    if (e.key === 'Tab') {
+      open = false
+      ref?.querySelector('button')?.focus()
+      return
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const n = filtered.length
+      if (n === 0) return
+      const d = e.key === 'ArrowDown' ? 1 : -1
+      const from = hl >= 0 && hl < n ? hl : d > 0 ? -1 : 0
+      hl = (from + d + n) % n
+      return
+    }
+    if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault()
+      if (filtered.length > 0) hl = e.key === 'Home' ? 0 : filtered.length - 1
+      return
+    }
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault()
+      // The highlighted row wins; with nothing highlighted (no matches) an
+      // allowCreate combobox commits the typed text instead.
+      const o = filtered[hl]
+      if (o) toggle(o.value)
+      else create()
+      return
+    }
+    if (allowCreate && e.key === ',' && !e.isComposing) {
       e.preventDefault()
       create()
     }
@@ -125,6 +194,15 @@
     type="button"
     {disabled}
     onclick={() => (open = !open)}
+    aria-haspopup="listbox"
+    aria-expanded={open}
+    onkeydown={(e) => {
+      // Arrows on a closed combobox open it — the closed half of the walk.
+      if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault()
+        open = true
+      } else onKeydown(e)
+    }}
     class={cn(
       controlSizes[size],
       'flex w-full items-center gap-2 rounded-md font-sans text-sm outline-none transition-colors disabled:opacity-50',
@@ -180,29 +258,35 @@
           <input
             autofocus
             bind:value={q}
-            onkeydown={onSearchKeyDown}
+            onkeydown={onKeydown}
             placeholder={allowCreate ? 'Search or create' : 'Search'}
+            aria-controls={listId}
+            aria-activedescendant={filtered[hl] ? `${listId}-${hl}` : undefined}
             class="h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted"
           />
         </div>
       {/if}
-      <ul class="max-h-56 overflow-y-auto">
+      <ul id={listId} role="listbox" class="max-h-56 overflow-y-auto">
         {#if filtered.length === 0 && !canCreate}
-          <li class="px-2 py-2 font-mono text-[11px] text-muted">No matches</li>
+          <li role="presentation" class="px-2 py-2 font-mono text-[11px] text-muted">No matches</li>
         {/if}
         {#if canCreate}
-          <li>
+          <li role="presentation">
             <button type="button" onclick={create} class={cn(popRow, 'text-fg')}>
               <span class="text-accent">＋</span> Create “{creatable}”
             </button>
           </li>
         {/if}
-        {#each filtered as o (o.value)}
-          <li>
+        {#each filtered as o, i (o.value)}
+          <li role="presentation">
             <button
               type="button"
+              role="option"
+              aria-selected={selectedSet.has(o.value)}
+              id={`${listId}-${i}`}
+              data-hl={hl === i || undefined}
               onclick={() => toggle(o.value)}
-              class={cn(popRow, selectedSet.has(o.value) && popRowSelected)}
+              class={cn(popRow, hl === i && 'bg-hover', selectedSet.has(o.value) && popRowSelected)}
             >
               {@render o.icon?.()}
               <span class="min-w-0 flex-1">

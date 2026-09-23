@@ -7,7 +7,7 @@
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -32,7 +32,6 @@
     queryKey: ['org-domains'],
     queryFn: (): Promise<OrgDomainRow[]> => getList<OrgDomainRow>('/api/admin/domains', 'domains'),
   }))
-  const data = $derived(query.data)
   let draft = $state('')
   let error = $state<string | null>(null)
   let verifying = $state<string | null>(null)
@@ -79,16 +78,9 @@
     title="Email sign-up domains"
     info="The domain after the @ in your team's EMAIL addresses, not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically. No invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed."
   />
-  {#if query.isPending}
-    <SkeletonRows rows={2} />
-  {:else if !data}
-    <QueryError
-      variant="inline"
-      error={query.error}
-      title="Could not load your sign-up domains"
-      onRetry={() => void query.refetch()}
-    />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load your sign-up domains" errorVariant="inline">
+    {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
+    {#snippet children(data)}
     <div class="space-y-2">
       {#if data.length === 0}
         <EmptyState
@@ -98,8 +90,8 @@
           class="font-sans"
         />
       {/if}
-      <!-- No `?? []` fallback: `!data` already forked to the error above, so
-           reaching here means the read landed. -->
+      <!-- No `?? []` fallback: the missing-data case forked to QueryState's
+           error branch, so reaching here means the read landed. -->
       {#each data as d (d.id)}
         <div class="space-y-1.5 rounded-md border border-line p-2.5">
           <div class="flex items-center gap-2">
@@ -157,5 +149,6 @@
         </div>
       {/if}
     </div>
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

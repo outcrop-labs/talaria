@@ -21,6 +21,11 @@ pub struct RoleTemplate {
     pub built_in: bool,
 }
 
+/// The dev-work routing rule, stamped onto every built-in soul beside the
+/// human-in-the-loop pair: code changes ship through a ticket and a workbench
+/// job, however small, and instructions given in chat land on the ticket.
+const DEV_WORK_RULE: &str = "- Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.";
+
 /// The soul every built-in shares, so they read as one library rather than
 /// eight separately-invented documents. `who` and `work` are the role's own;
 /// the human-in-the-loop pair is on EVERY built-in — a template is what an
@@ -42,6 +47,7 @@ fn soul(name: &str, role: &str, who: &str, voice: &str, work: &[&str]) -> String
     lines.push(
         "- Keep humans in the loop: create and triage tickets, never assign or close them.".into(),
     );
+    lines.push(DEV_WORK_RULE.into());
     lines.push("- When unsure, ask in the channel instead of guessing.".into());
     lines.join("\n")
 }
@@ -337,6 +343,7 @@ mod tests {
              - W1\n\
              - W2\n\
              - Keep humans in the loop: create and triage tickets, never assign or close them.\n\
+             - Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.\n\
              - When unsure, ask in the channel instead of guessing."
         );
     }
@@ -367,6 +374,7 @@ mod tests {
         for b in &t {
             assert!(b.soul.ends_with(
                 "- Keep humans in the loop: create and triage tickets, never assign or close them.\n\
+                 - Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.\n\
                  - When unsure, ask in the channel instead of guessing."
             ));
             assert!(b.built_in);

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-10 routes.
+12 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -25,6 +25,8 @@
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | POST | `session` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | DELETE | `session` |
 | [`/api/tasks/{id}/work-session`](#apitasksidwork-session) | GET | `session` |
+| [`/api/tasks/{id}/work-session/stop`](#apitasksidwork-sessionstop) | POST | `session` |
+| [`/api/tasks/{id}/work-sessions`](#apitasksidwork-sessions) | GET | `session` |
 | [`/api/workflows`](#apiworkflows) | GET | `session` |
 | [`/api/workflows`](#apiworkflows) | POST | `session` + `perm:agents.manage` |
 | [`/api/workflows/{id}`](#apiworkflowsid) | PUT | `session` + `perm:agents.manage` |
@@ -42,9 +44,9 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id.rs`](../../api/cra
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200, 403, 404 | — |
-| PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | — | `{ok}` | 200, 403, 404 | — |
+| GET | `dual` | — | `…` | 200, 403, 404, 409 | — |
+| PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | — | `{ok}` | 200, 403, 404, 409 | — |
 
 ### PUT `/api/tasks/{id}` body
 
@@ -95,8 +97,8 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_comments.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{comments}` | 200, 403, 404 | — |
-| POST | `dual` | [body](#post-apitasksidcomments-body) | `{comment}` | 200, 400, 403, 404 | — |
+| GET | `dual` | — | `{comments}` | 200, 403, 404, 409 | — |
+| POST | `dual` | [body](#post-apitasksidcomments-body) | `{comment}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/comments` body
 
@@ -116,20 +118,20 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 400, 403 | — |
+| POST | `dual` | [body](#post-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | [body](#delete-apitasksiddependencies-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dependsOnId` | `uuid` |  |
+| `dependsOnId` | `string(1, 200)` |  |
 
 ### DELETE `/api/tasks/{id}/dependencies` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `dependsOnId` | `uuid` |  |
+| `dependsOnId` | `string(1, 200)` |  |
 
 ## `/api/tasks/{id}/review`
 
@@ -141,7 +143,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apitasksidreview-body) | `{task}` | 200, 400, 403, 404 | — |
+| POST | `session` | [body](#post-apitasksidreview-body) | `{task}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/review` body
 
@@ -161,8 +163,8 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs`](../../a
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200, 403, 404 | — |
-| POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404 | — |
+| GET | `dual` | — | `…` | 200, 403, 404, 409 | — |
+| POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/usage` body
 
@@ -185,8 +187,8 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_watchers.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404 | — |
-| DELETE | `session` | [body](#delete-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404 | — |
+| POST | `session` | [body](#post-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404, 409 | — |
+| DELETE | `session` | [body](#delete-apitasksidwatchers-body) | `{watchers}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/watchers` body
 
@@ -212,7 +214,35 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{session, wait}` | 200, 403, 404 | — |
+| GET | `session` | — | `{session, wait}` | 200, 403, 404, 409 | — |
+
+## `/api/tasks/{id}/work-session/stop`
+
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session_stop.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session_stop.rs)
+
+> POST /api/tasks/{id}/work-session/stop. THE HUMAN BRAKE. Once an agent
+> has picked a ticket up, nothing else on the board ends that work: the
+> session is a detached driver whose send step may legitimately run for
+> hours. This route cancels every live work-session on the ticket —
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok}` | 200, 403, 404 | — |
+
+## `/api/tasks/{id}/work-sessions`
+
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_sessions.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_work_sessions.rs)
+
+> GET /api/tasks/{id}/work-sessions. THE RECORD, beside the live read's
+> NOW. The live work-session read answers "is anyone on it"; this answers
+> "what happened" — every session this ticket has had, live ones first by
+> creation order, finished ones newest-first, twenty deep. The run-detail
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{sessions}` | 200, 403, 404 | — |
 
 ## `/api/workflows`
 

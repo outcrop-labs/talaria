@@ -1,7 +1,7 @@
 // /api/teams/{id}/members. GET → members (any member of the team).
 // POST { email, role? } → add (owner; the role defaults to 'member', and the
 // email rides the audit row exactly as sent). DELETE { userId } → remove
-// (owner; owners are silently kept by the SQL's role guard). Non-uuid {id} →
+// (owner; the last owner is refused, everyone else goes). Non-uuid {id} →
 // the house 500. Gate order: uuid bind, then the role check, then the body.
 
 use super::owner_gate;
@@ -104,8 +104,10 @@ pub async fn delete(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    if let Err(e) = remove_team_member(&state.pg, &id, &user_id).await {
-        return Ok(internal("[teams] member remove failed", e));
+    match remove_team_member(&state.pg, &id, &user_id).await {
+        Ok(None) => {}
+        Ok(Some(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        Err(e) => return Ok(internal("[teams] member remove failed", e)),
     }
     log_audit(
         &state.pg,

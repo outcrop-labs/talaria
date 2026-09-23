@@ -18,8 +18,11 @@
 //
 // The shell owns all geometry: WebKitGTK mis-places new child webviews until
 // their first set_bounds (tauri#10420) and auto_resize breaks across resize
-// cycles (tauri#10131), so layout.rs recomputes logical-unit bounds on every
-// resize and never uses auto_resize. Full story: docs/DESKTOP.md.
+// cycles (tauri#10131), so layout.rs applies logical-unit bounds at the end
+// of setup and again on every resize, and never uses auto_resize. The setup
+// pass is load-bearing: the initial Resized can arrive before ShellState
+// exists, and without a later set_bounds the launcher stays 1×1 and Wayland
+// never maps the undecorated window. Full story: docs/DESKTOP.md.
 
 mod beacon;
 mod commands;
@@ -80,6 +83,32 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
 
+/// Beacon client. The platform verifier is preferred (enterprise CAs), but
+/// it refuses to build when the system store is empty — a Flatpak whose
+/// `SSL_CERT_FILE` points at a host path the sandbox cannot see, or a
+/// runtime whose probe paths are empty. That error aborts setup, and a
+/// `.desktop` launch (`Terminal=false`) shows nothing. Mozilla's roots
+/// still verify the beacon.
+fn http_client() -> reqwest::Client {
+    let build = || {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .redirect(reqwest::redirect::Policy::limited(3))
+    };
+    match build().build() {
+        Ok(client) => client,
+        Err(_) => {
+            let certs = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+                .iter()
+                .filter_map(|der| reqwest::Certificate::from_der(der.as_ref()).ok());
+            build()
+                .tls_certs_only(certs)
+                .build()
+                .expect("beacon client")
+        }
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -108,11 +137,13 @@ pub fn run() {
                 settings: Mutex::new(loaded_settings),
                 active: Mutex::new(None),
                 view: Mutex::new(View::Welcome),
-                http: reqwest::Client::builder()
-                    .timeout(Duration::from_secs(8))
-                    .redirect(reqwest::redirect::Policy::limited(3))
-                    .build()?,
+                http: http_client(),
             });
+            // After state exists, and after decorations (they change the
+            // client rect). The initial Resized often already happened.
+            if let Some(window) = app.get_window("main") {
+                layout::relayout(&window);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
