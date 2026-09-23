@@ -11,6 +11,7 @@
    *  scrollable modal. Mirrors whichever method is selected. */
   let { open, onClose, mode }: { open: boolean; onClose: () => void; mode: 'app' | 'pat' } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: the reopen $effect below re-seeds it from the live prop
   let tab = $state<'app' | 'pat'>(mode)
   $effect(() => {
     void open

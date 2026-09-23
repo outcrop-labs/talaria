@@ -2,6 +2,9 @@
 import { createQuery } from '@tanstack/svelte-query'
 import { errorMessage, getList, putJson } from '@/lib/fetch-json'
 export { isInternalServer } from '@/lib/mcp-servers'
+// The teams directory is one read app-wide (`@/lib/teams`); the MCP access
+// dialog reaches it through this module like the page's other shared helpers.
+export { useTeamsDirectory, type TeamDirectoryEntry } from '@/lib/teams'
 export {
   composeHeader,
   composeHeaders,
@@ -70,21 +73,6 @@ export function useMcpServers() {
     // "No MCP servers yet" invites an admin to register one they may already
     // have. Only a genuine empty registry earns that screen.
     queryFn: (): Promise<McpServerRow[]> => getList<McpServerRow>('/api/mcp/servers', 'servers'),
-  }))
-}
-
-export interface TeamDirectoryEntry {
-  id: string
-  name: string
-  memberCount: number
-  agentCount: number
-}
-
-export function useTeamsDirectory() {
-  return createQuery(() => ({
-    queryKey: ['teams-directory'],
-    queryFn: (): Promise<TeamDirectoryEntry[]> => getList<TeamDirectoryEntry>('/api/teams/directory', 'teams'),
-    staleTime: 30_000,
   }))
 }
 

@@ -63,7 +63,7 @@ const makeDeployTree = (envFile?: string) => {
 const docUpArgv = (() => {
   const md = readFileSync(join(import.meta.dir, '../../../../docs/CONTAINER.md'), 'utf8')
   const fences = [...md.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]!)
-  const block = fences.find((b) => b.includes('docker compose -f docker/compose.yml up'))
+  const block = fences.find((b) => b.includes('docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up'))
   if (!block) throw new Error('CONTAINER.md no longer contains the canonical up command')
   const tokens = block
     .replace(/\\\n/g, ' ')
@@ -108,11 +108,12 @@ describe('talaria deploy up — argv parity with CONTAINER.md', () => {
     const up = ctx.calls.find((c) => c.cmd === 'docker' && c.args.includes('up'))!
     expect(up.args).toEqual(docUpArgv)
     expect(up.args[0]).toBe('compose')
-    expect(up.args[1]).toBe('-f')
-    expect(up.args[2]).toBe('docker/compose.yml')
+    // the shared sidecar plane first, then the base — the order the merge
+    // depends on (see SIDECARS_COMPOSE)
+    expect(up.args.slice(1, 5)).toEqual(['-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml'])
     expect(up.opts?.cwd).toBe(root)
     // the printed equivalent is the same command, copy-pasteable
-    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg === 'docker compose -f docker/compose.yml up -d --build')).toBe(true)
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg === 'docker compose -f docker/sidecars.compose.yml -f docker/compose.yml up -d --build')).toBe(true)
   })
 
   test('DOCKER_GID resolved from the socket when nobody supplied one', async () => {
@@ -188,14 +189,14 @@ describe('talaria deploy down / logs / status / update', () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await runDown(ctx, false)
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'down'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'down'])
   })
 
   test('down --volumes is explicit and the flag says what it costs', async () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await downCommand.run(ctx, { positionals: [], flags: { volumes: true } })
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'down', '--volumes'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'down', '--volumes'])
     expect(downCommand.flags?.[0]!.desc).toContain('DATABASE')
   })
 
@@ -203,7 +204,7 @@ describe('talaria deploy down / logs / status / update', () => {
     const ctx = fakeCtx()
     ctx.root = makeDeployTree()
     await runLogs(ctx)
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'logs', '-f'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'logs', '-f'])
     expect(logsCommand.usage).toBe('talaria deploy logs')
   })
 
@@ -215,7 +216,7 @@ describe('talaria deploy down / logs / status / update', () => {
     expect(line).toContain('http://localhost:9999')
     expect(line).toContain('/srv/tal')
     expect(line).toContain('talaria-fleet/talaria') // the compose defaults
-    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/compose.yml', 'ps'])
+    expect(ctx.calls.at(-1)!.args).toEqual(['compose', '-f', 'docker/sidecars.compose.yml', '-f', 'docker/compose.yml', 'ps'])
   })
 
   test('update pulls --ff-only then runs the documented up', async () => {
@@ -276,10 +277,105 @@ describe('talaria deploy down / logs / status / update', () => {
     expect(ctx.logLines.some((l) => l.kind === 'skip' && l.msg.includes('TALARIA_API_IMAGE'))).toBe(true)
     expect(apiImageRef(mkdtempSync(join(tmpdir(), 'talaria-empty-')))).toBeNull() // no Dockerfile at all
   })
+
+  test('a saved pin fast-forwards that branch and does not git pull', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket')
+    const git = ctx.calls.filter((c) => c.cmd === 'git')
+    expect(git.map((c) => c.args)).toEqual([
+      ['fetch', 'origin', 'rc'],
+      ['merge', '--ff-only', 'origin/rc'],
+    ])
+    expect(git.every((c) => c.opts?.cwd === ctx.root)).toBe(true)
+    const fetchAt = ctx.calls.findIndex((c) => c.cmd === 'git')
+    const pkg = ctx.calls.findIndex((c) => c.cmd === 'docker' && c.args[0] === 'pull')
+    const up = ctx.calls.findIndex((c) => c.args.includes('up'))
+    expect(fetchAt).toBeLessThan(pkg)
+    expect(pkg).toBeLessThan(up)
+  })
+
+  test('--branch repins, persists, and fast-forwards the new branch', async () => {
+    const root = makeDeployTree('TALARIA_DEPLOY_BRANCH=main\nPOSTGRES_PASSWORD=kept\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runUpdate(ctx, '/nonexistent-deploy-test-socket', 'rc')
+    const text = readFileSync(join(root, 'docker/.env'), 'utf8')
+    expect(text).toContain('TALARIA_DEPLOY_BRANCH=rc')
+    expect(text).not.toContain('TALARIA_DEPLOY_BRANCH=main')
+    expect(text).toContain('POSTGRES_PASSWORD=kept')
+    expect(ctx.calls.filter((c) => c.cmd === 'git').map((c) => c.args)).toEqual([
+      ['fetch', 'origin', 'rc'],
+      ['merge', '--ff-only', 'origin/rc'],
+    ])
+  })
+
+  test('a bad branch name dies before git, and does not rewrite the pin', async () => {
+    const root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    const ctx = fakeCtx()
+    ctx.root = root
+    const msg = await attempt(() => runUpdate(ctx, '/nonexistent-deploy-test-socket', 'origin/rc'))
+    expect(msg).toContain('not a branch name')
+    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+    expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain('TALARIA_DEPLOY_BRANCH=rc')
+  })
+
+  test('a garbage saved pin dies before git pull', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=..\n')
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('not a branch name')
+    expect(ctx.calls.some((c) => c.cmd === 'git')).toBe(false)
+  })
+
+  test('a failed fetch dies before any docker command', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    ctx.plant(['git', ['fetch', 'origin', 'rc']], new Error('no route'))
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('git fetch origin rc failed')
+    expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+  })
+
+  test('a failed fast-forward dies before any docker command', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    ctx.plant(['git', ['merge', '--ff-only', 'origin/rc']], new Error('diverged'))
+    const msg = await attempt(() => runUpdate(ctx))
+    expect(msg).toContain('cannot fast-forward')
+    expect(ctx.calls.some((c) => c.cmd === 'docker')).toBe(false)
+  })
+
+  test('up --branch pins and fast-forwards before the build; a later plain up does not fetch', async () => {
+    const root = makeDeployTree()
+    const ctx = fakeCtx()
+    ctx.root = root
+    await runUp(ctx, '/nonexistent-deploy-test-socket', 'rc')
+    expect(readFileSync(join(root, 'docker/.env'), 'utf8')).toContain('TALARIA_DEPLOY_BRANCH=rc')
+    const git = ctx.calls.filter((c) => c.cmd === 'git')
+    expect(git.map((c) => c.args)).toEqual([
+      ['fetch', 'origin', 'rc'],
+      ['merge', '--ff-only', 'origin/rc'],
+    ])
+    const up = ctx.calls.findIndex((c) => c.args.includes('up'))
+    expect(ctx.calls.indexOf(git[1]!)).toBeLessThan(up)
+
+    const again = fakeCtx()
+    again.root = root
+    await runUp(again, '/nonexistent-deploy-test-socket')
+    expect(again.calls.some((c) => c.cmd === 'git')).toBe(false)
+  })
+
+  test('status names the pinned branch', async () => {
+    const ctx = fakeCtx()
+    ctx.root = makeDeployTree('TALARIA_DEPLOY_BRANCH=rc\n')
+    await runStatus(ctx)
+    expect(ctx.logLines.some((l) => l.kind === 'say' && l.msg.includes('branch origin/rc'))).toBe(true)
+  })
 })
 
 describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
-  const FILES = 'docker/compose.yml:docker/compose.registry.yml'
+  const FILES = 'docker/sidecars.compose.yml:docker/compose.yml:docker/compose.registry.yml'
 
   // An explicit -f BEATS the COMPOSE_FILE env in docker's own precedence, so
   // honoring the operator's layering means the CLI drops its -f entirely.
@@ -321,6 +417,30 @@ describe('talaria deploy — COMPOSE_FILE (the registry-image flow)', () => {
     const msg = await attempt(() => runUp(ctx, '/nonexistent-deploy-test-socket'))
     expect(msg).toContain('registry-mode up must not run')
     expect(ctx.calls.some((c) => c.args.includes('up'))).toBe(false)
+  })
+
+  // The 2026-09-21 incident, both customer VMs: the export forgot the
+  // fragment. Dying on it left every pre-fragment install unable to update
+  // or deploy until a human re-exported on each host — the wrapper now
+  // repairs the list in the env (the docker child reads COMPOSE_FILE from
+  // the inherited environment, not from the CLI's string), and the printed
+  // equivalent teaches the corrected export.
+  test('a COMPOSE_FILE without the sidecar plane is repaired, not fatal', async () => {
+    const broken = 'docker/compose.yml:docker/compose.registry.yml:docker/compose.vm.yml'
+    const fixed = `docker/sidecars.compose.yml:${broken}`
+    const down = fakeCtx({ env: { COMPOSE_FILE: broken } })
+    down.root = makeDeployTree()
+    await runDown(down, false)
+    expect(down.env.COMPOSE_FILE).toBe(fixed)
+    expect(down.calls.find((c) => c.cmd === 'docker')!.args).toEqual(['compose', 'down'])
+    expect(down.logLines.some((l) => l.kind === 'say' && l.msg === `COMPOSE_FILE=${fixed} docker compose down`)).toBe(true)
+    expect(down.logLines.some((l) => l.kind === 'warn' && l.msg.includes('docker/sidecars.compose.yml'))).toBe(true)
+    // the incident command itself: update now runs through to the compose up
+    const update = fakeCtx({ env: { COMPOSE_FILE: broken } })
+    update.root = makeDeployTree()
+    await runUpdate(update, '/nonexistent-deploy-test-socket')
+    expect(update.calls.some((c) => c.cmd === 'docker' && c.args.includes('searxng-config'))).toBe(true)
+    expect(update.calls.some((c) => c.cmd === 'docker' && c.args.includes('up'))).toBe(true)
   })
 
   test('the drift check scans every file COMPOSE_FILE lists', () => {

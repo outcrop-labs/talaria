@@ -4,7 +4,7 @@
   import { Archive, Bot, ChevronDown, ChevronLeft, GripVertical, Paperclip, Plus, X } from '@lucide/svelte'
   import { relativeTime } from '@/lib/fleet'
   import AttachButton from '@/components/chat/AttachButton.svelte'
-  import EffortPicker from '@/components/chat/EffortPicker.svelte'
+  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import PendingAttachments from '@/components/chat/PendingAttachments.svelte'
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
@@ -148,7 +148,10 @@
   // adopter below in refetch races (adopt → list lands without it → deselect
   // → adopt → …) and the oscillation took the whole panel down with an
   // unhandled effect loop.
-  const conversation = useInboxFocusConversation(chatId)
+  // Getter, not a value: the drawer mounts once in AppLayout (a peer of the
+  // nav rail), so an eager `chatId` would pin the thread to mount time and a
+  // picker switch would only swap the header. The query key must stay live.
+  const conversation = useInboxFocusConversation(() => chatId)
   // ADOPT, DON'T ASK. With nothing selected, the server answers from the most
   // recent instance (creating nothing) — and the picker should name whatever
   // is actually on screen, so the resolved id becomes the selection. This is
@@ -220,6 +223,12 @@
       if (effort !== next) effort = next
     }
   })
+
+  // The effort chip's shape: its rows, the rung the pick sits on ('' is the
+  // model's own default — no rung), and the ingress row that means it.
+  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
+  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effort) + 1) })
+  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
   // Google connection state — the footer offers the connect link the moment
   // the assistant could use mail/calendar but can't (the chat reply only ever
   // says "not connected"; this is the way out of that sentence). Same cache
@@ -515,6 +524,7 @@
     style:--aside-w="min({panelWidth}px, calc(100vw - 44px))"
     aria-label="Assistant conversation"
   >
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -- reason: ARIA adjustable separator (aria-valuenow, onkeydown) — legitimately interactive per ARIA -->
     <div
       role="separator"
       aria-label="Resize assistant conversation"
@@ -693,7 +703,25 @@
                  effort chip. -->
             <AttachButton onAttach={addAttachment} disabled={busy} />
             <span class="flex-1"></span>
-            {#if efforts.length > 0}<EffortPicker {efforts} value={effort} onChange={(v) => { effort = v; effortPristine = false }} disabled={busy} />{/if}
+            {#if efforts.length > 0}
+              <ComposerPicker
+                chipVariant="primary"
+                value={effort}
+                label={effort || 'auto'}
+                options={effortOptions}
+                autoOption={effortAuto}
+                meter={effortMeter}
+                searchable={false}
+                menuClass="min-w-48"
+                title="Reasoning effort for this reply"
+                menuLabel="Reasoning effort"
+                disabled={busy}
+                onChange={(v) => {
+                  effort = v
+                  effortPristine = false
+                }}
+              />
+            {/if}
           {/snippet}
         </ChatComposer>
       </div>

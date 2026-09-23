@@ -124,9 +124,14 @@ pub async fn put(
                         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
                     }
                 },
+                // Trimmed of '/' at both ends: a prefix typed "agent/" would
+                // otherwise compose into `agent//<ref>` — a branch GitHub's
+                // ref validation refuses with a 422 (the mint normalizes
+                // too, for rows written before this guard).
                 branch_prefix: talaria_body::optional_max_string_member(entry, "branchPrefix", 100)
                     .ok()
                     .flatten()
+                    .map(|p| p.trim().trim_matches('/').to_string())
                     .filter(|p| !p.is_empty()),
             };
             if let Err(e) = gh::set_repo_rule(&state.pg, &agent_id, &rule).await {

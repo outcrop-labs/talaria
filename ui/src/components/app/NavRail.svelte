@@ -110,16 +110,18 @@
   const sections = $derived.by(() => {
     const core = NAV.flatMap((section) => {
       if (section.adminOnly && !isAdmin) return []
-      const items = [...section.items, ...(section.title === 'Manage' ? appManage : [])].filter(passes)
-      return items.length === 0 ? [] : [{ title: section.title, items }]
+      const items = [...section.items, ...(section.id === 'manage' ? appManage : [])].filter(passes)
+      return items.length === 0 ? [] : [{ id: section.id, title: section.title, items }]
     })
     const apps = appWork.filter(passes)
     if (apps.length === 0) return core
-    // After Work when Work exists; otherwise ahead of Manage (or at the top,
-    // in the nothing-core-survives edge) — either way: Work, Apps, Manage.
-    const workAt = core.findIndex((s) => s.title === 'Work')
-    const at = workAt >= 0 ? workAt + 1 : Math.max(core.findIndex((s) => s.title === 'Manage'), 0)
-    return [...core.slice(0, at), { title: 'Apps', items: apps }, ...core.slice(at)]
+    // After the Work views when they exist; otherwise ahead of Manage (or at
+    // the top, in the nothing-core-survives edge) — either way: views, Apps,
+    // Manage. Placement branches on the section's stable `id`, never its
+    // display string: the Work views carry no header to match on.
+    const workAt = core.findIndex((s) => s.id === 'work')
+    const at = workAt >= 0 ? workAt + 1 : Math.max(core.findIndex((s) => s.id === 'manage'), 0)
+    return [...core.slice(0, at), { id: 'apps', title: 'Apps', items: apps }, ...core.slice(at)]
   })
 
   // THE ACTIVE ITEM IS THE MOST SPECIFIC ONE CONTAINING THE ROUTE, decided
@@ -204,7 +206,7 @@
          even though it only asked to scroll vertically — and the outset accent
          band was being sliced off flush at both edges. -->
     <div class="mt-3 flex min-h-0 w-full flex-1 flex-col items-center gap-2 overflow-y-auto p-1">
-      {#each sections as section, si (section.title)}
+      {#each sections as section, si (section.id)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
           {@const badge = badgeFor(item)}
@@ -295,11 +297,15 @@
 
     <!-- Room for the selected band at both edges — see the note above. -->
     <div class="mt-3 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-1">
-      {#each sections as section (section.title)}
+      {#each sections as section (section.id)}
         <div>
-          <div class="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-            {section.title}
-          </div>
+          <!-- The header row only when the section carries a title: the Work
+               views render as a bare list — the views are the label. -->
+          {#if section.title}
+            <div class="flex h-6 items-center px-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+              {section.title}
+            </div>
+          {/if}
           <!-- `space-y-1.5` rather than `space-y-px`: the row treatment blooms
                OUTWARD — the hover texture fades past the row's edge and the
                active halo reaches further still — so rows a single pixel apart

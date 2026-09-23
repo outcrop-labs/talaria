@@ -15,11 +15,31 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
-import type { ComposeSpec } from '../../compose'
+import { stackComposeFiles, type ComposeSpec } from '../../compose'
 import { devboxHome, NAME_RE } from '../../paths'
 
 export const IMAGE = 'talaria-devbox:latest'
 export const COMPOSE_FILE = 'docker/devbox.compose.yml'
+
+/** The box's compose project — the `-p` every box operation passes, and the
+ *  prefix of every object compose names after it. */
+export const boxProject = (name: string): string => `devbox-${name}`
+
+/** The box CONTAINER (the toolchain service) — what `docker exec` targets.
+ *  The same string as boxProject by construction (devbox.compose.yml's
+ *  `container_name: devbox-${BOX_NAME}`), but a different concept: this names
+ *  a container, that names a project. */
+export const boxHost = (name: string): string => `devbox-${name}`
+
+/** A sidecar container inside the box — `postgres`, `redis`, `qdrant`,
+ *  `minio`, … — named by devbox.compose.yml's `container_name:` lines. */
+export const boxSvc = (name: string, svc: string): string => `devbox-${name}-${svc}`
+
+/** The box's PRIVATE agent network — devbox.compose.yml's `networks.fleet.name`
+ *  and, by design, the fleet render's own compose project name: agents attach
+ *  to it and reach the box container-to-container. Per box on purpose (shared
+ *  fleets reconcile each other away — TALARIA_FLEET_PROJECT). */
+export const boxFleetNetwork = (name: string): string => `devbox-${name}-fleet`
 
 export const devboxes = (ctx: Ctx): string => devboxHome(ctx.root, ctx.env)
 
@@ -43,20 +63,22 @@ export function toolsExec(name: string, cmd: string): string[] {
     '-e', 'NPM_CONFIG_PREFIX=/work/tools',
     '-e', 'TOOLS_DIR=/work/tools',
     '-e', 'TOOLS_BIN=/work/tools/bin',
-    `devbox-${name}`,
+    boxHost(name),
     'sh', '-lc', 'exec flock /work/tools/.lock -c "$0"',
     cmd,
   ]
 }
 
-/** The repeated tuple: this template + this box's interpolation + its
- *  project. compose.override.yml (auth/provider env) merges in when the box
- *  has one. */
+/** The repeated tuple: the shared sidecar plane, then this template, this
+ *  box's interpolation and its project. compose.override.yml (auth/provider
+ *  env) merges in when the box has one. The fragment comes FIRST — the box's
+ *  own container names, and its `!reset` of the two services a box does not
+ *  run, are what the merge must let win. */
 export function boxComposeSpec(ctx: Ctx, name: string): ComposeSpec {
-  const files = [join(ctx.root, COMPOSE_FILE)]
+  const files = stackComposeFiles(ctx.root, COMPOSE_FILE)
   const override = join(boxDir(ctx, name), 'compose.override.yml')
   if (existsSync(override)) files.push(override)
-  return { files, project: `devbox-${name}`, envFile: join(boxDir(ctx, name), 'compose.env') }
+  return { files, project: boxProject(name), envFile: join(boxDir(ctx, name), 'compose.env') }
 }
 
 export function requireBox(ctx: Ctx, name: string): void {

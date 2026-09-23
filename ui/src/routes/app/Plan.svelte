@@ -19,7 +19,6 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import PlanDoc from '@/components/chat/PlanDoc.svelte'
   import PlanDocSkeleton from '@/components/chat/PlanDocSkeleton.svelte'
-  import TierPicker from '@/components/chat/TierPicker.svelte'
   import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
   import Button from '@/components/ui/Button.svelte'
@@ -147,6 +146,20 @@
 
   const current = $derived(agents.find((a) => a.id === selectedAgent))
 
+  // The tier chip's shape. This view lifts the pick out of its (minimal)
+  // composer, so it spells out what the chip renders: '' is the agent's main
+  // model and the chip's bottom rung — 'main' on the chip, 'main model' in the
+  // row it stands on.
+  const tierNames = $derived(current?.tiers ?? [])
+  const tierOptions = $derived([
+    { value: '', label: 'main model' },
+    ...tierNames.map((name) => ({ value: name, label: name })),
+  ])
+  const tierMeter = $derived({
+    total: tierOptions.length,
+    lit: Math.max(0, tierOptions.findIndex((o) => o.value === planTier)) + 1,
+  })
+
   const selected = $derived(
     conversations.find((c) => c.id === selectedConversationId) ??
       archived.find((c) => c.id === selectedConversationId) ??
@@ -259,7 +272,7 @@
       {#if templatesList.notice}<QueryError {...templatesList.notice} />{/if}
     {:else if planTemplates.length > 0}
       <!-- The template pick in the header's own language — the §7 chip
-           TierPicker beside it already speaks. It was a native <select> under
+           beside it already speaks. It was a native <select> under
            a mono label: its fixed-width trigger overflowed on long template
            names and its OS-drawn option list clashed with everything around
            it. The chip truncates instead, and the popover opens DOWN
@@ -275,10 +288,22 @@
         placement="bottom"
       />
     {/if}
-    {#if (current?.tiers ?? []).length > 0}
+    {#if tierNames.length > 0}
       <!-- The harness sits beside the view's other model-level controls, not
            in the composer. -->
-      <TierPicker tiers={current!.tiers ?? []} value={planTier} onChange={(t) => (planTier = t)} />
+      <ComposerPicker
+        icon="✳"
+        chipVariant="primary"
+        value={planTier}
+        label={planTier || 'main'}
+        options={tierOptions}
+        meter={tierMeter}
+        searchPlaceholder="Search tiers"
+        menuClass="min-w-44"
+        title="Model tier for this chat"
+        menuLabel="Model tier"
+        onChange={(t) => (planTier = t)}
+      />
     {/if}
     <!-- The payoff, dressed like it: this surface exists to turn planning
          into tickets, so the action takes the gold primary (spec §8) and

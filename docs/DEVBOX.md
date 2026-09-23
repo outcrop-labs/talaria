@@ -104,8 +104,10 @@ the symlink spelling never leaks into config the box must resolve.
   spirit. Boxes only dial the two stateless services on it
   (`TALARIA_EMBED_URL`/`SEARXNG_URL` by container name).
 - **fleet** — `devbox-<name>-fleet`, this box's private agent network.
-  Spawned agents attach to it and reach the app container-to-container as
-  `devbox:5273` (`TALARIA_MCP_GW_URL`/`TALARIA_GATEWAY_SELF_URL`).
+  Spawned agents attach to it and reach the box container-to-container:
+  `devbox:5273` for the MCP gateway (`TALARIA_MCP_GW_URL`), `devbox:5274` for
+  the LLM gateway (`TALARIA_GATEWAY_SELF_URL`). The API binds `0.0.0.0` inside
+  the box and is not published to the host.
 
 Why not host-gateway dialing: loopback-published ports are unreachable via
 `host-gateway`, and publishing `0.0.0.0` would expose a dev-credentialed app
@@ -219,7 +221,10 @@ with no prompt, run it from a TTY.
 
 `bun talaria box rm demo` refuses while the clone has uncommitted changes or
 commits no remote has (`--force` overrides) — those are the only things in a
-box that can't be recreated.
+box that can't be recreated. A box left behind is the sweep's business too:
+[`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags a stopped box
+untouched for a week, and `--apply` removes it only when the clone is clean and
+pushed. The shared tools layer (`../devboxes/shared`) is a cache — it stays.
 
 ## Troubleshooting
 

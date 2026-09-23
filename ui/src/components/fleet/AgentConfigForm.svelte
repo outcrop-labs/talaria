@@ -17,8 +17,14 @@
   let { def, endpoints, onSaved }: { def: AgentDef; endpoints: LlmEndpoint[]; onSaved?: () => void } = $props()
 
   const qc = useQueryClient()
+  // Version drafts: the form seeds from the loaded version once, then Save
+  // creates a NEW version — never re-seeding mid-edit is the contract, so a
+  // new `def` object from the apply-refetch must not clobber in-progress work.
+  // svelte-ignore state_referenced_locally -- reason: version drafts seeded once; saving creates a new version, refetch must not clobber in-progress edits
   const cfg = def.latest?.config
+  // svelte-ignore state_referenced_locally -- reason: version drafts seeded once; saving creates a new version, refetch must not clobber in-progress edits
   let soul = $state(def.latest?.soul ?? '')
+  // svelte-ignore state_referenced_locally -- reason: version drafts seeded once; saving creates a new version, refetch must not clobber in-progress edits
   let main = $state<ModelTarget>(cfg?.main ?? { endpoint: endpoints[0]?.name ?? '', model: '' })
   let aliases = $state<AliasRow[]>(cfg?.aliases ?? [])
   let fallbacks = $state<ModelTarget[]>(cfg?.fallbacks ?? [])

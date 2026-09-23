@@ -1,7 +1,11 @@
 <script lang="ts">
+  import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
+  import Tabs from '@/components/ui/Tabs.svelte'
+  import { Square } from '@lucide/svelte'
+  import type { TabItem } from '@/components/ui/tabs'
   import { getJson } from '@/lib/fetch-json'
-  import { useWorkSession } from '@/lib/work-session.svelte'
+  import { useStopWorkSession, useWorkSession } from '@/lib/work-session.svelte'
   import { useTargetArtifacts } from '@/lib/artifacts'
   import WorkWatch from './WorkWatch.svelte'
 
@@ -12,8 +16,9 @@
   // drove each turn, every tool call with its argument preview (where the
   // harness steering is legible), and the workbench's own MCP calls with
   // args and outcomes. RESOURCES is the agent container's cpu/mem/pids over
-  // the run's window. A window, not a steering wheel: nothing here touches
-  // the session.
+  // the run's window. A window that now carries the one brake it always
+  // lacked: the header's Stop ends the ticket's live session. Everything
+  // else in here still only reads — the panes never touch the run.
   let {
     open,
     onClose,
@@ -32,8 +37,22 @@
   let tab = $state<Tab>('live')
 
   const session = useWorkSession(() => taskId)
+  const stopWork = useStopWorkSession()
   const artifacts = useTargetArtifacts('task', () => taskId)
   const agentModel = $derived(session.data?.session?.agentModel ?? '')
+  // The brake rides in the header, but only against a LIVE session on this
+  // ticket — a modal opened from the work log (a finished run) has nothing
+  // to stop and shows no button.
+  const live = $derived(session.data?.session ?? null)
+  let stopping = $state(false)
+  const stop = async () => {
+    stopping = true
+    try {
+      await stopWork(taskId)
+    } finally {
+      stopping = false
+    }
+  }
 
   // ── Turns: parse the run's transcript artifact. ─────────────────────────
   type StreamLine = { t: string; v: string; s?: string; p?: string; r?: string; ms?: number }
@@ -126,28 +145,35 @@
     if (l.t === 'err') return `⚠ ${l.v}`
     return l.v
   }
-  const tabs: { id: Tab; label: string }[] = [
+  // The strip's items, with the turn count on the one label that carries it.
+  const tabs = $derived<TabItem<Tab>[]>([
     { id: 'live', label: 'Live' },
-    { id: 'turns', label: 'Turns' },
+    { id: 'turns', label: turns.length ? `Turns (${turns.length})` : 'Turns' },
     { id: 'resources', label: 'Resources' },
-  ]
+  ])
 </script>
 
 <Modal {open} {onClose} title="Run detail" takeover>
   <div class="flex h-full min-h-0 flex-col">
     <div class="flex items-center gap-1 border-b border-line-subtle pb-3">
-      {#each tabs as t (t.id)}
-        <button
-          type="button"
-          class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors {tab === t.id
-            ? 'bg-raised text-fg'
-            : 'text-muted hover:text-fg'}"
-          onclick={() => (tab = t.id)}
-        >
-          {t.label}{t.id === 'turns' && turns.length ? ` (${turns.length})` : ''}
-        </button>
-      {/each}
-      {#if agentModel}<span class="ml-auto truncate text-xs text-muted">{agentModel}</span>{/if}
+      <Tabs items={tabs} value={tab} onChange={(id) => (tab = id)} />
+      {#if agentModel || live}
+        <span class="ml-auto flex min-w-0 items-center gap-2">
+          {#if agentModel}<span class="truncate text-xs text-muted">{agentModel}</span>{/if}
+          {#if live}
+            <Button
+              size="xs"
+              variant="ghost"
+              class="shrink-0 text-danger hover:text-danger"
+              title="Stop the live work session"
+              disabled={stopping}
+              onclick={() => void stop()}
+            >
+              <Square size={11} />Stop
+            </Button>
+          {/if}
+        </span>
+      {/if}
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto pt-4">

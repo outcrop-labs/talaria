@@ -5,7 +5,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import NoEmailBump from '@/components/setup/NoEmailBump.svelte'
@@ -33,7 +33,6 @@
     queryKey: ['invites'],
     queryFn: (): Promise<InviteRow[]> => getList<InviteRow>('/api/admin/invites', 'invites'),
   }))
-  const data = $derived(query.data)
   let draft = $state('')
   let error = $state<string | null>(null)
   let notice = $state<string | null>(null)
@@ -91,13 +90,10 @@
     {#if notice}<span class="min-w-0 truncate text-xs text-muted">{notice}</span>{/if}
   </div>
   {#if error}<div transition:slide={{ duration: 150 }} class="mb-2 text-xs text-danger">{error}</div>{/if}
-  {#if query.isPending}
-    <SkeletonRows rows={2} />
-  {:else if !data}
-    <QueryError variant="inline" error={query.error} title="Could not load invites" onRetry={() => void query.refetch()} />
-  {:else if data.length === 0}
-    <EmptyState variant="inline" title="No invites yet." class="font-sans" />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load invites" errorVariant="inline">
+    {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
+    {#snippet empty()}<EmptyState variant="inline" title="No invites yet." class="font-sans" />{/snippet}
+    {#snippet children(data)}
     <ul class="divide-y divide-line-subtle">
       {#each data as i (i.id)}
         {@const st = inviteState(i)}
@@ -127,5 +123,6 @@
         </li>
       {/each}
     </ul>
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

@@ -48,7 +48,7 @@ pub async fn get(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    // a non-uuid id answers the 500 here — it never reaches the uuid bind.
+    // a non-uuid id answers 400 here — it never reaches the uuid bind.
     if let Some(gate) = uuid_gate("plans", "GET draft", &id) {
         return Ok(gate);
     }

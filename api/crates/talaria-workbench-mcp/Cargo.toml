@@ -1,39 +1,39 @@
 [package]
 name = "talaria-workbench-mcp"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-axum = { version = "0.8", features = ["multipart"] }
-futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
-uuid = { version = "1", features = ["v4"] }
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-approvals = { path = "../talaria-approvals" }
-talaria-artifacts = { path = "../talaria-artifacts" }
-talaria-attribution = { path = "../talaria-attribution" }
-talaria-boards = { path = "../talaria-boards" }
-talaria-body = { path = "../talaria-body" }
-talaria-fleet-budget = { path = "../talaria-fleet-budget" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
-talaria-github = { path = "../talaria-github" }
-talaria-mcp-jsonrpc = { path = "../talaria-mcp-jsonrpc" }
-talaria-realtime = { path = "../talaria-realtime" }
-talaria-runs-define = { path = "../talaria-runs-define" }
-talaria-secretbox = { path = "../talaria-secretbox" }
-talaria-tasks = { path = "../talaria-tasks" }
-talaria-work-wait = { path = "../talaria-work-wait" }
-talaria-workbench = { path = "../talaria-workbench" }
-tokio = { version = "1", features = ["macros", "sync", "time"] }
-tracing = "0.1"
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager"] }
-regex = "1"
-talaria-workbench-harnesses = { path = "../talaria-workbench-harnesses" }
-getrandom = "0.3"
+axum = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-approvals = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-attribution = { workspace = true }
+talaria-boards = { workspace = true }
+talaria-body = { workspace = true }
+talaria-fleet-budget = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+talaria-github = { workspace = true }
+talaria-mcp-jsonrpc = { workspace = true }
+talaria-realtime = { workspace = true }
+talaria-runs-define = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-tasks = { workspace = true }
+talaria-work-wait = { workspace = true }
+talaria-workbench = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+redis = { workspace = true }
+regex = { workspace = true }
+talaria-workbench-harnesses = { workspace = true }
+getrandom = { workspace = true }

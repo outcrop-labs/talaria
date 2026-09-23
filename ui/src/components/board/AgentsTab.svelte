@@ -37,7 +37,7 @@
   )
   // The request queue is editor surface: the GET gates on edit-or-elevated
   // server-side, so a viewer never even asks.
-  const requestsQuery = useBoardAgentRequests(() => board.id, canEdit)
+  const requestsQuery = useBoardAgentRequests(() => board.id, () => canEdit)
   const requests = $derived(requestsQuery.data ?? [])
   let allowAll = $state(false)
   let agents = $state<string[]>([])

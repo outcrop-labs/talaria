@@ -2,13 +2,46 @@
 // internally reference-counted, and the OnceCells mean the lazy handles are
 // constructed at most once per process no matter how many clones race.
 
-use redis::aio::ConnectionManager;
+use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use sqlx::PgPool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use talaria_config::Config;
 use talaria_secretbox::SecretBox;
 use tokio::sync::OnceCell;
+
+/// redis-rs 1.6 times out a multiplexed command at 500ms. This process has
+/// one ConnectionManager — every lease heartbeat, publish, rate limit, and
+/// session read shares it — and a fleet's pipeline blows past that while
+/// Redis itself is fine. Failed renewals look like lost leases; runs stall
+/// and agents retry into the same queue. Five seconds is patience for a busy
+/// local Redis, not a hang: a dead server still fails, and a healthy command
+/// answers in a millisecond so the ceiling never adds latency.
+/// `TALARIA_REDIS_RESPONSE_TIMEOUT_MS` overrides; empty, zero, or garbage
+/// keeps the default, same law as the pool knobs.
+pub const DEFAULT_REDIS_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub fn redis_response_timeout(raw: Option<&str>) -> Duration {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return DEFAULT_REDIS_RESPONSE_TIMEOUT;
+    };
+    match raw.parse::<u64>() {
+        Ok(0) => DEFAULT_REDIS_RESPONSE_TIMEOUT,
+        Ok(ms) => Duration::from_millis(ms),
+        Err(_) => DEFAULT_REDIS_RESPONSE_TIMEOUT,
+    }
+}
+
+fn redis_manager_config() -> ConnectionManagerConfig {
+    let timeout = redis_response_timeout(
+        std::env::var("TALARIA_REDIS_RESPONSE_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    );
+    ConnectionManagerConfig::new()
+        .set_response_timeout(Some(timeout))
+        .set_connection_timeout(Some(Duration::from_millis(2_000)))
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -53,11 +86,23 @@ impl AppState {
             return Ok(conn.clone());
         }
         // Client::open only parses the URL; ConnectionManager does the I/O and
-        // owns reconnection from then on.
+        // owns reconnection from then on. The config is what keeps a busy
+        // fleet off the library's 500ms command timeout — see
+        // `redis_response_timeout`.
         let client = redis::Client::open(self.cfg.redis_url.as_str())?;
-        let connected =
-            tokio::time::timeout(Duration::from_millis(2_500), ConnectionManager::new(client))
-                .await;
+        let config = redis_manager_config();
+        tracing::info!(
+            "[state] redis response_timeout_ms={}",
+            config
+                .response_timeout()
+                .unwrap_or(DEFAULT_REDIS_RESPONSE_TIMEOUT)
+                .as_millis()
+        );
+        let connected = tokio::time::timeout(
+            Duration::from_millis(2_500),
+            ConnectionManager::new_with_config(client, config),
+        )
+        .await;
         match connected {
             Ok(Ok(conn)) => {
                 let _ = self.redis.set(conn.clone());
@@ -86,5 +131,25 @@ impl AppState {
             })
             .await?;
         Ok(cell.read().expect("secretbox lock").clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redis_timeout_rejects_the_library_default() {
+        // THE BUG. redis-rs 1.6's DEFAULT_RESPONSE_TIMEOUT is 500ms. A test
+        // that only checks "some Duration" would pass on the library default.
+        assert_eq!(redis_response_timeout(None), Duration::from_secs(5));
+        assert_ne!(redis_response_timeout(None), Duration::from_millis(500));
+        assert_eq!(redis_response_timeout(Some("")), Duration::from_secs(5));
+        assert_eq!(redis_response_timeout(Some("0")), Duration::from_secs(5));
+        assert_eq!(redis_response_timeout(Some("nope")), Duration::from_secs(5));
+        assert_eq!(
+            redis_response_timeout(Some("2500")),
+            Duration::from_millis(2500)
+        );
     }
 }

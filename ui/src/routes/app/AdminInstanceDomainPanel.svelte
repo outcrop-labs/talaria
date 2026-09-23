@@ -4,7 +4,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -20,12 +20,13 @@
   // null, so a blip showed a configured instance its "set a domain" form and a
   // Save would have rewritten live OAuth callbacks. Now only the server's own
   // `instance: null` gets there; a non-2xx becomes an error.
+  type HostingDomain = { domain: string; verified: boolean; verifiedAt: string | null }
+
   const query = createQuery(() => ({
     queryKey: ['instance-domain'],
-    queryFn: async (): Promise<{ domain: string; verified: boolean; verifiedAt: string | null } | null> =>
-      (await getJson<{ instance: { domain: string; verified: boolean; verifiedAt: string | null } | null }>('/api/admin/instance')).instance,
+    queryFn: async (): Promise<HostingDomain | null> =>
+      (await getJson<{ instance: HostingDomain | null }>('/api/admin/instance')).instance,
   }))
-  const data = $derived(query.data)
   let draft = $state('')
   let error = $state<string | null>(null)
   let busy = $state(false)
@@ -51,58 +52,59 @@
     title="Instance domain"
     info="Where THIS Talaria deployment is hosted (e.g. talaria.yourcompany.com), separate from your email sign-up domains below. Verification round-trips through the domain and confirms it reaches this exact instance. Once verified it becomes the canonical base URL: OAuth apps get one stable callback, links use it."
   />
-  {#if query.isPending}
-    <SkeletonRows rows={1} />
-  {:else if data === undefined}
-    <QueryError
-      variant="inline"
-      error={query.error}
-      title="Could not load the instance domain"
-      onRetry={() => void query.refetch()}
-    />
-  {:else if data}
-    <div class="flex items-center gap-2">
-      <span class="font-mono text-[13px] text-fg">{data.domain}</span>
-      {#if data.verified}
-        <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
-          <StatusDot status="ok" />
-          verified · routes to this instance
-        </span>
-      {:else}
-        <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
-          <StatusDot status="warn" />
-          unverified
-        </span>
-      {/if}
-      <span class="flex-1"></span>
-      {#if !data.verified}
-        <Button size="sm" variant="outline" disabled={busy} onclick={() => void post({ verify: true })}>
-          {busy ? 'Checking' : 'Verify'}
+  <QueryState query={query} errorTitle="Could not load the instance domain" errorVariant="inline">
+    {#snippet skeleton()}<SkeletonRows rows={1} />{/snippet}
+    {#snippet empty()}
+      <!-- `null` is the server's own answer — no hosting domain configured yet
+           — and this form invites you to set one. -->
+      <div class="flex items-center gap-2">
+        <Input
+          size="sm"
+          bind:value={draft}
+          onkeydown={(e) => e.key === 'Enter' && draft.trim() && void post({ domain: draft.trim() })}
+          placeholder="talaria.yourcompany.com (where this instance is hosted)"
+          class="w-96"
+        />
+        <Button size="sm" disabled={!draft.trim() || busy} onclick={() => void post({ domain: draft.trim() })}>
+          Set domain
         </Button>
+      </div>
+    {/snippet}
+    {#snippet children(data)}
+      <!-- `empty` owns the server's `null`, so children only ever sees a real
+           domain. This is the narrowing the compiler needs. -->
+      {#if data}
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-[13px] text-fg">{data.domain}</span>
+          {#if data.verified}
+            <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
+              <StatusDot status="ok" />
+              verified · routes to this instance
+            </span>
+          {:else}
+            <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
+              <StatusDot status="warn" />
+              unverified
+            </span>
+          {/if}
+          <span class="flex-1"></span>
+          {#if !data.verified}
+            <Button size="sm" variant="outline" disabled={busy} onclick={() => void post({ verify: true })}>
+              {busy ? 'Checking' : 'Verify'}
+            </Button>
+          {/if}
+          <button
+            type="button"
+            title="Clear the hosting domain"
+            onclick={() => void post({ domain: null })}
+            class="text-muted transition-colors hover:text-danger"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
       {/if}
-      <button
-        type="button"
-        title="Clear the hosting domain"
-        onclick={() => void post({ domain: null })}
-        class="text-muted transition-colors hover:text-danger"
-      >
-        <Trash2 size={13} />
-      </button>
-    </div>
-  {:else}
-    <div class="flex items-center gap-2">
-      <Input
-        size="sm"
-        bind:value={draft}
-        onkeydown={(e) => e.key === 'Enter' && draft.trim() && void post({ domain: draft.trim() })}
-        placeholder="talaria.yourcompany.com (where this instance is hosted)"
-        class="w-96"
-      />
-      <Button size="sm" disabled={!draft.trim() || busy} onclick={() => void post({ domain: draft.trim() })}>
-        Set domain
-      </Button>
-    </div>
-  {/if}
+    {/snippet}
+  </QueryState>
   {#if error}
     <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">
       {error}

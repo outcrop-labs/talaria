@@ -1,13 +1,13 @@
 [package]
 name = "talaria-retrieval-sparse"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde = { workspace = true }
 

@@ -5,7 +5,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import QueryState from '@/components/ui/QueryState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -157,14 +157,15 @@
     {#if notice}<span class="min-w-0 truncate text-xs text-success">{notice}</span>{/if}
   </div>
   {#if error}<div transition:slide={{ duration: 150 }} class="mb-2 text-xs text-danger">{error}</div>{/if}
-  {#if query.isPending}
-    <SkeletonRows rows={2} />
-  {:else if !data}
-    <QueryError variant="inline" error={query.error} title="Could not load password accounts" onRetry={() => void query.refetch()} />
-  {:else}
+  <QueryState query={query} errorTitle="Could not load password accounts" errorVariant="inline">
+    {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
+    {#snippet children(data)}
     <!-- The signed-in admin with no credential row: Google-only sign-in is one
          revoked OAuth grant away from a lockout. Offer the fallback here, on
-         the surface that manages the other passwords. -->
+         the surface that manages the other passwords. And note a failed read
+         never reaches any of this — "No accounts yet." decides whether the login
+         screen offers the password form at all (the invites panel keeps the same
+         rule), so QueryState's error branch owns that verdict. -->
     {#if !mine}
       <div class="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-line-subtle px-2 py-2">
         <span class="min-w-0 flex-1 text-xs text-muted">
@@ -245,5 +246,6 @@
         {/each}
       </ul>
     {/if}
-  {/if}
+    {/snippet}
+  </QueryState>
 </Panel>

@@ -1,12 +1,12 @@
 // The one right-click menu for a ticket — kanban cards and list rows serve
 // the SAME entries: open/copy shortcuts, then quick controls (move, priority,
 // due presets, assign-to-me), then archive. Callers own the actual mutations.
-import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, UserRound } from '@lucide/svelte'
-import { copyAppLink, type ContextMenuEntry, type ContextMenuItem } from '@/components/ui/context-menu.svelte'
+import { Archive, ArrowRight, CalendarDays, ExternalLink, Flag, Hash, Link as LinkIcon, Palette, Square, UserRound } from '@lucide/svelte'
+import { openCopyItems, type ContextMenuEntry, type ContextMenuItem } from '@/components/ui/context-menu.svelte'
 import { userAssignee } from '@/lib/assignees'
 import { PRIORITIES, STATUS_LABEL, TASK_STATUSES, TICKET_COLORS, type Task, type TaskStatus, type Priority, type TicketColor } from '@/lib/task-const'
 import { statusColorOf, type BoardStatus } from '@/lib/statuses'
-import { LABEL_CSS } from '@/components/board/field-pills'
+import { colorEntries } from '@/components/ui/ColorsMenu.svelte'
 import ColorDot from '@/components/board/ColorDot.svelte'
 
 export interface TicketMenuOpts {
@@ -16,6 +16,11 @@ export interface TicketMenuOpts {
   onOpen: () => void
   onPatch: (p: { status?: TaskStatus; priority?: Priority; dueDate?: string | null; assignees?: string[]; color?: TicketColor | null }) => void
   onArchive: () => void
+  /** Pass true while a work session is LIVE on the ticket — it is what
+   *  enables the 'Stop the work' entry (the server gates the verb itself). */
+  working?: boolean
+  /** Present → the 'Stop the work' entry renders, last of the action group. */
+  onStop?: () => void
 }
 
 const dueIso = (days: number) => {
@@ -26,10 +31,10 @@ const dueIso = (days: number) => {
 }
 
 export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[] {
-  const items: ContextMenuEntry[] = [
-    { label: 'Open', icon: [ExternalLink, { size: 14 }], onSelect: o.onOpen },
-    { label: 'Copy link', icon: [LinkIcon, { size: 14 }], onSelect: () => copyAppLink(`/boards/${t.boardId}/${t.id}`) },
-  ]
+  const items: ContextMenuEntry[] = openCopyItems(`/boards/${t.boardId}/${t.id}`, o.onOpen, {
+    open: [ExternalLink, { size: 14 }],
+    copy: [LinkIcon, { size: 14 }],
+  })
   if (t.ticketRef) {
     const ref = t.ticketRef
     items.push({ label: 'Copy ticket ref', icon: [Hash, { size: 14 }], onSelect: () => void navigator.clipboard.writeText(ref) })
@@ -67,14 +72,7 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
         label: 'Color',
         icon: [Palette, { size: 14 }],
         children: [
-          ...TICKET_COLORS.map(
-            (c): ContextMenuItem => ({
-              label: c,
-              icon: [ColorDot, { class: 'h-2.5 w-2.5 rounded-full', color: LABEL_CSS[c] }],
-              checked: t.color === c,
-              onSelect: () => o.onPatch({ color: c }),
-            }),
-          ),
+          ...colorEntries(TICKET_COLORS, t.color, (color) => o.onPatch({ color })),
           ...(t.color ? (['sep', { label: 'Clear color', danger: true, onSelect: () => o.onPatch({ color: null }) }] as ContextMenuEntry[]) : []),
         ],
       },
@@ -106,6 +104,19 @@ export function ticketMenuEntries(t: Task, o: TicketMenuOpts): ContextMenuEntry[
       danger: !t.archivedAt,
       onSelect: o.onArchive,
     })
+    // Last of the group, after archive: the brake. Rendered whenever the
+    // caller offers it, enabled only while a session is live — on an idle
+    // ticket it sits greyed rather than vanishing, so the surface it mirrors
+    // (the ticker's Stop) stays discoverable.
+    if (o.onStop) {
+      items.push({
+        label: 'Stop the work',
+        icon: [Square, { size: 14 }],
+        danger: true,
+        disabled: !o.working,
+        onSelect: o.onStop,
+      })
+    }
   }
   return items
 }

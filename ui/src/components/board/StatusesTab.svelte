@@ -1,16 +1,16 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { GripVertical, Trash2 } from '@lucide/svelte'
-  import Button from '@/components/ui/Button.svelte'
+  import AddRow from '@/components/ui/AddRow.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
+  import ColorsMenu from '@/components/ui/ColorsMenu.svelte'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import type { ContextMenuItem } from '@/components/ui/context-menu.svelte'
-  import Input from '@/components/ui/Input.svelte'
+  import RenameField from '@/components/ui/RenameField.svelte'
   import Select from '@/components/ui/Select.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { cn } from '@/lib/cn'
   import type { Board } from '@/lib/boards.svelte'
-  import { LABEL_CSS } from '@/components/board/field-pills'
   import {
     useBoardStatuses,
     createBoardStatus,
@@ -20,7 +20,6 @@
     type BoardStatus,
   } from '@/lib/statuses'
   import { listStagger } from '@/lib/motion'
-  import ColorDot from './ColorDot.svelte'
   import WorkflowDiagnostics from './WorkflowDiagnostics.svelte'
 
   // ── Statuses: the board's workflow columns. Order = column order; category
@@ -35,7 +34,6 @@
   const statusesQuery = useBoardStatuses(() => board.id)
   const statuses = $derived(statusesQuery.data ?? [])
   const canEdit = $derived(board.role === 'owner' || board.role === 'editor')
-  let draft = $state('')
   let err = $state<string | null>(null)
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['board-statuses', board.id] })
@@ -67,14 +65,6 @@
     dragKey = null
     overKey = null
   }
-
-  const colorItems = (st: BoardStatus): ContextMenuItem[] =>
-    (Object.keys(LABEL_CSS) as Array<keyof typeof LABEL_CSS>).map((c) => ({
-      label: c,
-      icon: [ColorDot, { class: 'h-2.5 w-2.5 rounded-full', color: LABEL_CSS[c] }],
-      checked: st.color === c,
-      onSelect: () => run(() => updateBoardStatus(board.id, st.key, { color: c })),
-    }))
 
   const deleteItems = (st: BoardStatus): ContextMenuItem[] =>
     statuses
@@ -153,32 +143,21 @@
           size={13}
           class={cn('shrink-0', canEdit && !st.system ? 'cursor-grab text-muted' : 'text-muted/30')}
         />
-        <DropdownMenu align="left" items={colorItems(st)}>
-          {#snippet trigger(open)}
-            <button
-              title="Color"
-              disabled={!canEdit || st.system}
-              class={cn('h-4 w-4 shrink-0 rounded-full ring-2 transition-shadow', open ? 'ring-[var(--theme-accent-border)]' : 'ring-transparent')}
-              style:background={LABEL_CSS[st.color as keyof typeof LABEL_CSS] ?? 'var(--theme-muted)'}
-            ></button>
-          {/snippet}
-        </DropdownMenu>
+        <ColorsMenu
+          value={st.color}
+          disabled={!canEdit || st.system}
+          onPick={(c) => run(() => updateBoardStatus(board.id, st.key, { color: c }))}
+        />
         {#if st.system}
           <span class="flex-1 font-sans text-sm text-fg">Blocked <span class="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">system</span></span>
         {:else}
-          {#key `${st.key}-${st.label}`}
-            <Input
-              size="sm"
-              value={st.label}
-              disabled={!canEdit}
-              onblur={(e) => {
-                const v = (e.target as HTMLInputElement).value.trim()
-                if (v && v !== st.label) run(() => updateBoardStatus(board.id, st.key, { label: v }))
-              }}
-              onkeydown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-              class="flex-1"
-            />
-          {/key}
+          <RenameField
+            value={st.label}
+            key={`${st.key}-${st.label}`}
+            disabled={!canEdit}
+            class="flex-1"
+            onCommit={(v) => run(() => updateBoardStatus(board.id, st.key, { label: v }))}
+          />
         {/if}
         {#if !st.system}
           <Select
@@ -235,28 +214,6 @@
   <!-- Same rule as Labels: adding a column while the column set is unknown
        risks duplicating one the server already has. -->
   {#if canEdit && statusesQuery.data !== undefined}
-    <div class="flex gap-2">
-      <Input
-        size="sm"
-        bind:value={draft}
-        placeholder="New status"
-        onkeydown={(e) => {
-          if (e.key !== 'Enter' || !draft.trim()) return
-          run(() => createBoardStatus(board.id, { label: draft.trim() }))
-          draft = ''
-        }}
-        class="flex-1"
-      />
-      <Button
-        size="sm"
-        disabled={!draft.trim()}
-        onclick={() => {
-          run(() => createBoardStatus(board.id, { label: draft.trim() }))
-          draft = ''
-        }}
-      >
-        Add
-      </Button>
-    </div>
+    <AddRow placeholder="New status" onSubmit={(label) => run(() => createBoardStatus(board.id, { label }))} />
   {/if}
 </div>

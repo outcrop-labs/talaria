@@ -5,6 +5,7 @@
   import StreamText from './StreamText.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
   import ChatWaiting from './ChatWaiting.svelte'
+  import ChatChips from './ChatChips.svelte'
   import { fade } from '@/lib/motion'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import type { DisplayMessage } from './chat-view'
@@ -18,6 +19,8 @@
     agentLabel,
     live,
     onContextMenu,
+    onInvoke,
+    onDecided,
   }: {
     message: DisplayMessage
     /** Index in the thread — the handle that re-rolls the loader per turn. */
@@ -26,6 +29,8 @@
     agentLabel: string
     live: boolean
     onContextMenu?: (e: MouseEvent) => void
+    onInvoke?: (text: string) => void
+    onDecided?: () => void
   } = $props()
 
   const hasReasoning = $derived(!!message.reasoning?.trim())
@@ -43,6 +48,7 @@
   )
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the message context menu has no keyboard path -->
 <div in:fade={{ duration: 150 }} class="flex gap-2.5" oncontextmenu={onContextMenu}>
   <MessageAvatar name={agentLabel} class="mt-0.5" />
   <div class="min-w-0 flex-1 space-y-2">
@@ -101,6 +107,7 @@
         slide fires on the live→settled flip; behind an `{#if !live}` the
         local transition would be suppressed by the ancestor block toggling. -->
     <GuardCaveat findings={live ? null : message.guard} />
+    <ChatChips chips={message.chips} content={message.content} {onInvoke} {onDecided} />
 
     <!-- Spec §9 state mapping. Which mark each of these draws is dealt per
         session by lib/waiting; the ROLE is fixed here — submitting while the

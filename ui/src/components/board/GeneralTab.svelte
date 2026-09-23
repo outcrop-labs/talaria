@@ -31,6 +31,7 @@
   } = $props()
 
   const qc = useQueryClient()
+  // svelte-ignore state_referenced_locally -- reason: settings-modal instance per open; drafts seeded from the board, Save writes the record
   let name = $state(board.name)
   let confirmDelete = $state(false)
   const archived = $derived(!!board.archivedAt)

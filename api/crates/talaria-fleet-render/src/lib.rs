@@ -36,7 +36,9 @@ use std::path::{Path, PathBuf};
 use talaria_agent_auth::ensure_agent_api_key;
 use talaria_fleet_layout::GATEWAY_PORT_BASE;
 use talaria_secretbox::SecretBox;
-use talaria_workbench_harnesses::{HarnessAuth, McpConfigFormat, list_harness_defs};
+use talaria_workbench_harnesses::{
+    HarnessAuth, McpConfigFormat, PI_CODING_AGENT_DIR, list_harness_defs,
+};
 
 /// The def columns the render loop reads — the agent_defs row for
 /// MANAGED+ENABLED agents (the current version rides alongside in
@@ -696,6 +698,13 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "# are no-ops because we ARE the store, and forgetting is done by revoking\n",
     "# the grant rather than by anything git says.\n",
     "[ \"$1\" = \"get\" ] || exit 0\n",
+    "decline() {\n",
+    "  if [ -z \"$path\" ]; then\n",
+    "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. Do not run git credential fill; it prints the token.\" >&2\n",
+    "  fi\n",
+    "  echo \"talaria: no credential for $host${path:+/$path}\" >&2\n",
+    "  exit 0\n",
+    "}\n",
     "host=\"\"; proto=\"\"; path=\"\"\n",
     "while IFS=\"=\" read -r k v; do\n",
     "  [ \"$k\" = \"host\" ] && host=\"$v\"\n",
@@ -705,6 +714,14 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  [ \"$k\" = \"path\" ] && path=\"$v\"\n",
     "done\n",
     "[ -n \"$host\" ] || exit 0\n",
+    "# Git omits path unless useHttpPath is on. A checkout outside the job\n",
+    "# workdir then asks for the host alone, and an unscoped answer is a token\n",
+    "# for every repo. Read origin instead — still one repo, still the grant\n",
+    "# check. credential.helper= so this read cannot call us back.\n",
+    "if [ -z \"$path\" ]; then\n",
+    "  origin=$(git -c credential.helper= config --get remote.origin.url 2>/dev/null || true)\n",
+    "  path=$(printf %s \"$origin\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
+    "fi\n",
     "# TALARIA_API_URL is the app as this container reaches it (rendered from\n",
     "# the app's own view of itself); TALARIA_AGENT_KEY is THIS agent's own\n",
     "# credential — the one /api/secrets/git-credential authenticates. The\n",
@@ -716,7 +733,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  resp=$(curl -sS --fail -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) \\\n",
-    "    || { echo \"talaria: no credential for $host${path:+/$path}\" >&2; exit 0; }\n",
+    "    || decline\n",
     "elif command -v wget >/dev/null 2>&1; then\n",
     "  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived\n",
     "  # harness image) takes --post-data; GNU wget takes --body-data with\n",
@@ -729,7 +746,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "  [ -n \"$resp\" ] || resp=$(wget -qO- --method=POST --body-data=\"$body\" \\\n",
     "    --header=\"X-Agent-Name: $API_SERVER_MODEL_NAME\" --header=\"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
     "    --header=\"content-type: application/json\" \"$url\" 2>/dev/null) \\\n",
-    "    || { echo \"talaria: no credential for $host${path:+/$path}\" >&2; exit 0; }\n",
+    "    || decline\n",
     "else\n",
     "  echo \"talaria: no curl or wget in this image — cannot fetch a credential for $host\" >&2\n",
     "  exit 0\n",
@@ -873,13 +890,16 @@ pub async fn render_fleet(
 
     let chassis = read_chassis().await?;
 
-    // Every rendered soul opens with the toolkit contract (always) and the
-    // organization context (when configured).
+    // Every rendered soul opens with the toolkit contract (always), the
+    // dev-work policy (always): dev work flows through a ticket and a
+    // workbench, never from a chat thread — and the organization context
+    // (when configured).
     let org_header = talaria_org::org_soul_header(&talaria_org::org_profile(pg).await);
     let soul_header = [
         org_header.as_deref(),
         Some(talaria_org::voice_soul_header().as_str()),
         Some(talaria_org::toolkit_soul_header().as_str()),
+        Some(talaria_org::dev_policy_soul_header().as_str()),
     ]
     .into_iter()
     .flatten()
@@ -1422,44 +1442,24 @@ pub async fn render_fleet(
             // bind-mounted directly — a symlink to a container-only path is
             // dangling on the host, and the docker daemon answers a dangling
             // bind source with mkdir-then-"file exists", which 500s the agent.
+            //
+            // Those file mounts land INSIDE the state volume. Docker creates
+            // the missing parents (`workbench/harness/pi`) as root:root 755
+            // before the entrypoint, and Hermes stage2 does not chown that
+            // tree when `/opt/data` is already hermes-owned. omp and pi write
+            // config there (`PI_CODING_AGENT_DIR`); a root-owned 755 dir is
+            // not writable by the runtime user, so the harness cannot start.
+            // The cont-init hook mounted below hands the directories to hermes
+            // on every boot — existing volumes included — and does not touch
+            // the :ro policy files. Pi and Oh My Pi share one dir, so the
+            // mounts are emitted once; mounting the same destination twice
+            // is a compose error, and `~/.omp` is not where omp looks once
+            // the env is set (those mounts were also what left `/home/hermes/.omp`
+            // root-owned).
+            let mut pi_config = false;
             for slug in &wb.harnesses {
                 match slug.as_str() {
-                    "pi" => {
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/pi/models.json:ro",
-                            wb_dir.join("models.json").display()
-                        ));
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/pi/settings.json:ro",
-                            wb_dir.join("pi-settings.json").display()
-                        ));
-                        if written.iter().any(|f| f == "mcp.json") {
-                            harness_mounts.push(format!(
-                                "{}:/opt/data/workbench/harness/pi/mcp.json:ro",
-                                wb_dir.join("mcp.json").display()
-                            ));
-                        }
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/pi/skills:ro",
-                            fleet_skills.display()
-                        ));
-                    }
-                    "oh-my-pi" => {
-                        for home in ["/home/hermes/.omp/agent", "/root/.omp/agent"] {
-                            harness_mounts.push(format!(
-                                "{}:{home}/models.json:ro",
-                                wb_dir.join("models.json").display()
-                            ));
-                            if written.iter().any(|f| f == "mcp.json") {
-                                harness_mounts.push(format!(
-                                    "{}:{home}/mcp.json:ro",
-                                    wb_dir.join("mcp.json").display()
-                                ));
-                            }
-                            harness_mounts
-                                .push(format!("{}:{home}/skills:ro", fleet_skills.display()));
-                        }
-                    }
+                    "pi" | "oh-my-pi" => pi_config = true,
                     "opencode" => {
                         harness_mounts.push(format!(
                             "{}:/opt/data/workbench/harness/opencode/skills:ro",
@@ -1468,6 +1468,13 @@ pub async fn render_fleet(
                     }
                     _ => {}
                 }
+            }
+            if pi_config {
+                harness_mounts.extend(pi_config_mounts(
+                    &wb_dir,
+                    &fleet_skills,
+                    written.iter().any(|f| f == "mcp.json"),
+                ));
             }
             // The workspace pointers every harness reads in its working
             // directory — where the skills live, whichever tool lands there.
@@ -1486,6 +1493,15 @@ pub async fn render_fleet(
         let mut vols: Vec<String> = Vec::new();
         if wb.is_some() {
             vols.push(format!("{}:/opt/workbench-config:ro", wb_dir.display()));
+            // Heal the root-owned parents Docker just created. The script is
+            // executable on the host; s6 runs `/etc/cont-init.d/*` as root
+            // before the hermes drop, so the chown lands before any harness.
+            let own_path = agent_dir.join("workbench-own");
+            tokio::fs::write(&own_path, HARNESS_OWN_SCRIPT)
+                .await
+                .map_err(|e| format!("{}: {e}", own_path.display()))?;
+            set_executable(&own_path).await;
+            vols.push(format!("{}:{HARNESS_OWN_HOOK}:ro", own_path.display()));
         }
         for m in &harness_mounts {
             vols.push(m.clone());
@@ -1691,6 +1707,77 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
     cfg.insert("unattended_mode".into(), json!("approve"));
     cfg.insert("cron_mode".into(), json!("approve"));
     routed.insert("approvals".into(), Value::Object(cfg));
+}
+
+/// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
+/// before user services start.
+const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
+
+/// Heal Docker's root-owned bind-mount parents so the hermes runtime can
+/// write harness config. Directories only — never `-R`. The policy files
+/// mounted inside (models.json, settings.json, mcp.json, skills) are
+/// read-only host files; a recursive chown fails on them or steals host
+/// ownership of the skills tree. `0775` is the shared-group mode: owner
+/// hermes can write, and so can the hermes group. Other users cannot, and
+/// `/opt/data` itself stays `0700`, so the listing is not reachable from
+/// outside the runtime user anyway.
+const HARNESS_OWN_SCRIPT: &str = r#"#!/bin/sh
+# Heal Docker's root-owned bind-mount parents so hermes can write config.
+set -eu
+[ "$(id -u)" = 0 ] || exit 0
+id hermes >/dev/null 2>&1 || exit 0
+own() {
+  [ -d "$1" ] || return 0
+  [ -L "$1" ] && return 0
+  chown hermes:hermes "$1" 2>/dev/null || true
+  chmod 0775 "$1" 2>/dev/null || true
+}
+# Create the writable state dirs. mkdir -p is a no-op on the ones Docker
+# already created as root; own() then hands those to hermes. A fresh volume
+# with no prior mount gets the same ownership, so a newly created harness
+# dir does not come out root-owned.
+mkdir -p \
+  /opt/data/workbench/harness/pi \
+  /opt/data/workbench/harness/opencode \
+  /opt/data/workbench/harness/xdg \
+  /opt/data/workbench/harness/playwright \
+  /opt/data/workbench/harness/npm \
+  /opt/data/workbench/jobs \
+  /opt/data/workbench/sessions \
+  2>/dev/null || true
+own /opt/data/workbench
+own /opt/data/workbench/harness
+own /opt/data/workbench/harness/pi
+own /opt/data/workbench/harness/opencode
+own /opt/data/workbench/harness/xdg
+own /opt/data/workbench/harness/playwright
+own /opt/data/workbench/harness/npm
+own /opt/data/workbench/jobs
+own /opt/data/workbench/sessions
+"#;
+
+/// Policy files Pi and Oh My Pi read inside [`PI_CODING_AGENT_DIR`]. One
+/// destination per file — both slugs share the dir.
+fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path, mcp: bool) -> Vec<String> {
+    let dir = PI_CODING_AGENT_DIR;
+    let mut mounts = vec![
+        format!(
+            "{}:{dir}/models.json:ro",
+            wb_dir.join("models.json").display()
+        ),
+        format!(
+            "{}:{dir}/settings.json:ro",
+            wb_dir.join("pi-settings.json").display()
+        ),
+    ];
+    if mcp {
+        mounts.push(format!(
+            "{}:{dir}/mcp.json:ro",
+            wb_dir.join("mcp.json").display()
+        ));
+    }
+    mounts.push(format!("{}:{dir}/skills:ro", fleet_skills.display()));
+    mounts
 }
 
 /// Pi / Oh My Pi `.mcp.json` shape — `${VAR}` expands from the container env.
@@ -2263,6 +2350,8 @@ empty_list: []
             "wget -qO- --method=POST --body-data=\"$body\" \\\n",
             "no curl or wget in this image",
             "no credential for $host${path:+/$path}",
+            "git -c credential.helper= config --get remote.origin.url",
+            "Do not run git credential fill",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
         ] {
             assert!(
@@ -2296,6 +2385,117 @@ empty_list: []
         let mode = std::fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "helper must be executable");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_git_helper_reads_origin_when_git_omits_the_path() {
+        fn run(with_origin: bool, curl_ok: bool) -> (i32, String, String, String) {
+            let dir = std::env::temp_dir().join(format!(
+                "talaria-cred-{}-{}-{}",
+                std::process::id(),
+                u8::from(with_origin),
+                u8::from(curl_ok)
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("stub")).unwrap();
+            let repo = dir.join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            let helper = dir.join("helper");
+            std::fs::write(&helper, GIT_CREDENTIAL_HELPER).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            let exec = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(&helper, exec.clone()).unwrap();
+            let capture = dir.join("body");
+            let curl = if curl_ok {
+                format!(
+                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s' '{{\"username\":\"x-access-token\",\"password\":\"sekret\"}}'\n",
+                    capture.display()
+                )
+            } else {
+                "#!/bin/sh\nexit 1\n".to_string()
+            };
+            let curl_path = dir.join("stub/curl");
+            std::fs::write(&curl_path, curl).unwrap();
+            std::fs::set_permissions(&curl_path, exec).unwrap();
+            if with_origin {
+                assert!(
+                    std::process::Command::new("git")
+                        .args(["init", "-q"])
+                        .current_dir(&repo)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                assert!(
+                    std::process::Command::new("git")
+                        .args([
+                            "remote",
+                            "add",
+                            "origin",
+                            "https://github.com/outcrop-labs/talaria.git",
+                        ])
+                        .current_dir(&repo)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            let mut child = std::process::Command::new("sh")
+                .arg(&helper)
+                .arg("get")
+                .current_dir(&repo)
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        dir.join("stub").display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .env("TALARIA_API_URL", "http://talaria.test")
+                .env("TALARIA_AGENT_KEY", "tak_test")
+                .env("API_SERVER_MODEL_NAME", "engineer-engineering")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"protocol=https\nhost=github.com\n\n")
+                .unwrap();
+            let out = child.wait_with_output().unwrap();
+            let body = std::fs::read_to_string(&capture).unwrap_or_default();
+            let _ = std::fs::remove_dir_all(&dir);
+            (
+                out.status.code().unwrap_or(1),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+                body,
+            )
+        }
+
+        let (code, stdout, stderr, body) = run(true, true);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("username=x-access-token"), "{stdout}");
+        assert!(
+            body.contains("outcrop-labs/talaria"),
+            "pathless ask must be scoped to origin, got {body}"
+        );
+        assert!(!stderr.contains("no credential"), "{stderr}");
+
+        let (code, stdout, stderr, _) = run(false, false);
+        assert_eq!(code, 0, "a decline must not hang git: {stderr}");
+        assert!(
+            stdout.is_empty(),
+            "a decline must not print a token: {stdout}"
+        );
+        assert!(stderr.contains("no credential for github.com"), "{stderr}");
+        assert!(stderr.contains("did not name a repository"), "{stderr}");
+        assert!(stderr.contains("git credential fill"), "{stderr}");
     }
 
     #[test]
@@ -2455,5 +2655,61 @@ empty_list: []
         // caller falls back to the dev origin rather than guessing.
         assert_eq!(origin("https://upstream.example/v1"), None);
         assert_eq!(origin(""), None);
+    }
+
+    #[test]
+    fn the_own_hook_is_valid_shell_and_does_not_chown_the_policy_files() {
+        // A recursive chown is the plausible bug: it fails on the :ro policy
+        // mounts or steals host ownership of the skills tree. The hook must
+        // name the config dir omp writes and hand only the directories over.
+        let dir =
+            std::env::temp_dir().join(format!("talaria-render-tests-{}-own", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("workbench-own");
+        std::fs::write(&p, HARNESS_OWN_SCRIPT).unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("-n")
+            .arg(&p)
+            .output()
+            .expect("sh runs");
+        assert!(
+            out.status.success(),
+            "the generated own hook is not valid shell: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(HARNESS_OWN_SCRIPT.contains("chown hermes:hermes"));
+        assert!(HARNESS_OWN_SCRIPT.contains(PI_CODING_AGENT_DIR));
+        assert!(HARNESS_OWN_SCRIPT.contains("chmod 0775"));
+        assert!(
+            !HARNESS_OWN_SCRIPT.contains("chown -R"),
+            "a recursive chown retakes the :ro policy files"
+        );
+        assert_eq!(
+            HARNESS_OWN_HOOK,
+            "/etc/cont-init.d/03-talaria-workbench-own"
+        );
+        let mounts = pi_config_mounts(
+            Path::new("/fleet/eng/workbench"),
+            Path::new("/fleet/skills"),
+            true,
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/models.json:ro")))
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/mcp.json:ro")))
+        );
+        assert!(mounts.iter().all(|m| !m.contains("/.omp/")));
+        let without_mcp = pi_config_mounts(
+            Path::new("/fleet/eng/workbench"),
+            Path::new("/fleet/skills"),
+            false,
+        );
+        assert!(without_mcp.iter().all(|m| !m.contains("mcp.json")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

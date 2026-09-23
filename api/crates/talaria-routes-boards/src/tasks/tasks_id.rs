@@ -35,9 +35,10 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "GET task", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     // 404 comes BEFORE any auth: a ticket's existence is not revealed by who
     // asks about it — unknown id and no session answer the same 404.
     let full = match get_task_full(&state.pg, &id).await {
@@ -142,9 +143,10 @@ pub async fn put(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "PUT task", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -444,9 +446,10 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "DELETE task", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let task = match get_task(&state.pg, &id).await {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),

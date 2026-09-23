@@ -14,7 +14,7 @@ mod support;
 
 use redis::AsyncCommands;
 use sqlx::postgres::PgPool;
-use support::pg;
+use support::{pg, wire_boot_seams};
 use talaria_api::agent_auth::{AgentCaller, AgentSubject};
 use talaria_api::attribution::responsible_user_for;
 use talaria_api::users::{Identity, upsert_user};
@@ -156,6 +156,7 @@ async fn clear_turn(redis: &mut redis::aio::ConnectionManager, model: &str) {
 #[tokio::test]
 #[ignore]
 async fn a_personal_assistant_outranks_a_live_turn() {
+    wire_boot_seams();
     let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-pa", "pa").await;
@@ -177,6 +178,7 @@ async fn a_personal_assistant_outranks_a_live_turn() {
 #[tokio::test]
 #[ignore]
 async fn a_live_turn_outranks_the_hirer() {
+    wire_boot_seams();
     let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-org", "org").await;
@@ -219,6 +221,7 @@ async fn no_turn_falls_to_the_latest_hirer() {
 #[tokio::test]
 #[ignore]
 async fn a_dead_turn_names_the_hirer_not_a_missing_conversation() {
+    wire_boot_seams();
     let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-deadturn", "deadturn").await;
@@ -249,6 +252,7 @@ async fn a_dead_turn_names_the_hirer_not_a_missing_conversation() {
 #[tokio::test]
 #[ignore]
 async fn a_legacy_caller_gets_nobody() {
+    wire_boot_seams();
     let pg = pg().await;
     let mut redis = redis().await;
     cleanup(&pg, "attrtest-legacy", "legacy").await;

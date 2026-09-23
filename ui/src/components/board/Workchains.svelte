@@ -1,8 +1,11 @@
 <script lang="ts">
-  // Workchains view — the board's fourth lens (TALA-30). Each chain renders
-  // as a horizontal rail of compact step cards (WorkchainRail) with the
-  // derived states legible at a glance; below the chains sits UNCHAINED —
-  // the tickets no chain holds yet, each row offering to join one.
+  // Workchains view — the board's fourth lens (TALA-30; TALA-35 the graph).
+  // Each chain renders as a horizontal rail of compact step cards
+  // (WorkchainRail) with the derived states legible at a glance; a chain
+  // that BRANCHES (any step with two or more outgoing wires) renders as the
+  // node canvas (WorkchainCanvas) instead — the rails cannot draw a fan-out
+  // honestly. Below the chains sits UNCHAINED — the tickets no chain holds
+  // yet, each row offering to join one.
   //
   // Filtering follows the lens convention (list/gantt): the rails draw what
   // the board's filtered `tasks` contain — a step whose ticket is filtered
@@ -25,23 +28,19 @@
   import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
   import { EFFORT_LABEL, type Task } from '@/lib/task-const'
   import type { Board, BoardMember } from '@/lib/boards.svelte'
-  import WorkchainRail from './WorkchainRail.svelte'
+  import WorkchainCanvas from './WorkchainCanvas.svelte'
   import { addWorkchainStep, createWorkchain, useBoardWorkchains } from '@/lib/workchain-client'
   import { chainedTaskIds, type WorkchainStep } from '@/lib/workchain-rules'
 
   let {
     board,
     tasks,
-    allTasks,
     members = [],
     onOpen,
   }: {
     board: Board
     /** The board's filtered tickets — what this lens draws. */
     tasks: Task[]
-    /** Unfiltered: the picker's pool. The pickable set drawn from it
-     *  excludes archived and already-chained tickets (one chain per task). */
-    allTasks: Task[]
     members?: BoardMember[]
     onOpen: (taskId: string) => void
   } = $props()
@@ -78,9 +77,6 @@
 
   const visibleChains = $derived(chains.filter(railShows))
   const unchained = $derived(tasks.filter((t) => !chained.has(t.id)))
-  /** Pickable = unarchived and in no chain (the v1 invariant is board-wide). */
-  const pickable = $derived(allTasks.filter((t) => !t.archivedAt && !chained.has(t.id)))
-
   // Unchained collapses once chains exist (it is a backlog, not the show);
   // with no chains it is the whole view, so it starts open.
   let unchainedOpen = $state(false)
@@ -142,7 +138,12 @@
       {/if}
     {:else}
       {#each visibleChains as w (w.id)}
-        <WorkchainRail workchain={w} {boardStatuses} {agents} {members} {pickable} {onOpen} onAdded={invalidate} />
+        <!-- TALA-34: EVERY chain renders as the node canvas — the wiring
+             editor needs grabbable ports on any chain you want to extend,
+             including a straight one (a rail has no ports, so A→B could
+             never be authored by dragging). The rail leaves the lens; the
+             cheap cousin (moveStepOrder reorder) lives on in TaskDetail. -->
+        <WorkchainCanvas workchain={w} boardId={board.id} {boardStatuses} {agents} {members} {onOpen} onChanged={invalidate} />
       {/each}
       {#if canEdit}
         <button

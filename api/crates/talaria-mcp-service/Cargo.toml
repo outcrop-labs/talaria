@@ -1,16 +1,16 @@
 [package]
 name = "talaria-mcp-service"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.97"
-publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
 
 [lints]
 workspace = true
 
 [dependencies]
-talaria-agent-auth = { path = "../talaria-agent-auth" }
-talaria-fleet-layout = { path = "../talaria-fleet-layout" }
-tokio = { version = "1", features = ["process", "io-util", "macros", "rt"] }
-tracing = "0.1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+talaria-agent-auth = { workspace = true }
+talaria-fleet-layout = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }

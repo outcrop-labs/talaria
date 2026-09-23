@@ -36,10 +36,12 @@
   const qc = useQueryClient()
   // The skill's live directory name: a save that renames moves it, and the
   // overlay follows rather than reading a path that no longer exists.
+  // svelte-ignore state_referenced_locally -- reason: overlay mounts per opened skill, so name is fixed per mount; renames move the path the overlay follows
   let currentName = $state(name)
   const query = useSkill(() => owner, () => currentName)
   let busy = $state(false)
   let failure = $state<unknown>(null)
+  // svelte-ignore state_referenced_locally -- reason: overlay mounts per opened skill, so name is fixed per mount
   let skillNameInput = $state(name)
 
   const refresh = async () => {

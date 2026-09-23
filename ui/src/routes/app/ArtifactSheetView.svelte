@@ -9,6 +9,7 @@
   // read mode renders a table. Autosaves (debounced).
   let { value, editable, onSave }: { value: string; editable: boolean; onSave: (body: string) => void } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: the parent mounts this view inside {#key id-seed}, so the body is fixed per mount and the grid is a seed-once draft
   let grid = $state<string[][]>(parseGrid(value))
   let timer: ReturnType<typeof setTimeout> | null = null
   $effect(() => () => {

@@ -20,6 +20,7 @@
     collapsible = false,
   }: { kinds: string[]; title?: string; collapsible?: boolean } = $props()
 
+  // svelte-ignore state_referenced_locally -- reason: initial state from a static prop; the list mounts per surface
   let expanded = $state(!collapsible)
   const query = createQuery(() => ({
     queryKey: ['home-activity', kinds.join(',')],

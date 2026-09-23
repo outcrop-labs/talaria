@@ -89,12 +89,102 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_mcp_apply::ROLL_AGENT.set(std::sync::Arc::new(|pg, sb, dept| {
         Box::pin(async move { talaria_fleet_reconcile::roll_agent(&pg, &sb, &dept).await })
     }));
+    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
+        Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
+    }));
+    // THE ROLL'S OWN TWO EDGES. `roll_agent` reaches the renderer through
+    // them — a roll renders the incoming slot, brings it up, flips the
+    // manifest, then re-renders — and an edge nothing sets is a roll that
+    // returns "… not wired" into callers that discard it: the roster never
+    // changes, the logs stay silent, and the agent keeps running the config
+    // the operator just replaced. Same completeness rule as the job table
+    // above, one layer down.
+    let _ = talaria_fleet_reconcile::RENDER_FLEET.set(std::sync::Arc::new(|pg, sb, roll| {
+        Box::pin(async move {
+            let overlay =
+                roll.as_ref()
+                    .map(|(slug, slot, port)| talaria_fleet_render::RollOverlay {
+                        slug,
+                        slot: *slot,
+                        port: *port,
+                    });
+            talaria_fleet_render::render_fleet(&pg, &sb, overlay)
+                .await
+                .map(|render| (render.agents.len(), render.warnings))
+        })
+    }));
+    let _ = talaria_fleet_reconcile::NEXT_FREE_PORT.set(std::sync::Arc::new(|pg| {
+        Box::pin(async move {
+            talaria_fleet_render::next_free_port(&pg)
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }));
     let _ = talaria_fleet_docker::PREFLIGHT.set(|pool| {
         tokio::spawn(async move {
             let _ = talaria_fleet_preflight::run_fleet_preflight(&pool).await;
         });
     });
     let _ = talaria_gateway::usage::NUDGE_AUTO_PRICES.set(talaria_price_oracle::nudge_auto_prices);
+    // THE RUN ASSEMBLY plan-draft, research, and reindex enqueue through.
+    // The seam and its constructor (`work_dispatch::dispatch_deps`, which is
+    // `real_run_deps` — the same assembly agent-hire calls directly) both
+    // existed; this wiring did not, so every plan-draft POST answered 500
+    // "could not start the plan draft" — `BUILD_DISPATCH.get()` is None on
+    // every install. Research start and guided reindex die the same way.
+    let _ = talaria_tasks_types::BUILD_DISPATCH.set(Arc::new(talaria_work_dispatch::dispatch_deps));
+    // THE ATTRIBUTION LADDER'S CHATTER RUNG. The seam (CONVERSATION_OWNER) and
+    // the resolver it wants (conversations::conversation_owner — whose doc
+    // comment names this ladder) both existed; this wiring did not, so the
+    // live-turn rung read an unset OnceLock and silently fell to the hirer on
+    // every install. Nothing noticed for the same reason nothing ever does: an
+    // unset optional rung answers SOMEONE, just the wrong one. The live suite's
+    // first CI run (api-integration.yml, attribution's
+    // a_live_turn_outranks_the_hirer) is what caught it.
+    let _ = talaria_attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_conversations::conversation_owner(&pg, &id).await })
+    }));
+    // THE TWO GET_TASK EDGES — same disease as CONVERSATION_OWNER, found the
+    // same week by the live suite's first runs: workchains' turn/pause paths
+    // and inbox-focus's focus scoring both `.expect("GET_TASK")` on a seam
+    // nothing ever set, so those paths PANICKED in production (caught by
+    // catch-panic as opaque 500s) instead of doing their work.
+    let _ = talaria_workchains::GET_TASK.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
+    }));
+    let _ = talaria_inbox_focus::GET_TASK.set(std::sync::Arc::new(|pg, id| {
+        Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
+    }));
+    // THE KB-BODY RUNG — same disease, found before it bit this time. The
+    // seam (uploads' KB_DOC_ALLOWS_READ) shipped in the extraction commit
+    // with its resolver never registered, so can_access_upload's "an upload
+    // embedded in a KB doc is readable by whoever can read the doc" branch
+    // read an unset OnceLock and fell through to the reach query — every
+    // non-owner reader of an embedded image got a 404. Mirrors the
+    // pre-extraction logic (get_doc → effective_doc_perms → can_read,
+    // teams for grant matching); fails closed like every other rung: a
+    // perms read that errors answers false.
+    let _ =
+        talaria_uploads::KB_DOC_ALLOWS_READ.set(std::sync::Arc::new(|pg, doc_id, user_id, who| {
+            Box::pin(async move {
+                let Ok(Some(doc)) = talaria_kb::get_doc(&pg, &doc_id).await else {
+                    return false;
+                };
+                let Ok(effective) = talaria_kb::effective_doc_perms(&pg, &doc).await else {
+                    return false;
+                };
+                let team_ids = talaria_teams::team_ids_for_user(&pg, &user_id)
+                    .await
+                    .unwrap_or_default();
+                talaria_kb_perms::can_read(
+                    &effective.perms,
+                    Some(&user_id),
+                    who.as_deref(),
+                    &effective.grants,
+                    &team_ids,
+                )
+            })
+        }));
     talaria_price_oracle::register_price_refresh_job(Arc::new(PriceRefreshDeps {
         pg: state.pg.clone(),
     }));
@@ -305,6 +395,35 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::UpdateReconcile),
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
+        );
+
+        // THE ROLL'S EDGES, the same completeness rule one layer down. These
+        // OnceLocks are how the reconcile crate reaches the renderer, and an
+        // unwired one makes `roll_agent` return "… not wired" — a sentence
+        // the control route discards while answering `{"rolling": true}`.
+        // Nothing else in the crate graph runs boot, so this is the only
+        // place the absence can be caught before an operator notices that
+        // their agents never changed.
+        assert!(
+            talaria_fleet_reconcile::RENDER_FLEET.get().is_some(),
+            "the roll's overlay renderer fell out of the boot wiring — every roll would silently do nothing"
+        );
+        assert!(
+            talaria_fleet_reconcile::NEXT_FREE_PORT.get().is_some(),
+            "the roll's port allocator fell out of the boot wiring — every roll would silently do nothing"
+        );
+        assert!(
+            talaria_update_job::ROLL_FLEET.get().is_some(),
+            "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
+        );
+        // THE RUN ASSEMBLY request-path enqueues use. Unset, every plan-draft
+        // POST is a 500 ("dispatch not wired" → "could not start the plan
+        // draft"), and research start and guided reindex die the same way.
+        // Nothing else in the crate graph runs boot, so this is the only
+        // place the absence can be caught before drafting tickets does nothing.
+        assert!(
+            talaria_tasks_types::BUILD_DISPATCH.get().is_some(),
+            "BUILD_DISPATCH fell out of the boot wiring — plan drafts, research, and reindex cannot enqueue"
         );
     }
 

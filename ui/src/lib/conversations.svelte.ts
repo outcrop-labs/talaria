@@ -4,6 +4,7 @@ import { delJson, getJson, getList, patchJson, postJson, putJson } from '@/lib/f
 import { confirm, prompt } from '@/components/ui/confirm.svelte'
 import { toastError } from '@/lib/toast.svelte'
 import type { ToolCall } from '@/lib/sse-parse'
+import type { ChatChip } from '@/lib/chips'
 
 export interface Conversation {
   id: string
@@ -37,6 +38,7 @@ export interface StoredMessage {
   /** Row-level stamps; `resumed` marks a turn the server auto-resumed after
    *  its stream died mid-flight. */
   metadata?: { resumed?: boolean } | null
+  chips?: ChatChip[]
 }
 
 export interface PlanMember {
