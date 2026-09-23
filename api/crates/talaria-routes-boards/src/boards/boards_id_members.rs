@@ -122,7 +122,7 @@ pub async fn post(
                 return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     "only an owner can add an owner",
-                ))
+                ));
             }
             Err(e) => return Ok(internal("[boards] role read on owner share failed", e)),
         }
@@ -233,7 +233,7 @@ pub async fn delete(
                 return Ok(house_error(
                     StatusCode::FORBIDDEN,
                     "only an owner can remove an owner",
-                ))
+                ));
             }
             Err(e) => return Ok(internal("[boards] role read on owner unshare failed", e)),
         }

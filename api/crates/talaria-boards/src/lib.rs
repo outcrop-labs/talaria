@@ -463,7 +463,11 @@ pub async fn share_board(
     Ok(ShareOutcome::Shared)
 }
 
-pub async fn unshare_board(pg: &PgPool, board_id: &str, user_id: &str) -> Result<Option<String>, sqlx::Error> {
+pub async fn unshare_board(
+    pg: &PgPool,
+    board_id: &str,
+    user_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
     // The last owner stays. Anyone else — including an owner, once another
     // owner remains — can be removed. A silent no-op here is what made the
     // people tab's remove control look broken.
