@@ -16,7 +16,7 @@
 // recipe with the randomness pinned.
 //
 // Usage:
-//   bun run api:vectors           # write api/tests/fixtures/secretbox.json
+//   bun run api:vectors           # write api/tests/it/fixtures/secretbox.json
 //   bun run api:vectors --check   # fail if the committed file is stale
 //
 // The DEK-wrap asymmetry gets its own vectors on purpose: a DEK is wrapped as
@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { deriveKek } from '../ui/src/server/secretbox.ts'
 
-const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', 'api', 'tests', 'fixtures', 'secretbox.json')
+const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', 'api', 'tests', 'it', 'fixtures', 'secretbox.json')
 
 // ── Deterministic material ────────────────────────────────────────────────────
 const ROOT = 'talaria-vector-root-v1'
@@ -149,7 +149,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const committed = readFileSync(FIXTURE, 'utf8')
     if (committed !== canonical) {
       console.error(
-        'api/tests/fixtures/secretbox.json is stale — regenerate with: bun run api:vectors\n' +
+        'api/tests/it/fixtures/secretbox.json is stale — regenerate with: bun run api:vectors\n' +
           '(the Rust suite and ui vitest both assert against this file; it must match the TS recipe exactly)',
       )
       process.exit(1)
