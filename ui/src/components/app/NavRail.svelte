@@ -21,8 +21,7 @@
   import CreateBoardModal from '@/components/board/CreateBoardModal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import { activeAmong, isUnder } from '@/lib/route-tabs'
-  import { shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
+  import { isUnder } from '@/lib/route-tabs'
   import BoardsSublist from './BoardsSublist.svelte'
   import NavIcon from './NavIcon.svelte'
   import RailTooltip from './RailTooltip.svelte'
@@ -32,10 +31,10 @@
   import { useNavCollapsed } from './nav-rail.svelte'
   import { cn } from '@/lib/cn'
   import { NAV, type NavItem } from '@/lib/nav'
+  import { appManageItem, appWorkItem, navActiveItem, navSections } from '@/lib/nav-sections'
+  import { useNavBadges, badgeTitle } from '@/lib/nav-badges.svelte'
   import { useEnabledApps } from '@/lib/apps'
-  import { useInboxFocus, useInboxFocusSummary } from '@/lib/inbox-focus.svelte'
   import { useDeniedViews } from '@/lib/session'
-  import { useUnreads } from '@/lib/unreads.svelte'
   import { navigate, route } from '@/router'
 
   // The main application menu. Expanded: WORK/MANAGE/SYSTEM sections with the
@@ -50,42 +49,10 @@
   const denied = useDeniedViews()
   let creating = $state(false)
   const nav = useNavCollapsed()
-  // Are we ON the Inbox? The full queue loads here and only a count elsewhere.
-  //
-  // The SAME predicate the assistant surface uses, not a fourth spelling of it.
-  // Bare `/home` renders the Inbox as its default tab, so an `isUnder(…,
-  // '/home/inbox')` of its own would have quietly loaded the summary instead of
-  // the queue on the URL the nav rail itself points at.
-  const isInbox = $derived(shouldAttachInboxDecision(pathname, undefined))
-  const inboxQueue = useInboxFocus(() => ({ enabled: isInbox }))
-  const inboxSummary = useInboxFocusSummary(() => ({ enabled: !isInbox }))
-  // `null` = the count could NOT be read, which is a different fact from zero
-  // and must not render as one. The rail is where a person checks whether
-  // anything is waiting without opening anything; a silent 0 over a failed
-  // read is this app's oldest bug shape, on the one surface that gates every
-  // human decision. `!` with a title is the honest badge.
-  const inboxRead = $derived(isInbox ? inboxQueue : inboxSummary)
-  const unread: number | null = $derived(
-    inboxRead.isError && inboxRead.data === undefined
-      ? null
-      : isInbox
-        ? (inboxQueue.data?.counts.total ?? 0)
-        : (inboxSummary.data?.count ?? 0),
-  )
-  // The other rails' badges — Comms, Plan, Research — ride /api/unreads, the
-  // same counts their pills show, live over the firehose with its own 30s
-  // floor. The SAME unread-null doctrine as /home above applies, for the same
-  // reason and on the same surface.
-  const unreadsQuery = useUnreads()
-  /** An item's badge count: undefined = carries none; null = unreadable. */
-  const badgeFor = (item: NavItem): number | null | undefined => {
-    if (item.to === '/home') return unread
-    if (!item.badge) return undefined
-    if (unreadsQuery.isError && unreadsQuery.data === undefined) return null
-    return unreadsQuery.data?.[item.badge] ?? 0
-  }
-  const badgeTitle = (badge: number | null) =>
-    badge === null ? 'Could not load what is waiting here' : undefined
+  // The badge reads (Inbox queue-vs-summary, /api/unreads) and their
+  // unread-null doctrine live in lib/nav-badges now — one wiring, shared with
+  // the surfaces that come after the rail.
+  const badges = useNavBadges(() => pathname)
   // Enabled apps get their own rail category, separate from Work: Work is
   // Talaria's own surfaces, and an app's work surface is a guest with its own
   // heading — you should be able to tell platform from app at a glance. An
@@ -99,43 +66,24 @@
   const appsQuery = useEnabledApps()
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
   const appsBroken = $derived(appsList.failed || appsList.stale)
-  const appWork = $derived(appsList.rows.filter((a) => a.surfaces.work).map((a) => ({ to: `/x/${a.slug}`, label: a.surfaces.work!, icon: a.icon })))
-  const appManage = $derived(appsList.rows.filter((a) => a.surfaces.manage).map((a) => ({ to: `/x/${a.slug}/manage`, label: a.surfaces.manage!, icon: a.icon })))
-
-  // Denied-view + role filtering, shared by both modes and by the app items
-  // wherever they land.
-  const passes = (i: NavItem) =>
-    (!i.adminOnly || isAdmin) && !denied.current.includes(i.to) && !denied.current.some((d) => i.to.startsWith(d + '/'))
-
-  const sections = $derived.by(() => {
-    const core = NAV.flatMap((section) => {
-      if (section.adminOnly && !isAdmin) return []
-      const items = [...section.items, ...(section.id === 'manage' ? appManage : [])].filter(passes)
-      return items.length === 0 ? [] : [{ id: section.id, title: section.title, items }]
-    })
-    const apps = appWork.filter(passes)
-    if (apps.length === 0) return core
-    // After the Work views when they exist; otherwise ahead of Manage (or at
-    // the top, in the nothing-core-survives edge) — either way: views, Apps,
-    // Manage. Placement branches on the section's stable `id`, never its
-    // display string: the Work views carry no header to match on.
-    const workAt = core.findIndex((s) => s.id === 'work')
-    const at = workAt >= 0 ? workAt + 1 : Math.max(core.findIndex((s) => s.id === 'manage'), 0)
-    return [...core.slice(0, at), { id: 'apps', title: 'Apps', items: apps }, ...core.slice(at)]
-  })
-
-  // THE ACTIVE ITEM IS THE MOST SPECIFIC ONE CONTAINING THE ROUTE, decided
-  // across every section at once by `activeAmong` — so `/boards` stays lit
-  // while you read a task inside it, and an app's Manage surface beats its Work
-  // surface instead of lighting both.
-  //
-  // This replaced `exactFor`, which matched Home and app Work items EXACTLY and
-  // everything else by prefix. That fixed two cases and stated no rule: Home
-  // needed an exemption because it is an ancestor of every route, app Work
-  // needed one because Manage nests under it, and the next nested pair would
-  // have lit both again. Most-specific-wins subsumes all three.
-  const activePath = $derived(activeAmong(pathname, sections.flatMap((sec) => sec.items.map((i) => i.to))))
-
+  const appWork = $derived(
+    appsList.rows.flatMap((a) => {
+      const item = appWorkItem(a)
+      return item === null ? [] : [item]
+    }),
+  )
+  const appManage = $derived(
+    appsList.rows.flatMap((a) => {
+      const item = appManageItem(a)
+      return item === null ? [] : [item]
+    }),
+  )
+  // The section derivation (core + apps slotting + grants filtering) is
+  // lib/nav-sections' one implementation now, tested there; the active-item
+  // rule (most specific containing the route, via activeAmong) went with it.
+  const sections = $derived(navSections(NAV, appWork, appManage, { isAdmin, denied: denied.current }))
+  const activeItem = $derived(navActiveItem(pathname, sections))
+  const activePath = $derived(activeItem?.to ?? null)
   // AMBIENT TEXTURE ON THE RAIL, and the halo under whatever is active.
   //
   // A whisper by default and a notch louder while the pointer is over the
@@ -153,7 +101,6 @@
   // lagged a row behind on scroll; an element cannot be wrong about where it
   // is.
   const [sendMark, receiveMark] = markCrossfade()
-
   let inside = $state(false)
   const ambient = $derived.by((): DitherSource[] => {
     const a = inside ? { chrome: 0.2, grain: 0.05, foot: 0.09 } : { chrome: 0.14, grain: 0.035, foot: 0.06 }
@@ -163,7 +110,6 @@
       { id: 'foot', kind: 'edge', side: 'bottom', depth: 96, strength: a.foot },
     ]
   })
-
   const statusFor = (item: NavItem): 'active' | undefined => (item.to === activePath ? 'active' : undefined)
 </script>
 
@@ -209,7 +155,7 @@
       {#each sections as section, si (section.id)}
         {#if si > 0}<div class="my-2 h-px w-6 shrink-0 bg-line"></div>{/if}
         {#each section.items as item (item.to)}
-          {@const badge = badgeFor(item)}
+          {@const badge = badges.badgeFor(item)}
           <RailTooltip label={item.label}>
             <a
               href={item.to}
@@ -314,7 +260,7 @@
                row's field resolves as its own. -->
           <ul class="space-y-1.5">
             {#each section.items as item (item.to)}
-              {@const badge = badgeFor(item)}
+              {@const badge = badges.badgeFor(item)}
               <li>
                 <a
                   {@attach ditherSurface()}
