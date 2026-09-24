@@ -10,15 +10,15 @@
     type PermissionState,
     type PushOutcome,
   } from '@/lib/browser-notify'
+  import { inDesktopShell } from '@/lib/desktop-shell'
 
-  // Desktop notifications: the browser tapping you on the shoulder when
-  // Talaria is in another tab or window — and, through Web Push, when it is
-  // closed entirely. The permission lives with the browser, but the
-  // closed-tab half is a subscription this row files with the server
-  // (browser-notify.ts), so turning it on and off both round-trip once. It
-  // sits inside the notifications section because it answers the same
-  // question the routing table does ("where does this reach me"), for the
-  // one destination the routing table can't name per-device.
+  // Desktop notifications: an OS banner when Talaria is not what the person
+  // is looking at. In a browser that is the Notification API plus Web Push
+  // for a closed browser. In the desktop shell the webview's permission
+  // reads denied and there is no site-settings page — the shell posts
+  // natively, and this row does not pretend a push subscription exists.
+  // The app has to be running; quitting it stops the banners.
+  const shell = inDesktopShell()
   const OPTIONS = [
     { id: 'on' as const, label: 'On' },
     { id: 'off' as const, label: 'Off' },
@@ -32,12 +32,13 @@
     if (wanted) {
       // The click IS the gesture the permission prompt requires
       // (browser-notify.ts, rule 1); asking outside one is how a site ends
-      // up reflex-denied forever. The same gesture files the push
-      // subscription — closed-tab reach rides the same grant.
+      // up reflex-denied forever. In a browser the same gesture files the
+      // push subscription. The shell has no service worker to wake a quit
+      // process, so it does not try.
       perm = await requestBrowserNotify()
       if (perm === 'granted') {
         setBrowserNotifyPref(true)
-        push = await ensurePushSubscription()
+        if (!shell) push = await ensurePushSubscription()
       }
     } else {
       // Browsers give no way to hand a grant back from a page; our own pref
@@ -45,7 +46,7 @@
       // browser's, whose subscription this retires at both ends.
       setBrowserNotifyPref(false)
       push = null
-      void stopPushSubscription()
+      if (!shell) void stopPushSubscription()
     }
     on = browserNotifyEnabled()
   }
@@ -56,7 +57,15 @@
     <div class="min-w-0 flex-1">
       <div class="text-sm text-fg">Desktop notifications</div>
       <div class="font-sans text-xs text-muted">
-        {#if perm === 'denied'}
+        {#if shell}
+          {#if on}
+            On. A notification pops up when something new lands while the Talaria window isn't focused. The in-app toast
+            still shows when you're looking at it. If nothing appears, allow Talaria in the system notification settings.
+          {:else}
+            Off. Turn on to also get a notification when something lands while you're in another app, or the window is
+            minimized.
+          {/if}
+        {:else if perm === 'denied'}
           Your browser is blocking notifications from this site. Allow them in the browser's site settings, then turn this on.
         {:else if perm === 'unsupported'}
           This browser doesn't support desktop notifications.
@@ -66,7 +75,7 @@
         {:else}
           Off. Turn on to also get a browser notification when something lands while you're elsewhere — closed browsers included.
         {/if}
-        {#if on && push === 'failed'}
+        {#if !shell && on && push === 'failed'}
           Push didn't register for closed browsers this time (open-tab notifications are unaffected) — toggling off and on retries.
         {/if}
       </div>

@@ -3,10 +3,10 @@
 //! window and its webviews.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, WebviewBuilder, WebviewUrl, Window};
+use tauri::{AppHandle, Manager, Webview, WebviewBuilder, WebviewUrl, Window};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::{ShellState, View, beacon, layout, registry, registry::Instance, settings};
+use crate::{ShellState, View, beacon, layout, notify, registry, registry::Instance, settings};
 
 fn main_window(app: &AppHandle) -> Result<Window, String> {
     app.get_window("main")
@@ -307,4 +307,64 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| format!("installing the update: {e}"))?;
     app.restart();
+}
+
+/// Post an OS notification. The webview's Notification API reads denied inside
+/// the shell and has no site-settings page; this is the path that actually
+/// reaches the OS. A click focuses the window, brings the calling instance
+/// forward, and opens `href` when it is a same-origin path.
+#[tauri::command]
+pub fn desktop_notify(
+    app: AppHandle,
+    webview: Webview,
+    title: String,
+    body: Option<String>,
+    tag: Option<String>,
+    href: Option<String>,
+) -> Result<(), String> {
+    let title = notify::clamped_title(&title);
+    if title.is_empty() {
+        return Err("a notification needs a title".into());
+    }
+    let body = body
+        .as_deref()
+        .map(notify::clamped_body)
+        .filter(|b| !b.is_empty());
+    let tag = tag
+        .as_deref()
+        .map(notify::clamped_tag)
+        .filter(|t| !t.is_empty());
+    let label = webview.label().to_string();
+    let href = href
+        .as_deref()
+        .and_then(notify::openable_href)
+        .map(str::to_string);
+    notify::post(&app, &title, body.as_deref(), tag.as_deref(), {
+        let app = app.clone();
+        move || reveal_notice(&app, &label, href.as_deref())
+    })
+}
+
+fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
+    let label = label.to_string();
+    let href = href.map(str::to_string);
+    let app = app.clone();
+    // WebKitGTK eval and window ops belong on the main thread. The click
+    // waiter is a blocking thread; this only queues the reveal.
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(id) = label.strip_prefix("instance-") {
+            let _ = activate_instance(app.clone(), id.to_string());
+        }
+        if let Some(window) = app.get_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        if let Some(href) = href
+            && let Some(js) = notify::assign_js(&href)
+            && let Some(webview) = app.get_webview(&label)
+        {
+            let _ = webview.eval(js);
+        }
+    });
 }

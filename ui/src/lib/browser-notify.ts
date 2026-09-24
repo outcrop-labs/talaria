@@ -7,12 +7,18 @@
 //     in the corner of the OS would be noise. shouldBrowserNotify() is the
 //     one gate every caller goes through.
 //
-// The two cases split by where the browser is: this file's Notification API
-// covers the open-but-background tab, and Web Push covers the CLOSED
-// browser — /sw.js here, the VAPID/aes128gcm plane in the API's src/push.rs.
-// Push rides rule 2 as surely as the tab plane does (the worker suppresses
-// when a Talaria window is visible) and rule 1 doubly (subscription happens
-// in the settings toggle's click, after the grant).
+// The two cases split by where the person is. In a browser, this file's
+// Notification API covers the open-but-background tab, and Web Push covers
+// the CLOSED browser — /sw.js here, the VAPID/aes128gcm plane in the API's
+// src/push.rs. Push rides rule 2 as surely as the tab plane does (the worker
+// suppresses when a Talaria window is visible) and rule 1 doubly (subscription
+// happens in the settings toggle's click, after the grant).
+//
+// Inside the desktop shell the webview's Notification API reads denied and
+// there is no site-settings UI. The shell posts through the OS instead
+// (`desktop_notify`); the same gate and pref still decide whether to fire.
+// A quit desktop app is not listening — that is not Web Push.
+import { inDesktopShell, shellShowNotification } from '@/lib/desktop-shell'
 import { getJson, postJson } from '@/lib/fetch-json'
 import { readText, writeText } from '@/lib/persist'
 
@@ -20,9 +26,20 @@ const PREF_KEY = 'talaria.browserNotify'
 
 export type PermissionState = 'unsupported' | 'default' | 'granted' | 'denied'
 
+/** Inside the shell the OS grant is the shell's, not the webview's. A denied
+ *  `Notification.permission` must not keep the toggle off. */
+export function effectiveNotifyPermission(input: {
+  inShell: boolean
+  browser: PermissionState
+}): PermissionState {
+  return input.inShell ? 'granted' : input.browser
+}
+
 export function permissionState(): PermissionState {
-  if (typeof Notification === 'undefined') return 'unsupported'
-  return Notification.permission
+  return effectiveNotifyPermission({
+    inShell: inDesktopShell(),
+    browser: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
+  })
 }
 
 /** Set the person's own off switch. Revoking browser permission means digging
@@ -42,6 +59,9 @@ export function browserNotifyEnabled(): boolean {
 
 /** Ask. Must run inside a click handler (rule 1 above). */
 export async function requestBrowserNotify(): Promise<PermissionState> {
+  // The shell does not prompt the webview. Desktop apps post through the OS;
+  // the pref set by this click is the on switch.
+  if (inDesktopShell()) return 'granted'
   if (typeof Notification === 'undefined') return 'unsupported'
   try {
     if (Notification.permission === 'default') await Notification.requestPermission()
@@ -71,6 +91,12 @@ export function shouldBrowserNotify(input: {
  *  browser that refuses (or forbids the constructor from a page) is a
  *  degraded corner, not an error worth surfacing mid-poll. */
 export function fireBrowserNotification(n: { title: string; body?: string; tag?: string; href?: string }): void {
+  if (inDesktopShell()) {
+    // The toast already landed. A shell that predates this command, or an OS
+    // service that refuses the post, is a missed banner — not an error.
+    void shellShowNotification(n).catch(() => {})
+    return
+  }
   if (typeof Notification === 'undefined') return
   try {
     const note = new Notification(n.title, { body: n.body || undefined, tag: n.tag || undefined })

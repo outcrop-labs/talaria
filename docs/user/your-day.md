@@ -74,9 +74,12 @@ class (**Settings → Notifications**):
 nothing is.
 
 **Desktop notifications** (**Settings → Notifications**, the row under the routing table)
-extend the in-app copies to your OS: a browser notification when Talaria is in another
-tab or window, and — once your browser takes the push subscription the same toggle
-files — when it's closed entirely. A copy your browser shows while you're looking at
-Talaria is suppressed (the toast already said it), and turning the toggle off retires
-the subscription at both ends. Classes routed **Email only** reach mail, not your
-screen.
+extend the in-app copies to your OS. In a browser, that is a browser notification when
+Talaria is in another tab or window, and — once the browser takes the push subscription
+the same toggle files — when it's closed entirely. In the desktop app, the same toggle
+posts a native notification while the window isn't focused. The embedded view cannot grant
+browser notification permission, so the app asks the operating system directly; a click
+brings the window forward and opens the item. Quitting the app stops these — the process
+has to be running. A copy shown while you're looking at Talaria is suppressed (the toast
+already said it), and turning the toggle off retires a browser's push subscription at
+both ends. Classes routed **Email only** reach mail, not your screen.
