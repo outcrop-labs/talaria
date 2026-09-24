@@ -43,6 +43,7 @@ use talaria_research::{
     research_run_for_conversation, run_state_for_conversation,
 };
 use talaria_research_origin::mark_agent_turn;
+use talaria_sender_identity::{SenderIdentity, sender_identity_message};
 use talaria_session::require_user;
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
@@ -264,6 +265,14 @@ pub async fn post(
         id: &user.id,
         email: user.email.as_deref(),
         name: user.name.as_deref(),
+    };
+    // The same row ref_user reads, as the turn's speaker: the TALA-80 stamp
+    // must name who the authenticated row says is typing, not who the client
+    // or the model claims.
+    let identity = SenderIdentity {
+        id: user.id.clone(),
+        name: user.name.clone(),
+        email: user.email.clone(),
     };
     let ref_chips = resolve_refs(&state.pg, &ref_user, body.refs.as_deref().unwrap_or(&[]))
         .await
@@ -499,6 +508,7 @@ pub async fn post(
                 tier: body.tier.clone(),
                 plan: plan_meta.clone(),
                 research_prompt,
+                sender: Some(identity.clone()),
             };
             tokio::spawn(async move {
                 continue_conversation(&state, &conv_id, &meta).await;
@@ -595,6 +605,14 @@ pub async fn post(
     if mentions_handle(&spoken_content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
     }
+    // TALA-80: an unattributed user turn invites the agent to fill the
+    // speaker from remembered memory — the remembered user, a person from a
+    // different conversation — and answer them instead of whoever is typing.
+    // The identity rides WITH the turn, built above from the authenticated
+    // row, ahead of the history so it lands among the mode prompts and close
+    // to the turn. History rows keep their own speaker prefixes; the block
+    // rides only this turn's system row.
+    messages.push(sender_identity_message(&identity));
     messages.extend(
         prior
             .iter()
@@ -644,6 +662,7 @@ pub async fn post(
         tier: body.tier.clone(),
         plan: plan_meta.clone(),
         research_prompt,
+        sender: Some(identity),
         // A live turn is a first attempt — eligible for the one auto-resume.
         resumed: false,
     };

@@ -185,6 +185,10 @@ pub struct TurnMeta {
     /// the run's state at the turn — working while the run is, report-mode
     /// once it has finished. None for every other kind.
     pub research_prompt: Option<&'static str>,
+    /// Who spoke the queued turn this chain answers, threaded from /api/chat.
+    /// None on turns that predate the stamp or arrive without one — the
+    /// chained turn then composes without it, as before.
+    pub sender: Option<talaria_sender_identity::SenderIdentity>,
 }
 
 // One continuation at a time per conversation (in-process guard — the check
@@ -326,6 +330,13 @@ async fn continue_inner(
     if mentions_handle(&last.content) {
         messages.push(json!({ "role": "system", "content": HANDLE_TURN_NOTE }));
     }
+    // TALA-80: the queued message may name a relay or answer a person from
+    // memory — the chained turn must still know who actually spoke, from
+    // the authenticated row that stamped the queue, not from what the
+    // message itself claims.
+    if let Some(sender) = &meta.sender {
+        messages.push(talaria_sender_identity::sender_identity_message(sender));
+    }
     messages.extend(
         prior
             .iter()
@@ -413,6 +424,7 @@ async fn continue_inner(
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
+        sender: meta.sender.clone(),
         resumed: resume.is_some(),
     };
     // Detached — the chain's own tail continues it. The
@@ -459,6 +471,9 @@ pub struct PersistMeta {
     pub plan: Option<PlanMeta>,
     /// Rides through to the continuation's TurnMeta — see TurnMeta.
     pub research_prompt: Option<&'static str>,
+    /// Rides through to the continuation's TurnMeta — an auto-resumed turn
+    /// answers the same person, so the stamp re-rides. See TurnMeta.
+    pub sender: Option<talaria_sender_identity::SenderIdentity>,
     /// Whether this drive is an auto-resume of an earlier dead attempt on the
     /// same row. The death path reads it: a resumed turn that dies again
     /// STAYS dead — one quiet retry, then the error is a person's to look at.
@@ -818,6 +833,7 @@ pub async fn persist_assistant_stream(
                     tier: meta.tier,
                     plan: meta.plan,
                     research_prompt: meta.research_prompt,
+                    sender: meta.sender.clone(),
                 },
             )
             .await;
@@ -841,6 +857,7 @@ fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta:
         tier: meta.tier.clone(),
         plan: meta.plan.clone(),
         research_prompt: meta.research_prompt,
+        sender: meta.sender.clone(),
     };
     tokio::spawn(async move {
         tokio::time::sleep(RESUME_BACKOFF).await;

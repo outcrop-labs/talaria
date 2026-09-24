@@ -4287,6 +4287,7 @@ dependencies = [
  "talaria-realtime",
  "talaria-refs",
  "talaria-secretbox",
+ "talaria-sender-identity",
  "talaria-state",
  "talaria-ticket-chat",
  "talaria-uploads",
@@ -4337,6 +4338,7 @@ dependencies = [
  "talaria-retrieval-index",
  "talaria-retrieval-qdrant",
  "talaria-retrieval-sources",
+ "talaria-sender-identity",
  "talaria-state",
  "talaria-titler",
  "talaria-workspace-handles",
@@ -5368,6 +5370,7 @@ dependencies = [
  "talaria-persona",
  "talaria-refs",
  "talaria-secretbox",
+ "talaria-sender-identity",
  "talaria-session",
  "talaria-state",
  "talaria-statuses",
@@ -6453,6 +6456,7 @@ dependencies = [
  "talaria-refs",
  "talaria-research",
  "talaria-research-origin",
+ "talaria-sender-identity",
  "talaria-session",
  "talaria-state",
  "talaria-task-const",
@@ -6937,6 +6941,13 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "talaria-sender-identity"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

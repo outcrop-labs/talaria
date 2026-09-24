@@ -1714,6 +1714,11 @@ async fn execute_action_arms(
             let trigger_seq = posted.seq;
             let (channel_id, channel_name, message) =
                 (item.source_id.clone(), channel_name, message);
+            let trigger_sender = talaria_sender_identity::SenderIdentity {
+                id: user.id.clone(),
+                name: user.name.clone(),
+                email: user.email.clone(),
+            };
             tokio::spawn(async move {
                 if let Some(sb) = sb {
                     trigger_agent_replies(
@@ -1726,6 +1731,7 @@ async fn execute_action_arms(
                         0,
                         trigger_seq,
                         None,
+                        Some(trigger_sender),
                     )
                     .await;
                 }

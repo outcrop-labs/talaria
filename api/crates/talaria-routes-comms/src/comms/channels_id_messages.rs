@@ -460,6 +460,11 @@ async fn post_as_user(
     let trigger_root = thread_root_id.clone();
     let trigger_name = channel_name.clone();
     let trigger_id = id.to_string();
+    let trigger_sender = talaria_sender_identity::SenderIdentity {
+        id: user.id.clone(),
+        name: user.name.clone(),
+        email: user.email.clone(),
+    };
     tokio::spawn(async move {
         trigger_agent_replies(
             &trigger_state,
@@ -471,6 +476,7 @@ async fn post_as_user(
             trigger_attachments,
             trigger_seq,
             trigger_root.as_deref(),
+            Some(trigger_sender),
         )
         .await;
     });
