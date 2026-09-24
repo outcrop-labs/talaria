@@ -2145,6 +2145,43 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// mise.toml pins = CI's pins. The root mise.toml is how people and workbench
+// agents get the toolchain; setup-runtime is how CI gets it. Two spellings of
+// one pin drift the first time someone bumps only the file they were looking
+// at, and a workbench then builds on a toolchain CI never tested. Node is
+// compared by major, since CI pins `22.x` and mise `22`.
+{
+  const MISE = 'mise.toml'
+  const ACTION = '.github/actions/setup-runtime/action.yml'
+  const mise = readFileSync(join(ROOT, MISE), 'utf8')
+  const action = readFileSync(join(ROOT, ACTION), 'utf8')
+  const pinOf = (tool) => new RegExp(`^${tool}\\s*=\\s*"([^"]+)"`, 'm').exec(mise)?.[1]
+  const defaultOf = (input) =>
+    new RegExp(`^  ${input}:\\n(?:    .*\\n)*?    default: '([^']*)'`, 'm').exec(action)?.[1]
+  const problems = []
+  for (const [tool, norm] of [
+    ['rust', (v) => v],
+    ['bun', (v) => v],
+    ['node', (v) => v?.split('.')[0]],
+  ]) {
+    const a = pinOf(tool)
+    const b = defaultOf(tool)
+    if (a === undefined || b === undefined) {
+      problems.push(`${tool}: could not read the pin (${MISE}: ${a ?? 'missing'}, ${ACTION}: ${b ?? 'missing'})`)
+    } else if (norm(a) !== norm(b)) {
+      problems.push(`${tool}: ${MISE} says ${a}, ${ACTION} says ${b}`)
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'toolchain-pin-drift',
+      what: `${MISE} and ${ACTION} pin different toolchain versions`,
+      fix: [`Bump both files together; the comment at the top of ${ACTION} lists every pin site.`, ...problems],
+      found: [],
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)

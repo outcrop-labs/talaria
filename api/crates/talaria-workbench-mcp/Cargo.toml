@@ -35,6 +35,7 @@ talaria-tasks = { workspace = true }
 talaria-work-wait = { workspace = true }
 talaria-workbench = { workspace = true }
 tokio = { workspace = true }
+toml_edit = { workspace = true }
 tracing = { workspace = true }
 redis = { workspace = true }
 regex = { workspace = true }

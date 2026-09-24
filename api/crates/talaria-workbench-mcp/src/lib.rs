@@ -52,6 +52,7 @@ use talaria_tasks::{
     agent_ticket_refusal, get_task, log_activity, resolve_task_id, update_task,
 };
 use talaria_workbench::resolve_workbench;
+pub mod devenv;
 pub mod teardown;
 
 use talaria_workbench_harnesses::{
@@ -271,6 +272,11 @@ pub fn workbench_tools() -> Vec<Value> {
                 },
                 "required": ["jobId"],
             },
+        }),
+        json!({
+            "name": "prepare_env",
+            "description": "Set up the job's dev environment after you clone: Talaria reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise, plus any OS packages the repo lists in .talaria/workbench.toml. Idempotent; call it at the start of every job. The first run of a new toolchain can take minutes. Never install toolchains or system packages yourself: declare them in the repo and call this again.",
+            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
         }),
     ]
 }
@@ -1028,7 +1034,7 @@ async fn call_tool(
                     .to_string()
             } else {
                 format!(
-                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go — commits are authored as YOU. Never touch {base}. You are the orchestrator: the CHOSEN harness (first in the list) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Escalate effort only when the work truly needs it. When the change is right, finish_job — Talaria opens the PR.",
+                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go — commits are authored as YOU. Never touch {base}. Once cloned, call prepare_env with this jobId: it installs the repo's toolchains and system packages, so never install them yourself. You are the orchestrator: the CHOSEN harness (first in the list) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Escalate effort only when the work truly needs it. When the change is right, finish_job — Talaria opens the PR.",
                     base = created_branch.base,
                 )
             };
@@ -1109,6 +1115,36 @@ async fn call_tool(
                 jobs.push(wire);
             }
             CallOutcome::Ok(json!({ "jobs": jobs }))
+        }
+
+        "prepare_env" => {
+            let job_id = arg_str(args, "jobId");
+            if let Some(error) = bad_job_id(&job_id) {
+                return CallOutcome::Fail(error);
+            }
+            let status: Option<String> = match sqlx::query_scalar(
+                "select status from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
+            )
+            .bind(&job_id)
+            .bind(&agent.id)
+            .fetch_optional(pg)
+            .await
+            {
+                Ok(status) => status,
+                Err(e) => return thrown(format!("job read: {e}")),
+            };
+            match status.as_deref() {
+                None => return CallOutcome::Fail("unknown job".into()),
+                Some("started") => {}
+                Some(other) => return CallOutcome::Fail(format!("job is {other}")),
+            }
+            let Some(workdir) = teardown::job_workdir(&job_id) else {
+                return CallOutcome::Fail(format!("not a job id: {job_id:?}"));
+            };
+            match devenv::prepare_env(pg, &agent.department, &workdir).await {
+                Ok(result) => CallOutcome::Ok(result),
+                Err(e) => CallOutcome::Fail(e),
+            }
         }
 
         "merge_to_testing" => {
@@ -1995,7 +2031,8 @@ mod tests {
                 "job_status",
                 "merge_to_testing",
                 "request_repo",
-                "finish_job"
+                "finish_job",
+                "prepare_env"
             ]
         );
         // start_job's properties ride in declaration order, required last.

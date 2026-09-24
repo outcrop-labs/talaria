@@ -40,6 +40,21 @@ export async function runSetup(ctx: Ctx): Promise<number> {
   } catch {
     /* the need() above already died */
   }
+  // api/.cargo/config.toml links with mold on x86_64 Linux, and gcc looks up
+  // `ld.mold` on PATH, so without it the first cargo build dies at the link
+  // step with collect2's "cannot find 'ld'", long after setup said ready.
+  // A warning, not a stop: a deploy host builds inside docker and never links
+  // on the host.
+  if (process.platform === 'linux' && process.arch === 'x64') {
+    try {
+      await ctx.exec('ld.mold', ['--version'])
+    } catch {
+      ctx.log.warn('mold is not on PATH, and the api links with it (api/.cargo/config.toml).')
+      ctx.log.warn("  Run 'mise install' here (mise.toml pins it), or install your distro's package:")
+      ctx.log.warn("  'sudo pacman -S mold', 'sudo apt install mold', or 'sudo dnf install mold'.")
+      ctx.log.warn('  A deploy-only host can ignore this: the image build links inside docker.')
+    }
+  }
   ctx.log.ok(`docker, compose, node ${process.versions.node}, bun ${bunVersion}`)
 
   const pgPort = ctx.env.TALARIA_PG_PORT ?? PG_PORT
