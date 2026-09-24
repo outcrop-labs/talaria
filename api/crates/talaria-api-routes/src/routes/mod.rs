@@ -1266,19 +1266,12 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_agents_id_control::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
-        // The workbench family — the agent sandbox plane: the profile
-        // registry (env masked for members, infra fields admin-only), the
-        // per-repo git flow, the org GitHub connection (status/installations/
-        // patch/disconnect — admin, it holds org credentials), the harness
-        // registry (merged builtin+custom defs), the human side of workbench
-        // jobs (the ticket strip + approve/reject/merge-to-testing), the repo
-        // -creation approval queue, and the per-agent repo grants.
-        .route(
-            "/api/workbench",
-            get(talaria_routes_workbench::workbench::workbench::get)
-                .put(talaria_routes_workbench::workbench::workbench::put)
-                .fallback(|| async { method_not_allowed("GET, PUT") }),
-        )
+        // The workbench family, the agent sandbox plane: the per-repo git
+        // flow, the org GitHub connection (status/installations/patch/
+        // disconnect; admin, it holds org credentials), the human side of
+        // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
+        // the repo-creation approval queue, and the per-agent repo grants.
+        // Who is a developer is the agent's own switch (fleet/defs PATCH).
         .route(
             "/api/workbench/flow",
             get(talaria_routes_workbench::workbench::workbench_flow::get)
@@ -1290,13 +1283,6 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_workbench::workbench::workbench_github::get)
                 .put(talaria_routes_workbench::workbench::workbench_github::put)
                 .delete(talaria_routes_workbench::workbench::workbench_github::delete)
-                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
-        )
-        .route(
-            "/api/workbench/harnesses",
-            get(talaria_routes_workbench::workbench::workbench_harnesses::get)
-                .put(talaria_routes_workbench::workbench::workbench_harnesses::put)
-                .delete(talaria_routes_workbench::workbench::workbench_harnesses::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(

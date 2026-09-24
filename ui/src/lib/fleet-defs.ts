@@ -49,11 +49,8 @@ export interface AgentDef {
   enabled: boolean
   managed: boolean
   source: 'imported' | 'created'
-  /** THE workbench setting: off | auto (fit rules) | on (forced). */
-  workbench: 'off' | 'auto' | 'on'
-  workbenchProfile: string | null
-  workbenchHarness: string | null
-  workbenchModels: Partial<Record<'light' | 'standard' | 'heavy', string>>
+  /** The Developer Agent switch: dev sandbox + Oh My Pi + the Workbench tools. */
+  developer: boolean
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
   planTemplateId: string | null
@@ -233,7 +230,7 @@ export function useFleetHires(enabled: MaybeGetter<boolean>) {
 /** Update an agent's editable identity (role, display name, template bindings). */
 export async function patchAgentMeta(
   id: string,
-  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; workbench?: 'off' | 'auto' | 'on'; workbenchProfile?: string | null; workbenchHarness?: string | null; workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string | null>> },
+  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean },
 ): Promise<{ ok?: boolean; error?: string }> {
   try {
     return await patchJson<{ ok: boolean }>(`/api/fleet/defs/${id}`, patch)

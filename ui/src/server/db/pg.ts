@@ -3257,6 +3257,27 @@ alter table tasks drop column if exists conversation_id`,
      agent_model text not null,
      created_at timestamptz not null default now()
    )`,
+
+  // ── Developer Agent (2026-09-24): one switch per agent replaces Workbench
+  // off/auto/on, the profile registry, the harness pick, and the per-agent
+  // effort models. Oh My Pi is the only harness, and the switch is the only
+  // grant of the `workbench` MCP server (the registry ignores assignment and
+  // team rows for it). Add-first: the retired columns (agent_defs.workbench,
+  // workbench_profile, workbench_harness, workbench_models), the
+  // workbench_profiles and workbench_harness_defs tables, and old workbench
+  // grant rows stay in place, unread, so a rollback to the previous image
+  // still boots. A later release drops them.
+  `alter table agent_defs add column if not exists developer boolean not null default false`,
+  // Carry over the agents that were set up to code: Workbench forced on, or
+  // already holding a registry grant for the Workbench tools. 'auto' agents
+  // start off: they had the sandbox by fit, but never the tools to use it.
+  `update agent_defs set developer = true
+     where workbench = 'on'
+        or model in (
+          select a.agent_model from mcp_server_agents a
+          join mcp_servers s on s.id = a.server_id
+          where s.name = 'workbench'
+        )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

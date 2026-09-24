@@ -6859,6 +6859,7 @@ dependencies = [
  "talaria-state",
  "talaria-statuses",
  "talaria-tasks",
+ "talaria-workbench-harnesses",
  "talaria-workflows",
  "tokio",
  "tracing",
@@ -7443,7 +7444,6 @@ dependencies = [
  "talaria-tasks",
  "talaria-tasks-types",
  "talaria-work-wait",
- "talaria-workbench",
  "tokio",
  "tracing",
 ]
@@ -7461,18 +7461,14 @@ dependencies = [
 name = "talaria-workbench"
 version = "0.1.0"
 dependencies = [
- "regex",
- "serde",
  "serde_json",
  "sqlx",
- "talaria-fleet-layout",
 ]
 
 [[package]]
 name = "talaria-workbench-harnesses"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "sqlx",
  "talaria-gateway",
@@ -7509,7 +7505,6 @@ dependencies = [
  "talaria-statuses",
  "talaria-tasks",
  "talaria-work-wait",
- "talaria-workbench",
  "talaria-workbench-harnesses",
  "tokio",
  "tracing",

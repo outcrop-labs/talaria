@@ -244,7 +244,7 @@ Talaria stands on a small mountain of open source.
 - SearXNG
 - text-embeddings-inference
 - Hermes
-- opencode, Pi and Oh My Pi
+- Oh My Pi
 - Bun
 - TypeScript
 - Vitest

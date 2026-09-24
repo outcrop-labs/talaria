@@ -7,9 +7,9 @@
   import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { useFleet, relativeTime } from '@/lib/fleet'
   import { patchAgentMeta, type AgentDef, type ModelTarget } from '@/lib/fleet-defs'
+  import DeveloperAgentControl from './DeveloperAgentControl.svelte'
   import Stat from './Stat.svelte'
   import TemplateBindings from './TemplateBindings.svelte'
-  import WorkbenchControl from './WorkbenchControl.svelte'
 
   let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
 
@@ -176,8 +176,8 @@
       {/if}
     </div>
   {/if}
-  <!-- Workbench — THE sandbox setting: off / auto (fit rules) / on. -->
-  <WorkbenchControl {def} {isAdmin} />
+  <!-- Developer Agent: one switch for sandbox, Oh My Pi, Workbench tools. -->
+  <DeveloperAgentControl {def} {isAdmin} />
   <div class="grid grid-cols-2 gap-3">
     <Stat label="Model id" value={def.model} />
     <Stat label="Department" value={def.department} />
