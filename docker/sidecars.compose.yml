@@ -103,10 +103,17 @@ services:
   # defaults below are PROD's pair; the dev loop and a box override whichever
   # half differs, with the dev-grade values their own apps are handed.
   minio:
-    # quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09);
-    # quay's latest is digest-identical to the last Hub-published build.
-    # Freshness of quay's images is tracked in issue #366.
-    image: quay.io/minio/minio:latest
+    # OUR GHCR MIRROR, PINNED BY DIGEST (TALA-20). MinIO is dead upstream:
+    # github.com/minio/minio archived 2026-04-25, mc 2026-07-14, the last
+    # releases were never published to any registry, and quay's tags are
+    # frozen at the 2025-09 builds — post-freeze hotfix tags point at
+    # commits that don't exist in the public repo. A :latest from a dead
+    # project can move but never be fixed, so we mirror the bits ourselves
+    # and pin the digest: a pull cannot silently drift, and a bump is a
+    # commit that changes this line, the mc pin in cli/src/backup/lib.ts,
+    # and the mirror's source table together. Mirror + provenance:
+    # .github/workflows/minio-mirror.yml (replaces the #366 watch).
+    image: ghcr.io/outcrop-labs/talaria-minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     restart: unless-stopped
     command: ['server', '/data']
     environment:
