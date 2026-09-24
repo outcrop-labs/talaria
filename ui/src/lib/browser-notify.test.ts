@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   browserNotifyEnabled,
+  effectiveNotifyPermission,
   ensurePushSubscription,
   setBrowserNotifyPref,
   shouldBrowserNotify,
@@ -33,6 +34,18 @@ describe('shouldBrowserNotify (the one gate)', () => {
   it('never fires without the grant or with the pref off', () => {
     expect(shouldBrowserNotify({ focused: false, visible: false, permission: 'default', enabled: true })).toBe(false)
     expect(shouldBrowserNotify({ focused: false, visible: false, permission: 'granted', enabled: false })).toBe(false)
+  })
+})
+
+describe('effectiveNotifyPermission (shell vs webview)', () => {
+  it('does not inherit a denied webview read inside the shell', () => {
+    expect(effectiveNotifyPermission({ inShell: true, browser: 'denied' })).toBe('granted')
+    expect(effectiveNotifyPermission({ inShell: true, browser: 'unsupported' })).toBe('granted')
+  })
+
+  it('keeps the browser read outside the shell', () => {
+    expect(effectiveNotifyPermission({ inShell: false, browser: 'denied' })).toBe('denied')
+    expect(effectiveNotifyPermission({ inShell: false, browser: 'default' })).toBe('default')
   })
 })
 

@@ -15,6 +15,7 @@ fn main() {
             "desktop_window",
             "check_for_update",
             "install_update",
+            "desktop_notify",
         ]),
     ))
     .expect("failed to run tauri-build");

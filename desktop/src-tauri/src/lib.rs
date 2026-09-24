@@ -9,8 +9,8 @@
 //     but alive. Switching between instances happens INSIDE the instance UI
 //     (the desktop switcher beside the logo in ui/), so each registered
 //     instance origin is granted, at runtime, a minimal capability: the
-//     switcher commands plus window chrome (titlebar mode, min/max/close/drag)
-//     — no fs, nothing else.
+//     switcher commands, window chrome (titlebar mode, min/max/close/drag),
+//     and a notification post — no fs, nothing else.
 //
 // Every instance webview gets its own data directory, so cookie jars and
 // localStorage never mix; hidden webviews stay loaded (sessions and SSE
@@ -27,6 +27,7 @@
 mod beacon;
 mod commands;
 mod layout;
+mod notify;
 mod registry;
 mod settings;
 use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
@@ -64,8 +65,8 @@ impl ShellState {
     }
 }
 
-/// Grant one instance origin the switcher, window-chrome, and updater
-/// command set — the only IPC remote content ever gets, and only for origins
+/// Grant one instance origin the switcher, window-chrome, updater, and
+/// notification command set — the only IPC remote content ever gets, and only for origins
 /// the user registered.
 fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Result<(), String> {
     let capability = tauri::ipc::CapabilityBuilder::new(format!("switcher-{}", instance.id))
@@ -78,7 +79,8 @@ fn grant_switcher(app: &tauri::AppHandle, instance: &registry::Instance) -> Resu
         .permission("allow-set-titlebar-mode")
         .permission("allow-desktop-window")
         .permission("allow-check-for-update")
-        .permission("allow-install-update");
+        .permission("allow-install-update")
+        .permission("allow-desktop-notify");
     app.add_capability(capability)
         .map_err(|e| format!("granting the instance switcher access: {e}"))
 }
@@ -162,6 +164,7 @@ pub fn run() {
             commands::desktop_window,
             commands::check_for_update,
             commands::install_update,
+            commands::desktop_notify,
         ])
         .run(tauri::generate_context!())
         .expect("talaria desktop shell exited unexpectedly");

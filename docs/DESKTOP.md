@@ -45,14 +45,15 @@ deletes its data dir — the saved session dies with it; the instance itself is 
 
 ## Security posture
 
-- **Instance webviews get the switcher plus window chrome, nothing else.** The shell's
+- **Instance webviews get the switcher, window chrome, and a notification post — nothing else.** The shell's
   commands are gated behind capabilities (`AppManifest::commands` in `desktop/src-tauri/build.rs`);
   the launcher holds all of them (`capabilities/launcher.json`), and each REGISTERED instance
   origin gets a runtime grant (`grant_switcher` in `src-tauri/src/lib.rs`, via Tauri's
   dynamic-ACL) scoped to `list_instances`, `activate_instance`, `show_welcome`,
-  `get_desktop_settings`, `set_titlebar_mode`, `desktop_window` on that one webview. No fs,
-  no generic window API — remote content can switch instances and move/close *this* window.
-  An origin the user never registered gets no IPC at all.
+  `get_desktop_settings`, `set_titlebar_mode`, `desktop_window`, `check_for_update`,
+  `install_update`, and `desktop_notify` on that one webview. No fs, no generic window API —
+  remote content can switch instances, move/close *this* window, and post a notification
+  (title, body, and a same-origin path). An origin the user never registered gets no IPC at all.
 - Login happens inside each instance webview via the instance's own flows (password or
   OAuth). **Known limitation:** Google blocks OAuth inside embedded webviews; password login
   works, and for dev instances a session can be minted into Redis directly (see the
@@ -235,9 +236,19 @@ Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that 
 means installed copies can no longer verify a new payload. OS code signing
 (Gatekeeper / SmartScreen) is still absent; this signature is the updater's own.
 
+## Notifications
+
+The instance UI's Desktop notifications toggle posts through the shell (`desktop_notify`),
+not the webview's Notification API. WKWebView and WebKitGTK report that API denied, and
+there is no site-settings page inside the shell, so a page cannot grant it. The shell posts
+through the OS notification service — the same path other desktop apps use. A click focuses
+this window, brings that instance forward, and opens the notification's path when it is a
+same-origin path. The app has to be running; a quit process is not listening. Tray and
+delivery after quit stay deferred.
+
 ## Deferred on purpose
 
-Rename/reorder instances, health badges, native notifications, tray, deep links, OAuth via
+Rename/reorder instances, health badges, tray, deep links, OAuth via
 external browser, code signing and notarization.
 
 macOS and Windows build and ship, but the session-isolation invariant above does not hold
