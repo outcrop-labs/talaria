@@ -16,18 +16,23 @@
   import { useBoards, type Board } from '@/lib/boards.svelte'
   import { p } from '@/router'
 
-  // Sidebar search. This was `SidebarWorkOverview`, which carried two progress
-  // meters ("2/7 projects", "14/60 tasks") above the box. They were the first
-  // thing in the rail and the least useful: a ratio nobody set a target for,
-  // over boards the person may not even work on, that moved on its own. The
-  // meters are gone; what people came to this corner for is the box.
+  // THE STRIP'S SEARCH — the box that left the sidebar with the rail (TALA-84).
+  // An icon beside the bell; a click expands it into the input. The search it
+  // does is the one the rail's box did (boards + tasks across all boards), not
+  // a new global search: there is no command palette backend yet, and a box
+  // that answers "which board, which ticket" is honest about that.
+  //
+  // One request per board fires only while a query is typed — `enabled`
+  // waits for the box to be expanded AND have text, so a resting strip makes
+  // no reads at all.
+  let expanded = $state(false)
   let query = $state('')
   const normalizedQuery = $derived(query.trim().toLowerCase())
-  const searching = $derived(normalizedQuery.length > 0)
+  const searching = $derived(expanded && normalizedQuery.length > 0)
 
-  // A board read that 500s must never arrive here as an empty list: "no matches"
-  // and "we could not look" are different sentences, and only one of them is
-  // about the user's search.
+  // A board read that 500s must never arrive here as an empty list: "no
+  // matches" and "we could not look" are different sentences, and only one of
+  // them is about the user's search.
   const boardsQuery = useBoards()
   const boardList = listQuery(boardsQuery, {
     title: 'Could not search your projects',
@@ -39,10 +44,6 @@
   // one key hand each other's consumers the other's row shape. The board name
   // is joined below, out of the cached payload, so what lands in the cache is
   // exactly what the board views expect.
-  //
-  // `enabled` waits for a search. One request per board, on every page, is a
-  // real cost that the meters used to justify and nothing does now — the rows
-  // are only ever read to answer a query that has been typed.
   const taskQueries = createQueries(() => ({
     queries: boardList.rows.map((board) => ({
       queryKey: ['board-tasks', board.id, false],
@@ -79,6 +80,28 @@
           .slice(0, Math.max(0, 6 - projectMatches.length))
       : [],
   )
+
+  let inputEl = $state<HTMLInputElement | null>(null)
+
+  function collapse() {
+    expanded = false
+    query = ''
+  }
+
+  function onKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      collapse()
+      return
+    }
+    if (event.key === 'Enter' && projectMatches.length > 0 && taskMatches.length === 0) {
+      void p('/boards/:boardId', { params: { boardId: projectMatches[0]!.id } })
+      collapse()
+    }
+  }
+
+  function pick() {
+    collapse()
+  }
 </script>
 
 {#snippet searchResults(projects: Board[], taskRows: IndexedTask[])}
@@ -95,7 +118,7 @@
           in:fade={{ duration: 150 }}
           out:slide={{ duration: 120 }}
           href={p('/boards/:boardId', { params: { boardId: board.id } })}
-          onclick={() => (query = '')}
+          onclick={pick}
           class="flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-muted transition-colors dither-fill hover:text-fg"
         >
           <FolderKanban size={14} strokeWidth={1.5} class="shrink-0" />
@@ -108,7 +131,7 @@
           in:fade={{ duration: 150 }}
           out:slide={{ duration: 120 }}
           href={p('/boards/:boardId/:taskId', { params: { boardId: task.boardId, taskId: task.id } })}
-          onclick={() => (query = '')}
+          onclick={pick}
           class="flex min-h-8 items-start gap-2 rounded-md px-2 py-1.5 text-muted transition-colors dither-fill hover:text-fg"
         >
           <ListTodo size={14} strokeWidth={1.5} class="mt-px shrink-0" />
@@ -124,54 +147,71 @@
   {/if}
 {/snippet}
 
-<section aria-label="Search" class="mt-5 shrink-0">
-  <div class="relative">
-    <Search
-      size={14}
-      strokeWidth={1.7}
-      class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
-      aria-hidden="true"
-    />
-    <input
-      bind:value={query}
-      onkeydown={(event) => {
-        if (event.key === 'Escape') query = ''
-      }}
-      aria-label="Search"
-      placeholder="Search"
-      class="h-9 w-full rounded-lg border border-line bg-raised pl-9 pr-8 font-sans text-xs text-fg outline-none transition-colors placeholder:text-muted hover:border-line-strong focus:border-[color:var(--theme-accent-border)] focus:ring-1 focus:ring-[color:var(--theme-accent-border)]"
-    />
-    {#if query}
+<section aria-label="Search" class="relative shrink-0">
+  {#if expanded}
+    <!-- The expanded box, in the strip itself (spec §6's expanding search):
+         the input replaces the icon in place, results drop below, Escape or
+         the X hands the width back. Autofocused — a click on a search icon
+         IS the intent to type. -->
+    <div class="relative w-64">
+      <Search
+        size={14}
+        strokeWidth={1.7}
+        class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted"
+        aria-hidden="true"
+      />
+      <input
+        bind:this={inputEl}
+        bind:value={query}
+        onkeydown={onKeydown}
+        aria-label="Search"
+        placeholder="Search"
+        class="h-7 w-full rounded-lg border border-line bg-raised pl-8 pr-7 font-sans text-xs text-fg outline-none transition-colors placeholder:text-muted hover:border-line-strong focus:border-[color:var(--theme-accent-border)] focus:ring-1 focus:ring-[color:var(--theme-accent-border)]"
+      />
       <button
         type="button"
-        onclick={() => (query = '')}
-        aria-label="Clear search"
-        class="absolute right-2 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted transition-colors dither-fill hover:text-fg"
+        onclick={collapse}
+        aria-label="Close search"
+        class="absolute right-1.5 top-1/2 grid h-5 w-5 -translate-y-1/2 place-items-center rounded text-muted transition-colors dither-fill hover:text-fg"
       >
         <X size={12} strokeWidth={1.7} />
       </button>
-    {/if}
-  </div>
-
-  <!-- Failures are reported while the person is SEARCHING, which is the only
-       time this component reads anything. A standing error box over an idle
-       search field is noise about work nobody asked for; a silent empty result
-       set while a read is failing is the lie this app keeps hunting down. -->
-  {#if searching}
-    {#if boardList.notice}
-      <div class="mt-3 px-2"><QueryError {...boardList.notice} /></div>
-    {/if}
-    {#if tasksFailed.length > 0}
-      <QueryError
-        error={tasksFailed[0]?.error}
-        title="Could not search your tasks"
-        variant="inline"
-        onRetry={retryTasks}
-        class="mt-3 px-2"
-      />
-    {/if}
-    {#if !boardList.failed}
-      {@render searchResults(projectMatches, taskMatches)}
-    {/if}
+    </div>
+    <!-- Failures are reported while the person is SEARCHING, which is the only
+         time this component reads anything. A standing error box over an idle
+         search field is noise about work nobody asked for; a silent empty result
+         set while a read is failing is the lie this app keeps hunting down.
+         Positioned under the box, right-aligned with the strip's cluster. -->
+    <div class="absolute right-0 top-9 z-50 w-80 rounded-lg border border-line bg-panel p-2 shadow-[var(--theme-shadow-2)]">
+      {#if searching}
+        {#if boardList.notice}
+          <div class="px-2 pb-2"><QueryError {...boardList.notice} /></div>
+        {/if}
+        {#if tasksFailed.length > 0}
+          <QueryError
+            error={tasksFailed[0]?.error}
+            title="Could not search your tasks"
+            variant="inline"
+            onRetry={retryTasks}
+            class="px-2 pb-2"
+          />
+        {/if}
+        {#if !boardList.failed}
+          {@render searchResults(projectMatches, taskMatches)}
+        {/if}
+      {/if}
+    </div>
+  {:else}
+    <button
+      type="button"
+      onclick={() => {
+        expanded = true
+        queueMicrotask(() => inputEl?.focus())
+      }}
+      aria-label="Search"
+      class="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
+    >
+      <Search size={15} class="shrink-0" />
+    </button>
   {/if}
 </section>
