@@ -34,6 +34,7 @@
     addWorkchainEdge,
     addWorkchainStep,
     removeWorkchainEdge,
+    removeWorkchainStep,
     updateWorkchain,
   } from '@/lib/workchain-client'
   import {
@@ -409,10 +410,19 @@
   const cardMenu = (e: MouseEvent, step: WorkchainStep) => {
     menu.openMenu(e, [
       { label: 'Open', onSelect: () => onOpen(step.taskId) },
+      { label: 'Remove from chain', danger: true, onSelect: () => removeStep(step.taskId) },
       ...(edgesFrom(step.taskId).length > 0
         ? [{ label: 'Cut all wires from here', danger: true, onSelect: () => cutAllFrom(step.taskId) }]
         : []),
     ])
+  }
+
+  // Unlink the ticket from the chain (the ticket itself survives). A miss
+  // is a quiet ok per the client contract.
+  const removeStep = (taskId: string) => {
+    void removeWorkchainStep(workchain.id, taskId)
+      .then(onChanged)
+      .catch(failure('Removing the step'))
   }
 
   const edgesFrom = (taskId: string) => workchain.edges.filter((e) => e.fromTaskId === taskId)
