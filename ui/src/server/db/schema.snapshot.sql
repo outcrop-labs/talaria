@@ -1162,7 +1162,8 @@ CREATE TABLE public.workbench_jobs (
     summary text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    merged_testing_at timestamp with time zone
+    merged_testing_at timestamp with time zone,
+    workspace_cleared_at timestamp with time zone
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
