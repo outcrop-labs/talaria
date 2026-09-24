@@ -8,17 +8,21 @@
   // on click (hover lifts them first) and Delete removes the selected edge;
   // right-clicking a card offers the same via context menu. Cards drag to
   // reposition (persisting through PATCH nodes), the canvas pans (space-drag,
-  // or an empty-canvas drag) and zooms (wheel), and zoom-to-fit resets.
+  // or an empty-canvas drag) and zooms (a modified wheel — ctrl/⌘, or the
+  // ctrl a trackpad pinch synthesizes; a bare wheel scrolls the page), and
+  // zoom-to-fit resets.
   //
   // The pure halves live in lib: workchain-rules.ts (layout, paths, states),
   // wiring-overlay.ts (geometry + viewport math), wiring-canvas.ts (the drop
   // resolution + candidate sets) — this component is the DOM half.
-  import { Check, Maximize2, Pause, Play, ZoomIn, ZoomOut } from '@lucide/svelte'
+  import { Check, ListPlus, Maximize2, Pause, Pencil, Play, Trash2, ZoomIn, ZoomOut } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { createTask } from '@/lib/boards.svelte'
   import { assigneeInfo } from '@/lib/assignees'
   import { cn } from '@/lib/cn'
@@ -31,11 +35,13 @@
     addWorkchainEdge,
     addWorkchainStep,
     removeWorkchainEdge,
+    removeWorkchainStep,
     updateWorkchain,
   } from '@/lib/workchain-client'
   import {
     autoLayout,
     chainProgress,
+    filterCandidates,
     NODE_H,
     NODE_W,
     wirePath,
@@ -43,6 +49,7 @@
     type Workchain,
     type WorkchainEdge,
     type WorkchainStep,
+    type WorkchainCandidate,
   } from '@/lib/workchain-rules'
   import {
     clientToCanvas,
@@ -51,6 +58,7 @@
     hitTestNode,
     hitTestPort,
     portRadius,
+    wheelZoomGesture,
     zoomAt,
   } from '@/lib/wiring-overlay'
   import { edgeCandidateSteps, edgeDropOutcome, WIRE_HIT_RADIUS } from '@/lib/wiring-canvas'
@@ -65,6 +73,11 @@
     members,
     onOpen,
     onChanged,
+    managed = false,
+    onRename,
+    onDelete,
+    candidates = [],
+    onAddTask,
   }: {
     workchain: Workchain
     /** The chain's board — the create-and-connect composer files the new
@@ -76,6 +89,19 @@
     onOpen: (taskId: string) => void
     /** A write landed; the owner re-reads (it owns the query). */
     onChanged: () => void
+    /** Managed mode: the header grows the chain's rename/delete affordances.
+     *  The writes and their confirms stay with the caller — onRename and
+     *  onDelete are the hooks it gets. */
+    managed?: boolean
+    /** The chain's new name — trimmed, non-empty, actually changed. */
+    onRename?: (name: string) => void
+    /** The chain goes; the caller owns the confirm and the request. */
+    onDelete?: () => void
+    /** The board's UNCHAINED tickets the "+ Add ticket" picker offers.
+     *  Ownership stays with the caller: it decides what a candidate is. */
+    candidates?: WorkchainCandidate[]
+    /** A ticket joins the focused chain; the caller owns the write. */
+    onAddTask?: (taskId: string) => void
   } = $props()
 
   const info = (step: WorkchainStep) =>
@@ -88,6 +114,24 @@
     void updateWorkchain(workchain.id, { paused: !workchain.paused })
       .then(onChanged)
       .catch(failure(workchain.paused ? 'Unpausing the chain' : 'Pausing the chain'))
+
+  // ── Managed mode: the rename affordance ──────────────────────────────────
+  // The popover's draft, reset to the live name on every open (the trigger
+  // click), so a refetch can never leave stale text sitting in the box.
+  let renameDraft = $state('')
+
+  const commitRename = () => {
+    const name = renameDraft.trim()
+    if (name && name !== workchain.name) onRename?.(name)
+  }
+
+  // ── Managed mode: the "+ Add ticket" picker ──────────────────────────────
+  // The canvas header's seed path for the focused chain: a type-to-filter
+  // list over the caller's candidates (the board's unchained tickets).
+  // Selecting a row hands the write to onAddTask — the caller owns it —
+  // and closes. The draft is session state, cleared on every open.
+  let addDraft = $state('')
+  const addRows = $derived(filterCandidates(candidates, addDraft))
 
   const menu = useContextMenu()
 
@@ -143,7 +187,8 @@
 
   // ── The viewport: pan + zoom (TALA-34) ───────────────────────────────────
   // The transform is translation + scale; every pointer coordinate crosses
-  // clientToCanvas before any hit test. Wheel zooms at the cursor; space-drag
+  // clientToCanvas before any hit test. A modified wheel (ctrl/⌘ — trackpad
+  // pinch included) zooms at the cursor; space-drag
   // pans (and an empty-canvas drag pans too, the n8n convenience). Pan/zoom
   // is session-local state, never persisted.
   let viewport = $state({ x: 0, y: 0, k: 1 })
@@ -154,8 +199,12 @@
   let plane = $state<HTMLDivElement | null>(null)
 
   const onWheel = (e: WheelEvent) => {
-    if (!surface) return
+    // Zoom is a MODIFIED wheel: ctrlKey (a trackpad pinch synthesizes it)
+    // or metaKey (⌘/Win+wheel). A bare wheel returns un-prevented — the
+    // page's scroll container takes it.
+    if (!wheelZoomGesture(e)) return
     e.preventDefault()
+    if (!surface) return
     const rect = surface.getBoundingClientRect()
     const focus = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
     // trackpads speak small deltas per event (ctrl+wheel pinch), mice one
@@ -226,10 +275,10 @@
   let composerAt = $state<{ left: number; top: number } | null>(null)
 
   /** The steps this drag may legally land on — the highlight set. */
-  const candidates = $derived(
+  const edgeCandidates = $derived(
     wireDrag ? edgeCandidateSteps(workchain.steps, workchain.edges, wireDrag.fromTaskId) : [],
   )
-  const candidateIds = $derived(new Set(candidates.map((s) => s.taskId)))
+  const candidateIds = $derived(new Set(edgeCandidates.map((s) => s.taskId)))
 
   const startWire = (taskId: string, e: PointerEvent) => {
     e.stopPropagation()
@@ -252,7 +301,7 @@
     const at = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
     // Ports first (the precise target), then the card body, then nothing.
     const portHits: Array<{ taskId: string; side: 'in' | 'out'; pos: { x: number; y: number } }> =
-      candidates.map((s) => ({
+      edgeCandidates.map((s) => ({
         taskId: s.taskId,
         side: 'in',
         pos: positions.get(s.taskId) ?? { x: 0, y: 0 },
@@ -277,7 +326,7 @@
     const rect = surface?.getBoundingClientRect()
     if (!rect) return
     const at = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
-    const portHits = candidates.map((s) => ({
+    const portHits = edgeCandidates.map((s) => ({
       taskId: s.taskId,
       side: 'in' as const,
       pos: positions.get(s.taskId) ?? { x: 0, y: 0 },
@@ -379,10 +428,19 @@
   const cardMenu = (e: MouseEvent, step: WorkchainStep) => {
     menu.openMenu(e, [
       { label: 'Open', onSelect: () => onOpen(step.taskId) },
+      { label: 'Remove from chain', danger: true, onSelect: () => removeStep(step.taskId) },
       ...(edgesFrom(step.taskId).length > 0
         ? [{ label: 'Cut all wires from here', danger: true, onSelect: () => cutAllFrom(step.taskId) }]
         : []),
     ])
+  }
+
+  // Unlink the ticket from the chain (the ticket itself survives). A miss
+  // is a quiet ok per the client contract.
+  const removeStep = (taskId: string) => {
+    void removeWorkchainStep(workchain.id, taskId)
+      .then(onChanged)
+      .catch(failure('Removing the step'))
   }
 
   const edgesFrom = (taskId: string) => workchain.edges.filter((e) => e.fromTaskId === taskId)
@@ -408,10 +466,10 @@
 
 </script>
 
-<div class="min-w-0">
+<div class="flex h-full min-w-0 flex-col">
   <!-- Canvas header: the chain's name, its derived progress, its controls —
        the rail header's shape, so the two renders read as one surface. -->
-  <div class="flex flex-wrap items-center gap-2">
+  <div class="flex shrink-0 flex-wrap items-center gap-2">
     <span class="font-sans text-sm font-medium text-fg">{workchain.name}</span>
     <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{chainProgress(workchain)}</span>
     {#if workchain.paused}
@@ -437,6 +495,96 @@
       <IconButton size="sm" title="Zoom to fit" onclick={zoomToFit}>
         <Maximize2 size={14} />
       </IconButton>
+      {#if managed && onAddTask && candidates.length > 0}
+        <Popover align="left">
+          {#snippet trigger(open)}
+            <IconButton size="sm" active={open} title="Add ticket" onclick={() => (addDraft = '')}>
+              <ListPlus size={14} />
+            </IconButton>
+          {/snippet}
+          {#snippet content(close)}
+            <div class="flex w-64 flex-col gap-1">
+              <Input
+                autofocus
+                bind:value={addDraft}
+                placeholder="Filter tickets"
+                size="sm"
+              />
+              {#if addRows.length === 0}
+                <p class="px-1 py-2 font-sans text-xs text-muted">No tickets match.</p>
+              {:else}
+                <div class="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
+                  {#each addRows as t (t.id)}
+                    <button
+                      type="button"
+                      onclick={() => {
+                        onAddTask(t.id)
+                        close()
+                      }}
+                      class="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-raised"
+                    >
+                      {#if t.ticketRef}
+                        <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{t.ticketRef}</span>
+                      {/if}
+                      <span class="min-w-0 flex-1 truncate font-sans text-xs text-fg">{t.title}</span>
+                      {#if t.effort}
+                        <span class="shrink-0 rounded border border-line-subtle px-1 font-mono text-[9px] uppercase tracking-[0.05em] text-muted">
+                          {EFFORT_LABEL[t.effort]}
+                        </span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/snippet}
+        </Popover>
+      {/if}
+      {#if managed && onRename}
+        <Popover align="left">
+          {#snippet trigger(open)}
+            <IconButton
+              size="sm"
+              active={open}
+              title="Rename chain"
+              onclick={() => (renameDraft = workchain.name)}
+            >
+              <Pencil size={14} />
+            </IconButton>
+          {/snippet}
+          {#snippet content(close)}
+            <div class="w-56 space-y-1">
+              <Input
+                autofocus
+                bind:value={renameDraft}
+                placeholder="New name"
+                size="sm"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    commitRename()
+                    close()
+                  }
+                }}
+              />
+              <div class="flex items-center justify-between px-1">
+                <span class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted">enter to rename</span>
+                <button
+                  type="button"
+                  class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:text-fg"
+                  onclick={close}
+                >
+                  esc
+                </button>
+              </div>
+            </div>
+          {/snippet}
+        </Popover>
+      {/if}
+      {#if managed && onDelete}
+        <IconButton size="sm" title="Delete chain" danger onclick={() => onDelete?.()}>
+          <Trash2 size={14} />
+        </IconButton>
+      {/if}
     </span>
   </div>
 
@@ -446,8 +594,8 @@
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
   <div
     bind:this={surface}
-    class="relative mt-2 overflow-hidden rounded-lg border border-line-subtle bg-canvas"
-    style="height: 420px; touch-action: none;"
+    class="relative mt-2 min-h-0 flex-1 overflow-hidden rounded-lg border border-line-subtle bg-canvas"
+    style="touch-action: pan-y;"
     role="application"
     aria-label="Workchain canvas — drag between ports to wire steps"
     tabindex="0"
@@ -640,6 +788,16 @@
          create-and-connect. Title only; the chain does the rest. Lives at
          SURFACE level (outside the transform) because composerAt is computed
          in surface coordinates. -->
+    {#if workchain.steps.length === 0}
+      <!-- The empty chain's hint: the seed paths a blank canvas has — the
+           header's picker (a ticket already on the board) or the drag-on-
+           empty-canvas composer (a new one, wired in on Enter). -->
+      <div class="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
+          No steps yet — add a ticket or drop a wire to create one
+        </p>
+      </div>
+    {/if}
     {#if composer}
       <div
         class="absolute z-10 w-56 rounded-lg border border-accent-border bg-panel p-2 shadow-[var(--theme-shadow-2)]"
@@ -667,5 +825,10 @@
         </div>
       </div>
     {/if}
+    <!-- This surface owns the card/wire menus: its controller's open state
+         renders here (the portal lifts the panel to <body>). Without this,
+         cardMenu/wireMenu set state nothing displays — the TALA-34 menus
+         never had a renderer. -->
+    <ContextMenu {menu} />
   </div>
 </div>
