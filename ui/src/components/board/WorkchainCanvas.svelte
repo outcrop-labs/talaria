@@ -8,15 +8,18 @@
   // on click (hover lifts them first) and Delete removes the selected edge;
   // right-clicking a card offers the same via context menu. Cards drag to
   // reposition (persisting through PATCH nodes), the canvas pans (space-drag,
-  // or an empty-canvas drag) and zooms (wheel), and zoom-to-fit resets.
+  // or an empty-canvas drag) and zooms (a modified wheel — ctrl/⌘, or the
+  // ctrl a trackpad pinch synthesizes; a bare wheel scrolls the page), and
+  // zoom-to-fit resets.
   //
   // The pure halves live in lib: workchain-rules.ts (layout, paths, states),
   // wiring-overlay.ts (geometry + viewport math), wiring-canvas.ts (the drop
   // resolution + candidate sets) — this component is the DOM half.
-  import { Check, Maximize2, Pause, Play, ZoomIn, ZoomOut } from '@lucide/svelte'
+  import { Check, Maximize2, Pause, Pencil, Play, Trash2, ZoomIn, ZoomOut } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import { createTask } from '@/lib/boards.svelte'
@@ -51,6 +54,7 @@
     hitTestNode,
     hitTestPort,
     portRadius,
+    wheelZoomGesture,
     zoomAt,
   } from '@/lib/wiring-overlay'
   import { edgeCandidateSteps, edgeDropOutcome, WIRE_HIT_RADIUS } from '@/lib/wiring-canvas'
@@ -65,6 +69,9 @@
     members,
     onOpen,
     onChanged,
+    managed = false,
+    onRename,
+    onDelete,
   }: {
     workchain: Workchain
     /** The chain's board — the create-and-connect composer files the new
@@ -76,6 +83,14 @@
     onOpen: (taskId: string) => void
     /** A write landed; the owner re-reads (it owns the query). */
     onChanged: () => void
+    /** Managed mode: the header grows the chain's rename/delete affordances.
+     *  The writes and their confirms stay with the caller — onRename and
+     *  onDelete are the hooks it gets. */
+    managed?: boolean
+    /** The chain's new name — trimmed, non-empty, actually changed. */
+    onRename?: (name: string) => void
+    /** The chain goes; the caller owns the confirm and the request. */
+    onDelete?: () => void
   } = $props()
 
   const info = (step: WorkchainStep) =>
@@ -88,6 +103,16 @@
     void updateWorkchain(workchain.id, { paused: !workchain.paused })
       .then(onChanged)
       .catch(failure(workchain.paused ? 'Unpausing the chain' : 'Pausing the chain'))
+
+  // ── Managed mode: the rename affordance ──────────────────────────────────
+  // The popover's draft, reset to the live name on every open (the trigger
+  // click), so a refetch can never leave stale text sitting in the box.
+  let renameDraft = $state('')
+
+  const commitRename = () => {
+    const name = renameDraft.trim()
+    if (name && name !== workchain.name) onRename?.(name)
+  }
 
   const menu = useContextMenu()
 
@@ -143,7 +168,8 @@
 
   // ── The viewport: pan + zoom (TALA-34) ───────────────────────────────────
   // The transform is translation + scale; every pointer coordinate crosses
-  // clientToCanvas before any hit test. Wheel zooms at the cursor; space-drag
+  // clientToCanvas before any hit test. A modified wheel (ctrl/⌘ — trackpad
+  // pinch included) zooms at the cursor; space-drag
   // pans (and an empty-canvas drag pans too, the n8n convenience). Pan/zoom
   // is session-local state, never persisted.
   let viewport = $state({ x: 0, y: 0, k: 1 })
@@ -154,8 +180,12 @@
   let plane = $state<HTMLDivElement | null>(null)
 
   const onWheel = (e: WheelEvent) => {
-    if (!surface) return
+    // Zoom is a MODIFIED wheel: ctrlKey (a trackpad pinch synthesizes it)
+    // or metaKey (⌘/Win+wheel). A bare wheel returns un-prevented — the
+    // page's scroll container takes it.
+    if (!wheelZoomGesture(e)) return
     e.preventDefault()
+    if (!surface) return
     const rect = surface.getBoundingClientRect()
     const focus = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
     // trackpads speak small deltas per event (ctrl+wheel pinch), mice one
@@ -408,10 +438,10 @@
 
 </script>
 
-<div class="min-w-0">
+<div class="flex h-full min-w-0 flex-col">
   <!-- Canvas header: the chain's name, its derived progress, its controls —
        the rail header's shape, so the two renders read as one surface. -->
-  <div class="flex flex-wrap items-center gap-2">
+  <div class="flex shrink-0 flex-wrap items-center gap-2">
     <span class="font-sans text-sm font-medium text-fg">{workchain.name}</span>
     <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{chainProgress(workchain)}</span>
     {#if workchain.paused}
@@ -437,6 +467,51 @@
       <IconButton size="sm" title="Zoom to fit" onclick={zoomToFit}>
         <Maximize2 size={14} />
       </IconButton>
+      {#if managed && onRename}
+        <Popover align="left">
+          {#snippet trigger(open)}
+            <IconButton
+              size="sm"
+              active={open}
+              title="Rename chain"
+              onclick={() => (renameDraft = workchain.name)}
+            >
+              <Pencil size={14} />
+            </IconButton>
+          {/snippet}
+          {#snippet content(close)}
+            <div class="w-56 space-y-1">
+              <Input
+                autofocus
+                bind:value={renameDraft}
+                placeholder="New name"
+                size="sm"
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') {
+                    commitRename()
+                    close()
+                  }
+                }}
+              />
+              <div class="flex items-center justify-between px-1">
+                <span class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted">enter to rename</span>
+                <button
+                  type="button"
+                  class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:text-fg"
+                  onclick={close}
+                >
+                  esc
+                </button>
+              </div>
+            </div>
+          {/snippet}
+        </Popover>
+      {/if}
+      {#if managed && onDelete}
+        <IconButton size="sm" title="Delete chain" danger onclick={() => onDelete?.()}>
+          <Trash2 size={14} />
+        </IconButton>
+      {/if}
     </span>
   </div>
 
@@ -446,8 +521,8 @@
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
   <div
     bind:this={surface}
-    class="relative mt-2 overflow-hidden rounded-lg border border-line-subtle bg-canvas"
-    style="height: 420px; touch-action: none;"
+    class="relative mt-2 min-h-0 flex-1 overflow-hidden rounded-lg border border-line-subtle bg-canvas"
+    style="touch-action: pan-y;"
     role="application"
     aria-label="Workchain canvas — drag between ports to wire steps"
     tabindex="0"

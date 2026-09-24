@@ -1,36 +1,41 @@
 <script lang="ts">
-  // Workchains view — the board's fourth lens (TALA-30; TALA-35 the graph).
-  // Each chain renders as a horizontal rail of compact step cards
-  // (WorkchainRail) with the derived states legible at a glance; a chain
-  // that BRANCHES (any step with two or more outgoing wires) renders as the
-  // node canvas (WorkchainCanvas) instead — the rails cannot draw a fan-out
-  // honestly. Below the chains sits UNCHAINED — the tickets no chain holds
-  // yet, each row offering to join one.
+  // Workchains view — the board's fourth lens (TALA-30; TALA-35 the graph,
+  // TALA-34 the wiring editor). ONE chain fills the view at a time: the
+  // switcher above the canvas picks which (the first by default;
+  // pickFocusedChain's fallback also absorbs the stale focus a delete
+  // leaves behind), and the chain renders as the node canvas
+  // (WorkchainCanvas) — grabbable ports on every card, so A→B can be
+  // authored by dragging. The rename/delete verbs ride the same dropdown
+  // when you can edit; pause and zoom stay on the canvas header. Below the
+  // canvas sits UNCHAINED — the tickets no chain holds yet, each row
+  // offering to join one.
   //
-  // Filtering follows the lens convention (list/gantt): the rails draw what
-  // the board's filtered `tasks` contain — a step whose ticket is filtered
-  // out is hidden, and chevrons connect what remains — EXCEPT archived
-  // steps, which always render: they are chain structure. A rail is hidden
-  // entirely only when it has steps and ALL of them are filtered out; an
-  // empty chain stays (its picker is the only way to seed it).
+  // The switcher follows the lens convention (list/gantt): it offers the
+  // chains whose steps the board's filtered `tasks` still contain —
+  // EXCEPT archived steps, which always count: they are chain structure.
+  // A chain leaves the switcher only when it has steps and ALL of them are
+  // filtered out; an empty chain stays (its picker is the only way to seed
+  // it). The canvas itself draws the whole chain, filter or not.
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ChevronRight, Plus } from '@lucide/svelte'
+  import { ChevronDown, ChevronRight, Plus, Workflow } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { toastError } from '@/lib/toast.svelte'
+  import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { listQuery } from '@/components/ui/query-state'
   import Select from '@/components/ui/Select.svelte'
-  import { prompt } from '@/components/ui/confirm.svelte'
+  import { confirmDelete, prompt } from '@/components/ui/confirm.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useAgents } from '@/lib/agents'
   import { statusColorOf, useBoardStatuses } from '@/lib/statuses'
   import { EFFORT_LABEL, type Task } from '@/lib/task-const'
   import type { Board, BoardMember } from '@/lib/boards.svelte'
   import WorkchainCanvas from './WorkchainCanvas.svelte'
-  import { addWorkchainStep, createWorkchain, useBoardWorkchains } from '@/lib/workchain-client'
-  import { chainedTaskIds, type WorkchainStep } from '@/lib/workchain-rules'
+  import { addWorkchainStep, createWorkchain, deleteWorkchain, updateWorkchain, useBoardWorkchains } from '@/lib/workchain-client'
+  import { chainedTaskIds, pickFocusedChain, type WorkchainStep } from '@/lib/workchain-rules'
 
   let {
     board,
@@ -64,18 +69,20 @@
     await createWorkchain(board.id, name.trim()).then(invalidate).catch(failure('Creating the workchain'))
   }
 
-  // ── What each rail and the Unchained section draw ─────────────────────────
+  // ── What the switcher offers and the Unchained section draw ────────────────
   const filteredIds = $derived(new Set(tasks.map((t) => t.id)))
   const chained = $derived(chainedTaskIds(chains))
 
-  /** A step renders when its ticket passes the filter — or it is archived:
-   *  chain structure, drawn even with the archived chip off. */
+  /** A step counts when its ticket passes the filter — or it is archived:
+   *  chain structure, kept even with the archived chip off. */
   const stepShows = (s: WorkchainStep): boolean => s.state === 'archived' || filteredIds.has(s.taskId)
-  /** A rail with steps hides only when the filter removed every one. */
-  const railShows = (w: { steps: WorkchainStep[] }): boolean =>
+  /** A chain with steps leaves the switcher only when the filter removed
+   *  every one; an empty chain stays (its picker is the only way to seed it). */
+  const chainShows = (w: { steps: WorkchainStep[] }): boolean =>
     w.steps.length === 0 || w.steps.some(stepShows)
 
-  const visibleChains = $derived(chains.filter(railShows))
+  /** What the switcher offers — the chains the filter leaves visible. */
+  const visibleChains = $derived(chains.filter(chainShows))
   const unchained = $derived(tasks.filter((t) => !chained.has(t.id)))
   // Unchained collapses once chains exist (it is a backlog, not the show);
   // with no chains it is the whole view, so it starts open.
@@ -84,6 +91,74 @@
   $effect(() => {
     unchainedOpen = !anyChains
   })
+
+  // ── Which chain fills the view ────────────────────────────────────────────
+  // The switcher is the ONLY writer of focusedId; a delete leaves it stale
+  // on purpose — pickFocusedChain's fallback lands on the first survivor,
+  // so the view never sits focused on nothing.
+  let focusedId = $state<string | null>(null)
+  const focused = $derived(pickFocusedChain(chains, focusedId))
+  const focusedChain = $derived(chains.find((c) => c.id === focused) ?? null)
+
+  /** The trigger's `2/5` — where the focused chain sits among the offered
+   *  ones (hidden when the focused chain is one the filter removed). */
+  const switcherPos = $derived(visibleChains.findIndex((w) => w.id === focused) + 1)
+  const switcherCount = $derived(visibleChains.length)
+
+  const switcherItems = $derived.by(() => {
+    const items: ContextMenuEntry[] = visibleChains.map((w) => ({
+      label: w.name,
+      checked: w.id === focused,
+      onSelect: () => (focusedId = w.id),
+    }))
+    if (canEdit && focusedChain) {
+      items.push(
+        'sep',
+        { label: 'Rename…', onSelect: () => void promptRenameFocused() },
+        { label: 'Delete…', danger: true, onSelect: () => void deleteFocused() },
+      )
+    }
+    return items
+  })
+
+  /** The canvas header's pencil (managed mode) hands over a validated name
+   *  — trimmed, non-empty, actually changed. */
+  const renameFocused = (name: string) => {
+    const c = focusedChain
+    if (!c) return
+    void updateWorkchain(c.id, { name }).then(invalidate).catch(failure('Renaming the workchain'))
+  }
+
+  /** The dropdown's Rename… — a prompt seeded with the current name. */
+  const promptRenameFocused = async () => {
+    const c = focusedChain
+    if (!c) return
+    const name = await prompt({
+      title: 'Rename workchain',
+      message: `Rename “${c.name}”.`,
+      confirmLabel: 'Rename',
+      defaultValue: c.name,
+    })
+    const trimmed = name?.trim()
+    if (!trimmed || trimmed === c.name) return
+    renameFocused(trimmed)
+  }
+
+  /** The dropdown's Delete… — the repo's double opt-in (type the name),
+   *  then the request. Its tickets stay on the board, unchained. */
+  const deleteFocused = async () => {
+    const c = focusedChain
+    if (!c) return
+    if (
+      !(await confirmDelete({
+        what: 'workchain',
+        name: c.name,
+        detail: 'Its tickets stay on the board, unchained.',
+      }))
+    )
+      return
+    await deleteWorkchain(c.id).then(invalidate).catch(failure('Deleting the workchain'))
+  }
 
   const addTo = (chainId: string, taskId: string) =>
     void addWorkchainStep(chainId, taskId).then(invalidate).catch(failure('Adding the step'))
@@ -94,21 +169,13 @@
     {#if chainsList.notice}<QueryError {...chainsList.notice} class="mb-4" />{/if}
 
     {#if chainsList.pending}
-      <!-- First load: rail-shaped skeletons — a header line and a row of
-           compact cards — not the kanban columns or the list's table. -->
-      {#each [0, 1] as r (r)}
-        <div>
-          <div class="flex items-center gap-2">
-            <Skeleton class="h-4 w-32 rounded-full" />
-            <Skeleton class="h-3 w-8 rounded-full" />
-          </div>
-          <div class="mt-2 flex gap-1.5">
-            {#each [0, 1, 2, 3] as i (i)}
-              <Skeleton class="h-20 w-52 shrink-0 rounded-lg" />
-            {/each}
-          </div>
-        </div>
-      {/each}
+      <!-- First load: the shape of the coming view — a switcher line, then
+           ONE canvas block taking the rest — not the kanban columns or the
+           list's table. -->
+      <div class="flex h-full flex-col">
+        <Skeleton class="h-8 w-56 shrink-0 rounded-md" />
+        <Skeleton class="mt-2 min-h-0 w-full flex-1 rounded-lg" />
+      </div>
     {:else if chainsList.failed}
       <!-- The notice (rendered above) owns the whole region; an empty rail
            stack under a failed read would read as "and also no chains". -->
@@ -137,23 +204,62 @@
         />
       {/if}
     {:else}
-      {#each visibleChains as w (w.id)}
-        <!-- TALA-34: EVERY chain renders as the node canvas — the wiring
-             editor needs grabbable ports on any chain you want to extend,
-             including a straight one (a rail has no ports, so A→B could
-             never be authored by dragging). The rail leaves the lens; the
-             cheap cousin (moveStepOrder reorder) lives on in TaskDetail. -->
-        <WorkchainCanvas workchain={w} boardId={board.id} {boardStatuses} {agents} {members} {onOpen} onChanged={invalidate} />
-      {/each}
-      {#if canEdit}
-        <button
-          type="button"
-          onclick={() => void addChain()}
-          class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
-        >
-          <Plus size={12} /> New workchain
-        </button>
-      {/if}
+      <!-- ONE chain fills the view at a time: the switcher above the canvas
+           picks which (the first by default), the canvas takes the rest of
+           the height, and UNCHAINED scrolls in below it. One at a time
+           keeps the wiring editor a surface, not a scroll. -->
+      <div class="flex h-full min-h-0 flex-1 flex-col">
+        <div class="flex shrink-0 items-center gap-2">
+          <DropdownMenu align="left" items={switcherItems}>
+            {#snippet trigger(open)}
+              <button
+                type="button"
+                class={cn(
+                  'flex h-8 min-w-0 max-w-72 items-center gap-2 rounded-md border border-line bg-panel px-2 font-sans text-sm text-fg transition-colors hover:border-line-strong',
+                  open && 'border-line-strong',
+                )}
+              >
+                <Workflow size={14} class="shrink-0 text-muted" />
+                <span class="min-w-0 truncate">{focusedChain?.name}</span>
+                {#if switcherPos > 0}
+                  <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{switcherPos}/{switcherCount}</span>
+                {/if}
+                <ChevronDown size={14} class={cn('shrink-0 text-muted transition-transform', open && 'rotate-180')} />
+              </button>
+            {/snippet}
+          </DropdownMenu>
+          {#if canEdit}
+            <button
+              type="button"
+              onclick={() => void addChain()}
+              class="flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
+            >
+              <Plus size={12} /> New workchain
+            </button>
+          {/if}
+        </div>
+        {#if focusedChain}
+          <!-- TALA-34: the chain renders as the node canvas — the wiring
+               editor needs grabbable ports on any chain you want to extend,
+               including a straight one (a rail has no ports, so A→B could
+               never be authored by dragging). The rail leaves the lens; the
+               cheap cousin (moveStepOrder reorder) lives on in TaskDetail. -->
+          <div class="min-h-0 flex-1">
+            <WorkchainCanvas
+              workchain={focusedChain}
+              boardId={board.id}
+              {boardStatuses}
+              {agents}
+              {members}
+              {onOpen}
+              onChanged={invalidate}
+              managed={canEdit}
+              onRename={renameFocused}
+              onDelete={() => void deleteFocused()}
+            />
+          </div>
+        {/if}
+      </div>
     {/if}
 
     {#if !chainsList.pending && !chainsList.failed && (unchained.length > 0 || !anyChains)}

@@ -86,6 +86,21 @@ export function moveStepOrder(taskIds: string[], taskId: string, delta: -1 | 1):
   return taskIds.map((id, k) => (k === i ? b : k === j ? a : id))
 }
 
+/** The chain a focus-holding view should show: the focused id while it
+ *  still names a chain in the list, else the FIRST chain in the list's
+ *  own order — null only when the list is empty. Null focus, an unknown
+ *  id, and the stale id a delete leaves behind all land on the first
+ *  chain: a view with chains never sits focused on nothing. */
+export function pickFocusedChain(
+  chains: Array<Pick<Workchain, 'id'>>,
+  focusedId: string | null,
+): string | null {
+  const first = chains[0]
+  if (!first) return null // empty list: nothing to focus
+  if (focusedId !== null && chains.some((w) => w.id === focusedId)) return focusedId
+  return first.id // null, unknown, or stale focus: the first chain in list order
+}
+
 // ── TALA-35: the canvas ──────────────────────────────────────────────────────
 
 /** A chain BRANCHES when any step has two or more outgoing wires — the
