@@ -41,6 +41,8 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 - `merge_to_testing(jobId)` — into the repo's testing branch, when configured.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
 
+**Teardown is the platform's, not the agent's.** When `finish_job` opens the PR, Talaria stops every process still running in the job's workdir (the checkout stays for a revise bounce). Abandoning removes the workdir outright. The `workbench-job-sweep` (every 10 minutes) covers what never calls a verb: a `started` or awaiting-approval job whose ticket reached a done column or was archived is abandoned, and it and any `pr_open` job on a closed ticket lose their workdir. Jobs with no ticket are left alone. `workspace_cleared_at` marks a job whose workdir is gone.
+
 A cap refusal and a "no commits yet" refusal name the job id, branch, and workdir — finish or push there; retrying the same call does not change the answer. `jobId` is the uuid `start_job` returned, not a ticket ref. Omitting `effort` means `standard`, and `standard`/`heavy` are refused without `plan`.
 
 Git in a job workdir asks Talaria for a credential. A checkout outside that workdir only gets one when git names the repo — the helper reads `origin` when git omits the path. `git credential fill` prints the token into the transcript; do not run it.
@@ -70,7 +72,7 @@ Packing floors: **conversation** 768 MiB / 2 GiB; **workbench idle** 2 GiB; **pe
 
 The 2026-09-17 dogfood freeze — fourteen tickets, eleven jobs, 4 GiB chassis, twenty-six OOM kills — was a hard `mem_limit` plus unbounded pile-up. Packing + a 32 GiB last-ditch ceiling replaces both the 3-job stall and the 8g one-size box.
 
-Two known amplifiers stay out of packing, tracked separately: ever-growing session contexts (retried tickets can carry millions of tokens), and leftover per-job processes inside long-lived agent containers.
+One known amplifier stays out of packing, tracked separately: ever-growing session contexts (retried tickets can carry millions of tokens). Leftover per-job processes and workdirs are the job teardown's (above).
 
 
 ### Observing a run

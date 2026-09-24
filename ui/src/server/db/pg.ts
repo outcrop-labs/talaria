@@ -3196,6 +3196,9 @@ alter table tasks drop column if exists conversation_id`,
    ) where archived_prices is null
      and (price_in_per_mtok is not null or price_out_per_mtok is not null
           or model_prices <> '{}'::jsonb or auto_prices <> '{}'::jsonb)`,
+  // Set when a finished job's workdir is gone from the agent's container, by
+  // the abandon teardown or the workbench-job-sweep. Null = still on disk.
+  `alter table workbench_jobs add column if not exists workspace_cleared_at timestamptz`,
   // Who an agent acts as on Google. Seeded from the old rule (owner column
   // wins, otherwise the shared org account) so existing agents do not change
   // identity at cutover. owner_user_id on agent_defs stays the legacy fallback
