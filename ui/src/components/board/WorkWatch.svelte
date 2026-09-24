@@ -4,17 +4,29 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { getStream } from '@/lib/fetch-json'
   import { useWorkSession } from '@/lib/work-session.svelte'
+  import { frameLabel, isHarnessFrame, type WatchFrame } from '@/lib/work-watch'
 
-  // The watch pane: a TERMINAL of the agent's own work. Two streams feed it
-  // — the run's SSE for state/phase (turn boundaries, ends), and the run's
-  // watch SSE for the agent's words and tool calls as they happen, replayed
-  // from the current turn's tail so the modal opens mid-work with history.
-  // A window, not a steering wheel: nothing here touches the session.
+  // The agent pane: Hermes replies and its own tool calls. Harness
+  // invocations are reported upward and rendered on Turns, not here. Two
+  // streams feed the live half — the run's SSE for state, and the watch SSE
+  // for words and tool calls. `history` is the retained half (completed
+  // turns). `resetKey` reconnects the watch when a turn is captured, so the
+  // tail replay is only the turn still in flight.
   let {
     runId,
     taskId,
     onEnded,
-  }: { runId: string; taskId: string; onEnded: () => void } = $props()
+    history = [],
+    resetKey = 0,
+    onFrame,
+  }: {
+    runId: string
+    taskId: string
+    onEnded: () => void
+    history?: WatchFrame[]
+    resetKey?: number
+    onFrame?: (ev: WatchFrame) => void
+  } = $props()
 
   const qc = useQueryClient()
   const sessionQuery = useWorkSession(() => taskId)
@@ -48,6 +60,7 @@
   // render them into a transcript rather than consume them as events, and
   // fetch gives us the replay and the live half in one body.
   $effect(() => {
+    void resetKey
     lines = []
     terminal = ''
     let closed = false
@@ -92,7 +105,9 @@
    *  line, their argument preview indented beneath (that preview is where
    *  the harness steering is legible — the whole command the agent ran);
    *  prose appends to the flowing paragraph. */
-  function appendEvent(ev: { t: string; v: string; s?: string; p?: string; r?: string; ms?: number }) {
+  function appendEvent(ev: WatchFrame) {
+    onFrame?.(ev)
+    if (isHarnessFrame(ev)) return
     if (ev.t === 'd') {
       terminal += ev.v
       return
@@ -153,23 +168,25 @@
     {/if}
   </div>
 
-  <!-- The terminal: the agent's own stream, replayed then live. Tool markers
-       on their own lines; prose flows; newest at the bottom, pinned. -->
+  <!-- Retained replies and tool calls, then the live tail. Harness
+       exchanges are not in this box. -->
   <div
     class="max-h-[420px] overflow-y-auto rounded-md border border-line-subtle bg-[color-mix(in_srgb,var(--color-ink-dim)_10%,transparent)] p-3 font-mono text-xs leading-relaxed text-fg"
     bind:this={scrollBox}
   >
+    {#each history as ev, i (i)}
+      <div class="whitespace-pre-wrap">{frameLabel(ev)}</div>
+      {#if (ev.t === 'tool' || ev.t === 'toolfull' || ev.t === 'wtool') && (ev.p || ev.r)}
+        <div class="mb-1 whitespace-pre-wrap border-l-2 border-line-subtle pl-2 text-muted">
+          {#if ev.p}<div>{ev.p}</div>{/if}
+          {#if ev.r}<div class="mt-0.5">→ {ev.r}</div>{/if}
+        </div>
+      {/if}
+    {/each}
     {#each lines as l, i (i)}<div class="whitespace-pre-wrap">{l}</div>{/each}
     {#if terminal}<div class="whitespace-pre-wrap">{terminal}<span class="animate-pulse">▍</span></div>{/if}
-    {#if !ended && lines.length === 0 && !terminal}
-      <div class="text-muted">waiting for the agent's next output…</div>
+    {#if !ended && history.length === 0 && lines.length === 0 && !terminal}
+      <div class="text-muted">waiting for the agent's next output</div>
     {/if}
   </div>
-
-  {#if session?.lastTail}
-    <details>
-      <summary class="cursor-pointer text-xs text-muted hover:text-fg">previous turn's reply</summary>
-      <pre class="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-line-subtle bg-raised/40 p-2.5 font-mono text-xs text-fg">{session.lastTail}</pre>
-    </details>
-  {/if}
 </div>

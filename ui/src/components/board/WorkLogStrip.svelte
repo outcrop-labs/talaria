@@ -2,6 +2,7 @@
   import { Eye } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { relativeTime } from '@/lib/fleet'
+  import QueryError from '@/components/ui/QueryError.svelte'
   import { useWorkSessionHistory } from '@/lib/work-session.svelte'
 
   // The ticket's WORK LOG: every session it has seen, newest first — the
@@ -10,7 +11,7 @@
   // is still going), when, and the eye that opens the run's detail modal
   // (turns and resources read the retained record). Renders nothing while
   // the history read is empty or in flight, so an unworked ticket stays
-  // quiet.
+  // quiet. A failed read is not an empty log.
   let { taskId, onView }: { taskId: string; onView: (runId: string) => void } = $props()
 
   const history = useWorkSessionHistory(() => taskId)
@@ -29,7 +30,15 @@
   const stateTone = (state: string) => STATE_TONE[state] ?? 'border-line-subtle text-muted'
 </script>
 
-{#if sessions.length > 0}
+{#if history.isError && history.data === undefined}
+  <QueryError
+    variant="inline"
+    class="mb-3"
+    error={history.error}
+    title="Could not load the work log"
+    onRetry={() => void history.refetch()}
+  />
+{:else if sessions.length > 0}
   <div class="rounded-lg border border-line-subtle">
     <div class="px-3 pb-1 pt-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Work log</div>
     <ul class="divide-y divide-line-subtle">

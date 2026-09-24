@@ -18,6 +18,7 @@ talaria-agent-secrets = { workspace = true }
 talaria-agent-skills = { workspace = true }
 talaria-agents-registry = { workspace = true }
 talaria-approvals = { workspace = true }
+talaria-artifacts = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth = { workspace = true }
 talaria-auth-config = { workspace = true }

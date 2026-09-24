@@ -709,10 +709,11 @@ async fn capture_turn_transcript(
     };
     let prompt_bounded = talaria_body::truncate_utf16(prompt, 16_000).to_string();
     let tail_bounded = talaria_body::truncate_utf16(&tail, 262_000).to_string();
+    let title = talaria_artifacts::run_transcript_title(run_id);
     let existing: Option<(String, String)> = sqlx::query_as(
         "select id::text, body from artifacts where kind = 'run-transcript' and title = $1 limit 1",
     )
-    .bind(format!("Run {run_id} transcript"))
+    .bind(&title)
     .fetch_optional(&state.pg)
     .await
     .ok()
@@ -722,7 +723,7 @@ async fn capture_turn_transcript(
         None => match talaria_artifacts::create_artifact(
             &state.pg,
             Some("run-transcript"),
-            Some(&format!("Run {run_id} transcript")),
+            Some(&title),
             agent_model,
             None,
             None,
