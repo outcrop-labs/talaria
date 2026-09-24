@@ -148,6 +148,7 @@ hickory-resolver = { version = "0.25", default-features = false, features = ["sy
 
 # Declared by crates only (not by the root binary); union of crate specs.
 boa_engine = { version = "0.22.0", default-features = false }
+toml_edit = "0.25"
 
 # Declared by crates only (not by the root binary); union of crate specs.
 hex = { version = "0.4" }
