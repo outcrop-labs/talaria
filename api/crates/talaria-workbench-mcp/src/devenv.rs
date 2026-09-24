@@ -18,10 +18,17 @@
 //   · mise's shims on PATH for every login shell, so `cargo` / `bun` / `go`
 //     resolve to the repo's pinned versions by directory, with no activation
 //     step the agent can forget.
+//   · for Rust repos, sccache as cargo's compiler wrapper with one cache per
+//     department, so a job's cold `target/` still gets every dependency
+//     another job already compiled instead of rebuilding the whole graph.
+//     Scoped to the repo through mise.local.toml's [env], never global: the
+//     wrapper is a path mise resolves per directory, and cargo outside a repo
+//     that installed it would fail to start rustc.
 //
 // .talaria/workbench.toml (all optional):
 //
 //     apt = ["libssl-dev", "protobuf-compiler"]
+//     sccache = false      # opt a Rust repo out of the shared compile cache
 //     [tools]              # extra mise tools, merged over detection
 //     protoc = "28"
 
@@ -110,11 +117,12 @@ fi
 
 /// User half, as the checkout's owner: the mise binary, the shims line in
 /// the shell profiles, the generated config kept out of git, every tool the
-/// repo's mise configs name, and what resolved. $1 = home, $2 = repo root,
-/// $3 = "1" when a mise.local.toml was written.
+/// repo's mise configs name, sccache wired into the repo's env when asked,
+/// and what resolved. $1 = home, $2 = repo root, $3 = "1" when a
+/// mise.local.toml was written, $4 = the sccache dir ("" = no sccache).
 const USER_SH: &str = r#"
 set -e
-home="$1"; root="$2"; wrote="$3"
+home="$1"; root="$2"; wrote="$3"; sccache_dir="$4"
 export HOME="$home" MISE_YES=1 MISE_TRUSTED_CONFIG_PATHS=/opt/data/workbench/jobs
 bin="$home/.local/bin"
 export PATH="$bin:$PATH"
@@ -156,9 +164,20 @@ if ! mise install >"$log" 2>&1; then
   exit 1
 fi
 rm -f "$log"
+# The wrapper is sccache's absolute install path, not its shim: cargo runs
+# rustc for registry crates from their own source dirs, outside the repo,
+# where a shim finds no version to run.
+if [ -n "$sccache_dir" ]; then
+  wrapper=$(mise which sccache)
+  mise set --file mise.local.toml RUSTC_WRAPPER="$wrapper" SCCACHE_DIR="$sccache_dir" SCCACHE_CACHE_SIZE=20G
+fi
 echo "=== resolved"
 mise ls --current 2>&1
 "#;
+
+/// One compile cache per department, on the shared harness volume beside the
+/// npm cache and Playwright browsers, so every agent's jobs feed one cache.
+pub const SCCACHE_DIR: &str = "/opt/data/workbench/harness/sccache";
 
 /// Long enough for a first-time Rust toolchain on a slow link; every later
 /// job finds the version already in the shared data dir and takes seconds.
@@ -172,6 +191,9 @@ pub struct EnvPlan {
     /// Tools to write to mise.local.toml, in insertion order.
     pub tools: Vec<(String, String)>,
     pub apt: Vec<String>,
+    /// A Rust repo that has not opted out: sccache is in `tools`, and the
+    /// install wires it into the repo's env.
+    pub sccache: bool,
     /// Declared entries that failed validation, told back to the agent.
     pub rejected: Vec<String>,
 }
@@ -323,9 +345,11 @@ pub fn plan_env(files: &[(String, String)]) -> EnvPlan {
     }
 
     // The repo's explicit extras apply on top of either source.
+    let mut sccache_opt_out = false;
     if let Some((_, text)) = files.iter().find(|(p, _)| p == ".talaria/workbench.toml") {
         match text.parse::<toml_edit::DocumentMut>() {
             Ok(doc) => {
+                sccache_opt_out = doc.get("sccache").and_then(|v| v.as_bool()) == Some(false);
                 if let Some(list) = doc.get("apt").and_then(|a| a.as_array()) {
                     for item in list.iter() {
                         match item.as_str() {
@@ -353,6 +377,11 @@ pub fn plan_env(files: &[(String, String)]) -> EnvPlan {
                 .rejected
                 .push(format!(".talaria/workbench.toml does not parse: {e}")),
         }
+    }
+    // Any crate in the repo, whichever file pinned the toolchain.
+    if any(files, &["Cargo.toml"]) && !sccache_opt_out {
+        plan.sccache = true;
+        plan.set_tool("sccache", "latest");
     }
     plan
 }
@@ -493,6 +522,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
             &home,
             &scan.root,
             if wrote { "1" } else { "0" },
+            if plan.sccache { SCCACHE_DIR } else { "" },
         ],
         USER_TIMEOUT_MS,
     )
@@ -513,6 +543,7 @@ pub async fn prepare_env(pg: &PgPool, department: &str, workdir: &str) -> Result
         },
         "tools": plan.tools.iter().map(|(n, v)| format!("{n}@{v}")).collect::<Vec<_>>(),
         "apt": plan.apt,
+        "sccache": plan.sccache,
         "rejected": plan.rejected,
         "resolved": resolved,
         "usage": "Toolchains resolve through mise shims by directory in every NEW login shell (bash -l). In a shell opened before this call, run `. ~/.profile` first, or prefix a command with `mise exec --`. Do not install toolchains yourself: add them to the repo's mise.toml or .talaria/workbench.toml and call prepare_env again.",
@@ -531,7 +562,7 @@ mod tests {
     fn a_repo_mise_config_is_used_as_is() {
         let plan = plan_env(&[
             f("mise.toml", "[tools]\nnode = \"22\"\n"),
-            f("Cargo.toml", "[package]\n"),
+            f("go.mod", "module x\n\ngo 1.22\n"),
             f("package.json", "{}"),
         ]);
         assert!(plan.repo_config);
@@ -561,8 +592,32 @@ mod tests {
                 ("mold".into(), "latest".into()),
                 ("node".into(), "lts".into()),
                 ("bun".into(), "1.4.0".into()),
+                ("sccache".into(), "latest".into()),
             ]
         );
+        assert!(plan.sccache);
+    }
+
+    #[test]
+    fn a_rust_repo_with_its_own_mise_config_still_gets_sccache() {
+        let plan = plan_env(&[
+            f("mise.toml", "[tools]\nrust = \"1.97.1\"\n"),
+            f("api/Cargo.toml", "[workspace]\n"),
+        ]);
+        assert!(plan.repo_config && plan.sccache);
+        assert_eq!(plan.tools, vec![("sccache".into(), "latest".into())]);
+    }
+
+    #[test]
+    fn sccache_is_opt_out_and_rust_only() {
+        let plan = plan_env(&[
+            f("Cargo.toml", "[package]\n"),
+            f(".talaria/workbench.toml", "sccache = false\n"),
+        ]);
+        assert!(!plan.sccache);
+        assert_eq!(plan.tools, vec![("rust".into(), "stable".into())]);
+        let plan = plan_env(&[f("package.json", "{}")]);
+        assert!(!plan.sccache);
     }
 
     #[test]
