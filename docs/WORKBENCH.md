@@ -59,10 +59,12 @@ Agents run unprivileged in a stock image, so the platform sets up each job's too
 - **Toolchains through [mise](https://mise.jdx.dev)**, in user space on the persistent volume, so a department's agents share one download of each version. A repo's own `mise.toml` / `.tool-versions` is used as is. Otherwise the versions come from the files each ecosystem already keeps: `rust-toolchain.toml` (plus mold when `.cargo/config.toml` links with it), `.nvmrc` / `.node-version` / `package.json` (node, and bun or pnpm from `packageManager` or the lockfile), `go.mod`, `.python-version` / `pyproject.toml` / `uv.lock`, `.ruby-version`, at the repo root or one directory down. Detected tools go to a `mise.local.toml` that `.git/info/exclude` keeps out of commits.
 - **OS packages through apt, as root**, only for names the repo lists in `.talaria/workbench.toml`, and only from the image's Debian sources. The agent itself never gets root.
 - **mise's shims on PATH** in the agent's login shells, so `cargo`, `bun`, `go` and the rest resolve to the repo's pinned versions by directory.
+- **A shared Rust compile cache.** For any repo with a `Cargo.toml`, sccache becomes cargo's compiler wrapper, with one cache per department at `/opt/data/workbench/harness/sccache` (20 GiB cap). Every job still starts from an empty `target/`, but a dependency any job already compiled comes out of the cache instead of being rebuilt, so only the first job after a dependency change pays for the full graph. It's scoped to the repo through `mise.local.toml`'s `[env]`, never set globally. Opt out with `sccache = false` in `.talaria/workbench.toml`.
 
 ```toml
 # .talaria/workbench.toml (optional)
 apt = ["libssl-dev", "protobuf-compiler"]
+sccache = false   # opt a Rust repo out of the shared compile cache
 
 [tools]           # extra mise tools, merged over detection
 protoc = "28"
