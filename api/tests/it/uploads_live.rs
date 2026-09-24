@@ -20,7 +20,7 @@
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test uploads_live -- --ignored
+//   source ui/.env && cargo test --test it uploads_live:: -- --ignored
 
 use axum::body::Body;
 use axum::http::Request;
@@ -30,9 +30,7 @@ use talaria_api::session::{SessionUser, create_session};
 use talaria_api::state::AppState;
 use talaria_api::uploads::MAX_BYTES;
 
-mod support;
-
-use support::wire_boot_seams;
+use crate::support::wire_boot_seams;
 use tower::ServiceExt; // oneshot
 
 fn live_config() -> Config {

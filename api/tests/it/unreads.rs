@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the rail badges' one read (cargo test -- --ignored).
 // /api/unreads is a tokio::join! of five counters, and a badge that disagreed
 // with the pills it summarizes would be worse than no badge — so this suite
@@ -8,10 +7,10 @@ mod support;
 // seq 0, not 1: the floor is -1, and this is where that crossing the route's
 // total is provable. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test unreads -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it unreads:: -- --ignored
 
+use crate::support::{person, pg};
 use sqlx::postgres::PgPool;
-use support::{person, pg};
 use talaria_api::channels::{channel_unread_total, create_channel};
 use talaria_api::conversations::{conversation_unread_total, create_conversation};
 use talaria_api::notify::{unread_count, unread_count_of_kind};

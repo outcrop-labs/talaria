@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of runs/store.rs (cargo test -- --ignored). Every write in
 // the store is a compare-and-set whose correctness is a WHERE clause — a
 // typo'd predicate does not fail a unit test, it silently lets two drivers
@@ -7,11 +6,11 @@ mod support;
 // refusal, the park/answer/stale-key path, the deferral wait, and
 // cancel-from-anywhere. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test runs_store -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it runs_store:: -- --ignored
 
+use crate::support::pg;
 use serde_json::json;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::runs::define::{
     DecisionAnswer, DecisionOption, DecisionRequest, RunDecision, RunState,
 };

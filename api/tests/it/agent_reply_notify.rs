@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the agent-reply fan-out (cargo test -- --ignored). The
 // feature is three gates stacked on one writer — the read cursor ("still
 // looking" files nothing), the unread dedupe (one pointer per thread, further
@@ -7,10 +6,10 @@ mod support;
 // of them is a WHERE clause only Postgres can confirm. House rule:
 // #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test agent_reply_notify -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it agent_reply_notify:: -- --ignored
 
+use crate::support::{person, pg};
 use sqlx::postgres::PgPool;
-use support::{person, pg};
 use talaria_api::conversations::{create_conversation, mark_conversation_read};
 use talaria_api::notify::{NotifyDeps, notify_agent_reply, notify_class_of};
 /// Two throwaway people — a thread owner and a plan collaborator. The

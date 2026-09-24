@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the typed-bind fixes (cargo test -- --ignored). The port's
 // crash class: sqlx declares each bind's wire type from the Rust value
 // (String → TEXT), so a text bind COMPARED against a non-text column dies at
@@ -7,14 +6,14 @@ mod support;
 // statement against the real schema, because that is the only layer the bug
 // lived on. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test typed_binds -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it typed_binds:: -- --ignored
 //
 // The sweep test also needs the dev retrieval containers (talaria-qdrant-dev,
 // talaria-embeddings-dev) up — it proves the window queries READ, which the
 // health gate fronts.
 
+use crate::support::{fabricate_user, pg, sweep_user_rows};
 use serde_json::Value;
-use support::{fabricate_user, pg, sweep_user_rows};
 use talaria_api::agent_auth::epoch_ms_to_iso;
 use talaria_api::daily_brief::load_recent_row;
 use talaria_api::retrieval::backfill::{rag_health, sweep_new_activity};

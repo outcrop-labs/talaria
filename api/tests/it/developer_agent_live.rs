@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof that the Developer Agent switch is the one and only grant of
 // the Workbench MCP server (cargo test -- --ignored). The guarantee lives in
 // two SQL paths, the render's roster (`servers_for_agent`) and the gateway's
@@ -7,10 +6,10 @@ mod support;
 // up everywhere EXCEPT one out-of-the-way grant had no tools; now a registry
 // row neither grants nor withholds them. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test developer_agent_live -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it developer_agent_live:: -- --ignored
 
+use crate::support::pg;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::agent_auth::AgentSubject;
 use talaria_api::secretbox::SecretBox;
 use talaria_mcp::registry::{

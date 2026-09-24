@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof for the pending-draft dedupe (cargo test -- --ignored).
 // The report this file pins, 2026-09-11: the dogfood brief held six
 // SEND EMAIL cards for one reply, because a retried agent run re-drafts
@@ -11,10 +10,10 @@ mod support;
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test pending_dedupe_live -- --ignored
+//   source ui/.env && cargo test --test it pending_dedupe_live:: -- --ignored
 
+use crate::support::{app_state, fabricate_user, pg};
 use serde_json::{Value, json};
-use support::{app_state, fabricate_user, pg};
 use talaria_api::google::pending_actions::{QueueAction, queue_action};
 use talaria_api::realtime::RealtimeDeps;
 /// Redis on a dead port, exactly like the other live tests: the announce

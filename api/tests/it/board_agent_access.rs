@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the self-service grant path (cargo test -- --ignored).
 // The one-step grant is two single-row writes against board_agents and one
 // partial-unique dedup on board_agent_requests — none of which a unit test
@@ -6,10 +5,10 @@ mod support;
 // target, the partial index's where clause). House rule: #[ignore]d, never
 // CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test board_agent_access -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it board_agent_access:: -- --ignored
 
+use crate::support::pg;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::boards::{add_board_agent_row, get_board_agent_config, remove_board_agent_row};
 /// Each test hangs off its OWN throwaway user (tests run concurrently, and a
 /// shared one would mean one test's cleanup deleting the board out from

@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of boards.rs (cargo test -- --ignored). The agent listing is
 // one SELECT whose legality is a Postgres rule — DISTINCT demands every
 // ORDER BY expression in the select list — and a query that violates it does
@@ -9,10 +8,10 @@ mod support;
 // table so an illegal shape can never land again. House rule: #[ignore]d,
 // never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test boards_store -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it boards_store:: -- --ignored
 
+use crate::support::pg;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::boards::list_boards_for_agent;
 /// Everything this suite fabricates hangs off one throwaway user, so the
 /// cascade removes board, board_agents and grants along with it.

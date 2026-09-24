@@ -1,4 +1,3 @@
-mod support;
 // Live-DB + live-Redis proof of the attribution ladder
 // (cargo test -- --ignored). The ladder is three queries and one Redis GET
 // whose correctness is ORDER: an owner that outranks a live turn, a chatter
@@ -10,11 +9,11 @@ mod support;
 // subdomain; cleanup touches only its own rows.
 //
 //   DATABASE_URL=postgres://… REDIS_URL=redis://… \
-//     cargo test --test attribution -- --ignored
+//     cargo test --test it attribution:: -- --ignored
 
+use crate::support::{pg, wire_boot_seams};
 use redis::AsyncCommands;
 use sqlx::postgres::PgPool;
-use support::{pg, wire_boot_seams};
 use talaria_api::agent_auth::{AgentCaller, AgentSubject};
 use talaria_api::attribution::responsible_user_for;
 use talaria_api::users::{Identity, upsert_user};

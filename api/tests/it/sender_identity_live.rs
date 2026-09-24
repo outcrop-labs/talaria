@@ -1,4 +1,3 @@
-mod support;
 // Live-wire proof of the TALA-80 sender-identity stamp (cargo test --
 // --ignored). The unit tests pin the block's shape; this file pins the only
 // fact that matters at the door: the message actually lands on the WIRE the
@@ -14,7 +13,7 @@ mod support;
 // House rule: #[ignore]d, never CI.
 //
 //   DATABASE_URL=... REDIS_URL=... TALARIA_SECRET_KEY=ci-dummy \
-//   cargo test --test sender_identity_live -- --ignored
+//   cargo test --test it sender_identity_live:: -- --ignored
 
 use std::io::{Read as _, Write as _};
 use std::net::TcpListener;

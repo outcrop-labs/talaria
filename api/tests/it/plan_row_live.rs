@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the plan and research row actions (cargo test -- --ignored).
 // DELETE /api/conversations/{id} archives an owned plan and ?hard=1 removes it;
 // PATCH {archived:false} is the way back, owner-only. PATCH /api/research/{id}
@@ -9,7 +8,7 @@ mod support;
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test plan_row_live -- --ignored
+//   source ui/.env && cargo test --test it plan_row_live:: -- --ignored
 
 use axum::body::Body;
 use axum::http::Request;

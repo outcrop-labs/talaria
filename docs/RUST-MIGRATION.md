@@ -78,7 +78,7 @@ command an agent runs before a pull request.
    `ui/src/server/secretbox.ts` seal and open the same rows — the TS side still
    spends workspace secrets through the app-MCP gateway — so the cipher is a
    live two-way contract: same KEK derivation, same token grammar, pinned by
-   one committed fixture asserted from both sides (`api/tests/secretbox.rs`,
+   one committed fixture asserted from both sides (`api/tests/it/secretbox.rs`,
    `ui/src/server/secretbox.fixtures.test.ts`). Regenerate with
    `bun run api:vectors`; `api:check` fails on a stale fixture.
 5. **The scheduler runs in exactly one process.** `TALARIA_SCHEDULER` is the

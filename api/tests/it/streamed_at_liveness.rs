@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the long-turn liveness contract (cargo test -- --ignored).
 // A turn is alive while it is WRITING (streamed_at), not while it is YOUNG
 // (created_at) — the stale sweep, the working flags, and the one-shot
@@ -6,10 +5,10 @@ mod support;
 // evaluating the interval arithmetic the way it does. House rule: #[ignore]d,
 // never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test streamed_at_liveness -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it streamed_at_liveness:: -- --ignored
 
+use crate::support::pg;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::conversations::{
     active_streaming_assistant, create_conversation, insert_streaming_assistant,
     mark_message_resumed, message_still_errored, prior_messages, resurrect_streaming_assistant,
