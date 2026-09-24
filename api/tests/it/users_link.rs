@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the sign-in email link (cargo test -- --ignored). The
 // link is one UPDATE whose correctness is a WHERE clause — a sign-in that
 // forks a second row for a claimed email does not fail a unit test, it
@@ -12,11 +11,11 @@ mod support;
 // statement the claim runs in its transaction. House rule: #[ignore]d,
 // never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test users_link -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it users_link:: -- --ignored
 
+use crate::support::pg;
 use sqlx::postgres::PgPool;
 use std::time::Duration;
-use support::pg;
 use talaria_api::password_accounts::verify_password_login;
 use talaria_api::users::{Identity, link_by_email, upsert_user};
 /// The rows THIS TEST fabricates, by email, so a crashed run cannot leak them

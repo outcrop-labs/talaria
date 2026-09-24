@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the hot-path caches (cargo test -- --ignored). Each cache
 // buys the gateway its zero-checkout warm turn, and each one has a law the
 // pure tests can't pin because the law is about the DATABASE round trip:
@@ -7,13 +6,13 @@ mod support;
 // 15s longer than the reset promises — wrong, but silent everywhere except
 // here. House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test gateway_hot_caches -- --ignored
+//   source ui/.env && cargo test --test it gateway_hot_caches:: -- --ignored
 //
 // (TALARIA_SECRET_KEY comes along with the source: the key-cache test seals
 // through the same box production resolves through.)
 
+use crate::support::{fabricate_user, pg, sweep_user_rows};
 use serde_json::json;
-use support::{fabricate_user, pg, sweep_user_rows};
 use talaria_api::auth::{authenticate_key, reset_identity_cache, sha256_hex};
 use talaria_api::config::Config;
 use talaria_api::db::pool as app_pool;

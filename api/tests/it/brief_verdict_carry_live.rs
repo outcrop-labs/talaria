@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof for the cross-day verdict carry (cargo test -- --ignored).
 // The report this file pins, 2026-09-10: an item the owner crossed off came
 // back every morning, un-crossed, for as long as its source stood still — a
@@ -10,9 +9,9 @@ mod support;
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test brief_verdict_carry_live -- --ignored
+//   source ui/.env && cargo test --test it brief_verdict_carry_live:: -- --ignored
 
-use support::{app_state, pg};
+use crate::support::{app_state, pg};
 use talaria_api::daily_brief::{
     BriefUser, mark_brief_item, open_brief, real_brief_deps, sweep_brief,
 };

@@ -1,14 +1,13 @@
-mod support;
 // Live-DB proof of the conversation read cursors (cargo test -- --ignored).
 // The unread subquery's WHERE is the whole feature — whose turns count, which
 // statuses count, what a member with no cursor row yet sees — and none of it
 // is provable without Postgres evaluating the LEFT JOIN's NULL the way it
 // does. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test conversation_reads -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it conversation_reads:: -- --ignored
 
+use crate::support::{person, pg};
 use sqlx::postgres::PgPool;
-use support::{person, pg};
 use talaria_api::conversations::{
     create_conversation, latest_message_seq, list_conversations, mark_conversation_read,
 };

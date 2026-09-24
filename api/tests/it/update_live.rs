@@ -5,7 +5,7 @@
 // that matters is the one CI actually publishes to. House rule:
 // #[ignore]d, never CI.
 //
-//   cargo test --test update_live -- --ignored
+//   cargo test --test it update_live:: -- --ignored
 //
 // (No DATABASE_URL here: this suite proves the REGISTRY plane; the state
 // row's Postgres behavior is covered by the pure tests in state.rs, which

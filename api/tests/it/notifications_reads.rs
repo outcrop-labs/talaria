@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the mark-read selectors (cargo test -- --ignored). The
 // href arm is an UPDATE whose matching only Postgres can confirm, and the
 // precedence it promises — ids win over href, an empty href folds into all
@@ -6,10 +5,10 @@ mod support;
 // wrong arm is a notification that came back from the dead. House rule:
 // #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test notifications_reads -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it notifications_reads:: -- --ignored
 
+use crate::support::pg;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::notify::{mark_notifications_read, unread_count};
 /// One throwaway user; the cascade takes the notification rows with it.
 async fn cleanup(pg: &PgPool) {

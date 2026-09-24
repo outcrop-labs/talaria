@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the ticket ROOM (cargo test -- --ignored). A ticket's
 // discussion is a channel linked to its task (channels.task_id), and every
 // guarantee this file pins is one a unit test cannot vouch for because it IS
@@ -11,12 +10,12 @@ mod support;
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test ticket_threads_live -- --ignored
+//   source ui/.env && cargo test --test it ticket_threads_live:: -- --ignored
 
+use crate::support::pg;
 use axum::body::Body;
 use axum::http::Request;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::channels::channel_role;
 use talaria_api::config::Config;
 use talaria_api::routes;

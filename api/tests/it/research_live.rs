@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proofs for the research harness's conversation plane (cargo test
 // -- --ignored). The bug this file exists to pin: research conversations are
 // kind='research', and the chat door's access predicates only admitted
@@ -7,10 +6,10 @@ mod support;
 // schema, because that is the only layer the omission lived on. House rule:
 // #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test research_live -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it research_live:: -- --ignored
 
+use crate::support::{fabricate_user, pg, sweep_user_rows};
 use sqlx::postgres::PgPool;
-use support::{fabricate_user, pg, sweep_user_rows};
 use talaria_api::conversations::{
     accessible_conversation, conversation_accessible, post_agent_turn,
 };

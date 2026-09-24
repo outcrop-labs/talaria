@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof of the push plane's row tending and keypair custody
 // (cargo test -- --ignored). The cryptography is pinned to RFC vectors in
 // the unit tests; what only Postgres can confirm is the LOOP — which rows
@@ -6,16 +5,16 @@ mod support;
 // keypair is born exactly once even when several first deliveries race.
 // House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test push_live -- --ignored
+//   DATABASE_URL=postgres://… cargo test --test it push_live:: -- --ignored
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::support::pg;
 use base64::Engine as _;
 use p256::elliptic_curve::Generate;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use sqlx::postgres::PgPool;
-use support::pg;
 use talaria_api::push::{PostPushFn, PushNote, PushPost, VAPID_KEY, deliver_push, vapid_keys};
 use talaria_api::secretbox::SecretBox;
 

@@ -11,7 +11,7 @@
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test workchains_live -- --ignored
+//   source ui/.env && cargo test --test it workchains_live:: -- --ignored
 
 use axum::body::Body;
 use axum::http::Request;
@@ -23,7 +23,7 @@ use talaria_api::session::{SessionUser, create_session};
 use talaria_api::state::AppState;
 use tower::ServiceExt; // oneshot
 
-mod support;
+use crate::support;
 
 /// Real services, the same ones the process boots with — Redis carries the
 /// minted sessions.

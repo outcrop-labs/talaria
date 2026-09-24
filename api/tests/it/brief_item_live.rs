@@ -1,4 +1,3 @@
-mod support;
 // Live-DB proof for the brief item mark (cargo test -- --ignored). The bug
 // this file pins, reported on the live fleet 2026-09-03: the read serves the
 // most recent readable document when today's has not opened yet — get_brief's
@@ -12,9 +11,9 @@ mod support;
 //
 // House rule: #[ignore]d, never CI.
 //
-//   source ui/.env && cargo test --test brief_item_live -- --ignored
+//   source ui/.env && cargo test --test it brief_item_live:: -- --ignored
 
-use support::{app_state, fabricate_user, pg};
+use crate::support::{app_state, fabricate_user, pg};
 use talaria_api::daily_brief::{BriefUser, mark_brief_item, real_brief_deps};
 /// An AppState exactly the way the other live tests build one. Redis points
 /// at a dead port on purpose: the mark's notify publish degrades to a no-op

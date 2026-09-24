@@ -1,7 +1,7 @@
 // Cross-language secretbox fixtures — the TS side of the tripwire.
 //
-// api/tests/fixtures/secretbox.json is the ONE artifact both languages assert
-// against (Rust: api/tests/secretbox.rs). This test proves the committed file
+// api/tests/it/fixtures/secretbox.json is the ONE artifact both languages assert
+// against (Rust: api/tests/it/secretbox.rs). This test proves the committed file
 // is exactly what the TS recipe produces TODAY: if secretbox.ts's crypto
 // drifts (a dependency bump changing scrypt defaults, a rewrite of encRaw)
 // without the fixture being regenerated, this fails instead of letting the two
@@ -19,7 +19,7 @@ import { test, expect } from 'vitest'
 // @ts-expect-error scripts/ is not under ui/'s tsconfig rootDirs
 import { buildVectors, serialize } from '../../../scripts/gen-secretbox-vectors.mjs'
 
-const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'tests', 'fixtures', 'secretbox.json')
+const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'api', 'tests', 'it', 'fixtures', 'secretbox.json')
 
 test('committed secretbox vectors are what TS produces today', () => {
   const committed = readFileSync(FIXTURE, 'utf8')
