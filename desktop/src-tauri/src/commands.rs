@@ -351,7 +351,7 @@ fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
     let app = app.clone();
     // WebKitGTK eval and window ops belong on the main thread. The click
     // waiter is a blocking thread; this only queues the reveal.
-    let _ = app.run_on_main_thread(move || {
+    let _ = app.clone().run_on_main_thread(move || {
         if let Some(id) = label.strip_prefix("instance-") {
             let _ = activate_instance(app.clone(), id.to_string());
         }
