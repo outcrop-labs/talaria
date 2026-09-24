@@ -14,7 +14,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-google-agent = { workspace = true }
 talaria-google-calendar = { workspace = true }
+talaria-google-docs = { workspace = true }
+talaria-google-drive = { workspace = true }
 talaria-google-connections = { workspace = true }
 talaria-google-gmail = { workspace = true }
 talaria-google-org = { workspace = true }

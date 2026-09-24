@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+40 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -15,7 +15,20 @@
 | [`/api/integrations/google`](#apiintegrationsgoogle) | DELETE | `session` |
 | [`/api/integrations/google/agent/calendar`](#apiintegrationsgoogleagentcalendar) | GET | `agent` |
 | [`/api/integrations/google/agent/calendar`](#apiintegrationsgoogleagentcalendar) | POST | `agent` |
+| [`/api/integrations/google/agent/calendar/cancel`](#apiintegrationsgoogleagentcalendarcancel) | POST | `agent` |
+| [`/api/integrations/google/agent/calendar/meeting`](#apiintegrationsgoogleagentcalendarmeeting) | POST | `agent` |
+| [`/api/integrations/google/agent/calendar/update`](#apiintegrationsgoogleagentcalendarupdate) | POST | `agent` |
+| [`/api/integrations/google/agent/callback`](#apiintegrationsgoogleagentcallback) | GET | `session` + `perm:agents.manage` |
+| [`/api/integrations/google/agent/docs`](#apiintegrationsgoogleagentdocs) | POST | `agent` |
+| [`/api/integrations/google/agent/docs/{id}`](#apiintegrationsgoogleagentdocsid) | GET | `agent` |
+| [`/api/integrations/google/agent/docs/{id}`](#apiintegrationsgoogleagentdocsid) | POST | `agent` |
 | [`/api/integrations/google/agent/drive`](#apiintegrationsgoogleagentdrive) | GET | `agent` |
+| [`/api/integrations/google/agent/drive/folder`](#apiintegrationsgoogleagentdrivefolder) | POST | `agent` |
+| [`/api/integrations/google/agent/drive/import`](#apiintegrationsgoogleagentdriveimport) | POST | `agent` |
+| [`/api/integrations/google/agent/drive/move`](#apiintegrationsgoogleagentdrivemove) | POST | `agent` |
+| [`/api/integrations/google/agent/drive/rename`](#apiintegrationsgoogleagentdriverename) | POST | `agent` |
+| [`/api/integrations/google/agent/files`](#apiintegrationsgoogleagentfiles) | GET | `agent` |
+| [`/api/integrations/google/agent/files/{id}`](#apiintegrationsgoogleagentfilesid) | GET | `agent` |
 | [`/api/integrations/google/agent/gmail`](#apiintegrationsgoogleagentgmail) | GET | `agent` |
 | [`/api/integrations/google/agent/gmail`](#apiintegrationsgoogleagentgmail) | POST | `agent` |
 | [`/api/integrations/google/agent/gmail/{id}`](#apiintegrationsgoogleagentgmailid) | GET | `agent` |
@@ -87,6 +100,125 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | `allDay` | `bool?` |  |
 | `attendees` | `email[]?` |  |
 
+## `/api/integrations/google/agent/calendar/cancel`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_calendar.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_calendar.rs)
+
+> /api/integrations/google/agent/calendar. Agent-facing calendar: a personal
+> assistant acts as its owner; a general fleet agent acts on the shared ORG
+> calendar.
+> GET  → read upcoming events (free)
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentcalendarcancel-body) | `…` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/calendar/cancel` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `eventId` | `string(1, 200)` |  |
+
+## `/api/integrations/google/agent/calendar/meeting`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_calendar.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_calendar.rs)
+
+> /api/integrations/google/agent/calendar. Agent-facing calendar: a personal
+> assistant acts as its owner; a general fleet agent acts on the shared ORG
+> calendar.
+> GET  → read upcoming events (free)
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentcalendarmeeting-body) | `…` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/calendar/meeting` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `summary` | `string(1, 500)` |  |
+| `start` | `string(4)` |  |
+| `end` | `string(4)` |  |
+
+## `/api/integrations/google/agent/calendar/update`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_calendar.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_calendar.rs)
+
+> /api/integrations/google/agent/calendar. Agent-facing calendar: a personal
+> assistant acts as its owner; a general fleet agent acts on the shared ORG
+> calendar.
+> GET  → read upcoming events (free)
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentcalendarupdate-body) | `…` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/calendar/update` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `eventId` | `string(1, 200)` |  |
+
+## `/api/integrations/google/agent/callback`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_callback.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_callback.rs)
+
+> GET /api/integrations/google/agent/callback — store the agent's own Google
+> connection and set its principal to that identity. The state cookie is the
+> CSRF check; the state row says which agent the admin started this for.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `…` | 302 | — |
+
+## `/api/integrations/google/agent/docs`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
+
+> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
+> destroys nothing. Updating a doc the agent did not create queues a
+> `doc_update` for a human. Updating one this agent created is immediate.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentdocs-body) | `{id, url, name, mimeType, createdByAgent, message}` | 200, 400, 409 | — |
+
+### POST `/api/integrations/google/agent/docs` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `title` | `string?(500)` |  |
+| `body` | `string?(500000)` |  |
+| `folderId` | `string?(200)` |  |
+
+## `/api/integrations/google/agent/docs/{id}`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
+
+> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
+> destroys nothing. Updating a doc the agent did not create queues a
+> `doc_update` for a human. Updating one this agent created is immediate.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `{id, title, url, mimeType, markdown}` | 200, 409 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentdocsid-body) | `{pending, message}` | 200, 400, 409 | — |
+
+### POST `/api/integrations/google/agent/docs/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `body` | `string(0, 500000)` |  |
+| `title` | `string?(500)` |  |
+| `append` | `bool?` |  |
+
 ## `/api/integrations/google/agent/drive`
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive.rs)
@@ -99,6 +231,106 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `{files}` | 200, 409 | — |
+
+## `/api/integrations/google/agent/drive/folder`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs)
+
+> Agent Drive management. Creating a folder is immediate — cheap and
+> reversible. Moving or renaming mutates the human's Drive, so those queue.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentdrivefolder-body) | `{id, name, url, message}` | 200, 400, 409 | — |
+
+### POST `/api/integrations/google/agent/drive/folder` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 200)` |  |
+| `parentId` | `string?(200)` |  |
+
+## `/api/integrations/google/agent/drive/import`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_import.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_import.rs)
+
+> POST /api/integrations/google/agent/drive/import — pull a Drive file into
+> a Talaria artifact, using the Google account the agent acts for. Immediate:
+> it creates a new artifact and does not change the Drive file.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentdriveimport-body) | `{artifact, message}` | 200, 400, 409 | — |
+
+### POST `/api/integrations/google/agent/drive/import` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `fileId` | `string(1, 200)` |  |
+
+## `/api/integrations/google/agent/drive/move`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs)
+
+> Agent Drive management. Creating a folder is immediate — cheap and
+> reversible. Moving or renaming mutates the human's Drive, so those queue.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentdrivemove-body) | `…` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/drive/move` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `parentId` | `string(1, 200)` |  |
+| `fileId` | `string(1, 200)` |  |
+
+## `/api/integrations/google/agent/drive/rename`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_drive_manage.rs)
+
+> Agent Drive management. Creating a folder is immediate — cheap and
+> reversible. Moving or renaming mutates the human's Drive, so those queue.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentdriverename-body) | `…` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/drive/rename` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string(1, 200)` |  |
+| `fileId` | `string(1, 200)` |  |
+
+## `/api/integrations/google/agent/files`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
+
+> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
+> destroys nothing. Updating a doc the agent did not create queues a
+> `doc_update` for a human. Updating one this agent created is immediate.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `{files}` | 200, 409 | — |
+
+## `/api/integrations/google/agent/files/{id}`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_docs.rs)
+
+> Agent Google Docs. Reads are free. Creating a new doc is immediate — it
+> destroys nothing. Updating a doc the agent did not create queues a
+> `doc_update` for a human. Updating one this agent created is immediate.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `{id, encoding, text}` | 200, 409 | — |
 
 ## `/api/integrations/google/agent/gmail`
 

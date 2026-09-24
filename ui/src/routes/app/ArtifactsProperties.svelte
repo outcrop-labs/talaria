@@ -100,7 +100,6 @@
     <!-- RAG routing is the one field with no plain-English home elsewhere in
          the browser, and it decides whether a model can ever see this. -->
     {@render field('Assistant access', a ? (a.ragRouting === 'none' ? 'Not used for answers' : a.ragRouting === 'auto' ? 'Automatic' : a.ragRouting) : null)}
-
     {#if access}
       <!-- Sharing gets its own block, not another read-only row: it's the one
            property people come here to CHANGE. The values stay a summary; the
@@ -158,7 +157,7 @@
       <div class="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 py-1.5">
         <span class="font-mono text-[10px] font-semibold uppercase tracking-wide text-muted">Google Drive</span>
         <a href={a.googleFileUrl} target="_blank" rel="noreferrer" class="flex items-center gap-1 font-sans text-[13px] text-accent hover:underline">
-          Open in Drive <ExternalLink size={11} />
+          Open in Google <ExternalLink size={11} />
         </a>
       </div>
     {/if}

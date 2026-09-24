@@ -57,6 +57,20 @@ pub fn conversation_owner_conflict(
     }
 }
 
+/// An outbound write whose principal cannot act. Owner-without-Google and
+/// agent-without-connection name the fix; the org account still queues and
+/// fails at approval, which is the cutover behavior.
+pub async fn refuse_unresolved_write(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<Option<Response>, sqlx::Error> {
+    Ok(
+        talaria_api_facades::google::agent::outbound_write_refusal(pg, agent_model)
+            .await?
+            .map(|reason| house_error(StatusCode::CONFLICT, reason)),
+    )
+}
+
 /// The response a draft route may return after `queue_action`. Success only
 /// when the approver's queue contains the row. A fresh insert that fails
 /// that proof is deleted; a dedupe hit is left for whoever can already see it.
@@ -129,13 +143,10 @@ pub fn answer_executed(id: &str, outcome_status: &str, sent: &str, failed: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use talaria_api_facades::google::agent::AgentPrincipal;
+    use talaria_api_facades::google::agent::{AgentPrincipal, PrincipalKind};
 
     fn personal(owner: Option<&str>) -> AgentPrincipal {
-        AgentPrincipal {
-            is_org: false,
-            owner_user_id: owner.map(str::to_string),
-        }
+        AgentPrincipal::from_kind(PrincipalKind::Owner, owner.map(str::to_string))
     }
 
     #[test]
@@ -153,10 +164,7 @@ mod tests {
             conversation_owner_conflict(&personal(Some("owner-jon")), Some("owner-jon")).is_none()
         );
         assert!(conversation_owner_conflict(&personal(Some("owner-jon")), None).is_none());
-        let org = AgentPrincipal {
-            is_org: true,
-            owner_user_id: None,
-        };
+        let org = AgentPrincipal::from_kind(PrincipalKind::Org, None);
         assert!(conversation_owner_conflict(&org, Some("anyone")).is_none());
     }
 }

@@ -5,6 +5,8 @@
 //
 //   personal action (a personal assistant, bound to its owner) → the OWNER approves
 //   org action (a general agent, on the shared org account)     → an ADMIN approves
+//   agent action (the agent's own Google account)               → an ADMIN approves,
+//     and the agent's token executes — never the org account's
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -12,8 +14,13 @@ use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use std::sync::OnceLock;
-use talaria_google_calendar::{CreateEventInput, create_event_with_token};
+use talaria_google_agent::get_agent_access_token;
+use talaria_google_calendar::{
+    CreateEventInput, cancel_event_with_token, create_event_with_token, update_event_with_token,
+};
 use talaria_google_connections::get_access_token;
+use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
+use talaria_google_drive::{move_drive_file_with_token, rename_drive_file_with_token};
 use talaria_google_gmail::{SendInput, send_message_with_token};
 use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
 use talaria_realtime::RealtimeDeps;
@@ -34,6 +41,10 @@ pub struct PendingAction {
     pub agent_model: Option<String>,
     pub owner_user_id: Option<String>,
     pub is_org: bool,
+    /// "owner" | "org" | "agent". Who approves is `is_org`; this is whose
+    /// token executes. An agent identity is admin-approved and still not the
+    /// org account.
+    pub principal_kind: String,
     pub status: String,
     pub created_ms: i64,
 }
@@ -50,6 +61,8 @@ pub struct QueueAction<'a> {
     /// `is_org` (an admin approves those).
     pub owner_user_id: Option<&'a str>,
     pub is_org: bool,
+    /// Executor identity stored on the row. "owner" | "org" | "agent".
+    pub principal_kind: &'a str,
 }
 
 /// What a queueing produced. `already_pending` marks the converge case: the
@@ -93,11 +106,14 @@ pub async fn queue_action(
         Option<String>,
         bool,
         String,
+        String,
         i64,
     ) = sqlx::query_as(
-        "insert into google_pending_actions (kind, summary, payload, agent_model, owner_user_id, is_org) \
-         values ($1, $2, $3, $4, $5::uuid, $6) \
-         returning id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, status, \
+        "insert into google_pending_actions \
+             (kind, summary, payload, agent_model, owner_user_id, is_org, principal_kind) \
+         values ($1, $2, $3, $4, $5::uuid, $6, $7) \
+         returning id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
+                   principal_kind, status, \
                    (trunc(extract(epoch from created_at) * 1000))::bigint",
     )
     .bind(input.kind)
@@ -106,10 +122,22 @@ pub async fn queue_action(
     .bind(input.agent_model)
     .bind(input.owner_user_id)
     .bind(input.is_org)
+    .bind(input.principal_kind)
     .fetch_one(pg)
     .await
     .map_err(|e| format!("google pending action insert: {e}"))?;
-    let (id, kind, summary, payload, agent_model, owner_user_id, is_org, status, created_ms) = row;
+    let (
+        id,
+        kind,
+        summary,
+        payload,
+        agent_model,
+        owner_user_id,
+        is_org,
+        principal_kind,
+        status,
+        created_ms,
+    ) = row;
     let action = PendingAction {
         id: id.clone(),
         kind,
@@ -118,6 +146,7 @@ pub async fn queue_action(
         agent_model,
         owner_user_id,
         is_org,
+        principal_kind,
         status,
         created_ms,
     };
@@ -166,9 +195,11 @@ async fn find_same_pending_draft(
         Option<String>,
         bool,
         String,
+        String,
         i64,
     )> = sqlx::query_as(
-        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, status, \
+        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
+                principal_kind, status, \
                 (trunc(extract(epoch from created_at) * 1000))::bigint \
          from google_pending_actions \
          where kind = 'gmail_send' and status = 'pending' \
@@ -191,6 +222,7 @@ async fn find_same_pending_draft(
                 agent_model,
                 owner_user_id,
                 is_org,
+                principal_kind,
                 status,
                 created_ms,
             )| {
@@ -202,6 +234,7 @@ async fn find_same_pending_draft(
                     agent_model,
                     owner_user_id,
                     is_org,
+                    principal_kind,
                     status,
                     created_ms,
                 }
@@ -286,6 +319,7 @@ pub fn pending_wire(a: &PendingAction) -> Value {
         "agentModel": a.agent_model,
         "ownerUserId": a.owner_user_id,
         "isOrg": a.is_org,
+        "principalKind": a.principal_kind,
         "status": a.status,
         "createdAt": talaria_agent_auth::epoch_ms_to_iso(a.created_ms),
     })
@@ -313,9 +347,11 @@ pub async fn list_pending(
         Option<String>,
         bool,
         String,
+        String,
         i64,
     )> = sqlx::query_as(
-        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, status, \
+        "select id::text, kind, summary, payload, agent_model, owner_user_id::text, is_org, \
+                principal_kind, status, \
                 (trunc(extract(epoch from created_at) * 1000))::bigint \
          from google_pending_actions \
          where status = 'pending' \
@@ -337,6 +373,7 @@ pub async fn list_pending(
                 agent_model,
                 owner_user_id,
                 is_org,
+                principal_kind,
                 status,
                 created_ms,
             )| PendingAction {
@@ -347,6 +384,7 @@ pub async fn list_pending(
                 agent_model,
                 owner_user_id,
                 is_org,
+                principal_kind,
                 status,
                 created_ms,
             },
@@ -457,16 +495,24 @@ pub async fn decide_action(
     now_ms: i64,
 ) -> Result<Option<DecideOutcome>, String> {
     #[allow(clippy::type_complexity)] // the decided row's own columns, one each
-    let action: Option<(String, Value, Option<String>, Option<String>, bool, String)> =
-        sqlx::query_as(
-            "select kind, payload, agent_model, owner_user_id::text, is_org, status \
-             from google_pending_actions where id = $1::uuid",
-        )
-        .bind(action_id)
-        .fetch_optional(pg)
-        .await
-        .map_err(|e| format!("google pending action read: {e}"))?;
-    let Some((kind, payload, agent_model, owner_user_id, is_org, status)) = action else {
+    let action: Option<(
+        String,
+        Value,
+        Option<String>,
+        Option<String>,
+        bool,
+        String,
+        String,
+    )> = sqlx::query_as(
+        "select kind, payload, agent_model, owner_user_id::text, is_org, principal_kind, status \
+         from google_pending_actions where id = $1::uuid",
+    )
+    .bind(action_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("google pending action read: {e}"))?;
+    let Some((kind, payload, agent_model, owner_user_id, is_org, principal_kind, status)) = action
+    else {
         return Ok(None);
     };
     let authorized = if is_org {
@@ -520,13 +566,21 @@ pub async fn decide_action(
         }));
     }
 
-    // Approve → resolve the executing token (org account, or the owner's).
-    let token = if is_org {
-        get_org_access_token(pg, sb, now_ms)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        get_access_token(
+    // Approve → the token of the identity that was queued, not whichever
+    // account is_org happens to imply. Agent rows are admin-approved
+    // (is_org) and still execute as the agent's own Google account.
+    let token = match principal_kind.as_str() {
+        "agent" => get_agent_access_token(
+            pg,
+            sb,
+            agent_model
+                .as_deref()
+                .expect("agent-identity actions carry an agent model"),
+            now_ms,
+        )
+        .await
+        .map_err(|e| e.to_string())?,
+        "owner" => get_access_token(
             pg,
             sb,
             owner_user_id
@@ -535,16 +589,19 @@ pub async fn decide_action(
             now_ms,
         )
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?,
+        _ => get_org_access_token(pg, sb, now_ms)
+            .await
+            .map_err(|e| e.to_string())?,
     };
     let Some(token) = token else {
         return Ok(Some(DecideOutcome {
             status: "not_connected".into(),
             message: Some(
-                if is_org {
-                    "Reconnect the org Google account to run this."
-                } else {
-                    "Reconnect Google to run this action."
+                match principal_kind.as_str() {
+                    "agent" => "Reconnect this agent's Google account on its record to run this.",
+                    "org" => "Reconnect the org Google account to run this.",
+                    _ => "Reconnect Google to run this action.",
                 }
                 .to_string(),
             ),
@@ -552,16 +609,14 @@ pub async fn decide_action(
     };
 
     // Org actions land on the configured shared targets (calendar / send-as
-    // alias) — except an org agent's mail, which carries ITS OWN address: the
-    // stored override, else the org account's plus-address for its slug, else
-    // the send-as target as before. Resolved at execution (not queueing) so an
-    // alias edit between draft and approve is honored.
-    let targets = if is_org {
+    // alias). An agent identity uses its own account — no org send-as, no
+    // org calendar — even though an admin approves it.
+    let targets = if principal_kind == "org" {
         get_org_targets(pg).await.map_err(|e| e.to_string())?
     } else {
         Default::default()
     };
-    let agent_from = if is_org && kind == "gmail_send" && agent_model.is_some() {
+    let agent_from = if principal_kind == "org" && kind == "gmail_send" && agent_model.is_some() {
         org_agent_from_address(pg, agent_model.as_deref().expect("checked some"))
             .await
             .map_err(|e| e.to_string())?
@@ -610,11 +665,158 @@ pub async fn decide_action(
                         .collect()
                 })
                 .unwrap_or_default(),
+            meet: payload
+                .get("meet")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         };
         create_event_with_token(&token, &input, targets.calendar_id.as_deref())
             .await
             .map(|e| serde_json::to_value(&e).unwrap_or(Value::Null))
             .map_err(|e| e.to_string())
+    } else if kind == "doc_update" {
+        let file_id = payload
+            .get("fileId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if file_id.is_empty() {
+            Err("doc_update missing fileId".into())
+        } else {
+            update_doc_with_token(
+                &token,
+                file_id,
+                payload
+                    .get("markdown")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                payload.get("title").and_then(Value::as_str),
+            )
+            .await
+            .map(|doc| json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
+            .map_err(|e| e.to_string())
+        }
+    } else if kind == "drive_rename" {
+        let file_id = payload
+            .get("fileId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let name = payload
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if file_id.is_empty() || name.is_empty() {
+            Err("drive_rename missing fileId or name".into())
+        } else {
+            rename_drive_file_with_token(&token, file_id, name)
+                .await
+                .map(|entry| json!({ "id": entry.id, "name": entry.name, "url": entry.web_view_link }))
+                .map_err(|e| e.to_string())
+        }
+    } else if kind == "drive_move" {
+        let file_id = payload
+            .get("fileId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let parent = payload
+            .get("parentId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty());
+        if file_id.is_empty() {
+            Err("drive_move missing fileId".into())
+        } else {
+            move_drive_file_with_token(&token, file_id, parent, None)
+                .await
+                .map(|_| json!({ "id": file_id, "parentId": parent }))
+                .map_err(|e| e.to_string())
+        }
+    } else if kind == "calendar_update" {
+        let event_id = payload
+            .get("eventId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if event_id.is_empty() {
+            Err("calendar_update missing eventId".into())
+        } else {
+            update_event_with_token(
+                &token,
+                targets.calendar_id.as_deref(),
+                event_id,
+                payload.get("summary").and_then(Value::as_str),
+                payload.get("start").and_then(Value::as_str),
+                payload.get("end").and_then(Value::as_str),
+                payload
+                    .get("allDay")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .await
+            .map(|e| serde_json::to_value(&e).unwrap_or(Value::Null))
+            .map_err(|e| e.to_string())
+        }
+    } else if kind == "calendar_cancel" {
+        let event_id = payload
+            .get("eventId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if event_id.is_empty() {
+            Err("calendar_cancel missing eventId".into())
+        } else {
+            cancel_event_with_token(&token, targets.calendar_id.as_deref(), event_id)
+                .await
+                .map(|_| json!({ "id": event_id, "status": "cancelled" }))
+                .map_err(|e| e.to_string())
+        }
+    } else if kind == "meeting_create" {
+        let s = |k: &str| payload.get(k).and_then(Value::as_str).unwrap_or_default();
+        let input = CreateEventInput {
+            summary: s("summary"),
+            description: payload.get("description").and_then(Value::as_str),
+            location: payload.get("location").and_then(Value::as_str),
+            start: s("start"),
+            end: s("end"),
+            all_day: payload
+                .get("allDay")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            attendees: payload
+                .get("attendees")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            meet: true,
+        };
+        match create_event_with_token(&token, &input, targets.calendar_id.as_deref()).await {
+            Ok(event) => {
+                let mut result = serde_json::to_value(&event).unwrap_or(Value::Null);
+                // Agenda is created here, at decision time, never at queue time.
+                if let Some(agenda) = payload
+                    .get("agenda")
+                    .and_then(Value::as_str)
+                    .filter(|a| !a.is_empty())
+                {
+                    match create_doc_with_token(&token, s("summary"), agenda, None).await {
+                        Ok(doc) => {
+                            if let Some(obj) = result.as_object_mut() {
+                                obj.insert("agendaUrl".into(), json!(doc.url));
+                                obj.insert("agendaId".into(), json!(doc.id));
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(obj) = result.as_object_mut() {
+                                obj.insert("agendaError".into(), json!(e.to_string()));
+                            }
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            Err(e) => Err(e.to_string()),
+        }
     } else {
         Err(format!("unknown action kind: {kind}"))
     };
@@ -854,6 +1056,7 @@ mod tests {
             agent_model: None,
             owner_user_id: Some("owner".into()),
             is_org: false,
+            principal_kind: "owner".into(),
             status: "pending".into(),
             created_ms: 0,
         }];

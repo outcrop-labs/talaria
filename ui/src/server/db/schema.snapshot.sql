@@ -14,6 +14,11 @@ SET client_min_messages = warning;
 SET row_security = off;
 SET default_tablespace = '';
 SET default_table_access_method = heap;
+CREATE TABLE public.agent_created_google_docs (
+    file_id text NOT NULL,
+    agent_model text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.agent_defs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     slug text NOT NULL,
@@ -40,12 +45,37 @@ CREATE TABLE public.agent_defs (
     proactive boolean DEFAULT false NOT NULL,
     email_alias text
 );
+CREATE TABLE public.agent_google_connections (
+    agent_model text NOT NULL,
+    google_sub text NOT NULL,
+    email text,
+    scope text DEFAULT ''::text NOT NULL,
+    refresh_token_enc text,
+    access_token_enc text,
+    access_expires_at timestamp with time zone,
+    connected_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.agent_google_oauth_states (
+    state text NOT NULL,
+    agent_model text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.agent_keys (
     agent_id uuid NOT NULL,
     key_hash text NOT NULL,
     key_enc text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     last_used_at timestamp with time zone
+);
+CREATE TABLE public.agent_principals (
+    agent_model text NOT NULL,
+    principal_kind text NOT NULL,
+    principal_user_id uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT agent_principals_principal_kind_check CHECK ((principal_kind = ANY (ARRAY['owner'::text, 'org'::text, 'agent'::text])))
 );
 CREATE TABLE public.agent_resource_samples (
     id bigint NOT NULL,
@@ -464,7 +494,9 @@ CREATE TABLE public.google_pending_actions (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     decided_at timestamp with time zone,
     decided_by uuid,
-    is_org boolean DEFAULT false NOT NULL
+    is_org boolean DEFAULT false NOT NULL,
+    principal_kind text DEFAULT 'org'::text NOT NULL,
+    CONSTRAINT google_pending_principal_kind_check CHECK ((principal_kind = ANY (ARRAY['owner'::text, 'org'::text, 'agent'::text])))
 );
 CREATE TABLE public.guard_findings (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1242,16 +1274,24 @@ CREATE TABLE public.workspace_secrets (
     owner_user_id uuid,
     secret_folder_id uuid
 );
+ALTER TABLE ONLY public.agent_created_google_docs
+    ADD CONSTRAINT agent_created_google_docs_pkey PRIMARY KEY (file_id);
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_model_key UNIQUE (model);
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_slug_key UNIQUE (slug);
+ALTER TABLE ONLY public.agent_google_connections
+    ADD CONSTRAINT agent_google_connections_pkey PRIMARY KEY (agent_model);
+ALTER TABLE ONLY public.agent_google_oauth_states
+    ADD CONSTRAINT agent_google_oauth_states_pkey PRIMARY KEY (state);
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_key_hash_key UNIQUE (key_hash);
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_pkey PRIMARY KEY (agent_id);
+ALTER TABLE ONLY public.agent_principals
+    ADD CONSTRAINT agent_principals_pkey PRIMARY KEY (agent_model);
 ALTER TABLE ONLY public.agent_resource_samples
     ADD CONSTRAINT agent_resource_samples_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.agent_role_templates
@@ -1611,8 +1651,18 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_ticket_template_id_fkey FOREIGN KEY (ticket_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.agent_google_connections
+    ADD CONSTRAINT agent_google_connections_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_google_connections
+    ADD CONSTRAINT agent_google_connections_connected_by_fkey FOREIGN KEY (connected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.agent_google_oauth_states
+    ADD CONSTRAINT agent_google_oauth_states_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_principals
+    ADD CONSTRAINT agent_principals_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_principals
+    ADD CONSTRAINT agent_principals_principal_user_id_fkey FOREIGN KEY (principal_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_secrets
     ADD CONSTRAINT agent_secrets_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_versions

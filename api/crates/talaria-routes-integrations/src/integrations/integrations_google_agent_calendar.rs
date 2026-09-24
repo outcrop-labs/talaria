@@ -7,15 +7,16 @@
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::{resolve_agent_google, resolve_agent_principal};
-use talaria_api_facades::google::calendar::list_upcoming_events_with_token;
+use talaria_api_facades::google::calendar::list_events_in_window_with_token;
 use talaria_api_facades::google::errors::{GoogleError, google_fail_with};
+use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::org::get_org_targets;
 use talaria_api_facades::google::pending_actions::{QueueAction, queue_action};
 use talaria_body::{
@@ -26,7 +27,11 @@ use talaria_error::{house_error, house_error_msg, internal, object_or_400};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_state::AppState;
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<Response, Response> {
     let caller = require_agent(&state.pg, &headers).await?;
     // Acting as a HUMAN — the owner's calendar (or the shared org one). A
     // legacy shared-key caller only ASSERTS which agent it is, so it never
@@ -57,9 +62,27 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     } else {
         None
     };
+    let q = query_pairs(uri.query());
+    let time_min = q
+        .get("timeMin")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_else(|| talaria_agent_auth::epoch_ms_to_iso(now_ms()));
+    let time_max = q.get("timeMax").filter(|s| !s.is_empty()).cloned();
+    let max_results = q
+        .get("maxResults")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(10)
+        .clamp(1, 50);
     Ok(
-        match list_upcoming_events_with_token(&google.token, now_ms(), 10, calendar_id.as_deref())
-            .await
+        match list_events_in_window_with_token(
+            &google.token,
+            calendar_id.as_deref(),
+            &time_min,
+            time_max.as_deref(),
+            max_results,
+        )
+        .await
         {
             Ok(events) => Json(json!({ "events": events })).into_response(),
             Err(e) => google_fail_with(GoogleError::from(e), "Calendar", "calendar_error"),
@@ -139,6 +162,18 @@ pub async fn post(
     ) {
         return Ok(house_error(StatusCode::CONFLICT, &reason));
     }
+    if let Some(denied) =
+        super::integrations_google_agent_queue::refuse_unresolved_write(&state.pg, &agent_model)
+            .await
+            .map_err(|e| {
+                internal(
+                    "[integrations/google/agent] principal connection read failed",
+                    e,
+                )
+            })?
+    {
+        return Ok(denied);
+    }
 
     // The payload IS the validated draft, stored exactly as drafted and
     // executed as stored at approve time — optional members ride only when
@@ -171,6 +206,7 @@ pub async fn post(
             agent_model: &agent_model,
             owner_user_id: principal.owner_user_id.as_deref(),
             is_org: principal.is_org,
+            principal_kind: principal.kind.as_str(),
         },
     )
     .await
@@ -224,4 +260,146 @@ pub async fn post(
         "Drafted — waiting for an admin to approve.",
     )
     .await)
+}
+
+async fn queue_calendar_change(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Bytes,
+    kind: &'static str,
+    summary: &str,
+    payload: serde_json::Map<String, Value>,
+) -> Result<Response, Response> {
+    let caller = require_agent(&state.pg, headers).await?;
+    if let Some(denied) = refuse_legacy(&caller, "Calendar access") {
+        return Ok(denied);
+    }
+    let agent_model = caller.model.clone();
+    if let Some(denied) =
+        super::integrations_google_agent_queue::refuse_unresolved_write(&state.pg, &agent_model)
+            .await
+            .map_err(|e| {
+                internal(
+                    "[integrations/google/agent] principal connection read failed",
+                    e,
+                )
+            })?
+    {
+        return Ok(denied);
+    }
+    let principal = match resolve_agent_principal(&state.pg, &agent_model).await {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/agent] principal read failed",
+                e,
+            ));
+        }
+    };
+    let _ = body;
+    let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
+    let queued = match queue_action(
+        &state.pg,
+        realtime,
+        &QueueAction {
+            kind,
+            summary,
+            payload: &Value::Object(payload),
+            agent_model: &agent_model,
+            owner_user_id: principal.owner_user_id.as_deref(),
+            is_org: principal.is_org,
+            principal_kind: principal.kind.as_str(),
+        },
+    )
+    .await
+    {
+        Ok(q) => q,
+        Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
+    };
+    Ok(super::integrations_google_agent_queue::answer_queued(
+        &state.pg,
+        queued,
+        "An identical calendar change is already waiting — nothing new queued.",
+        "Queued — waiting for the owner to approve before the calendar changes.",
+        "Queued — waiting for an admin to approve before the calendar changes.",
+    )
+    .await)
+}
+
+pub async fn post_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let parsed = parse(&body);
+    let obj = object_or_400(&parsed)?;
+    let event_id = match string_member(obj, "eventId", 1, 200) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("eventId".into(), json!(event_id));
+    for key in ["summary", "start", "end"] {
+        if let Some(v) = obj.get(key).and_then(Value::as_str) {
+            payload.insert(key.into(), json!(v));
+        }
+    }
+    if let Some(all_day) = obj.get("allDay").and_then(Value::as_bool) {
+        payload.insert("allDay".into(), json!(all_day));
+    }
+    let summary = format!("Update calendar event {event_id}");
+    queue_calendar_change(&state, &headers, body, "calendar_update", &summary, payload).await
+}
+
+pub async fn post_cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let parsed = parse(&body);
+    let obj = object_or_400(&parsed)?;
+    let event_id = match string_member(obj, "eventId", 1, 200) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("eventId".into(), json!(event_id));
+    let summary = format!("Cancel calendar event {event_id}");
+    queue_calendar_change(&state, &headers, body, "calendar_cancel", &summary, payload).await
+}
+
+/// Queue a meeting. The agenda markdown is stored only. Nothing is created
+/// in Google until a human approves.
+pub async fn post_meeting(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, Response> {
+    let parsed = parse(&body);
+    let obj = object_or_400(&parsed)?;
+    let summary_text = match string_member(obj, "summary", 1, 500) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let start = match string_member(obj, "start", 4, usize::MAX) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let end = match string_member(obj, "end", 4, usize::MAX) {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("summary".into(), json!(summary_text));
+    payload.insert("start".into(), json!(start));
+    payload.insert("end".into(), json!(end));
+    payload.insert("meet".into(), json!(true));
+    if let Some(agenda) = obj.get("agenda").and_then(Value::as_str) {
+        payload.insert("agenda".into(), json!(agenda));
+    }
+    if let Some(list) = obj.get("attendees").and_then(Value::as_array) {
+        payload.insert("attendees".into(), Value::Array(list.clone()));
+    }
+    let summary = format!("Meeting: {summary_text} ({start})");
+    queue_calendar_change(&state, &headers, body, "meeting_create", &summary, payload).await
 }

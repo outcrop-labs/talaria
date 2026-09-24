@@ -56,6 +56,7 @@ fn draft(owner: &str, payload: Value) -> QueueAction<'static> {
         agent_model: "test-agent",
         owner_user_id: Some(Box::leak(owner.to_string().into_boxed_str())),
         is_org: false,
+        principal_kind: "owner",
     }
 }
 

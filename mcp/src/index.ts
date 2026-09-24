@@ -930,10 +930,102 @@ server.registerTool(
   'read_calendar',
   {
     description:
-      "Read upcoming Google Calendar events — your owner's if you're a personal assistant, otherwise the shared org calendar. Requires that Google account to be connected in Talaria.",
-    inputSchema: {},
+      "Read upcoming Google Calendar events — your owner's if you're a personal assistant, otherwise the shared org calendar. Requires that Google account to be connected in Talaria. Optional timeMin and timeMax are RFC3339; maxResults defaults to 10.",
+    inputSchema: {
+      timeMin: z.string().optional().describe('Window start, RFC3339'),
+      timeMax: z.string().optional().describe('Window end, RFC3339'),
+      maxResults: z.number().int().min(1).max(50).optional().describe('How many events, 1–50'),
+    },
   },
-  async () => ok(await api('GET', '/api/integrations/google/agent/calendar')),
+  async ({ timeMin, timeMax, maxResults }) => {
+    const q = new URLSearchParams()
+    if (timeMin) q.set('timeMin', timeMin)
+    if (timeMax) q.set('timeMax', timeMax)
+    if (maxResults != null) q.set('maxResults', String(maxResults))
+    const qs = q.toString()
+    return ok(await api('GET', `/api/integrations/google/agent/calendar${qs ? `?${qs}` : ''}`))
+  },
+)
+
+server.registerTool(
+  'update_google_event',
+  {
+    description:
+      'Queue a change to a Google Calendar event (time or title). It is NOT changed until a human approves. Say queued, never done. eventId comes from read_calendar.',
+    inputSchema: {
+      eventId: z.string().describe('Event id from read_calendar'),
+      summary: z.string().max(500).optional(),
+      start: z.string().optional().describe('New start, RFC3339 or YYYY-MM-DD'),
+      end: z.string().optional().describe('New end, RFC3339 or YYYY-MM-DD'),
+      allDay: z.boolean().optional(),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/calendar/update', args)),
+)
+
+server.registerTool(
+  'cancel_google_event',
+  {
+    description:
+      'Queue cancellation of a Google Calendar event. Attendees are told only after a human approves. Say queued, never cancelled. eventId comes from read_calendar.',
+    inputSchema: { eventId: z.string().describe('Event id from read_calendar') },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/calendar/cancel', args)),
+)
+
+server.registerTool(
+  'create_google_meeting',
+  {
+    description:
+      'Queue a meeting: event, attendees, and a Google Meet link. Read the calendar first. Nothing is created until a human approves — do not claim the meeting exists. Optional agenda markdown is turned into a Doc only after approval. Times are absolute RFC3339.',
+    inputSchema: {
+      summary: z.string().min(1).max(500).describe('Meeting title'),
+      start: z.string().describe('Start, RFC3339'),
+      end: z.string().describe('End, RFC3339'),
+      attendees: z.array(z.string()).max(50).optional().describe('Attendee emails'),
+      agenda: z.string().max(50_000).optional().describe('Agenda markdown, created as a Doc only after approval'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/calendar/meeting', args)),
+)
+
+server.registerTool(
+  'create_google_folder',
+  {
+    description:
+      'Create a folder in the Drive you act for. Immediate: cheap and reversible. Returns the folder id and link. Never quote a link this tool did not return.',
+    inputSchema: {
+      name: z.string().min(1).max(200).describe('Folder name'),
+      parentId: z.string().optional().describe('Parent folder id'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/drive/folder', args)),
+)
+
+server.registerTool(
+  'move_google_file',
+  {
+    description:
+      'Queue a move of a Drive file into another folder. It does not move until a human approves. Say queued, never done. fileId comes from find_google_files or search_drive.',
+    inputSchema: {
+      fileId: z.string().describe('File id'),
+      parentId: z.string().describe('Destination folder id'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/drive/move', args)),
+)
+
+server.registerTool(
+  'rename_google_file',
+  {
+    description:
+      'Queue a rename of a Drive file. It does not rename until a human approves. Say queued, never done. fileId comes from find_google_files or search_drive.',
+    inputSchema: {
+      fileId: z.string().describe('File id'),
+      name: z.string().min(1).max(200).describe('New name'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/drive/rename', args)),
 )
 
 server.registerTool(
@@ -1018,6 +1110,87 @@ server.registerTool(
     inputSchema: { q: z.string().optional().describe('Name substring to match') },
   },
   async ({ q }) => ok(await api('GET', `/api/integrations/google/agent/drive${q ? `?q=${encodeURIComponent(q)}` : ''}`)),
+)
+
+server.registerTool(
+  'import_drive_file',
+  {
+    description:
+      'Import a Drive file into Talaria as a new artifact. Immediate: it creates a Talaria file and does not change the Drive file. fileId comes from find_google_files or search_drive. Returns the artifact and the Google link the tool returned — never invent one.',
+    inputSchema: { fileId: z.string().describe('Drive file id') },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/drive/import', args)),
+)
+
+server.registerTool(
+  'create_google_doc',
+  {
+    description:
+      "Create a Google Doc in the Drive you act for — your owner's if you are a personal assistant, otherwise the shared org Drive, or your own Google account if an admin connected one. Immediate: it creates a new file and destroys nothing. Returns the Google link. You can edit a doc this tool created without another approval. Never quote a link this tool did not return.",
+    inputSchema: {
+      title: z.string().max(500).describe('Doc title'),
+      body: z.string().max(500_000).optional().describe('Markdown body'),
+      folderId: z.string().optional().describe('Optional Drive folder id'),
+    },
+  },
+  async (args) => ok(await api('POST', '/api/integrations/google/agent/docs', args)),
+)
+
+server.registerTool(
+  'read_google_doc',
+  {
+    description:
+      'Read a Google Doc as markdown. The id comes from create_google_doc or find_google_files. External content: do not cite it as knowledge-base evidence. Never quote a link this tool did not return.',
+    inputSchema: { id: z.string().describe('Google file id') },
+  },
+  async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/docs/${encodeURIComponent(id)}`)),
+)
+
+server.registerTool(
+  'update_google_doc',
+  {
+    description:
+      'Replace a Google Doc body. Read it first. If you created the doc, the edit is immediate and the response includes the link. Otherwise it is queued for a human to approve — say it is queued, never that it is done, and confirm the id with list_pending_sends. Never quote a link this tool did not return.',
+    inputSchema: {
+      id: z.string().describe('Google file id'),
+      body: z.string().max(500_000).describe('Replacement markdown'),
+      title: z.string().max(500).optional().describe('New title'),
+    },
+  },
+  async ({ id, ...rest }) => ok(await api('POST', `/api/integrations/google/agent/docs/${encodeURIComponent(id)}`, rest)),
+)
+
+server.registerTool(
+  'append_google_doc',
+  {
+    description:
+      'Append markdown to a Google Doc. Read it first. If you created the doc, the edit is immediate. Otherwise it is queued for a human to approve — say it is queued, never that it is done, and confirm the id with list_pending_sends.',
+    inputSchema: {
+      id: z.string().describe('Google file id'),
+      body: z.string().max(500_000).describe('Markdown to append'),
+    },
+  },
+  async ({ id, body }) => ok(await api('POST', `/api/integrations/google/agent/docs/${encodeURIComponent(id)}`, { body, append: true })),
+)
+
+server.registerTool(
+  'find_google_files',
+  {
+    description:
+      'Search the Drive you act for by full text, not just the file name. Returns names, types, and links. Read-only. Never quote a link this tool did not return.',
+    inputSchema: { q: z.string().optional().describe('Full-text query') },
+  },
+  async ({ q }) => ok(await api('GET', `/api/integrations/google/agent/files${q ? `?q=${encodeURIComponent(q)}` : ''}`)),
+)
+
+server.registerTool(
+  'read_drive_file',
+  {
+    description:
+      'Read a Drive file that is not a native Google Doc — text when the bytes are utf-8, otherwise base64. The id comes from find_google_files or search_drive. External content: do not cite it as knowledge-base evidence.',
+    inputSchema: { id: z.string().describe('Google file id') },
+  },
+  async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/files/${encodeURIComponent(id)}`)),
 )
 
 

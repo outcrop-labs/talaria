@@ -29,6 +29,9 @@ pub struct CalendarEvent {
     pub location: Option<String>,
     pub html_link: Option<String>,
     pub attendees: Vec<String>,
+    /// Present when a Meet link was provisioned. Absent is an honest miss.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hangout_link: Option<String>,
 }
 
 /// Why the agenda read produced nothing. `NotConnected` is a state, not a
@@ -62,13 +65,20 @@ impl std::fmt::Display for CalendarError {
 
 /// The events-list URL, parameter order pinned (timeMin, maxResults,
 /// singleEvents, orderBy). `calendar_id` empty/None reads 'primary'.
-fn events_url_with_params(calendar_id: Option<&str>, now_ms: i64, max_results: usize) -> String {
+/// `time_max` is omitted when absent so the no-window URL stays byte-identical.
+pub fn events_url_window(
+    calendar_id: Option<&str>,
+    time_min: &str,
+    time_max: Option<&str>,
+    max_results: usize,
+) -> String {
     let wanted = max_results.clamp(1, 50);
     let mut params = url::form_urlencoded::Serializer::new(String::new());
+    params.append_pair("timeMin", time_min);
+    if let Some(max) = time_max.filter(|s| !s.is_empty()) {
+        params.append_pair("timeMax", max);
+    }
     params
-        .append_pair("timeMin", &epoch_ms_to_iso(now_ms))
-        // Over-fetch 3× so dropped working locations don't shrink the agenda —
-        // they were fetched, they just don't count against the slots.
         .append_pair("maxResults", &wanted.saturating_mul(3).min(50).to_string())
         .append_pair("singleEvents", "true")
         .append_pair("orderBy", "startTime");
@@ -77,6 +87,10 @@ fn events_url_with_params(calendar_id: Option<&str>, now_ms: i64, max_results: u
         "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?{}",
         params.finish()
     )
+}
+
+fn events_url_with_params(calendar_id: Option<&str>, now_ms: i64, max_results: usize) -> String {
+    events_url_window(calendar_id, &epoch_ms_to_iso(now_ms), None, max_results)
 }
 
 /// Upcoming events (from now), soonest first.
@@ -144,6 +158,57 @@ pub async fn list_upcoming_events_with_token(
         .collect())
 }
 
+/// Agenda inside an explicit window. `time_min` and `time_max` are already
+/// RFC3339 or YYYY-MM-DD — the route validated them. `time_max` absent means
+/// open-ended, same as the upcoming read.
+pub async fn list_events_in_window_with_token(
+    token: &str,
+    calendar_id: Option<&str>,
+    time_min: &str,
+    time_max: Option<&str>,
+    max_results: usize,
+) -> Result<Vec<CalendarEvent>, CalendarError> {
+    let res = http()
+        .get(events_url_window(
+            calendar_id,
+            time_min,
+            time_max,
+            max_results,
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| CalendarError::Failed(format!("calendar list request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(CalendarError::Failed(format!(
+            "calendar list failed: {status} {text}"
+        )));
+    }
+    let data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| CalendarError::Failed(format!("calendar list body: {e}")))?;
+    let Some(items) = data.get("items").and_then(|v| v.as_array()) else {
+        return Ok(Vec::new());
+    };
+    let wanted = max_results.clamp(1, 50);
+    Ok(items
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.get("eventType")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("default"),
+                "default" | "focusTime" | "outOfOffice"
+            )
+        })
+        .take(wanted)
+        .filter_map(normalize)
+        .collect())
+}
+
 /// Fold one Google event to `CalendarEvent`; an event with no id is not an
 /// event — skipped, not a crash.
 fn normalize(e: &serde_json::Value) -> Option<CalendarEvent> {
@@ -182,6 +247,11 @@ fn normalize(e: &serde_json::Value) -> Option<CalendarEvent> {
                     .collect()
             })
             .unwrap_or_default(),
+        hangout_link: e
+            .get("hangoutLink")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from),
     })
 }
 
@@ -197,6 +267,8 @@ pub struct CreateEventInput<'a> {
     pub end: &'a str,
     pub all_day: bool,
     pub attendees: Vec<String>,
+    /// Ask Google to attach a Meet link. Not guaranteed on insert alone.
+    pub meet: bool,
 }
 
 /// Create an event on the user's primary calendar.
@@ -251,11 +323,33 @@ pub async fn create_event_with_token(
                 .collect(),
         ),
     );
+    if input.meet {
+        body.insert(
+            "conferenceData".into(),
+            serde_json::json!({
+                "createRequest": {
+                    "requestId": format!(
+                        "talaria-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0)
+                    ),
+                    "conferenceSolutionKey": { "type": "hangoutsMeet" }
+                }
+            }),
+        );
+    }
     let body = Value::Object(body);
     let cal = percent_encode(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
+    let conference = if input.meet {
+        "&conferenceDataVersion=1"
+    } else {
+        ""
+    };
     let res = http()
         .post(format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?sendUpdates=all"
+            "https://www.googleapis.com/calendar/v3/calendars/{cal}/events?sendUpdates=all{conference}"
         ))
         .bearer_auth(token)
         .header("content-type", "application/json")
@@ -274,7 +368,7 @@ pub async fn create_event_with_token(
         .json()
         .await
         .map_err(|e| GoogleError::Failed(format!("calendar create body: {e}")))?;
-    Ok(normalize(&created).unwrap_or(CalendarEvent {
+    let mut event = normalize(&created).unwrap_or(CalendarEvent {
         id: String::new(),
         summary: String::new(),
         start: None,
@@ -283,7 +377,115 @@ pub async fn create_event_with_token(
         location: None,
         html_link: None,
         attendees: vec![],
+        hangout_link: None,
+    });
+    // Meet links are not always on the insert response. One follow-up get,
+    // then one more, then the missing link is the honest answer.
+    if input.meet && event.hangout_link.is_none() && !event.id.is_empty() {
+        for _ in 0..2 {
+            let url = format!(
+                "https://www.googleapis.com/calendar/v3/calendars/{cal}/events/{}?conferenceDataVersion=1",
+                percent_encode(&event.id)
+            );
+            let got = http().get(url).bearer_auth(token).send().await;
+            let Ok(res) = got else { break };
+            if !res.status().is_success() {
+                break;
+            }
+            let Ok(body) = res.json::<serde_json::Value>().await else {
+                break;
+            };
+            if let Some(link) = normalize(&body).and_then(|e| e.hangout_link) {
+                event.hangout_link = Some(link);
+                break;
+            }
+        }
+    }
+    Ok(event)
+}
+
+/// Patch an existing event. Only fields the caller set are sent. Attendees
+/// and time changes notify them (`sendUpdates=all`).
+pub async fn update_event_with_token(
+    token: &str,
+    calendar_id: Option<&str>,
+    event_id: &str,
+    summary: Option<&str>,
+    start: Option<&str>,
+    end: Option<&str>,
+    all_day: bool,
+) -> Result<CalendarEvent, GoogleError> {
+    let mut body = serde_json::Map::new();
+    if let Some(s) = summary.filter(|s| !s.is_empty()) {
+        body.insert("summary".into(), serde_json::json!(s));
+    }
+    let time_field = if all_day { "date" } else { "dateTime" };
+    if let Some(s) = start.filter(|s| !s.is_empty()) {
+        body.insert("start".into(), serde_json::json!({ time_field: s }));
+    }
+    if let Some(s) = end.filter(|s| !s.is_empty()) {
+        body.insert("end".into(), serde_json::json!({ time_field: s }));
+    }
+    let cal = percent_encode(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
+    let id = percent_encode(event_id);
+    let res = http()
+        .patch(format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{cal}/events/{id}?sendUpdates=all"
+        ))
+        .bearer_auth(token)
+        .header("content-type", "application/json")
+        .body(serde_json::Value::Object(body).to_string())
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("calendar update request: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "calendar update failed: {status} {text}"
+        )));
+    }
+    let updated: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("calendar update body: {e}")))?;
+    Ok(normalize(&updated).unwrap_or(CalendarEvent {
+        id: event_id.to_string(),
+        summary: String::new(),
+        start: None,
+        end: None,
+        all_day: false,
+        location: None,
+        html_link: None,
+        attendees: vec![],
+        hangout_link: None,
     }))
+}
+
+/// Cancel an event and tell attendees. Delete is the Calendar cancel.
+pub async fn cancel_event_with_token(
+    token: &str,
+    calendar_id: Option<&str>,
+    event_id: &str,
+) -> Result<(), GoogleError> {
+    let cal = percent_encode(calendar_id.filter(|c| !c.is_empty()).unwrap_or("primary"));
+    let id = percent_encode(event_id);
+    let res = http()
+        .delete(format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{cal}/events/{id}?sendUpdates=all"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("calendar cancel request: {e}")))?;
+    if !res.status().is_success() && res.status().as_u16() != 404 {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "calendar cancel failed: {status} {text}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -374,6 +576,18 @@ mod tests {
                 .starts_with(
                     "https://www.googleapis.com/calendar/v3/calendars/outcrop.co.uk_av1%40group.calendar.google.com/events?"
                 )
+        );
+        assert!(
+            events_url_window(
+                None,
+                "2026-09-24T00:00:00.000Z",
+                Some("2026-09-25T00:00:00.000Z"),
+                10
+            )
+            .contains("timeMax=2026-09-25T00%3A00%3A00.000Z")
+        );
+        assert!(
+            !events_url_window(None, "2026-09-24T00:00:00.000Z", None, 10).contains("timeMax=")
         );
     }
 }
