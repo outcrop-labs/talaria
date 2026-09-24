@@ -514,6 +514,7 @@ talaria-secret-rotation = { path = "crates/talaria-secret-rotation" }
 talaria-secretbox = { path = "crates/talaria-secretbox" }
 
 talaria-session = { path = "crates/talaria-session" }
+talaria-sender-identity = { path = "crates/talaria-sender-identity" }
 
 talaria-settings = { path = "crates/talaria-settings" }
 

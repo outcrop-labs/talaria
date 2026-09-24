@@ -38,6 +38,7 @@ use talaria_mentions::{Mentionee, notify_mentions};
 use talaria_notify::NotifyDeps;
 use talaria_refs::ref_blocks;
 use talaria_secretbox::SecretBox;
+use talaria_sender_identity::SenderIdentity;
 use talaria_state::AppState;
 use talaria_ticket_chat::TicketMeta;
 use talaria_uploads::{attachment_as_data_url, attachment_text_blocks, is_image};
@@ -498,6 +499,7 @@ pub async fn trigger_agent_replies(
     attachments: usize,
     message_seq: i32,
     thread_root_id: Option<&str>,
+    sender: Option<SenderIdentity>,
 ) {
     let room = talaria_ticket_chat::ticket_for_room(&deps.pg, channel_id).await;
     let agents = if room.is_some() {
@@ -631,9 +633,21 @@ pub async fn trigger_agent_replies(
         let channel_id = channel_id.to_string();
         let channel_name = channel_name.to_string();
         let message_id = row.id;
+        let sender = sender.clone();
         tokio::spawn(async move {
             let transcript = transcript_for(&task_deps.pg, &task_sb, &model, &history).await;
             let mut messages = vec![json!({"role": "system", "content": system})];
+            // TALA-80: every agent reply in this room — rail channel or
+            // ticket task room — answers the same live sender, and the
+            // transcript's name prefixes are convention, not identity: an
+            // agent with persistent memory can read "Grace: …" and still
+            // answer the person its memory remembers instead of the one
+            // typing. The identity rides here, between the system prompt and
+            // the transcript, sourced from the authenticated row the door
+            // read — not from memory, not from the message's own claims.
+            if let Some(sender) = &sender {
+                messages.push(talaria_sender_identity::sender_identity_message(sender));
+            }
             messages.extend(transcript);
             stream_reply(
                 &task_deps,
