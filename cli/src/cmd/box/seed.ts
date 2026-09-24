@@ -29,6 +29,7 @@ import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
 import { DEV_NETWORK, MINIO_CONTAINER, PG_CONTAINER, QDRANT_CONTAINER, containerExists } from '../../containers'
 import { readEnvFile, writeSecret } from '../../envfile'
+import { mcImage } from '../../backup/lib'
 import { boxFleetNetwork, boxHost, boxProject, boxSvc, boxState } from './shared'
 
 /** Repoint the chassis's fleet network at THIS box's own — the template
@@ -120,8 +121,9 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
   const MCT = boxSvc(name, 'seed-mc')
   try {
     await ctx.exec('docker', ['rm', '-f', MCT]).catch(() => {})
-    // quay, not docker.io — MinIO removed its Docker Hub namespace (2026-09)
-    await ctx.exec('docker', ['create', '--name', MCT, '--entrypoint', 'sh', 'quay.io/minio/mc:latest', '-c', 'sleep infinity'])
+    // mc from the pinned GHCR mirror — the same spelling and override rules
+    // as backup/restore (MinIO is dead upstream; see backup/lib.ts).
+    await ctx.exec('docker', ['create', '--name', MCT, '--entrypoint', 'sh', mcImage(ctx), '-c', 'sleep infinity'])
     await ctx.exec('docker', ['network', 'connect', `${boxProject(name)}_default`, MCT])
     await ctx.exec('docker', ['network', 'connect', DEV_NETWORK, MCT])
     await ctx.exec('docker', ['start', MCT])

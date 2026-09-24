@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, manifestGet,
-  pgQuery, stampOf, storageFromDb, storageFromManifest, verifySums, writeSums,
+  mcImage, pgQuery, PINNED_MC_IMAGE, stampOf, storageFromDb, storageFromManifest, verifySums, writeSums,
 } from './lib'
 import { fakeCtx } from '../testing'
 import { CliError } from '../ui'
@@ -158,6 +158,29 @@ describe('pg client', () => {
     const ctx = fakeCtx()
     ctx.plant(['psql', ['postgres://u@h/db', '-v', 'ON_ERROR_STOP=1', '-At', '-F', '\x1f', '-q', '-c', 'select 1']], 't')
     expect(await pgQuery(ctx, 'postgres://u@h/db', 'select 1')).toBe('t')
+  })
+})
+
+describe('mcImage', () => {
+  test('no override → the pinned GHCR mirror, by digest, no warning', () => {
+    const ctx = fakeCtx()
+    expect(mcImage(ctx)).toBe(PINNED_MC_IMAGE)
+    expect(ctx.logLines.some((l) => l.kind === 'warn')).toBe(false)
+  })
+
+  test('a live override is honored verbatim', () => {
+    const ctx = fakeCtx({ env: { TALARIA_MC_IMAGE: 'quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z' } })
+    expect(mcImage(ctx)).toBe('quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z')
+    expect(ctx.logLines.some((l) => l.kind === 'warn')).toBe(false)
+  })
+
+  test('a docker.io/minio override is dead — warned and replaced by the pin', () => {
+    for (const dead of ['minio/mc:latest', 'docker.io/minio/mc:latest']) {
+      const ctx = fakeCtx({ env: { TALARIA_MC_IMAGE: dead } })
+      expect(mcImage(ctx)).toBe(PINNED_MC_IMAGE)
+      const warn = ctx.logLines.find((l) => l.kind === 'warn')
+      expect(warn?.msg).toContain('docker.io/minio')
+    }
   })
 })
 

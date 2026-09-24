@@ -13,6 +13,7 @@ import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
 import { runInstall } from './install'
 import { runRm, runStart } from './lifecycle'
+import { PINNED_MC_IMAGE } from '../../backup/lib'
 import { boxComposeSpec, toolsExec } from './shared'
 import { fakeCtx, type FakeCtx } from '../../testing'
 import { CliError } from '../../ui'
@@ -222,6 +223,9 @@ describe('box seed — run', () => {
     const envPath = join(state, 'fleet/.env')
     expect(readFileSync(envPath, 'utf8')).toContain('LLM_API_KEY=sekrit')
     expect((statSync(envPath).mode & 0o777)).toBe(0o600)
+    // the throwaway mc container is created from the pinned mirror image
+    const created = ctx.calls.find((c) => c.cmd === 'docker' && c.args[0] === 'create')
+    expect(created?.args).toContain(PINNED_MC_IMAGE)
     // the throwaway mc container is removed even on the happy path
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'rm' && c.args.includes('devbox-demo-seed-mc')))
   })

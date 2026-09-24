@@ -64,12 +64,17 @@ never delete a good one in favour of a broken one.
 
 ## Requirements
 
-`pg_dump` and `psql` on `PATH`, **or** Docker — the CLI borrows the clients
+`pg_dump` and `psql` on the `PATH`, **or** Docker — the CLI borrows the clients
 from a throwaway `postgres:16-alpine` container on the host network when the
-host has none. Bucket storage additionally needs `mc` or Docker
-(`minio/mc:latest`). Override the images with `TALARIA_PG_IMAGE` /
-`TALARIA_MC_IMAGE`; bump the Postgres one together with the server, since
-`pg_dump` refuses a server newer than itself.
+host has none. Bucket storage additionally needs `mc` or Docker; the fallback
+image is our own digest-pinned mirror, `ghcr.io/outcrop-labs/talaria-mc`
+(MinIO is dead upstream — archived repos, frozen registries — so we mirror
+and pin; provenance in [`.github/workflows/minio-mirror.yml`](../.github/workflows/minio-mirror.yml)).
+Override the images with `TALARIA_PG_IMAGE` / `TALARIA_MC_IMAGE`; bump the
+Postgres one together with the server, since `pg_dump` refuses a server newer
+than itself. A `TALARIA_MC_IMAGE` naming the deleted `docker.io/minio`
+namespace (a short `minio/…` ref resolves there) is ignored with a warning in
+favour of the pin — it can never pull.
 
 The container fallback uses `--network host`, which is a Linux thing. On
 macOS/Windows install the Postgres client instead.
