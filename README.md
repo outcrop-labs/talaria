@@ -116,6 +116,40 @@ LLM provider on `/models`, set your organization in Admin, and describe your fir
 
 For hosting the app on a live domain, we recommend using a Cloudflare Tunnel. It's the cleanest way to prevent unauthorized access to your infrastructure.
 
+### Deployment topology: one instance
+
+**One Talaria app instance per deployment** — one app process against one Postgres/Redis
+pair. For now, scale the box (CPU, RAM), not the instance count.
+
+**What's already multi-instance-safe:** the background scheduler and the durable runs
+plane. Scheduled jobs take a Redis lease — one run per interval, fleet-wide — except the
+`per_instance` ones whose input is this process's own memory or this host's docker,
+which run on every instance on purpose. Work dispatch derives each run's id
+deterministically, so two racing dispatchers converge on the same session and the
+primary key refuses the loser. Durable runs lease one step and release immediately; an
+expired lease is a reclaim signal, so any instance can pick up the next step. See
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md), "Jobs and durable runs".
+
+**What isn't:** the TS ui plane. The SPA shell, app-module compiling
+([`ui/src/server/app-build/`](./ui/src/server/app-build/)), and the permanent TS
+residents (the app-server gateway, app-MCP dispatch, healthz) assume they are one
+process — two instances over one apps dir would race app compiles (the in-flight guard
+is per-process). And process-local queues defeat failover: the notify mail outbox is
+the user-visible one — an instance that dies with mail queued strands it, and no other
+instance can drain it. The in-app notification survives; the queued mail does not.
+
+**Multi-instance would need:**
+
+- shared or routed per-instance job queues, instead of process-local outboxes
+- cross-instance coordination for app-module compiles — shared build artifacts or a
+  compile lease
+- any remaining process-local caches made shared, or made irrelevant
+- per-instance identity in health checks and observability
+
+**Related but different:** running more than one instance per *host* is per-host compose
+isolation — separate `COMPOSE_PROJECT_NAME` and state dirs — not multi-instance against
+one shared Postgres/Redis. See [`docs/CONTAINER.md`](./docs/CONTAINER.md).
+
 ### Manual Updates
 
 ```bash
