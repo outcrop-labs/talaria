@@ -16,7 +16,6 @@ import { z } from 'zod'
 // the contract now breaks the typecheck of the documentation itself.
 import {
   defineHarness,
-  defineWorkbenchHarness,
   belowAnswerFloor,
   NO_TOOLS,
   resolveHarnessModel,
@@ -182,17 +181,5 @@ describe('the rest of the exported surface, as the docs list it', () => {
       onFailure: 'null',
     }
     expect(texty.output.kind).toBe('text')
-  })
-
-  it('keeps the deprecated workbench spelling building, because renaming an extension point is a break', () => {
-    const wb = defineWorkbenchHarness({
-      slug: 'aider',
-      label: 'Aider',
-      auth: 'gateway',
-      invoke: 'aider --model <model> --message "<task>"',
-      guide: 'Aider works in git-aware sessions.',
-    })
-    // The overload, not a second function: same identity, different contract.
-    expect(defineHarness(wb)).toBe(wb)
   })
 })

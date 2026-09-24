@@ -1002,8 +1002,8 @@ async fn dispatch_prompt(
     // Fail-open by design: the personalization is an ENHANCEMENT of step 5,
     // never a precondition — a lookup that errors or misses falls back to the
     // standing default and the session proceeds.
-    let agent_row = sqlx::query_as::<_, (String, Option<String>)>(
-        "select id::text, workbench_harness from agent_defs where model = $1 and enabled",
+    let agent_row = sqlx::query_as::<_, (String, bool)>(
+        "select id::text, developer from agent_defs where model = $1 and enabled",
     )
     .bind(agent_model)
     .fetch_optional(pg)
@@ -1011,7 +1011,10 @@ async fn dispatch_prompt(
     .ok()
     .flatten();
     let (agent_id, agent_harness) = match agent_row {
-        Some((id, harness)) => (Some(id), harness.filter(|h| !h.is_empty())),
+        Some((id, developer)) => (
+            Some(id),
+            developer.then_some(talaria_workbench_harnesses::OMP.label),
+        ),
         None => (None, None),
     };
     let mut hygiene_block = match agent_id.as_deref() {
@@ -1036,7 +1039,7 @@ async fn dispatch_prompt(
             workflow_block: &block,
             step2: &step2,
             hygiene_block: Some(&hygiene_block),
-            harness: agent_harness.as_deref(),
+            harness: agent_harness,
         },
     ))
 }

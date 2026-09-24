@@ -49,11 +49,8 @@ export interface LlmEndpoint {
 }
 
 export interface AgentDef {
-  /** Workbench: THE setting + per-agent tuning (api/src/harness/defs/workbench.rs). */
-  workbench?: 'off' | 'auto' | 'on'
-  workbenchProfile?: string | null
-  workbenchHarness?: string | null
-  workbenchModels?: Partial<Record<'light' | 'standard' | 'heavy', string>>
+  /** The Developer Agent switch (api/crates/talaria-workbench). */
+  developer?: boolean
   id: string
   slug: string
   department: string
@@ -242,8 +239,7 @@ export async function listAgentDefs(): Promise<Array<AgentDef & { latest: AgentV
     select id, slug, department, model, display_name as "displayName", role,
            email_alias as "emailAlias", owner_user_id as "ownerUserId",
            enabled, managed, source,
-           workbench, workbench_profile as "workbenchProfile",
-           workbench_harness as "workbenchHarness", workbench_models as "workbenchModels",
+           developer,
            ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs order by slug asc
@@ -271,8 +267,7 @@ export async function getAgentDef(id: string): Promise<AgentDef | null> {
     select id, slug, department, model, display_name as "displayName", role,
            email_alias as "emailAlias", owner_user_id as "ownerUserId",
            enabled, managed, source,
-           workbench, workbench_profile as "workbenchProfile",
-           workbench_harness as "workbenchHarness", workbench_models as "workbenchModels",
+           developer,
            ticket_template_id as "ticketTemplateId", plan_template_id as "planTemplateId",
            current_version as "currentVersion", created_at as "createdAt", updated_at as "updatedAt"
     from agent_defs where id = ${id}

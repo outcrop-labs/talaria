@@ -1,6 +1,6 @@
 // /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
-// display name, send alias) plus the workbench and template binds. Not
-// versioned — this is identity, not config. Admin only.
+// display name, send alias) plus the Developer Agent switch and template
+// binds. Not versioned: this is identity, not config. Admin only.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -9,14 +9,15 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
 use talaria_agent_defs::{AgentMetaPatch, update_agent_meta};
-use talaria_api_facades::workbench::{set_agent_workbench, set_agent_workbench_tuning};
+use talaria_api_facades::mcp::apply::roll_agent_for_model;
+use talaria_api_facades::workbench::set_developer;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    object_msg, optional_enum_member, parse, present_nullable_max_string_member,
+    optional_boolean_member, parse, present_nullable_max_string_member,
     present_nullable_uuid_member, string_msg, too_big_msg, too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, require_perm};
+use talaria_session::{actor_of, require_perm, secretbox_or_500};
 use talaria_state::AppState;
 use talaria_templates::set_agent_templates;
 
@@ -64,35 +65,6 @@ fn parse_email_alias(obj: &Map<String, Value>) -> Result<Option<Option<String>>,
     }
 }
 
-/// `workbenchModels`: three nullable-optional model picks, one per weight
-/// class. Unknown keys are stripped — the stored map carries only these
-/// three, present ones only.
-fn parse_workbench_models(obj: &Map<String, Value>) -> Result<Option<Map<String, Value>>, String> {
-    match obj.get("workbenchModels") {
-        None => Ok(None),
-        Some(v) => {
-            let m = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
-            let mut out = Map::new();
-            for key in ["light", "standard", "heavy"] {
-                match m.get(key) {
-                    None => {}
-                    Some(Value::Null) => {
-                        out.insert(key.into(), Value::Null);
-                    }
-                    Some(sv) => {
-                        let s = sv.as_str().ok_or_else(|| string_msg(zod_type_name(sv)))?;
-                        if utf16_len(s) > 200 {
-                            return Err(too_big_msg(200));
-                        }
-                        out.insert(key.into(), json!(s));
-                    }
-                }
-            }
-            Ok(Some(out))
-        }
-    }
-}
-
 pub async fn patch(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -123,28 +95,17 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let workbench = match optional_enum_member(obj, "workbench", &["off", "auto", "on"]) {
-        Ok(v) => v,
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-    };
-    let workbench_profile = match present_nullable_max_string_member(obj, "workbenchProfile", 40) {
-        Ok(v) => v,
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-    };
-    let workbench_harness = match present_nullable_max_string_member(obj, "workbenchHarness", 40) {
-        Ok(v) => v,
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-    };
-    let workbench_models = match parse_workbench_models(obj) {
+    // The Developer Agent switch: on sets the agent up end to end (sandbox,
+    // Oh My Pi, Workbench tools); the roll below applies it.
+    let developer = match optional_boolean_member(obj, "developer") {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
 
-    // the def read — the columns this route touches (the workbench fallback
-    // below needs the stored value). The body parses BEFORE the lookup, so a
-    // bad body on an unknown id is the 400, not the 404.
-    let def: Option<(String, String, String, Option<String>)> = match sqlx::query_as(
-        "select id::text, model, display_name, workbench from agent_defs where id = $1::uuid",
+    // The def read: the columns this route touches. The body parses BEFORE
+    // the lookup, so a bad body on an unknown id is the 400, not the 404.
+    let def: Option<(String, String, String)> = match sqlx::query_as(
+        "select id::text, model, display_name from agent_defs where id = $1::uuid",
     )
     .bind(&id)
     .fetch_optional(&state.pg)
@@ -153,7 +114,7 @@ pub async fn patch(
         Ok(row) => row,
         Err(e) => return Ok(internal("[fleet/defs] def read failed", e)),
     };
-    let Some((def_id, def_model, def_display_name, def_workbench)) = def else {
+    let Some((def_id, def_model, def_display_name)) = def else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
 
@@ -170,32 +131,13 @@ pub async fn patch(
     {
         return Ok(internal("[fleet/defs] meta update failed", e));
     }
-    if workbench.is_some() || workbench_profile.is_some() {
-        // workbench ?? stored ?? 'auto' — a profile-only patch re-states the
-        // stored mode rather than defaulting it.
-        let wb = workbench.or(def_workbench).unwrap_or_else(|| "auto".into());
-        if let Err(e) = set_agent_workbench(
-            &state.pg,
-            &def_id,
-            &wb,
-            workbench_profile.as_ref().map(|o| o.as_deref()),
-        )
-        .await
-        {
-            return Ok(internal("[fleet/defs] workbench set failed", e));
-        }
-    }
-    if (workbench_harness.is_some() || workbench_models.is_some())
-        && let Err(e) = set_agent_workbench_tuning(
-            &state.pg,
-            &def_id,
-            workbench_harness.as_ref().map(|o| o.as_deref()),
-            workbench_models.as_ref(),
-        )
-        .await
-    {
-        return Ok(internal("[fleet/defs] workbench tuning failed", e));
-    }
+    let developer_changed = match developer {
+        Some(on) => match set_developer(&state.pg, &def_id, on).await {
+            Ok(changed) => changed,
+            Err(e) => return Ok(internal("[fleet/defs] developer set failed", e)),
+        },
+        None => false,
+    };
     if ticket_template_id.is_some() || plan_template_id.is_some() {
         // Template binds key on the agent's MODEL, not its id — the same
         // identity the chain resolves by.
@@ -223,5 +165,29 @@ pub async fn patch(
         },
     )
     .await;
+    if developer_changed && let Some(on) = developer {
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "agent.developer",
+                target_type: "agent",
+                target_id: Some(&def_id),
+                target_label: Some(&def_display_name),
+                before: Some(json!({ "developer": !on })),
+                after: Some(json!({ "developer": on })),
+            },
+        )
+        .await;
+        // A running Hermes wires its MCP servers and container env at start,
+        // so the switch lands by rolling the agent (blue/green; the roll
+        // re-renders the incoming slot). Fire-and-forget, never the caller's
+        // problem.
+        let sb = secretbox_or_500(&state, "[fleet/defs] secretbox unavailable").await?;
+        let (pg, model) = (state.pg.clone(), def_model.clone());
+        tokio::spawn(async move {
+            roll_agent_for_model(&pg, &sb, &model).await;
+        });
+    }
     Ok(Json(json!({ "ok": true })).into_response())
 }

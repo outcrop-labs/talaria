@@ -10,7 +10,8 @@
 // PLANE (the 0600 fleet .env writers, the shared + per-agent credential
 // seeding, and the shared-skill seeding with its pristine/adopt/never-clobber
 // tree), and THE LOOP itself — per-agent config.yaml/SOUL.md/git helper, the
-// workbench overlay, the MCP pass-through, the compose emit, and the manifest.
+// Developer Agent overlay (dev sandbox + Oh My Pi), the MCP pass-through, the
+// compose emit, and the manifest.
 //
 // THE CHASSIS PARSE carries one YAML resolution subtlety. chassis.yml may
 // spell file modes as `0400`; this parse (serde_yaml_ng, YAML 1.2 resolution)
@@ -36,9 +37,7 @@ use std::path::{Path, PathBuf};
 use talaria_agent_auth::ensure_agent_api_key;
 use talaria_fleet_layout::GATEWAY_PORT_BASE;
 use talaria_secretbox::SecretBox;
-use talaria_workbench_harnesses::{
-    HarnessAuth, McpConfigFormat, PI_CODING_AGENT_DIR, list_harness_defs,
-};
+use talaria_workbench_harnesses::{MCP_CONFIG_FILE, PI_CODING_AGENT_DIR};
 
 /// The def columns the render loop reads — the agent_defs row for
 /// MANAGED+ENABLED agents (the current version rides alongside in
@@ -55,9 +54,9 @@ pub struct RenderDef {
     pub role: Option<String>,
     pub source: String,
     pub active_slot: Option<String>,
-    pub workbench: Option<String>,
-    pub workbench_profile: Option<String>,
-    pub workbench_harness: Option<String>,
+    /// The Developer Agent switch: dev sandbox, Oh My Pi, and the Workbench
+    /// MCP tools.
+    pub developer: bool,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -85,9 +84,7 @@ type TargetTuple = (
     Option<String>,
     String,
     Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
+    bool,
     i32,
     String,
     Value,
@@ -104,14 +101,12 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             role: r.5,
             source: r.6,
             active_slot: r.7,
-            workbench: r.8,
-            workbench_profile: r.9,
-            workbench_harness: r.10,
+            developer: r.8,
         },
         version: RenderVersion {
-            version: r.11,
-            soul: r.12,
-            config: r.13,
+            version: r.9,
+            soul: r.10,
+            config: r.11,
         },
     }
 }
@@ -123,8 +118,7 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.workbench, d.workbench_profile, d.workbench_harness, \
-         v.version, v.soul, v.config \
+         d.active_slot, d.developer, v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -312,12 +306,11 @@ fn with_trailing_newline(content: &str) -> &str {
 }
 
 /// Seed the SHARED keys into the fleet .env: TALARIA_AGENT_KEY (the app's own
-/// hop to the toolkit service) plus any provider key a native-auth harness
-/// references, provisioned from the server env when present. Absent keys stay
-/// absent — the doctor/auth surfaces tell the agent. Shared keys append ONCE
-/// (presence is enough); per-agent keys are rewritten from the DB every render
-/// ([`ensure_agent_env_keys`]).
-pub async fn ensure_fleet_env_key(pg: &PgPool) -> Result<(), String> {
+/// hop to the toolkit service), provisioned from the server env when present.
+/// Absent keys stay absent; the doctor/auth surfaces tell the agent. Shared
+/// keys append ONCE (presence is enough); per-agent keys are rewritten from
+/// the DB every render ([`ensure_agent_env_keys`]).
+pub async fn ensure_fleet_env_key() -> Result<(), String> {
     let env_path = talaria_fleet_layout::fleet_env();
     let current = tokio::fs::read_to_string(&env_path)
         .await
@@ -340,30 +333,6 @@ pub async fn ensure_fleet_env_key(pg: &PgPool) -> Result<(), String> {
         }
     };
     need("TALARIA_AGENT_KEY", std::env::var("TALARIA_AGENT_KEY").ok());
-    // Native-auth harness keys: any provider key a registry harness references
-    // must reach compose interpolation. Best-effort — a registry or DB that
-    // can't answer skips this provisioning without failing the render (the
-    // TALARIA_AGENT_KEY seeding above still holds).
-    let registry = async {
-        let eps: Vec<(String, String)> = sqlx::query_as(
-            "select provider, api_key_env from llm_endpoints where api_key_env is not null",
-        )
-        .fetch_all(pg)
-        .await?;
-        let defs = list_harness_defs(pg).await?;
-        Ok::<_, sqlx::Error>((eps, defs))
-    }
-    .await;
-    if let Ok((eps, defs)) = registry {
-        for h in &defs {
-            let HarnessAuth::Provider { provider, .. } = &h.def.auth else {
-                continue;
-            };
-            if let Some((_, key_env)) = eps.iter().find(|(p, _)| p == provider) {
-                need(key_env, std::env::var(key_env).ok());
-            }
-        }
-    }
     if append.is_empty() {
         return Ok(());
     }
@@ -911,7 +880,7 @@ pub async fn render_fleet(
     // and that the compose env can interpolate each agent's key into the
     // header.
     talaria_mcp_service::ensure_mcp_service();
-    ensure_fleet_env_key(pg).await?;
+    ensure_fleet_env_key().await?;
     ensure_agent_env_keys(pg, sb, &targets).await?;
     seed_shared_skills().await?;
     seed_events_plugin().await?;
@@ -940,18 +909,13 @@ pub async fn render_fleet(
     .await
     .map_err(|e| e.to_string())?;
 
-    // Read once, ahead of the loop: the harness registry and the endpoint env
-    // contract are the same rows for every agent (the data is read-only for
-    // the render's duration).
-    let harness_registry = list_harness_defs(pg)
+    // Read once, ahead of the loop: omp's model roles are the same for every
+    // Developer Agent (the data is read-only for the render's duration). A
+    // role that cannot be read renders as unset, so omp runs on its
+    // default rather than the render failing the whole fleet.
+    let omp_roles = talaria_workbench_harnesses::omp_roles(pg)
         .await
-        .map_err(|e| format!("harness registry: {e}"))?;
-    let endpoints: Vec<(String, String)> = sqlx::query_as(
-        "select provider, api_key_env from llm_endpoints where api_key_env is not null",
-    )
-    .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
+        .unwrap_or_default();
 
     let gw_base = talaria_fleet_layout::mcp_gw_base();
     let fleet_skills = talaria_fleet_layout::fleet_dir().join("skills");
@@ -1023,37 +987,12 @@ pub async fn render_fleet(
             }),
         );
 
-        let wb_agent = talaria_workbench::WorkbenchAgent {
-            department: &def.department,
-            role: def.role.as_deref(),
-            workbench: def.workbench.as_deref().unwrap_or("auto"),
-            workbench_profile: def.workbench_profile.as_deref(),
-        };
-        let wb = talaria_workbench::resolve_workbench(pg, &wb_agent)
-            .await
-            .unwrap_or(None);
-
-        // The agent's CHOSEN coding harness, as an MCP server on its own
-        // config (stdio, in-sandbox).
-        if let Some(wb) = &wb {
-            let pick = def
-                .workbench_harness
-                .as_deref()
-                .filter(|p| wb.harnesses.iter().any(|h| h == p))
-                .or_else(|| wb.harnesses.first().map(|s| s.as_str()));
-            if let Some(pick) = pick
-                && let Some(h) = harness_registry.iter().find(|r| r.def.slug == pick)
-                && let Some(serve) = &h.def.mcp_serve
-            {
-                mcp_servers.insert(
-                    h.def.slug.clone(),
-                    json!({ "command": serve.command, "args": serve.args }),
-                );
-            }
-        }
+        let developer = def.developer;
 
         // Org-registry MCP servers ride in as GATEWAY URLs — the agent never
-        // sees an upstream address or credential.
+        // sees an upstream address or credential. The Workbench is among them
+        // exactly when the Developer Agent switch is on (servers_for_agent
+        // derives it from the flag).
         for srv in &agent_servers {
             let mut entry = json!({
                 "url": format!("{gw_base}/{}", srv.name),
@@ -1262,16 +1201,16 @@ pub async fn render_fleet(
         // toolkit skill already tells the agent to report_problem.
         env.insert("GIT_TERMINAL_PROMPT".into(), json!("0"));
 
-        // Workbench overlay — the agent's runtime profile. Harness state
-        // PERSISTS on the department state volume (hand-offs: a session one
-        // agent starts, a department-mate can resume); GitHub attribution
-        // AUTHORS commits as the agent (display name + stable per-agent email).
-        if let Some(wb) = &wb {
+        // Developer Agent overlay: the dev sandbox. Harness state PERSISTS
+        // on the department state volume (hand-offs: a session one agent
+        // starts, a department-mate can resume); GitHub attribution AUTHORS
+        // commits as the agent (display name + stable per-agent email).
+        if developer {
             let obj = svc
                 .as_object_mut()
                 .ok_or_else(|| "chassis.yml service block is not a mapping".to_string())?;
-            if !wb.image.is_empty() {
-                obj.insert("image".into(), json!(wb.image));
+            if let Some(image) = talaria_workbench::sandbox_image() {
+                obj.insert("image".into(), json!(image));
             }
             // Ceiling is this VM minus the platform keep-back, not a
             // hardcoded 32g that overcommits an 8g box.
@@ -1288,10 +1227,9 @@ pub async fn render_fleet(
             );
             obj.insert("pids_limit".into(), json!("${AGENT_WB_PIDS_LIMIT:-2048}"));
             obj.insert("oom_score_adj".into(), json!(500));
-            for (k, v) in &wb.env {
-                env.insert(k.clone(), v.clone());
+            for (k, v) in talaria_workbench::sandbox_env() {
+                env.insert(k, v);
             }
-            env.insert("TALARIA_WORKBENCH_PROFILE".into(), json!(wb.slug));
             env.insert(
                 "XDG_DATA_HOME".into(),
                 json!("/opt/data/workbench/harness/xdg"),
@@ -1311,29 +1249,14 @@ pub async fn render_fleet(
             env.insert("GIT_AUTHOR_EMAIL".into(), json!(agent_email.clone()));
             env.insert("GIT_COMMITTER_NAME".into(), json!(agent_label));
             env.insert("GIT_COMMITTER_EMAIL".into(), json!(agent_email));
-            // Harness auth, gateway-first: OpenAI-compatible harnesses point
-            // at Talaria's gateway; a custom native-auth harness gets its
-            // provider's key interpolated from the endpoint registry.
-            for slug in &wb.harnesses {
-                let Some(h) = harness_registry.iter().find(|r| r.def.slug == *slug) else {
-                    continue;
-                };
-                for (k, v) in &h.full_env {
-                    env.insert(k.clone(), v.clone());
-                }
-                if let HarnessAuth::Provider { provider, env_var } = &h.def.auth {
-                    match endpoints.iter().find(|(p, _)| p == provider) {
-                        Some((_, key_env)) => {
-                            env.insert(env_var.clone(), json!(format!("${{{key_env}}}")));
-                        }
-                        None => tracing::warn!(
-                            "[fleet] harness \"{}\" wants a {} provider key ({}) and no matching endpoint is configured — add the endpoint, or the harness runs unauthenticated",
-                            h.def.slug,
-                            provider,
-                            env_var,
-                        ),
-                    }
-                }
+            // Oh My Pi: gateway auth on the workbench credential, its config
+            // dir, and its non-default model roles (the default rides
+            // `--model` on each start_job invocation line).
+            for (k, v) in talaria_workbench_harnesses::omp_env() {
+                env.insert(k, v);
+            }
+            for (k, v) in omp_roles.env() {
+                env.insert(k, v);
             }
             obj.insert("environment".into(), Value::Object(env));
         } else {
@@ -1365,7 +1288,7 @@ pub async fn render_fleet(
         // Harness parity mounts — unattended-auth policy files and skills
         // links, filled by the workbench pass below, applied to the volumes.
         let mut harness_mounts: Vec<String> = Vec::new();
-        if let Some(wb) = &wb {
+        if developer {
             let mut names: Vec<String> = vec!["talaria".into()];
             for srv in &agent_servers {
                 if !names.contains(&srv.name) {
@@ -1375,56 +1298,21 @@ pub async fn render_fleet(
             tokio::fs::create_dir_all(&wb_dir)
                 .await
                 .map_err(|e| format!("{}: {e}", wb_dir.display()))?;
-            let mut written: Vec<String> = Vec::new();
-            for slug in &wb.harnesses {
-                let Some(h) = harness_registry.iter().find(|r| r.def.slug == *slug) else {
-                    continue;
-                };
-                let Some(mc) = &h.def.mcp_config else {
-                    continue;
-                };
-                if written.contains(&mc.filename) {
-                    continue;
-                }
-                // 'custom' hands rendering to the app-shipped harness's own
-                // code — functions can't ride JSON, so nothing reachable from
-                // this registry layer uses it (see workbench_harnesses' header).
-                let body = match mc.format {
-                    McpConfigFormat::Custom => None,
-                    McpConfigFormat::ClaudeJson => {
-                        Some(claude_mcp_config(&names, &def.model, &gw_base))
-                    }
-                    McpConfigFormat::OpencodeJson => {
-                        Some(opencode_mcp_config(&names, &def.model, &gw_base))
-                    }
-                };
-                let Some(body) = body else {
-                    continue;
-                };
-                let p = wb_dir.join(&mc.filename);
-                tokio::fs::write(&p, serde_json::to_string_pretty(&body).unwrap_or_default())
-                    .await
-                    .map_err(|e| format!("{}: {e}", p.display()))?;
-                written.push(mc.filename.clone());
-            }
+            let mcp_path = wb_dir.join(MCP_CONFIG_FILE);
+            tokio::fs::write(
+                &mcp_path,
+                serde_json::to_string_pretty(&claude_mcp_config(&names, &def.model, &gw_base))
+                    .unwrap_or_default(),
+            )
+            .await
+            .map_err(|e| format!("{}: {e}", mcp_path.display()))?;
 
-            // Gateway models.json for Pi / Oh My Pi: a `talaria` provider
-            // pointed at the same OpenAI-compatible gateway the personas use.
-            // `$OPENAI_API_KEY` interpolates from the container env at request
-            // time (gateway_env already set OPENAI_*).
+            // Gateway models.json for Oh My Pi: a `talaria` provider pointed
+            // at the same OpenAI-compatible gateway the personas use, listing
+            // every model omp's roles name. `$OPENAI_API_KEY` interpolates
+            // from the container env at request time (omp_env set OPENAI_*).
             let llm_base = format!("{}/api/llm/v1", gateway_origin());
-            let effort = talaria_workbench_harnesses::effort_models(pg, None)
-                .await
-                .unwrap_or_default();
-            let mut model_ids: Vec<String> = Vec::new();
-            for key in ["light", "standard", "heavy"] {
-                if let Some(id) = effort.get(key).and_then(Value::as_str)
-                    && !model_ids.iter().any(|m| m == id)
-                {
-                    model_ids.push(id.to_string());
-                }
-            }
-            let models_body = talaria_provider_models_json(&llm_base, &model_ids);
+            let models_body = talaria_provider_models_json(&llm_base, &omp_roles.model_ids());
             tokio::fs::write(
                 wb_dir.join("models.json"),
                 serde_json::to_string_pretty(&models_body).unwrap_or_default(),
@@ -1446,36 +1334,15 @@ pub async fn render_fleet(
             // Those file mounts land INSIDE the state volume. Docker creates
             // the missing parents (`workbench/harness/pi`) as root:root 755
             // before the entrypoint, and Hermes stage2 does not chown that
-            // tree when `/opt/data` is already hermes-owned. omp and pi write
+            // tree when `/opt/data` is already hermes-owned. omp writes
             // config there (`PI_CODING_AGENT_DIR`); a root-owned 755 dir is
             // not writable by the runtime user, so the harness cannot start.
             // The cont-init hook mounted below hands the directories to hermes
             // on every boot — existing volumes included — and does not touch
-            // the :ro policy files. Pi and Oh My Pi share one dir, so the
-            // mounts are emitted once; mounting the same destination twice
-            // is a compose error, and `~/.omp` is not where omp looks once
-            // the env is set (those mounts were also what left `/home/hermes/.omp`
+            // the :ro policy files. `~/.omp` is not where omp looks once the
+            // env is set (mounts there were also what left `/home/hermes/.omp`
             // root-owned).
-            let mut pi_config = false;
-            for slug in &wb.harnesses {
-                match slug.as_str() {
-                    "pi" | "oh-my-pi" => pi_config = true,
-                    "opencode" => {
-                        harness_mounts.push(format!(
-                            "{}:/opt/data/workbench/harness/opencode/skills:ro",
-                            fleet_skills.display()
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-            if pi_config {
-                harness_mounts.extend(pi_config_mounts(
-                    &wb_dir,
-                    &fleet_skills,
-                    written.iter().any(|f| f == "mcp.json"),
-                ));
-            }
+            harness_mounts.extend(pi_config_mounts(&wb_dir, &fleet_skills));
             // The workspace pointers every harness reads in its working
             // directory — where the skills live, whichever tool lands there.
             let _ = tokio::fs::write(
@@ -1491,7 +1358,7 @@ pub async fn render_fleet(
         }
 
         let mut vols: Vec<String> = Vec::new();
-        if wb.is_some() {
+        if developer {
             vols.push(format!("{}:/opt/workbench-config:ro", wb_dir.display()));
             // Heal the root-owned parents Docker just created. The script is
             // executable on the host; s6 runs `/etc/cont-init.d/*` as root
@@ -1505,11 +1372,6 @@ pub async fn render_fleet(
         }
         for m in &harness_mounts {
             vols.push(m.clone());
-        }
-        if let Some(wb) = &wb {
-            for m in &wb.mounts {
-                vols.push(m.clone());
-            }
         }
         vols.push(format!("{state_volume}:/opt/data"));
         vols.push(format!("{}:/opt/data/config.yaml:ro", cfg_path.display()));
@@ -1738,7 +1600,6 @@ own() {
 # dir does not come out root-owned.
 mkdir -p \
   /opt/data/workbench/harness/pi \
-  /opt/data/workbench/harness/opencode \
   /opt/data/workbench/harness/xdg \
   /opt/data/workbench/harness/playwright \
   /opt/data/workbench/harness/npm \
@@ -1748,7 +1609,6 @@ mkdir -p \
 own /opt/data/workbench
 own /opt/data/workbench/harness
 own /opt/data/workbench/harness/pi
-own /opt/data/workbench/harness/opencode
 own /opt/data/workbench/harness/xdg
 own /opt/data/workbench/harness/playwright
 own /opt/data/workbench/harness/npm
@@ -1756,11 +1616,10 @@ own /opt/data/workbench/jobs
 own /opt/data/workbench/sessions
 "#;
 
-/// Policy files Pi and Oh My Pi read inside [`PI_CODING_AGENT_DIR`]. One
-/// destination per file — both slugs share the dir.
-fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path, mcp: bool) -> Vec<String> {
+/// Policy files Oh My Pi reads inside [`PI_CODING_AGENT_DIR`].
+fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path) -> Vec<String> {
     let dir = PI_CODING_AGENT_DIR;
-    let mut mounts = vec![
+    vec![
         format!(
             "{}:{dir}/models.json:ro",
             wb_dir.join("models.json").display()
@@ -1769,18 +1628,15 @@ fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path, mcp: bool) -> Vec<String
             "{}:{dir}/settings.json:ro",
             wb_dir.join("pi-settings.json").display()
         ),
-    ];
-    if mcp {
-        mounts.push(format!(
-            "{}:{dir}/mcp.json:ro",
-            wb_dir.join("mcp.json").display()
-        ));
-    }
-    mounts.push(format!("{}:{dir}/skills:ro", fleet_skills.display()));
-    mounts
+        format!(
+            "{}:{dir}/{MCP_CONFIG_FILE}:ro",
+            wb_dir.join(MCP_CONFIG_FILE).display()
+        ),
+        format!("{}:{dir}/skills:ro", fleet_skills.display()),
+    ]
 }
 
-/// Pi / Oh My Pi `.mcp.json` shape — `${VAR}` expands from the container env.
+/// Oh My Pi's `mcp.json` shape. `${VAR}` expands from the container env.
 fn claude_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
     json!({
         "mcpServers": names.iter().map(|n| (n.clone(), json!({
@@ -1791,20 +1647,7 @@ fn claude_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
     })
 }
 
-/// opencode's config — `{env:VAR}` is its env-substitution syntax.
-fn opencode_mcp_config(names: &[String], model: &str, gw_base: &str) -> Value {
-    json!({
-        "$schema": "https://opencode.ai/config.json",
-        "mcp": names.iter().map(|n| (n.clone(), json!({
-            "type": "remote",
-            "url": format!("{gw_base}/{n}"),
-            "headers": { "X-Agent-Name": model, "X-Api-Key": "{env:TALARIA_AGENT_KEY}" },
-            "enabled": true,
-        }))).collect::<Map<String, Value>>(),
-    })
-}
-
-/// Pi / Oh My Pi `models.json`: a single `talaria` provider against the org
+/// Oh My Pi's `models.json`: a single `talaria` provider against the org
 /// gateway. `apiKey` interpolates `$OPENAI_API_KEY` at request time.
 fn talaria_provider_models_json(base_url: &str, model_ids: &[String]) -> Value {
     let models: Vec<Value> = if model_ids.is_empty() {
@@ -2691,25 +2534,20 @@ empty_list: []
         let mounts = pi_config_mounts(
             Path::new("/fleet/eng/workbench"),
             Path::new("/fleet/skills"),
-            true,
         );
-        assert!(
-            mounts
-                .iter()
-                .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/models.json:ro")))
-        );
-        assert!(
-            mounts
-                .iter()
-                .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/mcp.json:ro")))
-        );
+        for file in ["models.json", "settings.json", "mcp.json", "skills"] {
+            assert!(
+                mounts
+                    .iter()
+                    .any(|m| m.ends_with(&format!(":{PI_CODING_AGENT_DIR}/{file}:ro"))),
+                "omp's {file} is mounted into its config dir"
+            );
+        }
         assert!(mounts.iter().all(|m| !m.contains("/.omp/")));
-        let without_mcp = pi_config_mounts(
-            Path::new("/fleet/eng/workbench"),
-            Path::new("/fleet/skills"),
-            false,
+        assert!(
+            !HARNESS_OWN_SCRIPT.contains("opencode"),
+            "only Oh My Pi's state dirs are created"
         );
-        assert!(without_mcp.iter().all(|m| !m.contains("mcp.json")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

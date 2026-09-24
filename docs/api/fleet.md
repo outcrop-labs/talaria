@@ -233,8 +233,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs)
 
 > /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
-> display name, send alias) plus the workbench and template binds. Not
-> versioned — this is identity, not config. Admin only.
+> display name, send alias) plus the Developer Agent switch and template
+> binds. Not versioned: this is identity, not config. Admin only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -247,9 +247,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `role` | `string? nullable(80)` |  |
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
-| `workbench` | `enum(off|auto|on)?` |  |
-| `workbenchProfile` | `string? nullable(40)` |  |
-| `workbenchHarness` | `string? nullable(40)` |  |
+| `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
 
 ## `/api/fleet/defs/{id}/edit`
 

@@ -144,14 +144,6 @@ import { defineAppServer, z } from '@talaria/sdk/server'    // server
 | `AppMcpTool` | type | One tool: name, description, inputSchema, handler |
 | `AppMcpContext` | type | Tool handler ctx: app, agent, store |
 
-## `@talaria/sdk/server` — workbench harnesses
-
-| symbol | kind | what it is |
-| :--- | :--- | :--- |
-| `defineWorkbenchHarness` | fn | Declare a coding harness agents drive; default-export from harness.ts |
-| `WorkbenchHarnessDefinition` | type | The declarative contract (auth, invoke, guide…) |
-| `HarnessMcpRenderContext` | type | What a custom MCP config renderer receives |
-
 ## `@talaria/sdk/server` — activity harnesses
 
 | symbol | kind | what it is |

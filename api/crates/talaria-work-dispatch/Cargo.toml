@@ -26,7 +26,6 @@ talaria-statuses = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-work-wait = { workspace = true }
-talaria-workbench = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-runs-decide = { workspace = true }

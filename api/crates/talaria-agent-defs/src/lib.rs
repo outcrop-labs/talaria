@@ -178,10 +178,7 @@ struct DefListRow {
     enabled: bool,
     managed: bool,
     source: String,
-    workbench: Option<String>,
-    workbench_profile: Option<String>,
-    workbench_harness: Option<String>,
-    workbench_models: Option<Value>,
+    developer: bool,
     ticket_template_id: Option<String>,
     plan_template_id: Option<String>,
     current_version: i32,
@@ -192,8 +189,8 @@ struct DefListRow {
 pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
     let defs: Vec<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
-           owner_user_id::text, enabled, managed, source, workbench, workbench_profile, \
-           workbench_harness, workbench_models, ticket_template_id::text, plan_template_id::text, \
+           owner_user_id::text, enabled, managed, source, developer, \
+           ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs order by slug asc",
@@ -251,10 +248,7 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
                 "enabled": d.enabled,
                 "managed": d.managed,
                 "source": d.source,
-                "workbench": d.workbench,
-                "workbenchProfile": d.workbench_profile,
-                "workbenchHarness": d.workbench_harness,
-                "workbenchModels": d.workbench_models,
+                "developer": d.developer,
                 "ticketTemplateId": d.ticket_template_id,
                 "planTemplateId": d.plan_template_id,
                 "currentVersion": d.current_version,
@@ -272,8 +266,8 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
 pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, sqlx::Error> {
     let d: Option<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
-           owner_user_id::text, enabled, managed, source, workbench, workbench_profile, \
-           workbench_harness, workbench_models, ticket_template_id::text, plan_template_id::text, \
+           owner_user_id::text, enabled, managed, source, developer, \
+           ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs where id = $1::uuid",
@@ -294,10 +288,7 @@ pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, 
             "enabled": d.enabled,
             "managed": d.managed,
             "source": d.source,
-            "workbench": d.workbench,
-            "workbenchProfile": d.workbench_profile,
-            "workbenchHarness": d.workbench_harness,
-            "workbenchModels": d.workbench_models,
+            "developer": d.developer,
             "ticketTemplateId": d.ticket_template_id,
             "planTemplateId": d.plan_template_id,
             "currentVersion": d.current_version,

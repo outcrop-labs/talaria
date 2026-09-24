@@ -477,7 +477,7 @@ pub async fn ensure_builtin_mcp(pg: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pg)
     .await?;
     // The Workbench surface — in-process like app servers, but NOT all_agents:
-    // access is an explicit per-agent grant like any other governed capability.
+    // access is the agent's Developer Agent switch (see WORKBENCH_SERVER).
     let tools = workbench_catalog();
     sqlx::query(
         "insert into mcp_servers (name, label, description, url, all_agents, created_by, tools, tools_refreshed_at) \
@@ -996,6 +996,20 @@ fn intersect(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<Strin
     }
 }
 
+/// The Workbench's registry name. Its access is the agent's Developer Agent
+/// switch (agent_defs.developer), never an assignment or team row.
+pub const WORKBENCH_SERVER: &str = "workbench";
+
+/// Is this agent (by model) a Developer Agent?
+async fn agent_is_developer(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
+    let on: Option<bool> =
+        sqlx::query_scalar("select developer from agent_defs where model = $1 and enabled")
+            .bind(agent_model)
+            .fetch_optional(pg)
+            .await?;
+    Ok(on.unwrap_or(false))
+}
+
 /// Union of tool allowlists. `None` = all tools, so it dominates.
 fn union_tools(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
     match (a, b) {
@@ -1040,43 +1054,56 @@ pub async fn effective_mcp_for(
         return Ok(None);
     }
 
-    let rows: Vec<(Option<Vec<String>>,)> = sqlx::query_as(
-        "select tools from mcp_server_agents where server_id::text = $1 and agent_model = $2",
-    )
-    .bind(&server.id)
-    .bind(agent_model)
-    .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
-    let team_agent_access: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
-        "select a.allowed, a.tools \
-         from mcp_team_access a \
-         join team_agents t on t.team_id = a.team_id \
-         where a.server_id::text = $1 and t.agent_model = $2",
-    )
-    .bind(&server.id)
-    .bind(agent_model)
-    .fetch_all(pg)
-    .await
-    .map_err(|e| e.to_string())?;
-    let team_allow_lists: Vec<Option<Vec<String>>> = team_agent_access
-        .into_iter()
-        .filter(|(allowed, _)| *allowed)
-        .map(|(_, tools)| tools)
-        .collect();
-    // All-agents servers carry everyone; assignment rows become per-agent
-    // tool OVERRIDES. Scoped servers require a row outright — or an allowed
-    // team grant for a team the agent is on.
-    let agent_tools = if rows.is_empty() {
-        if server.all_agents {
-            None
-        } else if team_allow_lists.is_empty() {
+    // The Workbench is granted by the agent's Developer Agent switch and by
+    // nothing else. Assignment and team rows for it are ignored, so the
+    // switch and the tools can never disagree.
+    let agent_tools = if server.name == WORKBENCH_SERVER {
+        if !agent_is_developer(pg, agent_model)
+            .await
+            .map_err(|e| e.to_string())?
+        {
             return Ok(None);
-        } else {
-            union_tool_lists(team_allow_lists)
         }
+        None
     } else {
-        union_tool_lists(std::iter::once(rows[0].0.clone()).chain(team_allow_lists))
+        let rows: Vec<(Option<Vec<String>>,)> = sqlx::query_as(
+            "select tools from mcp_server_agents where server_id::text = $1 and agent_model = $2",
+        )
+        .bind(&server.id)
+        .bind(agent_model)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+        let team_agent_access: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
+            "select a.allowed, a.tools \
+             from mcp_team_access a \
+             join team_agents t on t.team_id = a.team_id \
+             where a.server_id::text = $1 and t.agent_model = $2",
+        )
+        .bind(&server.id)
+        .bind(agent_model)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
+        let team_allow_lists: Vec<Option<Vec<String>>> = team_agent_access
+            .into_iter()
+            .filter(|(allowed, _)| *allowed)
+            .map(|(_, tools)| tools)
+            .collect();
+        // All-agents servers carry everyone; assignment rows become per-agent
+        // tool OVERRIDES. Scoped servers require a row outright, or an allowed
+        // team grant for a team the agent is on.
+        if rows.is_empty() {
+            if server.all_agents {
+                None
+            } else if team_allow_lists.is_empty() {
+                return Ok(None);
+            } else {
+                union_tool_lists(team_allow_lists)
+            }
+        } else {
+            union_tool_lists(std::iter::once(rows[0].0.clone()).chain(team_allow_lists))
+        }
     };
 
     let owner = assistant_owner_for(pg, subject)
@@ -1374,16 +1401,19 @@ pub async fn servers_for_agent(
     let rows: Vec<(String, Option<i64>, String, bool, String)> = sqlx::query_as(
         "select s.name, s.timeout_secs::int8, s.auth_mode, (s.oauth is not null), s.id::text \
          from mcp_servers s \
-         where s.enabled and not s.builtin and (s.all_agents or exists ( \
+         where s.enabled and not s.builtin and case when s.name = $2 then exists ( \
+           select 1 from agent_defs d where d.model = $1 and d.enabled and d.developer \
+         ) else (s.all_agents or exists ( \
            select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = $1 \
          ) or exists ( \
            select 1 from mcp_team_access t \
            join team_agents ta on ta.team_id = t.team_id \
            where t.server_id = s.id and ta.agent_model = $1 and t.allowed \
-         )) \
+         )) end \
          order by s.name",
     )
     .bind(agent_model)
+    .bind(WORKBENCH_SERVER)
     .fetch_all(pg)
     .await?;
     let owner = personal_assistant_owners(pg)

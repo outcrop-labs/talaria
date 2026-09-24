@@ -435,7 +435,7 @@ data (`TALARIA_APP_DATA_DIR`). No host-image rebuild. Uninstall stops the
 container and deletes both directories.
 
 
-One caveat for exotic setups: chassis mounts (workbench profiles, plugins)
+One caveat for exotic setups: chassis mounts (plugins)
 reference **host** paths — the rendered fleet compose resolves them on the
 host, so anything an agent mounts must live somewhere host-visible, not inside
 the app container's filesystem.
