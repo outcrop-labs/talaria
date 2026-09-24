@@ -52,9 +52,12 @@ use talaria_tasks::{
     agent_ticket_refusal, get_task, log_activity, resolve_task_id, update_task,
 };
 use talaria_workbench::resolve_workbench;
+pub mod teardown;
+
 use talaria_workbench_harnesses::{
     HarnessSource, effort_model, effort_models, fill_harness_cmd, list_harness_defs,
 };
+use teardown::{Teardown, spawn_teardown};
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
 /// (GitHub credentials unseal through it), and the optional Redis the task
@@ -1273,6 +1276,13 @@ async fn call_tool(
                 )
                 .await;
                 sync_agent_budget(pg, &agent.department, &agent.id).await;
+                // The job is over: its builds stop and its workdir goes.
+                spawn_teardown(
+                    pg.clone(),
+                    agent.department.clone(),
+                    job.id.clone(),
+                    Teardown::Remove,
+                );
                 return CallOutcome::Ok(json!({ "status": "abandoned" }));
             }
             if job.status == "awaiting_approval" {
@@ -1405,6 +1415,15 @@ async fn call_tool(
             )
             .await;
             sync_agent_budget(pg, &agent.department, &agent.id).await;
+            // The PR is open, so nothing the agent started in the workdir is
+            // still owed a result. The checkout stays for a revise bounce;
+            // the sweep removes it once the ticket closes.
+            spawn_teardown(
+                pg.clone(),
+                agent.department.clone(),
+                job.id.clone(),
+                Teardown::Stop,
+            );
             CallOutcome::Ok(json!({
                 "prUrl": pr.url,
                 "prNumber": pr.number,
