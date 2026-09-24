@@ -22,6 +22,7 @@
   import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { createTask } from '@/lib/boards.svelte'
   import { assigneeInfo } from '@/lib/assignees'
   import { cn } from '@/lib/cn'
@@ -824,5 +825,10 @@
         </div>
       </div>
     {/if}
+    <!-- This surface owns the card/wire menus: its controller's open state
+         renders here (the portal lifts the panel to <body>). Without this,
+         cardMenu/wireMenu set state nothing displays — the TALA-34 menus
+         never had a renderer. -->
+    <ContextMenu {menu} />
   </div>
 </div>
