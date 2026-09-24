@@ -17,6 +17,15 @@ FROM ${HERMES_IMAGE}
 RUN npm install -g @oh-my-pi/pi-coding-agent \
     && npm cache clean --force
 
+# The dev-env baseline prepare_env builds on: a C toolchain and pkg-config
+# for native builds, mold for repos that link with it (Talaria does), and mise
+# for per-repo toolchains. prepare_env installs any of these on the stock
+# image too; baking them in just skips the first-job wait.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential pkg-config mold curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+
 COPY workbench-harness-update.sh /usr/local/bin/talaria-harness-update
 RUN chmod +x /usr/local/bin/talaria-harness-update
 

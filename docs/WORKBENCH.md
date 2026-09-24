@@ -36,6 +36,7 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 - `doctor`: end-to-end self-diagnosis: the Oh My Pi harness (+ a probe command to verify the binary), GitHub, repo grants, omp's model roles, config paths.
 - `list_repos`: the agent's granted repos + omp's model roles.
 - `start_job(repo, taskId, effort, plan)`: Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>`, named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket), and returns a short-lived authenticated clone URL, a **per-job workspace** (`/opt/data/workbench/jobs/<id>`, so concurrent jobs never collide), omp's model roles, and the Oh My Pi invocation lines (default model filled in). Effort decides planning and how much RAM the job reserves, not the model. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
+- `prepare_env(jobId)`: sets up the job's dev environment after the clone (see "Dev environments" below).
 - `job_status` — jobs with fresh clone URLs (tokens expire by design).
 - `merge_to_testing(jobId)` — into the repo's testing branch, when configured.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
@@ -49,6 +50,24 @@ Git in a job workdir asks Talaria for a credential. A checkout outside that work
 **Attribution:** commits are authored as the agent (`Analyst (Talaria agent) <analyst-engineering@agents.talaria.local>` — provisioned git identity per sandbox), so history and blame show who did the work. API-level actions (branch/PR/merge) show the App's identity; PR footers name the acting agent.
 
 **Persistence:** harness session state (Oh My Pi's agent dir, the npm cache, Playwright browsers) lives on the department's state volume, surviving restarts and **shared across the department's agents**, so sessions can be resumed later or picked up by a teammate as a hand-off.
+
+## Dev environments
+
+Agents run unprivileged in a stock image, so the platform sets up each job's toolchain rather than leaving the agent to hand-install rustup and linkers into its home. `prepare_env(jobId)`, called right after the clone:
+
+- **Toolchains through [mise](https://mise.jdx.dev)**, in user space on the persistent volume, so a department's agents share one download of each version. A repo's own `mise.toml` / `.tool-versions` is used as is. Otherwise the versions come from the files each ecosystem already keeps: `rust-toolchain.toml` (plus mold when `.cargo/config.toml` links with it), `.nvmrc` / `.node-version` / `package.json` (node, and bun or pnpm from `packageManager` or the lockfile), `go.mod`, `.python-version` / `pyproject.toml` / `uv.lock`, `.ruby-version`, at the repo root or one directory down. Detected tools go to a `mise.local.toml` that `.git/info/exclude` keeps out of commits.
+- **OS packages through apt, as root**, only for names the repo lists in `.talaria/workbench.toml`, and only from the image's Debian sources. The agent itself never gets root.
+- **mise's shims on PATH** in the agent's login shells, so `cargo`, `bun`, `go` and the rest resolve to the repo's pinned versions by directory.
+
+```toml
+# .talaria/workbench.toml (optional)
+apt = ["libssl-dev", "protobuf-compiler"]
+
+[tools]           # extra mise tools, merged over detection
+protoc = "28"
+```
+
+It is idempotent and cheap once versions are cached, so agents call it on every job. A missing tool is fixed by declaring it in the repo, never by the agent installing it. Talaria's own `mise.toml` is the example: the same file gives people and agents Rust, Bun, Node, and mold.
 
 ## Work sessions
 

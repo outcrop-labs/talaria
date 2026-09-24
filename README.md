@@ -92,6 +92,8 @@ Prerequisites:
 [Docker](https://docs.docker.com/get-docker/)
 [Bun](https://bun.sh)
 
+To develop on Linux you also need [mold](https://github.com/rui314/mold), which the Rust api links with. With [mise](https://mise.jdx.dev), `mise install` in the repo sets up mold and the pinned Rust, Bun, and Node in one go.
+
 Podman is untested.
 
 ### Developing
