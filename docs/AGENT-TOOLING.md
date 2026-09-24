@@ -26,11 +26,11 @@ because Claude Code reads `CLAUDE.md`, not `AGENTS.md`, and every other harness 
 | Harness | Instructions | Skills | Stop gate |
 |---|---|---|---|
 | Claude Code | `CLAUDE.md` → imports AGENTS.md | native — discovers `.claude/skills/` (dir name = the slash command) | wired — tracked [`.claude/settings.json`](../.claude/settings.json) Stop hook |
-| opencode | reads AGENTS.md | native — discovers `.claude/skills/` at project level (walks up to the worktree root) | run [`scripts/hooks/stop-check.mjs`](../scripts/hooks/stop-check.mjs) at your done-moment, honor exit 2 |
-| Pi | reads AGENTS.md (cwd + parents) | via the skills index in AGENTS.md — read the file when the row matches | same |
-| Oh My Pi | reads AGENTS.md; inherits `.claude`/`.codex`-style workspace config | via the index | same |
-| Codex CLI | reads AGENTS.md | via the index | same |
-| anything else | AGENTS.md if it reads any instruction file | via the index | the git pre-push recipe in [`scripts/hooks/README.md`](../scripts/hooks/README.md) is universal |
+| Codex CLI | reads AGENTS.md | via the index | wired — tracked [`.codex/hooks.json`](../.codex/hooks.json) Stop hook. Exit 2 continues the turn. A project hook does not run until trusted (`/hooks`). |
+| opencode | reads AGENTS.md | native — discovers `.claude/skills/` at project level (walks up to the worktree root) | no main-agent Stop that can block a turn. The lifecycle rule in AGENTS.md still binds: run [`stop-check.mjs`](../scripts/hooks/stop-check.mjs) before claiming done, honor exit 2 |
+| Pi | reads AGENTS.md (cwd + parents) | via the skills index in AGENTS.md — read the file when the row matches | same. A settle hook also fires for subagents, so it is not wired |
+| Oh My Pi | reads AGENTS.md; inherits `.claude`/`.codex`-style workspace config | via the index | same. Inheriting the config style does not run those Stop hooks |
+| anything else | AGENTS.md if it reads any instruction file | via the index | the git pre-push recipe in [`scripts/hooks/README.md`](../scripts/hooks/README.md) is universal; run the stop script at the done-moment |
 
 The per-harness rows are verified against each tool's current documentation and — for the
 workbench harnesses — against the harness registry in `api/src/workbench/harnesses.rs`.
@@ -63,8 +63,12 @@ a gate failure may predate your change — the block message says what to do abo
 After the check passes, the same gate runs
 [`scripts/cleanup-sweep.mjs`](../scripts/cleanup-sweep.mjs) `--gate`. Exit 2 then means disk
 pressure or stale dev artifacts; the procedure is the
-[cleanup](../.claude/skills/cleanup/SKILL.md) skill. That scan is not part of `bun run check`:
-a CI runner has no one's worktrees, and a disk reading is not an invariant of the tree.
+[cleanup](../.claude/skills/cleanup/SKILL.md) skill. That scan is the backstop, not the
+step: a finished task removes the local workspace it created before it claims done, and
+that rule loads from [`AGENTS.md`](../AGENTS.md) for every harness, including the ones
+whose stop event cannot block a turn. The sweep does not delete a fresh worktree. It is
+not part of `bun run check`: a CI runner has no one's worktrees, and a disk reading is
+not an invariant of the tree.
 
 The same contract carries the branch-flow guard: [`scripts/hooks/pre-push`](../scripts/hooks/pre-push)
 forwards the refs a push is about to send to

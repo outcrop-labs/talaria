@@ -1,19 +1,23 @@
 ---
 name: cleanup
-description: Remove the artifacts a dev task created — worktrees, devboxes, scratch checkouts, throwaway downloads — and leave shared caches alone. Use when a task is finished, the stop gate blocks on disk pressure or stale artifacts, or the disk is filling up.
+description: Remove the local workspace a dev task created — worktree, devbox, scratch checkout, throwaway download — and leave shared caches alone. Use when a task is about to be claimed done, when the stop gate blocks on disk pressure or stale artifacts, or when the disk is filling up.
 ---
 
 # Clean up after a dev task
 
-The stop gate runs this. Forgetting is not an option: [`scripts/hooks/stop-check.mjs`](../../../scripts/hooks/stop-check.mjs)
+This is the last step of every task, on every harness. Do it before you claim done.
+The stop gate is the backstop, not the step: [`scripts/hooks/stop-check.mjs`](../../../scripts/hooks/stop-check.mjs)
 runs [`scripts/cleanup-sweep.mjs`](../../../scripts/cleanup-sweep.mjs) `--gate` after `bun run check`, and exit 2
-means you are not done. The numbers live in `POLICY` in that script. Today: a worktree or box
+means you are not done. It does not delete a fresh worktree for you. The numbers live in `POLICY` in that script. Today: a worktree or box
 untouched for 7 days, scratch under `/tmp/talaria-*` older than a day, disk use at 85%, or
-2 GiB of artifacts the sweep is willing to remove.
+2 GiB of artifacts the sweep is willing to remove. Harnesses whose stop event can block a
+turn run that script themselves (see [`scripts/hooks/README.md`](../../../scripts/hooks/README.md)); the rest still do this step.
 
 ## When the task ends
 
-Remove what **this task** created. Do it before you claim done.
+Remove what **this task** created. Do it before you claim done, and not while a
+pull request from this task is still red — you may need the workspace to fix.
+Once the proof line is green, tear it down.
 
 | You created | Tear it down |
 |---|---|
