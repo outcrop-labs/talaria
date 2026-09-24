@@ -53,6 +53,7 @@ pub async fn get(
         "redirectUris": [
             { "uri": format!("{origin}/api/integrations/google/callback"), "what": "your account connect (Settings)" },
             { "uri": format!("{origin}/api/integrations/google/org/callback"), "what": "org connect (Admin)" },
+            { "uri": format!("{origin}/api/integrations/google/agent/callback"), "what": "per-agent Google identity (agent record)" },
             { "uri": format!("{origin}/api/auth/google/callback"), "what": "Google login (only if you enable it)" },
         ],
     }))

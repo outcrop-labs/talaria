@@ -10,6 +10,7 @@ pub mod fleet_crons;
 pub mod fleet_defs;
 pub mod fleet_defs_id;
 pub mod fleet_defs_id_edit;
+pub mod fleet_defs_id_google;
 pub mod fleet_defs_id_mcp;
 pub mod fleet_defs_id_versions;
 pub mod fleet_endpoints;

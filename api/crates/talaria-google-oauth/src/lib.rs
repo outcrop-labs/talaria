@@ -400,6 +400,20 @@ pub fn google_org_connect_redirect_uri(
     )
 }
 
+/// Fixed callback for connecting an agent's own Google account. The agent id
+/// is not in the path — Google redirect URIs are exact, and the state row
+/// binds the dance to a model.
+pub fn google_agent_connect_redirect_uri(
+    cfg_public_url: Option<&str>,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> String {
+    format!(
+        "{}/api/integrations/google/agent/callback",
+        resolve_origin(cfg_public_url, headers, uri)
+    )
+}
+
 /// Whether the Google integration can run at all — an OAuth client exists,
 /// from the Admin UI record or the env fallback (same client as login).
 pub async fn google_integration_enabled(pg: &PgPool, sb: &SecretBox) -> bool {

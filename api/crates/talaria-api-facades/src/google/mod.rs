@@ -4,6 +4,7 @@ pub use talaria_google_api_health as api_health;
 pub use talaria_google_calendar as calendar;
 pub use talaria_google_client as client;
 pub use talaria_google_connections as connections;
+pub use talaria_google_docs as docs;
 pub use talaria_google_drive as drive;
 pub use talaria_google_errors as errors;
 pub use talaria_google_gmail as gmail;

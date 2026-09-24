@@ -3984,6 +3984,7 @@ dependencies = [
  "talaria-google-calendar",
  "talaria-google-client",
  "talaria-google-connections",
+ "talaria-google-docs",
  "talaria-google-drive",
  "talaria-google-errors",
  "talaria-google-gmail",
@@ -5035,6 +5036,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-google-docs"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-errors",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-google-drive"
 version = "0.1.0"
 dependencies = [
@@ -5141,8 +5156,11 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-google-agent",
  "talaria-google-calendar",
  "talaria-google-connections",
+ "talaria-google-docs",
+ "talaria-google-drive",
  "talaria-google-gmail",
  "talaria-google-org",
  "talaria-notify",
@@ -6546,6 +6564,7 @@ name = "talaria-routes-integrations"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "regex",
  "serde",
  "serde_json",

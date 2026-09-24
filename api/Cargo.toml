@@ -311,6 +311,8 @@ talaria-google-connections = { path = "crates/talaria-google-connections" }
 
 talaria-google-drive = { path = "crates/talaria-google-drive" }
 
+talaria-google-docs = { path = "crates/talaria-google-docs" }
+
 talaria-google-errors = { path = "crates/talaria-google-errors" }
 
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }

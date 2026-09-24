@@ -318,14 +318,18 @@ pub async fn approval_items(
     Ok(rows
         .into_iter()
         .map(|(id, kind, summary, payload, agent_model, _is_org, created_ms)| {
-            let label = if kind == "gmail_send" { "SEND EMAIL" } else { "CREATE EVENT" };
+            let label = match kind.as_str() {
+                "gmail_send" => "SEND EMAIL",
+                "doc_update" => "UPDATE DOC",
+                _ => "CREATE EVENT",
+            };
             // The payload's own fields, not a paraphrase: the card recommends
             // "review the exact outbound payload", so the evidence IS the
             // payload. The actor rides last (4 rows max render).
-            let mut evidence = if kind == "gmail_send" {
-                approval_evidence_email(&payload)
-            } else {
-                approval_evidence_event(&payload)
+            let mut evidence = match kind.as_str() {
+                "gmail_send" => approval_evidence_email(&payload),
+                "doc_update" | "drive_move" | "drive_rename" => approval_evidence_file(&payload),
+                _ => approval_evidence_event(&payload),
             };
             evidence.push(BriefEvidence {
                 label: "Drafted by".into(),
@@ -340,7 +344,11 @@ pub async fn approval_items(
                 due_at: None,
                 question: format!(
                     "{} \u{201c}{}\u{201d}?",
-                    if kind == "gmail_send" { "Send" } else { "Create" },
+                    match kind.as_str() {
+                        "gmail_send" => "Send",
+                        "doc_update" => "Update",
+                        _ => "Create",
+                    },
                     summary.unwrap_or_else(|| label.to_lowercase())
                 ),
                 recommendation: "Review the exact outbound payload before confirming this identity-bearing action.".into(),
@@ -436,6 +444,33 @@ fn approval_evidence_event(payload: &Value) -> Vec<BriefEvidence> {
             label: "Notes".into(),
             text: notes.chars().take(1_000).collect(),
         });
+    }
+    out
+}
+
+fn approval_evidence_file(payload: &Value) -> Vec<BriefEvidence> {
+    let get = |k: &str| payload.get(k).and_then(|v| v.as_str());
+    let mut out = Vec::new();
+    let push = |out: &mut Vec<BriefEvidence>, label: &str, text: &str| {
+        out.push(BriefEvidence {
+            label: label.into(),
+            text: text.chars().take(1_000).collect(),
+        });
+    };
+    if let Some(id) = get("fileId").filter(|v| !v.is_empty()) {
+        push(&mut out, "File", id);
+    }
+    if let Some(name) = get("name")
+        .or_else(|| get("title"))
+        .filter(|v| !v.is_empty())
+    {
+        push(&mut out, "Name", name);
+    }
+    if let Some(parent) = get("parentId").filter(|v| !v.is_empty()) {
+        push(&mut out, "Folder", parent);
+    }
+    if let Some(body) = get("markdown").filter(|v| !v.is_empty()) {
+        push(&mut out, "Incoming", body);
     }
     out
 }
