@@ -87,15 +87,6 @@
   const removeModel = (id: string) =>
     void runCascading((force) => patchEndpoint(ep.id, { models: ep.models.filter((m) => m !== id), force }))
 
-  const setPrice = (m: string, priceKey: 'in' | 'out', raw: string) => {
-    const next = { ...(ep.modelPrices ?? {}) }
-    const entry = { ...(next[m] ?? {}) }
-    if (raw === '') delete entry[priceKey]
-    else entry[priceKey] = Number(raw)
-    if (entry.in === undefined && entry.out === undefined) delete next[m]
-    else next[m] = entry
-    void run(patchEndpoint(ep.id, { modelPrices: next }))
-  }
 
   // Declaring a ladder is a whole-map write like the pricing edits beside it.
   // A cache refresh rides along: the composer's effort chip reads through the
@@ -208,28 +199,22 @@
 
     {#if ep.class === 'cloud'}
       <section>
-        <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Pricing · $/1M tokens (in / out)</div>
-        <div class="space-y-1.5">
-          <div class="flex items-center gap-2 font-mono text-xs">
-            <span class="min-w-0 flex-1 truncate text-muted">endpoint default (fallback)</span>
-            <Input size="sm" type="number" value={ep.priceInPerMtok ?? ''} placeholder="in" class="w-20 shrink-0"
-              onblur={(e) => { const v = e.currentTarget.value.trim(); void run(patchEndpoint(ep.id, { priceInPerMtok: v === '' ? null : Number(v) })) }} />
-            <Input size="sm" type="number" value={ep.priceOutPerMtok ?? ''} placeholder="out" class="w-20 shrink-0"
-              onblur={(e) => { const v = e.currentTarget.value.trim(); void run(patchEndpoint(ep.id, { priceOutPerMtok: v === '' ? null : Number(v) })) }} />
+        <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Pricing · $/1M tokens</div>
+        {#if (ep.providerPrices ?? []).length === 0}
+          <p class="text-xs text-muted">No published price yet. Spend uses the provider's reported charge when they send one.</p>
+        {:else}
+          <div class="space-y-1.5">
+            {#each ep.providerPrices ?? [] as row (`${row.model}:${row.variant}`)}
+              <div class="flex items-baseline gap-2 font-mono text-xs">
+                <span class="min-w-0 flex-1 truncate text-fg">{row.model}{row.variant ? ` · ${row.variant}` : ''}</span>
+                <span class="shrink-0 text-muted">{row.in ?? '—'} / {row.out ?? '—'}</span>
+                <span class="shrink-0 text-muted">{row.source}</span>
+                <span class="shrink-0 text-muted">{row.fetchedAt}</span>
+              </div>
+            {/each}
           </div>
-          {#each ep.models as m (m)}
-            {@const p = ep.modelPrices?.[m]}
-            {@const auto = ep.autoPrices?.[m]}
-            {@const overridden = p?.in !== undefined || p?.out !== undefined}
-            <div class="flex items-center gap-2 font-mono text-xs">
-              <span class="min-w-0 flex-1 truncate text-fg">{m}</span>
-              {#if !overridden && auto}<span class="shrink-0 text-success">auto</span>{/if}
-              {#if !overridden && !auto}<span class="shrink-0 text-muted">unpriced</span>{/if}
-              <Input size="sm" type="number" value={p?.in ?? ''} placeholder={auto ? String(auto.in) : 'in'} class="w-20 shrink-0" onblur={(e) => setPrice(m, 'in', e.currentTarget.value.trim())} />
-              <Input size="sm" type="number" value={p?.out ?? ''} placeholder={auto ? String(auto.out) : 'out'} class="w-20 shrink-0" onblur={(e) => setPrice(m, 'out', e.currentTarget.value.trim())} />
-            </div>
-          {/each}
-        </div>
+        {/if}
+        <p class="mt-1 text-xs text-muted">Read-only. OpenRouter prices differ by the endpoint that served the call, so spend uses the provider's reported charge, not a single rate.</p>
       </section>
     {/if}
 

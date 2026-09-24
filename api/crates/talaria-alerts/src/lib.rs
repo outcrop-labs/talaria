@@ -594,6 +594,11 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         }
     }
 
+    // A full disk or a box out of RAM is silence until someone looks. The
+    // host read is the same snapshot Observability shows; a container that
+    // cannot see the host contributes nothing here rather than a lie.
+    push_host_pressure(&mut alerts).await;
+
     // Severity-rank sort — stable, severity-first.
     alerts.sort_by_key(|a| match a.severity {
         AlertSeverity::Critical => 0,
@@ -608,6 +613,82 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
 /// at most twenty per read, freed never.
 fn leak(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
+}
+
+async fn push_host_pressure(alerts: &mut Vec<Alert>) {
+    let snap = talaria_host_metrics::snapshot().await;
+    if !snap.available {
+        return;
+    }
+    let hot: Vec<_> = snap.mounts.iter().filter(|m| m.percent >= 85.0).collect();
+    if !hot.is_empty() {
+        let critical = hot.iter().any(|m| m.percent >= 95.0);
+        let title = if hot.len() == 1 {
+            format!("{} is {:.0}% full", hot[0].mount, hot[0].percent)
+        } else {
+            format!("{} mounts are filling", hot.len())
+        };
+        let detail = hot
+            .iter()
+            .map(|m| format!("{} {:.0}%", m.mount, m.percent))
+            .collect::<Vec<_>>()
+            .join(", ");
+        alerts.push(Alert {
+            severity: if critical {
+                AlertSeverity::Critical
+            } else {
+                AlertSeverity::Warning
+            },
+            title,
+            detail,
+            href: "/observability/host",
+        });
+    }
+    if let Some(mem) = &snap.memory
+        && mem.percent >= 90.0
+    {
+        alerts.push(Alert {
+            severity: if mem.percent >= 97.0 {
+                AlertSeverity::Critical
+            } else {
+                AlertSeverity::Warning
+            },
+            title: format!("Host memory is {:.0}% used", mem.percent),
+            detail: format!(
+                "{} available of {}",
+                human_bytes(mem.available),
+                human_bytes(mem.total)
+            ),
+            href: "/observability/host",
+        });
+    }
+    if let Some(swap) = &snap.swap
+        && swap.present
+        && swap.percent >= 60.0
+    {
+        alerts.push(Alert {
+            severity: AlertSeverity::Warning,
+            title: format!("Host is swapping ({:.0}%)", swap.percent),
+            detail: format!(
+                "{} of {} swap in use. The box is out of RAM.",
+                human_bytes(swap.used),
+                human_bytes(swap.total)
+            ),
+            href: "/observability/host",
+        });
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    if n >= 1 << 30 {
+        format!("{:.1} GB", n as f64 / GIB)
+    } else if n >= 1 << 20 {
+        format!("{:.0} MB", n as f64 / MIB)
+    } else {
+        format!("{n} B")
+    }
 }
 
 async fn probe_mcp() -> bool {

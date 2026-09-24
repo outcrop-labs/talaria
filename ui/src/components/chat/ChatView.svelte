@@ -390,6 +390,7 @@
 
   // The surface's nudge — see the prop. Same last-signal guard the doc panes
   // use, so the effect only fires on a real bump.
+  // svelte-ignore state_referenced_locally -- reason: the last-seen-signal guard's baseline; the effect below updates it on every real bump
   let lastSync = syncSignal
   $effect(() => {
     if (syncSignal === lastSync) return

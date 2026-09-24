@@ -5,6 +5,10 @@
 // invariants, doc links, generated-reference drift — and the one excuse for
 // skipping it has always been "I forgot". A stop gate removes the excuse:
 // the same chain CI runs, run at the moment an agent claims to be done.
+// The same moment runs the artifact sweep (scripts/cleanup-sweep.mjs --gate).
+// Disk pressure and stale dev artifacts are not a CI invariant — a fresh
+// runner has no one's worktrees — so they stay out of `bun run check` and
+// live here, where the agent who left them is about to claim done.
 //
 // THE CONTRACT (see README.md in this directory — the load-bearing part; any
 // harness that can run a command and read an exit code can wire this):
@@ -44,7 +48,7 @@ if (run.status === null) {
   process.exit(1)
 }
 
-if (run.status === 0) process.exit(0)
+if (run.status !== 0) {
 
 console.error('stop gate FAILED — bun run check is red. Fix it before claiming done.')
 if (run.stdout) process.stderr.write(run.stdout)
@@ -54,3 +58,33 @@ console.error(
     'sessions share working trees), verify that and say so in the PR.'
 )
 process.exit(2)
+}
+
+const sweep = spawnSync(process.execPath, [resolve(ROOT, 'scripts', 'cleanup-sweep.mjs'), '--gate'], {
+  cwd: ROOT,
+  encoding: 'utf8',
+  timeout: 20_000,
+})
+
+if (sweep.error || sweep.status === null) {
+  console.error(
+    `stop gate could not run the artifact sweep — not a pass: ${sweep.error?.message ?? 'timed out'}`,
+  )
+  process.exit(1)
+}
+
+if (sweep.status === 2) {
+  console.error('stop gate FAILED — dev artifacts or disk pressure. Clean up before claiming done.')
+  if (sweep.stdout) process.stderr.write(sweep.stdout)
+  if (sweep.stderr) process.stderr.write(sweep.stderr)
+  console.error('The command is `bun talaria cleanup --apply`. The convention is the cleanup skill.')
+  process.exit(2)
+}
+
+if (sweep.status !== 0) {
+  console.error('stop gate could not run the artifact sweep — not a pass.')
+  if (sweep.stderr) process.stderr.write(sweep.stderr)
+  process.exit(1)
+}
+
+process.exit(0)

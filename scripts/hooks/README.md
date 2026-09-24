@@ -25,8 +25,10 @@ is the part that matters.
 Three entry points:
 
 - [`stop-check.mjs`](./stop-check.mjs) — runs `bun run check` (invariants + doc links +
-  generated-reference drift) under this contract, on the whole tree, with no fast path — see
-  its header for why.
+  generated-reference drift) and then [`../cleanup-sweep.mjs`](../cleanup-sweep.mjs) `--gate`
+  (disk pressure and stale dev artifacts). Both under this contract, on the whole tree, with
+  no fast path — see its header for why the check has no skip list, and why the sweep is not
+  part of `bun run check`.
 - [`pre-push`](./pre-push) — the branch-flow guard. Git invokes it with one line per ref about
   to leave the machine (`<local ref> <local sha> <remote ref> <remote sha>`) and forwards each
   to [`../flow-guard.mjs`](../flow-guard.mjs), the same policy

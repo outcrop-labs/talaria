@@ -3,7 +3,7 @@
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import EffortSlotPicker from './EffortSlotPicker.svelte'
   import CapabilityTags from './CapabilityTags.svelte'
-  import { CAPABILITY_WORDS, assignmentNotice, type ModelRow } from './fitness'
+  import { CAPABILITY_WORDS, assignmentNotice, suppliedSearchNote, type ModelRow } from './fitness'
   import { useModelCapabilities } from './fitness-queries'
   import { slotState, type RoleIssue, type Slot } from './slot'
 
@@ -47,9 +47,9 @@
 
   // Capability facts and the last fitness run's per-slot bands: the tags are
   // what this model has MEASURED to be, the notice is the unfit warning (a
-  // capability recorded false, or a run that tested the slot badly). Both
-  // advisory; neither blocks. A worker's slot key is the same `agent:<id>`
-  // spelling the fitness bands are filed under.
+  // run that cannot reach what the role needs, or a run that tested the slot
+  // badly). Both advisory; neither blocks. A worker's slot key is the same
+  // `agent:<id>` spelling the fitness bands are filed under.
   const capsQuery = useModelCapabilities()
   const capsRow: ModelRow | undefined = $derived(assigned ? capsQuery.data?.models.find((m) => m.id === assigned) : undefined)
   const notice = $derived.by(() => {
@@ -58,6 +58,12 @@
     const note = slot.kind === 'role' ? (issues.find((i) => i.role === slot.row.role)?.note ?? null) : null
     return assignmentNotice({ entry: capsQuery.data?.index[assigned], slotKey, capabilityNote: note })
   })
+  // A research role whose model cannot browse natively, with a harness tool
+  // that can fetch. Not a warning — the chip stays `search ↗`; this says the
+  // run will still have pages.
+  const supplied = $derived(
+    !notice && slot.kind === 'role' && slot.row.requires.includes('search') ? suppliedSearchNote(capsRow) : null,
+  )
 </script>
 
 <!-- The setting's title row: kind chip + name + state, the record-editor
@@ -103,6 +109,8 @@
 
 {#if notice}
   <p class="mb-3 max-w-prose font-sans text-xs text-warning">{notice.text}</p>
+{:else if supplied}
+  <p class="mb-3 max-w-prose font-sans text-xs text-muted">{supplied}</p>
 {/if}
 
 <!-- The requirement/pitch half of the advisory pairing. A ROLE declares

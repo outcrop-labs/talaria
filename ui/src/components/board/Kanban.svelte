@@ -144,6 +144,7 @@
             PgNumeric), so `s + t.estimatedHours` concatenated — "04.5" — and
             fmtHours then called .toFixed on a string. -->
         {@const colHours = colTasks.reduce((s, t) => s + pgNumOr(t.estimatedHours, 0), 0)}
+        <!-- svelte-ignore a11y_no_static_element_interactions -- reason: drag-drop drop target; drag-and-drop is a pointer paradigm with no keyboard equivalent here -->
         <div
           ondragover={canEdit
             ? (e) => {

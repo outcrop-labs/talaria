@@ -2228,7 +2228,7 @@ use talaria_capability_platform::{call_platform_tool, is_platform_server};
 use talaria_capability_reach::Supplier;
 use talaria_gateway::registry::resolve_route;
 use talaria_gateway::upstream::{build_upstream, fetch_upstream};
-use talaria_gateway::usage::{TokenCounts, record_gateway_usage};
+use talaria_gateway::usage::{TokenCounts, record_gateway_usage_with_spend, reported_spend};
 use talaria_harness::define::Role;
 use talaria_harness::run::{BoxFut, TransportFn};
 use talaria_harness::transport::{
@@ -2386,8 +2386,9 @@ pub fn search_transport(state: AppState, run_id: String, sink: SearchSink) -> Tr
                     route.upstream_model.clone(),
                 );
                 let caller = format!("research:{run_id}");
+                let spend = reported_spend(&route.endpoint.provider, &j);
                 tokio::spawn(async move {
-                    let _ = record_gateway_usage(
+                    let _ = record_gateway_usage_with_spend(
                         &pg,
                         &caller,
                         &endpoint_name,
@@ -2401,6 +2402,7 @@ pub fn search_transport(state: AppState, run_id: String, sink: SearchSink) -> Tr
                             reasoning_tokens: 0,
                         },
                         false,
+                        Some(&spend),
                     )
                     .await;
                 });

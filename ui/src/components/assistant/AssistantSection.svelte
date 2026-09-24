@@ -167,14 +167,15 @@
 
     <div class="mb-4 grid gap-4 sm:grid-cols-2">
       <div>
-        <label class={fieldLabel}>Name</label>
-        <Input bind:value={name} maxlength={60} />
+        <label for="assistant-name" class={fieldLabel}>Name</label>
+        <Input id="assistant-name" bind:value={name} maxlength={60} />
       </div>
       <div>
-        <label class={fieldLabel}>Handle</label>
+        <label for="assistant-handle" class={fieldLabel}>Handle</label>
         <div class="flex items-center gap-2">
           <span class="text-sm text-muted">@</span>
           <Input
+            id="assistant-handle"
             bind:value={handle}
             oninput={() => (handle = handle.toLowerCase())}
             maxlength={30}
@@ -189,7 +190,7 @@
 
     {#if assistant.tiers.length > 0}
       <div class="mb-4">
-        <label class={fieldLabel}>Model</label>
+        <span class={fieldLabel}>Model</span>
         <!-- Tier chips per §7/§8 chip anatomy: radius 6, mono 10px uppercase;
              the active tier reads gold, inactive hairline+muted → hover. -->
         <div class="flex flex-wrap gap-1.5">
@@ -214,7 +215,7 @@
     {/if}
 
     <div class="mb-1 flex items-center">
-      <label class={cn(fieldLabel, 'mb-0')}>Personality</label>
+      <span class={cn(fieldLabel, 'mb-0')}>Personality</span>
       <button type="button" class="ml-auto text-xs text-accent hover:underline" onclick={() => (personaEditor = true)}>
         Open editor
       </button>

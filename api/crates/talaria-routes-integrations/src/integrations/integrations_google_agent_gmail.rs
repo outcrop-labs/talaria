@@ -106,6 +106,27 @@ pub async fn post(
             ));
         }
     };
+    let talking_to = match super::integrations_google_agent_queue::streaming_conversation_user(
+        &state.pg,
+        &agent_model,
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(e) => {
+            return Ok(internal(
+                "[integrations/google/agent] conversation owner read failed",
+                e,
+            ));
+        }
+    };
+    if let Some(reason) = super::integrations_google_agent_queue::conversation_owner_conflict(
+        &principal,
+        talking_to.as_deref(),
+    ) {
+        return Ok(house_error(StatusCode::CONFLICT, &reason));
+    }
+
     // The payload IS the validated draft, stored as drafted and executed as
     // stored at approve time; subject/body always ride (their defaults),
     // cc/bcc only when the request carried them.
@@ -146,7 +167,8 @@ pub async fn post(
         Err(e) => return Ok(internal("[integrations/google/agent] queue failed", e)),
     };
     // A prior approval in this conversation unlocked draft_email. Execute
-    // the draft now instead of asking again — the unlock chip already said so.
+    // the draft now instead of asking again — and only say it sent when the
+    // decide path actually marked it executed.
     if !principal.is_org
         && let Ok(Some(conv)) = talaria_chips::live_conversation_id(&state.pg, &agent_model).await
         && talaria_chips::tool_unlocked(&state.pg, &conv, "draft_email")
@@ -155,32 +177,39 @@ pub async fn post(
         && let Some(owner) = principal.owner_user_id.as_deref()
     {
         let sb = state.secretbox().await.unwrap_or_default();
-        let _ = talaria_api_facades::google::pending_actions::decide_action(
-            &state.pg,
-            &sb,
-            &queued.action.id,
-            owner,
-            false,
-            "approve",
-            talaria_agent_auth::now_ms(),
-        )
-        .await;
-        return Ok(Json(json!({
-            "pending": { "id": queued.action.id, "status": "executed" },
-            "message": "Sent — this conversation already unlocked draft_email.",
-        }))
-        .into_response());
+        let id = queued.action.id.clone();
+        return Ok(
+            match talaria_api_facades::google::pending_actions::decide_action(
+                &state.pg,
+                &sb,
+                &id,
+                owner,
+                false,
+                "approve",
+                talaria_agent_auth::now_ms(),
+            )
+            .await
+            {
+                Ok(Some(outcome)) => super::integrations_google_agent_queue::answer_executed(
+                    &id,
+                    &outcome.status,
+                    "Sent — this conversation already unlocked draft_email.",
+                    "Unlocked draft_email did not send",
+                ),
+                Ok(None) => house_error(
+                    StatusCode::CONFLICT,
+                    "unlocked draft disappeared before it could send — do not report it as sent",
+                ),
+                Err(e) => internal("[integrations/google/agent] unlocked send failed", e),
+            },
+        );
     }
-    let message = if queued.already_pending {
-        "An identical draft is already waiting for approval — nothing new queued."
-    } else if principal.is_org {
-        "Drafted — waiting for an admin to approve before it sends."
-    } else {
-        "Drafted — waiting for the owner to approve before it sends."
-    };
-    Ok(Json(json!({
-        "pending": { "id": queued.action.id, "status": "pending" },
-        "message": message,
-    }))
-    .into_response())
+    Ok(super::integrations_google_agent_queue::answer_queued(
+        &state.pg,
+        queued,
+        "An identical draft is already waiting for approval — nothing new queued.",
+        "Drafted — waiting for the owner to approve before it sends.",
+        "Drafted — waiting for an admin to approve before it sends.",
+    )
+    .await)
 }

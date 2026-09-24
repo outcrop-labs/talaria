@@ -14,6 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-state = { workspace = true }
 talaria-scheduler = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-10 routes.
+11 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -16,6 +16,7 @@
 | [`/api/cost`](#apicost) | GET | `session` + `view:/observability` |
 | [`/api/history`](#apihistory) | GET | `session` |
 | [`/api/home`](#apihome) | GET | `session` |
+| [`/api/host`](#apihost) | GET | `session` + `view:/observability` |
 | [`/api/notifications`](#apinotifications) | GET | `session` |
 | [`/api/notifications`](#apinotifications) | PUT | `session` |
 | [`/api/notifications`](#apinotifications) | PATCH | `session` |
@@ -83,6 +84,19 @@ Source: [`api/crates/talaria-routes-comms/src/activity/home.rs`](../../api/crate
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | — |
+
+## `/api/host`
+
+Source: [`api/crates/talaria-routes-fleet/src/models/host.rs`](../../api/crates/talaria-routes-fleet/src/models/host.rs)
+
+> The machine this api can see: CPU, load, memory, swap, disk per
+> mount, and the processes using them. Admins and Observability
+> grantees. A container without the host mounts says so instead of
+> reporting its own cgroup.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `view:/observability` | — | `…` | 200 | — |
 
 ## `/api/notifications`
 

@@ -191,6 +191,22 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
     )
     .fetch_all(pg)
     .await?;
+    let prices: Vec<(
+        String,
+        String,
+        String,
+        Option<f64>,
+        Option<f64>,
+        String,
+        Option<String>,
+    )> = sqlx::query_as(
+        "select endpoint_id::text, model, variant, price_in_per_mtok::float8, \
+             price_out_per_mtok::float8, source, \
+             to_char(fetched_at at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+             from provider_prices",
+    )
+    .fetch_all(pg)
+    .await?;
     Ok(rows
         .into_iter()
         .map(
@@ -202,15 +218,29 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
                 class,
                 api_key_env,
                 context_length,
-                price_in,
-                price_out,
+                _price_in,
+                _price_out,
                 models,
-                model_prices,
+                _model_prices,
                 model_efforts,
-                auto_prices,
+                _auto_prices,
                 request_defaults,
                 has_key,
             )| {
+                let provider_prices: Vec<serde_json::Value> = prices
+                    .iter()
+                    .filter(|p| p.0 == id)
+                    .map(|p| {
+                        serde_json::json!({
+                            "model": p.1,
+                            "variant": p.2,
+                            "in": p.3,
+                            "out": p.4,
+                            "source": p.5,
+                            "fetchedAt": p.6,
+                        })
+                    })
+                    .collect();
                 serde_json::json!({
                     "id": id,
                     "name": name,
@@ -219,12 +249,9 @@ pub async fn list_endpoints_wire(pg: &PgPool) -> Result<Vec<serde_json::Value>, 
                     "class": class,
                     "apiKeyEnv": api_key_env,
                     "contextLength": context_length,
-                    "priceInPerMtok": price_in,
-                    "priceOutPerMtok": price_out,
                     "models": models,
-                    "modelPrices": model_prices,
                     "modelEfforts": model_efforts,
-                    "autoPrices": auto_prices,
+                    "providerPrices": provider_prices,
                     "requestDefaults": request_defaults,
                     "hasKey": has_key,
                 })

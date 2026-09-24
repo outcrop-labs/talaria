@@ -940,7 +940,8 @@ server.registerTool(
   'draft_calendar_event',
   {
     description:
-      "Draft a Google Calendar event (on your owner's calendar, or the shared org calendar). It is NOT created immediately — it's queued for a human to approve in Talaria first (confirm-sends). Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
+      "Draft a Google Calendar event (on your owner's calendar, or the shared org calendar). It is NOT created immediately — it's queued for a human to approve in Talaria first (confirm-sends). The call is not proof it landed: confirm with list_pending_sends and see the id before telling anyone it is ready. Times are RFC3339 (e.g. 2026-07-08T15:00:00Z), or YYYY-MM-DD with allDay=true.",
+
     inputSchema: {
       summary: z.string().min(1).max(500).describe('Event title'),
       start: z.string().describe('Start — RFC3339 dateTime or YYYY-MM-DD'),
@@ -1024,7 +1025,8 @@ server.registerTool(
   'draft_email',
   {
     description:
-      "Draft an email to send (AS your owner, or from the shared org account). It is NOT sent immediately — it's queued for a human to approve in Talaria first (confirm-sends). Use this to prepare correspondence; a human reviews and sends with one click.",
+      "Draft an email to send (AS your owner, or from the shared org account). It is NOT sent immediately — it's queued for a human to approve in Talaria first (confirm-sends). The call is not proof the draft landed: a success names the approver, and you MUST call list_pending_sends and see that id before telling anyone it is ready. If this errors, say it failed — never report a draft that is not in the queue.",
+
     inputSchema: {
       to: z.string().describe('Recipient email(s), comma-separated'),
       subject: z.string().max(500).optional(),
@@ -1035,6 +1037,27 @@ server.registerTool(
   },
   async (args) => ok(await api('POST', '/api/integrations/google/agent/gmail', args)),
 )
+
+server.registerTool(
+  'list_pending_sends',
+  {
+    description:
+      "List the confirm-sends queue your approver actually sees — your owner's, if you are a personal assistant, otherwise the org queue an admin approves. Each row is an email or calendar event still waiting. Call this after draft_email or draft_calendar_event and do not tell anyone a draft is ready unless its id is in this list. whoami.agent.owner.id is the personal approver; the response's approver.userId must be that person.",
+    inputSchema: {},
+  },
+  async () => ok(await api('GET', '/api/integrations/google/agent/pending')),
+)
+
+server.registerTool(
+  'read_pending_send',
+  {
+    description:
+      'Read one confirm-send by the id draft_email or draft_calendar_event returned. 404 means it is not in the approver\'s queue — do not report it as ready. The payload is the exact outbound draft.',
+    inputSchema: { id: z.string().describe('Pending id from draft_email or draft_calendar_event') },
+  },
+  async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/pending/${encodeURIComponent(id)}`)),
+)
+
 
 server.registerTool(
   'log_usage',

@@ -172,6 +172,7 @@ jobs:
           args=(-f api/package.Dockerfile
                 --platform linux/amd64
                 --build-arg "PROFILE=$PROFILE"
+                --build-arg "CARGO_BUILD_JOBS=$(nproc)"
                 --build-arg "REVISION=$(git rev-parse HEAD)"
                 --build-arg "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
                 --cache-from "type=registry,ref=$IMAGE:buildcache"

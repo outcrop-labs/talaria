@@ -161,8 +161,11 @@ export function autoLayout(steps: Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y'
     if (level.has(id)) return level.get(id) as number
     if (stack.has(id)) return 0 // cycle: the api refuses writes like this; derive defensively anyway
     stack.add(id)
-    const ps = (preds.get(id) ?? []).filter((p) => ids.has(p))
-    const l = ps.length === 0 ? 0 : 1 + Math.max(...ps.map((p) => visit(p, stack)))
+    // All predecessors count, placed or not: a placed one is a satisfied
+    // earlier column (contributes 1); an unplaced one contributes 1 + its
+    // own level. Edges naming ids outside the chain stay ignored, as before.
+    const ps = (preds.get(id) ?? []).filter((p) => ids.has(p) || placed.has(p))
+    const l = ps.length === 0 ? 0 : 1 + Math.max(...ps.map((p) => (placed.has(p) ? 0 : visit(p, stack))))
     stack.delete(id)
     level.set(id, l)
     return l

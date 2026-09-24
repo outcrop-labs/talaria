@@ -50,6 +50,7 @@
   const templates = $derived(templatesList.rows)
   const boardsLoading = $derived(boardsList.pending)
   const templatesLoading = $derived(templatesList.pending)
+  // svelte-ignore state_referenced_locally -- reason: picker default seeded from the roster once at mount; the user's own selection is the live state
   let agentModel = $state(agents[0]?.id ?? '')
   let tier = $state('')
   let boardId = $state('')
@@ -209,8 +210,8 @@
       </p>
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Planner</label>
-          <Select value={picked?.id ?? ''} size="sm" onchange={(e) => (agentModel = e.currentTarget.value)} class="w-full">
+          <label for="plan-planner" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Planner</label>
+          <Select id="plan-planner" value={picked?.id ?? ''} size="sm" onchange={(e) => (agentModel = e.currentTarget.value)} class="w-full">
             {#each agents as a (a.id)}
               <option value={a.id}>
                 {a.label}
@@ -219,8 +220,8 @@
           </Select>
         </div>
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tier</label>
-          <Select bind:value={tier} size="sm" class="w-full">
+          <label for="plan-tier" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tier</label>
+          <Select id="plan-tier" bind:value={tier} size="sm" class="w-full">
             <option value="">main</option>
             {#each tiers as t (t)}
               <option value={t}>
@@ -230,13 +231,13 @@
           </Select>
         </div>
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Board</label>
+          <label for="plan-board" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Board</label>
           {#if boardsLoading}
             <!-- Select-shaped stand-in (sm control = h-9) so the field —
                  and why Draft is still disabled — is visible on open. -->
             <Skeleton class="h-9 w-full rounded-xl" />
           {:else}
-            <Select bind:value={boardId} size="sm" class="w-full">
+            <Select id="plan-board" bind:value={boardId} size="sm" class="w-full">
               <option value="">Pick a board</option>
               {#each editable as b (b.id)}
                 <option value={b.id}>
@@ -248,11 +249,11 @@
           {#if boardsList.notice}<QueryError {...boardsList.notice} />{/if}
         </div>
         <div>
-          <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Ticket template</label>
+          <label for="plan-template" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Ticket template</label>
           {#if templatesLoading}
             <Skeleton class="h-9 w-full rounded-xl" />
           {:else}
-            <Select bind:value={templateId} size="sm" class="w-full">
+            <Select id="plan-template" bind:value={templateId} size="sm" class="w-full">
               <option value="">Automatic (agent → board default)</option>
               {#each ticketTemplates as t (t.id)}
                 <option value={t.id}>

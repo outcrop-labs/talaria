@@ -167,9 +167,9 @@
           applyLink()
         }}
       >
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">URL</label>
+        <label for="et-link-url" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">URL</label>
         <!-- svelte-ignore a11y_autofocus -->
-        <Input autofocus bind:value={linkUrl} placeholder="https://example.com" class="w-full" />
+        <Input id="et-link-url" autofocus bind:value={linkUrl} placeholder="https://example.com" class="w-full" />
         <p class="mt-2 text-xs text-muted">Leave empty and apply to remove the link.</p>
       </form>
       {#snippet footer()}
@@ -186,9 +186,9 @@
           applyImage()
         }}
       >
-        <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Image URL</label>
+        <label for="et-img-url" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Image URL</label>
         <!-- svelte-ignore a11y_autofocus -->
-        <Input autofocus bind:value={imgUrl} placeholder="https:///image.png" class="w-full" />
+        <Input id="et-img-url" autofocus bind:value={imgUrl} placeholder="https:///image.png" class="w-full" />
       </form>
       {#snippet footer()}
         <div class="flex justify-end gap-2">

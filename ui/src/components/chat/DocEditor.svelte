@@ -74,6 +74,7 @@
   // The document builds as you talk: every landed agent turn triggers a sync.
   // Unsaved manual edits are flushed first so the rewrite starts from them
   // instead of clobbering them. Signal 0 is mount, not a turn.
+  // svelte-ignore state_referenced_locally -- reason: the last-seen-signal guard's baseline; the effect below updates it on every real bump
   let lastSignal = syncSignal
   $effect(() => {
     if (syncSignal === lastSignal) return

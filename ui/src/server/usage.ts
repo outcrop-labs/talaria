@@ -228,30 +228,41 @@ export interface CostOverview {
   perDay: Array<{ day: string; prompt: number; completion: number; generations: number; local: number; cloud: number }>
 }
 
-// The priced view: cloud rows get $ from the user's per-model override, else
-// the auto-fetched public rate (price-oracle), else the endpoint default;
-// local rows are $0 (your hardware); cloud rows with no price at all get NULL
-// cost so they can be surfaced as "unpriced".
-//
-// Every INPUT kind is priced off the input rate at its own multiplier: fresh
-// prompt at 1x, cache writes at 1.25x, cache reads at 0.1x. Reasoning tokens
-// are already inside completion_tokens, so they are never added again.
+// The priced view. Local rows are $0. A provider-reported dollar amount wins.
+// Otherwise a cloud row is derived from provider_prices — never the editable
+// model_prices / price_in/out / auto_prices card. OpenRouter without a serving
+// variant stays unpriced rather than using a blended catalog rate.
 const PRICED = `
   select u.*,
     case
       when u.endpoint_class = 'local' then 0
-      when u.endpoint_class = 'cloud' then
+      when u.provider_cost is not null then u.provider_cost
+      when u.endpoint_class = 'cloud'
+           and pp.in_tok is not null and pp.out_tok is not null then
         ((u.prompt_tokens
             + u.cache_write_tokens * ${CACHE_WRITE_MULTIPLIER}
             + u.cache_read_tokens * ${CACHE_READ_MULTIPLIER})
-           * coalesce((e.model_prices->u.llm_model->>'in')::numeric,
-                      (e.auto_prices->u.llm_model->>'in')::numeric, e.price_in_per_mtok)
-         + u.completion_tokens * coalesce((e.model_prices->u.llm_model->>'out')::numeric,
-                                          (e.auto_prices->u.llm_model->>'out')::numeric, e.price_out_per_mtok)) / 1e6
+           * pp.in_tok + u.completion_tokens * pp.out_tok) / 1e6
       else null
     end as cost
   from usage_events u
   left join llm_endpoints e on e.name = u.endpoint
+  left join lateral (
+    select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok
+    from provider_prices p
+    where p.endpoint_id = e.id
+      and p.model = u.llm_model
+      and (
+        (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant)
+        or (
+          coalesce(u.cost_variant, '') = ''
+          and p.variant = ''
+          and e.provider is distinct from 'openrouter'
+        )
+      )
+    order by p.fetched_at desc
+    limit 1
+  ) pp on true
 `
 
 /** Every token on a row, whatever its kind — the denominator for volume views. */

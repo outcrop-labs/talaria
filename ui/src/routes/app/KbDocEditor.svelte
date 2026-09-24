@@ -85,8 +85,10 @@
   // Presence drives the multiplayer avatars and the read-mode auto-refresh.
   // Defaulted it says "you are alone in here" during an outage, which is when
   // two people are most likely to overwrite each other.
+  // svelte-ignore state_referenced_locally -- reason: the component is keyed-remounted per doc ({#key docId} at the call site), so docId is fixed per mount
   const presenceList = listQuery(useDocLive(docId, () => mode), { title: 'Could not see who else is here', variant: 'inline' })
   const presence = $derived(presenceList.rows)
+  // svelte-ignore state_referenced_locally -- reason: the component is keyed-remounted per doc ({#key docId} at the call site), so docId is fixed per mount
   const commentsQuery = useDocComments(docId)
   const comments = $derived(commentsQuery.data ?? [])
   const openThreads = $derived(comments.filter((c) => !c.parentId && !c.resolved).length)

@@ -3,19 +3,46 @@
   import HomeListPanel from '@/components/app/HomeListPanel.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import { useContextMenu, openCopyItems } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import { planRowMenu } from '@/components/record-menus'
   import { listQuery } from '@/components/ui/query-state'
-  import { useConversations } from '@/lib/conversations.svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import {
+    archiveConversation,
+    deleteConversation,
+    renameConversation,
+    useConversations,
+    type Conversation,
+  } from '@/lib/conversations.svelte'
   import { useAgents } from '@/lib/agents'
   import { relativeTime } from '@/lib/fleet'
 
-  // Plans: your live plans (and ones shared with you).
+  // Plans: your live plans (and ones shared with you). Archived plans live
+  // on /plan, in the rail's Archived section — Home is the live preview.
   const menu = useContextMenu()
+  const qc = useQueryClient()
+  const refresh = () => void qc.invalidateQueries({ queryKey: ['conversations'] })
   // The original "No boards yet over a 500", verbatim, on Home: a failed read
   // renders "No plans yet. Start one on /plan." to an owner whose plans exist.
   const list = listQuery(useConversations('plan'), { title: 'Could not load your plans', variant: 'compact' })
   const fleetQuery = useAgents()
   const agentLabel = (id: string) => fleetQuery.data?.agents.find((a) => a.id === id)?.label ?? id
+  const open = (c: Conversation) => void navigate('/plan/:planId', { params: { planId: c.id } })
+  const rename = (c: Conversation) => {
+    void renameConversation(c.id, c.title).then((ok) => {
+      if (ok) refresh()
+    })
+  }
+  const archive = (c: Conversation) => {
+    void archiveConversation(c.id).then((ok) => {
+      if (ok) refresh()
+    })
+  }
+  const remove = (c: Conversation) => {
+    void deleteConversation(c.id, c.title).then((ok) => {
+      if (ok) refresh()
+    })
+  }
 </script>
 
 <HomeListPanel
@@ -36,7 +63,18 @@
         type="button"
         onclick={() => void navigate('/plan/:planId', { params: { planId: c.id } })}
         oncontextmenu={(e) =>
-          menu.openMenu(e, openCopyItems(`/plan/${c.id}`, () => void navigate('/plan/:planId', { params: { planId: c.id } })))}
+          menu.openMenu(
+            e,
+            planRowMenu(c, {
+              path: `/plan/${c.id}`,
+              open: () => open(c),
+              archived: false,
+              onRename: () => rename(c),
+              onArchive: () => archive(c),
+              onRestore: () => {},
+              onDelete: () => remove(c),
+            }),
+          )}
         class="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-card2"
       >
         {#if c.working}<StatusDot status="accent" pulse />{/if}

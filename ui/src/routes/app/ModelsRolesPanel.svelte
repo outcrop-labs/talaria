@@ -65,7 +65,7 @@
     {
       id: 'research',
       label: 'Research',
-      blurb: 'The search stages behind every research run. Each stage needs a web-search-capable model; without live search it answers from memory and the citations come out invented.',
+      blurb: 'The search stages behind every research run. A stage fetches through a web-search tool the harness or Hermes supplies, or through a model that browses natively. Without either, a run has nothing to fetch with.',
       ids: ['role:research-recon', 'role:research-brief', 'role:research-expedition'],
     },
     {

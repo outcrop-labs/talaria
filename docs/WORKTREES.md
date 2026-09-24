@@ -58,8 +58,11 @@ It prints the exact `talaria dev` command and the teardown steps.
 - **Agent LLM calls** still flow through the *main* gateway if you're testing chat
   — the fleet agents point at whatever `LLM_BASE_URL` they were rendered with.
   Isolated worktrees are for app/UI iteration, not for re-rendering the live fleet.
-- **Clean up** with the two teardown commands the script prints; `-v` drops the
-  isolated volumes so nothing lingers.
+- **Clean up** with the two teardown commands the script prints, from the primary
+  checkout; `-v` drops the isolated volumes so nothing lingers. A worktree left past
+  that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and
+  what the stop gate blocks on once it is stale. A `.talaria-keep` file in the
+  worktree root opts it out.
 
 ## Manual worktrees
 

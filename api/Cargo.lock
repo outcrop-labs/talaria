@@ -3697,6 +3697,7 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-preflight",
  "talaria-gateway",
+ "talaria-host-metrics",
  "talaria-mcp-service",
  "talaria-notify",
  "talaria-retrieval",
@@ -5324,6 +5325,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-host-metrics"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-inbox-focus"
 version = "0.1.0"
 dependencies = [
@@ -5468,6 +5479,7 @@ dependencies = [
  "talaria-secretbox",
  "talaria-state",
  "talaria-tasks",
+ "talaria-tasks-types",
  "talaria-teams",
  "talaria-update-job",
  "talaria-uploads",
@@ -6031,6 +6043,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-gateway",
  "talaria-scheduler",
+ "talaria-state",
  "tokio",
  "tracing",
 ]
@@ -6322,6 +6335,7 @@ dependencies = [
  "talaria-audit",
  "talaria-auth-config",
  "talaria-body",
+ "talaria-capability-reach",
  "talaria-config",
  "talaria-effort-prefs",
  "talaria-email",
@@ -6489,6 +6503,7 @@ dependencies = [
  "talaria-gaps",
  "talaria-harness-defs",
  "talaria-harness-model",
+ "talaria-host-metrics",
  "talaria-instance",
  "talaria-llm-keys",
  "talaria-notify",

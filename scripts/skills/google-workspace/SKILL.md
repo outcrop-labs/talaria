@@ -9,7 +9,8 @@ Gmail, Calendar, and Drive are the account connected in Talaria, through the
 `talaria` MCP tools — not the `gws` CLI, not a service-account JSON in the
 container.
 
-- **Mail** — `read_recent_email` / `read_email` / `draft_email` (awaits approval).
+- **Mail** — `read_recent_email` / `read_email` / `draft_email` (awaits approval). After a draft, `list_pending_sends` is the queue the approver sees — do not say it is ready unless that list contains the id.
+
 - **Calendar** — `read_calendar` / `draft_calendar_event` (awaits approval).
 - **Drive** — `search_drive` (read-only). Export a Talaria doc with
   `export_to_google_doc`.

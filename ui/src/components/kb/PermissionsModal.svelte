@@ -73,6 +73,7 @@
   // Until both principal lists resolve, grants would render as raw ids and the
   // add picker would be empty — hold the list's shape instead.
   const principalsLoading = $derived(usersList.pending || agentsQuery.isLoading || teamsList.pending)
+  // svelte-ignore state_referenced_locally -- reason: draft seeded from the prop; the reopen effect below re-seeds it
   let vis = $state<Visibility>(visibility)
   // `save()` PUTs the grant list back WHOLESALE, so this list is never allowed
   // to hold a value nobody read off the server. It is derived, not copied: the
@@ -84,6 +85,7 @@
   // failure, which made "the read broke" and "nobody is shared with" the same
   // value; Save then wrote the failure over real grants. Destroyed data, in a
   // browser, not in theory.
+  // svelte-ignore state_referenced_locally -- reason: kind is fixed per mount (each share target opens its own modal instance); id/open stay live via getters
   const editors = useEditors(kind, () => id, () => open)
   let edits = $state<KbEditor[] | null>(null)
   const grants = $derived(edits ?? editors.data ?? [])
@@ -91,8 +93,10 @@
   // still holds the last read's list, and letting Save write that while the
   // surface says "could not load" is the same lie one degree quieter.
   const known = $derived(editors.data !== undefined && !editors.isError)
+  // svelte-ignore state_referenced_locally -- reason: draft seeded from the prop; the reopen effect below re-seeds it
   let inh = $state(inherited)
   // General audience role for org/public: editors → edit_policy 'org'.
+  // svelte-ignore state_referenced_locally -- reason: draft seeded from the prop; the reopen effect below re-seeds it
   let orgRole = $state<GrantRole>(editPolicy === 'org' ? 'editor' : 'viewer')
   let saving = $state(false)
   let copied = $state(false)

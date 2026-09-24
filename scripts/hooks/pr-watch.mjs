@@ -318,7 +318,7 @@ head ${pr.headRefName} @ ${String(pr.headRefOid).slice(0, 12)}
 
 ${result.failing.map(checkLine).join('\n')}
 
-Diagnose from the log, fix, re-run the local gates (\`bun run verify\`, plus \`bun run api:check\` / \`bun run desktop:check\` if those surfaces moved), and push to \`${pr.headRefName}\` only. Never \`main\`, never \`rc\`, never \`--force\`. Then run this watcher again.
+Diagnose from the log, fix, re-run \`bun run gate\` (it compiles only what this diff touches; if the log names a crate the diff did not, \`cargo test -p <that crate>\` — never a workspace cargo, never \`api:check\`), and push to \`${pr.headRefName}\` only. Never \`main\`, never \`rc\`, never \`--force\`. Then run this watcher again.
 
 The same check still red after a push that was supposed to fix it is not self-fixable. A product decision, a review request, or infra you cannot fix from this branch (runner, registry, a secret) is not self-fixable either. Report the job link. Do not claim done.
 ${more}

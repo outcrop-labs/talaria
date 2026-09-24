@@ -6,6 +6,7 @@
   import { fly, staggerIn } from '@/lib/motion'
   import { claimViewTitle } from '@/lib/view-title.svelte'
   import ComputePanel from '@/components/observability/ComputePanel.svelte'
+  import HostPanel from '@/components/observability/HostPanel.svelte'
   import CostPanel from '@/components/observability/CostPanel.svelte'
   import AuditPanel from '@/components/observability/AuditPanel.svelte'
   import AlertsPanel from '@/components/observability/AlertsPanel.svelte'
@@ -41,6 +42,7 @@
       <div in:fly={{ y: 6, duration: 200 }} data-stagger-items="[data-obs-sections] > *">
         {#if tab === 'overview'}<OverviewPanel onOpen={setTab} />{/if}
         {#if tab === 'compute'}<ComputePanel />{/if}
+        {#if tab === 'host'}<HostPanel />{/if}
         {#if tab === 'cost'}<CostPanel />{/if}
         {#if tab === 'audit'}<AuditPanel />{/if}
         {#if tab === 'alerts'}<AlertsPanel />{/if}

@@ -456,7 +456,8 @@ pub fn router(state: AppState) -> Router {
             "/api/conversations/{id}",
             get(talaria_routes_comms::comms::conversations_id::get)
                 .patch(talaria_routes_comms::comms::conversations_id::patch)
-                .fallback(|| async { method_not_allowed("GET, PATCH") }),
+                .delete(talaria_routes_comms::comms::conversations_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
         )
         .route(
             "/api/conversations/{id}/read",
@@ -690,6 +691,17 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/integrations/google/agent/pending",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_pending::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/pending/{id}",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_pending::get_one)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+
+        .route(
             "/api/integrations/google/agent/gmail/labels",
             get(talaria_routes_integrations::integrations::integrations_google_agent_gmail_labels::get)
                 .post(talaria_routes_integrations::integrations::integrations_google_agent_gmail_labels::post)
@@ -722,8 +734,9 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/research/{id}",
             get(talaria_routes_workbench::research::research_id::get)
+                .patch(talaria_routes_workbench::research::research_id::patch)
                 .delete(talaria_routes_workbench::research::research_id::delete)
-                .fallback(|| async { method_not_allowed("GET, DELETE") }),
+                .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
         )
         .route(
             "/api/research/{id}/members",
@@ -1481,6 +1494,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/inference",
             get(talaria_routes_fleet::models::inference::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/host",
+            get(talaria_routes_fleet::models::host::get).fallback(|| async { method_not_allowed("GET") }),
         )
         // Multiplayer plans: the living document and the member roster.
         .route(

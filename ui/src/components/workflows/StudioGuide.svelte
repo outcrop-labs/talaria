@@ -63,12 +63,15 @@
   let step = $state(0)
 
   // Step 1 — the work
+  // svelte-ignore state_referenced_locally -- reason: step draft seeded from the prefill once at mount; the guide remounts per open
   let name = $state(prefill?.name ?? '')
   // Step 2 — recognition
+  // svelte-ignore state_referenced_locally -- reason: step draft seeded from the prefill once at mount; the guide remounts per open
   let boardIds = $state<string[]>(prefill?.boardIds ?? [])
   let labels = $state<string[]>([])
   let keywords = $state<string[]>([])
   // Step 3 — the flow
+  // svelte-ignore state_referenced_locally -- reason: step draft seeded from the prefill once at mount; the guide remounts per open
   let describe = $state(prefill?.describe ?? '')
   let skillMd = $state('')
   let drafting = $state(false)
@@ -77,6 +80,7 @@
   let abort: AbortController | null = null
   // Step 4 — placement
   const editable = $derived(owners.filter((o) => o.canEdit))
+  // svelte-ignore state_referenced_locally -- reason: step draft seeded from the prefill and owner list once at mount; the guide remounts per open
   let ownerPick = $state<string>(prefill?.owner && owners.some((o) => o.owner === prefill.owner && o.canEdit) ? prefill.owner : '')
   let creating = $state(false)
   let error = $state<string | null>(null)

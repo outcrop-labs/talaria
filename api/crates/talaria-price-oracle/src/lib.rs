@@ -1,3 +1,6 @@
+mod spend;
+mod spend_fetch;
+
 // Zero-config pricing: OpenRouter's
 // public model catalog (no auth) carries per-token prices for essentially every
 // major model. Each cloud endpoint's catalog models — PLUS every model usage
@@ -345,6 +348,7 @@ async fn refresh_once(
         return None;
     }
     stamps().last_attempt = now_ms();
+    let _ = spend_fetch::ingest_published_prices(pg).await;
     let result = refresh_auto_prices(pg).await;
     if result.is_ok() {
         stamps().last_refresh = now_ms();
@@ -387,29 +391,63 @@ pub struct PriceRefreshDeps {
     pub pg: PgPool,
 }
 
+type KeyLoad = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = Vec<spend_fetch::KeyedEndpoint>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Set from the api binary so the refresh job can open sealed provider keys
+/// without this crate owning `AppState` on the job deps.
+pub static LOAD_SPEND_KEYS: std::sync::OnceLock<KeyLoad> = std::sync::OnceLock::new();
+
+pub async fn keys_for(state: &talaria_state::AppState) -> Vec<spend_fetch::KeyedEndpoint> {
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "select id::text, provider, api_key_env from llm_endpoints where class = 'cloud'",
+    )
+    .fetch_all(&state.pg)
+    .await
+    .unwrap_or_default();
+    let mut out = Vec::new();
+    for (id, provider, api_key_env) in rows {
+        if let Some(key) = talaria_gateway::provider::open_stored_key(
+            state,
+            &id,
+            &provider,
+            api_key_env.as_deref(),
+        )
+        .await
+        {
+            out.push(spend_fetch::KeyedEndpoint { id, provider, key });
+        }
+    }
+    out
+}
+
 pub fn price_refresh_job_spec(deps: Arc<PriceRefreshDeps>) -> JobSpec {
     JobSpec {
         name: JobName::PriceRefresh,
         every_ms: PRICE_REFRESH_EVERY_MS,
         first_run_delay_ms: Some(PRICE_REFRESH_FIRST_RUN_DELAY_MS),
         max_run_ms: Some(PRICE_REFRESH_MAX_RUN_MS),
-        // NOT `per_instance`: the inputs are the shared tables (llm_endpoints,
-        // usage_events), so the fleet does one pass per interval — same shape
-        // and same reasoning as run-reclaim's comment.
         per_instance: false,
         run: Arc::new(move || {
             let pg = deps.pg.clone();
             Box::pin(async move {
+                let keyed = match LOAD_SPEND_KEYS.get() {
+                    Some(load) => load().await,
+                    None => Vec::new(),
+                };
+                let spent = spend_fetch::ingest_provider_spend(&pg, &keyed).await;
                 match refresh_once(&pg, None).await {
                     Some(Ok(c)) => Ok(Some(format!(
-                        "{} model price(s) across {} cloud endpoint(s)",
-                        c.priced, c.endpoints
+                        "{} published price(s), {} provider spend row(s), {} catalog fill(s)",
+                        c.priced,
+                        spent.unwrap_or(0),
+                        c.endpoints
                     ))),
                     Some(Err(e)) => Err(e),
-                    // The job passes no throttle gate, so this arm is
-                    // unreachable — written as a no-op rather than a panic
-                    // only because the type demands it.
-                    None => Ok(None),
+                    None => Ok(spent.ok().map(|n| format!("{n} provider spend row(s)"))),
                 }
             })
         }),
