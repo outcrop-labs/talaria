@@ -162,6 +162,14 @@
 
   const addTo = (chainId: string, taskId: string) =>
     void addWorkchainStep(chainId, taskId).then(invalidate).catch(failure('Adding the step'))
+  /** The canvas header's "+ Add ticket" — the picked ticket joins the focused
+   *  chain; the write is addTo's. */
+  const addFocusedTask = (taskId: string) => {
+    const c = focusedChain
+    if (!c) return
+    addTo(c.id, taskId)
+  }
+
 </script>
 
 <div class="flex h-full flex-col">
@@ -256,6 +264,8 @@
               managed={canEdit}
               onRename={renameFocused}
               onDelete={() => void deleteFocused()}
+              candidates={unchained}
+              onAddTask={addFocusedTask}
             />
           </div>
         {/if}

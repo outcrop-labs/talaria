@@ -15,7 +15,7 @@
   // The pure halves live in lib: workchain-rules.ts (layout, paths, states),
   // wiring-overlay.ts (geometry + viewport math), wiring-canvas.ts (the drop
   // resolution + candidate sets) — this component is the DOM half.
-  import { Check, Maximize2, Pause, Pencil, Play, Trash2, ZoomIn, ZoomOut } from '@lucide/svelte'
+  import { Check, ListPlus, Maximize2, Pause, Pencil, Play, Trash2, ZoomIn, ZoomOut } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -40,6 +40,7 @@
   import {
     autoLayout,
     chainProgress,
+    filterCandidates,
     NODE_H,
     NODE_W,
     wirePath,
@@ -47,6 +48,7 @@
     type Workchain,
     type WorkchainEdge,
     type WorkchainStep,
+    type WorkchainCandidate,
   } from '@/lib/workchain-rules'
   import {
     clientToCanvas,
@@ -73,6 +75,8 @@
     managed = false,
     onRename,
     onDelete,
+    candidates = [],
+    onAddTask,
   }: {
     workchain: Workchain
     /** The chain's board — the create-and-connect composer files the new
@@ -92,6 +96,11 @@
     onRename?: (name: string) => void
     /** The chain goes; the caller owns the confirm and the request. */
     onDelete?: () => void
+    /** The board's UNCHAINED tickets the "+ Add ticket" picker offers.
+     *  Ownership stays with the caller: it decides what a candidate is. */
+    candidates?: WorkchainCandidate[]
+    /** A ticket joins the focused chain; the caller owns the write. */
+    onAddTask?: (taskId: string) => void
   } = $props()
 
   const info = (step: WorkchainStep) =>
@@ -114,6 +123,14 @@
     const name = renameDraft.trim()
     if (name && name !== workchain.name) onRename?.(name)
   }
+
+  // ── Managed mode: the "+ Add ticket" picker ──────────────────────────────
+  // The canvas header's seed path for the focused chain: a type-to-filter
+  // list over the caller's candidates (the board's unchained tickets).
+  // Selecting a row hands the write to onAddTask — the caller owns it —
+  // and closes. The draft is session state, cleared on every open.
+  let addDraft = $state('')
+  const addRows = $derived(filterCandidates(candidates, addDraft))
 
   const menu = useContextMenu()
 
@@ -257,10 +274,10 @@
   let composerAt = $state<{ left: number; top: number } | null>(null)
 
   /** The steps this drag may legally land on — the highlight set. */
-  const candidates = $derived(
+  const edgeCandidates = $derived(
     wireDrag ? edgeCandidateSteps(workchain.steps, workchain.edges, wireDrag.fromTaskId) : [],
   )
-  const candidateIds = $derived(new Set(candidates.map((s) => s.taskId)))
+  const candidateIds = $derived(new Set(edgeCandidates.map((s) => s.taskId)))
 
   const startWire = (taskId: string, e: PointerEvent) => {
     e.stopPropagation()
@@ -283,7 +300,7 @@
     const at = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
     // Ports first (the precise target), then the card body, then nothing.
     const portHits: Array<{ taskId: string; side: 'in' | 'out'; pos: { x: number; y: number } }> =
-      candidates.map((s) => ({
+      edgeCandidates.map((s) => ({
         taskId: s.taskId,
         side: 'in',
         pos: positions.get(s.taskId) ?? { x: 0, y: 0 },
@@ -308,7 +325,7 @@
     const rect = surface?.getBoundingClientRect()
     if (!rect) return
     const at = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
-    const portHits = candidates.map((s) => ({
+    const portHits = edgeCandidates.map((s) => ({
       taskId: s.taskId,
       side: 'in' as const,
       pos: positions.get(s.taskId) ?? { x: 0, y: 0 },
@@ -477,6 +494,51 @@
       <IconButton size="sm" title="Zoom to fit" onclick={zoomToFit}>
         <Maximize2 size={14} />
       </IconButton>
+      {#if managed && onAddTask && candidates.length > 0}
+        <Popover align="left">
+          {#snippet trigger(open)}
+            <IconButton size="sm" active={open} title="Add ticket" onclick={() => (addDraft = '')}>
+              <ListPlus size={14} />
+            </IconButton>
+          {/snippet}
+          {#snippet content(close)}
+            <div class="flex w-64 flex-col gap-1">
+              <Input
+                autofocus
+                bind:value={addDraft}
+                placeholder="Filter tickets"
+                size="sm"
+              />
+              {#if addRows.length === 0}
+                <p class="px-1 py-2 font-sans text-xs text-muted">No tickets match.</p>
+              {:else}
+                <div class="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
+                  {#each addRows as t (t.id)}
+                    <button
+                      type="button"
+                      onclick={() => {
+                        onAddTask(t.id)
+                        close()
+                      }}
+                      class="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-raised"
+                    >
+                      {#if t.ticketRef}
+                        <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted">{t.ticketRef}</span>
+                      {/if}
+                      <span class="min-w-0 flex-1 truncate font-sans text-xs text-fg">{t.title}</span>
+                      {#if t.effort}
+                        <span class="shrink-0 rounded border border-line-subtle px-1 font-mono text-[9px] uppercase tracking-[0.05em] text-muted">
+                          {EFFORT_LABEL[t.effort]}
+                        </span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/snippet}
+        </Popover>
+      {/if}
       {#if managed && onRename}
         <Popover align="left">
           {#snippet trigger(open)}
@@ -725,6 +787,16 @@
          create-and-connect. Title only; the chain does the rest. Lives at
          SURFACE level (outside the transform) because composerAt is computed
          in surface coordinates. -->
+    {#if workchain.steps.length === 0}
+      <!-- The empty chain's hint: the seed paths a blank canvas has — the
+           header's picker (a ticket already on the board) or the drag-on-
+           empty-canvas composer (a new one, wired in on Enter). -->
+      <div class="pointer-events-none absolute inset-0 flex items-center justify-center">
+        <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
+          No steps yet — add a ticket or drop a wire to create one
+        </p>
+      </div>
+    {/if}
     {#if composer}
       <div
         class="absolute z-10 w-56 rounded-lg border border-accent-border bg-panel p-2 shadow-[var(--theme-shadow-2)]"
