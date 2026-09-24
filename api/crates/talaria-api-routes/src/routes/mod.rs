@@ -1324,6 +1324,11 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_fleet::agents::runs_watch::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/runs/{id}/transcript",
+            get(talaria_routes_fleet::agents::runs_transcript::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/agents/tool-events",
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
         )

@@ -6491,6 +6491,7 @@ dependencies = [
  "talaria-agents-registry",
  "talaria-api-facades",
  "talaria-approvals",
+ "talaria-artifacts",
  "talaria-audit",
  "talaria-auth",
  "talaria-auth-config",

@@ -77,8 +77,8 @@ Two known amplifiers stay out of packing, tracked separately: ever-growing sessi
 
 The run-detail modal (every "watch the work" affordance opens it) is the full-insight view, one pane per question:
 
-- **Live** — the agent's stream as it happens: its words, its reasoning, and every tool call *with its argument preview* (the preview carries the persona's display-redacted primary argument — the whole terminal command, which is where the harness steering is legible). Workbench MCP calls (`start_job`, `finish_job`, …) appear with full arguments and outcomes — they are platform-side, so their fidelity is total.
-- **Turns** — the retained transcript: each turn's prompt and stream, captured to a `run-transcript` artifact on the ticket at turn end, scrubbed of known credential shapes, retained per `observability.transcriptRetentionDays` in admin settings (default 7 days; null = permanent).
+- **Agent** — Hermes replies and its own tool calls, retained turns above the live tail. A terminal call that invokes the coding harness is not shown here.
+- **Turns** — each harness exchange: the ask the agent sent, the harness output, and the prose the agent wrote back before it did anything else.
 - **Resources** — the agent container's cpu/memory/process sparklines over the run's window, sampled once a minute by the platform (admin-only; the same series feeds Observability → Compute).
 
 What the live stream cannot show on its own: tool RESULTS for tools that execute inside the agent container (the persona's completion frames don't carry them). The **talaria-events** Hermes plugin closes that gap: rendered into every agent, it reports each tool call's name, arguments, and result (clamped, secret-scrubbed at the api boundary) to `POST /api/agents/tool-events`, which lands `toolfull` frames on the live run's watch stream — so results appear live and in the retained transcripts. Correlation is the agent's newest live work session (a documented v1 approximation; exact persona-session pinning is a follow-up).

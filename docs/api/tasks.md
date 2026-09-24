@@ -228,7 +228,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session_stop.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{ok}` | 200, 403, 404 | — |
+| POST | `session` | — | `{ok}` | 200, 403, 404, 409 | — |
 
 ## `/api/tasks/{id}/work-sessions`
 
@@ -242,7 +242,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_sessions.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{sessions}` | 200, 403, 404 | — |
+| GET | `session` | — | `{sessions}` | 200, 403, 404, 409 | — |
 
 ## `/api/workflows`
 

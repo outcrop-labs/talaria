@@ -250,6 +250,28 @@ pub async fn create_artifact(
     Ok(Artifact::from(row))
 }
 
+/// The title a work-session transcript is stored under. The writer and the
+/// run-detail read share it: a drift here is a history view that says the
+/// record was never captured, while the row sits in the table.
+pub fn run_transcript_title(run_id: &str) -> String {
+    format!("Run {run_id} transcript")
+}
+
+/// The retained transcript for a run, if capture wrote one. Absence is not
+/// an error — a session that predates capture, or whose capture failed, has
+/// none. Visibility is irrelevant here: the row is private and owned by
+/// nobody (created_by is the agent model), so the generic artifact read
+/// filters it out. The caller is the run's own audience check.
+pub async fn run_transcript(pg: &PgPool, run_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select body from artifacts where kind = 'run-transcript' and title = $1 limit 1",
+    )
+    .bind(run_transcript_title(run_id))
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(body,)| body))
+}
+
 // ── Folders (organize artifacts into a nestable tree) ──────────────────────
 
 /// An artifact folder — wire order.
@@ -1249,6 +1271,16 @@ mod tests {
         let odd = r#"[["v"],[true,1.5,{"a":1},["j","oin"]]]"#;
         // header is 1 wide → only the first cell of the odd row renders.
         assert_eq!(sheet_to_markdown_table(odd), "| v |\n| --- |\n| true |");
+    }
+
+    #[test]
+    fn run_transcript_title_is_the_shape_already_stored() {
+        // Existing rows were written as `Run {id} transcript`. The read
+        // finds them only if this stays that string.
+        assert_eq!(
+            run_transcript_title("11111111-1111-4111-8111-111111111111"),
+            "Run 11111111-1111-4111-8111-111111111111 transcript"
+        );
     }
 
     #[test]
