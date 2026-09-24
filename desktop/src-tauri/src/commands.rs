@@ -360,12 +360,11 @@ fn reveal_notice(app: &AppHandle, label: &str, href: Option<&str>) {
             let _ = window.show();
             let _ = window.set_focus();
         }
-        if let Some(href) = href {
-            if let Some(js) = notify::assign_js(&href) {
-                if let Some(webview) = app.get_webview(&label) {
-                    let _ = webview.eval(js);
-                }
-            }
+        if let Some(href) = href
+            && let Some(js) = notify::assign_js(&href)
+            && let Some(webview) = app.get_webview(&label)
+        {
+            let _ = webview.eval(js);
         }
     });
 }
