@@ -25,6 +25,21 @@ export function permissionState(): PermissionState {
   return Notification.permission
 }
 
+/** Whether this row may offer browser notification UI at all (the permission
+ * toggle, push status, browser recovery advice). Inside the Tauri shell the
+ * webview reads Notification.permission as 'denied' and there is no browser
+ * site settings surface to fix that (native notifications are deferred,
+ * docs/DESKTOP.md), so the row renders its shell variant instead.
+ * 'unsupported' means no browser Notification API either. Pure and takes the
+ * shell flag as an input: the node test suite must not load desktop-shell.ts,
+ * whose dynamic Tauri import only resolves inside the app. */
+export function canUseBrowserNotifications(input: {
+  permission: PermissionState
+  inDesktopShell: boolean
+}): boolean {
+  return !input.inDesktopShell && input.permission !== 'unsupported'
+}
+
 /** Set the person's own off switch. Revoking browser permission means digging
  *  through browser site settings; this makes "stop showing these" one click
  *  while the grant stands. */

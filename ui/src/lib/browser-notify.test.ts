@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   browserNotifyEnabled,
+  canUseBrowserNotifications,
   ensurePushSubscription,
   setBrowserNotifyPref,
   shouldBrowserNotify,
@@ -33,6 +34,26 @@ describe('shouldBrowserNotify (the one gate)', () => {
   it('never fires without the grant or with the pref off', () => {
     expect(shouldBrowserNotify({ focused: false, visible: false, permission: 'default', enabled: true })).toBe(false)
     expect(shouldBrowserNotify({ focused: false, visible: false, permission: 'granted', enabled: false })).toBe(false)
+  })
+})
+
+describe('canUseBrowserNotifications (the shell gate)', () => {
+  // TALA-76: inside the Tauri shell the webview reports Notification.permission
+  // as 'denied', and there is no browser site-settings surface there to undo
+  // it — the row offers no browser UI on that reading, whatever the state says.
+  it('is false inside the desktop shell for every permission state', () => {
+    for (const permission of ['unsupported', 'default', 'granted', 'denied'] as const) {
+      expect(canUseBrowserNotifications({ permission, inDesktopShell: true })).toBe(false)
+    }
+  })
+
+  it('offers the row in a browser for every permission state but unsupported', () => {
+    expect(canUseBrowserNotifications({ permission: 'default', inDesktopShell: false })).toBe(true)
+    expect(canUseBrowserNotifications({ permission: 'granted', inDesktopShell: false })).toBe(true)
+    // Denied stays offerable here: the recovery advice is followable in a
+    // real browser's site settings — exactly the surface the shell lacks.
+    expect(canUseBrowserNotifications({ permission: 'denied', inDesktopShell: false })).toBe(true)
+    expect(canUseBrowserNotifications({ permission: 'unsupported', inDesktopShell: false })).toBe(false)
   })
 })
 
