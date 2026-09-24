@@ -166,53 +166,46 @@
 {#snippet shellSkeleton(content: Snippet | undefined)}
   <MercuryBackdrop />
   <div class="flex h-full flex-col">
-  <!-- Dock-shaped skeleton: the band of tiles above the strip, exactly the
-       rows the real chrome paints, so loading never reflows. h-9 tiles and
-       the h-14 band match the real dock's geometry; the strip rows keep the
-       old line boxes (text-base 24px, 10px mono 15px + mt-0.5). -->
-  <nav
-    aria-label="Primary"
-    class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
-  >
-    <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
-      <WingMark class="h-5 w-5" />
-    </div>
-    {#each [0, 1, 2, 3, 4, 5] as i (i)}
-      <Skeleton class="h-9 w-9 rounded-md" />
-    {/each}
-    <div class="min-w-0 flex-1"></div>
-  </nav>
-  <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-    <!-- Two-row strip skeleton: title, then the breadcrumb line under it —
-         the same shape the real strip paints, so loading never reflows.
-         h-6/h-4 match the real rows' line boxes (text-base 24px, 10px mono
-         15px + mt-0.5), not a guess at them. -->
-    <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2">
-      <div>
-        <Skeleton class="h-6 w-44 rounded-full" />
-        <Skeleton class="mt-0.5 h-4 w-28 rounded-full" />
+    <!-- Dock-shaped skeleton: the band of tiles above the strip, exactly the
+         rows the real chrome paints, so loading never reflows. h-9 tiles and
+         the h-14 band match the real dock's geometry; the strip row keeps
+         its line box (the strip is the slim personal row now). -->
+    <nav
+      aria-label="Primary"
+      class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
+    >
+      <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
+        <WingMark class="h-5 w-5" />
       </div>
-      {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" />{/if}
-    </header>
-    <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
-      {#if content}
-        {@render content()}
-      {:else}
-        <!-- No title skeleton: view titles live in the strip now, so the
-             page body starts straight at its content. -->
-        <div class="mx-auto w-full max-w-[var(--page-width)]">
-          <div class="grid gap-4 xl:grid-cols-3">
-            {#each [0, 1, 2] as i (i)}
-              <div class="rounded-lg border border-line bg-panel p-6">
-                <Skeleton class="mb-4 h-3 w-24 rounded-full" />
-                <SkeletonRows rows={4} />
-              </div>
-            {/each}
+      {#each [0, 1, 2, 3, 4, 5] as i (i)}
+        <Skeleton class="h-9 w-9 rounded-md" />
+      {/each}
+      <div class="min-w-0 flex-1"></div>
+    </nav>
+    <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <!-- The strip: one slim row now — the title row is gone, so the skeleton
+           holds only its line box (py-2 + h-7). -->
+      <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2">
+        <div class="w-40"></div>
+        {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" />{/if}
+      </header>
+      <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
+        {#if content}
+          {@render content()}
+        {:else}
+          <div class="mx-auto w-full max-w-[var(--page-width)]">
+            <div class="grid gap-4 xl:grid-cols-3">
+              {#each [0, 1, 2] as i (i)}
+                <div class="rounded-lg border border-line bg-panel p-6">
+                  <Skeleton class="mb-4 h-3 w-24 rounded-full" />
+                  <SkeletonRows rows={4} />
+                </div>
+              {/each}
+            </div>
           </div>
-        </div>
-      {/if}
+        {/if}
+      </div>
     </div>
-  </div>
   </div>
 
 {/snippet}

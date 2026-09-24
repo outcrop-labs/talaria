@@ -48,9 +48,11 @@ Three entry points:
 | Harness | How |
 |---|---|
 | Claude Code | already wired — the tracked [`../../.claude/settings.json`](../../.claude/settings.json) Stop hook |
+| Codex CLI | already wired — the tracked [`../../.codex/hooks.json`](../../.codex/hooks.json) Stop hook. Exit 2 continues the turn with stderr as the next prompt. A project hook does not run until it is trusted (`/hooks`). |
+| Pi, Oh My Pi, opencode | no main-agent Stop event that can block a turn. A settle hook also fires for subagents, so it is not wired — the full check on every subagent is not a lifecycle. The rule in [`AGENTS.md`](../../AGENTS.md) still binds: run [`stop-check.mjs`](./stop-check.mjs) at the done-moment and honor exit 2. |
 | git (works under any harness) | `talaria setup` sets `core.hooksPath` to this directory, which is what makes [`pre-push`](./pre-push) run; per-clone by hand: `git config core.hooksPath scripts/hooks` |
-| CI | nothing to do — [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs `bun run check` itself, and [`../../.github/workflows/flow.yml`](../../.github/workflows/flow.yml) runs the branch policy |
-| anything else | run [`stop-check.mjs`](./stop-check.mjs) at your "about to claim done" moment and [`pr-watch.mjs`](./pr-watch.mjs) after the PR opens; honor exit 2 |
+| CI | nothing to do — [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs `bun run check` itself, and [`../../.github/workflows/flow.yml`](../../.github/workflows/flow.yml) runs the branch policy. CI has no one's worktrees. |
+| anything else | run [`stop-check.mjs`](./stop-check.mjs) before you claim done, and [`pr-watch.mjs`](./pr-watch.mjs) after the PR opens; honor exit 2. Removing the local workspace is still your step — the sweep does not delete a fresh one. |
 
 A git hook is bypassable (`git push --no-verify`) and a stop gate is not a wall either; both
 are there so the right thing is the easy thing. What makes the branch model hold is the
