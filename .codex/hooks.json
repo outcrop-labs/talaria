@@ -1,0 +1,16 @@
+{
+  "description": "Stop gate for agents building this repo. Exit 2 continues the turn with the reason on stderr.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$(git rev-parse --show-toplevel)/scripts/hooks/stop-check.mjs\"",
+            "statusMessage": "Checking the tree and local workspace"
+          }
+        ]
+      }
+    ]
+  }
+}

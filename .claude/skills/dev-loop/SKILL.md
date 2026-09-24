@@ -69,11 +69,13 @@ Never two servers on one database — a stale encryption key re-seals secrets wr
 
 ## When the task ends
 
-Remove what this task created before you claim done. The convention — what goes, what stays,
-and the command — is the [cleanup](../cleanup/SKILL.md) skill. Scratch checkouts and throwaway
-downloads go under `/tmp/talaria-<name>` so the sweep can see them. `bun talaria cleanup`
-reports what is still there; the stop gate runs the sweep and blocks when disk use or the
-stale set crosses the line.
+Remove what this task created before you claim done, and not while a pull request
+from this task is still red — you may need the workspace to fix. The convention —
+what goes, what stays, and the command — is the [cleanup](../cleanup/SKILL.md) skill.
+Scratch checkouts and throwaway downloads go under `/tmp/talaria-<name>` so the sweep
+can see them. `bun talaria cleanup` reports what is still there; the stop gate runs
+the sweep and blocks when disk use or the stale set crosses the line. It does not
+delete a fresh worktree for you.
 
 ## When something fails oddly
 
