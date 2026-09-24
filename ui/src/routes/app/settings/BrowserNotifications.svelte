@@ -2,6 +2,7 @@
   import Segmented from '@/components/ui/Segmented.svelte'
   import {
     browserNotifyEnabled,
+    canUseBrowserNotifications,
     ensurePushSubscription,
     permissionState,
     requestBrowserNotify,
@@ -10,6 +11,7 @@
     type PermissionState,
     type PushOutcome,
   } from '@/lib/browser-notify'
+  import { inDesktopShell } from '@/lib/desktop-shell'
 
   // Desktop notifications: the browser tapping you on the shoulder when
   // Talaria is in another tab or window — and, through Web Push, when it is
@@ -27,6 +29,13 @@
   let perm = $state<PermissionState>(permissionState())
   let on = $state(browserNotifyEnabled())
   let push = $state<PushOutcome | null>(null)
+
+  // TALA-76: the shell's webview reports the permission as 'denied' with no
+  // way to undo that from inside the app, so the browser row's recovery
+  // advice can't be followed there — and native notifications are deferred
+  // (docs/DESKTOP.md). Read once at init: the shell flag and the API's
+  // existence are both fixed for the session.
+  const browserRow = canUseBrowserNotifications({ permission: permissionState(), inDesktopShell: inDesktopShell() })
 
   const set = async (wanted: boolean) => {
     if (wanted) {
@@ -51,6 +60,7 @@
   }
 </script>
 
+{#if browserRow}
 <div class="mt-5 border-t border-line-subtle pt-4">
   <div class="flex items-center gap-4">
     <div class="min-w-0 flex-1">
@@ -76,3 +86,16 @@
     {/if}
   </div>
 </div>
+{:else}
+<div class="mt-5 border-t border-line-subtle pt-4">
+  <div class="flex items-center gap-4">
+    <div class="min-w-0 flex-1">
+      <div class="text-sm text-fg">Desktop notifications</div>
+      <div class="font-sans text-xs text-muted">
+        Native notifications aren't available in the desktop app yet — this toggle is browser-only for now. In a browser, Talaria
+        can also reach you when it's closed entirely.
+      </div>
+    </div>
+  </div>
+</div>
+{/if}
