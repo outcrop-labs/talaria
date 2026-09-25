@@ -501,6 +501,7 @@ Source: [`api/crates/talaria-routes-boards/src/workchains/workchains_id.rs`](../
 | :--- | :--- | :--- |
 | `taskId` | `uuid` |  |
 | `after` | `uuid?` |  |
+| `wire` | `bool?` |  |
 
 ## `/api/workchains/{id}/steps/{taskId}`
 

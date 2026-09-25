@@ -5,7 +5,10 @@ import {
   chainBranches,
   chainProgress,
   chainedTaskIds,
+  chainIsLinear,
+  gridLayout,
   moveStepOrder,
+  NODE_W,
   wirePath,
   wireState,
   wouldCycle,
@@ -134,6 +137,38 @@ describe('chainBranches', () => {
   })
 })
 
+describe('chainIsLinear', () => {
+  const chainOf = (ids: string[], edges: WorkchainEdge[]) => ({
+    steps: ids.map((taskId, position) => ({ taskId, position })) as WorkchainStep[],
+    edges,
+  })
+
+  it('a straight line is linear — the positions verb is safe', () => {
+    expect(chainIsLinear(chainOf(['a', 'b', 'c'], [wire('a', 'b'), wire('b', 'c')]))).toBe(true)
+  })
+
+  it('a single step, with no wires at all, is linear', () => {
+    expect(chainIsLinear(chainOf(['a'], []))).toBe(true)
+    expect(chainIsLinear(chainOf([], []))).toBe(true)
+  })
+
+  it('a fan-out is not', () => {
+    expect(chainIsLinear(chainOf(['a', 'b', 'c'], [wire('a', 'b'), wire('a', 'c')]))).toBe(false)
+  })
+
+  it('an AND-join is not', () => {
+    expect(chainIsLinear(chainOf(['a', 'b', 'c'], [wire('a', 'c'), wire('b', 'c')]))).toBe(false)
+  })
+
+  it('two disjoint lines are not — the reorder would splice them into one', () => {
+    expect(chainIsLinear(chainOf(['a', 'b', 'c', 'd'], [wire('a', 'b'), wire('c', 'd')]))).toBe(false)
+  })
+
+  it('a step hanging off the line with no wire is not', () => {
+    expect(chainIsLinear(chainOf(['a', 'b', 'c'], [wire('a', 'b')]))).toBe(false)
+  })
+})
+
 describe('wouldCycle', () => {
   it('a self-wire is a cycle', () => {
     expect(wouldCycle([], 'a', 'a')).toBe(true)
@@ -160,43 +195,71 @@ describe('wouldCycle', () => {
   })
 })
 
-describe('autoLayout', () => {
-  it('placed steps keep their spot, unplaced get columns', () => {
-    const steps = [
-      { taskId: 'a', x: 500, y: 300, position: 0 },
-      { taskId: 'b', x: null, y: null, position: 1 },
-      { taskId: 'c', x: null, y: null, position: 2 },
-    ] as Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>
-    const layout = autoLayout(steps, [wire('a', 'b'), wire('b', 'c')])
-    expect(layout.get('a')).toEqual({ x: 500, y: 300 })
-    expect(layout.get('b')).toEqual({ x: 208 + 64, y: 0 }) // a column right of its placed predecessor — no longer stacked at the origin
-    expect(layout.get('c')).toEqual({ x: layout.get('b')!.x + 208 + 64, y: 0 })
-  })
+const unplaced = (taskId: string, position: number) =>
+  ({ taskId, x: null, y: null, position }) as Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>
 
-  it('an unplaced branch off a placed step lands a column right, not at the origin', () => {
-    const steps = [
-      { taskId: 'a', x: 40, y: 60, position: 0 },
-      { taskId: 'b', x: 320, y: 60, position: 1 },
-      { taskId: 'c', x: null, y: null, position: 2 },
-    ] as Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>
-    const layout = autoLayout(steps, [wire('a', 'b'), wire('a', 'c')])
-    expect(layout.get('a')).toEqual({ x: 40, y: 60 })
-    expect(layout.get('b')).toEqual({ x: 320, y: 60 })
-    expect(layout.get('c')).not.toEqual({ x: 0, y: 0 }) // not stacked on whatever sits at the origin
-    expect(layout.get('c')!.x).toBeGreaterThan(208) // a column right of its placed predecessor
+describe('gridLayout', () => {
+  it('a line walks one column per step', () => {
+    const steps = [unplaced('a', 0), unplaced('b', 1), unplaced('c', 2)]
+    const g = gridLayout(steps, [wire('a', 'b'), wire('b', 'c')])
+    expect(g.get('a')).toEqual({ x: 0, y: 0 })
+    expect(g.get('b')).toEqual({ x: 208 + 64, y: 0 })
+    expect(g.get('c')).toEqual({ x: (208 + 64) * 2, y: 0 })
   })
 
   it('a fan-out lays the branches in rows of one column', () => {
+    const steps = [unplaced('a', 0), unplaced('b', 1), unplaced('c', 2)]
+    const g = gridLayout(steps, [wire('a', 'b'), wire('a', 'c')])
+    expect(g.get('a')).toEqual({ x: 0, y: 0 })
+    expect(g.get('b')!.x).toBe(208 + 64)
+    expect(g.get('c')!.x).toBe(g.get('b')!.x)
+    expect(g.get('c')!.y).toBeGreaterThan(g.get('b')!.y)
+  })
+
+  it('an AND-join sits a column past its LAST predecessor', () => {
+    const steps = [unplaced('a', 0), unplaced('b', 1), unplaced('c', 2), unplaced('d', 3)]
+    const g = gridLayout(steps, [wire('a', 'b'), wire('b', 'c'), wire('a', 'd'), wire('c', 'd')])
+    expect(g.get('d')!.x).toBe(g.get('c')!.x + 208 + 64) // longest path, not the short one through 'a'
+  })
+
+  it('the grid ignores placement — it is what Tidy up writes', () => {
     const steps = [
-      { taskId: 'a', x: null, y: null, position: 0 },
-      { taskId: 'b', x: null, y: null, position: 1 },
-      { taskId: 'c', x: null, y: null, position: 2 },
+      { taskId: 'a', x: 900, y: 900, position: 0 },
+      unplaced('b', 1),
     ] as Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>
-    const layout = autoLayout(steps, [wire('a', 'b'), wire('a', 'c')])
-    expect(layout.get('a')).toEqual({ x: 0, y: 0 })
-    expect(layout.get('b')!.x).toBe(layout.get('a')!.x + 208 + 64)
-    expect(layout.get('c')!.x).toBe(layout.get('b')!.x)
-    expect(layout.get('c')!.y).toBeGreaterThan(layout.get('b')!.y)
+    expect(gridLayout(steps, [wire('a', 'b')]).get('a')).toEqual({ x: 0, y: 0 })
+  })
+
+  it('an edge naming work outside the chain does not level anything', () => {
+    const g = gridLayout([unplaced('a', 0)], [wire('ghost', 'a')])
+    expect(g.get('a')).toEqual({ x: 0, y: 0 })
+  })
+})
+
+describe('autoLayout', () => {
+  it('placed steps keep their spot; the rest keep their grid slot', () => {
+    const steps = [
+      { taskId: 'a', x: 500, y: 300, position: 0 },
+      unplaced('b', 1),
+      unplaced('c', 2),
+    ] as Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>
+    const layout = autoLayout(steps, [wire('a', 'b'), wire('b', 'c')])
+    expect(layout.get('a')).toEqual({ x: 500, y: 300 })
+    expect(layout.get('b')).toEqual({ x: 208 + 64, y: 0 })
+    expect(layout.get('c')).toEqual({ x: (208 + 64) * 2, y: 0 })
+  })
+
+  it('PLACING ONE CARD MOVES NOTHING ELSE — the whole point of the grid', () => {
+    const steps = [unplaced('a', 0), unplaced('b', 1), unplaced('c', 2), unplaced('d', 3)]
+    const edges = [wire('a', 'b'), wire('b', 'c'), wire('c', 'd')]
+    const before = autoLayout(steps, edges)
+    // the reader drags 'b' somewhere of their own
+    const after = autoLayout(
+      steps.map((s) => (s.taskId === 'b' ? { ...s, x: 40, y: 400 } : s)),
+      edges,
+    )
+    expect(after.get('b')).toEqual({ x: 40, y: 400 })
+    for (const id of ['a', 'c', 'd']) expect(after.get(id)).toEqual(before.get(id))
   })
 })
 
@@ -210,6 +273,17 @@ describe('wirePath', () => {
   it('curves through control points off both nodes', () => {
     const d = wirePath({ x: 0, y: 0 }, { x: 300, y: 200 })
     expect(d).toContain('C')
+  })
+
+  it('a BACKWARDS wire pushes its controls past the overlap, not through it', () => {
+    // target left of the source: the control points must still leave right of
+    // the source and arrive left of the target, or the curve folds flat.
+    const d = wirePath({ x: 400, y: 0 }, { x: 0, y: 200 })
+    const nums = d.match(/-?\d+(?:\.\d+)?/g)!.map(Number)
+    const [x1, , c1x, , c2x] = nums as number[]
+    expect(c1x!).toBeGreaterThan(x1!) // out of the source's right edge
+    expect(c2x!).toBeLessThan(0) // into the target's left edge
+    expect(x1).toBe(400 + NODE_W)
   })
 })
 
