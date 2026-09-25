@@ -14,10 +14,12 @@
 //
 // House rule: #[ignore]d so the unit CI job skips it; the api-integration
 // workflow runs every it/ module with --ignored against the real rig, so
-// this file must hold up there: its month-cost assertions read the rig's
-// GLOBAL month window, and the workflow runs a module's tests concurrently
-// (no --test-threads=1) — the MONTH_WINDOW guard below serializes each
-// test's before/after read, the same shape push_live uses for its keypair.
+// this file must hold up there. The assertions are LEDGER-ANCHORED — every
+// month-cost claim is a comparison against the same priced-view sum
+// cost_overview itself reads, computed from the same SQL — so a sibling
+// module's row landing mid-test moves both sides equally and cannot fake a
+// result. MONTH_WINDOW below only keeps the two fixtures from colliding,
+// not correctness.
 //
 //   DATABASE_URL=... REDIS_URL=... TALARIA_SECRET_KEY=ci-dummy \
 //     cargo test -p talaria-api --test it price_rig_live -- --ignored
@@ -30,10 +32,11 @@ use talaria_api_facades::gateway::usage::cost_overview;
 /// failed previous run cannot shadow the next one.
 const PREFIX: &str = "price-rig-live";
 
-/// Held across each test's before/after month-cost reads: both tests assert
-/// on the DELTA the rig's shared month window moved, so a sibling's ledger
-/// row landing mid-window would fake a double cost. CI runs this file's
-/// tests in parallel — one guard closes the window.
+/// Held across each test's fixture: both tests write endpoints with
+/// different names but sweep the same usage_events tag, and the sweep must
+/// not run under the sibling's inserts. Correctness no longer depends on
+/// this lock — the assertions are ledger-anchored — it just keeps the two
+/// fixtures out of each other's resets.
 static MONTH_WINDOW: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Delete this binary's rows. The cascades (provider_prices,
@@ -101,79 +104,96 @@ async fn cloud_row(pg: &PgPool, endpoint: &str, model: &str, prompt: i32, comple
     .unwrap();
 }
 
-/// The month window's ledger cost right now — the rig carries other
-/// sessions' rows, so the assertions are on the DELTA a fixture adds, never
-/// on an absolute number.
-async fn month_cost(pg: &PgPool) -> f64 {
-    let totals = cost_overview(pg).await.unwrap().totals;
-    totals.month.cost.as_f64().unwrap()
+/// The priced view cost_overview's month window reads — the exact CTE,
+/// lifted once so the tests compare against the same SQL the product uses.
+/// The multiplier constants are the gateway's CACHE_WRITE/READ_MULTIPLIER.
+const PRICED_CTE: &str = "with priced as (
+    select u.*,
+      case when u.endpoint_class = 'local' then 0
+           when u.provider_cost is not null then u.provider_cost
+           when u.endpoint_class = 'cloud'
+                and pp.in_tok is not null and pp.out_tok is not null then
+             ((u.prompt_tokens + u.cache_write_tokens * 1.25
+               + u.cache_read_tokens * 0.1) * pp.in_tok
+              + u.completion_tokens * pp.out_tok) / 1e6
+           else null
+      end as cost,
+      case when u.endpoint_class = 'local' then 'local'
+           when u.provider_cost is not null then 'provider'
+           when u.endpoint_class = 'cloud'
+                and pp.in_tok is not null and pp.out_tok is not null then 'derived'
+           else null
+      end as cost_basis
+    from usage_events u
+    left join llm_endpoints e on e.name = u.endpoint
+    left join lateral (
+      select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok
+      from provider_prices p
+      where p.endpoint_id = e.id
+        and p.model = u.llm_model
+        and (
+          (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant)
+          or (
+            coalesce(u.cost_variant, '') = ''
+            and p.variant = ''
+            and e.provider is distinct from 'openrouter'
+          )
+        )
+      order by p.fetched_at desc
+      limit 1
+    ) pp on true)";
+
+/// This endpoint's own row in the priced view: (cost, cost_basis). Null
+/// when the fixture row is missing — the caller's expect says which.
+async fn endpoint_row_cost(pg: &PgPool, endpoint: &str) -> Option<(f64, String)> {
+    let sql =
+        format!("{PRICED_CTE} select cost::float8, cost_basis from priced where endpoint = $1");
+    sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(endpoint)
+        .fetch_optional(pg)
+        .await
+        .unwrap()
+}
+
+/// The 30-day ledger sum, computed with the SAME priced CTE cost_overview's
+/// month window uses — the number a stale report must never move.
+async fn ledger_month_cost(pg: &PgPool) -> f64 {
+    let sql = format!(
+        "{PRICED_CTE} \
+         select coalesce(sum(cost), 0)::float8 as cost \
+         from priced where created_at > now() - interval '30 days'"
+    );
+    let (cost,): (f64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .fetch_one(pg)
+        .await
+        .unwrap();
+    cost
 }
 
 #[tokio::test]
 #[ignore = "needs a live rig"]
 async fn a_cloud_row_without_a_provider_charge_prices_from_the_catalog_row() {
     let pg = pg().await;
-    // Close the month-cost window before touching the ledger (MONTH_WINDOW).
+    // Keep the sibling's reset out of this fixture (MONTH_WINDOW).
     let _window = MONTH_WINDOW.lock().await;
     reset(&pg).await;
-
-    // Baseline first: the rig's own rows are in the 30-day month window.
-    let before = month_cost(&pg).await;
 
     let name = fixture(&pg, "priced", "test-model-x", 3.0, 15.0).await;
     cloud_row(&pg, &name, "test-model-x", 1000, 500).await;
 
     let overview = cost_overview(&pg).await.unwrap();
-    // (1000 in × $3 + 500 out × $15) / 1e6 = $0.0105.
-    let after = overview.totals.month.cost.as_f64().unwrap();
+    // The month tile carries the ledger number — the same sum the priced
+    // view reports — with our row priced in. (1000 × $3 + 500 × $15)/1e6.
+    let ledger = ledger_month_cost(&pg).await;
+    let month = overview.totals.month.cost.as_f64().unwrap();
     assert!(
-        (after - before - 0.0105).abs() < 1e-9,
-        "month cost {after} should be baseline {before} + 0.0105"
+        (month - ledger).abs() < 1e-9,
+        "month cost {month} should be the ledger sum {ledger}"
     );
-    // The same priced read names its basis: derived, not provider, not null.
-    let row: Option<(f64, String)> = sqlx::query_as(
-        "with priced as (
-            select u.*,
-              case when u.endpoint_class = 'local' then 0
-                   when u.provider_cost is not null then u.provider_cost
-                   when u.endpoint_class = 'cloud'
-                        and pp.in_tok is not null and pp.out_tok is not null then
-                     ((u.prompt_tokens + u.cache_write_tokens * 1.25
-                       + u.cache_read_tokens * 0.1) * pp.in_tok
-                      + u.completion_tokens * pp.out_tok) / 1e6
-                   else null
-              end as cost,
-              case when u.endpoint_class = 'local' then 'local'
-                   when u.provider_cost is not null then 'provider'
-                   when u.endpoint_class = 'cloud'
-                        and pp.in_tok is not null and pp.out_tok is not null then 'derived'
-                   else null
-              end as cost_basis
-            from usage_events u
-            left join llm_endpoints e on e.name = u.endpoint
-            left join lateral (
-              select p.price_in_per_mtok as in_tok, p.price_out_per_mtok as out_tok
-              from provider_prices p
-              where p.endpoint_id = e.id
-                and p.model = u.llm_model
-                and (
-                  (coalesce(u.cost_variant, '') <> '' and p.variant = u.cost_variant)
-                  or (
-                    coalesce(u.cost_variant, '') = ''
-                    and p.variant = ''
-                    and e.provider is distinct from 'openrouter'
-                  )
-                )
-              order by p.fetched_at desc
-              limit 1
-            ) pp on true)
-         select cost::float8, cost_basis from priced where endpoint = $1",
-    )
-    .bind(&name)
-    .fetch_optional(&pg)
-    .await
-    .unwrap();
-    let (cost, basis) = row.expect("the fixture row is in the priced view");
+    // Our row is what moved it: priced 0.0105, basis derived.
+    let (cost, basis) = endpoint_row_cost(&pg, &name)
+        .await
+        .expect("the fixture row is in the priced view");
     assert!(
         (cost - 0.0105).abs() < 1e-9,
         "row cost {cost} should be 0.0105"
@@ -185,13 +205,21 @@ async fn a_cloud_row_without_a_provider_charge_prices_from_the_catalog_row() {
 #[ignore = "needs a live rig"]
 async fn stale_provider_activity_leaves_the_ledger_month_cost() {
     let pg = pg().await;
-    // Close the month-cost window before touching the ledger (MONTH_WINDOW).
+    // Keep the sibling's reset out of this fixture (MONTH_WINDOW).
     let _window = MONTH_WINDOW.lock().await;
     reset(&pg).await;
 
     let name = fixture(&pg, "stale", "test-model-s", 3.0, 15.0).await;
     cloud_row(&pg, &name, "test-model-s", 1000, 500).await;
-    let before = month_cost(&pg).await;
+    // Our priced row is in the ledger before the stale report lands.
+    let (cost, basis) = endpoint_row_cost(&pg, &name)
+        .await
+        .expect("the fixture row is in the priced view");
+    assert!(
+        (cost - 0.0105).abs() < 1e-9,
+        "row cost {cost} should be 0.0105"
+    );
+    assert_eq!(basis, "derived");
 
     // A stale activity report: 13 hours old, past the 12h freshness window —
     // the shape a dead ingest leaves behind. Without the guard it would
@@ -211,11 +239,16 @@ async fn stale_provider_activity_leaves_the_ledger_month_cost() {
     .unwrap();
 
     let overview = cost_overview(&pg).await.unwrap();
-    let after = overview.totals.month.cost.as_f64().unwrap();
+    // The regression: a stale report may NEVER make the month tile diverge
+    // from the ledger sum — both sides read the same priced view, so a
+    // sibling's concurrent write moves them equally and cannot fake this.
+    let ledger = ledger_month_cost(&pg).await;
+    let month = overview.totals.month.cost.as_f64().unwrap();
     assert!(
-        (after - before).abs() < 1e-9,
-        "stale report must not move the month cost: before {before}, after {after}"
+        (month - ledger).abs() < 1e-9,
+        "stale report moved the month cost off the ledger: month {month}, ledger {ledger}"
     );
+    assert!(month < 99.0, "the stale 99.0 must not own the month tile");
     let reported = overview
         .totals
         .provider_reported
