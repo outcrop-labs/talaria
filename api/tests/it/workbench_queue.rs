@@ -1,4 +1,4 @@
-mod support;
+use crate::support::pg;
 // Live-DB proof of the workbench queue's FIFO (cargo test -- --ignored).
 // promote_head_of_line walks queued jobs oldest-first and flips at most
 // `guard` per pass, stopping at the first admission refusal — the
@@ -69,7 +69,7 @@ async fn status_of(pg: &PgPool, job_id: &str) -> (String, Option<String>) {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn one_pass_promotes_only_the_head_and_clears_its_reason() {
-    let pg = support::pg().await;
+    let pg = pg().await;
     let slug = format!("wb-queue-{}", Uuid::new_v4());
     reset(&pg, &slug).await;
     let agent = agent_row(&pg, &slug).await;
@@ -118,7 +118,7 @@ async fn one_pass_promotes_only_the_head_and_clears_its_reason() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_refused_head_blocks_the_line_not_just_itself() {
-    let pg = support::pg().await;
+    let pg = pg().await;
     let slug = format!("wb-queue-{}", Uuid::new_v4());
     reset(&pg, &slug).await;
     let agent = agent_row(&pg, &slug).await;

@@ -7507,6 +7507,7 @@ dependencies = [
  "talaria-statuses",
  "talaria-tasks",
  "talaria-work-wait",
+ "talaria-workbench",
  "talaria-workbench-harnesses",
  "talaria-workbench-queue",
  "tokio",
