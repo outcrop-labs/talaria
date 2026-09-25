@@ -57,6 +57,7 @@ talaria-teams = { workspace = true }
 talaria-update-job = { workspace = true }
 talaria-uploads = { workspace = true }
 talaria-work-dispatch = { workspace = true }
+talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-fleet-create = { workspace = true }

@@ -431,6 +431,70 @@ fn read_load(proc: &Path) -> Option<LoadReading> {
     parse_loadavg(&text)
 }
 
+// ── The admission surface ────────────────────────────────────────────────────
+//
+// `snapshot()` is the observability read: cached, CPU-delta-windowed, and
+// shaped for the UI. Admission needs none of that — it wants the same
+// root-detection (`/proc` vs `/host/proc`) and the same file reads, but
+// fresh, one number each, and pure enough to test without a host. The
+// helpers below reuse the private machinery (never a second copy of root
+// detection or statvfs) and expose exactly what the workbench's
+// resource gate reads.
+
+/// The host's `/proc` this process can actually see — `/proc` on the host,
+/// `/host/proc` in the container deploy, or the `TALARIA_HOST_PROC`
+/// override when it is readable. `None` when neither is available (a
+/// container without the bind mounts): the caller fails that dimension
+/// open rather than read the container's own `/proc` as the host's.
+pub fn host_proc() -> Option<PathBuf> {
+    match choose_roots(&RootFacts::detect()) {
+        Roots::Host { proc, .. } => Some(PathBuf::from(proc)),
+        Roots::Unavailable { .. } => None,
+    }
+}
+
+/// The host's root filesystem as seen here — `/` on the host, `/host` in the
+/// container deploy (with `TALARIA_HOST_ROOT` the override). `None` under
+/// the same law as `host_proc`: no host root, no host disk reading.
+pub fn host_root() -> Option<PathBuf> {
+    match choose_roots(&RootFacts::detect()) {
+        Roots::Host { root, .. } => Some(PathBuf::from(root)),
+        Roots::Unavailable { .. } => None,
+    }
+}
+
+/// The one-minute load average divided by the core count — "how saturated
+/// is a core", comparable across machines. `None` when the host's loadavg
+/// or core count cannot be read.
+pub fn load1_per_core() -> Option<f64> {
+    let proc = host_proc()?;
+    load1_per_core_of(read_load(&proc)?, cpu_cores(&proc))
+}
+
+/// The pure half of `load1_per_core`: one reading over its core count.
+/// A zero core count is a broken stat, not a saturated machine — refuse it
+/// rather than divide by zero.
+pub fn load1_per_core_of(load: LoadReading, cores: u32) -> Option<f64> {
+    (cores > 0).then(|| load.one / f64::from(cores))
+}
+
+/// The host's core count as `/proc/stat` spells it.
+pub fn core_count() -> Option<u32> {
+    let proc = host_proc()?;
+    let cores = cpu_cores(&proc);
+    (cores > 0).then_some(cores)
+}
+
+/// Free bytes available to non-root on the filesystem holding `path` —
+/// `f_bavail`, the `df` number an operator cross-checks. `path` is resolved
+/// through the host root (`/host/opt/data` in the container deploy), so a
+/// containerized api still reads the host's disk, not its overlay. `None`
+/// when the host root or the statvfs fails.
+pub fn mount_free_bytes(path: &Path) -> Option<u64> {
+    let resolved = host_path(&host_root()?, &path.to_string_lossy());
+    statvfs_usage(&resolved).map(|u| u.available)
+}
+
 fn parse_loadavg(text: &str) -> Option<LoadReading> {
     let mut parts = text.split_whitespace();
     Some(LoadReading {
@@ -947,6 +1011,37 @@ Cached:          250 kB
         assert_eq!(l.one, 1.5);
         assert_eq!(l.five, 0.75);
         assert_eq!(l.fifteen, 0.25);
+    }
+
+    #[test]
+    fn load_per_core_divides_and_refuses_a_zero_core_count() {
+        let load = parse_loadavg("8.00 4.00 2.00 2/100 9\n").unwrap();
+        // 8.0 over 4 cores is exactly 2 per core.
+        assert_eq!(load1_per_core_of(load, 4), Some(2.0));
+        // A zero core count is a broken stat, not a saturated machine.
+        let load = parse_loadavg("8.00 4.00 2.00 2/100 9\n").unwrap();
+        assert_eq!(load1_per_core_of(load, 0), None);
+    }
+
+    #[test]
+    fn mount_free_bytes_resolves_through_the_host_root() {
+        // The resolution half is pure and testable without a host: the
+        // same host_path law read_mounts uses, applied to the admission
+        // path. On the host the path is unchanged; in the container
+        // deploy the host bind root is prepended.
+        assert_eq!(
+            host_path(Path::new("/"), "/opt/data/workbench/jobs"),
+            PathBuf::from("/opt/data/workbench/jobs")
+        );
+        assert_eq!(
+            host_path(Path::new("/host"), "/opt/data/workbench/jobs"),
+            PathBuf::from("/host/opt/data/workbench/jobs")
+        );
+        // The statvfs half needs a real filesystem; against this repo's
+        // own tree it answers Some, proving the plumbing end to end
+        // without depending on /proc.
+        assert!(mount_free_bytes(Path::new("tests")).is_none_or(|n| n > 0));
+        assert_eq!(mount_free_bytes(Path::new("/no/such/mount/here")), None);
     }
 
     #[test]

@@ -1086,6 +1086,12 @@ const MIGRATIONS: string[] = [
     updated_at timestamptz not null default now()
   )`,
   `alter table workbench_jobs add column if not exists merged_testing_at timestamptz`,
+  // TALA-81: a refused start is a queued start. `queued_at` is the FIFO
+  // key (kept on re-queue so a job does not buy a new place in line),
+  // `queued_reason` is the admission refusal the agent and job_status
+  // both read. Cleared on promotion to started (queued_at stays for history).
+  `alter table workbench_jobs add column if not exists queued_at timestamptz`,
+  `alter table workbench_jobs add column if not exists queued_reason text`,
   // Admin-registered custom workbench harnesses (declarative JSON matching
   // the SDK HarnessDefinition — no code). Merged over builtin + app-shipped
   // definitions by slug.

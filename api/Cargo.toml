@@ -583,6 +583,8 @@ talaria-workbench-harnesses = { path = "crates/talaria-workbench-harnesses" }
 
 talaria-workbench-mcp = { path = "crates/talaria-workbench-mcp" }
 
+talaria-workbench-queue = { path = "crates/talaria-workbench-queue" }
+
 talaria-workchains = { path = "crates/talaria-workchains" }
 
 talaria-workflows = { path = "crates/talaria-workflows" }
@@ -831,6 +833,7 @@ talaria-work-wait = { workspace = true }
 talaria-workbench = { workspace = true }
 talaria-workbench-harnesses = { workspace = true }
 talaria-workbench-mcp = { workspace = true }
+talaria-workbench-queue = { workspace = true }
 talaria-workchains = { workspace = true }
 talaria-workflows = { workspace = true }
 talaria-workspace-handles = { workspace = true }

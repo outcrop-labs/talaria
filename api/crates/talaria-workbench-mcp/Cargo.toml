@@ -31,6 +31,7 @@ talaria-secretbox = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-work-wait = { workspace = true }
 talaria-workbench = { workspace = true }
+talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 redis = { workspace = true }
