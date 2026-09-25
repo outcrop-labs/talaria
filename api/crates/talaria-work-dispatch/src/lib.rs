@@ -213,65 +213,45 @@ pub async fn maybe_dispatch_ticket(
             continue;
         }
         // The concurrency cap, asked BEFORE the refusal walk — and scoped to
-        // WORKBENCH agents only: their sessions spawn real processes in one
-        // container, while a session for a workbench-less agent is just model
+        // DEVELOPER agents only: their sessions spawn real processes in one
+        // container, while a session for any other agent is just model
         // turns and stays uncapped. An agent already driving MAX_CONCURRENT
         // sessions gets no new one this pass; standing down quietly is the
         // design, because the sweep re-offers every sixty seconds — the skip
         // IS the queue. A def or count we cannot read is a dispatch we do not
         // make (same law as the claim read below).
-        let wb_def: Option<(String, Option<String>, String, Option<String>)> = match sqlx::query_as(
-            "select department, role, workbench, workbench_profile from agent_defs where model = $1",
-        )
-        .bind(&agent)
-        .fetch_optional(pg)
-        .await
-        {
-            Ok(row) => row,
-            Err(e) => {
-                tracing::error!(
-                    "{LOG} {}: could not read {agent}'s def, not dispatching: {e}",
-                    task.id
-                );
-                continue;
-            }
-        };
-        let capped = match &wb_def {
-            // No def row (an unmanaged name) is nothing this gate knows how to
-            // classify — dispatch proceeds and the refusal walk below decides.
-            None => false,
-            Some((department, role, workbench, workbench_profile)) => {
-                let resolved = talaria_workbench::resolve_workbench(
-                    pg,
-                    &talaria_workbench::WorkbenchAgent {
-                        department,
-                        role: role.as_deref(),
-                        workbench,
-                        workbench_profile: workbench_profile.as_deref(),
-                    },
-                )
+        let developer: Option<bool> =
+            match sqlx::query_scalar("select developer from agent_defs where model = $1")
+                .bind(&agent)
+                .fetch_optional(pg)
                 .await
-                .unwrap_or(None);
-                match resolved {
-                    None => false,
-                    Some(_) => {
-                        match talaria_fleet_budget::admit_work(talaria_fleet_budget::JOB_STANDARD)
-                            .await
-                        {
-                            Ok(()) => false,
-                            Err(reason) => {
-                                tracing::debug!(
-                                    "{LOG} {}: {agent} waiting on host RAM ({reason})",
-                                    task.id
-                                );
-                                talaria_work_wait::mark_waiting(pg, &task.id, &agent, &reason)
-                                    .await;
-                                true
-                            }
-                        }
+            {
+                Ok(row) => row,
+                Err(e) => {
+                    tracing::error!(
+                        "{LOG} {}: could not read {agent}'s def, not dispatching: {e}",
+                        task.id
+                    );
+                    continue;
+                }
+            };
+        // No def row (an unmanaged name) is nothing this gate knows how to
+        // classify; dispatch proceeds and the refusal walk below decides.
+        let capped = match developer {
+            Some(true) => {
+                match talaria_fleet_budget::admit_work(talaria_fleet_budget::JOB_STANDARD).await {
+                    Ok(()) => false,
+                    Err(reason) => {
+                        tracing::debug!(
+                            "{LOG} {}: {agent} waiting on host RAM ({reason})",
+                            task.id
+                        );
+                        talaria_work_wait::mark_waiting(pg, &task.id, &agent, &reason).await;
+                        true
                     }
                 }
             }
+            Some(false) | None => false,
         };
         if capped {
             continue;

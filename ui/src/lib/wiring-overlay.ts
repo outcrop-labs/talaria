@@ -61,6 +61,12 @@ export function hitTestNode(
 
 // ── The viewport: pan + zoom ────────────────────────────────────────────────
 
+/** The canvas takes a wheel only when it is a zoom gesture: ctrl or cmd held
+ *  (a trackpad pinch synthesizes ctrl). A bare wheel is the page's scroll. */
+export function wheelZoomGesture(e: { ctrlKey: boolean; metaKey: boolean }): boolean {
+  return e.ctrlKey || e.metaKey
+}
+
 /** A canvas-space point from a client-space one, through the viewport. */
 export function clientToCanvas(
   client: { x: number; y: number },

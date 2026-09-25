@@ -148,6 +148,7 @@ hickory-resolver = { version = "0.25", default-features = false, features = ["sy
 
 # Declared by crates only (not by the root binary); union of crate specs.
 boa_engine = { version = "0.22.0", default-features = false }
+toml_edit = "0.25"
 
 # Declared by crates only (not by the root binary); union of crate specs.
 hex = { version = "0.4" }
@@ -310,6 +311,8 @@ talaria-google-client = { path = "crates/talaria-google-client" }
 talaria-google-connections = { path = "crates/talaria-google-connections" }
 
 talaria-google-drive = { path = "crates/talaria-google-drive" }
+
+talaria-google-docs = { path = "crates/talaria-google-docs" }
 
 talaria-google-errors = { path = "crates/talaria-google-errors" }
 
@@ -514,6 +517,7 @@ talaria-secret-rotation = { path = "crates/talaria-secret-rotation" }
 talaria-secretbox = { path = "crates/talaria-secretbox" }
 
 talaria-session = { path = "crates/talaria-session" }
+talaria-sender-identity = { path = "crates/talaria-sender-identity" }
 
 talaria-settings = { path = "crates/talaria-settings" }
 

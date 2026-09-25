@@ -24,6 +24,7 @@ talaria-retrieval-embed = { workspace = true }
 talaria-retrieval-index = { workspace = true }
 talaria-retrieval-qdrant = { workspace = true }
 talaria-retrieval-sources = { workspace = true }
+talaria-sender-identity = { workspace = true }
 talaria-state = { workspace = true }
 talaria-titler = { workspace = true }
 talaria-workspace-handles = { workspace = true }

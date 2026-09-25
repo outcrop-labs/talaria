@@ -2,10 +2,13 @@
 // NOW. The live work-session read answers "is anyone on it"; this answers
 // "what happened" — every session this ticket has had, live ones first by
 // creation order, finished ones newest-first, twenty deep. The run-detail
-// modal does the rest from the runId (live SSE when live, the retained
-// per-turn transcript artifacts when not): reviewing the work AFTER it is
-// done is the whole point, and until this read the only way back to a
-// finished session's log was already knowing its run id.
+// modal does the rest from the runId: live SSE while the session is live,
+// GET /api/runs/{id}/transcript for the retained turns. Reviewing the work
+// after it is done is the whole point.
+//
+// `{id}` is the row uuid or the ref the board shows (`PLAT-118`), same as
+// the live work-session read. A miss is 404. Two boards sharing the ref
+// is 409.
 //
 // GATED LIKE THE TASK READ (board visibility) and shaped like the live
 // read's session object (runId/state/phase/agentModel/turn), plus
@@ -30,9 +33,10 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "GET work-sessions", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let user = require_user(&state, &headers).await?;
     let board: Option<(String,)> =
         sqlx::query_as("select board_id::text from tasks where id = $1::uuid")

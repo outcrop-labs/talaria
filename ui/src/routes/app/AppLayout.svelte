@@ -5,10 +5,10 @@
   import Brand from '@/components/Brand.svelte'
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
-  import NavRail from '@/components/app/NavRail.svelte'
+  import TopDock from '@/components/app/TopDock.svelte'
+  import ManageSidebar from '@/components/app/ManageSidebar.svelte'
   import DesktopTitlebar from '@/components/app/DesktopTitlebar.svelte'
   import FileViewerHost from '@/components/app/FileViewerHost.svelte'
-  import { useNavCollapsed } from '@/components/app/nav-rail.svelte'
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
   import NotificationToasts from '@/components/app/NotificationToasts.svelte'
   import Toasts from '@/components/app/Toasts.svelte'
@@ -25,9 +25,11 @@
   import { useUserEventInvalidation } from '@/lib/user-events.svelte'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
-  // Authenticated app shell (Mercury, spec §5–6): the collapsible nav rail
-  // spans the full height on the left; the top strip sits above the active view
-  // (children) on the right. The brand lives in the rail, not the strip.
+  // Authenticated app shell (Mercury, spec §5–6): the dock is a full-width
+  // band of nav tiles above everything; below it, the top strip sits above
+  // the active view (children). The brand lives in the dock, not the strip.
+  // The manage half of the menu lives in the sidebar the dock's gear opens
+  // (ManageSidebar, a sibling below).
   let { children }: { children: Snippet } = $props()
 
   const session = useSession()
@@ -122,7 +124,7 @@
   // in flight — and in the beat between "resolved: nobody" and the /login
   // navigation landing — the screen is the login surface's own ground with the
   // mark centered (sessionHold below). The app chrome used to paint here too
-  // (skeleton rail + strip + cards): for a signed-in reload that read as
+  // (skeleton dock + strip + cards): for a signed-in reload that read as
   // "frame first, content fills in", but for every signed-out visitor it was
   // the dashboard flashing for a moment before the login screen slammed in.
   // One session round-trip of quiet mark is the price both pay — and since the
@@ -134,9 +136,9 @@
   // not the session — the person is probably signed in, so they get the frame
   // with a retry in it, not a bounce that reads as "you have been signed out".
   //
-  // Hydration-safe: server snapshot is "expanded"; the persisted client value
-  // swaps in right after hydration (same store NavRail uses, so no jump).
-  const nav = useNavCollapsed()
+  // The dock shell has no collapsed variant to hydrate around (the rail's
+  // docked choice, in nav-dock.svelte, belongs to the shell swap's second
+  // half and rides the same module-state discipline as the rail's did).
 
   // EVERY MARKED CONTROL GETS ITS FIELD FROM ONE PLACE. The `dither-*` classes
   // stay in the markup as the statement of intent — 127 call sites already
@@ -163,47 +165,34 @@
 
 {#snippet shellSkeleton(content: Snippet | undefined)}
   <MercuryBackdrop />
-  <div class="flex h-full">
-    {#if nav.collapsed}
-      <nav class="flex h-full w-16 shrink-0 flex-col items-center gap-3 border-r border-line bg-sidebar pb-5 pt-3">
-        <div class="grid h-9 w-9 place-items-center">
-          <WingMark class="h-5 w-5" />
-        </div>
-        {#each [0, 1, 2, 3, 4, 5] as i (i)}
-          <Skeleton class="h-9 w-9 rounded-md" />
-        {/each}
-      </nav>
-    {:else}
-      <nav class="flex h-full w-[208px] shrink-0 flex-col gap-5 border-r border-line bg-sidebar px-3 pb-4 pt-5">
-        <div class="flex h-6 items-center">
-          <Brand />
-        </div>
-        {#each [0, 1, 2] as g (g)}
-          <div class="space-y-2 px-2">
-            <Skeleton class="h-2 w-14 rounded-full" />
-            <SkeletonRows rows={4} />
-          </div>
-        {/each}
-      </nav>
-    {/if}
+  <div class="flex h-full flex-col">
+    <!-- Dock-shaped skeleton: the band of tiles above the strip, exactly the
+         rows the real chrome paints, so loading never reflows. h-9 tiles and
+         the h-14 band match the real dock's geometry; the strip row keeps
+         its line box (the strip is the slim personal row now). -->
+    <nav
+      aria-label="Primary"
+      class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
+    >
+      <div class="grid h-9 w-9 shrink-0 place-items-center" aria-label="Talaria">
+        <WingMark class="h-5 w-5" />
+      </div>
+      {#each [0, 1, 2, 3, 4, 5] as i (i)}
+        <Skeleton class="h-9 w-9 rounded-md" />
+      {/each}
+      <div class="min-w-0 flex-1"></div>
+    </nav>
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      <!-- Two-row strip skeleton: title, then the breadcrumb line under it —
-           the same shape the real strip paints, so loading never reflows.
-           h-6/h-4 match the real rows' line boxes (text-base 24px, 10px mono
-           15px + mt-0.5), not a guess at them. -->
+      <!-- The strip: one slim row now — the title row is gone, so the skeleton
+           holds only its line box (py-2 + h-7). -->
       <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2">
-        <div>
-          <Skeleton class="h-6 w-44 rounded-full" />
-          <Skeleton class="mt-0.5 h-4 w-28 rounded-full" />
-        </div>
+        <div class="w-40"></div>
         {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" />{/if}
       </header>
       <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
         {#if content}
           {@render content()}
         {:else}
-          <!-- No title skeleton: view titles live in the strip now, so the
-               page body starts straight at its content. -->
           <div class="mx-auto w-full max-w-[var(--page-width)]">
             <div class="grid gap-4 xl:grid-cols-3">
               {#each [0, 1, 2] as i (i)}
@@ -218,6 +207,7 @@
       </div>
     </div>
   </div>
+
 {/snippet}
 
 {#snippet sessionFailed()}
@@ -241,40 +231,52 @@
   {@render sessionHold()}
 {:else}
   <MercuryBackdrop />
-  <div bind:this={shell} class="flex h-full">
-    <NavRail {user} />
-    <!-- THE ASSISTANT DRAWER IS A PEER OF THE NAV RAIL, not of the page body.
-         It used to open inside `vt-view`, below the top strip and the banner,
-         so a panel that is conceptually a second rail started a strip's height
-         down the screen and left a notch beside the nav. Out here it spans the
-         viewport, and the strip belongs to the view it titles. It also stops
-         being animated by the view transition on every nav click, which it
-         never should have been — the drawer stays put while the page swaps. -->
-    <InboxFocusShell
-      attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}
-      surface={assistantSurface(route.pathname, tab)}
-    >
-      <TopStrip {user} onLogout={() => void logout()} />
-      <!-- Above the content, below the strip: unreadable secrets fail at USE
-           time, so without a standing signal an admin learns about it from a
-           confused colleague days later. Renders nothing for members, and
-           nothing at all when there is nothing to say. -->
-      <UnreadableSecretsBanner />
-      <!-- Silent first-run timezone adoption. Renders nothing; see the
-           component. Here, next to the banner, because both are "the shell
-           quietly makes the workspace honest" — one about secrets, one about
-           whose clock the person is on. -->
-      <TimezoneAdopt />
-      <!-- This region used to carry `vt-view` and be animated by the View
-           Transitions API on nav clicks. Removed: the transition paints a
-           static snapshot while the incoming view is still loading its data,
-           so the live DOM appeared in one jump when the animation ended. See
-           the note in styles.css. Content entrance is animated by Materialize
-           and listStagger instead, which fire when the data actually lands. -->
-      <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
-        {@render children()}
-      </div>
-    </InboxFocusShell>
+  <div bind:this={shell} class="relative flex h-full flex-col">
+    <!-- THE DOCK SPANS THE FULL WIDTH ABOVE EVERYTHING — the one layout
+         semantics change of the swap. The rail was a peer of the assistant
+         drawer; the dock is a band ABOVE it, because horizontal nav and a
+         left drawer are different kinds of furniture: the drawer must still
+         span the viewport's height to be a peer surface, and a dock band
+         above it reads as the shell's top edge rather than a notch cut out
+         of the drawer. The strip stays inside the drawer's column, still
+         titling the view, and everything below keeps its height chain. -->
+    <TopDock {user} />
+    <div class="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <ManageSidebar />
+      <!-- THE ASSISTANT DRAWER IS A PEER OF THE DOCK'S ROW, not of the page
+           body. It used to open inside `vt-view`, below the top strip and
+           the banner, so a panel that is conceptually a second rail started
+           a strip's height down the screen and left a notch beside the nav.
+           Out here it spans the below-dock row, and the strip belongs to
+           the view it titles. It also stops being animated by the view
+           transition on every nav click, which it never should have been —
+           the drawer stays put while the page swaps. -->
+      <InboxFocusShell
+        attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}
+        surface={assistantSurface(route.pathname, tab)}
+      >
+        <TopStrip {user} onLogout={() => void logout()} />
+        <!-- Above the content, below the strip: unreadable secrets fail at USE
+             time, so without a standing signal an admin learns about it from a
+             confused colleague days later. Renders nothing for members, and
+             nothing at all when there is nothing to say. -->
+        <UnreadableSecretsBanner />
+        <!-- Silent first-run timezone adoption. Renders nothing; see the
+             component. Here, next to the banner, because both are "the shell
+             quietly makes the workspace honest" — one about secrets, one about
+             whose clock the person is on. -->
+        <TimezoneAdopt />
+        <!-- This region used to carry `vt-view` and be animated by the View
+             Transitions API on nav clicks. Removed: the transition paints a
+             static snapshot while the incoming view is still loading its data,
+             so the live DOM appeared in one jump when the animation ended. See
+             the note in styles.css. Content entrance is animated by Materialize
+             and listStagger instead, which fire when the data actually lands. -->
+        <div class="min-h-0 min-w-0 flex-1 overflow-hidden">
+          {@render children()}
+        </div>
+      </InboxFocusShell>
+    </div>
     <!-- Tell-me-now lives in the shell, not in any view: the watcher turns
          live notifications into toasts on every surface, and adds an OS
          notification only when Talaria is not what the person is looking

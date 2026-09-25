@@ -14,8 +14,8 @@ use talaria_api_facades::mcp::apply::{
 };
 use talaria_api_facades::mcp::oauth::{ensure_oauth_config, set_manual_oauth_client};
 use talaria_api_facades::mcp::registry::{
-    ServerPatch, delete_mcp_server, get_mcp_server, refresh_mcp_tools, remove_assignment,
-    set_assignment, set_team_access, set_user_access, update_mcp_server,
+    ServerPatch, WORKBENCH_SERVER, delete_mcp_server, get_mcp_server, refresh_mcp_tools,
+    remove_assignment, set_assignment, set_team_access, set_user_access, update_mcp_server,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -56,6 +56,21 @@ pub async fn put(
         Ok(p) => p,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Who may use the Workbench is each agent's Developer Agent switch, not a
+    // registry grant. A row written here would be ignored, so refuse it
+    // rather than let the page look like it did something.
+    if server.name == WORKBENCH_SERVER
+        && (patch.assign.is_some()
+            || patch.unassign.is_some()
+            || patch.team_access.is_some()
+            || patch.user_access.is_some()
+            || patch.all_agents.is_some())
+    {
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "the Workbench is granted by the Developer Agent switch on each agent's settings, not here",
+        ));
+    }
     if let Some(oauth_client) = &patch.oauth_client {
         // `{origin}/api/mcp/oauth/callback` — the callback this instance
         // registers with the provider. Callers come through the frontend

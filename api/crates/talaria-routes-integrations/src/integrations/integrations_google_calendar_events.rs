@@ -96,6 +96,7 @@ impl EventDraft {
             end: &self.end,
             all_day: self.all_day,
             attendees: self.attendees.clone(),
+            meet: false,
         }
     }
 }

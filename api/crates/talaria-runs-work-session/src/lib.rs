@@ -709,10 +709,11 @@ async fn capture_turn_transcript(
     };
     let prompt_bounded = talaria_body::truncate_utf16(prompt, 16_000).to_string();
     let tail_bounded = talaria_body::truncate_utf16(&tail, 262_000).to_string();
+    let title = talaria_artifacts::run_transcript_title(run_id);
     let existing: Option<(String, String)> = sqlx::query_as(
         "select id::text, body from artifacts where kind = 'run-transcript' and title = $1 limit 1",
     )
-    .bind(format!("Run {run_id} transcript"))
+    .bind(&title)
     .fetch_optional(&state.pg)
     .await
     .ok()
@@ -722,7 +723,7 @@ async fn capture_turn_transcript(
         None => match talaria_artifacts::create_artifact(
             &state.pg,
             Some("run-transcript"),
-            Some(&format!("Run {run_id} transcript")),
+            Some(&title),
             agent_model,
             None,
             None,
@@ -1001,8 +1002,8 @@ async fn dispatch_prompt(
     // Fail-open by design: the personalization is an ENHANCEMENT of step 5,
     // never a precondition — a lookup that errors or misses falls back to the
     // standing default and the session proceeds.
-    let agent_row = sqlx::query_as::<_, (String, Option<String>)>(
-        "select id::text, workbench_harness from agent_defs where model = $1 and enabled",
+    let agent_row = sqlx::query_as::<_, (String, bool)>(
+        "select id::text, developer from agent_defs where model = $1 and enabled",
     )
     .bind(agent_model)
     .fetch_optional(pg)
@@ -1010,7 +1011,10 @@ async fn dispatch_prompt(
     .ok()
     .flatten();
     let (agent_id, agent_harness) = match agent_row {
-        Some((id, harness)) => (Some(id), harness.filter(|h| !h.is_empty())),
+        Some((id, developer)) => (
+            Some(id),
+            developer.then_some(talaria_workbench_harnesses::OMP.label),
+        ),
         None => (None, None),
     };
     let mut hygiene_block = match agent_id.as_deref() {
@@ -1035,7 +1039,7 @@ async fn dispatch_prompt(
             workflow_block: &block,
             step2: &step2,
             hygiene_block: Some(&hygiene_block),
-            harness: agent_harness.as_deref(),
+            harness: agent_harness,
         },
     ))
 }

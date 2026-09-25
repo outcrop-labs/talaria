@@ -73,72 +73,6 @@ export interface AppMcp {
 
 export const defineAppMcp = (mcp: AppMcp): AppMcp => mcp
 
-// ── Workbench harnesses ────────────────────────────────────────────────────
-// apps/<slug>/harness.ts default-exports defineWorkbenchHarness(...): a
-// coding/work harness Hermes agents drive through their WORKBENCH. The host merges it
-// into the harness registry (builtin < app-shipped < admin-custom, by slug):
-// it becomes selectable per agent, its auth/env provision into the sandbox at
-// render time, its MCP pass-through config is written in its own format, and
-// — where it can serve MCP — it registers on the agent's Hermes config as
-// stdio tools. Declarative only: no host code runs from the definition.
-
-export interface WorkbenchHarnessDefinition {
-  /** Stable id — what profiles and per-agent picks reference. */
-  slug: string
-  label: string
-  description?: string
-  /** 'gateway' = OpenAI-compatible; the host points it at Talaria's gateway
-   *  (metered, attributed). Otherwise name the provider whose key the org's
-   *  endpoint registry provisions, and the env var the harness reads. */
-  auth: 'gateway' | { provider: string; envVar: string }
-  /** Extra container env (compose-interpolated; merged over the auth env). */
-  env?: Record<string, string>
-  /** Prefix model ids need for this harness's CLI (e.g. "openai/"). */
-  modelPrefix?: string
-  /** Invocation template — `<model>`, `<task>`, `<sessionDir>` placeholders. */
-  invoke: string
-  /** Structured-output form — REQUIRED for good drivers; agents are taught
-   *  to read structured results, never scrape logs. */
-  jsonInvoke?: string
-  /** Follow-up on the same session (`-c` / continue). Same placeholders.
-   *  Omit when every run in the workdir continues the project session. */
-  continueInvoke?: string
-  continueJsonInvoke?: string
-  /** How to run the harness AS an MCP server (stdio) — the preferred
-   *  integration: agents drive it with tools. */
-  mcpServe?: { command: string; args: string[] }
-  /** MCP pass-through config the harness reads: written per agent in this
-   *  format at render time ('claude-json' = .mcp.json-style, 'opencode-json'
-   *  = opencode config, 'custom' = your renderMcpConfig below — app-shipped
-   *  harnesses only). Omit if the harness has no MCP client. */
-  mcpConfig?: { format: 'claude-json' | 'opencode-json' | 'custom'; filename: string }
-  /** Custom pass-through renderer (format: 'custom'; app-shipped only —
-   *  admin-JSON definitions can't carry code). Return the JSON-serializable
-   *  config your harness reads; you own env-substitution syntax. */
-  renderMcpConfig?: (ctx: HarnessMcpRenderContext) => unknown
-  /** A cheap command that proves the harness runs in a sandbox (version
-   *  check) — surfaced by the workbench doctor for agents to self-verify. */
-  probe?: string
-  /** What a driving agent should understand: sessions, resume, results. */
-  guide: string
-  /** RESERVED: image-build layer hints — declared and validated now, consumed
-   *  when the workbench image pipeline lands. */
-  install?: { npm?: string[]; commands?: string[]; notes?: string }
-}
-
-export interface HarnessMcpRenderContext {
-  /** The agent this config is rendered for (its fleet model id). */
-  agentModel: string
-  /** The agent's granted MCP servers, as per-agent gateway endpoints. */
-  servers: Array<{ name: string; url: string }>
-  /** Env var (set in the container) holding the fleet API key — use your
-   *  harness's own env-substitution syntax to reference it in headers,
-   *  together with an X-Agent-Name: <agentModel> header. */
-  apiKeyEnvVar: string
-}
-
-export const defineWorkbenchHarness = (h: WorkbenchHarnessDefinition): WorkbenchHarnessDefinition => h
-
 // ── Activity harnesses ─────────────────────────────────────────────────────
 // apps/<slug>/harnesses/*.ts default-export defineHarness(...): a MODEL CALL
 // Talaria makes on the app's behalf — a prompt, an output contract, a model
@@ -153,17 +87,13 @@ export const defineWorkbenchHarness = (h: WorkbenchHarnessDefinition): Workbench
 // an admin which of their models it actually works on, for the cost of an
 // array.
 //
-// UNLIKE the workbench definition above, this one carries CODE — `render`
-// builds the messages, `output.clean`/`output.verify` decide whether the reply
-// held the contract, `evals[].check` grades it. So it can only come from a
-// file the deployment compiled, never from an admin-entered JSON row.
-
-// `HarnessDefinition` NOW MEANS THE ACTIVITY ONE, and it takes two type
-// arguments, so a file that meant the workbench shape gets "requires 2 type
-// arguments" at its own import — a compile error naming both types, rather than
-// a silently wrong one. Say `WorkbenchHarnessDefinition` there. The VALUE
-// `defineHarness` still accepts either (see the overloads below), because a call
-// in an app's `harness.ts` has to keep building.
+// It carries CODE: `render` builds the messages, `output.clean`/`output.verify`
+// decide whether the reply held the contract, `evals[].check` grades it. So it
+// can only come from a file the deployment compiled, never from an
+// admin-entered JSON row.
+//
+// (The coding harness an AGENT drives in its sandbox is not an extension point:
+// the workbench runs Oh My Pi, and only Oh My Pi.)
 export type { HarnessDefinition, EvalCase, EvalBand, EvalContext, RoleFloor, RenderContext, Message, Grounding, Verify } from '@/server/harness/define'
 export type { CheckResult } from '@/server/harness/define'
 export type { Capability } from '@/server/harness/capability'
@@ -205,27 +135,10 @@ export { NO_TOOLS } from '@/server/harness/define'
 
 /** Declare an ACTIVITY harness — a model call Talaria runs for your app.
  *
- *  TWO CONTRACTS WORE THIS ONE NAME, and the one-sentence version is: this is
- *  the harness Talaria runs (a prompt and an output contract), and
- *  `defineWorkbenchHarness` is the harness an AGENT runs (a coding CLI in a
- *  sandbox, declared as shell templates and env). Neither is a specialization
- *  of the other.
- *
  *  Identity at runtime; it exists so `render`'s input type and `output`'s value
  *  type are checked against each other at the definition site, which is the one
  *  place an author can get that pair wrong and the last place anyone looks. */
-export function defineHarness<I, O>(h: HarnessDefinition<I, O>): HarnessDefinition<I, O>
-/** @deprecated Use `defineWorkbenchHarness`.
- *
- *  The overload that keeps the old spelling working: `apps/<slug>/harness.ts`
- *  files and stored `workbench_harness_defs` rows were written against
- *  `defineHarness`, and renaming an extension point out from under third-party
- *  apps is not a rename, it is a break. The two shapes are disjoint — a
- *  workbench definition has `slug`/`invoke`/`guide` and no `render` — so which
- *  contract a call means is never ambiguous, and new code says which it means
- *  by name. */
-export function defineHarness(h: WorkbenchHarnessDefinition): WorkbenchHarnessDefinition
-export function defineHarness<T>(h: T): T {
+export function defineHarness<I, O>(h: HarnessDefinition<I, O>): HarnessDefinition<I, O> {
   return h
 }
 

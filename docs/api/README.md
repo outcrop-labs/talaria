@@ -6,22 +6,22 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-265 routes across 23 groups.
+279 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 13 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 24 |
-| [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 21 |
+| [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 22 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 19 |
-| [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 15 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 21 |
+| [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 16 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 23 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
-| [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 28 |
+| [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 40 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, search. | 19 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 9 |
@@ -32,7 +32,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 12 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 8 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 6 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):

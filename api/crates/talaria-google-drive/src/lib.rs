@@ -1048,7 +1048,19 @@ pub async fn import_drive_file(
     let token = require_token(pg, sb, user_id, now_ms)
         .await
         .map_err(GoogleError::from)?;
+    import_drive_file_with_token(pg, sb, &token, Some(user_id), file_id).await
+}
 
+/// The same import, with a token the caller already resolved — an agent's
+/// principal, not necessarily a Talaria user. `upload_owner` is stamped on
+/// stored blobs; None for an org or per-agent identity.
+pub async fn import_drive_file_with_token(
+    pg: &PgPool,
+    sb: &SecretBox,
+    token: &str,
+    upload_owner: Option<&str>,
+    file_id: &str,
+) -> Result<ImportedContent, GoogleError> {
     // Metadata first: name + type decide how we pull the bytes.
     let meta_res = http()
         .get(format!(
@@ -1086,7 +1098,7 @@ pub async fn import_drive_file(
         .map(String::from);
 
     if mime == GOOGLE_DOC {
-        let md = export_google_text(&token, file_id, "text/markdown").await?;
+        let md = export_google_text(token, file_id, "text/markdown").await?;
         return Ok(ImportedContent {
             kind: "doc".into(),
             title: name,
@@ -1097,7 +1109,7 @@ pub async fn import_drive_file(
         });
     }
     if mime == GOOGLE_SHEET {
-        let csv = export_google_text(&token, file_id, "text/csv").await?;
+        let csv = export_google_text(token, file_id, "text/csv").await?;
         return Ok(ImportedContent {
             kind: "sheet".into(),
             title: name,
@@ -1111,14 +1123,14 @@ pub async fn import_drive_file(
     if mime.starts_with(GOOGLE_NATIVE_PREFIX) {
         // Other native types (Slides, Drawings, …) → export a PDF and store as
         // a file.
-        let bytes = export_google_bytes(&token, file_id, "application/pdf").await?;
+        let bytes = export_google_bytes(token, file_id, "application/pdf").await?;
         let up = save_upload(
             pg,
             sb,
             &format!("{name}.pdf"),
             "application/pdf",
             &bytes,
-            Some(user_id),
+            upload_owner,
         )
         .await
         .map_err(GoogleError::Failed)?;
@@ -1154,7 +1166,7 @@ pub async fn import_drive_file(
         .await
         .map(|b| b.to_vec())
         .map_err(|e| GoogleError::Failed(format!("drive download body: {e}")))?;
-    let up = save_upload(pg, sb, &name, &mime, &bytes, Some(user_id))
+    let up = save_upload(pg, sb, &name, &mime, &bytes, upload_owner)
         .await
         .map_err(GoogleError::Failed)?;
     Ok(ImportedContent {

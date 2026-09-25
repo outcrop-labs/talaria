@@ -107,6 +107,7 @@ pub enum JobName {
     BlurbRewrite,
     McpPkgReconcile,
     AgentResourceSample,
+    WorkbenchJobSweep,
 }
 
 impl JobName {
@@ -127,6 +128,7 @@ impl JobName {
             JobName::BlurbRewrite => "blurb-rewrite",
             JobName::McpPkgReconcile => "mcp-pkg-reconcile",
             JobName::AgentResourceSample => "agent-resource-sample",
+            JobName::WorkbenchJobSweep => "workbench-job-sweep",
         }
     }
 }

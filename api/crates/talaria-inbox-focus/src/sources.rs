@@ -157,16 +157,22 @@ pub async fn approval_items(
     Ok(approvals
         .into_iter()
         .map(|approval| {
-            let label = if approval.kind == "gmail_send" { "SEND EMAIL" } else { "CREATE EVENT" };
+            let label = match approval.kind.as_str() {
+                "gmail_send" => "SEND EMAIL",
+                "doc_update" => "UPDATE DOC",
+                _ => "CREATE EVENT",
+            };
             // The payload's own fields, not a paraphrase: the card recommends
             // "review the exact outbound payload", so the evidence IS the
             // payload. Capped per entry like every other source (1_000) —
             // enough to judge, never enough to bury the card. The actor rides
             // last (4 rows max render).
-            let mut evidence = if approval.kind == "gmail_send" {
-                approval_evidence_email(&approval.payload)
-            } else {
-                approval_evidence_event(&approval.payload)
+            let mut evidence = match approval.kind.as_str() {
+                "gmail_send" => approval_evidence_email(&approval.payload),
+                "doc_update" | "drive_move" | "drive_rename" => {
+                    approval_evidence_file(&approval.payload)
+                }
+                _ => approval_evidence_event(&approval.payload),
             };
             evidence.push(FocusEvidence {
                 label: "Drafted by".into(),
@@ -184,7 +190,11 @@ pub async fn approval_items(
                 due_at: None,
                 question: format!(
                     "{} \u{201c}{}\u{201d}?",
-                    if approval.kind == "gmail_send" { "Send" } else { "Create" },
+                    match approval.kind.as_str() {
+                        "gmail_send" => "Send",
+                        "doc_update" => "Update",
+                        _ => "Create",
+                    },
                     approval.summary.clone().unwrap_or_else(|| label.to_lowercase())
                 ),
                 recommendation: "Review the exact outbound payload before confirming this identity-bearing action.".into(),
@@ -279,6 +289,26 @@ fn approval_evidence_event(payload: &Value) -> Vec<FocusEvidence> {
     }
     if let Some(description) = s("description").filter(|d| !d.is_empty()) {
         out.push(evidence("Notes", description));
+    }
+    out
+}
+
+/// A Drive or Doc draft: the file, the new name, and a snippet of the body.
+fn approval_evidence_file(payload: &Value) -> Vec<FocusEvidence> {
+    let s = |k: &str| payload.get(k).and_then(Value::as_str);
+    let mut out = Vec::new();
+    if let Some(id) = s("fileId").filter(|v| !v.is_empty()) {
+        out.push(evidence("File", id));
+    }
+    if let Some(name) = s("name").or_else(|| s("title")).filter(|v| !v.is_empty()) {
+        out.push(evidence("Name", name));
+    }
+    if let Some(parent) = s("parentId").filter(|v| !v.is_empty()) {
+        out.push(evidence("Folder", parent));
+    }
+    if let Some(body) = s("markdown").filter(|v| !v.is_empty()) {
+        let snippet: String = body.chars().take(240).collect();
+        out.push(evidence("Incoming", &snippet));
     }
     out
 }

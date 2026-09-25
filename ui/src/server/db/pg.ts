@@ -3196,6 +3196,88 @@ alter table tasks drop column if exists conversation_id`,
    ) where archived_prices is null
      and (price_in_per_mtok is not null or price_out_per_mtok is not null
           or model_prices <> '{}'::jsonb or auto_prices <> '{}'::jsonb)`,
+  // Set when a finished job's workdir is gone from the agent's container, by
+  // the abandon teardown or the workbench-job-sweep. Null = still on disk.
+  `alter table workbench_jobs add column if not exists workspace_cleared_at timestamptz`,
+  // Who an agent acts as on Google. Seeded from the old rule (owner column
+  // wins, otherwise the shared org account) so existing agents do not change
+  // identity at cutover. owner_user_id on agent_defs stays the legacy fallback
+  // for a def that has no row yet; once a row exists it is advisory.
+  `create table if not exists agent_principals (
+     agent_model text primary key references agent_defs(model) on delete cascade,
+     principal_kind text not null check (principal_kind in ('owner', 'org', 'agent')),
+     principal_user_id uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `insert into agent_principals (agent_model, principal_kind, principal_user_id)
+   select model,
+          case when owner_user_id is not null then 'owner' else 'org' end,
+          owner_user_id
+   from agent_defs
+   on conflict (agent_model) do nothing`,
+  // The agent's own Google account, when principal_kind is 'agent'. Same
+  // sealed-token shape as google_connections, keyed by the agent model.
+  `create table if not exists agent_google_connections (
+     agent_model text primary key references agent_defs(model) on delete cascade,
+     google_sub text not null,
+     email text,
+     scope text not null default '',
+     refresh_token_enc text,
+     access_token_enc text,
+     access_expires_at timestamptz,
+     connected_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // One-shot OAuth state → which agent the admin is connecting. The cookie
+  // still carries the random token; this row is what binds it to a model.
+  `create table if not exists agent_google_oauth_states (
+     state text primary key,
+     agent_model text not null references agent_defs(model) on delete cascade,
+     created_at timestamptz not null default now()
+   )`,
+  // Executor identity, distinct from who approves. Existing rows are backfilled
+  // from is_org before the column is required, so a queued owner draft does
+  // not start executing as the org.
+  `alter table google_pending_actions add column if not exists principal_kind text`,
+  `update google_pending_actions
+   set principal_kind = case when is_org then 'org' else 'owner' end
+   where principal_kind is null`,
+  `alter table google_pending_actions
+     alter column principal_kind set default 'org',
+     alter column principal_kind set not null`,
+  `alter table google_pending_actions
+     add constraint google_pending_principal_kind_check
+     check (principal_kind in ('owner', 'org', 'agent'))`,
+  // Docs an agent created. Updates to these are immediate; updates to a
+  // human-owned doc queue. The file id is Drive's, not a Talaria uuid.
+  `create table if not exists agent_created_google_docs (
+     file_id text primary key,
+     agent_model text not null,
+     created_at timestamptz not null default now()
+   )`,
+
+  // ── Developer Agent (2026-09-24): one switch per agent replaces Workbench
+  // off/auto/on, the profile registry, the harness pick, and the per-agent
+  // effort models. Oh My Pi is the only harness, and the switch is the only
+  // grant of the `workbench` MCP server (the registry ignores assignment and
+  // team rows for it). Add-first: the retired columns (agent_defs.workbench,
+  // workbench_profile, workbench_harness, workbench_models), the
+  // workbench_profiles and workbench_harness_defs tables, and old workbench
+  // grant rows stay in place, unread, so a rollback to the previous image
+  // still boots. A later release drops them.
+  `alter table agent_defs add column if not exists developer boolean not null default false`,
+  // Carry over the agents that were set up to code: Workbench forced on, or
+  // already holding a registry grant for the Workbench tools. 'auto' agents
+  // start off: they had the sandbox by fit, but never the tools to use it.
+  `update agent_defs set developer = true
+     where workbench = 'on'
+        or model in (
+          select a.agent_model from mcp_server_agents a
+          join mcp_servers s on s.id = a.server_id
+          where s.name = 'workbench'
+        )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

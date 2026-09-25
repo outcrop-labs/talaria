@@ -258,6 +258,8 @@
   const live = $derived(workSession.data?.session ?? null)
   const queuedWait = $derived(workSession.data?.wait ?? null)
   let watchRun = $state<string | null>(null)
+  // Both eyes open on Agent. Turns is the harness exchange, one tab over.
+  let watchFocus = $state<'agent' | 'turns'>('agent')
 </script>
 
 <!-- The one Modal primitive (fixed height + unpadded): the ticket detail is
@@ -321,7 +323,11 @@
               title="Watch the work"
               aria-label="Watch the work"
               disabled={!live}
-              onclick={() => live && (watchRun = live.runId)}
+              onclick={() => {
+                if (!live) return
+                watchFocus = 'agent'
+                watchRun = live.runId
+              }}
               class="ml-auto flex items-center rounded-md p-1 text-accent transition-colors hover:text-fg disabled:opacity-50"
             >
               <Eye size={13} />
@@ -379,7 +385,13 @@
             <WorkbenchTicker {taskId} />
             <!-- The record under the live strip: every session this ticket has
                  seen, each row opening the shared run-detail modal. -->
-            <WorkLogStrip {taskId} onView={(runId) => (watchRun = runId)} />
+            <WorkLogStrip
+              {taskId}
+              onView={(runId) => {
+                watchFocus = 'agent'
+                watchRun = runId
+              }}
+            />
             <WorkbenchJobsStrip {taskId} {canEdit} />
           </div>
         </div>
@@ -802,6 +814,6 @@
      work log's View-log buttons (any retained run) both land here. Modal
      portals itself, so nesting inside the ticket modal's tree is safe. -->
 {#if watchRun}
-  <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} onEnded={() => (watchRun = null)} />
+  <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} focus={watchFocus} onEnded={() => (watchRun = null)} />
 {/if}
 </Modal>

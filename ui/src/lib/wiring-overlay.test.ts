@@ -7,6 +7,7 @@ import {
   hitTestPort,
   portPoint,
   portRadius,
+  wheelZoomGesture,
   wireMidpoint,
   zoomAt,
   TOUCH_PORT_RADIUS,
@@ -79,6 +80,24 @@ describe('clientToCanvas', () => {
     const canvas = clientToCanvas({ x: 170, y: 65 }, { left: 10, top: 10 }, view)
     // screen p = k * canvas p + t  →  canvas p = (screen p - t) / k
     expect(canvas).toEqual({ x: (170 - 10 - 40) / 1.5, y: (65 - 10 - 20) / 1.5 })
+  })
+})
+
+describe('wheelZoomGesture', () => {
+  it('a bare wheel is the page\'s scroll', () => {
+    expect(wheelZoomGesture({ ctrlKey: false, metaKey: false })).toBe(false)
+  })
+
+  it('ctrl held is a zoom gesture', () => {
+    expect(wheelZoomGesture({ ctrlKey: true, metaKey: false })).toBe(true)
+  })
+
+  it('meta held is a zoom gesture', () => {
+    expect(wheelZoomGesture({ ctrlKey: false, metaKey: true })).toBe(true)
+  })
+
+  it('both held is a zoom gesture too', () => {
+    expect(wheelZoomGesture({ ctrlKey: true, metaKey: true })).toBe(true)
   })
 })
 

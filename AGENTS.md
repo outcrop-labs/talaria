@@ -70,6 +70,11 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
   checks, or merge conflicts against `rc`. Local gates cannot see that. The watcher is
   [`scripts/hooks/pr-watch.mjs`](./scripts/hooks/pr-watch.mjs); the procedure is
   [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md).
+- Do not report a task done until its local workspace is gone. Remove the worktree,
+  devbox, scratch checkout, and throwaway download this task created; shared caches
+  stay. Every harness, before the claim — the procedure is the
+  [`cleanup`](./.claude/skills/cleanup/SKILL.md) skill. The stop gate blocks when disk
+  use or stale artifacts cross the line; that is the backstop, not the step.
 
 ## Environment facts
 
@@ -83,10 +88,9 @@ Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the c
 - Parallel *agent* sessions: devboxes give each task a container with the agent CLIs inside
   ([`docs/DEVBOX.md`](./docs/DEVBOX.md)). Never share a host `~/.claude` across concurrent
   CLIs — it corrupts `.claude.json`.
-- **Clean up what the task created.** A finished task removes its worktree, devbox, scratch
-  checkout, and throwaway download. Shared caches stay. The stop gate runs the sweep and
-  blocks when disk use or stale artifacts cross the line; the procedure is the
-  [`cleanup`](./.claude/skills/cleanup/SKILL.md) skill.
+- **Clean up the local workspace before the claim.** The rule above is the step; the
+  [`cleanup`](./.claude/skills/cleanup/SKILL.md) skill is how. The stop gate does not
+  delete a fresh worktree for you.
 
 ## Parallel sessions share working trees
 
@@ -112,7 +116,7 @@ situation matches.
 | [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, changelog, the PR against `rc`, and the post-PR watcher — do not claim done on red, pending, or a conflict |
 | [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed: the diff-level checks (`scripts/judge-pr.mjs`) and the reading no script can do |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
-| [`cleanup`](./.claude/skills/cleanup/SKILL.md) | a dev task is finished, or the stop gate blocked on disk pressure or stale artifacts — remove what the task created, leave shared caches |
+| [`cleanup`](./.claude/skills/cleanup/SKILL.md) | before claiming a task done — remove the local workspace it created; also when the stop gate blocks on disk pressure or stale artifacts |
 
 ## Known traps
 
@@ -145,7 +149,8 @@ check is cheaper than the scope-matching that would skip it. After that check pa
 [`scripts/cleanup-sweep.mjs`](./scripts/cleanup-sweep.mjs) `--gate`: exit 2 means disk pressure
 or stale artifacts, and the way through is `bun talaria cleanup --apply`. That scan is not part
 of `bun run check` — CI has no one's worktrees. Wiring per harness (Claude
-Code's tracked [`settings.json`](./.claude/settings.json) Stop hook, the git pre-push
+Code's tracked [`settings.json`](./.claude/settings.json) Stop hook, Codex's tracked
+[`.codex/hooks.json`](./.codex/hooks.json) Stop hook, the git pre-push
 recipe, CI): [`scripts/hooks/README.md`](./scripts/hooks/README.md). No permissions are
 tracked anywhere — personal allowlists live in `.claude/settings.local.json`, untracked.
 

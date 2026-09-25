@@ -150,7 +150,7 @@ function selfTest() {
   const graph = classify(['api/Cargo.lock', 'api/Cargo.toml', 'api/.cargo/config.toml'], stub)
   assert(graph.apiPackages.length === 0 && graph.apiGraph.length === 3, 'graph files do not select packages')
 
-  const root = classify(['api/src/db.rs', 'api/tests/secretbox.rs'], stub)
+  const root = classify(['api/src/db.rs', 'api/tests/it/secretbox.rs'], stub)
   assert(root.apiPackages.length === 1 && root.apiPackages[0] === 'talaria-api', 'api/src and api/tests are the root package')
 
   const both = classify(['api/crates/talaria-db/src/lib.rs', 'api/crates/talaria-error/Cargo.toml'], stub)

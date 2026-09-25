@@ -18,7 +18,7 @@
   import PermissionsModal from '@/components/kb/PermissionsModal.svelte'
   import { cn } from '@/lib/cn'
   import { downloadFile } from '@/lib/download-file'
-  import { errorMessage, postJsonOr } from '@/lib/fetch-json'
+  import { errorMessage, postJson, postJsonOr } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
@@ -129,7 +129,25 @@
       exporting = false
     }
   }
-  const googleLabel = $derived(artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs')
+  let pulling = $state(false)
+  const pullFromGoogle = async () => {
+    if (!(await confirm({
+      title: 'Pull from Google',
+      message: 'Replace the Talaria copy with the Google Doc? Edits here that have not been synced will be overwritten.',
+      confirmLabel: 'Pull and overwrite',
+      danger: true,
+    }))) return
+    pulling = true
+    try {
+      await postJson(`/api/artifacts/${id}/pull/google`)
+      await qc.invalidateQueries({ queryKey: ['artifact', id] })
+    } catch (e) {
+      await alert({ title: 'Pull failed', message: errorMessage(e) })
+    } finally {
+      pulling = false
+    }
+  }
+  const googleLabel = $derived(artifact?.googleFileUrl ? 'Sync to Google' : artifact?.kind === 'sheet' ? 'Export to Google Sheets' : artifact?.kind === 'file' ? 'Export to Google Drive' : 'Export to Google Docs')
 
   const menuItems = (): ContextMenuEntry[] => {
     if (!artifact) return []
@@ -138,7 +156,10 @@
       { label: exporting ? 'Exporting' : googleLabel, icon: [Upload, { size: 13 }], disabled: exporting, onSelect: () => void exportToGoogle() },
     ]
     const driveUrl = artifact.googleFileUrl
-    if (driveUrl) entries.push({ label: 'Open in Google Drive', icon: [ExternalLink, { size: 13 }], onSelect: () => window.open(driveUrl, '_blank', 'noopener,noreferrer') })
+    if (driveUrl) {
+      entries.push({ label: 'Open in Google', icon: [ExternalLink, { size: 13 }], onSelect: () => window.open(driveUrl, '_blank', 'noopener,noreferrer') })
+      entries.push({ label: pulling ? 'Pulling' : 'Pull from Google', icon: [Upload, { size: 13 }], disabled: pulling, onSelect: () => void pullFromGoogle() })
+    }
     entries.push({
       label: 'Delete file',
       icon: [Trash2, { size: 13 }],

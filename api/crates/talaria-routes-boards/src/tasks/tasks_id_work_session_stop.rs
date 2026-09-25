@@ -16,8 +16,8 @@
 //
 // GATED LIKE THE WORK-SESSION READ (board membership): stop is a safety
 // action, so every member who can see the work may end it — viewer
-// included. Idempotent: a ticket with no live session stops fine and
-// still says ok.
+// included. `{id}` is the row uuid or the ticket ref, same as the read.
+// Idempotent: a ticket with no live session stops fine and still says ok.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -35,9 +35,10 @@ pub async fn post(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    if let Some(gate) = talaria_params::uuid_gate("tasks", "POST work-session/stop", &id) {
-        return Ok(gate);
-    }
+    let id = match super::resolve_task_path(&state.pg, &id).await {
+        Ok(id) => id,
+        Err(resp) => return Ok(resp),
+    };
     let user = require_user(&state, &headers).await?;
     let board: Option<(String,)> =
         sqlx::query_as("select board_id::text from tasks where id = $1::uuid")

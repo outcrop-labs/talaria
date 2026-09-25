@@ -1,8 +1,7 @@
 // The Workbench MCP — the governed surface agents drive their sandbox
-// through. Registered in the MCP registry like any server (grantable per
-// agent), dispatched in-process like app surfaces. Verbs are PROFILE-SCOPED:
-// the dev workbench exposes the job lifecycle below; later profiles (design,
-// data, content) expose their own gated verbs from the same dispatcher.
+// through. Registered in the MCP registry, dispatched in-process like app
+// surfaces, and granted by the agent's Developer Agent switch (never by a
+// registry assignment): the dev workbench exposes the job lifecycle below.
 //
 // The git-flow contract (why it never gets messy): Talaria cuts the branch
 // (talaria/<ticket-ref>-<slug>, or under the repo grant's configured branch
@@ -28,7 +27,7 @@
 // nothing to count.
 //
 // The dispatcher consumes mcp_jsonrpc (the shared envelope); the verbs ride
-// github.rs's REST half and the harness registry's effort chain.
+// github.rs's REST half and omp's model roles.
 
 use axum::http::StatusCode;
 use serde_json::{Map, Value, json};
@@ -51,10 +50,11 @@ use talaria_tasks::{
     AgentIntent, AgentWriteTarget, ResolvedTaskId, TaskActor, TaskDeps, TaskPatch, add_comment,
     agent_ticket_refusal, get_task, log_activity, resolve_task_id, update_task,
 };
-use talaria_workbench::resolve_workbench;
-use talaria_workbench_harnesses::{
-    HarnessSource, effort_model, effort_models, fill_harness_cmd, list_harness_defs,
-};
+pub mod devenv;
+pub mod teardown;
+
+use talaria_workbench_harnesses::{MCP_CONFIG_FILE, OMP, fill_cmd, omp_roles};
+use teardown::{Teardown, spawn_teardown};
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
 /// (GitHub credentials unseal through it), and the optional Redis the task
@@ -209,7 +209,7 @@ pub fn workbench_tools() -> Vec<Value> {
     vec![
         json!({
             "name": "doctor",
-            "description": "Diagnose YOUR workbench end to end: profile, chosen harness (with a probe command to run in your shell), auth, GitHub connection, repo grants, effort→model map, and pass-through config locations. Run this first when anything about your workbench misbehaves — or before your first job.",
+            "description": "Diagnose YOUR workbench end to end: the Oh My Pi harness (with a probe command to run in your shell), GitHub connection, repo grants, omp's model roles, and pass-through config locations. Run this first when anything about your workbench misbehaves, or before your first job.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -269,6 +269,11 @@ pub fn workbench_tools() -> Vec<Value> {
                 "required": ["jobId"],
             },
         }),
+        json!({
+            "name": "prepare_env",
+            "description": "Set up the job's dev environment after you clone: Talaria reads the repo (its mise.toml / .tool-versions, else rust-toolchain.toml, .nvmrc, package.json, go.mod, .python-version, ...) and installs those toolchains through mise, plus any OS packages the repo lists in .talaria/workbench.toml. Idempotent; call it at the start of every job. The first run of a new toolchain can take minutes. Never install toolchains or system packages yourself: declare them in the repo and call this again.",
+            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
+        }),
     ]
 }
 
@@ -280,30 +285,16 @@ pub struct AgentCtx {
     pub display_name: String,
     pub department: String,
     pub role: Option<String>,
-    /// 'off' | 'auto' | 'on' (a bare string: the column's domain).
-    pub workbench: String,
-    pub workbench_profile: Option<String>,
-    pub workbench_harness: Option<String>,
-    pub workbench_models: Option<Map<String, Value>>,
+    /// The Developer Agent switch.
+    pub developer: bool,
 }
 
-/// agent_defs' workbench column set — nine wide, too wide to spell inline.
-type AgentModelRow = (
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<Value>,
-);
+/// agent_defs' workbench column set.
+type AgentModelRow = (String, String, String, String, Option<String>, bool);
 
 async fn agent_by_model(pg: &PgPool, model: &str) -> Result<Option<AgentCtx>, sqlx::Error> {
     let row: Option<AgentModelRow> = sqlx::query_as(
-        "select id::text, model, display_name, department, role, workbench, \
-                workbench_profile, workbench_harness, workbench_models \
+        "select id::text, model, display_name, department, role, developer \
          from agent_defs where model = $1 and enabled",
     )
     .bind(model)
@@ -315,10 +306,7 @@ async fn agent_by_model(pg: &PgPool, model: &str) -> Result<Option<AgentCtx>, sq
         display_name: r.2,
         department: r.3,
         role: r.4,
-        workbench: r.5,
-        workbench_profile: r.6,
-        workbench_harness: r.7,
-        workbench_models: r.8.and_then(|v| v.as_object().cloned()),
+        developer: r.5,
     }))
 }
 
@@ -513,74 +501,22 @@ async fn call_tool(
         Ok(None) => return CallOutcome::Fail("unknown agent".into()),
         Err(e) => return thrown(format!("agent read: {e}")),
     };
-    let profile = match resolve_workbench(
-        pg,
-        &talaria_workbench::WorkbenchAgent {
-            department: &agent.department,
-            role: agent.role.as_deref(),
-            workbench: &agent.workbench,
-            workbench_profile: agent.workbench_profile.as_deref(),
-        },
-    )
-    .await
-    {
-        Ok(Some(profile)) => profile,
-        Ok(None) => {
-            return CallOutcome::Fail(
-                "no workbench attached — an admin can enable one on your agent settings".into(),
-            );
-        }
-        Err(e) => return thrown(e),
-    };
+    if !agent.developer {
+        return CallOutcome::Fail(
+            "you are not a Developer Agent; an admin turns it on in your agent settings".into(),
+        );
+    }
 
     match name {
         "doctor" => {
-            let registry = match list_harness_defs(pg).await {
-                Ok(r) => r,
-                Err(e) => return thrown(format!("harness registry read: {e}")),
-            };
-            let chosen_slug: Option<String> = match &agent.workbench_harness {
-                Some(h) if profile.harnesses.iter().any(|s| s == h) => Some(h.clone()),
-                _ => profile.harnesses.first().cloned(),
-            };
-            let h = registry
-                .iter()
-                .find(|x| Some(x.def.slug.as_str()) == chosen_slug.as_deref());
             let gh_status = github_status(pg, &deps.sb).await;
             let repos = gh::granted_repos(pg, &agent.id).await;
             let mut checks: Vec<String> = Vec::new();
+            checks.push("developer agent: on, dev sandbox attached".into());
             checks.push(format!(
-                "profile: {} ({}) — attached",
-                profile.name, profile.slug
+                "harness: {} ({}), auth through the Talaria gateway, no key needed on your side",
+                OMP.label, OMP.slug
             ));
-            checks.push(match h {
-                Some(h) => format!(
-                    "harness: {} ({}, {}) — chosen",
-                    h.def.label,
-                    h.def.slug,
-                    match h.source {
-                        HarnessSource::Builtin => "builtin",
-                        HarnessSource::Custom => "custom",
-                    }
-                ),
-                None => format!(
-                    "harness: \"{}\" NOT in the registry — pick another or ask an admin",
-                    chosen_slug
-                        .as_deref()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "undefined".into())
-                ),
-            });
-            if let Some(h) = h {
-                checks.push(match &h.def.auth {
-                    talaria_workbench_harnesses::HarnessAuth::Gateway => {
-                        "auth: Talaria gateway (no key needed on your side)".into()
-                    }
-                    talaria_workbench_harnesses::HarnessAuth::Provider { provider, env_var } => {
-                        format!("auth: native {provider} key expected in {env_var}")
-                    }
-                });
-            }
             checks.push(match gh_status.configured {
                 true => format!(
                     "github: connected{}",
@@ -598,39 +534,35 @@ async fn call_tool(
             } else {
                 format!("repos: {}", repos.join(", "))
             });
-            let efforts = match effort_models(pg, agent.workbench_models.as_ref()).await {
-                Ok(e) => Value::Object(e),
+            let models = match omp_roles(pg).await {
+                Ok(r) => r.wire(),
                 Err(e) => return thrown(e),
             };
             CallOutcome::Ok(json!({
                 "checks": checks,
-                "harness": h.map(|h| json!({
-                    "slug": h.def.slug,
-                    "guide": h.def.guide,
-                    "probe": h.def.probe,
-                    "mcpTools": if h.def.mcp_serve.is_some() { "registered on your config when this harness is chosen" } else { "none — drive it via jsonRun" },
-                    "passthroughConfig": h.def.mcp_config.as_ref().map(|m| format!("/opt/workbench-config/{}", m.filename)),
-                })),
-                "efforts": efforts,
+                "harness": {
+                    "slug": OMP.slug,
+                    "guide": OMP.guide,
+                    "probe": OMP.probe,
+                    "passthroughConfig": format!("/opt/workbench-config/{MCP_CONFIG_FILE}"),
+                },
+                "models": models,
                 "workspaceRoot": "/opt/data/workbench/jobs/<jobId>",
                 "sessionHistory": "/opt/data/workbench/harness (persistent, shared with your department)",
-                "next": match h.and_then(|h| h.def.probe.clone()) {
-                    Some(probe) => format!("Run the probe in your shell to verify the harness binary: {probe}"),
-                    None => "No probe declared — try the harness directly on your first job.".into(),
-                },
+                "next": format!("Run the probe in your shell to verify the harness binary: {}", OMP.probe),
             }))
         }
 
         "list_repos" => {
             let repos = gh::granted_repos(pg, &agent.id).await;
-            let efforts = match effort_models(pg, agent.workbench_models.as_ref()).await {
-                Ok(e) => Value::Object(e),
+            let models = match omp_roles(pg).await {
+                Ok(r) => r.wire(),
                 Err(e) => return thrown(e),
             };
             CallOutcome::Ok(json!({
                 "repos": repos,
-                "efforts": efforts,
-                "note": "Pick effort by the work, not the model: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, used sparingly).",
+                "models": models,
+                "note": "Pick effort by the size of the work: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, waits for human approval, used sparingly). Effort decides planning and how much room the job reserves; Oh My Pi picks its own models from the roles above as it works.",
             }))
         }
 
@@ -926,88 +858,28 @@ async fn call_tool(
                 },
             )
             .await;
-            // Effort → model is Talaria's call: the agent picked the effort,
-            // the platform resolves which model that means today. Invocation
-            // hints come from the profile's harness adapters with the model
-            // slotted in.
-            let model = match effort_model(pg, &effort, agent.workbench_models.as_ref()).await {
-                Ok(m) => m,
+            // The model is omp's call: the org's Workbench roles are its
+            // default / smol / slow / plan (rendered into the sandbox), and
+            // the invocation lines carry the default so they run as written.
+            // Effort decided planning and the RAM reserve above, not the model.
+            let roles = match omp_roles(pg).await {
+                Ok(r) => r,
                 Err(e) => return thrown(e),
             };
-            // The agent's chosen harness leads (falling back to the profile's
-            // first); its invocation line carries the model in the harness's
-            // own syntax, so it's directly runnable.
-            let chosen_slug: Option<String> = match &agent.workbench_harness {
-                Some(h) if profile.harnesses.iter().any(|s| s == h) => Some(h.clone()),
-                _ => profile.harnesses.first().cloned(),
-            };
-            let registry = match list_harness_defs(pg).await {
-                Ok(r) => r,
-                Err(e) => return thrown(format!("harness registry read: {e}")),
-            };
-            let mut found: Vec<&talaria_workbench_harnesses::ResolvedHarness> = profile
-                .harnesses
-                .iter()
-                .filter_map(|slug| registry.iter().find(|h| h.def.slug == *slug))
-                .collect();
-            found.sort_by(|a, b| {
-                let chosen = chosen_slug.as_deref();
-                if Some(a.def.slug.as_str()) == chosen {
-                    std::cmp::Ordering::Less
-                } else if Some(b.def.slug.as_str()) == chosen {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            });
+            let model = roles.default.clone();
             let session_dir = format!("/opt/data/workbench/sessions/{}", job.id);
-            let harnesses: Vec<Value> = found
-                .iter()
-                .map(|h| {
-                    let mut entry = Map::new();
-                    entry.insert("harness".into(), json!(h.def.slug));
-                    entry.insert(
-                        "chosen".into(),
-                        json!(Some(h.def.slug.as_str()) == chosen_slug.as_deref()),
-                    );
-                    entry.insert(
-                        "run".into(),
-                        json!(fill_harness_cmd(
-                            &h.def.invoke,
-                            &h.def,
-                            model.as_deref(),
-                            &session_dir
-                        )),
-                    );
-                    if let Some(json_invoke) = &h.def.json_invoke {
-                        entry.insert(
-                            "jsonRun".into(),
-                            json!(fill_harness_cmd(
-                                json_invoke,
-                                &h.def,
-                                model.as_deref(),
-                                &session_dir
-                            )),
-                        );
-                    }
-                    if let Some(c) = &h.def.continue_invoke {
-                        entry.insert(
-                            "continueRun".into(),
-                            json!(fill_harness_cmd(c, &h.def, model.as_deref(), &session_dir)),
-                        );
-                    }
-                    if let Some(c) = &h.def.continue_json_invoke {
-                        entry.insert(
-                            "continueJsonRun".into(),
-                            json!(fill_harness_cmd(c, &h.def, model.as_deref(), &session_dir)),
-                        );
-                    }
-                    if Some(h.def.slug.as_str()) == chosen_slug.as_deref() {
-                        entry.insert("guide".into(), json!(h.def.guide));
-                    }
-                    Value::Object(entry)
-                })
-                .collect();
+            let fill = |tmpl: &str| fill_cmd(tmpl, model.as_deref(), &session_dir);
+            // One entry, in the shape every start_job has answered with, so a
+            // driver that reads `harnesses[0]` keeps working.
+            let harnesses = vec![json!({
+                "harness": OMP.slug,
+                "chosen": true,
+                "run": fill(OMP.invoke),
+                "jsonRun": fill(OMP.json_invoke),
+                "continueRun": fill(OMP.continue_invoke),
+                "continueJsonRun": fill(OMP.continue_json_invoke),
+                "guide": OMP.guide,
+            })];
             // One WORKSPACE per job — concurrent jobs never collide — under
             // the persistent volume, so clones and harness sessions survive
             // restarts.
@@ -1025,7 +897,7 @@ async fn call_tool(
                     .to_string()
             } else {
                 format!(
-                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none — your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go — commits are authored as YOU. Never touch {base}. You are the orchestrator: the CHOSEN harness (first in the list) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Escalate effort only when the work truly needs it. When the change is right, finish_job — Talaria opens the PR.",
+                    "Clone with the URL above INTO your workdir (mkdir -p {workdir} first). It carries no credential and needs none: your sandbox's git asks Talaria for one when it pushes, so never add a token to a remote URL. One workspace per job: never work outside it. Work ONLY on {branch}; the branch name satisfies this repo's branch rules, so pushes to it are accepted. Commit and push as you go; commits are authored as YOU. Never touch {base}. Once cloned, call prepare_env with this jobId: it installs the repo's toolchains and system packages, so never install them yourself. You are the orchestrator: Oh My Pi (harnesses[0]) is the pair programmer. First turn: jsonRun (or run) with ONE scoped ask, not the whole ticket. Later turns: continueJsonRun / continueRun (`-c`) against sessionDir so the harness keeps context. Read structured results, then steer. Git over https:// just works. Do not override its --model; omp switches between its roles itself. When the change is right, finish_job. Talaria opens the PR.",
                     base = created_branch.base,
                 )
             };
@@ -1046,6 +918,7 @@ async fn call_tool(
                 "model".into(),
                 model.map(Value::String).unwrap_or(Value::Null),
             );
+            value.insert("models".into(), roles.wire());
             value.insert("harnesses".into(), Value::Array(harnesses));
             value.insert("rules".into(), json!(rules));
             if !gated {
@@ -1106,6 +979,36 @@ async fn call_tool(
                 jobs.push(wire);
             }
             CallOutcome::Ok(json!({ "jobs": jobs }))
+        }
+
+        "prepare_env" => {
+            let job_id = arg_str(args, "jobId");
+            if let Some(error) = bad_job_id(&job_id) {
+                return CallOutcome::Fail(error);
+            }
+            let status: Option<String> = match sqlx::query_scalar(
+                "select status from workbench_jobs where id = $1::uuid and agent_id = $2::uuid",
+            )
+            .bind(&job_id)
+            .bind(&agent.id)
+            .fetch_optional(pg)
+            .await
+            {
+                Ok(status) => status,
+                Err(e) => return thrown(format!("job read: {e}")),
+            };
+            match status.as_deref() {
+                None => return CallOutcome::Fail("unknown job".into()),
+                Some("started") => {}
+                Some(other) => return CallOutcome::Fail(format!("job is {other}")),
+            }
+            let Some(workdir) = teardown::job_workdir(&job_id) else {
+                return CallOutcome::Fail(format!("not a job id: {job_id:?}"));
+            };
+            match devenv::prepare_env(pg, &agent.department, &workdir).await {
+                Ok(result) => CallOutcome::Ok(result),
+                Err(e) => CallOutcome::Fail(e),
+            }
         }
 
         "merge_to_testing" => {
@@ -1273,6 +1176,13 @@ async fn call_tool(
                 )
                 .await;
                 sync_agent_budget(pg, &agent.department, &agent.id).await;
+                // The job is over: its builds stop and its workdir goes.
+                spawn_teardown(
+                    pg.clone(),
+                    agent.department.clone(),
+                    job.id.clone(),
+                    Teardown::Remove,
+                );
                 return CallOutcome::Ok(json!({ "status": "abandoned" }));
             }
             if job.status == "awaiting_approval" {
@@ -1405,6 +1315,15 @@ async fn call_tool(
             )
             .await;
             sync_agent_budget(pg, &agent.department, &agent.id).await;
+            // The PR is open, so nothing the agent started in the workdir is
+            // still owed a result. The checkout stays for a revise bounce;
+            // the sweep removes it once the ticket closes.
+            spawn_teardown(
+                pg.clone(),
+                agent.department.clone(),
+                job.id.clone(),
+                Teardown::Stop,
+            );
             CallOutcome::Ok(json!({
                 "prUrl": pr.url,
                 "prNumber": pr.number,
@@ -1976,7 +1895,8 @@ mod tests {
                 "job_status",
                 "merge_to_testing",
                 "request_repo",
-                "finish_job"
+                "finish_job",
+                "prepare_env"
             ]
         );
         // start_job's properties ride in declaration order, required last.

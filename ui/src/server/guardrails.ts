@@ -121,7 +121,7 @@ export interface ToolRecord {
 }
 
 // Tools that don't count as a real external action for the zero-tool check.
-const NONBACKING = new Set(['memory', 'todo', 'think', 'skill_manage', 'session_search', 'tool_search', 'tool_describe', 'search_knowledge'])
+const NONBACKING = new Set(['memory', 'todo', 'think', 'skill_manage', 'session_search', 'tool_search', 'tool_describe', 'search_knowledge', 'read_google_doc', 'read_drive_file'])
 const RESULTS_CAP = 200_000
 
 type Msg = { role?: string; content?: unknown; tool_calls?: Array<{ function?: { name?: string } }> }

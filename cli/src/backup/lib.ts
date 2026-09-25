@@ -16,8 +16,31 @@ import { MINIO_PORT } from '../ports'
 // matches docker/dev-compose.yml — a dump is refused if the client is older
 // than the server, so bump this together with the server image.
 export const pgImage = (env: Env): string => env.TALARIA_PG_IMAGE || 'postgres:16-alpine'
-// mc comes from quay — MinIO removed its Docker Hub namespace (2026-09)
-export const mcImage = (env: Env): string => env.TALARIA_MC_IMAGE || 'quay.io/minio/mc:latest'
+// mc comes from OUR GHCR mirror, digest-pinned: MinIO is dead upstream
+// (repos archived 2026-04/07, last releases never published to a registry,
+// quay's tags frozen). Provenance and the bump-together rule:
+// .github/workflows/minio-mirror.yml and docker/sidecars.compose.yml.
+export const PINNED_MC_IMAGE =
+  'ghcr.io/outcrop-labs/talaria-mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
+
+/** `docker.io/minio/…` — the namespace MinIO deleted (2026-09; every pull
+ *  answers "repository does not exist"). docker.io is implied for a short
+ *  name, so `minio/mc:latest` lands there too. */
+const isDeadMinioRef = (ref: string): boolean =>
+  /^(docker\.io\/)?minio\//.test(ref.split('@')[0]!)
+
+/** The mc image a backup/restore borrows when the host has none.
+ *  TALARIA_MC_IMAGE still overrides — except a value pointing at the
+ *  deleted docker.io/minio namespace, which can never pull: that warns and
+ *  falls through to the pin instead of dying at container-create time. */
+export function mcImage(ctx: Ctx): string {
+  const override = ctx.env.TALARIA_MC_IMAGE
+  if (override && isDeadMinioRef(override)) {
+    ctx.log.warn(`TALARIA_MC_IMAGE (${override}) points at the deleted docker.io/minio namespace — using the pinned mirror ${PINNED_MC_IMAGE}`)
+    return PINNED_MC_IMAGE
+  }
+  return override || PINNED_MC_IMAGE
+}
 
 type Env = Record<string, string | undefined>
 
@@ -249,7 +272,7 @@ export async function mcRun(ctx: Ctx, dir: string, st: Storage, args: string[]):
         [
           'run', '--rm', '--network', 'host', ...user,
           '-e', 'S3_ENDPOINT', '-e', 'S3_ACCESS_KEY', '-e', 'S3_SECRET_KEY', '-e', 'HOME=/tmp',
-          '-v', `${dir}:${dir}`, '--entrypoint', 'sh', mcImage(ctx.env), '-c', script,
+          '-v', `${dir}:${dir}`, '--entrypoint', 'sh', mcImage(ctx), '-c', script,
         ],
         { timeoutMs: 7_200_000 },
       )

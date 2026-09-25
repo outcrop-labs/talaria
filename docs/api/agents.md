@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+22 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -27,6 +27,7 @@
 | [`/api/gaps/{id}`](#apigapsid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/muse`](#apimuse) | POST | `session` |
 | [`/api/runs/{id}/events`](#apirunsidevents) | GET | `session` |
+| [`/api/runs/{id}/transcript`](#apirunsidtranscript) | GET | `session` |
 | [`/api/runs/{id}/watch`](#apirunsidwatch) | GET | `session` |
 | [`/api/skills`](#apiskills) | GET | `session` |
 | [`/api/skills/{owner}/{name}`](#apiskillsownername) | GET | `session` |
@@ -281,6 +282,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/runs_events.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200, 403 | SSE |
+
+## `/api/runs/{id}/transcript`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/runs_transcript.rs`](../../api/crates/talaria-routes-fleet/src/agents/runs_transcript.rs)
+
+> GET /api/runs/{id}/transcript. The retained work history: every turn's
+> prompt and the watch lines captured with it. The live terminal only
+> replays the current turn's tail, and that tail expires with the session,
+> so this is the record a finished session has.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{body}` | 200, 403 | — |
 
 ## `/api/runs/{id}/watch`
 

@@ -79,3 +79,15 @@ export async function shellInstallUpdate(): Promise<void> {
   if (!inDesktopShell()) return
   await ipc().then((invoke) => invoke('install_update'))
 }
+
+export async function shellShowNotification(n: {
+  title: string
+  body?: string
+  tag?: string
+  href?: string
+}): Promise<void> {
+  if (!inDesktopShell()) return
+  await ipc().then((invoke) =>
+    invoke('desktop_notify', { title: n.title, body: n.body, tag: n.tag, href: n.href }),
+  )
+}

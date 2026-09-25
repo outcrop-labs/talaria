@@ -81,7 +81,7 @@
         "claude-code"
       ],
       "signpost": "claude-code",
-      "why": "Claude Code is not a Talaria workbench harness. The signpost points at Pi / Oh My Pi / opencode via workbench-driving."
+      "why": "Claude Code is not a Talaria workbench harness. The signpost points at Oh My Pi via workbench-driving."
     },
     {
       "path": "autonomous-ai-agents/codex",
@@ -89,7 +89,7 @@
         "codex"
       ],
       "signpost": "codex",
-      "why": "Codex is not a Talaria workbench harness. The signpost points at Pi / Oh My Pi / opencode via workbench-driving."
+      "why": "Codex is not a Talaria workbench harness. The signpost points at Oh My Pi via workbench-driving."
     },
     {
       "path": "autonomous-ai-agents/opencode",
@@ -97,7 +97,7 @@
         "opencode"
       ],
       "signpost": "opencode",
-      "why": "Raw OpenCode CLI skips plan gates. The signpost teaches the workbench job path (start_job / jsonRun / finish_job)."
+      "why": "OpenCode is not a Talaria workbench harness, and the raw CLI skips plan gates. The signpost points at Oh My Pi via workbench-driving."
     },
     {
       "path": "social-media/xurl",

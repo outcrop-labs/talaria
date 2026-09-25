@@ -602,6 +602,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/integrations/google/agent/callback",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_callback::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/integrations/google/org/health",
             get(talaria_routes_integrations::integrations::integrations_google_org_health::get)
                 .fallback(|| async { method_not_allowed("GET") }),
@@ -680,9 +685,65 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
+            "/api/integrations/google/agent/calendar/update",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_calendar::post_update)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/calendar/cancel",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_calendar::post_cancel)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/calendar/meeting",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_calendar::post_meeting)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/integrations/google/agent/drive",
             get(talaria_routes_integrations::integrations::integrations_google_agent_drive::get)
                 .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/drive/import",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_drive_import::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/docs",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_docs::post_create)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/docs/{id}",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_docs::get_doc)
+                .post(talaria_routes_integrations::integrations::integrations_google_agent_docs::post_update)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/files",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_docs::get_search)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/files/{id}",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_docs::get_file)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/drive/folder",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_drive_manage::post_folder)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/drive/move",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_drive_manage::post_move)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/integrations/google/agent/drive/rename",
+            post(talaria_routes_integrations::integrations::integrations_google_agent_drive_manage::post_rename)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/integrations/google/agent/gmail",
@@ -1069,6 +1130,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/artifacts/{id}/pull/google",
+            post(talaria_routes_knowledge::files::artifacts_id_pull_google::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/artifact-folders",
             get(talaria_routes_knowledge::files::artifact_folders::get)
                 .post(talaria_routes_knowledge::files::artifact_folders::post)
@@ -1200,19 +1266,12 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_agents_id_control::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
-        // The workbench family — the agent sandbox plane: the profile
-        // registry (env masked for members, infra fields admin-only), the
-        // per-repo git flow, the org GitHub connection (status/installations/
-        // patch/disconnect — admin, it holds org credentials), the harness
-        // registry (merged builtin+custom defs), the human side of workbench
-        // jobs (the ticket strip + approve/reject/merge-to-testing), the repo
-        // -creation approval queue, and the per-agent repo grants.
-        .route(
-            "/api/workbench",
-            get(talaria_routes_workbench::workbench::workbench::get)
-                .put(talaria_routes_workbench::workbench::workbench::put)
-                .fallback(|| async { method_not_allowed("GET, PUT") }),
-        )
+        // The workbench family, the agent sandbox plane: the per-repo git
+        // flow, the org GitHub connection (status/installations/patch/
+        // disconnect; admin, it holds org credentials), the human side of
+        // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
+        // the repo-creation approval queue, and the per-agent repo grants.
+        // Who is a developer is the agent's own switch (fleet/defs PATCH).
         .route(
             "/api/workbench/flow",
             get(talaria_routes_workbench::workbench::workbench_flow::get)
@@ -1224,13 +1283,6 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_workbench::workbench::workbench_github::get)
                 .put(talaria_routes_workbench::workbench::workbench_github::put)
                 .delete(talaria_routes_workbench::workbench::workbench_github::delete)
-                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
-        )
-        .route(
-            "/api/workbench/harnesses",
-            get(talaria_routes_workbench::workbench::workbench_harnesses::get)
-                .put(talaria_routes_workbench::workbench::workbench_harnesses::put)
-                .delete(talaria_routes_workbench::workbench::workbench_harnesses::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
@@ -1322,6 +1374,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/runs/{id}/watch",
             get(talaria_routes_fleet::agents::runs_watch::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/runs/{id}/transcript",
+            get(talaria_routes_fleet::agents::runs_transcript::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agents/tool-events",
@@ -1526,6 +1583,18 @@ pub fn router(state: AppState) -> Router {
             "/api/fleet/defs/{id}",
             axum::routing::patch(talaria_routes_fleet::fleet::fleet_defs_id::patch)
                 .fallback(|| async { method_not_allowed("PATCH") }),
+        )
+        .route(
+            "/api/fleet/defs/{id}/google",
+            get(talaria_routes_fleet::fleet::fleet_defs_id_google::get)
+                .put(talaria_routes_fleet::fleet::fleet_defs_id_google::put)
+                .delete(talaria_routes_fleet::fleet::fleet_defs_id_google::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/fleet/defs/{id}/google/connect",
+            get(talaria_routes_fleet::fleet::fleet_defs_id_google::connect)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/fleet/defs/{id}/edit",

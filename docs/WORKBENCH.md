@@ -6,23 +6,22 @@ The routing rule that makes the workbench the only path: **agents never do dev w
 
 It's a **reproducible methodology**, not a dev-only feature. Every workbench is the same six pieces; the dev workbench is simply the first instance (data, design, publishing, and web-operator workbenches ride the same chassis later):
 
-1. **A runtime profile** — image + env + mounts + preinstalled harnesses, composed into the agent's container by the fleet renderer.
+1. **A sandbox**: the dev overlay (env, state dirs, git identity, memory ceiling) and its coding harness, composed into the agent's container by the fleet renderer.
 2. **Scoped credentials** — only what the role touches (per-repo GitHub access for dev), never god tokens.
 3. **A governed toolkit** — the workbench MCP: the risky lifecycle (branches, PRs, merges) is platform-owned; agents drive it with tools.
-4. **Effort→model routing** — agents pick *effort*; Talaria picks the *model*.
+4. **Model roles**: the org's Workbench roles become the harness's own roles; the harness picks between them as it works.
 5. **MCP pass-through** — the agent's existing MCP grants, rendered into each harness's native config. Nothing reconnects inside a sandbox.
 6. **The audit spine** — every job transition lands in the ticket's activity next to dispatch, judge, and review events.
 
-## Profiles and THE setting
+## The Developer Agent switch
 
-`workbench_profiles` is a role-agnostic registry (the `dev` profile ships seeded: opencode, Pi, Oh My Pi). Per agent there is exactly one control, on the agent's Summary tab:
+Per agent there is exactly one control, on the agent's Summary tab:
 
-> **Workbench: Off / Auto / On** (+ optional explicit profile)
+> **Developer Agent: on / off**
 
-*Auto* attaches by fit rules declared on the profile (departments/roles — e.g. engineering, or a "Data Engineer" role). *On* forces a profile. *Off* means no sandbox. The tab shows a live "→ resolves to" readout, plus the per-agent tuning:
+On sets the agent up end to end, and nothing else needs wiring: the dev sandbox, **Oh My Pi** as its coding harness, and the Workbench tools (`doctor`, `start_job`, `finish_job`, …). Flipping it rolls the agent so the change lands. The switch is the *only* grant of the Workbench MCP server: the registry derives it from `agent_defs.developer` and ignores assignment or team rows for it, and the MCP page shows the Workbench as "every Developer Agent" with no access controls. Which repos the agent may touch stays an explicit pick, shown under the switch once it is on.
 
-- **Harness dropdown** — which coding tool this agent drives (Auto = the profile's first).
-- **Low / Medium / High model selects** — what each effort level means *for this agent* (blank = the org-wide Workbench model roles on /models, resolved with a fall-down chain so unset slots never strand a job).
+Oh My Pi is the only harness. There is no profile registry, no per-agent harness pick, and no per-agent effort→model table. Models come from the org-wide **Workbench model roles** on /models: `code-standard` is omp's default (the `--model` on every invocation line), `code-light` its `smol` role, and `code-heavy` its `slow` and `plan` roles (rendered as `PI_SMOL_MODEL` / `PI_SLOW_MODEL` / `PI_PLAN_MODEL`). omp moves between them on its own (subagents and small steps on smol, the advisor on slow, plan mode on plan), so a job is not pinned to one model. Unset roles fall down (heavy → standard → light → utility), so a missing slot never strands a job.
 
 ## GitHub, connected once
 
@@ -32,14 +31,17 @@ Connecting grants nothing by itself. **Repo access is an explicit per-agent gran
 
 ## The job lifecycle (why git never gets messy)
 
-Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned server in the MCP registry, granted per agent like any capability) owns the lifecycle:
+Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned server in the MCP registry, granted by the Developer Agent switch) owns the lifecycle:
 
-- `doctor` — end-to-end self-diagnosis: profile, chosen harness (+ a probe command to verify the binary), auth, GitHub, repo grants, effort map, config paths.
-- `list_repos` — the agent's granted repos + the effort→model map.
-- `start_job(repo, taskId, effort, plan)` — Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>` — the job branch is named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket), and returns a short-lived authenticated clone URL, a **per-job workspace** (`/opt/data/workbench/jobs/<id>` — concurrent jobs never collide), the resolved model, and per-harness invocation lines with the model in each harness's own syntax. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
+- `doctor`: end-to-end self-diagnosis: the Oh My Pi harness (+ a probe command to verify the binary), GitHub, repo grants, omp's model roles, config paths.
+- `list_repos`: the agent's granted repos + omp's model roles.
+- `start_job(repo, taskId, effort, plan)`: Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>`, named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket), and returns a short-lived authenticated clone URL, a **per-job workspace** (`/opt/data/workbench/jobs/<id>`, so concurrent jobs never collide), omp's model roles, and the Oh My Pi invocation lines (default model filled in). Effort decides planning and how much RAM the job reserves, not the model. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
+- `prepare_env(jobId)`: sets up the job's dev environment after the clone (see "Dev environments" below).
 - `job_status` — jobs with fresh clone URLs (tokens expire by design).
 - `merge_to_testing(jobId)` — into the repo's testing branch, when configured.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
+
+**Teardown is the platform's, not the agent's.** When `finish_job` opens the PR, Talaria stops every process still running in the job's workdir (the checkout stays for a revise bounce). Abandoning removes the workdir outright. The `workbench-job-sweep` (every 10 minutes) covers what never calls a verb: a `started` or awaiting-approval job whose ticket reached a done column or was archived is abandoned, and it and any `pr_open` job on a closed ticket lose their workdir. Jobs with no ticket are left alone. `workspace_cleared_at` marks a job whose workdir is gone.
 
 A cap refusal and a "no commits yet" refusal name the job id, branch, and workdir — finish or push there; retrying the same call does not change the answer. `jobId` is the uuid `start_job` returned, not a ticket ref. Omitting `effort` means `standard`, and `standard`/`heavy` are refused without `plan`.
 
@@ -47,7 +49,27 @@ Git in a job workdir asks Talaria for a credential. A checkout outside that work
 
 **Attribution:** commits are authored as the agent (`Analyst (Talaria agent) <analyst-engineering@agents.talaria.local>` — provisioned git identity per sandbox), so history and blame show who did the work. API-level actions (branch/PR/merge) show the App's identity; PR footers name the acting agent.
 
-**Persistence:** harness session state (opencode storage, Pi / Oh My Pi agent dirs, the npm cache, Playwright browsers) lives on the department's state volume — surviving restarts and **shared across the department's agents**, so sessions can be resumed later or picked up by a teammate as a hand-off.
+**Persistence:** harness session state (Oh My Pi's agent dir, the npm cache, Playwright browsers) lives on the department's state volume, surviving restarts and **shared across the department's agents**, so sessions can be resumed later or picked up by a teammate as a hand-off.
+
+## Dev environments
+
+Agents run unprivileged in a stock image, so the platform sets up each job's toolchain rather than leaving the agent to hand-install rustup and linkers into its home. `prepare_env(jobId)`, called right after the clone:
+
+- **Toolchains through [mise](https://mise.jdx.dev)**, in user space on the persistent volume, so a department's agents share one download of each version. A repo's own `mise.toml` / `.tool-versions` is used as is. Otherwise the versions come from the files each ecosystem already keeps: `rust-toolchain.toml` (plus mold when `.cargo/config.toml` links with it), `.nvmrc` / `.node-version` / `package.json` (node, and bun or pnpm from `packageManager` or the lockfile), `go.mod`, `.python-version` / `pyproject.toml` / `uv.lock`, `.ruby-version`, at the repo root or one directory down. Detected tools go to a `mise.local.toml` that `.git/info/exclude` keeps out of commits.
+- **OS packages through apt, as root**, only for names the repo lists in `.talaria/workbench.toml`, and only from the image's Debian sources. The agent itself never gets root.
+- **mise's shims on PATH** in the agent's login shells, so `cargo`, `bun`, `go` and the rest resolve to the repo's pinned versions by directory.
+- **A shared Rust compile cache.** For any repo with a `Cargo.toml`, sccache becomes cargo's compiler wrapper, with one cache per department at `/opt/data/workbench/harness/sccache` (20 GiB cap). Every job still starts from an empty `target/`, but a dependency any job already compiled comes out of the cache instead of being rebuilt, so only the first job after a dependency change pays for the full graph. It's scoped to the repo through `mise.local.toml`'s `[env]`, never set globally. Opt out with `sccache = false` in `.talaria/workbench.toml`.
+
+```toml
+# .talaria/workbench.toml (optional)
+apt = ["libssl-dev", "protobuf-compiler"]
+sccache = false   # opt a Rust repo out of the shared compile cache
+
+[tools]           # extra mise tools, merged over detection
+protoc = "28"
+```
+
+It is idempotent and cheap once versions are cached, so agents call it on every job. A missing tool is fixed by declaring it in the repo, never by the agent installing it. Talaria's own `mise.toml` is the example: the same file gives people and agents Rust, Bun, Node, and mold.
 
 ## Work sessions
 
@@ -70,27 +92,24 @@ Packing floors: **conversation** 768 MiB / 2 GiB; **workbench idle** 2 GiB; **pe
 
 The 2026-09-17 dogfood freeze — fourteen tickets, eleven jobs, 4 GiB chassis, twenty-six OOM kills — was a hard `mem_limit` plus unbounded pile-up. Packing + a 32 GiB last-ditch ceiling replaces both the 3-job stall and the 8g one-size box.
 
-Two known amplifiers stay out of packing, tracked separately: ever-growing session contexts (retried tickets can carry millions of tokens), and leftover per-job processes inside long-lived agent containers.
+One known amplifier stays out of packing, tracked separately: ever-growing session contexts (retried tickets can carry millions of tokens). Leftover per-job processes and workdirs are the job teardown's (above).
 
 
 ### Observing a run
 
 The run-detail modal (every "watch the work" affordance opens it) is the full-insight view, one pane per question:
 
-- **Live** — the agent's stream as it happens: its words, its reasoning, and every tool call *with its argument preview* (the preview carries the persona's display-redacted primary argument — the whole terminal command, which is where the harness steering is legible). Workbench MCP calls (`start_job`, `finish_job`, …) appear with full arguments and outcomes — they are platform-side, so their fidelity is total.
-- **Turns** — the retained transcript: each turn's prompt and stream, captured to a `run-transcript` artifact on the ticket at turn end, scrubbed of known credential shapes, retained per `observability.transcriptRetentionDays` in admin settings (default 7 days; null = permanent).
+- **Agent** — Hermes replies and its own tool calls, retained turns above the live tail. A terminal call that invokes the coding harness is not shown here.
+- **Turns** — each harness exchange: the ask the agent sent, the harness output, and the prose the agent wrote back before it did anything else.
 - **Resources** — the agent container's cpu/memory/process sparklines over the run's window, sampled once a minute by the platform (admin-only; the same series feeds Observability → Compute).
 
 What the live stream cannot show on its own: tool RESULTS for tools that execute inside the agent container (the persona's completion frames don't carry them). The **talaria-events** Hermes plugin closes that gap: rendered into every agent, it reports each tool call's name, arguments, and result (clamped, secret-scrubbed at the api boundary) to `POST /api/agents/tool-events`, which lands `toolfull` frames on the live run's watch stream — so results appear live and in the retained transcripts. Correlation is the agent's newest live work session (a documented v1 approximation; exact persona-session pinning is a follow-up).
 
-## Harnesses: an open registry
+## The harness: Oh My Pi
 
-A harness is a **declarative definition** (`defineWorkbenchHarness` in `@talaria/sdk/server` — the
-old spelling `defineHarness` still builds, deprecated, because renaming an extension point out from
-under third-party apps is a break rather than a rename; `defineHarness` now means the **activity**
-contract in [`HARNESSES.md`](./HARNESSES.md)): auth (`'gateway'` → pointed at Talaria's gateway, metered and attributed; or `{provider, envVar}` → that provider's key from the org's endpoint registry), invocation templates (structured `jsonInvoke` strongly preferred — agents are taught to read structured results, never scrape logs), `mcpServe` for harnesses that can run *as* MCP servers (registered as stdio tools on the agent's own Hermes config), `mcpConfig` naming the pass-through format it reads (or `format: 'custom'` with a `renderMcpConfig` function, app-shipped only), a driving `guide`, a `probe`, and `install` hints (npm packages the workbench image preinstalls and `talaria-harness-update` refreshes). Builtins are **opencode**, **Pi**, and **Oh My Pi** — all gateway-auth, all invoked unattended (`npx @latest`, print/json mode, no TUI). Claude Code and Codex are not offered.
+The workbench runs one coding harness, **Oh My Pi** (omp), defined once in `api/crates/talaria-workbench-harnesses`. It authenticates through Talaria's gateway on the workbench credential (metered and attributed), keeps its config and sessions in `PI_CODING_AGENT_DIR` on the department state volume, reads the agent's MCP grants from a rendered `mcp.json`, and is invoked unattended (`npx @latest`, print/json mode, `--auto-approve`, no TUI). Claude Code, Codex, OpenCode and Pi are not offered; their skill names are signposts pointing at Oh My Pi.
 
-Three layers merge by slug (later wins): **builtins** ← **app-shipped** (`apps/<slug>/harness.ts`, enabled apps only) ← **admin-custom** JSON (`PUT /api/workbench/harnesses`). No host code ever runs from a definition; harness commands execute only inside the agent's sandbox. Builtins run via `npx` on the stock image — no custom image required; first use installs into the persistent cache. The agents' built-in browser is that pattern taken literally: its engine is fetched from npm on first use, which makes the chassis's pinned external resolvers (`AGENT_DNS_1`/`_2` in `fleet/.env`) a hard dependency — no DNS, no browser, and nothing in a health check to say so. For instant first-runs, build the **workbench image** (`scripts/build-workbench-image.sh` — Hermes chassis + preinstalled harnesses + Playwright/chromium) and set it on the profile. See "Shipping a harness" in [`APPS.md`](./APPS.md).
+omp runs via `npx` on the stock image, no custom image required; first use installs into the persistent cache. The agents' built-in browser is that pattern taken literally: its engine is fetched from npm on first use, which makes the chassis's pinned external resolvers (`AGENT_DNS_1`/`_2` in `fleet/.env`) a hard dependency: no DNS, no browser, and nothing in a health check to say so. For instant first-runs, build the **workbench image** (`scripts/build-workbench-image.sh`: Hermes chassis + Oh My Pi + Playwright/chromium) and set `TALARIA_WORKBENCH_IMAGE` in the app's env; Developer Agents render on it.
 
 ## Roadmap
 
