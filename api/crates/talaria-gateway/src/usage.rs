@@ -236,6 +236,20 @@ pub struct ProviderReported {
     pub cost: serde_json::Number,
     pub source: String,
     pub fetched_at: Option<String>,
+    /// The freshest activity row is older than the freshness window — the
+    /// month tile shows the ledger number, not this stale report.
+    pub stale: bool,
+}
+
+/// Provider activity counts as fresh for 12h — twice the 6h price-refresh
+/// cadence, so a working ingest never reads as stale.
+pub const PROVIDER_REPORTED_FRESH_SECS: f64 = 12.0 * 3600.0;
+
+/// Pure: is the freshest activity row (age in seconds, straight from the
+/// query) older than the freshness window? No age reads as stale — never
+/// trust what we can't date.
+fn provider_reported_stale(age_secs: Option<f64>) -> bool {
+    age_secs.is_none_or(|a| a > PROVIDER_REPORTED_FRESH_SECS)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -447,9 +461,10 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
     let (today, week, month) = (today?, week?, month?);
     let (est, split, (unpriced,), per_model, per_agent, per_day) =
         (est?, split?, unpriced?, per_model?, per_agent?, per_day?);
-    let activity: (i32, f64, Option<String>, Option<String>) = sqlx::query_as(
+    let activity: (i32, f64, Option<String>, Option<String>, Option<f64>) = sqlx::query_as(
         "select count(*)::int, coalesce(sum(cost_usd), 0)::float8, max(source), \
-         to_char(max(fetched_at) at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') \
+         to_char(max(fetched_at) at time zone 'utc', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), \
+         extract(epoch from (now() - max(fetched_at)))::float8 \
          from provider_spend \
          where source in ('openrouter.activity', 'openai.costs', 'anthropic.cost_report') \
            and window_start > now() - make_interval(days => $1)",
@@ -461,6 +476,7 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         cost: js_num(activity.1),
         source: activity.2.unwrap_or_else(|| "provider".to_string()),
         fetched_at: activity.3,
+        stale: provider_reported_stale(activity.4),
     });
     let w =
         |(prompt, completion, cache, generations, cost): (i32, i32, i32, i32, f64)| CostWindow {
@@ -472,7 +488,11 @@ pub async fn cost_overview(pg: &PgPool) -> Result<CostOverview, sqlx::Error> {
         };
     let mut month = w(month);
     if let Some(reported) = &provider_reported {
-        month.cost = reported.cost.clone();
+        // A stale report would replace the real ledger number forever —
+        // only a fresh one wins the month tile.
+        if !reported.stale {
+            month.cost = reported.cost.clone();
+        }
     }
     Ok(CostOverview {
         totals: CostTotals {
@@ -1004,6 +1024,19 @@ mod tests {
         assert_eq!(spend.cost_usd, Some(0.0015));
         assert_eq!(spend.generation_id.as_deref(), Some("gen-abc"));
         assert_eq!(spend.variant.as_deref(), Some("Anthropic"));
+    }
+
+    #[test]
+    fn provider_reported_is_stale_past_the_freshness_window_or_without_an_age() {
+        // Fresh: six minutes old.
+        assert!(!provider_reported_stale(Some(360.0)));
+        // Exactly 12h old is still fresh; a second past is stale.
+        assert!(!provider_reported_stale(Some(12.0 * 3600.0)));
+        assert!(provider_reported_stale(Some(12.0 * 3600.0 + 1.0)));
+        // Clearly old: a week.
+        assert!(provider_reported_stale(Some(7.0 * 86_400.0)));
+        // No age at all: stale, never trusted.
+        assert!(provider_reported_stale(None));
     }
 
     #[test]
