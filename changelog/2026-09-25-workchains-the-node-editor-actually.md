@@ -21,8 +21,8 @@
   All of that is fixed. A drag moves the card and only the card; a click still
   opens the ticket. Panning is "anything that is not a card, a port or a wire".
   The grid is computed for every step from the graph alone — placing a card
-  moves nothing else — and **Tidy up** (the wand in the canvas header) re-lays
-  the whole chain on it and persists it. Opening a chain fits it. Wires carry
+  moves nothing else — and **Tidy up** (the wand floating over the canvas)
+  re-lays the whole chain on it and persists it. Opening a chain fits it. Wires carry
   arrowheads and the strong hairline, lifting to accent on hover; the canvas
   has a dot grid that pans and zooms with the graph, and agents' avatars wear
   an accent ring so a chain's human/agent mix reads at a glance. The drop point
@@ -53,9 +53,11 @@
   **workchain menu** (its trigger names the focused chain) switches between
   chains and holds every verb that acts on one: New workchain, Rename, Pause /
   Resume, Delete — rather than a switcher in one place and half the verbs on a
-  canvas header. **Add tickets** is the old UNCHAINED set as a searchable menu,
-  its count on the trigger so work sitting outside every chain still announces
-  itself; a row click appends it and leaves the menu open (seeding a pipeline
+  canvas header. Creating one FOCUSES it: naming a chain is asking to work on
+  it, and a create that only moved the menu's `1/2` read left the reader
+  looking at the chain they already had. **Add tickets** is the old UNCHAINED
+  set as a searchable menu, its count on the trigger so work sitting outside
+  every chain still announces itself; a row click appends it and leaves the menu open (seeding a pipeline
   is a run of picks), and the canvas re-fits so the reader sees where the card
   landed. The canvas keeps only what needs canvas state — zoom, fit, Tidy up —
   floating over its own bottom-left corner.

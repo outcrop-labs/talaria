@@ -76,10 +76,18 @@
    *  after a ticket joins, show the reader where it landed. */
   let canvas = $state<WorkchainCanvas | null>(null)
 
+  /** Create, and FOCUS it: naming a chain is asking to work on it, and a
+   *  create that only moved the menu's `1/2` read left the reader looking at
+   *  the chain they already had. */
   const addChain = async () => {
     const name = await prompt({ title: 'New workchain', message: 'Name this chain of tickets.', confirmLabel: 'Create' })
     if (!name?.trim()) return
-    await createWorkchain(board.id, name.trim()).then(invalidate).catch(failure('Creating the workchain'))
+    await createWorkchain(board.id, name.trim())
+      .then(({ workchain }) => {
+        focusedId = workchain.id
+        invalidate()
+      })
+      .catch(failure('Creating the workchain'))
   }
 
   // ── What the menu offers and the ticket picker draws ──────────────────────
