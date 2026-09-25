@@ -16,6 +16,53 @@ const here = fileURLToPath(new URL('.', import.meta.url))
 //   prod  server-entry.ts wraps the built handler (see vite.server.config.ts)
 // Tailwind v4 via the vite plugin; path alias `@/*` → `src/*` (see tsconfig).
 
+/** The migration pass, at dev boot — the twin of server-entry.ts's boot step,
+ *  which is the PROD wrapper and never runs under `vite dev`.
+ *
+ *  The pass used to be purely lazy (the first table-backed db() call fired
+ *  it), and before the api cutover that was enough: the TS server served the
+ *  tables, so the first page hit migrated a fresh database. Post-cutover every
+ *  table query belongs to the Rust api, which owns no DDL by design, and
+ *  nothing in this process's boot path touches a table. `server-entry.ts` grew
+ *  an explicit boot pass for exactly that; the dev middleware did not — so a
+ *  fresh `talaria dev` came up with ZERO tables, /claim 500'd, and every api
+ *  request answered `relation "…" does not exist` until somebody ran the pass
+ *  by hand. Same failure, same fix, one door apart.
+ *
+ *  Not awaited by requests, deliberately: `talaria dev` starts vite and then
+ *  the Rust api, so the pass runs while that is still coming up, and the
+ *  server's OWN table queries already await the cached promise inside
+ *  ensureMigrated(). A failure records the code on the globalThis channel
+ *  /api/healthz reads (boot-health.ts), so a broken schema fails the probe in
+ *  dev the way it does in prod rather than presenting a green server that
+ *  500s every query. */
+async function bootMigrations(s: ViteDevServer): Promise<void> {
+  const started = Date.now()
+  try {
+    const mod = (await s.ssrLoadModule('/src/server/app.ts')) as {
+      migrate?: () => Promise<{ applied: number; total: number }>
+    }
+    if (typeof mod.migrate !== 'function') {
+      s.config.logger.warn('[talaria] src/server/app.ts exports no migrate() — schema setup waits for the first table query')
+      return
+    }
+    const { applied, total } = await mod.migrate()
+    const ms = Date.now() - started
+    s.config.logger.info(
+      applied === 0
+        ? `[talaria] migrations → schema already current (${total} statements, ${ms}ms)`
+        : `[talaria] migrations → applied ${applied} statement(s) (${total} total, ${ms}ms)`,
+    )
+  } catch (err) {
+    const code = (err as { code?: unknown } | null | undefined)?.code
+    ;(globalThis as { __talariaBootMigrationError?: { code: string; at: number } }).__talariaBootMigrationError = {
+      code: typeof code === 'string' && /^[A-Z0-9_]{1,20}$/.test(code) ? code : 'MIGRATION_FAILED',
+      at: Date.now(),
+    }
+    s.config.logger.error(`[talaria] migrations FAILED — every table query will 500: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 /** /api/* (+ /.well-known/*) in dev, answered by the real server handler.
  *  ssrLoadModule keeps the server graph hot-reloadable like any other module. */
 function apiDev(): Plugin {
@@ -33,6 +80,7 @@ function apiDev(): Plugin {
     },
     configureServer(s) {
       server = s
+      void bootMigrations(s)
       server.middlewares.use((req, res, next) => {
         const pathname = (req.url ?? '/').split('?')[0]!
         if (!pathname.startsWith('/api/') && !pathname.startsWith('/.well-known/')) return next()

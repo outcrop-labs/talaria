@@ -243,10 +243,28 @@ export async function runDev(ctx: Ctx): Promise<number> {
     if (val && !ctx.env[varName]) ctx.env[varName] = val
   }
 
-  ctx.log.say('infra (postgres + redis + qdrant + minio)')
+  ctx.log.say('infra (postgres + redis + qdrant)')
   const devSpec = { files: stackComposeFiles(ctx.root, DEV_COMPOSE) }
-  if ((await compose(ctx, devSpec, ['up', '-d', 'postgres', 'redis', 'qdrant', 'minio'])) !== 0) {
+  if ((await compose(ctx, devSpec, ['up', '-d', 'postgres', 'redis', 'qdrant'])) !== 0) {
     ctx.log.die('dev infra failed to start')
+  }
+
+  // Object storage started separately, and non-fatally — the rule searxng and
+  // embeddings below already ride, which minio was the one sidecar still
+  // outside of. A single `up` resolves EVERY image before it creates ANY
+  // container, so one unpullable image took postgres and redis down with it:
+  // and minio's image is our own GHCR mirror (TALA-20), which a machine can
+  // only pull once that mirror has run and its package is public. Until then
+  // `talaria dev` died at "dev infra failed to start" on a fresh clone, with
+  // the registry's `denied` the only clue. The app boots without object
+  // storage; uploads are what degrade.
+  ctx.log.say('object storage (MinIO)')
+  if ((await compose(ctx, devSpec, ['up', '-d', 'minio'])) !== 0) {
+    ctx.log.warn('object storage failed to start — attachments and uploads will fail until it is up.')
+    ctx.log.warn(
+      'If the image could not be pulled: it is our mirror of a dead upstream ' +
+        '(.github/workflows/minio-mirror.yml). A private package needs `docker login ghcr.io` with read:packages.',
+    )
   }
 
   renderSearxng(ctx)
