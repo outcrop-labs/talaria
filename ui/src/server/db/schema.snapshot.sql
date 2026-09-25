@@ -1196,7 +1196,9 @@ CREATE TABLE public.workbench_jobs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     merged_testing_at timestamp with time zone,
-    workspace_cleared_at timestamp with time zone
+    workspace_cleared_at timestamp with time zone,
+    queued_at timestamp with time zone,
+    queued_reason text
 );
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
