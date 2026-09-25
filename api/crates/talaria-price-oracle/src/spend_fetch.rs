@@ -55,7 +55,9 @@ fn model_ids(models: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-async fn upsert_price(
+/// Upsert one published price. The unique key is (endpoint_id, model, variant),
+/// so a model-level row (variant '') and each upstream variant coexist.
+pub(crate) async fn upsert_price(
     pg: &PgPool,
     endpoint_id: &str,
     provider: &str,
