@@ -29,6 +29,7 @@ talaria-runs-define = { workspace = true }
 talaria-state = { workspace = true }
 talaria-statuses = { workspace = true }
 talaria-tasks = { workspace = true }
+talaria-workbench-harnesses = { workspace = true }
 talaria-workflows = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

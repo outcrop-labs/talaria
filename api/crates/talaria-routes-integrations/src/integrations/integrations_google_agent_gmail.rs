@@ -126,6 +126,18 @@ pub async fn post(
     ) {
         return Ok(house_error(StatusCode::CONFLICT, &reason));
     }
+    if let Some(denied) =
+        super::integrations_google_agent_queue::refuse_unresolved_write(&state.pg, &agent_model)
+            .await
+            .map_err(|e| {
+                internal(
+                    "[integrations/google/agent] principal connection read failed",
+                    e,
+                )
+            })?
+    {
+        return Ok(denied);
+    }
 
     // The payload IS the validated draft, stored as drafted and executed as
     // stored at approve time; subject/body always ride (their defaults),
@@ -159,6 +171,7 @@ pub async fn post(
             agent_model: &agent_model,
             owner_user_id: principal.owner_user_id.as_deref(),
             is_org: principal.is_org,
+            principal_kind: principal.kind.as_str(),
         },
     )
     .await

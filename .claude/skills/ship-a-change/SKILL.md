@@ -76,9 +76,11 @@ by hand.
 
 ## 6. After the PR opens — watch, then fix, then claim done
 
-Before you claim done, remove what this task created. The convention and the command are
-the [cleanup](../cleanup/SKILL.md) skill. The stop gate runs the sweep and blocks if disk
-pressure or stale artifacts are over the line — forgetting is how the disk fills.
+Do not tear the local workspace down while the watcher is still red — you may need it
+to fix. Once the proof line is green, remove what this task created before you claim
+done. The convention and the command are the [cleanup](../cleanup/SKILL.md) skill. The
+stop gate blocks if disk pressure or stale artifacts are over the line; that is the
+backstop, not the step.
 
 The stop gate and the pre-push hook saw the local tree. CI runs the full tree, and `rc`
 can move under the branch while the PR waits (a sibling merge is the usual way it
@@ -96,7 +98,7 @@ capped at 2min, hard stop at 45 minutes) and does not edit, merge, push, or comm
 
 | Exit | First line | What you do |
 |---|---|---|
-| 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with `rc`). You may claim done. Cite the proof line. A required review is not this gate — exit 0 does not mean a human approved, and you still do not merge. |
+| 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with `rc`). You may claim done only after the local workspace this task created is gone (cleanup skill). Cite the proof line. A required review is not this gate — exit 0 does not mean a human approved, and you still do not merge. |
 | 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Fix. Re-run `bun run gate`. If the log names a crate this diff did not touch, `cargo test -p <that crate>` (clippy the same way) — never `api:check`, never a workspace cargo. Push to this same branch. Run the watcher again. |
 | 2 | `pr-watch: conflict` | `git fetch origin rc && git merge origin/rc`. Resolve. Re-run `bun run gate`. Push to this same branch. Run the watcher again. |
 | 2 | `pr-watch: timeout` | Still pending when the wall clock ran out. Not done, and not a pass. Report the PR URL. Do not claim done. |

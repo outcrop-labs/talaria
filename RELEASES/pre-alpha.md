@@ -32,7 +32,7 @@ Sign in, add an LLM provider on `/models` (keys are encrypted in the DB), set yo
 ## Pre-alpha caveats
 
 - **Unstable by intent.** APIs, UI, and the schema change without deprecation notice; expect migrations.
-- **Single instance.** No business multitenancy yet; a managed cloud comes later (self-hosting never loses features).
+- **Single instance.** One app instance per deployment for now — the scheduler and durable runs are already Redis-leased and racing-safe, but the TS ui plane is not (details in the README's "Deployment topology: one instance"). No business multitenancy yet; a managed cloud comes later (self-hosting never loses features).
 - **Hermes-runtime agents.** Every agent is a full Hermes agent; other runtimes are planned.
 - **Admin-only surfaces.** Fleet rolls, storage, retrieval, and security settings are deliberately gated.
 - **On the way, not in this build:** official marketing/sales/support apps, design and creative surfaces, finance, in-app agentic coding beyond the Workbench, role-ready base agents, and connectors (Slack/Matrix, MCP-out, accounting/HR).

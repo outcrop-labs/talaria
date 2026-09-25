@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+23 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -28,6 +28,10 @@
 | [`/api/fleet/defs`](#apifleetdefs) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/defs/{id}`](#apifleetdefsid) | PATCH | `session` + `perm:agents.manage` |
 | [`/api/fleet/defs/{id}/edit`](#apifleetdefsidedit) | POST | `session` + `perm:agents.manage` |
+| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | GET | `session` + `perm:agents.manage` |
+| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | PUT | `session` + `perm:agents.manage` |
+| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | DELETE | `session` + `perm:agents.manage` |
+| [`/api/fleet/defs/{id}/google/connect`](#apifleetdefsidgoogleconnect) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | POST | `session` + `perm:agents.manage` |
@@ -229,8 +233,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs)
 
 > /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
-> display name, send alias) plus the workbench and template binds. Not
-> versioned — this is identity, not config. Admin only.
+> display name, send alias) plus the Developer Agent switch and template
+> binds. Not versioned: this is identity, not config. Admin only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -243,9 +247,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `role` | `string? nullable(80)` |  |
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
-| `workbench` | `enum(off|auto|on)?` |  |
-| `workbenchProfile` | `string? nullable(40)` |  |
-| `workbenchHarness` | `string? nullable(40)` |  |
+| `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
 
 ## `/api/fleet/defs/{id}/edit`
 
@@ -270,6 +272,42 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 | `fallbacks` | `target_array` |  |
 | `note` | `string?(300)` |  |
 | `apply` | `bool?` | Re-render + restart the managed container so the edit takes effect now. |
+
+## `/api/fleet/defs/{id}/google`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs)
+
+> /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
+> connect/disconnect control for a per-agent identity.
+>
+> GET    → the registry row (or the legacy fallback) plus connection face
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `…` | 200, 404 | — |
+| PUT | `session` + `perm:agents.manage` | [body](#put-apifleetdefsidgoogle-body) | `…` | 200, 400, 404 | audit |
+| DELETE | `session` + `perm:agents.manage` | — | `…` | 200, 404 | audit |
+
+### PUT `/api/fleet/defs/{id}/google` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `principalKind` | `enum(owner|org|agent)` |  |
+
+## `/api/fleet/defs/{id}/google/connect`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs)
+
+> /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
+> connect/disconnect control for a per-agent identity.
+>
+> GET    → the registry row (or the legacy fallback) plus connection face
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `…` | 302, 400, 404 | — |
 
 ## `/api/fleet/defs/{id}/mcp`
 

@@ -13,7 +13,6 @@ apps/<slug>/
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — default-exports defineAppServer({...})
   mcp.ts         optional agent tools — default-exports defineAppMcp({...})
-  harness.ts     optional workbench harness — defineWorkbenchHarness({...})
   harnesses/     optional activity harnesses — one defineHarness per file
 ```
 

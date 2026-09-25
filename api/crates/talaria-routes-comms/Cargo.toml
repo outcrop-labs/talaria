@@ -40,6 +40,7 @@ talaria-realtime-watch = { workspace = true }
 talaria-refs = { workspace = true }
 talaria-research = { workspace = true }
 talaria-research-origin = { workspace = true }
+talaria-sender-identity = { workspace = true }
 talaria-session = { workspace = true }
 talaria-state = { workspace = true }
 talaria-task-const = { workspace = true }

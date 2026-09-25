@@ -5,11 +5,13 @@
 # then run `bun install --frozen-lockfile` in a workspace. This composite action
 # is everything after the checkout, and it is where the three VERSION PINS live:
 #
-#   bun   1.4.0    also root package.json's `packageManager` field — move together
+#   bun   1.4.0    also root package.json's `packageManager` field and the root
+#                  mise.toml — move together
 #   node  22.x     a hard floor, not a preference: vite 7 declares
-#                  `^20.19.0 || >=22.12.0`. (Add a .nvmrc at the repo root and
+#                  `^20.19.0 || >=22.12.0`. Also the root mise.toml (by major).
+#                  (Add a .nvmrc at the repo root and
 #                  switch this to a node-version-file input, not a second pin.)
-#   rust  1.97.1   also api/rust-toolchain.toml, desktop/src-tauri/
+#   rust  1.97.1   also the root mise.toml, api/rust-toolchain.toml, desktop/src-tauri/
 #                  rust-toolchain.toml and the rustup line in
 #                  docker/devbox.Dockerfile — the sqlx 0.9 MSRV floor. Pinning
 #                  rather than tracking stable is what keeps devbox/CI/host one

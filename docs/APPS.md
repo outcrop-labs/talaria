@@ -18,7 +18,6 @@ apps/<slug>/
   *.svelte       one component per surface (plus whatever else you need)
   server.ts      optional API — defineAppServer(...) → /api/apps/<slug>/*
   mcp.ts         optional agent tools — defineAppMcp(...) → governed MCP server
-  harness.ts     optional workbench harness — defineWorkbenchHarness({...})
   harnesses/     optional activity harnesses — one defineHarness per file
 ```
 
@@ -93,18 +92,9 @@ rebuilding (managed update flows are on the roadmap).
 
 ## Shipping a harness
 
-Talaria has **two** things called a harness and they are not specializations of each other:
+An app ships an **activity harness** (`apps/<slug>/harnesses/*.ts`): a model call Talaria runs
+on your app's behalf, with evals that earn a column in the org's model-fitness matrix:
+[harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
 
-- a **workbench harness** (`apps/<slug>/harness.ts`) — a coding CLI agents drive in the sandbox:
-  [workbench-harnesses.md](./sdk/workbench-harnesses.md), deep contract in
-  [WORKBENCH.md](./WORKBENCH.md);
-- an **activity harness** (`apps/<slug>/harnesses/*.ts`) — a model call Talaria runs on your app's
-  behalf, with evals that earn a column in the org's model-fitness matrix:
-  [harnesses.md](./sdk/harnesses.md), deep contract in [HARNESSES.md](./HARNESSES.md).
-
-The host merges definitions from three layers by slug/id (later wins): Talaria's builtins ←
-app-shipped (enabled apps only) ← admin-registered custom JSON (`PUT /api/workbench/harnesses`,
-`agents.manage`). A registered harness plugs into the whole workbench machinery automatically —
-selectable per agent, auth and MCP grants provisioned at render time, probe surfaced by the
-workbench doctor — and jobs, branches, PRs, plan gates, per-job workspaces, and shared session
-history all behave identically: the harness is just the tool inside the flow.
+The coding harness agents drive in their sandbox is not an extension point: the workbench runs
+Oh My Pi, and only Oh My Pi ([WORKBENCH.md](./WORKBENCH.md)).

@@ -38,6 +38,10 @@ either branch, and `talaria setup` wires the same rule into `git push` locally.
    checks are failing, still pending, or the PR conflicts with `rc`.
    `node scripts/hooks/pr-watch.mjs` is that gate; the procedure is
    [`.claude/skills/ship-a-change/SKILL.md`](./.claude/skills/ship-a-change/SKILL.md).
+7. **Remove the local workspace this task created** before you call the work done —
+   worktree, devbox, scratch checkout, throwaway download. Shared caches stay. Do not
+   tear it down while the watcher is still red; you may need it to fix. The procedure is
+   [`.claude/skills/cleanup/SKILL.md`](./.claude/skills/cleanup/SKILL.md).
 
 A test earns its place only where a plausible bug would fail it. Behaviour, boundaries,
 invariants, transitions, real errors — not wiring, defaults, or the shape of the source.

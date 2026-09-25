@@ -3985,6 +3985,7 @@ dependencies = [
  "talaria-google-calendar",
  "talaria-google-client",
  "talaria-google-connections",
+ "talaria-google-docs",
  "talaria-google-drive",
  "talaria-google-errors",
  "talaria-google-gmail",
@@ -4288,6 +4289,7 @@ dependencies = [
  "talaria-realtime",
  "talaria-refs",
  "talaria-secretbox",
+ "talaria-sender-identity",
  "talaria-state",
  "talaria-ticket-chat",
  "talaria-uploads",
@@ -4338,6 +4340,7 @@ dependencies = [
  "talaria-retrieval-index",
  "talaria-retrieval-qdrant",
  "talaria-retrieval-sources",
+ "talaria-sender-identity",
  "talaria-state",
  "talaria-titler",
  "talaria-workspace-handles",
@@ -5034,6 +5037,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-google-docs"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-errors",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-google-drive"
 version = "0.1.0"
 dependencies = [
@@ -5140,8 +5157,11 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-google-agent",
  "talaria-google-calendar",
  "talaria-google-connections",
+ "talaria-google-docs",
+ "talaria-google-drive",
  "talaria-google-gmail",
  "talaria-google-org",
  "talaria-notify",
@@ -5369,6 +5389,7 @@ dependencies = [
  "talaria-persona",
  "talaria-refs",
  "talaria-secretbox",
+ "talaria-sender-identity",
  "talaria-session",
  "talaria-state",
  "talaria-statuses",
@@ -5486,6 +5507,7 @@ dependencies = [
  "talaria-uploads",
  "talaria-web-search",
  "talaria-work-dispatch",
+ "talaria-workbench-mcp",
  "talaria-workbench-queue",
  "talaria-workchains",
  "tokio",
@@ -6455,6 +6477,7 @@ dependencies = [
  "talaria-refs",
  "talaria-research",
  "talaria-research-origin",
+ "talaria-sender-identity",
  "talaria-session",
  "talaria-state",
  "talaria-task-const",
@@ -6544,6 +6567,7 @@ name = "talaria-routes-integrations"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "regex",
  "serde",
  "serde_json",
@@ -6837,6 +6861,7 @@ dependencies = [
  "talaria-state",
  "talaria-statuses",
  "talaria-tasks",
+ "talaria-workbench-harnesses",
  "talaria-workflows",
  "tokio",
  "tracing",
@@ -6940,6 +6965,13 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "talaria-sender-identity"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -7414,7 +7446,6 @@ dependencies = [
  "talaria-tasks",
  "talaria-tasks-types",
  "talaria-work-wait",
- "talaria-workbench",
  "tokio",
  "tracing",
 ]
@@ -7432,18 +7463,14 @@ dependencies = [
 name = "talaria-workbench"
 version = "0.1.0"
 dependencies = [
- "regex",
- "serde",
  "serde_json",
  "sqlx",
- "talaria-fleet-layout",
 ]
 
 [[package]]
 name = "talaria-workbench-harnesses"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
  "sqlx",
  "talaria-gateway",
@@ -7469,18 +7496,21 @@ dependencies = [
  "talaria-boards",
  "talaria-body",
  "talaria-fleet-budget",
+ "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-github",
  "talaria-mcp-jsonrpc",
  "talaria-realtime",
  "talaria-runs-define",
+ "talaria-scheduler",
  "talaria-secretbox",
+ "talaria-statuses",
  "talaria-tasks",
  "talaria-work-wait",
- "talaria-workbench",
  "talaria-workbench-harnesses",
  "talaria-workbench-queue",
  "tokio",
+ "toml_edit",
  "tracing",
  "uuid",
 ]
@@ -7765,6 +7795,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -7776,6 +7807,12 @@ checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tower"

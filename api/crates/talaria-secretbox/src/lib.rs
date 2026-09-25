@@ -17,7 +17,7 @@
 // tag 16. One asymmetry that will silently corrupt everything if gotten
 // wrong: the DEK wrap's plaintext is the STANDARD padded base64 STRING of the
 // key bytes, not the raw bytes — a quirk of the first writer that is now part
-// of the format. It has its own fixture case in tests/fixtures.
+// of the format. It has its own fixture case in tests/it/fixtures.
 //
 // This box OPENS, SEALS, and ROTATES, but never CREATES the first key: an
 // empty secret_keys is a recorded failure, not a migration write this crate
@@ -434,7 +434,7 @@ pub fn new_dek() -> Result<Key, SecretboxError> {
 mod tests {
     use super::*;
 
-    // Cross-language fixtures live in tests/fixtures/secretbox.json (see
+    // Cross-language fixtures live in tests/it/fixtures/secretbox.json (see
     // tests/secretbox.rs). These in-crate tests pin the round trips.
 
     fn kek_for(root: &str) -> Key {
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn kek_matches_the_recipe() {
         // 32 bytes, deterministic, salted by the literal — the exact value is
-        // pinned in tests/fixtures/secretbox.json.
+        // pinned in tests/it/fixtures/secretbox.json.
         assert_eq!(kek_for("root").len(), 32);
         assert_ne!(kek_for("root"), kek_for("other"));
     }

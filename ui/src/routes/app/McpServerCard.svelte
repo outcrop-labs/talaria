@@ -49,6 +49,10 @@
     }
   })
 
+  // The Workbench is granted by each agent's Developer Agent switch, not from
+  // here. The api refuses assignment and access rows for it.
+  const isWorkbench = $derived(s.name === 'workbench')
+
   const cardMenu = (e: MouseEvent) =>
     menu.openMenu(e, [
       { label: s.enabled ? 'Disable server' : 'Enable server', onSelect: () => void patch({ enabled: !s.enabled }) },
@@ -196,21 +200,27 @@
   <div class="mt-4 flex items-center gap-3 border-t border-line pt-3">
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Access</span>
     <span class="min-w-0 flex-1 truncate font-sans text-xs text-muted">
-      {#if s.allAgents || s.builtin}
+      {#if isWorkbench}
+        Every Developer Agent. Turn it on in an agent's settings.
+      {:else if s.allAgents || s.builtin}
         Every agent{#if s.assignments.length}, {s.assignments.length} narrowed{/if}
       {:else if s.assignments.length}
         {s.assignments.length} agent{s.assignments.length === 1 ? '' : 's'}
       {:else}
         No agents yet
       {/if}
-      ·
-      {#if s.userAccess.length}
-        {s.userAccess.length} {s.userAccess.length === 1 ? 'person' : 'people'}
-      {:else}
-        no per-person rules
+      {#if !isWorkbench}
+        ·
+        {#if s.userAccess.length}
+          {s.userAccess.length} {s.userAccess.length === 1 ? 'person' : 'people'}
+        {:else}
+          no per-person rules
+        {/if}
       {/if}
     </span>
-    <Button size="sm" variant="outline" onclick={() => (accessOpen = true)}>Manage access</Button>
+    {#if !isWorkbench}
+      <Button size="sm" variant="outline" onclick={() => (accessOpen = true)}>Manage access</Button>
+    {/if}
   </div>
 
   {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}

@@ -282,8 +282,9 @@ pub struct DispatchPromptInput<'a> {
     /// rules (base branches, required prefixes). None renders the standing
     /// default — branch-first is the posture even with no configuration.
     pub hygiene_block: Option<&'a str>,
-    /// The agent's SELECTED coding harness (workbench_harness on the def) —
-    /// the platform knows it, so the brief NAMES it rather than hedging.
+    /// The coding harness a Developer Agent drives (Oh My Pi), or None for
+    /// an agent without the switch. The platform knows it, so the brief
+    /// NAMES it rather than hedging.
     pub harness: Option<&'a str>,
 }
 
@@ -315,7 +316,9 @@ pub fn dispatch_prompt(input: &DispatchPromptInput) -> String {
     p.push_str("3. If the work touches a repo, sync FIRST: fetch and rebase or re-clone so you are on latest origin/main — a checkout that has sat for days is stale, and `git fetch` alone does not move your working tree. Base any branch on what you just pulled.\n");
     p.push_str("4. Do the work in as many steps as it takes — and if this ticket touches CODE, your coding harness does the writing");
     if let Some(h) = input.harness {
-        p.push_str(&format!(" — YOUR harness is {h}, selected on your agent settings: run `doctor` for its guide and probe, then drive it"));
+        p.push_str(&format!(
+            ": YOUR harness is {h}. Run `doctor` for its guide and probe, then drive it"
+        ));
     } else {
         p.push_str(": drive it");
     }

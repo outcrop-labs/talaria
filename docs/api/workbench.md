@@ -7,12 +7,10 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-8 routes.
+6 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
-| [`/api/workbench`](#apiworkbench) | GET | `session` + `perm:agents.manage` |
-| [`/api/workbench`](#apiworkbench) | PUT | `session` + `perm:agents.manage` |
 | [`/api/workbench/env/{*repo}`](#apiworkbenchenvrepo) | GET | `session` + `perm:agents.manage` |
 | [`/api/workbench/env/{*repo}`](#apiworkbenchenvrepo) | PATCH | `session` + `perm:agents.manage` |
 | [`/api/workbench/flow`](#apiworkbenchflow) | GET | `session` + `perm:agents.manage` |
@@ -20,44 +18,12 @@
 | [`/api/workbench/github`](#apiworkbenchgithub) | GET | `admin` |
 | [`/api/workbench/github`](#apiworkbenchgithub) | PUT | `admin` |
 | [`/api/workbench/github`](#apiworkbenchgithub) | DELETE | `admin` |
-| [`/api/workbench/harnesses`](#apiworkbenchharnesses) | GET | `session` |
-| [`/api/workbench/harnesses`](#apiworkbenchharnesses) | PUT | `session` + `perm:agents.manage` |
-| [`/api/workbench/harnesses`](#apiworkbenchharnesses) | DELETE | `session` + `perm:agents.manage` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | PUT | `session` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | GET | `admin` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | PUT | `admin` |
 | [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | GET | `session` + `perm:agents.manage` |
 | [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | PUT | `session` + `perm:agents.manage` |
-
-## `/api/workbench`
-
-Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench.rs)
-
-> /api/workbench. Workbench profiles: the role-agnostic sandbox registry
-> ('dev' seeded; designer/data ride the same table). GET → any member (env
-> values masked — they are the documented home for scoped credentials);
-> PUT → agents.manage, except the infrastructure fields, which are
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{profiles}` | 200 | — |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkbench-body) | `{ok}` | 200, 400, 403, 404 | audit |
-
-### PUT `/api/workbench` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `slug` | `string(1, 40)` | Patch — schema order (the audit trail's `after` rides it). |
-| `name` | `string?(80)` |  |
-| `description` | `string?(500)` |  |
-| `env` | `optional_env` |  |
-| `harnesses` | `string[]?(0, 40, 20)` |  |
-| `autoAttach` | `optional_auto_attach` |  |
-| `enabled` | `bool?` |  |
-| `image` | `string?(200)` | ── admin-only below: these two reach the host, not just the sandbox ── |
-| `mounts` | `string[]?(0, 300, 20)` |  |
 
 ## `/api/workbench/env/{*repo}`
 
@@ -121,36 +87,6 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github.rs`
 | :--- | :--- | :--- |
 | `mode` | `enum(app|pat)? nullable` |  |
 | `repoCreationOrgs` | `string[]?(1, 100, 10)` |  |
-
-## `/api/workbench/harnesses`
-
-Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_harnesses.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_harnesses.rs)
-
-> /api/workbench/harnesses. The harness registry. GET → merged definitions
-> with sources (any member — grounds the per-agent dropdowns); PUT →
-> register/replace a CUSTOM definition (declarative JSON, no code);
-> DELETE ?slug= removes one. Builtin/app-shipped entries can be shadowed by
-> …
-
-| Method | Auth | Body | Returns | Status | Flags |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `…` | 200 | — |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkbenchharnesses-body) | `…` | 200, 400 | — |
-| DELETE | `session` + `perm:agents.manage` | — | `…` | 200, 400 | — |
-
-### PUT `/api/workbench/harnesses` body
-
-| field | schema | notes |
-| :--- | :--- | :--- |
-| `slug` | `value` | slug: the regex is declared BEFORE the max, so a bad long slug answers the pattern sentence. |
-| `label` | `string(1, 60)` |  |
-| `description` | `string?(300)` |  |
-| `modelPrefix` | `string?(40)` |  |
-| `invoke` | `string(1, 500)` |  |
-| `jsonInvoke` | `string?(500)` |  |
-| `continueInvoke` | `string?(500)` |  |
-| `continueJsonInvoke` | `string?(500)` |  |
-| `guide` | `string(1, 2000)` |  |
 
 ## `/api/workbench/jobs`
 

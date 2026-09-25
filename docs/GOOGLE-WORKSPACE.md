@@ -95,13 +95,14 @@ AUTH_SECRET=<random, ≥32 bytes>        # also encrypts stored tokens
 # TALARIA_SECRET_KEY=<override>         # optional: separate key for secretbox
 ```
 
-In the **Google Cloud console** for that OAuth client, register **all three**
-redirect URIs (login + per-user connect + org connect):
+In the **Google Cloud console** for that OAuth client, register **all four**
+redirect URIs (login + per-user connect + org connect + per-agent identity):
 
 ```
 <public-url>/api/auth/google/callback
 <public-url>/api/integrations/google/callback
 <public-url>/api/integrations/google/org/callback
+<public-url>/api/integrations/google/agent/callback
 ```
 
 The Admin → Google Workspace · OAuth client panel lists these with the actual

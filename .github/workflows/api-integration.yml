@@ -7,7 +7,7 @@
 #     - replays the full TS MIGRATIONS array into the postgres (so the suite
 #       meets the exact schema a deployed instance would — and the replay
 #       doubles as the snapshot check)
-#     - runs every #[ignore]d integration binary in api/tests/ with --ignored:
+#     - runs every #[ignore]d integration module in api/tests/it/ with --ignored:
 #       the live-DB suites (runs_run, runs_decide, realtime, typed_binds'
 #       siblings…) that prove the runtime sqlx queries, the bind casts and the
 #       store engines against the real schema — the exact class the unit suite
@@ -123,17 +123,23 @@ jobs:
         working-directory: api
         run: |
           set -eu
-          # Self-maintaining: every integration binary in api/tests/ runs with
-          # --ignored, so a new tests/<file>.rs is picked up automatically.
-          # The only committed knowledge is what CANNOT run here — each
-          # exclusion says why, at the exclusion. (`--skip` filters by test
-          # NAME, not by binary, which is why the exclusions live here rather
-          # than on one cargo line.)
-          for t in $(/bin/ls tests/*.rs | sed 's|^tests/||; s|\.rs$||'); do
+          # Self-maintaining: every module of the one integration binary
+          # (api/tests/it/) runs with --ignored, so a new tests/it/<file>.rs is
+          # picked up automatically. The only committed knowledge is what
+          # CANNOT run here — each exclusion says why, at the exclusion.
+          #
+          # One module per run, not the whole binary in one go: the files were
+          # separate binaries until they were merged to link once, so tests
+          # from different files have never shared the scratch database
+          # concurrently. The binary builds on the first run; the rest only
+          # filter it.
+          for t in $(/bin/ls tests/it/*.rs | sed 's|^tests/it/||; s|\.rs$||'); do
             case "$t" in
               # typed_binds: needs the dev retrieval containers (qdrant + TEI
               # embeddings). Stays a local suite against talaria dev infra.
               typed_binds) continue ;;
+              # main is the crate root that declares the modules, not a suite.
+              main) continue ;;
               # update_live: reads the real ghcr.io registry — network-shaped,
               # not a per-push gate.
               update_live) continue ;;
@@ -141,9 +147,9 @@ jobs:
             skips=""
             # llm_models/minted_key_lists_the_catalog wants a minted tlk_ key
             # (TALARIA_LLM_TEST_KEY) this job does not create.
-            [ "$t" = "llm_models" ] && skips="--skip minted_key_lists_the_catalog"
+            [ "$t" = "llm_models" ] && skips="--skip llm_models::minted_key_lists_the_catalog"
             echo "== $t =="
-            cargo test --quiet --test "$t" -- --ignored $skips
+            cargo test --quiet --test it -- --ignored "$t::" $skips
           done
           # Ignored in-crate unit tests (workspace-wide: e.g. talaria-runs-store)
           # ride the same containers.

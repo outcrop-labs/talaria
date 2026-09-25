@@ -15,7 +15,7 @@
 // yaml text) and stays reproducible across machines.
 //
 // Usage:
-//   bun run api:vectors:yaml           # write api/tests/fixtures/yaml-stringify.json
+//   bun run api:vectors:yaml           # write api/tests/it/fixtures/yaml-stringify.json
 //   bun run api:vectors:yaml --check   # fail if the committed file is stale
 
 import { createRequire } from 'node:module'
@@ -31,6 +31,7 @@ const FIXTURE = join(
   '..',
   'api',
   'tests',
+  'it',
   'fixtures',
   'yaml-stringify.json'
 )

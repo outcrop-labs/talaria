@@ -24,6 +24,7 @@ talaria-notify = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-refs = { workspace = true }
 talaria-secretbox = { workspace = true }
+talaria-sender-identity = { workspace = true }
 talaria-state = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-uploads = { workspace = true }

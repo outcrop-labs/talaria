@@ -55,8 +55,9 @@ use talaria_harness::transport::ToolDefinition;
 use talaria_fitness_talaria_tools::{SandboxTool, TALARIA_TOOLS, tools_named};
 use talaria_fitness_world::{
     AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxBoard, SandboxComment,
-    SandboxDm, SandboxDocument, SandboxEmailDraft, SandboxEventDraft, SandboxKbDoc, SandboxKbSpace,
-    SandboxLabel, SandboxMember, SandboxOutcome, SandboxTicket, SandboxWorld, base_world,
+    SandboxDm, SandboxDocument, SandboxDriveFile, SandboxEmailDraft, SandboxEventDraft,
+    SandboxKbDoc, SandboxKbSpace, SandboxLabel, SandboxMember, SandboxOutcome, SandboxTicket,
+    SandboxWorld, base_world,
 };
 
 // ── The refusal, and the arg narrowing that produces it ─────────────────────
@@ -1239,6 +1240,142 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "files": files }))
         }
 
+        "create_google_doc" => {
+            google_only(w, "create_google_doc")?;
+            let title = req_str(&a["title"], "title")?;
+            let id = next_id("gdoc", w.drive.len());
+            w.drive.push(SandboxDriveFile {
+                id: id.clone(),
+                name: title.to_string(),
+                mime_type: "application/vnd.google-apps.document".into(),
+                modified_time: "2026-09-24T00:00:00.000Z".into(),
+            });
+            Ok(json!({
+                "id": id,
+                "url": format!("https://docs.google.com/document/d/{id}/edit"),
+                "name": title,
+                "createdByAgent": true,
+                "message": "Created. This agent can edit it without another approval."
+            }))
+        }
+
+        "read_google_doc" => {
+            google_only(w, "read_google_doc")?;
+            let id = req_str(&a["id"], "id")?;
+            let Some(file) = w.drive.iter().find(|f| f.id == id) else {
+                return Err(refuse(format!("no Google Doc {id}")));
+            };
+            Ok(json!({
+                "id": file.id,
+                "title": file.name,
+                "url": format!("https://docs.google.com/document/d/{}/edit", file.id),
+                "markdown": format!("# {}\n", file.name),
+            }))
+        }
+
+        "update_google_doc" | "append_google_doc" => {
+            google_only(w, "update_google_doc")?;
+            let id = req_str(&a["id"], "id")?;
+            let _body = req_str(&a["body"], "body")?;
+            if !w.drive.iter().any(|f| f.id == id) {
+                return Err(refuse(format!("no Google Doc {id}")));
+            }
+            if id.starts_with("gdoc-") {
+                Ok(json!({
+                    "id": id,
+                    "url": format!("https://docs.google.com/document/d/{id}/edit"),
+                    "createdByAgent": true,
+                    "message": "Updated. This agent created the doc, so the edit was not queued."
+                }))
+            } else {
+                Ok(json!({
+                    "pending": { "id": format!("doc-{id}"), "status": "pending", "kind": "doc_update" },
+                    "message": "Queued — waiting for a human to approve before the doc changes. Confirm with list_pending_sends before telling anyone it is done."
+                }))
+            }
+        }
+
+        "find_google_files" => {
+            google_only(w, "find_google_files")?;
+            let q = opt_str(&a["q"]).map(|q| q.to_lowercase());
+            let files: Vec<Value> = w
+                .drive
+                .iter()
+                .filter(|f| {
+                    q.as_ref()
+                        .map(|q| f.name.to_lowercase().contains(q.as_str()))
+                        .unwrap_or(true)
+                })
+                .map(|f| {
+                    json!({
+                        "id": f.id,
+                        "name": f.name,
+                        "mimeType": f.mime_type,
+                        "url": format!("https://drive.google.com/open?id={}", f.id),
+                    })
+                })
+                .collect();
+            Ok(json!({ "files": files }))
+        }
+
+        "read_drive_file" => {
+            google_only(w, "read_drive_file")?;
+            let id = req_str(&a["id"], "id")?;
+            let Some(file) = w.drive.iter().find(|f| f.id == id) else {
+                return Err(refuse(format!("no Drive file {id}")));
+            };
+            Ok(json!({ "id": file.id, "encoding": "utf-8", "text": file.name }))
+        }
+
+        "import_drive_file" => {
+            google_only(w, "import_drive_file")?;
+            let id = req_str(&a["fileId"], "fileId")?;
+            Ok(json!({
+                "artifact": { "id": format!("art-{id}"), "title": "Imported", "kind": "doc" },
+                "url": format!("https://drive.google.com/open?id={id}"),
+                "message": "Imported. The Drive file was not changed."
+            }))
+        }
+
+        "update_google_event"
+        | "cancel_google_event"
+        | "move_google_file"
+        | "rename_google_file" => {
+            google_only(w, "update_google_event")?;
+            Ok(json!({
+                "pending": { "id": "pending-change", "status": "pending" },
+                "message": "Queued — waiting for a human to approve. Do not say this is done."
+            }))
+        }
+
+        "create_google_meeting" => {
+            google_only(w, "create_google_meeting")?;
+            let _ = req_str(&a["summary"], "summary")?;
+            let _ = req_str(&a["start"], "start")?;
+            let _ = req_str(&a["end"], "end")?;
+            Ok(json!({
+                "pending": { "id": "pending-meeting", "status": "pending", "kind": "meeting_create" },
+                "message": "Queued — a human approves before the meeting or its agenda doc exists. Do not claim it exists."
+            }))
+        }
+
+        "create_google_folder" => {
+            google_only(w, "create_google_folder")?;
+            let name = req_str(&a["name"], "name")?;
+            let id = next_id("folder", w.drive.len());
+            Ok(json!({
+                "id": id,
+                "name": name,
+                "url": format!("https://drive.google.com/drive/folders/{id}"),
+                "message": "Created the folder."
+            }))
+        }
+
+        "expose_tools" => {
+            let _ = req_str(&a["tools"], "tools")?;
+            Ok(json!({ "shown": true }))
+        }
+
         "draft_email" => {
             google_only(w, "draft_email")?;
             let id = next_id("pending", w.email_drafts.len());
@@ -1610,6 +1747,20 @@ pub const BACKED_TOOLS: &[&str] = &[
     "draft_email",
     "list_pending_sends",
     "read_pending_send",
+    "create_google_doc",
+    "read_google_doc",
+    "update_google_doc",
+    "append_google_doc",
+    "find_google_files",
+    "read_drive_file",
+    "import_drive_file",
+    "update_google_event",
+    "cancel_google_event",
+    "create_google_meeting",
+    "create_google_folder",
+    "move_google_file",
+    "rename_google_file",
+    "expose_tools",
     // ── Research ─────────────────────────────────────────────────────────
     "research",
     "list_research",
@@ -2805,7 +2956,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            63,
+            77,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

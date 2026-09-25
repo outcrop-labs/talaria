@@ -33,6 +33,7 @@ talaria-google-client = { workspace = true }
 talaria-google-connections = { workspace = true }
 talaria-google-drive = { workspace = true }
 talaria-google-errors = { workspace = true }
+talaria-google-docs = { workspace = true }
 talaria-google-gmail = { workspace = true }
 talaria-google-oauth = { workspace = true }
 talaria-google-org = { workspace = true }

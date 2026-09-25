@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { useQueryClient } from '@tanstack/svelte-query'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
+  import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
   import { useFleet, relativeTime } from '@/lib/fleet'
   import { patchAgentMeta, type AgentDef, type ModelTarget } from '@/lib/fleet-defs'
+  import DeveloperAgentControl from './DeveloperAgentControl.svelte'
   import Stat from './Stat.svelte'
   import TemplateBindings from './TemplateBindings.svelte'
-  import WorkbenchControl from './WorkbenchControl.svelte'
 
   let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
 
@@ -33,6 +35,62 @@
     if (alias.trim() === (def.emailAlias ?? '')) return
     await patchAgentMeta(def.id, { emailAlias: alias.trim() || null })
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
+  }
+
+  type GoogleIdentity = {
+    principalKind: 'owner' | 'org' | 'agent'
+    principalUserId: string | null
+    connected: boolean
+    email: string | null
+    legacyOwnerUserId: string | null
+  }
+  const googleQuery = createQuery(() => ({
+    queryKey: ['agent-google', def.id],
+    enabled: isAdmin,
+    queryFn: (): Promise<GoogleIdentity> => getJson<GoogleIdentity>(`/api/fleet/defs/${def.id}/google`),
+  }))
+  let kind = $state<'owner' | 'org' | 'agent'>('org')
+  let principalUserId = $state('')
+  let googleError = $state('')
+  let googleBusy = $state(false)
+  let googleSeeded = $state(false)
+  $effect(() => {
+    const row = googleQuery.data
+    if (!row || googleSeeded) return
+    kind = row.principalKind
+    principalUserId = row.principalUserId ?? ''
+    googleSeeded = true
+  })
+  const savePrincipal = async () => {
+    googleError = ''
+    googleBusy = true
+    try {
+      const saved = await putJson<GoogleIdentity>(`/api/fleet/defs/${def.id}/google`, {
+        principalKind: kind,
+        principalUserId: kind === 'owner' ? principalUserId.trim() || null : null,
+      })
+      kind = saved.principalKind
+      principalUserId = saved.principalUserId ?? ''
+      await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
+    } catch (e) {
+      googleError = errorMessage(e)
+    } finally {
+      googleBusy = false
+    }
+  }
+  const disconnectGoogle = async () => {
+    googleError = ''
+    googleBusy = true
+    try {
+      const saved = await delJson<GoogleIdentity>(`/api/fleet/defs/${def.id}/google`)
+      kind = saved.principalKind
+      principalUserId = saved.principalUserId ?? ''
+      await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
+    } catch (e) {
+      googleError = errorMessage(e)
+    } finally {
+      googleBusy = false
+    }
   }
 </script>
 
@@ -78,8 +136,48 @@
       {/if}
     </div>
   {/if}
-  <!-- Workbench — THE sandbox setting: off / auto (fit rules) / on. -->
-  <WorkbenchControl {def} {isAdmin} />
+  {#if isAdmin}
+    <div>
+      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Google identity</div>
+      {#if googleQuery.isLoading}
+        <Skeleton class="h-8 w-64" />
+      {:else if googleQuery.isError}
+        <div class="text-xs text-danger">{errorMessage(googleQuery.error)}</div>
+      {:else}
+        <div class="flex flex-wrap items-center gap-2">
+          <select bind:value={kind} class="rounded-md border border-line bg-surface px-2 py-1 text-xs text-fg">
+            <option value="org">Shared org account</option>
+            <option value="owner">A person's account</option>
+            <option value="agent">This agent's own account</option>
+          </select>
+          {#if kind === 'owner'}
+            <Input size="sm" bind:value={principalUserId} placeholder="owner user id" class="max-w-xs font-mono" />
+          {/if}
+          <Button size="sm" disabled={googleBusy} onclick={() => void savePrincipal()}>Save</Button>
+        </div>
+        <div class="mt-1 text-xs text-muted">
+          {#if googleQuery.data?.principalKind === 'agent'}
+            {googleQuery.data.connected ? `Connected as ${googleQuery.data.email ?? 'a Google account'}.` : 'Not connected. Writes refuse until an admin connects this agent’s own Google account.'}
+          {:else if googleQuery.data?.principalKind === 'owner'}
+            {googleQuery.data.connected ? `Owner’s Google is connected${googleQuery.data.email ? ` (${googleQuery.data.email})` : ''}.` : 'That person has not connected Google. This agent will not fall back to the org account.'}
+          {:else}
+            Fleet default: the shared org account. An admin approves outbound writes.
+          {/if}
+        </div>
+        {#if kind === 'agent'}
+          <div class="mt-2 flex items-center gap-2">
+            <a href={`/api/fleet/defs/${def.id}/google/connect`} class="rounded-md border border-line bg-surface px-2.5 py-1 text-xs text-fg hover:bg-raised">Connect Google</a>
+            {#if googleQuery.data?.connected}
+              <Button size="sm" variant="ghost" disabled={googleBusy} onclick={() => void disconnectGoogle()}>Disconnect</Button>
+            {/if}
+          </div>
+        {/if}
+        {#if googleError}<div class="mt-1 text-xs text-danger">{googleError}</div>{/if}
+      {/if}
+    </div>
+  {/if}
+  <!-- Developer Agent: one switch for sandbox, Oh My Pi, Workbench tools. -->
+  <DeveloperAgentControl {def} {isAdmin} />
   <div class="grid grid-cols-2 gap-3">
     <Stat label="Model id" value={def.model} />
     <Stat label="Department" value={def.department} />

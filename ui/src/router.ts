@@ -95,11 +95,14 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     '/channels': () => import('./routes/app/Channels.svelte'),
     '/inbox': () => import('./routes/app/Inbox.svelte'),
     '/boards': {
+      layout: () => import('./routes/app/boards/BoardsShell.svelte'),
       '/': () => import('./routes/app/boards/BoardsIndex.svelte'),
       '/:boardId': {
         // BoardLayout persists across board↔ticket navigation (sv-router
         // layouts survive child swaps), so opening a ticket mounts ONLY the
-        // overlay — the board behind it never re-renders.
+        // overlay — the board behind it never re-renders. BoardsShell wraps
+        // it: the boards view's own sidebar lives at THIS level, so the board
+        // and the ticket overlay both get it and the shell's nav does not.
         '/': () => import('./routes/app/boards/NoOverlay.svelte'),
         '/:taskId': () => import('./routes/app/boards/Task.svelte'),
         layout: () => import('./routes/app/boards/BoardLayout.svelte'),

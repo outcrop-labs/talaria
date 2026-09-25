@@ -1,0 +1,98 @@
+# The minio/mc mirror — upstream is dead, so the images this repo runs are
+# ones WE republish. Two frozen digests, copied from quay (still the only
+# public host of the bits) into this org's GHCR namespace; every repo
+# reference points at the GHCR refs (TALA-20, #366 option 1).
+#
+# WHY. github.com/minio/minio is archived (2026-04-25), mc with it
+# (2026-07-14), and the last releases were never published to any container
+# registry. quay's tags are frozen at the 2025-09 builds; post-freeze
+# hotfix tags reference commits that do not exist in the public repo. The
+# old posture — watch quay's freshness in #366 — watched a frozen thing.
+# Replaced by: pin digests, own the distribution.
+#
+# THE ASSERT IS THE POINT. skopeo copies the manifest list (--all, every
+# arch preserved) and then the pushed digest is asserted equal to the
+# source digest. A mirror that rewrote anything, or a tag that drifted,
+# fails HERE — not in a customer's `compose pull`.
+#
+# NOT A WATCH. Nothing schedules this: the sources are frozen, so a run
+# happens when a human dispatches it or a commit lands that changes the
+# pinned refs (paths below). A bump is ONE commit changing the digests in
+# this file, docker/sidecars.compose.yml, and cli/src/backup/lib.ts.
+#
+# NO CHECKOUT — nothing here reads the repo (release.yml's resolve job set
+# the precedent); the digests below are the only inputs. NO ACTIONS:
+# skopeo comes from Ubuntu's own apt (chassis.yml's no-third-party taste).
+#
+# FIRST RUN (one-time, by hand): dispatch against the branch that carries
+# this file BEFORE it merges — the compose refs point at these digests, so
+# the packages must exist and be public first. Then flip BOTH packages
+# public: github.com/outcrop-labs → Packages → talaria-minio / talaria-mc →
+# Package settings → Change visibility → Public — the same one-time flip
+# RELEASING.md records for the app image and the api package. Until then,
+# pulls of the pinned refs need `docker login ghcr.io` with read:packages.
+name: minio-mirror
+
+on:
+  workflow_dispatch: {}
+  push:
+    # rc is where PRs land, so merging this file (or a digest bump) fires
+    # the mirror; the promotion to main re-fires it, idempotently.
+    branches: [rc, main]
+    paths:
+      - '.github/workflows/minio-mirror.yml'
+      - 'docker/sidecars.compose.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    name: copy the frozen minio + mc digests into GHCR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write # the GHCR push
+    concurrency:
+      # Never cancelled mid-run — a half-moved tag pair is the half-moved
+      # channel release.yml refuses. Re-runs are idempotent: the digest is
+      # the identity, the tags are conveniences.
+      group: minio-mirror
+      cancel-in-progress: false
+    env:
+      # THE PINNED SOURCES — verified 2026-09-24 against quay and the
+      # GitHub API. minio = quay's frozen latest = RELEASE.2025-09-07T16-13-09Z;
+      # mc = RELEASE.2025-08-13T08-35-41Z.
+      MINIO: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+      MC: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+      MINIO_TAG: RELEASE.2025-09-07T16-13-09Z
+      MC_TAG: RELEASE.2025-08-13T08-35-41Z
+    steps:
+      - name: Install skopeo
+        run: sudo apt-get -q update && sudo apt-get -q install -y skopeo
+
+      # The workflow's own token — GHCR accepts GITHUB_TOKEN for push within
+      # the same repo/org (release.yml's precedent; no secret provisioned).
+      - name: Log in to GHCR
+        run: echo "${GITHUB_TOKEN}" | skopeo login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Mirror both digests (latest + RELEASE tags) and assert identity
+        run: |
+          set -eu
+          mirror() { # <source-ref> <target-repo> <release-tag>
+            local src="$1" repo="$2" rel="$3" digest="${1#*@}" got
+            for t in latest "$rel"; do
+              echo "copying $src → $repo:$t (all arches)"
+              skopeo copy --all "$src" "docker://$repo:$t"
+              got=$(skopeo inspect --format '{{.Digest}}' "docker://$repo:$t")
+              if [ "$got" != "$digest" ]; then
+                echo "::error::$repo:$t resolved to $got, expected $digest — the mirror did not preserve the source manifest"
+                exit 1
+              fi
+              echo "  ok: $repo:$t = $digest"
+            done
+          }
+          mirror "$MINIO" "ghcr.io/${{ github.repository }}-minio" "$MINIO_TAG"
+          mirror "$MC"    "ghcr.io/${{ github.repository }}-mc"    "$MC_TAG"

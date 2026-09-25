@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-15 routes.
+16 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -28,6 +28,7 @@
 | [`/api/artifacts/{id}/export/google`](#apiartifactsidexportgoogle) | POST | `dual` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | POST | `session` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | DELETE | `session` |
+| [`/api/artifacts/{id}/pull/google`](#apiartifactsidpullgoogle) | POST | `session` |
 | [`/api/artifacts/for`](#apiartifactsfor) | GET | `session` |
 | [`/api/artifacts/public/{slug}`](#apiartifactspublicslug) | GET | `public` |
 | [`/api/artifacts/public/{slug}/download`](#apiartifactspublicslugdownload) | GET | `public` |
@@ -241,6 +242,18 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_links.rs`](
 | :--- | :--- | :--- |
 | `targetType` | `string(1, 40)` |  |
 | `targetId` | `string(1, 200)` |  |
+
+## `/api/artifacts/{id}/pull/google`
+
+Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_pull_google.rs`](../../api/crates/talaria-routes-knowledge/src/files/artifacts_id_pull_google.rs)
+
+> POST /api/artifacts/{id}/pull/google. Overwrite the Talaria body from the
+> Google Doc this artifact was last exported to. The editor confirms first;
+> this route is the overwrite.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{title, markdown, url}` | 200, 403, 404, 409 | — |
 
 ## `/api/artifacts/for`
 

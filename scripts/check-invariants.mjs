@@ -2045,12 +2045,14 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
-// AGENT CLEANUP RUNS AT THE STOP GATE, NOT FROM MEMORY.
+// AGENT CLEANUP IS A STEP OF EVERY TASK, AND THE STOP GATE IS THE BACKSTOP.
 //
-// AGENTS.md tells a finished task to remove what it created. What makes that
-// true is the stop gate running scripts/cleanup-sweep.mjs --gate, and the
-// cleanup skill being the procedure the index points at. Delete the call, or
-// the skill, and the disk fills again while every other check stays green.
+// AGENTS.md tells a finished task to remove the local workspace it created
+// before the claim. What makes that true is the sentence (every harness loads
+// it), the cleanup skill, and the stop gate running scripts/cleanup-sweep.mjs
+// --gate. The gate is wired for every harness whose Stop event can block a
+// turn. Delete the sentence, the call, or a wired hook, and the disk fills
+// again while every other check stays green.
 {
   const read = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), 'utf8') : null)
   const found = []
@@ -2060,6 +2062,9 @@ const DUPLICATE_BODY_ALLOW = [
     ['scripts/cleanup-sweep.mjs', 'export const POLICY', 'the thresholds have one home'],
     ['.claude/skills/cleanup/SKILL.md', 'Use when', 'the procedure carries its trigger'],
     ['AGENTS.md', '.claude/skills/cleanup/SKILL.md', 'the invariant points at the skill'],
+    ['AGENTS.md', 'local workspace is gone', 'cleanup is a before-done step of every task'],
+    ['.claude/settings.json', 'stop-check.mjs', 'Claude Code runs the stop gate'],
+    ['.codex/hooks.json', 'stop-check.mjs', 'Codex runs the stop gate'],
   ]
   for (const [file, needle, why] of wired) {
     const text = read(file)
@@ -2071,11 +2076,13 @@ const DUPLICATE_BODY_ALLOW = [
       id: 'cleanup-sweep-anchors',
       what: 'the artifact sweep and the stop gate have drifted apart',
       fix: [
-        'A finished dev task removes what it created. scripts/hooks/stop-check.mjs runs',
-        'scripts/cleanup-sweep.mjs --gate after bun run check, and exits 2 when disk use or',
-        'the removable set is over the line. The procedure is .claude/skills/cleanup/SKILL.md,',
-        'indexed from AGENTS.md. If one of them moved, update this check in the same commit —',
-        'an anchor that points at nothing passes while guarding nothing.',
+        'A finished dev task removes the local workspace it created before the claim.',
+        'That sentence lives in AGENTS.md ("local workspace is gone"). The procedure is',
+        '.claude/skills/cleanup/SKILL.md. scripts/hooks/stop-check.mjs runs',
+        'scripts/cleanup-sweep.mjs --gate after bun run check. Claude wires it from',
+        '.claude/settings.json; Codex wires it from .codex/hooks.json. If one of them',
+        'moved, update this check in the same commit — an anchor that points at nothing',
+        'passes while guarding nothing.',
       ],
       found,
     })
@@ -2133,6 +2140,43 @@ const DUPLICATE_BODY_ALLOW = [
         'offered, or one that stops working at the door.',
         ...problems,
       ],
+      found: [],
+    })
+  }
+}
+
+// mise.toml pins = CI's pins. The root mise.toml is how people and workbench
+// agents get the toolchain; setup-runtime is how CI gets it. Two spellings of
+// one pin drift the first time someone bumps only the file they were looking
+// at, and a workbench then builds on a toolchain CI never tested. Node is
+// compared by major, since CI pins `22.x` and mise `22`.
+{
+  const MISE = 'mise.toml'
+  const ACTION = '.github/actions/setup-runtime/action.yml'
+  const mise = readFileSync(join(ROOT, MISE), 'utf8')
+  const action = readFileSync(join(ROOT, ACTION), 'utf8')
+  const pinOf = (tool) => new RegExp(`^${tool}\\s*=\\s*"([^"]+)"`, 'm').exec(mise)?.[1]
+  const defaultOf = (input) =>
+    new RegExp(`^  ${input}:\\n(?:    .*\\n)*?    default: '([^']*)'`, 'm').exec(action)?.[1]
+  const problems = []
+  for (const [tool, norm] of [
+    ['rust', (v) => v],
+    ['bun', (v) => v],
+    ['node', (v) => v?.split('.')[0]],
+  ]) {
+    const a = pinOf(tool)
+    const b = defaultOf(tool)
+    if (a === undefined || b === undefined) {
+      problems.push(`${tool}: could not read the pin (${MISE}: ${a ?? 'missing'}, ${ACTION}: ${b ?? 'missing'})`)
+    } else if (norm(a) !== norm(b)) {
+      problems.push(`${tool}: ${MISE} says ${a}, ${ACTION} says ${b}`)
+    }
+  }
+  if (problems.length) {
+    failures.push({
+      id: 'toolchain-pin-drift',
+      what: `${MISE} and ${ACTION} pin different toolchain versions`,
+      fix: [`Bump both files together; the comment at the top of ${ACTION} lists every pin site.`, ...problems],
       found: [],
     })
   }

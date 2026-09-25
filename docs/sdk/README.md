@@ -5,7 +5,7 @@ Everything a [Talaria app](../APPS.md) imports. Two entry points:
 | entry point | for | used in |
 | :--- | :--- | :--- |
 | `@talaria/sdk` | client: UI kit, session + data hooks, fetch helpers, motion | `app.ts`, `*.svelte` |
-| `@talaria/sdk/server` | server: app server, document store, MCP tools, harnesses | `server.ts`, `mcp.ts`, `harness.ts`, `harnesses/*.ts` |
+| `@talaria/sdk/server` | server: app server, document store, MCP tools, harnesses | `server.ts`, `mcp.ts`, `harnesses/*.ts` |
 
 The stack is **Svelte 5 (runes) + sv-router + @tanstack/svelte-query v6 + Tailwind 4**. Both
 entry points resolve from the host at build time — an app **installs nothing**; `svelte`,
@@ -22,7 +22,6 @@ the deployment. Import `svelte` and icons freely; import everything else through
 | [server.md](./server.md) | The fetch handler, the context, the document store |
 | [mcp.md](./mcp.md) | Tools your app gives the org's agents |
 | [harnesses.md](./harnesses.md) | Activity harnesses: model calls Talaria runs for you |
-| [workbench-harnesses.md](./workbench-harnesses.md) | Workbench harnesses: coding tools agents drive |
 | [reference.md](./reference.md) | Every export, one row each — enforced against the source |
 
 Scaffold a new app with `bun talaria app new <slug>`.
