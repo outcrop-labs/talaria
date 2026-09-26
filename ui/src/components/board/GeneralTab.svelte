@@ -67,9 +67,17 @@
 
   // Team reassignment (owner only): the confirm dialog shows who would lose
   // sight of the board BEFORE the move applies; cancel restores the choice.
-  const commitTeam = async () => {
-    const target = teamChoice || null
-    if ((target ?? null) === (board.teamId ?? null)) return
+  // The pick's value comes off the event target, not `teamChoice`: Svelte 5
+  // runs a delegated onchange before bind_select_value's own listener writes
+  // the bind, so reading the state here sees the PREVIOUS pick and the move
+  // early-returns as a no-op (the dialog never opened in the browser run).
+  const commitTeam = async (e: Event) => {
+    const raw = e.currentTarget instanceof HTMLSelectElement ? e.currentTarget.value : teamChoice
+    const target = raw || null
+    if ((target ?? null) === (board.teamId ?? null)) {
+      teamChoice = board.teamId ?? ''
+      return
+    }
     const label = target
       ? (teamsDirectory.data?.find((t) => t.id === target)?.name ?? 'the selected team')
       : 'Personal'
@@ -130,7 +138,7 @@
       <Select
         id="board-team-select"
         value={teamChoice}
-        onchange={() => void commitTeam()}
+        onchange={(e) => void commitTeam(e)}
         class="w-full"
       >
         <option value="">Personal (no team)</option>
