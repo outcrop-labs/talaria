@@ -270,7 +270,7 @@ async fn a_team_move_regrants_access_previews_loss_and_refuses_bad_movers() {
     let (actor, action, before, after): (String, String, serde_json::Value, serde_json::Value) =
         sqlx::query_as(
             "select actor, action, before, after from audit_log \
-             where action = 'board.team_move' and target_id = $1::uuid \
+             where action = 'board.team_move' and target_id = $1::text \
              order by created_at desc limit 1",
         )
         .bind(&board)
