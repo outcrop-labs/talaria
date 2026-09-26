@@ -2,7 +2,10 @@
 // per-token prices for essentially every major model. We match each cloud
 // endpoint's catalog models against it by normalized name and store the result
 // in llm_endpoints.auto_prices — separate from user overrides (model_prices),
-// which always win. Local endpoints are skipped ($0 by definition).
+// which always win. Each hit is also upserted into provider_prices as a
+// model-level published rate (variant '', source 'openrouter.catalog') —
+// direct providers publish no prices of their own, so that row is what their
+// usage is derived from. Local endpoints are skipped ($0 by definition).
 import { db } from './db/pg'
 
 interface OrModel {
@@ -128,6 +131,23 @@ async function refreshAutoPrices(): Promise<{ priced: number; endpoints: number 
       if (hit) {
         auto[m] = { in: Number(hit.in.toFixed(4)), out: Number(hit.out.toFixed(4)) }
         priced++
+        // The same hit is also a published model-level price for this
+        // endpoint. A failed upsert must not break the refresh — but it is
+        // a pricing gap, so it is never silent either.
+        try {
+          await sql`
+            insert into provider_prices
+              (endpoint_id, provider, model, variant, price_in_per_mtok, price_out_per_mtok, source, fetched_at)
+            values (${ep.id}, ${ep.provider}, ${m}, '', ${auto[m]!.in}, ${auto[m]!.out}, 'openrouter.catalog', now())
+            on conflict (endpoint_id, model, variant) do update set
+              price_in_per_mtok = excluded.price_in_per_mtok,
+              price_out_per_mtok = excluded.price_out_per_mtok,
+              source = excluded.source,
+              fetched_at = now()
+          `
+        } catch (e) {
+          console.warn(`price-oracle: catalog upsert failed for ${m}: ${e}`)
+        }
       }
     }
     await sql`update llm_endpoints set auto_prices = ${sql.json(auto)}, updated_at = now() where id = ${ep.id}`

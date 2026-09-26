@@ -1285,3 +1285,165 @@ async fn a_wire_draws_then_refuses_cycles_then_unwires() {
 
     reset(pg, "wires").await;
 }
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn wire_false_lands_a_step_with_no_edges() {
+    // The canvas's create-and-connect: the step lands where it was dropped
+    // and carries exactly the wire the gesture drew. With the default
+    // auto-wire the api also hung it off the chain's TAIL, so a card dragged
+    // out of A arrived with a second, invisible predecessor — and derived
+    // BLOCKED behind work it was never wired to.
+    let state = app_state().await;
+    let f = fixture(&state, "unwired").await;
+    let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
+
+    let a = ticket(pg, &f.board_id, "Entry", "in_progress").await;
+    let tail = ticket(pg, &f.board_id, "Tail", "in_progress").await;
+    let fresh = ticket(pg, &f.board_id, "Dropped on the canvas", "in_progress").await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Unwired rig").await;
+
+    let edge_count = async |chain: &str| -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "select count(*)::bigint from task_workchain_edges where workchain_id = $1::uuid",
+        )
+        .bind(chain)
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        n
+    };
+
+    for task_id in [&a, &tail] {
+        let (status, body) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200, "step add failed: {body}");
+    }
+    assert_eq!(
+        edge_count(&chain).await,
+        1,
+        "the default append wires a→tail"
+    );
+
+    // wire: false — the step joins the chain, the graph does not change.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/steps"),
+        Some(serde_json::json!({ "taskId": fresh, "wire": false })),
+    )
+    .await;
+    assert_eq!(status, 200, "unwired step add failed: {body}");
+    assert_eq!(
+        edge_count(&chain).await,
+        1,
+        "wire: false draws nothing — no tail edge volunteered"
+    );
+    assert_eq!(
+        chain_order(pg, &chain).await,
+        vec![a.clone(), tail.clone(), fresh.clone()],
+        "the step is still appended, it is only unwired"
+    );
+
+    // …and with no predecessors it derives HEAD, not blocked behind the tail.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "GET",
+        &format!("/api/boards/{}/workchains", f.board_id),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let steps = body["workchains"][0]["steps"].as_array().expect("steps");
+    let dropped = steps
+        .iter()
+        .find(|s| s["taskId"] == fresh.as_str())
+        .expect("the dropped step is listed");
+    assert_eq!(dropped["state"], "head", "an unwired step is its own head");
+
+    // The caller then draws the ONE wire it meant: a → fresh.
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/edges"),
+        Some(serde_json::json!({ "fromTaskId": a, "toTaskId": fresh })),
+    )
+    .await;
+    assert_eq!(status, 200, "edge draw failed: {body}");
+    assert_eq!(edge_count(&chain).await, 2, "a fan-out off a, nothing else");
+
+    reset(pg, "unwired").await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_refused_wedge_leaves_every_position_alone() {
+    // The `after` step must belong to this chain, and the 400 that says so
+    // must not have moved anything: the position shift used to run on the
+    // POOL rather than the transaction, so it committed on its own and every
+    // later step was pushed up by one before the refusal.
+    let state = app_state().await;
+    let f = fixture(&state, "wedge").await;
+    let owner = sid(&state, &f.owner).await;
+    let pg = &state.pg;
+
+    let a = ticket(pg, &f.board_id, "First", "in_progress").await;
+    let b = ticket(pg, &f.board_id, "Second", "in_progress").await;
+    let outsider = ticket(pg, &f.board_id, "Not in this chain", "in_progress").await;
+    let latecomer = ticket(pg, &f.board_id, "Wedge me", "in_progress").await;
+    let chain = create_chain(&state, &owner, &f.board_id, "Wedge rig").await;
+    for task_id in [&a, &b] {
+        let (status, _) = call(
+            &state,
+            &owner,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(serde_json::json!({ "taskId": task_id })),
+        )
+        .await;
+        assert_eq!(status, 200);
+    }
+    let positions_before: Vec<(String, i32)> = sqlx::query_as(
+        "select task_id::text, position from task_workchain_steps \
+         where workchain_id = $1::uuid order by position",
+    )
+    .bind(&chain)
+    .fetch_all(pg)
+    .await
+    .unwrap();
+
+    let (status, body) = call(
+        &state,
+        &owner,
+        "POST",
+        &format!("/api/workchains/{chain}/steps"),
+        Some(serde_json::json!({ "taskId": latecomer, "after": outsider })),
+    )
+    .await;
+    assert_eq!(status, 400, "a foreign anchor is refused: {body}");
+
+    let positions_after: Vec<(String, i32)> = sqlx::query_as(
+        "select task_id::text, position from task_workchain_steps \
+         where workchain_id = $1::uuid order by position",
+    )
+    .bind(&chain)
+    .fetch_all(pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        positions_before, positions_after,
+        "the refused wedge rolled its position shift back"
+    );
+
+    reset(pg, "wedge").await;
+}

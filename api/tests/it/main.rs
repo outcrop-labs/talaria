@@ -34,6 +34,7 @@ mod llm_models;
 mod notifications_reads;
 mod pending_dedupe_live;
 mod plan_row_live;
+mod price_rig_live;
 mod push_live;
 mod realtime;
 mod realtime_fan;

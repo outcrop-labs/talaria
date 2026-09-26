@@ -6,6 +6,9 @@
 //     connected-account headers on per-user servers)
 //   · FILTERS tools/list down to the allowed set
 //   · REJECTS tools/call outside it
+//   · ANSWERS a brace-led body that isn't valid JSON with JSON-RPC -32700,
+//     so a malformed tools/call cannot ride the raw pass-through around
+//     the two gates above
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
@@ -59,6 +62,89 @@ fn gate(rpc: Option<&Value>, tools: Option<&Vec<String>>) -> Option<Response> {
     )
 }
 
+/// A body that starts (ignoring whitespace) with an opening brace is a
+/// JSON-RPC attempt; one that failed to parse is a syntax error in that
+/// attempt, and forwarding it verbatim would carry a malformed tools/call
+/// straight past the tool gate and the spend boundary below. Answer it
+/// here instead, as a JSON-RPC parse error over HTTP 200 — the same shape
+/// the tool gate answers with — and log a bounded diagnostic. Every other
+/// unparseable shape (an empty body, SSE framing, a `[`-led batch, a
+/// ping) keeps the pass-through untouched, so `None` means exactly
+/// "forward as before". `server_name` only names the log line; tests
+/// drive the rest with the raw bytes and serde's own error.
+fn parse_error_response(
+    body: &[u8],
+    err: &serde_json::Error,
+    server_name: &str,
+) -> Option<Response> {
+    if !body.trim_ascii().starts_with(b"{".as_slice()) {
+        return None;
+    }
+    let len = body.len();
+    let diagnostic = parse_diagnostic(body, err);
+    tracing::warn!("[mcp/gw:{server_name}] unparseable body ({len} bytes): {err} | {diagnostic}");
+    Some(
+        (
+            StatusCode::OK,
+            Json(rpc_error(
+                &Value::Null,
+                -32700,
+                &format!(
+                    "request body is not valid JSON: {err}. The call was refused here, not \
+                     forwarded: the hexdump below is what the caller sent, so the fix is on the \
+                     sender's serialization (nested tool arguments need one \\ escape per JSON \
+                     layer). {diagnostic}"
+                ),
+            )),
+        )
+            .into_response(),
+    )
+}
+
+/// The bounded diagnostic for a JSON parse failure: the byte offset of the
+/// failure and a hexdump of the 8 bytes before it through the 8 after —
+/// hex pairs plus a printable-ASCII rendering, a dot for anything else.
+/// Those windowed bytes are the ONLY body content that ever reaches a log
+/// line or an error message, because bodies carry tool arguments and
+/// credentials; the offset plus at most 16 hex pairs and 16 ASCII chars
+/// keeps the diagnostic itself under 200 chars, and the full message under
+/// 450 even with serde's wording and the caller-side hint.
+fn parse_diagnostic(body: &[u8], err: &serde_json::Error) -> String {
+    let offset = error_byte_offset(body, err);
+    let window = &body[offset.saturating_sub(8)..offset.saturating_add(8).min(body.len())];
+    let hex = window
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let ascii: String = window
+        .iter()
+        .map(|&b| {
+            if (0x20..=0x7e).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    format!("offset {offset} | {hex} | {ascii}")
+}
+
+/// The byte offset a serde error points at. serde_json reports a 1-based
+/// line and a 0-based column ("column" is bytes since the line's last
+/// newline), so walking to the reported line's start recovers the offset.
+/// A body too short for the reported position clamps to its end.
+fn error_byte_offset(body: &[u8], err: &serde_json::Error) -> usize {
+    let mut line_start = 0;
+    for _ in 1..err.line() {
+        match body[line_start..].iter().position(|&b| b == b'\n') {
+            Some(at) => line_start += at + 1,
+            None => return body.len(),
+        }
+    }
+    (line_start + err.column()).min(body.len())
+}
+
 pub async fn post(
     State(state): State<AppState>,
     Path(server_name): Path<String>,
@@ -86,9 +172,18 @@ pub async fn post(
         ));
     };
 
+    // A body that parses runs the gate and the spend boundary below. One
+    // that doesn't still passes through verbatim — EXCEPT a brace-led body,
+    // a JSON-RPC attempt with a syntax error in it, which must not skip
+    // them: it is answered as a JSON-RPC parse error instead (above).
+    let mut rpc: Option<Value> = match serde_json::from_slice(&body) {
+        Ok(v) => Some(v),
+        Err(err) => match parse_error_response(&body, &err, &server_name) {
+            Some(resp) => return Ok(resp),
+            None => None,
+        },
+    };
     let mut body_text = String::from_utf8_lossy(&body).into_owned();
-    let mut rpc: Option<Value> = serde_json::from_slice(&body).ok();
-    // A non-JSON body (batch or ping) passes through untouched.
 
     // The call gate: reject disallowed tools before the upstream ever
     // hears about them.
@@ -522,5 +617,242 @@ fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
             serde_json::to_string(&msg).unwrap_or_else(|_| text.to_string())
         }
         None => text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The diagnostic serde's own error produces for these bytes — the
+    /// window, the offset recovery, and the hex/ASCII rendering.
+    fn diagnostic(body: &[u8]) -> String {
+        let err = serde_json::from_slice::<Value>(body).expect_err("test bodies do not parse");
+        parse_diagnostic(body, &err)
+    }
+
+    async fn body_of(resp: Response) -> Value {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("test responses have a body");
+        serde_json::from_slice(&bytes).expect("test responses are JSON")
+    }
+
+    async fn jsonrpc_of(resp: Response) -> Value {
+        let v = body_of(resp).await;
+        assert_eq!(
+            v.get("jsonrpc"),
+            Some(&json!("2.0")),
+            "the answer is a JSON-RPC 2.0 envelope"
+        );
+        v
+    }
+
+    #[tokio::test]
+    async fn a_raw_control_byte_in_a_string_is_a_32700_with_the_0a_in_the_dump() {
+        // A tools/call whose argument string contains a REAL 0x0a — serde
+        // rejects raw control characters inside strings, so this is exactly
+        // the malformed tools/call the verbatim pass-through used to forward
+        // around the gate and the spend boundary.
+        let mut body: Vec<u8> = br#"{"method":"tools/call","params":{"name":"x","arg":"a"#.to_vec();
+        body.push(0x0a); // lands INSIDE the still-open "a" string
+        body.extend_from_slice(b"b\"}}");
+        let err = serde_json::from_slice::<Value>(&body).expect_err("the raw 0x0a is rejected");
+
+        let resp = parse_error_response(&body, &err, "srv")
+            .expect("a brace-led body that fails to parse is answered, not forwarded");
+        let v = jsonrpc_of(resp).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
+        assert_eq!(v.pointer("/id"), Some(&Value::Null));
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert!(
+            message.contains("control character"),
+            "serde's own wording carries: {message}"
+        );
+        assert!(
+            message.contains(" 0a "),
+            "the hexdump window must include the offending byte: {message}"
+        );
+        assert!(message.len() < 450, "the diagnostic is bounded: {message}");
+    }
+
+    #[tokio::test]
+    async fn three_braces_report_the_offset_and_a_bounded_dump() {
+        let body = b"{{{";
+        let err = serde_json::from_slice::<Value>(body).expect_err("{{{ does not parse");
+        let resp = parse_error_response(body, &err, "srv")
+            .expect("a JSON-RPC attempt with a syntax error is answered");
+        let v = jsonrpc_of(resp).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert!(
+            message.contains("offset 2"),
+            "the failing byte (the second open brace) is named: {message}"
+        );
+        assert!(message.len() < 450, "the diagnostic is bounded: {message}");
+        assert_eq!(
+            diagnostic(body),
+            "offset 2 | 7b 7b 7b | {{{",
+            "a body shorter than the window dumps whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_body_passes_through_unanswered() {
+        // No brace → not a JSON-RPC attempt → the pass-through stands, so
+        // the batch/ping posture is preserved untouched.
+        let err = serde_json::from_slice::<Value>(&[]).expect_err("an empty body is not JSON");
+        assert!(
+            parse_error_response(&[], &err, "srv").is_none(),
+            "an empty body must not produce a -32700; it forwards as before"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_valid_tools_call_body_still_reaches_the_gate_path() {
+        // No AppState needed: `gate` is a pure function over the parsed rpc
+        // and the allowed tools, so this pins the parse→gate contract the
+        // change must keep intact — the body parses, and a disallowed name
+        // is refused with the gate's own sentence.
+        let body = br#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"rm-rf"}}"#;
+        let rpc = serde_json::from_slice::<Value>(&body[..])
+            .expect("a well-formed tools/call still parses");
+        let tools = Some(vec!["ls".to_string()]);
+        let resp =
+            gate(Some(&rpc), tools.as_ref()).expect("the disallowed tool is refused by the gate");
+        let v = body_of(resp).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32602)));
+        assert_eq!(v.pointer("/id"), Some(&json!(7)));
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert_eq!(message, "tool \"rm-rf\" is not available here");
+    }
+
+    #[tokio::test]
+    async fn a_markdown_ticket_body_with_raw_newlines_is_32700_with_the_caller_hint() {
+        // The Sep 24 create_ticket signature: a markdown-heavy body whose
+        // nested JSON was emitted with one escape layer too few, so REAL
+        // newlines sit inside the argument string. The answer must refuse
+        // here (never forward), carry serde's control-character wording,
+        // and name the sender's serialization as the thing to fix — what
+        // the bare parse error never said.
+        let prefix = "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"create_ticket\",\"arguments\":{\"description\":\"## What's broken - the gateway rejected a valid filing."
+            .as_bytes()
+            .to_vec();
+        let mut body = prefix.clone();
+        body.push(0x0a);
+        body.push(0x0a);
+        body.extend_from_slice(b"## Evidence and fix\"}}");
+
+        let err = serde_json::from_slice::<Value>(&body)
+            .expect_err("raw newlines inside a string are refused");
+        assert!(
+            err.to_string().contains("control character"),
+            "the failure is the control character: {err}"
+        );
+        let resp = parse_error_response(&body, &err, "srv")
+            .expect("a brace-led JSON-RPC attempt is answered, not forwarded");
+        let v = jsonrpc_of(resp).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert!(
+            message.contains("the fix is on the sender"),
+            "the caller-side hint must name which side to fix: {message}"
+        );
+        assert!(
+            message.contains(" 0a "),
+            "the hexdump window shows the raw newline bytes: {message}"
+        );
+        assert!(
+            message.len() < 450,
+            "the full answer stays bounded: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_unicode_payload_never_leaks_its_text_into_the_answer() {
+        // Tool arguments carry prose in every script. Multibyte characters
+        // are legal JSON — the raw control character is the defect — and the
+        // diagnostic window renders them as hex pairs and dots, so the
+        // answer names the failing BYTE without echoing payload text into a
+        // log line or a model-visible error.
+        let mut body =
+            "{\"method\":\"tools/call\",\"params\":{\"name\":\"translate\",\"text\":\"café"
+                .as_bytes()
+                .to_vec();
+        body.push(0x07); // a raw BEL inside the string: the only defect
+        body.extend_from_slice("\u{4e2d}\u{6587} \u{1f980}\"}}".as_bytes());
+
+        let err = serde_json::from_slice::<Value>(&body)
+            .expect_err("the BEL is refused; the multibyte text before it is legal");
+        assert!(
+            err.to_string().contains("control character"),
+            "the failure is the control character, not the unicode: {err}"
+        );
+        let resp = parse_error_response(&body, &err, "srv")
+            .expect("a brace-led JSON-RPC attempt is answered, not forwarded");
+        let v = jsonrpc_of(resp).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert!(
+            !message.contains("café") && !message.contains("中文") && !message.contains("🦀"),
+            "payload text must not reach the answer, only its bytes: {message}"
+        );
+        assert!(
+            message.len() < 450,
+            "the full answer stays bounded: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_multi_kb_body_still_gets_a_bounded_answer() {
+        // A multi-kilobyte argument payload must not become a
+        // multi-kilobyte error: the answer stays bounded no matter the body
+        // size, nothing but the windowed bytes reaches it, and the offset
+        // for an end-of-input failure clamps to the body's end.
+        let filler = "7".repeat(12_000);
+        let body = format!("{{\"method\":\"tools/call\",\"params\":{{\"note\":\"{filler}\"");
+
+        let err = serde_json::from_slice::<Value>(body.as_bytes())
+            .expect_err("an unterminated object does not parse");
+        let resp = parse_error_response(body.as_bytes(), &err, "srv")
+            .expect("a brace-led attempt is answered");
+        let v = jsonrpc_of(resp).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert!(
+            message.len() < 450,
+            "12k of filler must not leak: {message}"
+        );
+        assert!(
+            !message.contains(&"7".repeat(16)),
+            "only the bounded window may appear, never bulk payload: {message}"
+        );
+        assert!(
+            message.contains(&format!("offset {} |", body.len())),
+            "an EOF failure points at the body's end: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_offset_walks_to_a_failure_on_a_later_line() {
+        // serde reports line/column; the diagnostic reports a whole-body
+        // byte offset. A failure on line 2 must land past line 1's bytes,
+        // with the newline itself visible in the dump window.
+        let body = b"{\"a\":1,\n\"b\":2,,}";
+        let err =
+            serde_json::from_slice::<Value>(&body[..]).expect_err("a doubled comma is refused");
+        let resp =
+            parse_error_response(&body[..], &err, "srv").expect("a brace-led attempt is answered");
+        let v = jsonrpc_of(resp).await;
+        let message = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32700)));
+        assert!(
+            message.contains("offset 15 |"),
+            "line 2 column 7 is byte 15 of the whole body: {message}"
+        );
+        assert!(
+            message.contains(" 0a "),
+            "the walked window crosses the newline: {message}"
+        );
     }
 }

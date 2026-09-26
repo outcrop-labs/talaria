@@ -3,9 +3,11 @@
 // untouched — the cascade fires the step rows, never the tasks; deleting a
 // chain unlinks, it does not delete work).
 //
-// /api/workchains/{id}/steps: POST { taskId, after? } appends (or inserts
-// after the named step); DELETE /steps/{taskId} removes one step without
-// touching the task.
+// /api/workchains/{id}/steps: POST { taskId, after?, wire? } appends (or
+// inserts after the named step); DELETE /steps/{taskId} removes one step
+// without touching the task. `wire: false` lands the step UNWIRED — the node
+// canvas draws its own edges, and the tail wire an append adds by default is
+// a wire nobody asked for there.
 //
 // The auth is the BOARD's, resolved through the workchain's board_id — the
 // board-configuration routes' reader/writer split: any member reads,
@@ -427,6 +429,15 @@ pub async fn post_step(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Wiring is the default — an append continues the pipeline, which is what
+    // every picker means by "add to this chain". The canvas's create-and-
+    // connect says otherwise: it knows the one wire it wants (or wants none
+    // at all), and the tail edge an append volunteers is a second, invisible
+    // predecessor that blocks the new step behind unrelated work.
+    let wire = match optional_boolean_member(obj, "wire") {
+        Ok(v) => v.unwrap_or(true),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     let board_id = match write_gate(&state, &user.id, &id, "POST step").await {
         Ok(b) => b,
         Err(gate) => return Err(gate),
@@ -522,6 +533,10 @@ pub async fn post_step(
             .await
         }
         Some(after_id) => {
+            // On the TRANSACTION, not the pool: on &state.pg this shift
+            // committed on its own, so a wedge whose `after` turned out not
+            // to be a step of this chain answered 400 having already pushed
+            // every later position up by one.
             let shifted = sqlx::query(
                 "update task_workchain_steps set position = position + 1 \
                  where workchain_id = $1::uuid and position > \
@@ -530,7 +545,7 @@ pub async fn post_step(
             )
             .bind(&id)
             .bind(after_id)
-            .execute(&state.pg)
+            .execute(&mut *tx)
             .await;
             match shifted {
                 Ok(_) => {}
@@ -582,7 +597,10 @@ pub async fn post_step(
     // after → new completes the splice. A wedge into a fan-out moves the
     // fan-out to the new step; the canvas reads edges, so it renders the
     // truth after the read refreshes.
-    if after.is_none() {
+    if !wire {
+        // `wire: false`: the step lands where it was asked to, with no edges.
+        // The caller draws them.
+    } else if after.is_none() {
         // Append: wire tail → new. The empty-chain case wires nothing (the
         // first step is a head with no predecessors).
         if let Some((tail_id,)) = tail {
