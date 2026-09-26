@@ -15,6 +15,14 @@ use sqlx::PgPool;
 use talaria_workbench_queue::{promote_head_of_line, queue_position};
 use uuid::Uuid;
 
+/// The suite's queue-row lock. Both tests insert queued workbench_jobs against
+/// the SHARED workbench tables, and cargo runs them concurrently by default
+/// (CI's module-filter run has no --test-threads=1): one test's 5-minutes-ago
+/// job landing between the other's pair makes queue_position answer 3 instead
+/// of 2 and promotion flip the sibling's head. A flake about scheduling, not
+/// about the FIFO law — so the tests take this lock for their whole body.
+static QUEUE_ROWS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The whole suite hangs off one throwaway agent row; the FK cascade
 /// removes its jobs along with it. Run at the START so a failed previous
 /// run's leftovers cannot shadow the next one's assertions.
@@ -70,6 +78,7 @@ async fn status_of(pg: &PgPool, job_id: &str) -> (String, Option<String>) {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn one_pass_promotes_only_the_head_and_clears_its_reason() {
     let pg = pg().await;
+    let _line = QUEUE_ROWS.lock().await;
     let slug = format!("wb-queue-{}", Uuid::new_v4());
     reset(&pg, &slug).await;
     let agent = agent_row(&pg, &slug).await;
@@ -119,6 +128,7 @@ async fn one_pass_promotes_only_the_head_and_clears_its_reason() {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn a_refused_head_blocks_the_line_not_just_itself() {
     let pg = pg().await;
+    let _line = QUEUE_ROWS.lock().await;
     let slug = format!("wb-queue-{}", Uuid::new_v4());
     reset(&pg, &slug).await;
     let agent = agent_row(&pg, &slug).await;
