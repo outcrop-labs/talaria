@@ -1,7 +1,9 @@
-// /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName? }
+// /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName?,
+// previewAccessLoss? }
 // → rename/archive/set the QA
 // judge mode (owner/editor); a team move is owner-only because it changes who
-// can see the board. DELETE → owner only. The identity here is ACTING user —
+// can see the board (and previewAccessLoss answers who WOULD lose sight of it
+// without moving anything). DELETE → owner only. The identity here is ACTING user —
 // a personal assistant patches as its owner (the identity-proxy model), and
 // an elevated assistant edits any board but never at owner level.
 
@@ -13,8 +15,8 @@ use serde_json::json;
 use talaria_api_facades::retrieval::qdrant;
 use talaria_api_facades::retrieval::sources::{ActivityField, purge_activity_by_field};
 use talaria_boards::{
-    archive_board, board_role, can_edit, delete_board, rename_board, set_board_judge_mode,
-    set_board_team,
+    archive_board, board_info, board_role, board_team, can_edit, delete_board, direct_board_role,
+    rename_board, set_board_judge_mode, set_board_team, team_move_access_loss,
 };
 use talaria_body::{
     optional_boolean_member, optional_enum_member, optional_string_member, parse,
@@ -39,6 +41,10 @@ struct Patch {
     judge_mode: Option<String>,
     team_id: Option<Option<String>>,
     team_name: Option<Option<String>>,
+    /// Compute the move's access-loss list WITHOUT applying anything — the
+    /// confirm dialog's preview. Combined with a team arm it answers
+    /// immediately and never writes.
+    preview_access_loss: Option<bool>,
 }
 
 fn validate_patch(obj: &serde_json::Map<String, serde_json::Value>) -> Result<Patch, String> {
@@ -48,6 +54,7 @@ fn validate_patch(obj: &serde_json::Map<String, serde_json::Value>) -> Result<Pa
         judge_mode: optional_enum_member(obj, "judgeMode", JUDGE_MODES)?,
         team_id: present_nullable_uuid_member(obj, "teamId")?,
         team_name: present_nullable_max_string_member(obj, "teamName", 120)?,
+        preview_access_loss: optional_boolean_member(obj, "previewAccessLoss")?,
     })
 }
 
@@ -114,6 +121,32 @@ pub async fn patch(
         };
         team_id = Some(resolved);
     }
+    // The access-loss PREVIEW — computed against the real tables, answered
+    // without writing anything. Owner-gated like the move itself, so a
+    // non-owner can't use it to probe a team's roster. The team arm must
+    // resolve first: the preview answers for the team this request moves to,
+    // and applying other patch fields with it would make the response shape
+    // ambiguous (preview and apply are separate calls by contract).
+    if patch.preview_access_loss == Some(true) {
+        if team_id.is_none() {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "previewAccessLoss needs a team move: pass teamId (or teamName) in the same request",
+            ));
+        }
+        if role.as_deref() != Some("owner") {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "only the owner can preview a team move's access loss",
+            ));
+        }
+        let target = team_id.expect("checked Some above");
+        let loss = match team_move_access_loss(&state.pg, &id, target.as_deref()).await {
+            Ok(l) => l,
+            Err(e) => return Ok(internal("[boards] access-loss preview failed", e)),
+        };
+        return Ok(Json(json!({ "preview": true, "loseAccess": loss })).into_response());
+    }
     if let Some(target) = team_id {
         // A team move changes who can see the board — owner's call alone.
         if role.as_deref() != Some("owner") {
@@ -122,10 +155,69 @@ pub async fn patch(
                 "only the owner can move a board between teams",
             ));
         }
-        match set_board_team(&state.pg, &id, target.as_deref()).await {
-            Ok(Ok(())) => {}
-            // setBoardTeam's refusal is the 400 body verbatim; 'unknown
-            // team' is its only in-practice message.
+        // The personal detach can strand the mover: access is a direct
+        // board_members row OR team membership, so a team-derived owner with
+        // no direct row would move their own board out of their reach. That
+        // is a lockout, not a move — refused with the sentence that says so.
+        if target.is_none() {
+            let direct = match direct_board_role(&state.pg, &user.id, &id).await {
+                Ok(d) => d,
+                Err(e) => {
+                    return Ok(internal(
+                        "[boards] direct role read on personal move failed",
+                        e,
+                    ));
+                }
+            };
+            if direct.is_none() {
+                return Ok(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "you would lose access: your ownership of this board comes from team membership, and moving it to personal leaves you outside it",
+                ));
+            }
+        }
+        let before = match board_team(&state.pg, &id).await {
+            Ok(t) => t,
+            Err(e) => return Ok(internal("[boards] board team read failed", e)),
+        };
+        match set_board_team(&state.pg, &id, target.as_deref(), &user.id).await {
+            Ok(Ok(())) => {
+                let after = match board_team(&state.pg, &id).await {
+                    Ok(t) => t,
+                    Err(e) => return Ok(internal("[boards] board team re-read failed", e)),
+                };
+                let label = match board_info(&state.pg, &id).await {
+                    Ok(info) if info.exists => Some(info.label),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::error!("[boards] board label read on team move failed: {e}");
+                        None
+                    }
+                };
+                // The move's record — from team → to team, who, when (the
+                // audit row's created_at). Never breaks the move itself.
+                talaria_audit::log_audit(
+                    &state.pg,
+                    talaria_audit::AuditEntry {
+                        actor: &user.label,
+                        action: "board.team_move",
+                        target_type: "board",
+                        target_id: Some(&id),
+                        target_label: label.as_deref(),
+                        before: Some(serde_json::json!({
+                            "teamId": before.as_ref().map(|(tid, _)| tid),
+                            "teamName": before.as_ref().map(|(_, name)| name),
+                        })),
+                        after: Some(serde_json::json!({
+                            "teamId": after.as_ref().map(|(tid, _)| tid),
+                            "teamName": after.as_ref().map(|(_, name)| name),
+                        })),
+                    },
+                )
+                .await;
+            }
+            // setBoardTeam's refusal is the 400 body verbatim: 'unknown
+            // team', or the destination-membership refusal.
             Ok(Err(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
             Err(e) => return Ok(internal("[boards] team move failed", e)),
         }
@@ -240,6 +332,19 @@ mod tests {
         assert_eq!(
             patch(json!({ "name": "" })).unwrap_err(),
             "Too small: expected string to have >=1 characters"
+        );
+        // previewAccessLoss: boolean, absent skips; the preview is a read
+        // verb, so a present null is not "on".
+        assert_eq!(patch(json!({})).unwrap().preview_access_loss, None);
+        assert_eq!(
+            patch(json!({ "previewAccessLoss": true }))
+                .unwrap()
+                .preview_access_loss,
+            Some(true)
+        );
+        assert_eq!(
+            patch(json!({ "previewAccessLoss": null })).unwrap_err(),
+            "Invalid input: expected boolean, received null"
         );
     }
 }

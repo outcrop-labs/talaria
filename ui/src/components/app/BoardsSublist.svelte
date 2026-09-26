@@ -36,7 +36,7 @@
   import SublistFooter from './SublistFooter.svelte'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
-  import { useBoards, useArchivedBoards, moveBoardToTeam } from '@/lib/boards.svelte'
+  import { useBoards, useArchivedBoards, moveBoardWithPreview } from '@/lib/boards.svelte'
   import { useTeams } from '@/lib/teams'
   import { navigate, p } from '@/router'
 
@@ -85,7 +85,11 @@
     const b = dragging
     dragging = null
     if (!b || (b.teamId ?? null) === teamId) return
-    const r = await moveBoardToTeam(b.id, teamId)
+    // The confirm dialog previews who loses sight of the board before the
+    // move lands (TALA-38) — a silent revocation is the failure the feature
+    // exists to prevent.
+    const label = teams.find((t) => t.id === teamId)?.name ?? 'Personal'
+    const r = await moveBoardWithPreview(b.id, teamId, label)
     if (r?.error) void alert({ title: 'Could not move board', message: r.error })
     await qc.invalidateQueries({ queryKey: ['boards'] })
     void key

@@ -78,15 +78,15 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards.rs`](../../api/crat
 
 Source: [`api/crates/talaria-routes-boards/src/boards/boards_id.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id.rs)
 
-> /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName? }
+> /api/boards/{id}. PATCH { name?, archived?, judgeMode?, teamId?, teamName?,
+> previewAccessLoss? }
 > → rename/archive/set the QA
 > judge mode (owner/editor); a team move is owner-only because it changes who
-> can see the board. DELETE → owner only. The identity here is ACTING user —
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PATCH | `dual` | [body](#patch-apiboardsid-body) | `{ok}` | 200, 400, 401, 403 | — |
+| PATCH | `dual` | [body](#patch-apiboardsid-body) | `{ok}` | 200, 400, 401, 403 | audit |
 | DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
 ### PATCH `/api/boards/{id}` body
@@ -98,6 +98,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id.rs`](../../api/c
 | `judgeMode` | `enum(inherit|off|advisory|enforcing)?` |  |
 | `teamId` | `uuid? nullable` |  |
 | `teamName` | `string? nullable(120)` |  |
+| `previewAccessLoss` | `bool?` |  |
 
 ## `/api/boards/{id}/agent-requests`
 
