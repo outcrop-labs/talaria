@@ -1,5 +1,7 @@
 import { openStream } from '@/lib/sse'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
+import { confirm } from '@/components/ui/confirm.svelte'
+import { accessLossMessage, lossName } from '@/lib/access-loss'
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { delJson, getJson, getJsonOr404, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
 import type { Effort, Priority, Task, TaskActivity, TaskComment, TaskLink, TaskStatus } from '@/lib/task-const'
@@ -282,12 +284,22 @@ export function useTask(taskId: MaybeGetter<string | null>) {
 
 // ── Actions ──────────────────────────────────────────────────────────────────
 export const createBoard = (name: string, teamId?: string | null) => postJson<{ board: Board }>('/api/boards', { name, teamId })
+/** The access-loss preview for a prospective team move (owner only): who
+ *  would lose sight of the board if it moved to `teamId` (null → Personal)
+ *  right now. A read verb — the server answers and applies nothing. */
+export const previewBoardTeamMove = (boardId: string, teamId: string | null) =>
+  patchJson<{ preview: boolean; loseAccess: { userId: string; email: string | null; name: string | null }[] }>(
+    `/api/boards/${boardId}`,
+    { teamId, previewAccessLoss: true },
+  )
 /** Move a board between teams (null → personal). Owner only.
  *
- *  Resolves to `{ error }` rather than throwing, because the caller is a drag
- *  handler that shows the message in an alert. It used to swallow the status
- *  entirely — a 403 resolved to `{}`, the rail said nothing, and the board
- *  quietly snapped back to its old team on the next refetch. */
+ *  Refusals (400: unknown team, or the destination-membership rule — the
+ *  mover must be ON the destination team) resolve to `{ error }` rather than
+ *  throwing, because the caller is a drag handler that shows the message in
+ *  an alert. It used to swallow the status entirely — a 403 resolved to
+ *  `{}`, the rail said nothing, and the board quietly snapped back to its
+ *  old team on the next refetch. */
 export const moveBoardToTeam = async (boardId: string, teamId: string | null): Promise<{ error?: string }> => {
   try {
     await patchJson(`/api/boards/${boardId}`, { teamId })
@@ -295,6 +307,36 @@ export const moveBoardToTeam = async (boardId: string, teamId: string | null): P
   } catch (e) {
     return { error: e instanceof Error ? e.message : `The server refused the move.` }
   }
+}
+
+/** The user-facing team move: preview who loses sight of the board, put that
+ *  list in front of the mover, and only move on an explicit confirm. A team
+ *  move changes who can SEE the board, so the confirm dialog must show the
+ *  people it cuts off rather than silently revoking them (TALA-38). Resolves
+ *  `{}` when nothing happened (cancel, or the caller is told why not) and
+ *  `{ error }` when the move was refused — same contract as
+ *  moveBoardToTeam, whose callers own the refetch. */
+export const moveBoardWithPreview = async (
+  boardId: string,
+  teamId: string | null,
+  targetLabel: string,
+): Promise<{ error?: string }> => {
+  let loseAccess: Awaited<ReturnType<typeof previewBoardTeamMove>>['loseAccess']
+  try {
+    ;({ loseAccess } = await previewBoardTeamMove(boardId, teamId))
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Could not preview who would lose access.' }
+  }
+  const names = loseAccess.map(lossName)
+  const message = accessLossMessage(names)
+  const ok = await confirm({
+    title: `Move to ${targetLabel}?`,
+    message,
+    confirmLabel: `Move to ${targetLabel}`,
+    danger: names.length > 0,
+  })
+  if (!ok) return {}
+  return moveBoardToTeam(boardId, teamId)
 }
 export const createTask = (
   boardId: string,
