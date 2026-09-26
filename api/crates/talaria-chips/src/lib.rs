@@ -442,8 +442,12 @@ pub struct ApprovalRow {
     pub agent_model: Option<String>,
 }
 
-/// Where an agent's chips should land: the turn it is writing, else its
-/// newest conversation. None only when the agent has never spoken to anyone.
+/// Where an agent's chips should land, in tier order: the conversation turn
+/// it is streaming, else the channel turn it is streaming, else its newest
+/// channel message of the last 15 minutes regardless of status, else its
+/// newest assistant conversation message of the last 15 minutes regardless
+/// of status. None when no tier hits — the agent has no live turn, and
+/// chips with nowhere correct to land are dropped.
 async fn speaking_target(pg: &PgPool, agent: &str) -> Result<Option<Landed>, sqlx::Error> {
     let conv: Option<(String, String)> = sqlx::query_as(
         "select m.id::text, m.conversation_id::text \
@@ -478,10 +482,27 @@ async fn speaking_target(pg: &PgPool, agent: &str) -> Result<Option<Landed>, sql
             message_id,
         }));
     }
+    let channel_recent: Option<(String, String)> = sqlx::query_as(
+        "select id::text, channel_id::text from channel_messages \
+         where author_type = 'agent' and author = $1 \
+           and created_at > now() - interval '15 minutes' \
+         order by created_at desc limit 1",
+    )
+    .bind(agent)
+    .fetch_optional(pg)
+    .await?;
+    if let Some((message_id, channel_id)) = channel_recent {
+        return Ok(Some(Landed {
+            conversation_id: None,
+            channel_id: Some(channel_id),
+            message_id,
+        }));
+    }
     let latest: Option<(String, String)> = sqlx::query_as(
         "select m.id::text, m.conversation_id::text \
          from messages m join conversations c on c.id = m.conversation_id \
          where c.agent_model = $1 and m.role = 'assistant' \
+           and m.created_at > now() - interval '15 minutes' \
          order by m.created_at desc limit 1",
     )
     .bind(agent)
@@ -999,5 +1020,31 @@ mod tests {
         assert_eq!(tools_unlocked("ticket_move"), ["triage_ticket"]);
         assert!(tools_unlocked("nope").is_empty());
         assert_eq!(unlock_chip("a-1", "gmail_send")["tools"][0], "draft_email");
+    }
+
+    #[test]
+    fn a_created_sheet_becomes_one_document_link_chip() {
+        let chips = chips_from_tool(
+            "create_sheet",
+            r#"{"title":"Q3 numbers"}"#,
+            r#"{"id":"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2","title":"Q3 numbers"}"#,
+        );
+        assert_eq!(chips.len(), 1, "no stray chips: {chips:?}");
+        assert_eq!(chips[0]["kind"], "link");
+        assert_eq!(chips[0]["entity"], "document");
+        assert_eq!(
+            chips[0]["href"],
+            "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"
+        );
+    }
+
+    #[test]
+    fn a_board_access_request_carries_its_payload() {
+        let chips = chips_from_tool("request_board_access", r#"{"boardId":"b-9"}"#, "{}");
+        assert_eq!(chips.len(), 1, "no stray chips: {chips:?}");
+        assert_eq!(chips[0]["kind"], "approval");
+        assert_eq!(chips[0]["actionKind"], "board_access");
+        assert_eq!(chips[0]["actionId"], "board:b-9");
+        assert_eq!(chips[0]["payload"], json!({ "boardId": "b-9" }));
     }
 }
