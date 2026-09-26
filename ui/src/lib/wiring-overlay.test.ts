@@ -139,6 +139,17 @@ describe('fitTransform', () => {
     const t = fitTransform({ w: 2000, h: 1200 }, { w: 100, h: 80 })
     expect(t.k).toBeGreaterThanOrEqual(0.2)
   })
+
+  it('centres the bounds it is given, whatever their origin', () => {
+    const vp = { w: 800, h: 500 }
+    const plain = fitTransform({ w: 600, h: 400 }, vp, 24)
+    // the same graph, dragged 300 left and 100 up of the canvas origin
+    const shifted = fitTransform({ x: -300, y: -100, w: 600, h: 400 }, vp, 24)
+    expect(shifted.k).toBe(plain.k)
+    // its top-left lands on the same SCREEN point: t + k*origin
+    expect(shifted.x + -300 * shifted.k).toBeCloseTo(plain.x, 5)
+    expect(shifted.y + -100 * shifted.k).toBeCloseTo(plain.y, 5)
+  })
 })
 
 describe('distanceToWire', () => {

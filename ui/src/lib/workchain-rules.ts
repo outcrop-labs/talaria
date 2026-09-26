@@ -137,6 +137,29 @@ export function chainBranches(w: Pick<Workchain, 'edges'>): boolean {
   return false
 }
 
+/** Is the chain ONE straight line — every step with at most one predecessor
+ *  and one successor, and exactly the edges a line needs?
+ *
+ *  This is the guard on the `positions` verb. That write is linear by
+ *  construction: the api rewrites the chain's edges to a single line through
+ *  the order it is sent. Offering it on a branched graph is a silent
+ *  flattening — every fan-out and join the reader drew would be collapsed by
+ *  a nudge of the move-earlier arrow. */
+export function chainIsLinear(w: Pick<Workchain, 'steps' | 'edges'>): boolean {
+  if (w.edges.length !== Math.max(0, w.steps.length - 1)) return false
+  const out = new Map<string, number>()
+  const inn = new Map<string, number>()
+  for (const e of w.edges) {
+    out.set(e.fromTaskId, (out.get(e.fromTaskId) ?? 0) + 1)
+    inn.set(e.toTaskId, (inn.get(e.toTaskId) ?? 0) + 1)
+  }
+  for (const n of out.values()) if (n > 1) return false
+  for (const n of inn.values()) if (n > 1) return false
+  // The counts alone allow two disjoint lines; a single line has exactly one
+  // step nothing points at.
+  return w.steps.filter((s) => (inn.get(s.taskId) ?? 0) === 0).length <= 1
+}
+
 /** Successor list per task — the adjacency the canvas and the derive walk. */
 export function successorsOf(edges: WorkchainEdge[]): Map<string, string[]> {
   const m = new Map<string, string[]>()
@@ -172,65 +195,92 @@ export function wouldCycle(edges: WorkchainEdge[], from: string, to: string): bo
   return false
 }
 
-/** Auto-layout for steps the user has never placed (x/y both null): levels
- *  by longest-path-from-an-entry (the classic layered DAG walk), x fixed
- *  per column, y stacked within a column. Returns a position per taskId;
- *  placed steps keep their saved spot. NODE_W/NODE_H mirror the card
- *  box so wires land on real corners. */
+/** The card box the canvas draws and the gaps the grid leaves between them.
+ *  NODE_W/NODE_H mirror the card so wires land on real corners. */
 export const NODE_W = 208
 export const NODE_H = 104
 export const COL_GAP = 64
 export const ROW_GAP = 24
 
-export function autoLayout(steps: Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>, edges: WorkchainEdge[]): Map<string, { x: number; y: number }> {
-  const placed = new Map<string, { x: number; y: number }>()
-  for (const s of steps) if (s.x !== null && s.y !== null) placed.set(s.taskId, { x: s.x, y: s.y })
-  const need = steps.filter((s) => !placed.has(s.taskId))
-  if (need.length === 0) return placed
-  // Level = longest edge-distance from any no-pred node (entry points).
+/** The layered-DAG grid for EVERY step, placements ignored: level by
+ *  longest-path-from-an-entry, x fixed per column, y stacked within a column
+ *  in the chain's read order. This is what "Tidy up" writes, and what
+ *  autoLayout falls back to per unplaced step.
+ *
+ *  Every step gets a slot, including the placed ones — that reservation is
+ *  the point. Levelling only the unplaced steps (what this did before) made
+ *  a placed predecessor collapse to column 0, so dragging ONE card
+ *  re-columned every card downstream of it: move B, and C and D jumped
+ *  left. A slot that does not depend on who has been placed cannot do that. */
+export function gridLayout(
+  steps: Array<Pick<WorkchainStep, 'taskId' | 'position'>>,
+  edges: WorkchainEdge[],
+): Map<string, { x: number; y: number }> {
+  const ids = new Set(steps.map((s) => s.taskId))
+  // Predecessors, chain-internal only: an edge naming work outside this
+  // chain's steps cannot level anything here.
   const preds = new Map<string, string[]>()
   for (const e of edges) {
+    if (!ids.has(e.fromTaskId) || !ids.has(e.toTaskId)) continue
     const list = preds.get(e.toTaskId) ?? []
     list.push(e.fromTaskId)
     preds.set(e.toTaskId, list)
   }
-  const ids = new Set(need.map((s) => s.taskId))
   const level = new Map<string, number>()
   const visit = (id: string, stack: Set<string>): number => {
-    if (level.has(id)) return level.get(id) as number
+    const seen = level.get(id)
+    if (seen !== undefined) return seen
     if (stack.has(id)) return 0 // cycle: the api refuses writes like this; derive defensively anyway
     stack.add(id)
-    // All predecessors count, placed or not: a placed one is a satisfied
-    // earlier column (contributes 1); an unplaced one contributes 1 + its
-    // own level. Edges naming ids outside the chain stay ignored, as before.
-    const ps = (preds.get(id) ?? []).filter((p) => ids.has(p) || placed.has(p))
-    const l = ps.length === 0 ? 0 : 1 + Math.max(...ps.map((p) => (placed.has(p) ? 0 : visit(p, stack))))
+    const ps = preds.get(id) ?? []
+    const l = ps.length === 0 ? 0 : 1 + Math.max(...ps.map((p) => visit(p, stack)))
     stack.delete(id)
     level.set(id, l)
     return l
   }
-  for (const id of ids) visit(id, new Set())
+  for (const s of steps) visit(s.taskId, new Set())
   // Column x: level * (node + gap). Rows y: stack within a column, in the
   // chain's own read order (position) so the layout is stable across reads.
   const byLevel = new Map<number, string[]>()
-  for (const s of [...need].sort((a, b) => a.position - b.position)) {
+  for (const s of [...steps].sort((a, b) => a.position - b.position)) {
     const l = level.get(s.taskId) ?? 0
     const list = byLevel.get(l) ?? []
     list.push(s.taskId)
     byLevel.set(l, list)
   }
-  for (const [l, idsInLevel] of [...byLevel.entries()].sort((a, b) => a[0] - b[0])) {
+  const out = new Map<string, { x: number; y: number }>()
+  for (const [l, idsInLevel] of byLevel) {
     idsInLevel.forEach((id, row) => {
-      placed.set(id, { x: l * (NODE_W + COL_GAP), y: row * (NODE_H + ROW_GAP) })
+      out.set(id, { x: l * (NODE_W + COL_GAP), y: row * (NODE_H + ROW_GAP) })
     })
   }
-  return placed
+  return out
+}
+
+/** What the canvas draws: the grid, with every hand-placed step (x AND y
+ *  set) overriding its slot. Placing a card therefore moves that card and
+ *  nothing else — the grid underneath is computed from the graph, never
+ *  from who happens to be placed. */
+export function autoLayout(
+  steps: Array<Pick<WorkchainStep, 'taskId' | 'x' | 'y' | 'position'>>,
+  edges: WorkchainEdge[],
+): Map<string, { x: number; y: number }> {
+  const out = gridLayout(steps, edges)
+  for (const s of steps) if (s.x !== null && s.y !== null) out.set(s.taskId, { x: s.x, y: s.y })
+  return out
 }
 
 /** The wire's svg path — a cubic bezier leaving `from`'s right edge and
  *  arriving at `to`'s left edge. Horizontal control points keep the curve
  *  reading as flow (left to right), the n8n look. Straight when the nodes
- *  already line up. */
+ *  already line up.
+ *
+ *  BACKWARDS wires (free placement lets a successor sit left of its
+ *  predecessor) get a wider push instead of the half-gap: with the small
+ *  offset the two control points cross and the curve folds into a flat S
+ *  that reads as a line through the cards. Pushing right off the source and
+ *  left off the target by more than the overlap draws the loop the eye can
+ *  actually follow. */
 export function wirePath(
   from: { x: number; y: number },
   to: { x: number; y: number },
@@ -239,7 +289,8 @@ export function wirePath(
   const y1 = from.y + NODE_H / 2
   const x2 = to.x
   const y2 = to.y + NODE_H / 2
-  const dx = Math.max(40, Math.abs(x2 - x1) / 2)
+  const gap = x2 - x1
+  const dx = gap >= 0 ? Math.max(40, gap / 2) : Math.max(80, -gap / 2 + 80)
   return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`
 }
 

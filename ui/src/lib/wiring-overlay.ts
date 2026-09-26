@@ -98,9 +98,13 @@ export function zoomAt(
   }
 }
 
-/** The viewport transform that fits `bounds` into `viewport` with padding. */
+/** The viewport transform that fits `bounds` into `viewport` with padding.
+ *  `bounds.x`/`bounds.y` are the graph's own top-left in CANVAS space and
+ *  default to the origin — a chain whose cards were dragged left of it (the
+ *  api stores negative coordinates on purpose) fits from its real corner,
+ *  not from 0,0. */
 export function fitTransform(
-  bounds: { w: number; h: number },
+  bounds: { x?: number; y?: number; w: number; h: number },
   viewport: { w: number; h: number },
   pad = 24,
 ): { x: number; y: number; k: number } {
@@ -109,10 +113,13 @@ export function fitTransform(
     1.5,
     Math.max(0.2, Math.min((viewport.w - pad * 2) / bounds.w, (viewport.h - pad * 2) / bounds.h)),
   )
+  // Centre the scaled bounds in the viewport, then subtract the graph's own
+  // origin: the screen position of a canvas point p is `t + k*p`, so landing
+  // bounds.x at the left margin means t = margin − k*bounds.x.
   return {
     k,
-    x: (viewport.w - pad * 2 - bounds.w * k) / 2 + pad,
-    y: (viewport.h - pad - bounds.h * k) / 2 + pad,
+    x: (viewport.w - bounds.w * k) / 2 - (bounds.x ?? 0) * k,
+    y: (viewport.h - bounds.h * k) / 2 - (bounds.y ?? 0) * k,
   }
 }
 
