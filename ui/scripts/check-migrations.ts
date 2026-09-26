@@ -70,7 +70,14 @@ if (UPDATE) {
   writeFileSync(SNAPSHOT, header + got)
   console.log(`[migrations] applied: ${applied}, total: ${total}; snapshot updated`)
 } else if (got !== normalize(readFileSync(SNAPSHOT, 'utf8'))) {
+  const want = normalize(readFileSync(SNAPSHOT, 'utf8')).split('\n')
+  const have = got.split('\n')
+  let i = 0
+  while (i < want.length && i < have.length && want[i] === have[i]) i++
   console.error('[migrations] schema snapshot drifted — the MIGRATIONS array and the committed snapshot disagree.')
+  console.error(`              first divergence at line ${i + 1}:`)
+  console.error(`              snapshot: ${want.slice(i, i + 3).join(' | ')}`)
+  console.error(`              replay:   ${have.slice(i, i + 3).join(' | ')}`)
   console.error('              if the migration change is intentional, run `cd ui && bun run migrations:snapshot`')
   console.error('              and commit the diff as the PR\'s schema change.')
   process.exit(1)

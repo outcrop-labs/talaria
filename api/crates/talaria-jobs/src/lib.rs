@@ -208,6 +208,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state: state.clone(),
     }));
     talaria_scheduler::register_job(talaria_fleet_resources::resource_job_spec(state.pg.clone()));
+    talaria_scheduler::register_job(talaria_workbench_queue::promotion_job_spec(
+        state.pg.clone(),
+    ));
     talaria_scheduler::register_job(talaria_workbench_mcp::teardown::job_sweep_spec(
         state.pg.clone(),
     ));

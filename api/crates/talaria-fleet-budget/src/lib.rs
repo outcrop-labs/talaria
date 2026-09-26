@@ -8,18 +8,19 @@
 //
 // THIS MODULE is the replacement. Hard cgroup ceilings stay as last-ditch
 // host protection (a leak must not eat Postgres). What an agent may START
-// is packed against host MemAvailable, and the running container's
-// reservation is resized to the work actually in flight. Conversation-only
-// agents stay cheap; a workbench grows when a job starts and shrinks when
-// it finishes.
+// is packed against the host's real headroom on three dimensions — RAM
+// (MemAvailable), CPU (one-minute load per core), and disk (free bytes on
+// the workbench jobs root) — and the running container's reservation is
+// resized to the work actually in flight. Conversation-only agents stay
+// cheap; a workbench grows when a job starts and shrinks when it finishes.
 //
 // Numbers are the cloud-pricing floors too: a light seat is the conversation
 // reservation; a coding seat is the workbench base plus one standard job.
 
+use sqlx::PgPool;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-
-use sqlx::PgPool;
 
 use talaria_fleet_docker::{self as docker, managed_container};
 
@@ -57,6 +58,21 @@ pub const MAX_LIVE_JOBS_PER_AGENT: usize = 16;
 pub const HOST_RESERVE: u64 = 4 * GIB;
 pub const PLATFORM_RESERVE_MIN: u64 = 2 * GIB;
 pub const PLATFORM_RESERVE_MAX: u64 = 16 * GIB;
+
+/// Admission defaults. The env overrides (`TALARIA_ADMISSION_LOAD_PER_CORE`,
+/// `TALARIA_ADMISSION_DISK_FREE`, `TALARIA_WORKBENCH_JOBS_ROOT`) are read
+/// per call, not cached: a threshold change is a redeploy-free dial, and the
+/// reads are two `getenv` lookups against a gate that already shells out to
+/// docker.
+///
+/// Load per core, not raw load: 4.0 means every core is busy and a queue is
+/// already forming. Above it a new job competes for CPU it will not get.
+pub const DEFAULT_ADMISSION_LOAD_PER_CORE: f64 = 4.0;
+/// Free bytes on the jobs root below which no new job is admitted. 4 GiB
+/// covers one standard clone (node_modules + target dirs) plus slack.
+pub const DEFAULT_ADMISSION_DISK_FREE: u64 = 4 * GIB;
+/// Where job workdirs live. The disk dimension stats this path.
+pub const DEFAULT_JOBS_ROOT: &str = "/opt/data/workbench/jobs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostMem {
@@ -280,23 +296,159 @@ pub fn compose_size(n: u64) -> String {
     }
 }
 
-/// Refuse a new workbench session/job when the docker host cannot take
-/// another job's RAM. Missing meminfo fails open.
+/// Refuse a new workbench session/job when the host cannot take another
+/// job's RAM, CPU, or disk. The single admission door — every caller
+/// (start_job, the human approve route, the dispatch sweep) goes through
+/// `admit_work`; nothing else re-derives headroom.
+///
+/// Missing meminfo fails open (existing law). A missing loadavg or an
+/// unreadable jobs root fails open for THAT DIMENSION: an unread pro must
+/// not queue a job by itself, and a box without /proc/loadavg (a
+/// stripped-down container) would otherwise admit nothing forever.
 pub async fn admit_work(extra: u64) -> Result<(), String> {
-    let Some(host) = host_mem().await else {
-        return Ok(());
-    };
-    let reserve = host_reserve_for(host.total);
-    if can_admit(host.available, extra, reserve) {
+    admit_resources(extra, &jobs_root()).await
+}
+
+/// The three admission dimensions, checked as one gate. `extra` is the RAM
+/// the new work needs (`effort_reserve`); `data_root` is the filesystem the
+/// job's clone and build artifacts will land on.
+///
+/// Fail-open is per dimension: a reading that cannot be taken admits that
+/// dimension. Missing meminfo keeps its historical fail-open, and an
+/// unread loadavg or jobs root must never queue a job alone — a box
+/// without /proc/loadavg would otherwise admit nothing forever.
+pub async fn admit_resources(extra: u64, data_root: &Path) -> Result<(), String> {
+    let mem = host_mem().await;
+    let h = headroom_of(
+        mem.map(|m| m.available),
+        extra,
+        mem.map_or(HOST_RESERVE, |m| host_reserve_for(m.total)),
+        talaria_host_metrics::load1_per_core(),
+        load_per_core_limit(),
+        talaria_host_metrics::mount_free_bytes(data_root),
+        disk_free_floor(),
+    );
+    if h.mem_ok && h.cpu_ok && h.disk_ok {
         Ok(())
     } else {
-        Err(format!(
-            "host has {} free; starting this work needs {} plus {} kept for the platform — waiting for a job to finish",
-            fmt_bytes(host.available),
-            fmt_bytes(extra),
-            fmt_bytes(reserve)
-        ))
+        Err(refusal_reason(&h))
     }
+}
+
+/// One admission verdict. The `*_ok` bools are the gate; the readings ride
+/// along because the refusal reason must name the numbers behind them
+/// (the queue stores that reason verbatim, and job_status will show it).
+/// `None` readings are unreadable dimensions — failed open, `*_ok` true.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Headroom {
+    pub mem_ok: bool,
+    pub cpu_ok: bool,
+    pub disk_ok: bool,
+    /// Host MemAvailable. `None` = meminfo unreadable.
+    pub mem_available: Option<u64>,
+    /// The RAM the candidate work needs.
+    pub mem_extra: u64,
+    /// The platform keep-back checked alongside `mem_extra`.
+    pub mem_reserve: u64,
+    /// One-minute load divided by the core count. `None` = unreadable.
+    pub load1_per_core: Option<f64>,
+    /// Free bytes on the jobs root. `None` = statvfs failed.
+    pub disk_free: Option<u64>,
+}
+
+/// The pure verdict: readings and thresholds in, three bools out. This is
+/// the whole admission law — `admit_resources` only gathers the inputs —
+/// so a threshold change or an edge (a reading exactly at the limit) is
+/// testable here without a host or an env.
+///
+/// Boundaries: RAM admits at exactly `extra + reserve` (`can_admit`), load
+/// admits strictly below the limit, disk admits at exactly the floor.
+pub fn headroom_of(
+    mem_available: Option<u64>,
+    mem_extra: u64,
+    mem_reserve: u64,
+    load1_per_core: Option<f64>,
+    load_limit: f64,
+    disk_free: Option<u64>,
+    disk_floor: u64,
+) -> Headroom {
+    Headroom {
+        mem_ok: mem_available.is_none_or(|avail| can_admit(avail, mem_extra, mem_reserve)),
+        cpu_ok: load1_per_core.is_none_or(|load| load < load_limit),
+        disk_ok: disk_free.is_none_or(|free| free >= disk_floor),
+        mem_available,
+        mem_extra,
+        mem_reserve,
+        load1_per_core,
+        disk_free,
+    }
+}
+
+/// The refusal reason, naming EVERY failing dimension with its numbers.
+/// The queue stores this string as the wait reason, so a job refused on
+/// RAM and disk together must say both — the agent and the ticket both
+/// read this one sentence.
+pub fn refusal_reason(h: &Headroom) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !h.mem_ok {
+        parts.push(format!(
+            "host has {} RAM free, this work needs {} plus {} kept for the platform",
+            h.mem_available.map(fmt_bytes).unwrap_or_else(|| "?".into()),
+            fmt_bytes(h.mem_extra),
+            fmt_bytes(h.mem_reserve),
+        ));
+    }
+    if !h.cpu_ok {
+        parts.push(format!(
+            "load is {:.1}/core, the gate holds at {:.1}",
+            h.load1_per_core.unwrap_or(f64::NAN),
+            load_per_core_limit()
+        ));
+    }
+    if !h.disk_ok {
+        parts.push(format!(
+            "{} free on the jobs disk, the floor is {}",
+            h.disk_free.map(fmt_bytes).unwrap_or_else(|| "?".into()),
+            fmt_bytes(disk_free_floor()),
+        ));
+    }
+    format!(
+        "host is out of headroom ({}) — waiting for headroom to return, then retry start_job",
+        parts.join("; ")
+    )
+}
+
+/// The per-core load past which admission holds.
+/// `TALARIA_ADMISSION_LOAD_PER_CORE` overrides (a bare decimal number).
+pub fn load_per_core_limit() -> f64 {
+    parse_f64_env("TALARIA_ADMISSION_LOAD_PER_CORE").unwrap_or(DEFAULT_ADMISSION_LOAD_PER_CORE)
+}
+
+/// The free-bytes floor on the jobs root.
+/// `TALARIA_ADMISSION_DISK_FREE` overrides (`parse_size` spellings).
+pub fn disk_free_floor() -> u64 {
+    parse_bytes_env("TALARIA_ADMISSION_DISK_FREE").unwrap_or(DEFAULT_ADMISSION_DISK_FREE)
+}
+
+/// The jobs root the disk dimension stats.
+/// `TALARIA_WORKBENCH_JOBS_ROOT` overrides.
+pub fn jobs_root() -> PathBuf {
+    std::env::var("TALARIA_WORKBENCH_JOBS_ROOT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_JOBS_ROOT))
+}
+
+/// `parse_size`'s f64 twin: a bare decimal number, no unit suffix. An
+/// empty or non-numeric value is no override (the default stands), not a
+/// crash.
+pub fn parse_f64_env(name: &str) -> Option<f64> {
+    std::env::var(name).ok().and_then(|raw| parse_f64(&raw))
+}
+
+pub fn parse_f64(raw: &str) -> Option<f64> {
+    raw.trim().parse().ok()
 }
 
 /// Resize the agent's running container to the jobs it actually has.
@@ -424,5 +576,174 @@ mod tests {
         assert_eq!(parse_size("4g"), Some(4 * GIB));
         assert_eq!(parse_size("768m"), Some(768 * MIB));
         assert_eq!(parse_size("1Gi"), Some(GIB));
+    }
+
+    #[test]
+    fn headroom_admits_when_all_three_dimensions_have_room() {
+        let h = headroom_of(
+            Some(8 * GIB),
+            JOB_STANDARD,
+            HOST_RESERVE,
+            Some(1.5),
+            DEFAULT_ADMISSION_LOAD_PER_CORE,
+            Some(10 * GIB),
+            DEFAULT_ADMISSION_DISK_FREE,
+        );
+        assert!(h.mem_ok && h.cpu_ok && h.disk_ok);
+    }
+
+    #[test]
+    fn headroom_refuses_each_dimension_at_its_boundary() {
+        let base = (
+            Some(8 * GIB),
+            JOB_STANDARD,
+            HOST_RESERVE,
+            Some(1.5),
+            DEFAULT_ADMISSION_LOAD_PER_CORE,
+            Some(10 * GIB),
+            DEFAULT_ADMISSION_DISK_FREE,
+        );
+        // RAM: `can_admit` boundary — exactly extra+reserve admits, one
+        // byte under refuses.
+        let (mem, extra, reserve, load, llimit, disk, dfloor) = base;
+        assert!(
+            headroom_of(
+                Some(JOB_STANDARD + HOST_RESERVE),
+                extra,
+                reserve,
+                load,
+                llimit,
+                disk,
+                dfloor
+            )
+            .mem_ok
+        );
+        assert!(
+            !headroom_of(
+                Some(JOB_STANDARD + HOST_RESERVE - 1),
+                extra,
+                reserve,
+                load,
+                llimit,
+                disk,
+                dfloor
+            )
+            .mem_ok
+        );
+        // CPU: load admits strictly below the limit; at the limit it holds.
+        assert!(
+            headroom_of(
+                mem,
+                extra,
+                reserve,
+                Some(llimit - 0.1),
+                llimit,
+                disk,
+                dfloor
+            )
+            .cpu_ok
+        );
+        assert!(!headroom_of(mem, extra, reserve, Some(llimit), llimit, disk, dfloor).cpu_ok);
+        // Disk: free admits at exactly the floor, one byte under refuses.
+        assert!(headroom_of(mem, extra, reserve, load, llimit, Some(dfloor), dfloor).disk_ok);
+        assert!(!headroom_of(mem, extra, reserve, load, llimit, Some(dfloor - 1), dfloor).disk_ok);
+    }
+
+    #[test]
+    fn unreadable_dimensions_fail_open_per_dimension() {
+        // No meminfo, no loadavg, no statvfs: every dimension admits.
+        let h = headroom_of(None, JOB_STANDARD, HOST_RESERVE, None, 4.0, None, 4 * GIB);
+        assert!(h.mem_ok && h.cpu_ok && h.disk_ok);
+        // An unread loadavg must not queue a job by itself: RAM and disk
+        // have room, so the CPU dimension fails open and the gate admits.
+        let h = headroom_of(
+            Some(8 * GIB),
+            JOB_STANDARD,
+            HOST_RESERVE,
+            None,
+            4.0,
+            Some(10 * GIB),
+            4 * GIB,
+        );
+        assert!(h.cpu_ok);
+        assert!(h.mem_ok && h.disk_ok);
+        // The inverse: RAM tight + load unreadable still refuses on RAM.
+        let h = headroom_of(
+            Some(2 * GIB),
+            JOB_STANDARD,
+            HOST_RESERVE,
+            None,
+            4.0,
+            Some(10 * GIB),
+            4 * GIB,
+        );
+        assert!(!h.mem_ok);
+        assert!(h.cpu_ok);
+    }
+
+    #[test]
+    fn admission_thresholds_parse_from_env_spellings() {
+        // parse_size already covers the disk spellings; the f64 helper is
+        // the new surface. A bare decimal, surrounded by whitespace.
+        assert_eq!(parse_f64(" 2.5 "), Some(2.5));
+        assert_eq!(parse_f64("2"), Some(2.0));
+        // Junk is no override, not a crash — the default stands.
+        assert_eq!(parse_f64(""), None);
+        assert_eq!(parse_f64("4x"), None);
+        assert_eq!(parse_f64("high"), None);
+        // The env wrapper reads the same law.
+        assert_eq!(parse_f64_env("TALARIA_ADMISSION_LOAD_PER_CORE_TEST"), None);
+    }
+
+    #[test]
+    fn the_refusal_names_every_failing_dimension_with_its_numbers() {
+        let h = headroom_of(
+            Some(2 * GIB),
+            JOB_STANDARD,
+            HOST_RESERVE,
+            Some(6.4),
+            DEFAULT_ADMISSION_LOAD_PER_CORE,
+            Some(GIB),
+            DEFAULT_ADMISSION_DISK_FREE,
+        );
+        assert!(!h.mem_ok && !h.cpu_ok && !h.disk_ok);
+        let reason = refusal_reason(&h);
+        assert!(
+            reason.contains("2.0 GiB RAM free"),
+            "the RAM sentence carries its number: {reason}"
+        );
+        assert!(
+            reason.contains("this work needs 2.0 GiB plus 4.0 GiB kept for the platform"),
+            "the RAM sentence names the need and the keep-back: {reason}"
+        );
+        assert!(
+            reason.contains("load is 6.4/core, the gate holds at 4.0"),
+            "the CPU sentence carries its number: {reason}"
+        );
+        assert!(
+            reason.contains("1.0 GiB free on the jobs disk, the floor is 4.0 GiB"),
+            "the disk sentence carries its number: {reason}"
+        );
+        assert!(
+            reason.contains(';'),
+            "three dimensions, two joins: {reason}"
+        );
+        // The boundary shape: a refusal naming exactly one dimension has
+        // no join, and the numbers still ride along.
+        let h = headroom_of(
+            Some(8 * GIB),
+            JOB_STANDARD,
+            HOST_RESERVE,
+            Some(6.0),
+            DEFAULT_ADMISSION_LOAD_PER_CORE,
+            Some(10 * GIB),
+            DEFAULT_ADMISSION_DISK_FREE,
+        );
+        let reason = refusal_reason(&h);
+        assert!(
+            reason.contains("load is 6.0/core") && !reason.contains("RAM free"),
+            "{reason}"
+        );
+        assert!(!reason.contains(';'), "one dimension, no join: {reason}");
     }
 }

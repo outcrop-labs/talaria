@@ -98,15 +98,22 @@ pub struct WorkbenchJob {
     pub status: String,
     pub pr_url: Option<String>,
     pub summary: String,
+    /// When this job entered the queue (epoch ms), kept after promotion
+    /// for history. `None` = never queued.
+    pub queued_at_ms: Option<i64>,
+    /// The admission refusal that parked this job, verbatim. `None` =
+    /// not queued (cleared on promotion).
+    pub queued_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
-
 /// The agent-side job column list (the agent side carries agentId; the
 /// ticket strip answers a different column set and shapes its own row in
-/// the route).
+/// the route). queued_at/queued_reason ride every read so job_status can
+/// answer a queued job with its place and its reason.
 const JOB_COLS: &str = "id::text, agent_id::text, agent_model, task_id::text, repo, branch, \
                         effort, plan, status, pr_url, summary, \
+                        (trunc(extract(epoch from queued_at) * 1000))::bigint, queued_reason, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint, \
                         (trunc(extract(epoch from updated_at) * 1000))::bigint";
 
@@ -125,6 +132,8 @@ type JobRow = (
     String,
     Option<String>,
     String,
+    Option<i64>,
+    Option<String>,
     i64,
     i64,
 );
@@ -143,8 +152,10 @@ impl WorkbenchJob {
             status: r.8,
             pr_url: r.9,
             summary: r.10,
-            created_at: epoch_ms_to_iso(r.11),
-            updated_at: epoch_ms_to_iso(r.12),
+            queued_at_ms: r.11,
+            queued_reason: r.12,
+            created_at: epoch_ms_to_iso(r.13),
+            updated_at: epoch_ms_to_iso(r.14),
         }
     }
 
@@ -177,6 +188,26 @@ impl WorkbenchJob {
         out.insert("summary".into(), json!(self.summary));
         out.insert("createdAt".into(), json!(self.created_at));
         out.insert("updatedAt".into(), json!(self.updated_at));
+        // A queued job answers with its place in line and the reason it is
+        // waiting — the fields the agent polls. Non-queued jobs carry the
+        // history fields only when they were ever queued (queued_at survives
+        // promotion), and never a reason (cleared on flip).
+        if self.status == "queued" {
+            out.insert(
+                "queuedAt".into(),
+                self.queued_at_ms
+                    .map(epoch_ms_to_iso)
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+            out.insert(
+                "waitReason".into(),
+                self.queued_reason
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            );
+        }
         Value::Object(out)
     }
 }
@@ -219,7 +250,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "start_job",
-            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — and returns a clone URL plus workdir. Work ONLY in that workdir, on that branch; commit and push there as you go. Omitting effort defaults to standard. standard and heavy are refused without `plan` (approach, files, test strategy) — pass plan on the first call; retrying without it does not pass. One job per ticket. A live-job cap refusal lists each live jobId; finish_job or abandon one of those before starting another.",
+            "description": "Start a workbench job for a ticket. Talaria cuts the working branch from the default branch — named to satisfy the repo's branch rules (a grant with a configured branch prefix gets the job branch under it) — and returns a clone URL plus workdir. Work ONLY in that workdir, on that branch; commit and push there as you go. Omitting effort defaults to standard. standard and heavy are refused without `plan` (approach, files, test strategy) — pass plan on the first call; retrying without it does not pass. One job per ticket. A live-job cap refusal lists each live jobId; finish_job or abandon one of those before starting another. When the host is out of headroom the job is QUEUED, not failed: the answer carries status 'queued', queuePosition, and waitReason, and the job starts automatically when resources free up — do not retry start_job, poll job_status instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -233,7 +264,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "job_status",
-            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours.",
+            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
         }),
         json!({
@@ -631,15 +662,28 @@ async fn call_tool(
             if live.len() >= MAX_CONCURRENT_JOBS_PER_AGENT {
                 return CallOutcome::Fail(live_cap_error(&live, MAX_CONCURRENT_JOBS_PER_AGENT));
             }
-            if let Err(reason) =
+            // The admission door. Pass → started; refusal → QUEUED, not a
+            // failure: the work is wanted, the box is full. The row lands
+            // with status='queued' below (the branch is already minted —
+            // the queue order and the branch law do not depend on the
+            // host's headroom), and the queue sweep promotes it when
+            // headroom returns.
+            let admission =
                 talaria_fleet_budget::admit_work(talaria_fleet_budget::effort_reserve(&effort))
-                    .await
-            {
-                if let Some(tid) = &task_id {
-                    talaria_work_wait::mark_waiting(pg, tid, &agent.model, &reason).await;
+                    .await;
+            let queue_reason = match admission {
+                Ok(()) => None,
+                Err(reason) => {
+                    // The ticket-level wait keeps its existing behavior:
+                    // the board sees the queue even before any job row
+                    // exists, and the sweep clears it when this job
+                    // actually starts.
+                    if let Some(tid) = &task_id {
+                        talaria_work_wait::mark_waiting(pg, tid, &agent.model, &reason).await;
+                    }
+                    Some(reason)
                 }
-                return CallOutcome::Fail(reason);
-            }
+            };
             let (ticket_ref, title) = match &task_id {
                 Some(task_id) => match ticket_ref_of(pg, task_id).await {
                     Some((r, t)) => (r.unwrap_or_default(), t),
@@ -670,27 +714,37 @@ async fn call_tool(
             // Plan-first, gated by effort: light auto-proceeds; standard
             // proceeds with the plan posted to the ticket (audit trail);
             // heavy WAITS for a human to approve the plan from the ticket
-            // before any clone URL exists.
+            // before any clone URL exists. A refused admission queues —
+            // a heavy job is never queued (it has its own human gate) and
+            // an approved one never re-runs the admission door here.
             let gated = effort == "heavy" && task_id.is_some();
             let status = if gated {
                 "awaiting_approval"
+            } else if queue_reason.is_some() {
+                "queued"
             } else {
                 "started"
             };
-            let job_row: Result<JobRow, sqlx::Error> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "insert into workbench_jobs (agent_id, agent_model, task_id, repo, branch, effort, plan, status) \
-                 values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8) returning {JOB_COLS}"
-            )))
-            .bind(&agent.id)
-            .bind(&agent.model)
-            .bind(&task_id)
-            .bind(&repo)
-            .bind(&branch)
-            .bind(&effort)
-            .bind(&plan)
-            .bind(status)
-            .fetch_one(pg)
-            .await;
+            let job_row: Result<JobRow, sqlx::Error> =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "insert into workbench_jobs \
+                 (agent_id, agent_model, task_id, repo, branch, effort, plan, status, \
+                  queued_at, queued_reason) \
+                 values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, \
+                         case when $8 = 'queued' then now() end, $9) \
+                 returning {JOB_COLS}"
+                )))
+                .bind(&agent.id)
+                .bind(&agent.model)
+                .bind(&task_id)
+                .bind(&repo)
+                .bind(&branch)
+                .bind(&effort)
+                .bind(&plan)
+                .bind(status)
+                .bind(queue_reason.as_deref())
+                .fetch_one(pg)
+                .await;
             let job = match job_row {
                 Ok(row) => WorkbenchJob::of(row),
                 Err(e) => return thrown(format!("job write: {e}")),
@@ -846,6 +900,10 @@ async fn call_tool(
                 &WorkbenchActor::Agent(subject.clone()),
                 &if gated {
                     format!("workbench job awaiting plan approval: {repo} @ {branch} (heavy)")
+                } else if job.status == "queued" {
+                    format!(
+                        "workbench job queued: {repo} @ {branch} ({effort}) — host out of headroom, it starts automatically when resources free up"
+                    )
                 } else {
                     format!(
                         "workbench job started: {repo} @ {branch} ({effort}){}",
@@ -858,6 +916,22 @@ async fn call_tool(
                 },
             )
             .await;
+            // A queued job is DONE for this call: no harness lines, no
+            // clone URL, no workdir — nothing exists to run yet. The agent
+            // gets the queue facts it polls for; the sweep starts the job
+            // and job_status then answers with the started shape.
+            if job.status == "queued" {
+                let position = talaria_workbench_queue::queue_position(pg, &job.id).await;
+                return CallOutcome::Ok(json!({
+                    "jobId": job.id,
+                    "repo": repo,
+                    "branch": branch,
+                    "status": "queued",
+                    "queuePosition": position,
+                    "waitReason": queue_reason,
+                    "note": "queued behind host headroom; it starts automatically when resources free up — poll job_status",
+                }));
+            }
             // The model is omp's call: the org's Workbench roles are its
             // default / smol / slow / plan (rendered into the sandbox), and
             // the invocation lines carry the default so they run as written.
@@ -959,7 +1033,8 @@ async fn call_tool(
             };
             // Running jobs get a FRESH clone URL each poll (app tokens expire
             // ~1h); gated jobs stay locked until a human approves from the
-            // ticket.
+            // ticket; queued jobs get their place in line — no clone URL,
+            // no workdir, nothing to run yet.
             let mut jobs: Vec<Value> = Vec::with_capacity(rows.len());
             for row in rows {
                 let job = WorkbenchJob::of(row);
@@ -974,6 +1049,17 @@ async fn call_tool(
                     obj.insert(
                         "workdir".into(),
                         json!(format!("/opt/data/workbench/jobs/{}", job.id)),
+                    );
+                }
+                if job.status == "queued" {
+                    let position = talaria_workbench_queue::queue_position(pg, &job.id)
+                        .await
+                        .unwrap_or(1);
+                    let obj = wire.as_object_mut().expect("wire is an object");
+                    obj.insert("queuePosition".into(), json!(position));
+                    obj.insert(
+                        "phase".into(),
+                        json!(talaria_workbench_queue::phase_of(position)),
                     );
                 }
                 jobs.push(wire);
@@ -1929,6 +2015,8 @@ mod tests {
             status: "started".into(),
             pr_url: None,
             summary: String::new(),
+            queued_at_ms: Some(1_700_000_000_000),
+            queued_reason: None,
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-01T00:00:00.000Z".into(),
         };
@@ -1940,7 +2028,9 @@ mod tests {
             .map(|s| s.as_str())
             .collect();
         // JOB_COLS' order minus `plan` — job_status never ships the plan,
-        // on any status.
+        // on any status. A STARTED job carries no queue fields even when
+        // it was queued once (queued_at survives as history, the wire
+        // answers the present).
         assert_eq!(
             keys,
             vec![
@@ -1960,5 +2050,31 @@ mod tests {
         );
         assert_eq!(wire["taskId"], Value::Null);
         assert!(wire.as_object().unwrap().get("plan").is_none());
+    }
+
+    #[test]
+    fn a_queued_wire_names_the_wait_and_the_time() {
+        let job = WorkbenchJob {
+            id: "j".into(),
+            agent_id: "a".into(),
+            agent_model: "m".into(),
+            task_id: None,
+            repo: "o/r".into(),
+            branch: "b".into(),
+            effort: "standard".into(),
+            plan: "p".into(),
+            status: "queued".into(),
+            pr_url: None,
+            summary: String::new(),
+            queued_at_ms: Some(1_700_000_000_000),
+            queued_reason: Some("host has 1.0 GiB RAM free".into()),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            updated_at: "2026-01-01T00:00:00.000Z".into(),
+        };
+        let wire = job.wire();
+        assert_eq!(wire["status"], "queued");
+        assert_eq!(wire["waitReason"], "host has 1.0 GiB RAM free");
+        // epoch_ms_to_iso's rendering, the same as createdAt/updatedAt.
+        assert_eq!(wire["queuedAt"], "2023-11-14T22:13:20.000Z");
     }
 }
