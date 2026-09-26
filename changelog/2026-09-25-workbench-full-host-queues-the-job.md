@@ -20,10 +20,21 @@
   suites for talaria-api, talaria-fleet-budget, talaria-host-metrics,
   talaria-jobs, talaria-scheduler, talaria-workbench-mcp,
   talaria-workbench-queue; svelte-check 0 errors; 1277 ui tests), and the new
-  live suite `api/tests/workbench_queue.rs` (`cargo test --test
-  workbench_queue -- --ignored` against the dev Postgres on :55441): the rank
-  window, the head-of-line flip that clears the reason and unblocks the
-  follower, and the refusal that parks the whole line — 2 passed, 0 failed.
+  live suite `api/tests/it/workbench_queue.rs` (`cargo test --test it --
+  --ignored workbench_queue::` against a scratch Postgres — the shape CI runs,
+  both tests in ONE process): the rank window, the head-of-line flip that
+  clears the reason and unblocks the follower, and the refusal that parks the
+  whole line — 2 passed, 0 failed. That suite runs one test at a time behind
+  a module lock, because the queue it measures is box-wide by design: run
+  concurrently, each test answered the other's rows (position 3 where it
+  seeded 2; the sweep promoting the sibling's job), which is how they first
+  went red in CI. The two migration statements live at the END of MIGRATIONS,
+  not beside the table they alter — the ledger is keyed by index, so a
+  mid-array insert renumbers everything after it and a deployed instance
+  refuses to boot; the upgrade replay (main's array, then this one on top of
+  the same database) is what catches that, and it is green: 386 baseline
+  statements, then exactly 2 applied, snapshot matching on both the fresh and
+  the upgraded database, and `applied: 0` on a second pass.
   The pre-existing `live_proc_reads_this_machine` test fails on this devbox
   because `/` here is an overlay (filtered as a pseudo fs); it is untouched by
   this change and passes on a host with a real root filesystem.
