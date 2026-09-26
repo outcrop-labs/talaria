@@ -1,4 +1,6 @@
-mod support;
+// teams_move_live (see main.rs): the it/ binary's shared support::mod supplies
+// the helpers; this file carries only what is specific to the board team move.
+//
 // Live-DB proof of the board team move (cargo test -- --ignored). The gates
 // live on the ROUTE and in the store, and they are all Postgres questions:
 // destination-team membership, the access-loss preview against
@@ -10,7 +12,7 @@ mod support;
 // House rule: #[ignore]d, never CI.
 //
 //   DATABASE_URL=postgres://… REDIS_URL=redis://… \
-//     cargo test --test teams_move_live -- --ignored --test-threads=1
+//     cargo test -p talaria-api --test it teams_move_live:: -- --ignored
 
 use axum::body::Body;
 use axum::http::Request;
