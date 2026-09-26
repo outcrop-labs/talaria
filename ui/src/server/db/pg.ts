@@ -1086,12 +1086,6 @@ const MIGRATIONS: string[] = [
     updated_at timestamptz not null default now()
   )`,
   `alter table workbench_jobs add column if not exists merged_testing_at timestamptz`,
-  // TALA-81: a refused start is a queued start. `queued_at` is the FIFO
-  // key (kept on re-queue so a job does not buy a new place in line),
-  // `queued_reason` is the admission refusal the agent and job_status
-  // both read. Cleared on promotion to started (queued_at stays for history).
-  `alter table workbench_jobs add column if not exists queued_at timestamptz`,
-  `alter table workbench_jobs add column if not exists queued_reason text`,
   // Admin-registered custom workbench harnesses (declarative JSON matching
   // the SDK HarnessDefinition — no code). Merged over builtin + app-shipped
   // definitions by slug.
@@ -3284,6 +3278,18 @@ alter table tasks drop column if exists conversation_id`,
           join mcp_servers s on s.id = a.server_id
           where s.name = 'workbench'
         )`,
+  // TALA-81: a refused start is a queued start. `queued_at` is the FIFO
+  // key (kept on re-queue so a job does not buy a new place in line),
+  // `queued_reason` is the admission refusal the agent and job_status
+  // both read. Cleared on promotion to started (queued_at stays for history).
+  // AT THE END, not beside the workbench_jobs table it belongs to: MIGRATIONS
+  // is append-only and the ledger is keyed by INDEX, so a statement wedged
+  // mid-array renumbers every statement after it and a deployed instance
+  // refuses to boot with `migration N changed after it was applied`. A fresh
+  // database cannot see that (no ledger); the upgrade replay in
+  // .github/workflows/migrations.yml is what does.
+  `alter table workbench_jobs add column if not exists queued_at timestamptz`,
+  `alter table workbench_jobs add column if not exists queued_reason text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
