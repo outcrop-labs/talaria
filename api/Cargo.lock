@@ -3942,6 +3942,7 @@ dependencies = [
  "talaria-workbench",
  "talaria-workbench-harnesses",
  "talaria-workbench-mcp",
+ "talaria-workbench-queue",
  "talaria-workchains",
  "talaria-workflows",
  "talaria-workspace-handles",
@@ -4718,7 +4719,7 @@ version = "0.1.0"
 dependencies = [
  "sqlx",
  "talaria-fleet-docker",
- "tokio",
+ "talaria-host-metrics",
  "tracing",
 ]
 
@@ -5507,6 +5508,7 @@ dependencies = [
  "talaria-web-search",
  "talaria-work-dispatch",
  "talaria-workbench-mcp",
+ "talaria-workbench-queue",
  "talaria-workchains",
  "tokio",
  "tracing",
@@ -7505,11 +7507,25 @@ dependencies = [
  "talaria-statuses",
  "talaria-tasks",
  "talaria-work-wait",
+ "talaria-workbench",
  "talaria-workbench-harnesses",
+ "talaria-workbench-queue",
  "tokio",
  "toml_edit",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "talaria-workbench-queue"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "talaria-fleet-budget",
+ "talaria-scheduler",
+ "talaria-work-wait",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

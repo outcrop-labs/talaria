@@ -51,5 +51,6 @@ mod unreads;
 mod update_live;
 mod uploads_live;
 mod users_link;
+mod workbench_queue;
 mod workchains_live;
 mod yaml_stringify;
