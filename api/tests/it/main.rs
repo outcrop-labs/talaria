@@ -22,6 +22,7 @@ mod board_agent_access;
 mod boards_store;
 mod brief_item_live;
 mod brief_verdict_carry_live;
+mod chips_landing_live;
 mod conversation_reads;
 mod developer_agent_live;
 mod fitness_arming;
