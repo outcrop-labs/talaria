@@ -1367,7 +1367,7 @@ server.registerTool(
   'move_board_to_team',
   {
     description:
-      "Move a board into a team, or back to Personal (personal assistants only, and only for boards your owner OWNS — it changes who can see the board). Team is matched by name; use 'personal' to remove it from any team.",
+      "Move a board into a team, or back to Personal (personal assistants only, and only for boards your owner OWNS — it changes who can see the board). Team is matched by name; use 'personal' to remove it from any team. Your owner must be a member of the destination team — the move is refused otherwise.",
     inputSchema: {
       boardId: z.string().describe('Board id (from list_boards)'),
       teamName: z.string().max(120).describe("Team name (see list_teams), or 'personal' for no team"),

@@ -7,11 +7,13 @@
   import {
     archiveBoard,
     deleteBoard,
+    moveBoardWithPreview,
     renameBoard,
     setBoardJudgeMode,
     type Board,
   } from '@/lib/boards.svelte'
-  import { toastError } from '@/lib/toast.svelte'
+  import { useTeamsDirectory } from '@/lib/teams'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
   import TemplatesSection from './TemplatesSection.svelte'
 
   // The General tab of BoardSettingsModal.svelte (module-private there in
@@ -34,8 +36,17 @@
   // svelte-ignore state_referenced_locally -- reason: settings-modal instance per open; drafts seeded from the board, Save writes the record
   let name = $state(board.name)
   let confirmDelete = $state(false)
+  // svelte-ignore state_referenced_locally -- reason: same one-time seed as the name draft; the modal instance is born from one board row
+  let teamChoice = $state(board.teamId ?? '')
   const archived = $derived(!!board.archivedAt)
   const refreshBoards = () => qc.invalidateQueries({ queryKey: ['boards'] })
+  // A getter, not the bare prop: isOwner cannot change for a modal
+  // instance, but the directory read still follows the prop honestly.
+  const teamsDirectory = useTeamsDirectory(() => isOwner)
+  const boardIsTeamBoard = $derived(board.teamId != null)
+  const currentTeamName = $derived(
+    board.teamName ?? teamsDirectory.data?.find((t) => t.id === board.teamId)?.name ?? 'Personal',
+  )
 
   const commitName = async () => {
     const n = name.trim()
@@ -49,6 +60,34 @@
       // Rename rejects now; the field would otherwise snap back on refetch
       // with no sentence, which is the silent failure this sweep removes.
       toastError('Rename failed', e)
+      return
+    }
+    void refreshBoards()
+  }
+
+  // Team reassignment (owner only): the confirm dialog shows who would lose
+  // sight of the board BEFORE the move applies; cancel restores the choice.
+  // The pick's value comes off the event target, not `teamChoice`: Svelte 5
+  // runs a delegated onchange before bind_select_value's own listener writes
+  // the bind, so reading the state here sees the PREVIOUS pick and the move
+  // early-returns as a no-op (the dialog never opened in the browser run).
+  const commitTeam = async (e: Event) => {
+    const raw = e.currentTarget instanceof HTMLSelectElement ? e.currentTarget.value : teamChoice
+    const target = raw || null
+    if ((target ?? null) === (board.teamId ?? null)) {
+      teamChoice = board.teamId ?? ''
+      return
+    }
+    const label = target
+      ? (teamsDirectory.data?.find((t) => t.id === target)?.name ?? 'the selected team')
+      : 'Personal'
+    const r = await moveBoardWithPreview(board.id, target, label)
+    if (r?.error) {
+      // r.error is the server's own refusal sentence (e.g. the
+      // destination-membership rule) — body it verbatim, don't route it
+      // through toastError, which expects a thrown unknown.
+      pushToast({ title: 'Could not move board', body: r.error, tone: 'danger' })
+      teamChoice = board.teamId ?? ''
       return
     }
     void refreshBoards()
@@ -92,6 +131,30 @@
       When an agent hands a ticket to quality review, the judge reviews it. Enforcing bounces “revise” verdicts back to the agent with the issues before a human sees them.
     </div>
   </div>
+
+  {#if isOwner}
+    <div>
+      <label class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim" for="board-team-select">Team</label>
+      <Select
+        id="board-team-select"
+        value={teamChoice}
+        onchange={(e) => void commitTeam(e)}
+        class="w-full"
+      >
+        <option value="">Personal (no team)</option>
+        {#each teamsDirectory.data ?? [] as t (t.id)}
+          <option value={t.id}>{t.name}</option>
+        {/each}
+      </Select>
+      <div class="mt-1 font-sans text-[11px] text-muted">
+        {#if boardIsTeamBoard}
+          Currently “{currentTeamName}”. Moving the board changes who can see it — the next dialog shows who loses access, and you must be a member of the team you move it to.
+        {:else}
+          Currently Personal. Moving the board into a team gives that team sight of it, and you must be a member of the destination team.
+        {/if}
+      </div>
+    </div>
+  {/if}
 
   <TemplatesSection {board} />
 
