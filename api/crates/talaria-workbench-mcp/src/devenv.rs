@@ -31,6 +31,10 @@
 //     sccache = false      # opt a Rust repo out of the shared compile cache
 //     [tools]              # extra mise tools, merged over detection
 //     protoc = "28"
+//     [cleanup]            # what a reclaim may drop from an idle job
+//     artifacts = ["target", ".turbo"]   # merges over detection; [] opts out
+//     keep = [".venv"]                   # never dropped, whatever the pressure
+//     maxWorkdirGib = 40                 # this repo's ceiling for one job
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -63,6 +67,14 @@ const MARKERS: &[&str] = &[
     "requirements.txt",
     "uv.lock",
     ".ruby-version",
+    // Read for cleanup detection rather than for toolchains: these name an
+    // ecosystem whose build output is rebuildable (see `plan_cleanup`).
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "mix.exs",
+    "*.sln",
+    "*.csproj",
     "*/rust-toolchain.toml",
     "*/rust-toolchain",
     "*/Cargo.toml",
@@ -386,6 +398,167 @@ pub fn plan_env(files: &[(String, String)]) -> EnvPlan {
     plan
 }
 
+// ── Cleanup: what a job's workdir may give back ─────────────────────────────
+//
+// Job teardown asks "is this job over?". It never asked "how big is this?",
+// so a job that is perfectly alive holds a checkout plus whatever its
+// toolchain writes beside it — and a cold Rust `target/` is 4-20 GiB on its
+// own. Reclaim is the rung between Stop and Remove: drop what the project can
+// rebuild, keep the checkout, the branch and every uncommitted edit.
+//
+// The platform cannot guess what is rebuildable. `target/` costs a cargo
+// build; `.venv` cost twenty minutes and a private index. So the project says
+// — and a project that says nothing still gets the detection below, because a
+// repo that must opt in mostly will not, and then the disk fills anyway.
+
+/// Rebuildable output per ecosystem. The rule is CHEAP AND LOCAL is
+/// reclaimable, SLOW OR REMOTE is not.
+///
+/// What is deliberately absent matters as much as what is here.
+/// `node_modules` itself is not reclaimable — rebuilding it means going back
+/// to the network — so only its cache is. `vendor/` is often committed and
+/// load-bearing offline. Go's build cache lives in `GOCACHE` outside the
+/// repo, so it is a department cache to cap, never a per-job path to drop.
+const DETECTED_ARTIFACTS: &[(&[&str], &[&str])] = &[
+    (&["Cargo.toml"], &["target"]),
+    (
+        &["package.json"],
+        &[
+            "node_modules/.cache",
+            "dist",
+            "build",
+            ".next",
+            ".nuxt",
+            ".svelte-kit",
+            ".turbo",
+        ],
+    ),
+    (
+        &["pyproject.toml", "requirements.txt", ".python-version"],
+        &["__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"],
+    ),
+    (&["pom.xml"], &["target"]),
+    (&["build.gradle", "build.gradle.kts"], &["build", ".gradle"]),
+    (&["mix.exs"], &["_build"]),
+];
+
+/// What one job's workdir may give back, and what it never may.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct CleanupPlan {
+    /// Repo-relative and rebuildable: detection, plus whatever the repo
+    /// declared. This list ends in an `rm -rf`, so every entry is validated.
+    pub artifacts: Vec<String>,
+    /// Repo-relative and never dropped, whatever the pressure. Wins over
+    /// `artifacts`, including over a detected entry.
+    pub keep: Vec<String>,
+    /// This repo's ceiling for ONE job's workdir, in GiB.
+    pub max_workdir_gib: Option<u64>,
+    /// Declared entries that failed validation, told back through `doctor`.
+    pub rejected: Vec<String>,
+}
+
+/// A path this may hand to `rm -rf`, inside the workdir and nowhere else.
+/// Absolute paths, `..` in any position, an empty segment, and `.git` at any
+/// depth are all refused here rather than left to the shell.
+pub fn valid_rel_path(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 200
+        && !p.starts_with('/')
+        && !p.starts_with('~')
+        && !p.split('/').any(|seg| {
+            seg.is_empty() || seg == ".." || seg == "." || seg.eq_ignore_ascii_case(".git")
+        })
+        && p.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
+fn push_unique(v: &mut Vec<String>, s: &str) {
+    if !v.iter().any(|x| x == s) {
+        v.push(s.to_string());
+    }
+}
+
+/// The cleanup rules for a repo. Pure, like `plan_env`: `files` is what the
+/// scan found, so the whole policy is pinned by tests without a container.
+pub fn plan_cleanup(files: &[(String, String)]) -> CleanupPlan {
+    let mut plan = CleanupPlan::default();
+    for (markers, paths) in DETECTED_ARTIFACTS {
+        if any(files, markers) {
+            for p in *paths {
+                push_unique(&mut plan.artifacts, p);
+            }
+        }
+    }
+    // .NET names its project file after the project, so it is a suffix match
+    // rather than one of `any`'s fixed names.
+    if files
+        .iter()
+        .any(|(p, _)| p.ends_with(".csproj") || p.ends_with(".sln"))
+    {
+        push_unique(&mut plan.artifacts, "bin");
+        push_unique(&mut plan.artifacts, "obj");
+    }
+
+    let mut declared: Option<Vec<String>> = None;
+    if let Some((_, text)) = files.iter().find(|(p, _)| p == ".talaria/workbench.toml") {
+        match text.parse::<toml_edit::DocumentMut>() {
+            Ok(doc) => {
+                if let Some(t) = doc.get("cleanup").and_then(|c| c.as_table_like()) {
+                    if let Some(list) = t.get("artifacts").and_then(|a| a.as_array()) {
+                        let mut got: Vec<String> = Vec::new();
+                        for item in list.iter() {
+                            match item.as_str() {
+                                Some(s) if valid_rel_path(s) => push_unique(&mut got, s),
+                                _ => plan.rejected.push(format!("cleanup artifact {item}")),
+                            }
+                        }
+                        declared = Some(got);
+                    }
+                    if let Some(list) = t.get("keep").and_then(|a| a.as_array()) {
+                        for item in list.iter() {
+                            match item.as_str() {
+                                Some(s) if valid_rel_path(s) => push_unique(&mut plan.keep, s),
+                                _ => plan.rejected.push(format!("cleanup keep {item}")),
+                            }
+                        }
+                    }
+                    match t.get("maxWorkdirGib").map(|v| v.as_integer()) {
+                        Some(Some(n)) if n > 0 => plan.max_workdir_gib = Some(n as u64),
+                        Some(_) => plan
+                            .rejected
+                            .push("cleanup maxWorkdirGib (a positive integer)".to_string()),
+                        None => {}
+                    }
+                }
+            }
+            Err(e) => plan
+                .rejected
+                .push(format!(".talaria/workbench.toml does not parse: {e}")),
+        }
+    }
+
+    // Declared artifacts MERGE OVER detection — name what detection misses,
+    // without restating it. An explicit empty list is the opt-out.
+    if let Some(got) = declared {
+        if got.is_empty() {
+            plan.artifacts.clear();
+        } else {
+            for p in got {
+                push_unique(&mut plan.artifacts, &p);
+            }
+        }
+    }
+    // `keep` wins over everything, including a detected default, and covers
+    // the subtree beneath it.
+    let keep = plan.keep.clone();
+    plan.artifacts.retain(|a| {
+        !keep
+            .iter()
+            .any(|k| k == a || a.starts_with(&format!("{k}/")))
+    });
+    plan
+}
+
 /// mise.local.toml for the plan's tools, written with toml_edit so no value
 /// can escape its string.
 pub fn mise_local_toml(tools: &[(String, String)]) -> String {
@@ -556,6 +729,99 @@ mod tests {
 
     fn f(path: &str, body: &str) -> (String, String) {
         (path.to_string(), body.to_string())
+    }
+
+    #[test]
+    fn a_repo_that_declares_nothing_still_gets_its_build_output_detected() {
+        let rust = plan_cleanup(&[f("Cargo.toml", "[package]\n")]);
+        assert_eq!(rust.artifacts, vec!["target"]);
+        let node = plan_cleanup(&[f("package.json", "{}")]);
+        assert!(node.artifacts.contains(&"dist".to_string()));
+        assert!(node.artifacts.contains(&"node_modules/.cache".to_string()));
+        // node_modules ITSELF is rebuildable only by going back to the
+        // network, so it is never on the list.
+        assert!(!node.artifacts.contains(&"node_modules".to_string()));
+        let dotnet = plan_cleanup(&[f("Api.csproj", "<Project/>")]);
+        assert_eq!(dotnet.artifacts, vec!["bin", "obj"]);
+        // Go's build cache lives outside the repo, so nothing is dropped
+        // per job — vendor/ is often committed and load-bearing offline.
+        assert!(
+            plan_cleanup(&[f("go.mod", "module x\n")])
+                .artifacts
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn declared_artifacts_merge_over_detection_and_an_empty_list_opts_out() {
+        let merged = plan_cleanup(&[
+            f("Cargo.toml", "[package]\n"),
+            f(
+                ".talaria/workbench.toml",
+                "[cleanup]\nartifacts = [\".turbo\"]\n",
+            ),
+        ]);
+        assert_eq!(merged.artifacts, vec!["target", ".turbo"]);
+        let opted_out = plan_cleanup(&[
+            f("Cargo.toml", "[package]\n"),
+            f(".talaria/workbench.toml", "[cleanup]\nartifacts = []\n"),
+        ]);
+        assert!(opted_out.artifacts.is_empty());
+    }
+
+    #[test]
+    fn keep_wins_over_detection_and_covers_its_subtree() {
+        let plan = plan_cleanup(&[
+            f("package.json", "{}"),
+            f(".talaria/workbench.toml", "[cleanup]\nkeep = [\"dist\"]\n"),
+        ]);
+        assert!(!plan.artifacts.contains(&"dist".to_string()));
+        assert!(plan.artifacts.contains(&".next".to_string()));
+        let subtree = plan_cleanup(&[
+            f("Cargo.toml", "[package]\n"),
+            f(
+                ".talaria/workbench.toml",
+                "[cleanup]\nartifacts = [\"target/debug\"]\nkeep = [\"target\"]\n",
+            ),
+        ]);
+        assert!(subtree.artifacts.is_empty());
+    }
+
+    #[test]
+    fn a_path_that_could_escape_the_workdir_is_refused() {
+        assert!(valid_rel_path("target"));
+        assert!(valid_rel_path("node_modules/.cache"));
+        assert!(!valid_rel_path(""));
+        assert!(!valid_rel_path("/etc/passwd"));
+        assert!(!valid_rel_path("~/.ssh"));
+        assert!(!valid_rel_path("../../etc"));
+        assert!(!valid_rel_path("target/../../etc"));
+        assert!(!valid_rel_path("target//x"));
+        // .git is never a legal target, at any depth or casing.
+        assert!(!valid_rel_path(".git"));
+        assert!(!valid_rel_path(".git/objects"));
+        assert!(!valid_rel_path("sub/.GIT"));
+        assert!(!valid_rel_path("a b; rm -rf /"));
+    }
+
+    #[test]
+    fn a_rejected_declaration_is_reported_not_silently_dropped() {
+        let plan = plan_cleanup(&[f(
+            ".talaria/workbench.toml",
+            "[cleanup]\nartifacts = [\"../escape\"]\nmaxWorkdirGib = 0\n",
+        )]);
+        assert!(plan.artifacts.is_empty());
+        assert_eq!(plan.max_workdir_gib, None);
+        assert_eq!(plan.rejected.len(), 2);
+    }
+
+    #[test]
+    fn a_ceiling_is_read_when_it_is_a_positive_integer() {
+        let plan = plan_cleanup(&[f(
+            ".talaria/workbench.toml",
+            "[cleanup]\nmaxWorkdirGib = 40\n",
+        )]);
+        assert_eq!(plan.max_workdir_gib, Some(40));
     }
 
     #[test]

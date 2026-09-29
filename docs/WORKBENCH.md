@@ -71,6 +71,72 @@ protoc = "28"
 
 It is idempotent and cheap once versions are cached, so agents call it on every job. A missing tool is fixed by declaring it in the repo, never by the agent installing it. Talaria's own `mise.toml` is the example: the same file gives people and agents Rust, Bun, Node, and mold.
 
+## Keeping a job's disk bounded
+
+Job teardown answers *"is this job over?"* — `finish_job` stops the builds, abandoning removes the workdir, and the sweep catches whatever never called a verb. What nothing asked was *"how big is this?"* A job that is perfectly alive — `started`, ticket open, agent working — holds a checkout plus whatever that project's toolchain writes beside it, and a cold Rust `target/` is 4–20 GiB on its own. Ten live jobs in a department is 200 GiB of entirely legitimate work, and the first notice is a build that fails on ENOSPC.
+
+Two things have to be true to fix that for **any** project, not just the ones Talaria happens to know. Somebody has to measure, because growth nothing reports is growth nobody sees until it is an outage. And somebody has to know what is *rebuildable* — the platform cannot guess that `target/` costs a cargo build while `.venv` cost twenty minutes and a private index. Only the project knows that.
+
+### The third rung: reclaim
+
+| | Processes | Build artifacts | Checkout | When |
+|---|---|---|---|---|
+| **Stop** | killed | kept | kept | `finish_job` — the PR is open, a revise bounce still needs the tree |
+| **Reclaim** | untouched | **dropped** | kept | an idle job, or the volume over budget |
+| **Remove** | killed | dropped | dropped | abandoned, or the ticket closed |
+
+**Reclaim** deletes only what the project has said it can rebuild. The checkout, the branch, uncommitted edits and `.git` all survive, so a job that is reclaimed and then resumed pays a rebuild and nothing else — and with the department's shared sccache behind it, a Rust rebuild is mostly cache hits rather than a cold graph.
+
+### What a project declares
+
+`.talaria/workbench.toml` is already where a repo tells the workbench about itself, so cleanup joins it rather than earning a second file:
+
+```toml
+[cleanup]
+# Rebuildable. Dropped from an idle job before its checkout is ever touched.
+# These MERGE OVER detection — name what detection would miss.
+artifacts = ["target", "dist", ".turbo"]
+
+# Expensive to recreate: a private-index virtualenv, a downloaded model, a
+# fixture corpus. Never dropped, whatever detection thinks, whatever the
+# pressure. `keep` always wins over `artifacts`.
+keep = [".venv", "fixtures/corpus"]
+
+# This repo's ceiling for ONE job's workdir. The platform default applies
+# when unset. A job over its ceiling is reclaimed at the next idle check
+# rather than waiting for the volume to get tight.
+maxWorkdirGib = 40
+```
+
+Every path is **repo-relative**. An absolute path, a `..` segment, an empty segment, or `.git` at any depth is refused and reported back through `doctor` — this list ends in an `rm -rf` inside a container, so it gets the same discipline as `job_workdir`: validated in Rust, validated again in the script, and never handed to a shell on trust.
+
+### What a project gets for free
+
+A repo that declares nothing still gets sane behavior, from the same marker scan `prepare_env` already runs:
+
+| Detected | Treated as rebuildable |
+|---|---|
+| `Cargo.toml` | `target` |
+| `package.json` | `node_modules/.cache`, `dist`, `build`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo` |
+| `pyproject.toml`, `requirements.txt`, `.python-version` | `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache` |
+| `pom.xml` | `target` |
+| `build.gradle`, `build.gradle.kts` | `build`, `.gradle` |
+| `*.sln`, `*.csproj` | `bin`, `obj` |
+| `mix.exs` | `_build` |
+
+What is **absent** matters as much as what is there. `node_modules` itself is rebuildable only by going back to the network, so only its cache is dropped. `vendor/` is often committed and load-bearing offline. A Go build cache lives in `GOCACHE` outside the repo, so it is capped as a department cache instead of reclaimed per job. The rule throughout: *cheap and local* is reclaimable, *slow or remote* is not.
+
+Opting out is one line — `artifacts = []` — and `keep` overrides any single detected entry, and the subtree beneath it, without discarding the rest. Detection is on by default because a project that must opt in mostly will not, and then the disk fills anyway.
+
+### When reclaim fires
+
+Never against a job that might be building. The check is the one teardown already makes for `Stop`, inverted: a job with a live process whose cwd is inside the workdir is left entirely alone, and the reclaim reports `BUSY` rather than guessing.
+
+- **Idle jobs**, on the existing ten-minute sweep. `pr_open` and `awaiting_approval` cannot be building by definition; a `started` job counts as idle once nothing has run in its workdir for the idle window.
+- **Volume budget.** When a department's workbench volume crosses its threshold, reclaim oldest-idle-first until it is back under — the backstop for several genuinely active large jobs, and it still refuses to touch one that is building.
+
+Every reclaim lands in the ticket's activity next to the other job transitions, naming what was dropped and how much came back. The audit spine already exists, and a deletion belongs in it.
+
 ## Work sessions
 
 Dispatch is not a single exchange. When a ticket enters an agent-start column with an agent assigned, Talaria pushes the work and then **keeps the session going** — continuation turns carrying live ticket status, up to 12 turns with 10 minutes of listening each — until the ticket reaches review/blocked/done. Agents work like a developer at a desk: run the harness, read its structured result, steer, test, repeat. UI work is verified **in a real browser** (Playwright) with screenshot evidence — "a UI change without a browser check is unverified" (see the `workbench-driving` canonical skill).
