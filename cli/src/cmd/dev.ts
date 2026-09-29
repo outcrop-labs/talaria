@@ -67,7 +67,12 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
 export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   if (ctx.env.TALARIA_API === 'off') return
 
-  const port = ctx.env.TALARIA_API_PORT ?? API_PORT
+  // ui/.env is read here too, not just the shell. A worktree writes its own
+  // TALARIA_API_PORT into ui/.env (talaria worktree), and reading only ctx.env
+  // meant that file was ignored: the port computed here is what the proxy dials
+  // AND what the adopt probe below tests, so missing it sent both back to the
+  // shared :5274.
+  const port = ctx.env.TALARIA_API_PORT ?? envValue(uiEnv, 'TALARIA_API_PORT') ?? API_PORT
   const url = `http://127.0.0.1:${port}`
   // The proxy defaults to exactly this loopback address, but lift the env
   // anyway when nothing else names it (the shell first, then ui/.env — the
@@ -104,7 +109,11 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
   // reach the renderer, and agents keep queueing on the UI hop.
   const env: Record<string, string> = {}
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
+  // TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
+  // reads it, defaulting to 5274). Without the lift, a worktree's api would
+  // dutifully bind the shared port while the proxy dialed the worktree's own —
+  // the two halves of the same setting have to agree.
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }
