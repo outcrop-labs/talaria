@@ -1934,6 +1934,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             completed_at: None,
+            approved_at: None,
             archived_at: None,
         }
     }
