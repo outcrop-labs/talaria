@@ -1,0 +1,17 @@
+[package]
+name = "talaria-workbench-queue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sqlx = { workspace = true }
+talaria-fleet-budget = { workspace = true }
+talaria-work-wait = { workspace = true }
+talaria-scheduler = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

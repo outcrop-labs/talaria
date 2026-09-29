@@ -90,9 +90,23 @@ export const updateWorkchain = (
 ) => patchJson<{ ok: true }>(`/api/workchains/${id}`, patch)
 
 /** Append a step (or wedge it after the named step). 409 when the ticket is
- *  already in ANY chain — one chain per task is the v1 invariant. */
-export const addWorkchainStep = (id: string, taskId: string, after?: string) =>
-  postJson<{ ok: true }>(`/api/workchains/${id}/steps`, { taskId, ...(after ? { after } : {}) })
+ *  already in ANY chain — one chain per task is the v1 invariant.
+ *
+ *  The api WIRES an append to the chain's tail by default — "add to this
+ *  pipeline" is what every picker means. `wire: false` lands the step with no
+ *  edges, for the canvas's create-and-connect: there the caller already knows
+ *  the one wire it wants, and a volunteered tail edge is an invisible second
+ *  predecessor blocking the new step behind unrelated work. */
+export const addWorkchainStep = (
+  id: string,
+  taskId: string,
+  opts: { after?: string; wire?: boolean } = {},
+) =>
+  postJson<{ ok: true }>(`/api/workchains/${id}/steps`, {
+    taskId,
+    ...(opts.after ? { after: opts.after } : {}),
+    ...(opts.wire === false ? { wire: false } : {}),
+  })
 
 /** Remove a step without touching the task. A miss is a quiet ok. */
 export const removeWorkchainStep = (id: string, taskId: string) =>

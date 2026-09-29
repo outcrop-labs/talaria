@@ -349,20 +349,54 @@ pub async fn rename_board(pg: &PgPool, board_id: &str, name: &str) -> Result<(),
 }
 
 /// Move a board between teams (null → personal). The
-/// inner Err ('unknown team') is caught by the route and re-spelled with the
-/// human-typed name; the sqlx error is everything else.
+/// inner Err is the route's 400 body verbatim: 'unknown team', or the
+/// destination-membership refusal — a team move changes who can SEE the
+/// board, so the mover must be on the destination team (the owner gate alone
+/// lets an owner march a board into a team they aren't on, which is an
+/// access grant nobody approved). The sqlx error is everything else.
 pub async fn set_board_team(
     pg: &PgPool,
     board_id: &str,
     team_id: Option<&str>,
+    mover_id: &str,
 ) -> Result<Result<(), String>, sqlx::Error> {
     if let Some(team_id) = team_id {
-        let known: Option<(i32,)> = sqlx::query_as("select 1 from teams where id = $1::uuid")
+        let team: Option<(String,)> = sqlx::query_as("select name from teams where id = $1::uuid")
             .bind(team_id)
             .fetch_optional(pg)
             .await?;
-        if known.is_none() {
+        let Some((name,)) = team else {
             return Ok(Err("unknown team".into()));
+        };
+        let on_team: Option<(i32,)> = sqlx::query_as(
+            "select 1 from team_members where team_id = $1::uuid and user_id = $2::uuid",
+        )
+        .bind(team_id)
+        .bind(mover_id)
+        .fetch_optional(pg)
+        .await?;
+        if on_team.is_none() {
+            return Ok(Err(format!(
+                "you are not on \"{name}\" — moving a board into a team requires membership in the destination team"
+            )));
+        }
+    } else {
+        // The symmetric rule for a personal move: the mover must hold a
+        // DIRECT board_members owner row on this board. A team-derived owner
+        // would drop the board along with the team — the move is the
+        // access loss it purports to prevent.
+        let direct_owner: Option<(i32,)> = sqlx::query_as(
+            "select 1 from board_members \
+             where board_id = $1::uuid and user_id = $2::uuid and role = 'owner'",
+        )
+        .bind(board_id)
+        .bind(mover_id)
+        .fetch_optional(pg)
+        .await?;
+        if direct_owner.is_none() {
+            return Ok(Err(
+                "you would lose access — moving a board to personal requires a direct owner membership".into(),
+            ));
         }
     }
     sqlx::query("update boards set team_id = $1::uuid, updated_at = now() where id = $2::uuid")
@@ -371,6 +405,92 @@ pub async fn set_board_team(
         .execute(pg)
         .await?;
     Ok(Ok(()))
+}
+
+/// The board's current team, (id, canonical name) — the before/after halves
+/// of the team-move audit entry. None when the board is personal (or absent;
+/// the move route has already gated on the board existing by then).
+pub async fn board_team(
+    pg: &PgPool,
+    board_id: &str,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "select t.id::text, t.name from boards b join teams t on t.id = b.team_id where b.id = $1::uuid",
+    )
+    .bind(board_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row)
+}
+
+/// The user's DIRECT board_members role — the team-derived arm excluded.
+/// `board_role` unions both arms; the personal-detach guard needs the direct
+/// one alone, because a team-derived owner has no row and moving their board
+/// to personal would strand them outside it.
+pub async fn direct_board_role(
+    pg: &PgPool,
+    user_id: &str,
+    board_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select role from board_members where board_id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(board_id)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(|(role,)| role))
+}
+
+/// One member of the access-loss preview: someone who can see the board only
+/// through the CURRENT team and would lose that sight on the move.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessLossMember {
+    pub user_id: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+}
+
+/// Who loses sight of the board if it moved to `target_team_id` right now —
+/// the confirm dialog's "these people would lose access" list.
+///
+/// Visibility is `board_visibility_sql`: a direct board_members row OR
+/// membership of the team that owns it. So the losers are exactly the
+/// CURRENT team's members who hold no direct row and are not on the target
+/// team (target null → personal: nobody's membership saves them). Direct
+/// members survive any move — their row follows the board. A board with no
+/// team has no team-derived viewers, so nobody loses anything.
+pub async fn team_move_access_loss(
+    pg: &PgPool,
+    board_id: &str,
+    target_team_id: Option<&str>,
+) -> Result<Vec<AccessLossMember>, sqlx::Error> {
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "select tm.user_id::text, u.email, u.name \
+         from boards b \
+         join team_members tm on tm.team_id = b.team_id \
+         join users u on u.id = tm.user_id \
+         where b.id = $1::uuid \
+           and b.team_id is not null \
+           and not exists (select 1 from board_members bm \
+                           where bm.board_id = b.id and bm.user_id = tm.user_id) \
+           and not exists (select 1 from team_members keep \
+                           where keep.user_id = tm.user_id and keep.team_id = $2::uuid) \
+         order by coalesce(nullif(u.name, ''), u.email, tm.user_id::text) asc",
+    )
+    .bind(board_id)
+    .bind(target_team_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(user_id, email, name)| AccessLossMember {
+            user_id,
+            email,
+            name,
+        })
+        .collect())
 }
 
 pub async fn archive_board(pg: &PgPool, board_id: &str, archived: bool) -> Result<(), sqlx::Error> {

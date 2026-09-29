@@ -6,7 +6,10 @@ mod spend_fetch;
 // major model. Each cloud endpoint's catalog models — PLUS every model usage
 // has actually been attributed to on it — are matched against that catalog by
 // normalized name, and the result lands in llm_endpoints.auto_prices, separate
-// from user overrides (model_prices), which always win. Local endpoints are
+// from user overrides (model_prices), which always win. Each hit is also
+// upserted into provider_prices as a model-level published rate (variant '',
+// source 'openrouter.catalog') — direct providers publish no prices of their
+// own, so that row is what their usage is derived from. Local endpoints are
 // skipped ($0 by definition).
 //
 // Three callers share one single-flight: the scheduled job
@@ -247,6 +250,28 @@ async fn fetch_catalog() -> Result<Catalog, String> {
 pub struct RefreshCounts {
     pub priced: usize,
     pub endpoints: usize,
+    /// Model-level published rows upserted into provider_prices this pass.
+    pub catalog_priced: usize,
+    /// provider_prices upserts that failed this pass — surfaced, never
+    /// swallowed: a catalog hit the store refused is a pricing gap.
+    pub upsert_failed: usize,
+    /// The first upsert error, for the warn the job logs.
+    pub first_upsert_error: Option<String>,
+}
+
+/// The model-level published price a catalog hit becomes: variant '' (the
+/// rate the spend view matches when no serving variant is known), rounded
+/// like every stored rate, and sourced from the public catalog. Direct
+/// providers publish no prices of their own — this row is what their usage
+/// is derived from.
+fn catalog_price_row(model: &str, hit: TokPrice) -> spend::PublishedPrice {
+    spend::PublishedPrice {
+        model: model.to_string(),
+        variant: String::new(),
+        price_in_per_mtok: Some(round4(hit.in_per_mtok)),
+        price_out_per_mtok: Some(round4(hit.out_per_mtok)),
+        source: "openrouter.catalog",
+    }
 }
 
 async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
@@ -289,8 +314,20 @@ async fn refresh_auto_prices(pg: &PgPool) -> Result<RefreshCounts, String> {
                     out_per_mtok: round4(hit.out_per_mtok),
                 })
                 .expect("an f64 pair serializes");
-                auto.insert(m, value);
+                auto.insert(m.clone(), value);
                 counts.priced += 1;
+                // The same hit is also a published model-level price for
+                // this endpoint.
+                let price = catalog_price_row(&m, hit);
+                match spend_fetch::upsert_price(pg, &id, &provider, &price).await {
+                    Ok(()) => counts.catalog_priced += 1,
+                    Err(e) => {
+                        counts.upsert_failed += 1;
+                        if counts.first_upsert_error.is_none() {
+                            counts.first_upsert_error = Some(e);
+                        }
+                    }
+                }
             }
         }
         sqlx::query(
@@ -434,20 +471,54 @@ pub fn price_refresh_job_spec(deps: Arc<PriceRefreshDeps>) -> JobSpec {
         run: Arc::new(move || {
             let pg = deps.pg.clone();
             Box::pin(async move {
-                let keyed = match LOAD_SPEND_KEYS.get() {
-                    Some(load) => load().await,
-                    None => Vec::new(),
-                };
+                let mut keyed = Vec::new();
+                let mut key_note = "";
+                match LOAD_SPEND_KEYS.get() {
+                    Some(load) => keyed = load().await,
+                    None => {
+                        // Warn once for the whole process: a missing loader
+                        // is a wiring bug, not a per-tick event.
+                        static WARNED_KEY_LOADER: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !WARNED_KEY_LOADER.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            tracing::warn!(
+                                "price-refresh: LOAD_SPEND_KEYS not wired; provider spend ingest skipped"
+                            );
+                        }
+                        key_note = "; no key loader wired";
+                    }
+                }
                 let spent = spend_fetch::ingest_provider_spend(&pg, &keyed).await;
+                let spend_note = match &spent {
+                    Ok(n) => format!("{n} provider spend row(s)"),
+                    Err(e) => {
+                        tracing::warn!("price-refresh: provider spend ingest failed: {e}");
+                        format!("0 provider spend row(s); provider spend ingest failed: {e}")
+                    }
+                };
+                let spend_note = format!("{spend_note}{key_note}");
                 match refresh_once(&pg, None).await {
-                    Some(Ok(c)) => Ok(Some(format!(
-                        "{} published price(s), {} provider spend row(s), {} catalog fill(s)",
-                        c.priced,
-                        spent.unwrap_or(0),
-                        c.endpoints
-                    ))),
+                    Some(Ok(c)) => {
+                        let mut out = format!(
+                            "{} published price(s), {spend_note}, {} catalog fill(s), \
+                             {} catalog-priced model(s)",
+                            c.priced, c.endpoints, c.catalog_priced
+                        );
+                        if c.upsert_failed > 0 {
+                            tracing::warn!(
+                                "price-refresh: {} catalog upsert(s) failed — first: {}",
+                                c.upsert_failed,
+                                c.first_upsert_error.as_deref().unwrap_or("unknown")
+                            );
+                            out.push_str(&format!(
+                                ", {} catalog upsert(s) failed",
+                                c.upsert_failed
+                            ));
+                        }
+                        Ok(Some(out))
+                    }
                     Some(Err(e)) => Err(e),
-                    None => Ok(spent.ok().map(|n| format!("{n} provider spend row(s)"))),
+                    None => Ok(Some(spend_note)),
                 }
             })
         }),
@@ -578,6 +649,30 @@ mod tests {
         assert!(near(round4(1.23456), 1.2346));
         assert!(near(round4(3.0), 3.0));
         assert!(near(round4(0.0000015 * 1e6), 1.5));
+    }
+
+    #[test]
+    fn a_catalog_hit_becomes_a_model_level_price_row() {
+        let c = build_catalog(&[entry("openai/gpt-5", "1", "2")]);
+        let hit = price_for(&c, "openai", "gpt-5").unwrap();
+        let row = catalog_price_row("gpt-5", hit);
+        // variant '' is the model-level rate — the one the spend view
+        // matches when no serving variant is known.
+        assert_eq!(row.model, "gpt-5");
+        assert_eq!(row.variant, "");
+        assert_eq!(row.source, "openrouter.catalog");
+        assert!(near(row.price_in_per_mtok.unwrap(), 1e6));
+        assert!(near(row.price_out_per_mtok.unwrap(), 2e6));
+        // Stored rounded to four decimals like every other rate.
+        let row = catalog_price_row(
+            "m",
+            TokPrice {
+                in_per_mtok: 1.23456,
+                out_per_mtok: 7.00006,
+            },
+        );
+        assert!(near(row.price_in_per_mtok.unwrap(), 1.2346));
+        assert!(near(row.price_out_per_mtok.unwrap(), 7.0001));
     }
 
     #[test]
