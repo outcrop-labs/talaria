@@ -27,7 +27,7 @@ Oh My Pi is the only harness. There is no profile registry, no per-agent harness
 
 Admin → Org → **GitHub · Workbench**: connect via a **GitHub App** (recommended — short-lived installation tokens, per-repo installs) or a **fine-grained PAT**. The *Setup guide* modal walks every field on GitHub's actual forms. Secrets seal via secretbox and never render back; status live-verifies.
 
-Connecting grants nothing by itself. **Repo access is an explicit per-agent grant** (toggle chips on the agent), validated against the connection's reachable pool. Per-repo **flow** config sets which branch PRs land on (blank = the repo's default) and an optional **testing branch** — features can be merged into it for integration testing (agent verb or ticket button), but testing merges never replace review: the PR still ships normally.
+Connecting grants nothing by itself. **Repo access is an explicit per-agent grant** (toggle chips on the agent), validated against the connection's reachable pool. Per-repo **flow** config sets which branch PRs land on (blank = the repo's default). Talaria's job ends at the pull request: how that branch is then reviewed, promoted or merged belongs to the repository's own branch protection and CI, not to anything Talaria assumes.
 
 ## The job lifecycle (why git never gets messy)
 
@@ -38,7 +38,6 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 - `start_job(repo, taskId, effort, plan)`: Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>`, named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket), and returns a short-lived authenticated clone URL, a **per-job workspace** (`/opt/data/workbench/jobs/<id>`, so concurrent jobs never collide), omp's model roles, and the Oh My Pi invocation lines (default model filled in). Effort decides planning and how much RAM the job reserves, not the model. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
 - `prepare_env(jobId)`: sets up the job's dev environment after the clone (see "Dev environments" below).
 - `job_status` — jobs with fresh clone URLs (tokens expire by design).
-- `merge_to_testing(jobId)` — into the repo's testing branch, when configured.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
 
 **Teardown is the platform's, not the agent's.** When `finish_job` opens the PR, Talaria stops every process still running in the job's workdir (the checkout stays for a revise bounce). Abandoning removes the workdir outright. The `workbench-job-sweep` (every 10 minutes) covers what never calls a verb: a `started` or awaiting-approval job whose ticket reached a done column or was archived is abandoned, and it and any `pr_open` job on a closed ticket lose their workdir. Jobs with no ticket are left alone. `workspace_cleared_at` marks a job whose workdir is gone.
@@ -70,6 +69,72 @@ protoc = "28"
 ```
 
 It is idempotent and cheap once versions are cached, so agents call it on every job. A missing tool is fixed by declaring it in the repo, never by the agent installing it. Talaria's own `mise.toml` is the example: the same file gives people and agents Rust, Bun, Node, and mold.
+
+## Keeping a job's disk bounded
+
+Job teardown answers *"is this job over?"* — `finish_job` stops the builds, abandoning removes the workdir, and the sweep catches whatever never called a verb. What nothing asked was *"how big is this?"* A job that is perfectly alive — `started`, ticket open, agent working — holds a checkout plus whatever that project's toolchain writes beside it, and a cold Rust `target/` is 4–20 GiB on its own. Ten live jobs in a department is 200 GiB of entirely legitimate work, and the first notice is a build that fails on ENOSPC.
+
+Two things have to be true to fix that for **any** project, not just the ones Talaria happens to know. Somebody has to measure, because growth nothing reports is growth nobody sees until it is an outage. And somebody has to know what is *rebuildable* — the platform cannot guess that `target/` costs a cargo build while `.venv` cost twenty minutes and a private index. Only the project knows that.
+
+### The third rung: reclaim
+
+| | Processes | Build artifacts | Checkout | When |
+|---|---|---|---|---|
+| **Stop** | killed | kept | kept | `finish_job` — the PR is open, a revise bounce still needs the tree |
+| **Reclaim** | untouched | **dropped** | kept | an idle job, or the volume over budget |
+| **Remove** | killed | dropped | dropped | abandoned, or the ticket closed |
+
+**Reclaim** deletes only what the project has said it can rebuild. The checkout, the branch, uncommitted edits and `.git` all survive, so a job that is reclaimed and then resumed pays a rebuild and nothing else — and with the department's shared sccache behind it, a Rust rebuild is mostly cache hits rather than a cold graph.
+
+### What a project declares
+
+`.talaria/workbench.toml` is already where a repo tells the workbench about itself, so cleanup joins it rather than earning a second file:
+
+```toml
+[cleanup]
+# Rebuildable. Dropped from an idle job before its checkout is ever touched.
+# These MERGE OVER detection — name what detection would miss.
+artifacts = ["target", "dist", ".turbo"]
+
+# Expensive to recreate: a private-index virtualenv, a downloaded model, a
+# fixture corpus. Never dropped, whatever detection thinks, whatever the
+# pressure. `keep` always wins over `artifacts`.
+keep = [".venv", "fixtures/corpus"]
+
+# This repo's ceiling for ONE job's workdir. The platform default applies
+# when unset. A job over its ceiling is reclaimed at the next idle check
+# rather than waiting for the volume to get tight.
+maxWorkdirGib = 40
+```
+
+Every path is **repo-relative**. An absolute path, a `..` segment, an empty segment, or `.git` at any depth is refused and reported back through `doctor` — this list ends in an `rm -rf` inside a container, so it gets the same discipline as `job_workdir`: validated in Rust, validated again in the script, and never handed to a shell on trust.
+
+### What a project gets for free
+
+A repo that declares nothing still gets sane behavior, from the same marker scan `prepare_env` already runs:
+
+| Detected | Treated as rebuildable |
+|---|---|
+| `Cargo.toml` | `target` |
+| `package.json` | `node_modules/.cache`, `dist`, `build`, `.next`, `.nuxt`, `.svelte-kit`, `.turbo` |
+| `pyproject.toml`, `requirements.txt`, `.python-version` | `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache` |
+| `pom.xml` | `target` |
+| `build.gradle`, `build.gradle.kts` | `build`, `.gradle` |
+| `*.sln`, `*.csproj` | `bin`, `obj` |
+| `mix.exs` | `_build` |
+
+What is **absent** matters as much as what is there. `node_modules` itself is rebuildable only by going back to the network, so only its cache is dropped. `vendor/` is often committed and load-bearing offline. A Go build cache lives in `GOCACHE` outside the repo, so it is capped as a department cache instead of reclaimed per job. The rule throughout: *cheap and local* is reclaimable, *slow or remote* is not.
+
+Opting out is one line — `artifacts = []` — and `keep` overrides any single detected entry, and the subtree beneath it, without discarding the rest. Detection is on by default because a project that must opt in mostly will not, and then the disk fills anyway.
+
+### When reclaim fires
+
+Never against a job that might be building. The check is the one teardown already makes for `Stop`, inverted: a job with a live process whose cwd is inside the workdir is left entirely alone, and the reclaim reports `BUSY` rather than guessing.
+
+- **Idle jobs**, on the existing ten-minute sweep. `pr_open` and `awaiting_approval` cannot be building by definition; a `started` job counts as idle once nothing has run in its workdir for the idle window.
+- **Volume budget.** When a department's workbench volume crosses its threshold, reclaim oldest-idle-first until it is back under — the backstop for several genuinely active large jobs, and it still refuses to touch one that is building.
+
+Every reclaim lands in the ticket's activity next to the other job transitions, naming what was dropped and how much came back. The audit spine already exists, and a deletion belongs in it.
 
 ## Work sessions
 

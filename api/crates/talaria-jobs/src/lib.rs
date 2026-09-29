@@ -160,6 +160,25 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_inbox_focus::GET_TASK.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_tasks::get_task(&pg, &id).await })
     }));
+    // THE THIRD EDGE, same disease, missed when the two above were fixed:
+    // inbox-focus's review card resolves its Approve / Request-changes click
+    // through COMPLETE_QUALITY_REVIEW and `.expect()`s it, so every click on a
+    // review card in the brief PANICKED on an unset seam. Registering it is
+    // what makes that card's two buttons do their work.
+    let _ = talaria_inbox_focus::COMPLETE_QUALITY_REVIEW.set(std::sync::Arc::new(
+        |deps, task_id, reviewer, review_status, next_status| {
+            Box::pin(async move {
+                talaria_tasks::complete_quality_review(
+                    &deps,
+                    &task_id,
+                    &reviewer,
+                    &review_status,
+                    &next_status,
+                )
+                .await
+            })
+        },
+    ));
     // THE KB-BODY RUNG — same disease, found before it bit this time. The
     // seam (uploads' KB_DOC_ALLOWS_READ) shipped in the extraction commit
     // with its resolver never registered, so can_access_upload's "an upload

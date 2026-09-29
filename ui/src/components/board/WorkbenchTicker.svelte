@@ -20,6 +20,14 @@
   let stopping = $state(false)
   const live = $derived(session.data?.session ?? null)
   const wait = $derived(session.data?.wait ?? null)
+  // Latch the run being watched. The strip is driven by the LIVE session, so
+  // gating the modal on `live` unmounted it the instant the session ended —
+  // which is precisely when the transcript becomes the thing worth reading.
+  // Held separately, the modal survives the session and closes on request.
+  let watchedRunId = $state<string | null>(null)
+  $effect(() => {
+    if (live?.runId) watchedRunId = live.runId
+  })
 
   const agentLabel = $derived.by(() => {
     const m = live?.agentModel ?? wait?.agentModel ?? ''
@@ -78,7 +86,10 @@
     </div>
   </div>
 
-  {#if live}
-    <RunDetailModal open={watchOpen} onClose={() => (watchOpen = false)} runId={live.runId} {taskId} onEnded={() => (watchOpen = false)} />
-  {/if}
+{/if}
+
+<!-- Outside the strip's guard on purpose: the strip is for live work, the
+     modal is the record of it, and the record outlives the session. -->
+{#if watchOpen && watchedRunId}
+  <RunDetailModal open={watchOpen} onClose={() => (watchOpen = false)} runId={watchedRunId} {taskId} />
 {/if}

@@ -127,6 +127,11 @@ pub struct Task {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    /// When a person signed this ticket off. Approval is a MARK, not a move:
+    /// it says "a human reviewed this and it passed", and leaves the column
+    /// alone, because a signed-off ticket usually still has merges or a
+    /// release ahead of it. A person moves it to done when it really is.
+    pub approved_at: Option<String>,
     pub archived_at: Option<String>,
 }
 

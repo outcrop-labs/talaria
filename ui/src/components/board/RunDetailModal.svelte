@@ -31,7 +31,10 @@
     onClose: () => void
     runId: string
     taskId: string
-    onEnded: () => void
+    /** Optional, and never a reason to close. The run ending is the moment
+     *  the transcript is worth reading; unmounting the modal then threw away
+     *  the only reader of it. Closing is `onClose`, a person's decision. */
+    onEnded?: () => void
     /** The eye opens on the agent. Turns is the harness exchange. */
     focus?: 'agent' | 'turns'
   } = $props()

@@ -16,8 +16,6 @@
     plan: string
     status: 'awaiting_approval' | 'started' | 'pr_open' | 'abandoned'
     prUrl: string | null
-    testingBranch: string | null
-    mergedTestingAt: string | null
   }
 
   /** Workbench jobs on this ticket — the plan-approval gate and PR links live
@@ -39,14 +37,14 @@
     refetchInterval: 30_000,
   }))
   const jobs = $derived(jobsQuery.data)
-  const act = async (jobId: string, action: 'approve' | 'reject' | 'merge_testing') => {
+  const act = async (jobId: string, action: 'approve' | 'reject') => {
     // A click that vanishes here leaves an agent blocked on a person who
     // believes they approved the plan — the one failure this gate can't keep
     // quiet about. The strip still refetches either way.
     try {
       await putJson('/api/workbench/jobs', { jobId, action })
     } catch (e) {
-      toastError(action === 'approve' ? 'Could not approve the plan' : action === 'reject' ? 'Could not reject the plan' : 'Could not merge to testing', e)
+      toastError(action === 'approve' ? 'Could not approve the plan' : 'Could not reject the plan', e)
     }
     await qc.invalidateQueries({ queryKey: ['workbench-jobs', taskId] })
   }
@@ -91,15 +89,6 @@
               <Button size="sm" variant="outline" onclick={() => void act(j.id, 'reject')}>
                 Reject
               </Button>
-            {/if}
-            {#if j.testingBranch && (j.status === 'started' || j.status === 'pr_open') && canEdit}
-              {#if j.mergedTestingAt}
-                <span class="font-mono text-[11px] tracking-[0.05em] text-muted">on {j.testingBranch}</span>
-              {:else}
-                <Button size="sm" variant="outline" onclick={() => void act(j.id, 'merge_testing')}>
-                  Merge to {j.testingBranch}
-                </Button>
-              {/if}
             {/if}
             {#if j.prUrl}
               <a href={j.prUrl} target="_blank" rel="noreferrer" class="text-xs text-accent hover:underline">

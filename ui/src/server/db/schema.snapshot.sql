@@ -1063,7 +1063,8 @@ CREATE TABLE public.tasks (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     parent_id uuid,
     start_date timestamp with time zone,
-    color text
+    color text,
+    approved_at timestamp with time zone
 );
 CREATE TABLE public.team_agents (
     team_id uuid NOT NULL,

@@ -68,8 +68,16 @@
      The height is a viewport clamp, not a share of whatever sits below, so
      tab content cannot resize it. The expand sheet is a sibling of the
      scroller (not a child) so this box's overflow does not clip it — it
-     still covers the modal, whose panel is the positioned ancestor. -->
-<div class="flex h-[clamp(9rem,24vh,14rem)] shrink-0 flex-col">
+     still covers the modal, whose panel is the positioned ancestor.
+
+     THE CLAMP IS DELIBERATELY MODEST — 6rem to 12rem, down from 9rem to 14rem.
+     Everything above the tab pane in the ticket is `shrink-0`, so each band's
+     floor is taken straight out of the pane's budget: a 9rem floor here meant
+     that on a short window the discussion was what collapsed, since this box
+     could not yield. 6rem still shows a first paragraph, and anything longer
+     has Expand, which is the right affordance for reading a page of prose
+     anyway. -->
+<div class="flex h-[clamp(6rem,16vh,12rem)] shrink-0 flex-col">
   <div class="mb-2 flex shrink-0 items-center gap-2">
     <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</div>
     <div class="ml-auto flex items-center gap-1">

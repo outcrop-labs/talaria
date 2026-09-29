@@ -8,8 +8,12 @@
 //
 // WHAT IT WILL REMOVE (--apply, and the safe subset on --gate):
 //   - a `talaria worktree` checkout (branch wt/<name>, directory
-//     ../talaria-<name>) untouched for POLICY.staleMs, not running, clean,
-//     and with no unpushed commits
+//     ../talaria-<name>) that is clean, has no unpushed commits, and is
+//     either untouched for POLICY.staleMs or has a MERGED pull request
+//   - the docker stack of such a worktree — containers, volumes, network.
+//     This one runs in --gate too: it frees RAM and CPU the moment the work
+//     is finished, removes nothing from disk, and `talaria dev` undoes it
+//   - a side worktree's build dir untouched for POLICY.staleTargetMs
 //   - a devbox the same way (../devboxes/<name>, not the shared tools layer)
 //   - /tmp/talaria-* (or $TMPDIR) older than POLICY.tmpStaleMs
 //   - a compose project named talaria-wt-* or devbox-* whose directory is gone
@@ -17,12 +21,19 @@
 // WHAT IT WILL NOT:
 //   - the primary checkout, the checkout this process is running in
 //   - anything with a .talaria-keep file in its root
-//   - a running stack, a dirty tree, or commits no remote has
+//   - a dirty tree, or commits no remote has
 //   - a worktree that is not the wt/<name> pair `talaria worktree` creates
 //     (a human's long-lived checkout is not this script's)
 //   - node_modules, the cargo registry, the bun cache, ../devboxes/shared
-//   - the primary checkout's target/ — a warm cache. Flagged when oversized
-//     and the disk is already under pressure; never deleted
+//   - the primary checkout's target/ — a warm cache. ALWAYS reported with
+//     its size, flagged when oversized, never deleted on a timer
+//   - a docker image, volume or exited container outside a swept project.
+//     The reclaimable total is reported; pruning it is a human's call
+//
+// "MERGED" MEANS THE PULL REQUEST MERGED, and nothing else. Ancestry is not
+// the test: a worktree cut an hour ago from main also has a HEAD that is an
+// ancestor of rc, and reading that as finished tears down a live stack
+// somebody else is using. Every merge check fails open.
 //
 // CONTRACT (scripts/hooks/README.md):
 //   exit 0 — nothing to surface. --gate is silent.
@@ -63,6 +74,13 @@ export const POLICY = {
   pressurePct: 85,
   staleBudgetBytes: 2 * 1024 * 1024 * 1024,
   oversizedTargetBytes: 10 * 1024 * 1024 * 1024,
+  // A build dir in a SIDE worktree, untouched this long, is spent. The
+  // primary's is a warm cache and is never removed on a timer — only named.
+  staleTargetMs: 14 * 24 * 60 * 60 * 1000,
+  // Flagged bulk earns a loud line, never an exit 2. Blocking on something
+  // the sweep refuses to delete is a gate with no way through, and a gate
+  // with no way through gets silenced.
+  nagBytes: 20 * 1024 * 1024 * 1024,
 }
 
 const SKIP_WALK = new Set(['node_modules', 'target', '.git', 'dist', 'fleet', '.output', '.vinxi'])
@@ -97,10 +115,25 @@ export function worktreeName(branch, dirBasename) {
  */
 export function classify(artifact, policy = POLICY) {
   if (artifact.kind === 'target') {
+    // The primary's build dir is a warm cache: named when oversized, never
+    // removed on a timer. A side worktree's is spent once the tree has sat.
+    if (artifact.primary || artifact.current || artifact.kept) {
+      return artifact.bytes >= policy.oversizedTargetBytes ? 'flag' : 'keep'
+    }
+    if (artifact.ageMs >= policy.staleTargetMs) return 'remove'
     return artifact.bytes >= policy.oversizedTargetBytes ? 'flag' : 'keep'
   }
   if (artifact.kind === 'orphan-compose') return 'remove'
+  // A stack row exists only for a worktree whose work is finished (its branch
+  // reached the base) or which has gone stale. Stopping it frees RAM and CPU
+  // and is reversible by `talaria dev`; the checkout itself is never touched.
+  if (artifact.kind === 'stack') return artifact.current ? 'keep' : 'remove'
   if (artifact.primary || artifact.current || artifact.kept) return 'keep'
+  // A merged branch is finished work: the 7-day idle clock is the wrong
+  // instrument for it. Still only ever flagged when dirty or unpushed.
+  if (artifact.merged && artifact.kind === 'worktree') {
+    return artifact.dirty || artifact.unpushed ? 'flag' : 'remove'
+  }
   if (artifact.running) return 'keep'
   const limit = artifact.kind === 'tmp' ? policy.tmpStaleMs : policy.staleMs
   if (artifact.ageMs < limit) return 'keep'
@@ -115,7 +148,12 @@ export function classify(artifact, policy = POLICY) {
 export function selectRemoval(classified, mode) {
   const removable = classified.filter((a) => a.action === 'remove')
   if (mode === 'apply') return removable
-  if (mode === 'gate') return removable.filter((a) => a.kind === 'tmp' || a.kind === 'orphan-compose')
+  // `stack` joins the gate set: it stops containers and removes nothing from
+  // disk, so the worst case is a stack the owner restarts with `talaria dev`.
+  // A checkout is never deleted without an explicit --apply.
+  if (mode === 'gate') {
+    return removable.filter((a) => a.kind === 'tmp' || a.kind === 'orphan-compose' || a.kind === 'stack')
+  }
   return []
 }
 
@@ -138,6 +176,11 @@ export function removalAllowed(artifact, roots) {
   if (artifact.kind === 'orphan-compose') {
     return /^(talaria-wt-|devbox-)[a-z0-9][a-z0-9-]*$/.test(artifact.id) && !artifact.path
   }
+  // A stack removes containers, never a directory — so it carries no path,
+  // and the compose project name is the whole of what may be acted on.
+  if (artifact.kind === 'stack') {
+    return /^[a-z0-9][a-z0-9-]*$/.test(artifact.id) && !artifact.path
+  }
   if (!artifact.path) return false
   const path = resolve(artifact.path)
   if (roots.primary && path === resolve(roots.primary)) return false
@@ -153,7 +196,26 @@ export function removalAllowed(artifact, roots) {
     const home = resolve(roots.devboxHome)
     return path.startsWith(home + sep) && basename(path) !== 'shared'
   }
+  if (artifact.kind === 'target') {
+    // Only a build dir inside a SIDE worktree, and only at one of the two
+    // paths the repo actually builds into. The primary's is never removable
+    // here however stale it looks — `cargo clean` stays a human's call.
+    const owner = TARGET_RELS.map((rel) => trimSuffix(path, rel)).find(Boolean)
+    if (!owner) return false
+    if (roots.primary && owner === resolve(roots.primary)) return false
+    if (roots.current && owner === resolve(roots.current)) return false
+    return basename(owner).startsWith('talaria-') && dirname(owner) === resolve(roots.siblingParent)
+  }
   return false
+}
+
+/** The two build dirs this repo produces, relative to a checkout root. */
+export const TARGET_RELS = ['api/target', 'desktop/src-tauri/target']
+
+/** `/w/talaria-x/api/target` minus `api/target` → `/w/talaria-x`, else null. */
+function trimSuffix(path, rel) {
+  const tail = sep + rel.split('/').join(sep)
+  return path.endsWith(tail) ? path.slice(0, -tail.length) : null
 }
 
 export function formatReport({ pressure, remaining, removed, notes, policy = POLICY }) {
@@ -186,9 +248,23 @@ export function formatReport({ pressure, remaining, removed, notes, policy = POL
       lines.push(`  ${a.kind} ${a.id}  ${formatBytes(a.bytes)}  ${why}  ${a.path || ''}`)
     }
   }
-  if (!toRemove.length && !flagged.length && !removed?.length) lines.push('nothing stale.')
-  if (v.pressureHigh && flagged.some((a) => a.kind === 'target')) {
-    lines.push('an oversized target/ was kept on purpose. `cargo clean --manifest-path api/Cargo.toml` if that is the pressure.')
+  // Build caches are reported at every disk reading, kept or not. They are
+  // the largest thing this repo produces and the slowest to notice.
+  const caches = remaining.filter((a) => a.kind === 'target')
+  const cacheBytes = caches.reduce((n, a) => n + (a.bytes || 0), 0)
+  if (caches.length) {
+    lines.push(`build caches ${formatBytes(cacheBytes)}:`)
+    for (const a of caches) {
+      const note = a.action === 'remove' ? 'stale — removable' : a.primary ? 'warm cache' : 'in use'
+      lines.push(`  ${a.id}  ${formatBytes(a.bytes)}  ${ageDays(a.ageMs)}  ${note}`)
+    }
+  }
+  if (!toRemove.length && !flagged.length && !removed?.length && !caches.length) lines.push('nothing stale.')
+  if (cacheBytes >= policy.nagBytes) {
+    lines.push(
+      `that is over ${formatBytes(policy.nagBytes)} of build cache. \`cargo clean --manifest-path api/Cargo.toml\` reclaims it; ` +
+        'the next build pays for it, and sccache keeps that cheap.',
+    )
   }
   if (v.exit === 2) {
     lines.push('clear the removable set with `bun talaria cleanup --apply`, then claim done.')
@@ -298,6 +374,32 @@ function composeProjects() {
   }
 }
 
+/**
+ * What docker is holding that it would give back. Reported, never acted on:
+ * `docker system df` counts images and volumes across every project on the
+ * machine, most of which are not this repo's to prune — and an exited
+ * container is as likely to be a one-shot init sidecar as it is garbage.
+ * Naming the number is the job; `docker system prune` stays a human's call.
+ */
+function dockerReclaimable() {
+  const out = tryExec('docker', ['system', 'df', '--format', 'json'])
+  if (!out) return null
+  const rows = []
+  for (const line of out.split('\n').filter(Boolean)) {
+    try {
+      const r = JSON.parse(line)
+      if (Array.isArray(r)) rows.push(...r)
+      else rows.push(r)
+    } catch {
+      return null
+    }
+  }
+  const parts = rows
+    .filter((r) => r.Reclaimable && !/^0B/.test(String(r.Reclaimable)))
+    .map((r) => `${String(r.Type).toLowerCase()} ${r.Reclaimable}`)
+  return parts.length ? parts.join(', ') : null
+}
+
 function projectRunning(projects, name) {
   if (!projects) return true
   const row = projects.find((p) => p.Name === name)
@@ -344,6 +446,76 @@ function devboxHome(root) {
 }
 
 /**
+ * Is this branch's work finished — as in, its pull request merged?
+ *
+ * Only the pull request can answer that. Ancestry cannot: a worktree cut an
+ * hour ago from `main` also has a HEAD that is an ancestor of `rc`, and
+ * reading that as "merged" tears down a colleague's running stack. The
+ * distinction is not "has this branch got commits in the base" but "did this
+ * branch's work land", and that fact lives on the PR.
+ *
+ * A local prefilter keeps the network call rare: a branch still ahead of the
+ * base is obviously unfinished, so it never reaches `gh`. Everything fails
+ * OPEN — no `gh`, no auth, no network, no PR all read as "not merged", so a
+ * tree is never reclaimed on a guess.
+ */
+function isMerged(dir, branch) {
+  const ahead = tryGit(['rev-list', '--count', 'origin/rc..HEAD'], dir)
+  if (ahead === null || Number(ahead) > 0) return false
+  try {
+    const out = execFileSync('gh', ['pr', 'view', branch, '--json', 'state', '-q', '.state'], {
+      cwd: dir,
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return out.trim() === 'MERGED'
+  } catch {
+    return false
+  }
+}
+
+/** A build directory. Always inventoried, whatever the disk reading — an
+ *  artifact nobody can see is the one that fills the disk. `classify` still
+ *  decides, and the primary's is never removed on a timer. */
+function targetRow(path, rel, now, flags) {
+  const owner = trimSuffix(resolve(path), rel)
+  return {
+    kind: 'target',
+    id: flags.primary || !owner ? rel : `${basename(owner)}/${rel}`,
+    path,
+    bytes: 0,
+    ageMs: now - statMs(path),
+    merged: false,
+    running: false,
+    dirty: false,
+    unpushed: false,
+    kept: flags.kept,
+    current: flags.current,
+    primary: flags.primary,
+  }
+}
+
+/** A running stack whose worktree is finished or stale. Stopping it frees
+ *  RAM and CPU; the checkout is a separate row and a separate decision. */
+function stackRow(name, ageMs, merged, current) {
+  return {
+    kind: 'stack',
+    id: name,
+    path: '',
+    bytes: 0,
+    ageMs,
+    merged,
+    running: true,
+    dirty: false,
+    unpushed: false,
+    kept: false,
+    current,
+    primary: false,
+  }
+}
+
+/**
  * Inventory. docker down is treated as "in use" so a missing daemon cannot
  * make a live worktree look abandoned. Sizes are filled in by the caller for
  * the rows that can actually be removed or flagged.
@@ -355,6 +527,8 @@ export function inventory(root, now = Date.now()) {
   const primary = listed.length ? real(listed[0].path) : current
   const projects = composeProjects()
   if (projects === null) notes.push('docker unavailable — stacks treated as in use; orphan projects not scanned')
+  const reclaim = dockerReclaimable()
+  if (reclaim) notes.push(`docker is holding reclaimable space: ${reclaim}. \`docker system prune\` is a human's call.`)
   const artifacts = []
   const seenWorktree = new Set()
 
@@ -365,20 +539,45 @@ export function inventory(root, now = Date.now()) {
     seenWorktree.add(name)
     const ageMs = now - Math.max(newestMs(path), commitMs(path), statMs(join(path, 'api/target')), statMs(join(path, 'desktop/src-tauri/target')))
     const running = projectRunning(projects, `talaria-wt-${name}`)
-    const stale = ageMs >= POLICY.staleMs && !running && path !== current && path !== primary && !existsSync(join(path, '.talaria-keep'))
+    const isCurrent = path === current
+    const isPrimary = path === primary
+    const kept = existsSync(join(path, '.talaria-keep'))
+    // Merged is a reclaim signal on its own, so it is worth a lookup for any
+    // side tree — but never for the one we are standing in.
+    const merged = !isCurrent && !isPrimary && !kept ? isMerged(path, `wt/${name}`) : false
+    const stale = ageMs >= POLICY.staleMs && !running && !isCurrent && !isPrimary && !kept
+    // Finished or stale, the git state decides remove vs flag, so read it.
+    const inspect = stale || (merged && !isCurrent && !isPrimary && !kept)
     artifacts.push({
       kind: 'worktree',
       id: name,
       path,
       bytes: 0,
       ageMs,
+      merged,
       running,
-      dirty: stale ? isDirty(path) : false,
-      unpushed: stale ? isUnpushed(path) : false,
-      kept: existsSync(join(path, '.talaria-keep')),
-      current: path === current,
-      primary: path === primary,
+      dirty: inspect ? isDirty(path) : false,
+      unpushed: inspect ? isUnpushed(path) : false,
+      kept,
+      current: isCurrent,
+      primary: isPrimary,
     })
+    if (running && (merged || ageMs >= POLICY.staleMs) && !kept) {
+      artifacts.push(stackRow(name, ageMs, merged, isCurrent))
+    }
+    for (const rel of TARGET_RELS) {
+      const tp = join(path, rel)
+      if (!existsSync(tp)) continue
+      artifacts.push(targetRow(tp, rel, now, { current: isCurrent, primary: isPrimary, kept }))
+    }
+  }
+
+  // The primary is not a `wt/<name>` pair, so the loop above skips it — but
+  // its build dir is the biggest thing on this disk and has to be counted.
+  for (const rel of TARGET_RELS) {
+    const tp = join(primary, rel)
+    if (!existsSync(tp)) continue
+    artifacts.push(targetRow(tp, rel, now, { current: primary === current, primary: true, kept: false }))
   }
 
   const home = devboxHome(root)
@@ -506,6 +705,25 @@ function tryExec(cmd, args) {
   }
 }
 
+/** Stop a worktree stack and take its volumes and network with it. Touches
+ *  no directory, so it is safe in the gate: `talaria dev` brings it back. */
+function downWorktreeStack(name, roots) {
+  const project = `talaria-wt-${name}`
+  tryExec('docker', [
+    'compose',
+    '-p',
+    project,
+    '-f',
+    join(roots.primary, 'docker/sidecars.compose.yml'),
+    '-f',
+    join(roots.primary, 'docker/dev-compose.yml'),
+    'down',
+    '-v',
+  ])
+  tryExec('docker', ['rm', '-f', `talaria-pg-${name}`, `talaria-redis-${name}`])
+  dockerByLabel(project)
+}
+
 export function removeArtifact(artifact, roots) {
   if (!removalAllowed(artifact, roots)) {
     throw new Error(`refusing to remove ${artifact.kind} ${artifact.id}: path is outside the sweep`)
@@ -518,21 +736,16 @@ export function removeArtifact(artifact, roots) {
     rmSync(artifact.path, { recursive: true, force: true })
     return
   }
+  if (artifact.kind === 'stack') {
+    downWorktreeStack(artifact.id, roots)
+    return
+  }
+  if (artifact.kind === 'target') {
+    rmSync(artifact.path, { recursive: true, force: true })
+    return
+  }
   if (artifact.kind === 'worktree') {
-    const project = `talaria-wt-${artifact.id}`
-    tryExec('docker', [
-      'compose',
-      '-p',
-      project,
-      '-f',
-      join(roots.primary, 'docker/sidecars.compose.yml'),
-      '-f',
-      join(roots.primary, 'docker/dev-compose.yml'),
-      'down',
-      '-v',
-    ])
-    tryExec('docker', ['rm', '-f', `talaria-pg-${artifact.id}`, `talaria-redis-${artifact.id}`])
-    dockerByLabel(project)
+    downWorktreeStack(artifact.id, roots)
     tryExec('git', ['-C', roots.primary, 'worktree', 'remove', '--force', artifact.path])
     if (existsSync(artifact.path)) rmSync(artifact.path, { recursive: true, force: true })
     tryExec('git', ['-C', roots.primary, 'worktree', 'prune'])
@@ -563,33 +776,20 @@ export function removeArtifact(artifact, roots) {
 }
 
 
-function measure(list, pressure, primary) {
+/**
+ * Size and classify. A build dir is sized ALWAYS, never behind a disk
+ * reading: `classify` needs its bytes to judge it, and a 35 GiB cache that
+ * only becomes visible at 85% of a 638 GiB disk is a cache nobody ever sees.
+ * Everything else is sized only when it is already a candidate — `du` on a
+ * tree we are going to keep is wasted work.
+ */
+function measure(list) {
   const out = list.map((a) => ({ ...a }))
   for (const a of out) {
     a.action = classify(a)
-    if ((a.action === 'remove' || a.action === 'flag') && a.path) a.bytes = dirBytes(a.path)
+    const sized = a.kind === 'target' || a.action === 'remove' || a.action === 'flag'
+    if (sized && a.path) a.bytes = dirBytes(a.path)
     a.action = classify(a)
-  }
-  if (pressure.usedPct >= POLICY.pressurePct) {
-    for (const rel of ['api/target', 'desktop/src-tauri/target']) {
-      const path = join(primary, rel)
-      if (!existsSync(path)) continue
-      const row = {
-        kind: 'target',
-        id: rel,
-        path,
-        bytes: dirBytes(path),
-        ageMs: 0,
-        running: false,
-        dirty: false,
-        unpushed: false,
-        kept: true,
-        current: true,
-        primary: true,
-      }
-      row.action = classify(row)
-      out.push(row)
-    }
   }
   return out
 }
@@ -651,7 +851,7 @@ function main() {
     process.exit(1)
   }
 
-  let classified = measure(inventoried.artifacts, pressure, inventoried.roots.primary)
+  let classified = measure(inventoried.artifacts)
   const removing = selectRemoval(classified, mode)
   const removed = []
   const failed = []
