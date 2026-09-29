@@ -46,4 +46,10 @@
   via `docker compose config` (the devbox file with its `BOX_*` variables set,
   as the box CLI always sets them). Not done here: the published app image and
   TEI are both amd64-only, so arm64 hosts remain unsupported — unchanged by
-  this work, but it surfaced during the sidecar image audit.
+  this work, but it surfaced during the sidecar image audit — and it does not
+  affect the dev loop, which runs the app on the host and containerises only
+  the sidecars. versitygw itself was confirmed on arm64 by running the
+  `linux/arm64` variant (`uname -m` = aarch64) through the same 5/5
+  conformance suite, so Apple Silicon machines run the new sidecar natively;
+  docs/BACKUPS.md now spells out the macOS host-client install and which
+  single sidecar (TEI) still needs emulation.

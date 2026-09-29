@@ -78,7 +78,22 @@ is therefore **ignored with a warning** rather than honoured: the argv is
 rclone's, so an mc image would fail on the first flag instead of at the pull.
 
 The container fallback uses `--network host`, which is a Linux thing. On
-macOS/Windows install the Postgres client instead.
+macOS/Windows install the clients on the host instead — **both** of them, since
+each tool has its own container fallback:
+
+```sh
+brew install libpq rclone     # macOS; libpq for pg_dump/psql, rclone for the bucket
+```
+
+An Apple Silicon machine needs nothing special beyond that: the `storage`
+sidecar image (`ghcr.io/versity/versitygw`) publishes a native `linux/arm64`
+build, as do Postgres, Redis, Qdrant, SearXNG and rclone. The one sidecar
+without an arm64 manifest is `embeddings` (TEI), which
+[`docker/sidecars.compose.yml`](../docker/sidecars.compose.yml) already pins to
+`platform: linux/amd64` so it runs under emulation — fine for the default small
+model, or point `TALARIA_EMBED_URL` at an external embeddings endpoint and skip
+it. The published *app* image is amd64-only, but the dev loop never uses it:
+`talaria dev` runs the app on the host and containerises only the sidecars.
 
 ## Storage modes
 
