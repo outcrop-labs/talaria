@@ -814,6 +814,6 @@
      work log's View-log buttons (any retained run) both land here. Modal
      portals itself, so nesting inside the ticket modal's tree is safe. -->
 {#if watchRun}
-  <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} focus={watchFocus} onEnded={() => (watchRun = null)} />
+  <RunDetailModal open={!!watchRun} onClose={() => (watchRun = null)} runId={watchRun} {taskId} focus={watchFocus} />
 {/if}
 </Modal>

@@ -221,7 +221,7 @@
         </div>
       {/each}
       {#if watchTask}
-    <RunDetailModal open={!!watchTask} onClose={() => (watchTask = null)} runId={watchTask.runId} taskId={watchTask.id} onEnded={() => (watchTask = null)} />
+    <RunDetailModal open={!!watchTask} onClose={() => (watchTask = null)} runId={watchTask.runId} taskId={watchTask.id} />
   {/if}
 
   <ContextMenu {menu} />
