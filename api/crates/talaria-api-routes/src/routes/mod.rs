@@ -725,6 +725,20 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_integrations::integrations::integrations_google_agent_docs::get_search)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
+        // Sheets: read cells freely, queue every write. Sibling of the Docs
+        // pair above and gated the same way.
+        // Slides: read only — a deck's text, slide by slide.
+        .route(
+            "/api/integrations/google/agent/slides/{id}",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_slides::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/integrations/google/agent/sheets/{id}",
+            get(talaria_routes_integrations::integrations::integrations_google_agent_sheets::get)
+                .post(talaria_routes_integrations::integrations::integrations_google_agent_sheets::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
         .route(
             "/api/integrations/google/agent/files/{id}",
             get(talaria_routes_integrations::integrations::integrations_google_agent_docs::get_file)

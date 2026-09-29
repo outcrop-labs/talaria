@@ -12,6 +12,8 @@ pub mod integrations_google_agent_gmail_labels;
 pub mod integrations_google_agent_gmail_organize;
 pub mod integrations_google_agent_pending;
 pub mod integrations_google_agent_queue;
+pub mod integrations_google_agent_sheets;
+pub mod integrations_google_agent_slides;
 
 pub mod integrations_google_calendar_events;
 pub mod integrations_google_callback;
