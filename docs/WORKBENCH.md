@@ -130,12 +130,18 @@ Opting out is one line — `artifacts = []` — and `keep` overrides any single 
 
 ### When reclaim fires
 
-Never against a job that might be building. The check is the one teardown already makes for `Stop`, inverted: a job with a live process whose cwd is inside the workdir is left entirely alone, and the reclaim reports `BUSY` rather than guessing.
+Never against a job that might be building. There is no idle *timer* to tune and get wrong: the reclaim script checks `/proc` for a live process whose cwd is inside the workdir — the same predicate `Stop` already uses, inverted — and answers `BUSY` without touching anything. A job compiling at that moment is simply asked again on the next sweep.
 
-- **Idle jobs**, on the existing ten-minute sweep. `pr_open` and `awaiting_approval` cannot be building by definition; a `started` job counts as idle once nothing has run in its workdir for the idle window.
-- **Volume budget.** When a department's workbench volume crosses its threshold, reclaim oldest-idle-first until it is back under — the backstop for several genuinely active large jobs, and it still refuses to touch one that is building.
+The existing ten-minute job sweep now runs two passes. The **status pass** is the old one, asking *"is this job over?"*. The **size pass** asks what it never could:
 
-Every reclaim lands in the ticket's activity next to the other job transitions, naming what was dropped and how much came back. The audit spine already exists, and a deletion belongs in it.
+- **Per-job ceiling.** Every live job (`started`, `awaiting_approval`, `pr_open`) is measured. One over its ceiling — its repo's `maxWorkdirGib`, or the platform's 25 GiB default — is reclaimed, because a single job is not entitled to the whole disk.
+- **Volume budget.** Once the filesystem holding the workbench volume is **80%** full, any live job with something to give back is reclaimed, oldest first, whatever its ceiling. This is the backstop for the case the per-job rule cannot help with: several genuinely active jobs, none individually outrageous, that together fill the disk.
+
+Oldest-first matters: the job most likely to be picked up again keeps its cache longest.
+
+Everything in the size pass is best-effort and per job. A container it cannot reach, a workdir with no checkout, a repo with no policy, or a busy build is skipped — never retried in a tight loop, and never allowed to fail the sweep. The platform does not guess on a repo it could not read.
+
+Every reclaim is logged with the job, the paths dropped and the bytes recovered, and the sweep's own summary line carries the total. Putting it on the ticket's activity alongside the other job transitions — where the audit spine already lives, and where a deletion belongs — is not wired yet.
 
 ## Work sessions
 
