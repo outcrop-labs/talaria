@@ -117,7 +117,7 @@ AUTH_GOOGLE_CLIENT_SECRET=
 # before per-agent keys (set TALARIA_AGENT_KEY_LEGACY=off to close that window).
 TALARIA_AGENT_KEY=${rand(32)}
 
-# Built-in object storage (the talaria-minio-dev container). \`talaria dev\`
+# Built-in object storage (the talaria-storage-dev container). \`talaria dev\`
 # exports these so the container and the app agree; Admin → Storage → "Built-in bucket".
 TALARIA_S3_ACCESS_KEY=talaria
 TALARIA_S3_SECRET_KEY=${rand(24)}
@@ -186,7 +186,7 @@ LLM_MODEL=
       'pull',
       '-q',
     ])
-    if (pull === 0) ctx.log.ok('infra images ready (postgres, redis, qdrant, embeddings, minio, searxng)')
+    if (pull === 0) ctx.log.ok('infra images ready (postgres, redis, qdrant, embeddings, storage, searxng)')
     else ctx.log.warn('image pull incomplete — `talaria dev` will retry; see errors above')
   } catch {
     /* daemon check already warned */

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, manifestGet,
-  mcImage, pgQuery, PINNED_MC_IMAGE, stampOf, storageFromDb, storageFromManifest, verifySums, writeSums,
+  rcloneImage, pgQuery, PINNED_RCLONE_IMAGE, stampOf, storageFromDb, storageFromManifest, verifySums, writeSums,
 } from './lib'
 import { fakeCtx } from '../testing'
 import { CliError } from '../ui'
@@ -161,26 +161,29 @@ describe('pg client', () => {
   })
 })
 
-describe('mcImage', () => {
-  test('no override → the pinned GHCR mirror, by digest, no warning', () => {
+describe('rcloneImage', () => {
+  test('no override → the pinned rclone image, no warning', () => {
     const ctx = fakeCtx()
-    expect(mcImage(ctx)).toBe(PINNED_MC_IMAGE)
+    expect(rcloneImage(ctx)).toBe(PINNED_RCLONE_IMAGE)
     expect(ctx.logLines.some((l) => l.kind === 'warn')).toBe(false)
   })
 
-  test('a live override is honored verbatim', () => {
+  test('TALARIA_RCLONE_IMAGE is honored verbatim', () => {
+    const ctx = fakeCtx({ env: { TALARIA_RCLONE_IMAGE: 'rclone/rclone:1.70' } })
+    expect(rcloneImage(ctx)).toBe('rclone/rclone:1.70')
+    expect(ctx.logLines.some((l) => l.kind === 'warn')).toBe(false)
+  })
+
+  test('the MinIO-era TALARIA_MC_IMAGE is refused, not honored — the argv is rclone\'s', () => {
     const ctx = fakeCtx({ env: { TALARIA_MC_IMAGE: 'quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z' } })
-    expect(mcImage(ctx)).toBe('quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z')
-    expect(ctx.logLines.some((l) => l.kind === 'warn')).toBe(false)
+    expect(rcloneImage(ctx)).toBe(PINNED_RCLONE_IMAGE)
+    expect(ctx.logLines.find((l) => l.kind === 'warn')?.msg).toContain('replaced by rclone')
   })
 
-  test('a docker.io/minio override is dead — warned and replaced by the pin', () => {
-    for (const dead of ['minio/mc:latest', 'docker.io/minio/mc:latest']) {
-      const ctx = fakeCtx({ env: { TALARIA_MC_IMAGE: dead } })
-      expect(mcImage(ctx)).toBe(PINNED_MC_IMAGE)
-      const warn = ctx.logLines.find((l) => l.kind === 'warn')
-      expect(warn?.msg).toContain('docker.io/minio')
-    }
+  test('an explicit rclone override silences the mc warning', () => {
+    const ctx = fakeCtx({ env: { TALARIA_MC_IMAGE: 'minio/mc:latest', TALARIA_RCLONE_IMAGE: 'rclone/rclone:1.70' } })
+    expect(rcloneImage(ctx)).toBe('rclone/rclone:1.70')
+    expect(ctx.logLines.some((l) => l.kind === 'warn')).toBe(false)
   })
 })
 
@@ -243,7 +246,7 @@ describe('storageFromDb', () => {
     ctx.plant(row, 's3\x1fhttps://s3.example\x1fkbucket\x1fpfx/\x1fAKIA')
     const st = await storageFromDb(ctx, URL_, ctx.env)
     expect(st).toMatchObject({ mode: 's3', endpoint: 'https://s3.example', bucket: 'kbucket', prefix: 'pfx/', accessKey: 'AKIA', secretKey: 'out-of-band' })
-    expect(bucketUploadsPath(st)).toBe('t/kbucket/pfx/uploads')
+    expect(bucketUploadsPath(st)).toBe('t:kbucket/pfx/uploads')
   })
 
   test('an unknown mode in app_settings dies rather than guessing', async () => {

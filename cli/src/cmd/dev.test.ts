@@ -118,19 +118,19 @@ describe('talaria dev — gates', () => {
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'compose')).toBe(true)
   })
 
-  test('an unpullable minio warns — it never takes postgres and redis down with it', async () => {
+  test('an unpullable storage sidecar warns — it never takes postgres and redis down with it', async () => {
     // A single `up` resolves every image before it creates any container, so
-    // the sidecar whose image lives in our own GHCR mirror used to abort the
-    // two services the app cannot boot without. Its own `up`, its own warning.
+    // one unpullable sidecar image used to abort the two services the app
+    // cannot boot without. Its own `up`, its own warning.
     const root = makeTree()
     const ctx = fakeCtx()
     ctx.root = root
     plantInfra(ctx)
-    ctx.plant(['docker', devCompose(root, 'up', '-d', 'minio')], new Error('denied'))
+    ctx.plant(['docker', devCompose(root, 'up', '-d', 'storage')], new Error('denied'))
     await runDev(ctx)
     const ups = ctx.calls.filter((c) => c.args.includes('up'))
     expect(ups[0]!.args.slice(-3)).toEqual(['postgres', 'redis', 'qdrant'])
-    expect(ups.some((c) => c.args.at(-1) === 'minio')).toBe(true)
+    expect(ups.some((c) => c.args.at(-1) === 'storage')).toBe(true)
     expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('object storage failed'))).toBe(true)
     // …and the run reached the app, which is the whole point
     expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')).toBe(true)

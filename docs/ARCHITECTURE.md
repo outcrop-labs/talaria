@@ -56,11 +56,11 @@ the hop, and the recorded divergences are
 | The Rust api (the backend; axum) | 5274 | host loopback; container mode also listens on the fleet network (not published) so agent LLM and toolkit calls skip the UI |
 | talaria-mcp | 5280 | spawned by the app as a child process |
 | Postgres / Redis (dev) | 5544 / 6399 | dev infra, `--restart unless-stopped` |
-| Qdrant / TEI / MinIO / SearXNG (dev) | 6333 / 8055 / 9010 / 8888 | retrieval, embeddings, the built-in bucket, search |
+| Qdrant / TEI / storage / SearXNG (dev) | 6333 / 8055 / 9010 / 8888 | retrieval, embeddings, the built-in bucket, search |
 | Each agent's persona gateway | 8770 up | stable per-agent port, persisted in `agent_defs.gateway_port` |
 
 Dev infra is **six services**, not two (`docker/dev-compose.yml`): Postgres, Redis, Qdrant,
-TEI embeddings, MinIO, SearXNG.
+TEI embeddings, object storage, SearXNG.
 
 ## Request lifecycle
 

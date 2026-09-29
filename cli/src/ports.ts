@@ -15,8 +15,10 @@ export const PG_PORT = '5544'
 /** TALARIA_REDIS_PORT. */
 export const REDIS_PORT = '6399'
 
-/** TALARIA_MINIO_PORT — the built-in S3 bucket (Admin → Storage). */
-export const MINIO_PORT = '9010'
+/** TALARIA_STORAGE_PORT — the built-in S3 bucket (Admin → Storage). The
+ *  MinIO-era TALARIA_MINIO_PORT is still read as a fallback, so a ui/.env
+ *  written before the engine swap keeps the port it already had. */
+export const STORAGE_PORT = '9010'
 
 /** TALARIA_SEARCH_PORT — the SearXNG host port. */
 export const SEARCH_PORT = '8888'

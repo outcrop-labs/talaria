@@ -54,15 +54,20 @@ services:
     ports:
       - '127.0.0.1:${TALARIA_EMBED_PORT:-8055}:80'
 
-  minio:
-    container_name: ${TALARIA_MINIO_CONTAINER:-talaria-minio-dev}
+  storage:
+    # The MinIO-era TALARIA_MINIO_CONTAINER / TALARIA_MINIO_PORT still work:
+    # `talaria dev` seeds the new names from the old ones when only the old
+    # ones are set (cli/src/cmd/dev.ts), so an existing ui/.env keeps the
+    # container name and port it already had. The defaults stay literal here
+    # because the dev-port-drift invariant reads this line.
+    container_name: ${TALARIA_STORAGE_CONTAINER:-talaria-storage-dev}
     ports:
-      - '127.0.0.1:${TALARIA_MINIO_PORT:-9010}:9000'
+      - '127.0.0.1:${TALARIA_STORAGE_PORT:-9010}:9000'
     environment:
       # The root pair must match the app's TALARIA_S3_* env — `talaria setup`
       # generates a random secret into ui/.env, which the CLI lifts into this
       # interpolation.
-      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-dev-secret}
+      ROOT_SECRET_KEY: ${TALARIA_S3_SECRET_KEY:-talaria-dev-secret}
 
   # OPTIONAL native reranker — uncomment to self-host the precision stage
   # (then set provider "Self-hosted (TEI)" + url http://localhost:8056 in
@@ -87,7 +92,7 @@ services:
   searxng:
     container_name: ${TALARIA_SEARCH_CONTAINER:-talaria-searxng-dev}
     ports:
-      # LOOPBACK ONLY, like minio. This instance has no authentication of any
+      # LOOPBACK ONLY, like storage. This instance has no authentication of any
       # kind — that is the point of an internal metasearch — so the control that
       # matters is that nothing off this machine can reach it. Publishing it on
       # 0.0.0.0 would hand the network a free, unlogged search proxy.

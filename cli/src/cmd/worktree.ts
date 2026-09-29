@@ -110,7 +110,7 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   ctx.env.TALARIA_PG_PORT = String(slot.pg)
   ctx.env.TALARIA_REDIS_CONTAINER = redisc
   ctx.env.TALARIA_REDIS_PORT = String(slot.redis)
-  // ONLY Postgres and Redis. The dev sidecars (qdrant/embeddings/minio/searxng)
+  // ONLY Postgres and Redis. The dev sidecars (qdrant/embeddings/storage/searxng)
   // carry fixed container names and fixed host ports, so a second project
   // cannot bring them up beside the main stack — `up` with no service list dies
   // on the name conflict whenever main is running (the bash script's latent

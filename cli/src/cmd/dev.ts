@@ -243,6 +243,13 @@ export async function runDev(ctx: Ctx): Promise<number> {
     return await waitThenRunApp(ctx, uiEnv)
   }
 
+  // The MinIO-era spellings keep working: a ui/.env written before the engine
+  // swap names the container and port under the old variables, and compose
+  // now interpolates the new ones. Seed across so nobody's dev loop moves
+  // underneath them; an explicit new value always wins.
+  ctx.env.TALARIA_STORAGE_CONTAINER ??= ctx.env.TALARIA_MINIO_CONTAINER ?? envValue(uiEnv, 'TALARIA_MINIO_CONTAINER') ?? undefined
+  ctx.env.TALARIA_STORAGE_PORT ??= ctx.env.TALARIA_MINIO_PORT ?? envValue(uiEnv, 'TALARIA_MINIO_PORT') ?? undefined
+
   // Built-in object storage creds: compose must match the app, so lift them
   // out of ui/.env for interpolation (both fall back to the same dev
   // defaults). Only if the shell hasn't already exported its own — the
@@ -259,20 +266,20 @@ export async function runDev(ctx: Ctx): Promise<number> {
   }
 
   // Object storage started separately, and non-fatally — the rule searxng and
-  // embeddings below already ride, which minio was the one sidecar still
+  // embeddings below already ride, which storage was the one sidecar still
   // outside of. A single `up` resolves EVERY image before it creates ANY
-  // container, so one unpullable image took postgres and redis down with it:
-  // and minio's image is our own GHCR mirror (TALA-20), which a machine can
-  // only pull once that mirror has run and its package is public. Until then
-  // `talaria dev` died at "dev infra failed to start" on a fresh clone, with
-  // the registry's `denied` the only clue. The app boots without object
-  // storage; uploads are what degrade.
-  ctx.log.say('object storage (MinIO)')
-  if ((await compose(ctx, devSpec, ['up', '-d', 'minio'])) !== 0) {
+  // container, so one unpullable image took postgres and redis down with it,
+  // and `talaria dev` died at "dev infra failed to start" on a fresh clone
+  // with the registry's error the only clue. That is exactly how the MinIO
+  // withdrawal was felt, and the split is what keeps the next dead upstream
+  // from being fatal. The app boots without object storage; uploads are what
+  // degrade.
+  ctx.log.say('object storage (versitygw)')
+  if ((await compose(ctx, devSpec, ['up', '-d', 'storage'])) !== 0) {
     ctx.log.warn('object storage failed to start — attachments and uploads will fail until it is up.')
     ctx.log.warn(
-      'If the image could not be pulled: it is our mirror of a dead upstream ' +
-        '(.github/workflows/minio-mirror.yml). A private package needs `docker login ghcr.io` with read:packages.',
+      'If the image could not be pulled: it is ghcr.io/versity/versitygw, a public image — ' +
+        'check network and daemon reachability rather than registry auth.',
     )
   }
 

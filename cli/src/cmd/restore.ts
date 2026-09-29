@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
-import { argvOf, bucketUploadsPath, clientFor, dbLabel, liftAppEnv, localAppDataDir, manifestGet, mcRun, pgQuery, storageFromManifest, verifySums } from '../backup/lib'
+import { argvOf, bucketUploadsPath, clientFor, dbLabel, liftAppEnv, localAppDataDir, manifestGet, pgQuery, rcloneRun, storageFromManifest, verifySums } from '../backup/lib'
 
 
 export type RestoreWhat = 'all' | 'db' | 'uploads'
@@ -95,8 +95,8 @@ export async function runRestore(
       const tmp = mkdtempSync(join(tmpdir(), 'talaria-restore-'))
       try {
         await ctx.run('tar', ['-xzf', join(snap, 'uploads.tar.gz'), '-C', tmp])
-        if (!(await mcRun(ctx, tmp, st, ['mirror', '--quiet', '--overwrite', tmp, bucketUploadsPath(st)]))) {
-          ctx.log.die(`could not mirror into ${bucketUploadsPath(st)} — check the endpoint and credentials`)
+        if (!(await rcloneRun(ctx, tmp, st, ['copy', tmp, bucketUploadsPath(st)]))) {
+          ctx.log.die(`could not copy into ${bucketUploadsPath(st)} — check the endpoint and credentials`)
         }
       } finally {
         rmSync(tmp, { recursive: true, force: true })

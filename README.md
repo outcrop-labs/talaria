@@ -242,7 +242,7 @@ Talaria stands on a small mountain of open source.
 - PostgreSQL
 - Redis
 - Qdrant
-- MinIO
+- versitygw (S3-compatible object storage)
 - SearXNG
 - text-embeddings-inference
 - Hermes
