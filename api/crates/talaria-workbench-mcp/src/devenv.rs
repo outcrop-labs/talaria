@@ -551,8 +551,11 @@ pub fn plan_cleanup(files: &[(String, String)]) -> CleanupPlan {
     // `keep` wins over everything, including a detected default, and covers
     // the subtree beneath it.
     let keep = plan.keep.clone();
-    plan.artifacts
-        .retain(|a| !keep.iter().any(|k| k == a || a.starts_with(&format!("{k}/"))));
+    plan.artifacts.retain(|a| {
+        !keep
+            .iter()
+            .any(|k| k == a || a.starts_with(&format!("{k}/")))
+    });
     plan
 }
 
@@ -742,14 +745,21 @@ mod tests {
         assert_eq!(dotnet.artifacts, vec!["bin", "obj"]);
         // Go's build cache lives outside the repo, so nothing is dropped
         // per job — vendor/ is often committed and load-bearing offline.
-        assert!(plan_cleanup(&[f("go.mod", "module x\n")]).artifacts.is_empty());
+        assert!(
+            plan_cleanup(&[f("go.mod", "module x\n")])
+                .artifacts
+                .is_empty()
+        );
     }
 
     #[test]
     fn declared_artifacts_merge_over_detection_and_an_empty_list_opts_out() {
         let merged = plan_cleanup(&[
             f("Cargo.toml", "[package]\n"),
-            f(".talaria/workbench.toml", "[cleanup]\nartifacts = [\".turbo\"]\n"),
+            f(
+                ".talaria/workbench.toml",
+                "[cleanup]\nartifacts = [\".turbo\"]\n",
+            ),
         ]);
         assert_eq!(merged.artifacts, vec!["target", ".turbo"]);
         let opted_out = plan_cleanup(&[
@@ -807,7 +817,10 @@ mod tests {
 
     #[test]
     fn a_ceiling_is_read_when_it_is_a_positive_integer() {
-        let plan = plan_cleanup(&[f(".talaria/workbench.toml", "[cleanup]\nmaxWorkdirGib = 40\n")]);
+        let plan = plan_cleanup(&[f(
+            ".talaria/workbench.toml",
+            "[cleanup]\nmaxWorkdirGib = 40\n",
+        )]);
         assert_eq!(plan.max_workdir_gib, Some(40));
     }
 
