@@ -18,8 +18,17 @@ linked worktree that wasn't set up this way (see [Manual worktrees](#manual-work
 — so you can't accidentally point a second app at your main DB.
 
 Each worktree is **fully isolated**: its own git worktree, its own Postgres +
-Redis, its own `ui/.env` on unique ports. It **cannot** touch your main dev DB,
-so nothing you do in a worktree can break your primary stack.
+Redis, its own **Rust api**, and its own `ui/.env` on unique ports. It **cannot**
+touch your main dev DB, so nothing you do in a worktree can break your primary
+stack.
+
+> The api used to be the hole in that sentence. Every stack put it on the fixed
+> `:5274`, and `talaria dev` **adopts** an api already listening there rather than
+> double-binding — so the second worktree to start proxied every `/api/*` request
+> to the *first* worktree's api, which is pointed at the first worktree's
+> database. Two app servers, one database, silently, and the app answered
+> normally the whole time because it was reading someone else's data rather than
+> failing. Each worktree now gets its own api port (`54xx`) in its `ui/.env`.
 
 ## Why isolation (not a shared DB)
 
@@ -35,13 +44,22 @@ data so you still have realistic agents/boards/tickets to work against.
 
 1. `git worktree add ../talaria-<name> -b wt/<name>` off your current `HEAD`.
 2. Brings up an isolated Postgres + Redis under compose project `talaria-wt-<name>`
-   on **deterministic per-name ports** (app `53xx`, Postgres `56xx`, Redis `65xx`).
+   on **deterministic per-name ports** (app `53xx`, api `54xx`, Postgres `56xx`,
+   Redis `65xx`).
 3. Seeds the new DB with `pg_dump` of your main DB (a snapshot — later changes on
-   main don't propagate).
-4. Writes the worktree's `ui/.env`: its own `DATABASE_URL`/`REDIS_URL`/`PORT`,
-   **copying the encryption root key** (`TALARIA_SECRET_KEY`, or `AUTH_SECRET` if
-   that's what you use) so the seeded secrets decrypt. This is the one thing
-   shared, and it's a read-only root — see below.
+   main don't propagate). It waits for main's `talaria` database to answer
+   `pg_isready` first: the container existing is not the same as the database
+   existing, and a worktree created moments after `talaria dev` used to die
+   mid-way with `FATAL: database "talaria" does not exist` — after both
+   containers were up and before `ui/.env` was written, which is the step that
+   makes the checkout usable.
+4. Writes the worktree's `ui/.env`: its own
+   `DATABASE_URL`/`REDIS_URL`/`PORT`/`TALARIA_API_PORT`, **copying the encryption
+   root key** (`TALARIA_SECRET_KEY`, or `AUTH_SECRET` if that's what you use) so
+   the seeded secrets decrypt. This is the one thing shared, and it's a read-only
+   root — see below. Any of those four inherited from main is stripped first:
+   `envValue` takes the *first* match, so a leftover line would shadow the one
+   written here.
 5. Symlinks `node_modules` from main (fast; no reinstall).
 
 It prints the exact `talaria dev` command and the teardown steps.
@@ -63,6 +81,19 @@ It prints the exact `talaria dev` command and the teardown steps.
   that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and
   what the stop gate blocks on once it is stale. A `.talaria-keep` file in the
   worktree root opts it out.
+- **Once the pull request merges, the stack stops itself.** The work is finished, so
+  the sweep does not wait out the seven-day idle clock: the next stop gate in any
+  checkout runs `docker compose down -v` on that worktree's stack, and the checkout
+  becomes removable by `bun talaria cleanup --apply`. Nothing on disk is deleted
+  without that explicit apply, and `talaria dev` restarts a stack that was stopped too
+  early. This is why a worktree costs RAM and two containers only while its work is
+  live — five stale stacks quietly running Postgres was the thing this fixed.
+- **Each worktree builds into its own `api/target`**, which is what keeps two stacks
+  from locking each other out of cargo. `mise.toml` puts every cargo behind a shared
+  **sccache**, so the second worktree's build reuses the first's compiled dependencies
+  instead of paying for the graph again. A side worktree's build dir untouched for 14
+  days is reclaimed by `--apply`; the primary's is a warm cache the sweep only ever
+  names.
 
 ## Manual worktrees
 

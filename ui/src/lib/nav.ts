@@ -12,6 +12,7 @@ import {
   BookOpen,
   Bot,
   CalendarRange,
+  Columns2,
   Cpu,
   FileBox,
   Hexagon,
@@ -44,6 +45,7 @@ export interface NavItem {
 // checklist in Admin → People, opposite resting state.
 export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/comms', label: 'Comms' },
+  { to: '/work', label: 'Work' },
   { to: '/plan', label: 'Plan' },
   { to: '/boards', label: 'Boards' },
   { to: '/research', label: 'Research' },
@@ -87,6 +89,12 @@ export const NAV: NavSection[] = [
       // lighting nothing.
       { to: '/home', label: 'Inbox', icon: Inbox },
       { to: '/comms', label: 'Comms', icon: MessageCircle, badge: 'comms' },
+      // The section's `id` is also 'work' — they do not collide in the UI
+      // because this section renders NO header (see the note above): the only
+      // "Work" a person ever sees is this item. The icon is the view in one
+      // glyph — two panes, the session on the left and the document on the
+      // right.
+      { to: '/work', label: 'Work', icon: Columns2 },
       { to: '/plan', label: 'Plan', icon: CalendarRange, badge: 'plan' },
       { to: '/boards', label: 'Boards', icon: LayoutGrid },
       { to: '/research', label: 'Research', icon: Telescope, badge: 'research' },

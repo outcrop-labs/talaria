@@ -39,6 +39,8 @@ talaria-google-oauth = { workspace = true }
 talaria-google-org = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-google-provisioning = { workspace = true }
+talaria-google-sheets = { workspace = true }
+talaria-google-slides = { workspace = true }
 talaria-harness = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-harness-json = { workspace = true }

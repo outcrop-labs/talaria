@@ -67,7 +67,12 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
 export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   if (ctx.env.TALARIA_API === 'off') return
 
-  const port = ctx.env.TALARIA_API_PORT ?? API_PORT
+  // ui/.env is read here too, not just the shell. A worktree writes its own
+  // TALARIA_API_PORT into ui/.env (talaria worktree), and reading only ctx.env
+  // meant that file was ignored: the port computed here is what the proxy dials
+  // AND what the adopt probe below tests, so missing it sent both back to the
+  // shared :5274.
+  const port = ctx.env.TALARIA_API_PORT ?? envValue(uiEnv, 'TALARIA_API_PORT') ?? API_PORT
   const url = `http://127.0.0.1:${port}`
   // The proxy defaults to exactly this loopback address, but lift the env
   // anyway when nothing else names it (the shell first, then ui/.env — the
@@ -104,7 +109,11 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
   // reach the renderer, and agents keep queueing on the UI hop.
   const env: Record<string, string> = {}
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
+  // TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
+  // reads it, defaulting to 5274). Without the lift, a worktree's api would
+  // dutifully bind the shared port while the proxy dialed the worktree's own —
+  // the two halves of the same setting have to agree.
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }
@@ -234,6 +243,13 @@ export async function runDev(ctx: Ctx): Promise<number> {
     return await waitThenRunApp(ctx, uiEnv)
   }
 
+  // The MinIO-era spellings keep working: a ui/.env written before the engine
+  // swap names the container and port under the old variables, and compose
+  // now interpolates the new ones. Seed across so nobody's dev loop moves
+  // underneath them; an explicit new value always wins.
+  ctx.env.TALARIA_STORAGE_CONTAINER ??= ctx.env.TALARIA_MINIO_CONTAINER ?? envValue(uiEnv, 'TALARIA_MINIO_CONTAINER') ?? undefined
+  ctx.env.TALARIA_STORAGE_PORT ??= ctx.env.TALARIA_MINIO_PORT ?? envValue(uiEnv, 'TALARIA_MINIO_PORT') ?? undefined
+
   // Built-in object storage creds: compose must match the app, so lift them
   // out of ui/.env for interpolation (both fall back to the same dev
   // defaults). Only if the shell hasn't already exported its own — the
@@ -250,20 +266,20 @@ export async function runDev(ctx: Ctx): Promise<number> {
   }
 
   // Object storage started separately, and non-fatally — the rule searxng and
-  // embeddings below already ride, which minio was the one sidecar still
+  // embeddings below already ride, which storage was the one sidecar still
   // outside of. A single `up` resolves EVERY image before it creates ANY
-  // container, so one unpullable image took postgres and redis down with it:
-  // and minio's image is our own GHCR mirror (TALA-20), which a machine can
-  // only pull once that mirror has run and its package is public. Until then
-  // `talaria dev` died at "dev infra failed to start" on a fresh clone, with
-  // the registry's `denied` the only clue. The app boots without object
-  // storage; uploads are what degrade.
-  ctx.log.say('object storage (MinIO)')
-  if ((await compose(ctx, devSpec, ['up', '-d', 'minio'])) !== 0) {
+  // container, so one unpullable image took postgres and redis down with it,
+  // and `talaria dev` died at "dev infra failed to start" on a fresh clone
+  // with the registry's error the only clue. That is exactly how the MinIO
+  // withdrawal was felt, and the split is what keeps the next dead upstream
+  // from being fatal. The app boots without object storage; uploads are what
+  // degrade.
+  ctx.log.say('object storage (versitygw)')
+  if ((await compose(ctx, devSpec, ['up', '-d', 'storage'])) !== 0) {
     ctx.log.warn('object storage failed to start — attachments and uploads will fail until it is up.')
     ctx.log.warn(
-      'If the image could not be pulled: it is our mirror of a dead upstream ' +
-        '(.github/workflows/minio-mirror.yml). A private package needs `docker login ghcr.io` with read:packages.',
+      'If the image could not be pulled: it is ghcr.io/versity/versitygw, a public image — ' +
+        'check network and daemon reachability rather than registry auth.',
     )
   }
 

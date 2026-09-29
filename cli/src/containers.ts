@@ -20,7 +20,7 @@ export const PG_CONTAINER = 'talaria-postgres-dev'
 export const REDIS_CONTAINER = 'talaria-redis-dev'
 export const QDRANT_CONTAINER = 'talaria-qdrant-dev'
 export const EMBED_CONTAINER = 'talaria-embeddings-dev'
-export const MINIO_CONTAINER = 'talaria-minio-dev'
+export const STORAGE_CONTAINER = 'talaria-storage-dev'
 export const SEARCH_CONTAINER = 'talaria-searxng-dev'
 
 /** A container's docker state as a string — 'running', 'exited', 'created',

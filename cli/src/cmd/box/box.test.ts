@@ -13,7 +13,7 @@ import { repointChassis, seedFleetEnv, runSeed } from './seed'
 import { runEnter } from './enter'
 import { runInstall } from './install'
 import { runRm, runStart } from './lifecycle'
-import { PINNED_MC_IMAGE } from '../../backup/lib'
+import { PINNED_RCLONE_IMAGE } from '../../backup/lib'
 import { boxComposeSpec, toolsExec } from './shared'
 import { fakeCtx, type FakeCtx } from '../../testing'
 import { CliError } from '../../ui'
@@ -223,11 +223,14 @@ describe('box seed — run', () => {
     const envPath = join(state, 'fleet/.env')
     expect(readFileSync(envPath, 'utf8')).toContain('LLM_API_KEY=sekrit')
     expect((statSync(envPath).mode & 0o777)).toBe(0o600)
-    // the throwaway mc container is created from the pinned mirror image
+    // the throwaway rclone container is created from the pinned image, and
+    // both remotes arrive as env rather than on a command line
     const created = ctx.calls.find((c) => c.cmd === 'docker' && c.args[0] === 'create')
-    expect(created?.args).toContain(PINNED_MC_IMAGE)
-    // the throwaway mc container is removed even on the happy path
-    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'rm' && c.args.includes('devbox-demo-seed-mc')))
+    expect(created?.args).toContain(PINNED_RCLONE_IMAGE)
+    expect(created?.args).toContain('RCLONE_CONFIG_SRC_ENDPOINT=http://talaria-storage-dev:9000')
+    expect(created?.args).toContain('RCLONE_CONFIG_DST_ENDPOINT=http://devbox-demo-storage:9000')
+    // the throwaway rclone container is removed even on the happy path
+    expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'rm' && c.args.includes('devbox-demo-seed-rclone')))
   })
 
   test('box DB with tables and no --force → no pipe, keeps existing chassis/.env', async () => {

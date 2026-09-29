@@ -118,19 +118,19 @@ describe('talaria dev — gates', () => {
     expect(ctx.calls.some((c) => c.cmd === 'docker' && c.args[0] === 'compose')).toBe(true)
   })
 
-  test('an unpullable minio warns — it never takes postgres and redis down with it', async () => {
+  test('an unpullable storage sidecar warns — it never takes postgres and redis down with it', async () => {
     // A single `up` resolves every image before it creates any container, so
-    // the sidecar whose image lives in our own GHCR mirror used to abort the
-    // two services the app cannot boot without. Its own `up`, its own warning.
+    // one unpullable sidecar image used to abort the two services the app
+    // cannot boot without. Its own `up`, its own warning.
     const root = makeTree()
     const ctx = fakeCtx()
     ctx.root = root
     plantInfra(ctx)
-    ctx.plant(['docker', devCompose(root, 'up', '-d', 'minio')], new Error('denied'))
+    ctx.plant(['docker', devCompose(root, 'up', '-d', 'storage')], new Error('denied'))
     await runDev(ctx)
     const ups = ctx.calls.filter((c) => c.args.includes('up'))
     expect(ups[0]!.args.slice(-3)).toEqual(['postgres', 'redis', 'qdrant'])
-    expect(ups.some((c) => c.args.at(-1) === 'minio')).toBe(true)
+    expect(ups.some((c) => c.args.at(-1) === 'storage')).toBe(true)
     expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('object storage failed'))).toBe(true)
     // …and the run reached the app, which is the whole point
     expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[0] === 'run' && c.args[1] === 'dev')).toBe(true)
@@ -288,5 +288,44 @@ describe('talaria dev — rust api sidecar', () => {
       await rustApi(ctx, 'DATABASE_URL=x\n')
       expect(ctx.env.TALARIA_RUST_API_URL).toBe('http://10.0.0.5:5274')
     })
+  })
+
+  test("ui/.env's TALARIA_API_PORT is read — a worktree's api port lives in that file", async () => {
+    await withListener(async (port) => {
+      // Nothing in the shell: the port comes from the file, which is where
+      // `talaria worktree` writes it. Reading only ctx.env meant a worktree's
+      // own api port was ignored and every stack fell back to the shared
+      // :5274 — where `talaria dev` ADOPTS whatever is already listening, so
+      // the second worktree proxied /api/* to the first one's database.
+      const ctx = fakeCtx()
+      await rustApi(ctx, `DATABASE_URL=x\nTALARIA_API_PORT=${port}\n`)
+      expect(ctx.logLines[0]).toMatchObject({
+        kind: 'say',
+        msg: `rust api → already listening on :${port}; adopting it`,
+      })
+      expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
+    })
+  })
+
+  test('the shell still wins over ui/.env for the api port', async () => {
+    await withListener(async (port) => {
+      // Same precedence as the S3 lift: the environment is the override point.
+      const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
+      await rustApi(ctx, 'DATABASE_URL=x\nTALARIA_API_PORT=59999\n')
+      expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
+    })
+  })
+
+  test('the api port is lifted into the cargo child — the api BINDS it', async () => {
+    const port = await closedPort()
+    // cargo is missing, so the spawn never happens and this stops at the warn —
+    // but the lift list is what matters, and it is read before that. The api
+    // reads TALARIA_API_PORT for its own bind (talaria-config, default 5274),
+    // so a port the proxy dials but the child never sees would leave the api
+    // bound to the shared port while the app looked at the private one.
+    const ctx = fakeCtx()
+    ctx.plant(['cargo', ['--version']], new Error('not found'))
+    await rustApi(ctx, `DATABASE_URL=x\nTALARIA_API_PORT=${port}\n`)
+    expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
   })
 })

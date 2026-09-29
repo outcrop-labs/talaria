@@ -1,8 +1,13 @@
 <script lang="ts">
-  // The plan rail — LEFT, on the shared Rail primitives (agent picker up top,
-  // this agent's plans below, plans shared with you at the end). Rows follow
-  // the Mercury session-list pattern (spec §10): status dot, 13px sans
-  // title, right-aligned mono meta/time; the active row carries the gold dot.
+  // The plan / work-session rail — LEFT, on the shared Rail primitives (agent
+  // picker up top, this agent's conversations below, ones shared with you at
+  // the end). Rows follow the Mercury session-list pattern (spec §10): status
+  // dot, 13px sans title, right-aligned mono meta/time; the active row carries
+  // the gold dot.
+  //
+  // TWO SURFACES, ONE RAIL. Plan and Work differ only in what they call a row
+  // and which permission opens the `+`, so those are props rather than a
+  // second copy of this file that would drift from it.
   import { Plus } from '@lucide/svelte'
   import { useHasPerm } from '@/lib/session'
   import { listStagger } from '@/lib/motion'
@@ -34,10 +39,13 @@
     onSelectConversation,
     onNewChat,
     onRowMenu,
+    noun = 'plan',
+    newPerm = 'plans.create',
+    newTitle = 'New plan: think it through, then draft tickets',
   }: {
     agents: AgentModel[]
     conversations: Conversation[]
-    /** Retired plans — the way back after Archive. Same membership as the live list. */
+    /** Retired rows — the way back after Archive. Same membership as the live list. */
     archived?: Conversation[]
     selectedAgent: string | null
     selectedConversationId: string | null
@@ -50,9 +58,19 @@
     onSelectConversation: (conv: Conversation) => void
     onNewChat: () => void
     onRowMenu?: (e: MouseEvent, conv: Conversation, archived: boolean) => void
+    /** What a row IS, for the rail's own sentences ("No plans yet with this
+     *  agent."). Plural is this + 's' — both nouns take it. */
+    noun?: string
+    /** The permission id that opens the `+`. */
+    newPerm?: string
+    /** The `+` button's tooltip — the surface says what it is for. */
+    newTitle?: string
   } = $props()
 
-  const canCreatePlans = useHasPerm('plans.create')
+  // A getter, not the bare prop: `newPerm` arrives as a prop, and reading it
+  // once at init is both the `state_referenced_locally` warning and a real
+  // staleness if a caller ever swaps it.
+  const canCreate = useHasPerm(() => newPerm)
   const agentConvs = $derived(conversations.filter((c) => c.agentModel === selectedAgent))
   const sharedElsewhere = $derived(
     conversations.filter((c) => c.role === 'collaborator' && c.agentModel !== selectedAgent),
@@ -63,8 +81,8 @@
 
 <Rail>
   {#snippet actions()}
-    {#if canCreatePlans.current}
-      <IconButton size="sm" title="New plan: think it through, then draft tickets" onclick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>
+    {#if canCreate.current}
+      <IconButton size="sm" title={newTitle} onclick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>
     {/if}
   {/snippet}
 
@@ -88,11 +106,11 @@
     <QueryError
       variant="compact"
       error={conversationsFailure.error}
-      title="Could not load your plans"
+      title={`Could not load your ${noun}s`}
       onRetry={conversationsFailure.retry}
     />
   {:else if agentConvs.length === 0}
-    <div class="px-2 py-6 text-center text-xs text-muted">No plans yet with this agent.</div>
+    <div class="px-2 py-6 text-center text-xs text-muted">No {noun}s yet with this agent.</div>
   {:else}
     <!-- div, not ul: RailRow renders div rows. -->
     <div class="space-y-0.5" use:listStagger>
@@ -104,7 +122,7 @@
     </div>
   {/if}
 
-  <!-- Plans shared WITH you ride other agents — always visible. -->
+  <!-- Rows shared WITH you ride other agents — always visible. -->
   {#if sharedElsewhere.length > 0}
     <div class="mt-4">
       <RailSection label="Shared with you">

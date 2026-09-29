@@ -17,7 +17,7 @@ import type { Ctx } from './ctx'
  *  spelled exactly this way. */
 export const COMPOSE_BASE = 'docker/compose.yml'
 
-/** The SHARED sidecar plane — postgres, redis, qdrant, embeddings, minio,
+/** The SHARED sidecar plane — postgres, redis, qdrant, embeddings, storage,
  *  searxng with their images, restart policies, data volumes, env defaults and
  *  healthchecks — which EVERY stack layers IN FRONT of its own file:
  *

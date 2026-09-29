@@ -14,7 +14,8 @@ use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::pending_actions::decide_action;
 use talaria_body::{enum_member, parse};
 use talaria_chips::{
-    load_approval, mark_approval, merge_unlocked, surface_for_agent, tools_unlocked, unlock_chip,
+    is_google_action, load_approval, mark_approval, merge_unlocked, surface_for_agent,
+    tools_unlocked, unlock_chip,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
@@ -84,39 +85,47 @@ async fn execute(
     is_admin: bool,
     row: &talaria_chips::ApprovalRow,
 ) -> Result<(), Response> {
-    match row.kind.as_str() {
-        "gmail_send" | "calendar_create" => {
-            let external = row.external_id.as_deref().unwrap_or("");
-            if external.is_empty() {
-                return Err(house_error(StatusCode::BAD_REQUEST, "nothing to send"));
-            }
-            let sb = secretbox_or_500(state, "[chips] confirm-send").await?;
-            match decide_action(
-                &state.pg,
-                &sb,
-                external,
-                user_id,
-                is_admin,
-                "approve",
-                now_ms(),
-            )
-            .await
-            {
-                Ok(Some(outcome)) if outcome.status == "executed" => Ok(()),
-                Ok(Some(outcome)) if outcome.status == "forbidden" => {
-                    Err(house_error(StatusCode::FORBIDDEN, "forbidden"))
-                }
-                Ok(Some(outcome)) => Err(house_error(
-                    StatusCode::BAD_GATEWAY,
-                    outcome
-                        .message
-                        .as_deref()
-                        .unwrap_or("the action did not send"),
-                )),
-                Ok(None) => Err(house_error(StatusCode::NOT_FOUND, "not found")),
-                Err(e) => Err(internal("[chips] confirm-send failed", e)),
-            }
+    // EVERY Google kind routes through the confirm-send plane, and the test
+    // is `is_google_action` rather than a second hand-written list of kinds.
+    // That is the bug this shape exists to prevent: the arm used to name
+    // `gmail_send` and `calendar_create` alone, so a queued Doc edit, Drive
+    // move or rename, or calendar change fell through to the catch-all and
+    // was marked APPROVED WITHOUT EVER BEING SENT — the person saw the card
+    // clear and Google never heard about it.
+    if is_google_action(&row.kind) {
+        let external = row.external_id.as_deref().unwrap_or("");
+        if external.is_empty() {
+            return Err(house_error(StatusCode::BAD_REQUEST, "nothing to send"));
         }
+        let sb = secretbox_or_500(state, "[chips] confirm-send").await?;
+        return match decide_action(
+            &state.pg,
+            &sb,
+            external,
+            user_id,
+            is_admin,
+            "approve",
+            now_ms(),
+        )
+        .await
+        {
+            Ok(Some(outcome)) if outcome.status == "executed" => Ok(()),
+            Ok(Some(outcome)) if outcome.status == "forbidden" => {
+                Err(house_error(StatusCode::FORBIDDEN, "forbidden"))
+            }
+            Ok(Some(outcome)) => Err(house_error(
+                StatusCode::BAD_GATEWAY,
+                outcome
+                    .message
+                    .as_deref()
+                    .unwrap_or("the action did not send"),
+            )),
+            Ok(None) => Err(house_error(StatusCode::NOT_FOUND, "not found")),
+            Err(e) => Err(internal("[chips] confirm-send failed", e)),
+        };
+    }
+
+    match row.kind.as_str() {
         "ticket_move" => {
             let task_id = row
                 .payload
@@ -151,6 +160,17 @@ async fn execute(
                 Err(TaskError::Db(e)) => Err(internal("[chips] ticket move failed", e)),
             }
         }
-        _ => Ok(()),
+        // The approval IS the grant — there is nothing else to run.
+        "board_access" => Ok(()),
+        // Not a silent success. An approval whose kind nothing here executes
+        // would otherwise be marked approved and quietly do nothing, which is
+        // exactly how the Google kinds went missing.
+        other => {
+            tracing::error!("[chips] approval kind '{other}' has no execution path");
+            Err(house_error(
+                StatusCode::BAD_REQUEST,
+                "this approval has no action behind it",
+            ))
+        }
     }
 }

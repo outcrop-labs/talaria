@@ -21,7 +21,7 @@
 #                   leaves docker's default.
 #   depends_on      only prod's searxng waits on the settings render step
 #                   (there is no render step outside prod).
-#   Divergent env   the dev/box minio root pair and the dev postgres password
+#   Divergent env   the dev/box storage root pair and the dev postgres password
 #                   are overridden in those files with the WHY at the override.
 #
 # Full story: docs/CONTAINER.md (Networking) and docs/DEVBOX.md.
@@ -95,34 +95,64 @@ services:
       timeout: 3s
       retries: 60
 
-  # Built-in object storage — a MinIO container so uploads can live in a real
-  # S3-compatible bucket with no cloud account (Admin → Storage → "Built-in
+  # Built-in object storage — an S3-compatible bucket so uploads can live
+  # somewhere real with no cloud account (Admin → Storage → "Built-in
   # bucket"). The same panel can replicate every blob to an external provider.
   # The root pair has to reach the app AND this container, so compose cannot
   # generate it (interpolation happens before any entrypoint runs). The two
   # defaults below are PROD's pair; the dev loop and a box override whichever
   # half differs, with the dev-grade values their own apps are handed.
-  minio:
-    # OUR GHCR MIRROR, PINNED BY DIGEST (TALA-20). MinIO is dead upstream:
-    # github.com/minio/minio archived 2026-04-25, mc 2026-07-14, the last
-    # releases were never published to any registry, and quay's tags are
-    # frozen at the 2025-09 builds — post-freeze hotfix tags point at
-    # commits that don't exist in the public repo. A :latest from a dead
-    # project can move but never be fixed, so we mirror the bits ourselves
-    # and pin the digest: a pull cannot silently drift, and a bump is a
-    # commit that changes this line, the mc pin in cli/src/backup/lib.ts,
-    # and the mirror's source table together. Mirror + provenance:
-    # .github/workflows/minio-mirror.yml (replaces the #366 watch).
-    image: ghcr.io/outcrop-labs/talaria-minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+  storage:
+    # VERSITYGW, AND NO LONGER MINIO. MinIO withdrew public distribution
+    # outright in 2026-09: github.com/minio/minio is archived (2026-04-25),
+    # the docker.io/minio namespace was deleted, quay.io/minio/{minio,mc} now
+    # answer 401 to an anonymous pull, and dl.min.io returns 410 Gone. There
+    # is no public source for those bits any more — which is why this is a
+    # REPLACEMENT and not another mirror. Mirroring an image nothing can fetch
+    # preserves a copy we happen to still hold; it does not restore a supply,
+    # and a fresh host would have had nothing to pull either way.
+    #
+    # WHY THIS ONE. Apache-2.0, actively maintained by Versity (~350 commits
+    # over 90 days across 32 authors, releases roughly monthly), and its posix
+    # backend maps S3 keys STRAIGHT TO FILES on the volume: `uploads/a.pdf`
+    # is /data/<bucket>/uploads/a.pdf, byte for byte. That is the property
+    # worth having after this incident — the cost of MinIO's exit was never
+    # the API, it was needing their software to read our own bytes. Here the
+    # blobs are already in the one format that outlives every vendor:
+    # readable with `cat`, backed up with `tar`.
+    #
+    # Verified against the exact four operations
+    # api/crates/talaria-storage/src/lib.rs signs — CreateBucket, GET, PUT,
+    # DELETE, path-style SigV4 — including the BucketAlreadyOwnedByYou answer
+    # to a repeat create that `ensure_bucket` tolerates by body match. No Rust
+    # change was needed to swap engines.
+    image: ghcr.io/versity/versitygw:v1.8.0
     restart: unless-stopped
-    command: ['server', '/data']
     environment:
-      MINIO_ROOT_USER: ${TALARIA_S3_ACCESS_KEY:-talaria}
-      MINIO_ROOT_PASSWORD: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
+      # versitygw's spelling of the root pair, fed the same interpolated
+      # values MINIO_ROOT_USER/PASSWORD took.
+      ROOT_ACCESS_KEY: ${TALARIA_S3_ACCESS_KEY:-talaria}
+      ROOT_SECRET_KEY: ${TALARIA_S3_SECRET_KEY:-talaria-container-secret}
+      # The stock entrypoint assembles `versitygw <flags> posix /data` from
+      # these three; no command override, no rendered config file.
+      VGW_BACKEND: posix
+      VGW_BACKEND_ARG: /data
+      # 9000 keeps every consumer's URL identical to the MinIO era — the
+      # TALARIA_S3_URL default, the dev loop's published port, box DNS.
+      VGW_PORT: ':9000'
+      VGW_REGION: ${TALARIA_S3_REGION:-us-east-1}
     volumes:
-      - minio-data:/data
+      # A NEW volume, deliberately not minio-data. MinIO's on-disk layout
+      # (.minio.sys/, an xl.meta per object) is not a posix object tree, so
+      # pointing a posix backend at it would serve MinIO's internals as
+      # objects. Carrying an existing bucket across is a one-time copy through
+      # the S3 API, while the old container can still read it: docs/BACKUPS.md
+      # § "Migrating off MinIO".
+      - storage-data:/data
     healthcheck:
-      test: ['CMD-SHELL', 'mc ready local >/dev/null 2>&1 || curl -sf http://127.0.0.1:9000/minio/health/live']
+      # busybox nc — versitygw exposes no health route, so the listener
+      # answering IS the signal.
+      test: ['CMD-SHELL', 'nc -z 127.0.0.1 9000 || exit 1']
       interval: 5s
       timeout: 3s
       retries: 30
@@ -170,4 +200,4 @@ volumes:
   redis-data: {}
   qdrant-data: {}
   tei-cache: {}
-  minio-data: {}
+  storage-data: {}

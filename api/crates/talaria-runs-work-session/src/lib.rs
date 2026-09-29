@@ -761,6 +761,15 @@ async fn capture_turn_transcript(
         &artifact_id,
         talaria_artifacts::SaveArtifactPatch {
             body: Some(&body),
+            // artifacts.visibility defaults to 'private', and this row is
+            // ownerless — an agent wrote it, so created_by is the agent model
+            // and owner_user_id is null. Private plus ownerless is readable by
+            // nobody: the Turns pane filtered a ticket's own transcript out for
+            // every human who opened it. It is the review record of the work,
+            // so it is org-visible like every other artifact an agent files.
+            // Set on every save, not only at create, so rows written before
+            // this heal the next time their run writes a turn.
+            visibility: Some("org"),
             ..Default::default()
         },
         agent_model,
@@ -1934,6 +1943,7 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
             completed_at: None,
+            approved_at: None,
             archived_at: None,
         }
     }

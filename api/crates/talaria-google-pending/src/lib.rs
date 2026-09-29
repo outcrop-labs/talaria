@@ -23,6 +23,7 @@ use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
 use talaria_google_drive::{move_drive_file_with_token, rename_drive_file_with_token};
 use talaria_google_gmail::{SendInput, send_message_with_token};
 use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
+use talaria_google_sheets::update_sheet_with_token;
 use talaria_realtime::RealtimeDeps;
 use talaria_secretbox::SecretBox;
 
@@ -694,6 +695,60 @@ pub async fn decide_action(
             .await
             .map(|doc| json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
             .map_err(|e| e.to_string())
+        }
+    } else if kind == "sheet_update" {
+        let file_id = payload
+            .get("fileId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let range = payload
+            .get("range")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if file_id.is_empty() || range.is_empty() {
+            Err("sheet_update missing fileId or range".into())
+        } else {
+            // The rows were normalised to Vec<Vec<String>> by the route
+            // before they were queued, so a row that is not an array here
+            // would be a corrupted payload, not a caller mistake — it reads
+            // as an empty row rather than failing the whole write.
+            let rows: Vec<Vec<String>> = payload
+                .get("rows")
+                .and_then(Value::as_array)
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| {
+                            row.as_array()
+                                .map(|cells| {
+                                    cells
+                                        .iter()
+                                        .map(|c| {
+                                            c.as_str().map(str::to_string).unwrap_or_else(|| {
+                                                if c.is_null() {
+                                                    String::new()
+                                                } else {
+                                                    c.to_string()
+                                                }
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            update_sheet_with_token(&token, file_id, range, &rows)
+                .await
+                .map(|up| {
+                    json!({
+                        "id": up.id,
+                        "url": up.url,
+                        "range": up.range,
+                        "updatedCells": up.updated_cells,
+                    })
+                })
+                .map_err(|e| e.to_string())
         }
     } else if kind == "drive_rename" {
         let file_id = payload

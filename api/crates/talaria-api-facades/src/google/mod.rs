@@ -12,3 +12,5 @@ pub use talaria_google_oauth as oauth;
 pub use talaria_google_org as org;
 pub use talaria_google_pending as pending_actions;
 pub use talaria_google_provisioning as provisioning;
+pub use talaria_google_sheets as sheets;
+pub use talaria_google_slides as slides;

@@ -10,36 +10,32 @@ import { createReadStream, existsSync, readFileSync, writeFileSync } from 'node:
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import { envValue, readEnvFile } from '../envfile'
-import { MINIO_PORT } from '../ports'
+import { STORAGE_PORT } from '../ports'
 
 // Client images, only used when the host has no psql/pg_dump/mc. postgres:16
 // matches docker/dev-compose.yml — a dump is refused if the client is older
 // than the server, so bump this together with the server image.
 export const pgImage = (env: Env): string => env.TALARIA_PG_IMAGE || 'postgres:16-alpine'
-// mc comes from OUR GHCR mirror, digest-pinned: MinIO is dead upstream
-// (repos archived 2026-04/07, last releases never published to a registry,
-// quay's tags frozen). Provenance and the bump-together rule:
-// .github/workflows/minio-mirror.yml and docker/sidecars.compose.yml.
-export const PINNED_MC_IMAGE =
-  'ghcr.io/outcrop-labs/talaria-mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727'
+// rclone, NOT mc. MinIO's client died with the server: docker.io/minio was
+// deleted, quay.io/minio/mc answers 401 to an anonymous pull, and dl.min.io
+// returns 410 Gone — the image cannot be fetched from anywhere public, and
+// unlike the server we never held a cached copy to mirror. rclone replaces
+// it: MIT, multi-arch, still published, and it speaks the same S3 the bucket
+// already answers. Only two operations were ever used here and both map
+// straight across (see rcloneRun).
+export const PINNED_RCLONE_IMAGE = 'rclone/rclone:1.71'
 
-/** `docker.io/minio/…` — the namespace MinIO deleted (2026-09; every pull
- *  answers "repository does not exist"). docker.io is implied for a short
- *  name, so `minio/mc:latest` lands there too. */
-const isDeadMinioRef = (ref: string): boolean =>
-  /^(docker\.io\/)?minio\//.test(ref.split('@')[0]!)
-
-/** The mc image a backup/restore borrows when the host has none.
- *  TALARIA_MC_IMAGE still overrides — except a value pointing at the
- *  deleted docker.io/minio namespace, which can never pull: that warns and
- *  falls through to the pin instead of dying at container-create time. */
-export function mcImage(ctx: Ctx): string {
-  const override = ctx.env.TALARIA_MC_IMAGE
-  if (override && isDeadMinioRef(override)) {
-    ctx.log.warn(`TALARIA_MC_IMAGE (${override}) points at the deleted docker.io/minio namespace — using the pinned mirror ${PINNED_MC_IMAGE}`)
-    return PINNED_MC_IMAGE
+/** The rclone image a backup/restore borrows when the host has no rclone
+ *  binary. TALARIA_RCLONE_IMAGE overrides. The MinIO-era TALARIA_MC_IMAGE is
+ *  REFUSED rather than honoured: the argv below is rclone's, so an mc image
+ *  would fail on the first flag instead of at the pull, which is a far worse
+ *  error to read. */
+export function rcloneImage(ctx: Ctx): string {
+  const override = ctx.env.TALARIA_RCLONE_IMAGE
+  if (!override && ctx.env.TALARIA_MC_IMAGE) {
+    ctx.log.warn(`TALARIA_MC_IMAGE is set, but mc was replaced by rclone — ignoring it; set TALARIA_RCLONE_IMAGE to override ${PINNED_RCLONE_IMAGE}`)
   }
-  return override || PINNED_MC_IMAGE
+  return override || PINNED_RCLONE_IMAGE
 }
 
 type Env = Record<string, string | undefined>
@@ -116,12 +112,12 @@ export type Storage = {
 
 const localStorage = (): Storage => ({ mode: 'local', endpoint: '', bucket: '', prefix: '', accessKey: '', secretKey: '' })
 
-/** The bundled MinIO container, resolved exactly as storage.ts's
+/** The bundled object-storage container, resolved exactly as storage.ts's
  *  internalTarget() does — same env vars, same defaults, empty prefix. */
 export function internalTarget(env: Env): Storage {
   return {
     mode: 'internal',
-    endpoint: env.TALARIA_S3_URL || `http://127.0.0.1:${env.TALARIA_MINIO_PORT || MINIO_PORT}`,
+    endpoint: env.TALARIA_S3_URL || `http://127.0.0.1:${env.TALARIA_STORAGE_PORT || env.TALARIA_MINIO_PORT || STORAGE_PORT}`,
     bucket: env.TALARIA_S3_BUCKET || 'talaria',
     prefix: '',
     accessKey: env.TALARIA_S3_ACCESS_KEY || 'talaria',
@@ -215,11 +211,11 @@ export function manifestGet(manifest: string, key: string): string {
   return envValue(manifest, key) ?? ''
 }
 
-// ── mc, against the resolved bucket ──────────────────────────────────────────
+// ── rclone, against the resolved bucket ──────────────────────────────────────
 
 /** Every blob key the app writes lives under "<prefix>uploads/" — the Rust
  *  upload store (api/src/uploads.rs). */
-export const bucketUploadsPath = (st: Storage): string => `t/${st.bucket}/${st.prefix}uploads`
+export const bucketUploadsPath = (st: Storage): string => `t:${st.bucket}/${st.prefix}uploads`
 
 /** Where the api's local-disk blobs live, for the backup READ: the env pin
  *  first (the same TALARIA_UPLOADS_DIR the api itself reads), then the dev
@@ -240,40 +236,48 @@ export function localAppDataDir(ctx: Ctx, env: Env): string {
 }
 
 
-/** Single-quote for the one place a shell string is unavoidable (the docker
- *  mc one-shot: alias set + the command must share one container lifetime). */
-const shq = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`
+/** The remote "t", configured ENTIRELY through env: rclone reads
+ *  RCLONE_CONFIG_<REMOTE>_<KEY>, so there is no alias step and no config file
+ *  to write. That is what lets the host path and the container path run the
+ *  same argv — mc needed `alias set` first, which is why its container form
+ *  had to be a single `sh -c` pair sharing one lifetime. RCLONE_CONFIG points
+ *  at /dev/null so a missing ~/.rclone.conf does not print a NOTICE over
+ *  every backup. */
+function rcloneEnv(st: Storage): Record<string, string> {
+  return {
+    RCLONE_CONFIG: '/dev/null',
+    RCLONE_CONFIG_T_TYPE: 's3',
+    RCLONE_CONFIG_T_PROVIDER: 'Other',
+    RCLONE_CONFIG_T_ENDPOINT: st.endpoint,
+    RCLONE_CONFIG_T_ACCESS_KEY_ID: st.accessKey,
+    RCLONE_CONFIG_T_SECRET_ACCESS_KEY: st.secretKey,
+    RCLONE_CONFIG_T_REGION: 'us-east-1',
+  }
+}
 
-/** Run an `mc` argv (after `--config-dir`) against the resolved bucket. Host
- *  mc runs as two plain invocations (the alias persists in /tmp/mc-talaria);
- *  without a host mc, both run inside ONE throwaway container — the alias
- *  setup and the command must share a container lifetime, so there the pair
- *  is a single sh -c, with credentials passed as env (never interpolated into
- *  the script). The host dir is mounted at the SAME path inside so one argv
- *  works either way. Returns false on failure (callers distinguish an empty
- *  prefix from an unreachable bucket by retrying with `ls`). */
-export async function mcRun(ctx: Ctx, dir: string, st: Storage, args: string[]): Promise<boolean> {
-  ctx.env.S3_ENDPOINT = st.endpoint
-  ctx.env.S3_ACCESS_KEY = st.accessKey
-  ctx.env.S3_SECRET_KEY = st.secretKey
-  const dirArg = ['--config-dir', '/tmp/mc-talaria']
+/** Run an rclone argv against the resolved bucket. A host rclone runs it
+ *  directly; without one it runs in a throwaway container on the host network
+ *  with the host dir mounted at the SAME path, so one argv works either way.
+ *  Credentials travel as env rather than through a shell — there is no shell
+ *  here at all any more, so nothing depends on quoting. Returns false on
+ *  failure.
+ *
+ *  `copy`, never `sync`: mc's `mirror` did not delete extras at the
+ *  destination and `rclone sync` does. A backup must not be able to empty the
+ *  bucket it is reading. */
+export async function rcloneRun(ctx: Ctx, dir: string, st: Storage, args: string[]): Promise<boolean> {
+  const env = rcloneEnv(st)
+  Object.assign(ctx.env, env)
   try {
-    if (await commandExists(ctx, 'mc')) {
-      await ctx.exec('mc', [...dirArg, 'alias', 'set', 't', st.endpoint, st.accessKey, st.secretKey])
-      await ctx.exec('mc', [...dirArg, ...args], { timeoutMs: 7_200_000 })
+    if (await commandExists(ctx, 'rclone')) {
+      await ctx.exec('rclone', args, { timeoutMs: 7_200_000 })
     } else {
       const uid = process.getuid?.()
       const user = uid === undefined ? [] : ['--user', `${uid}:${process.getgid?.() ?? uid}`]
-      const script =
-        `mc --config-dir /tmp/mc-talaria alias set t "$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null && ` +
-        `mc --config-dir /tmp/mc-talaria ${args.map(shq).join(' ')}`
+      const pass = Object.keys(env).flatMap((k) => ['-e', k])
       await ctx.exec(
         'docker',
-        [
-          'run', '--rm', '--network', 'host', ...user,
-          '-e', 'S3_ENDPOINT', '-e', 'S3_ACCESS_KEY', '-e', 'S3_SECRET_KEY', '-e', 'HOME=/tmp',
-          '-v', `${dir}:${dir}`, '--entrypoint', 'sh', mcImage(ctx), '-c', script,
-        ],
+        ['run', '--rm', '--network', 'host', ...user, ...pass, '-v', `${dir}:${dir}`, rcloneImage(ctx), ...args],
         { timeoutMs: 7_200_000 },
       )
     }

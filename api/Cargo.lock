@@ -3993,6 +3993,8 @@ dependencies = [
  "talaria-google-org",
  "talaria-google-pending",
  "talaria-google-provisioning",
+ "talaria-google-sheets",
+ "talaria-google-slides",
  "talaria-harness",
  "talaria-harness-defs",
  "talaria-harness-json",
@@ -5164,6 +5166,7 @@ dependencies = [
  "talaria-google-drive",
  "talaria-google-gmail",
  "talaria-google-org",
+ "talaria-google-sheets",
  "talaria-notify",
  "talaria-realtime",
  "talaria-secretbox",
@@ -5193,6 +5196,30 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "talaria-google-sheets"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-errors",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-google-slides"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-google-errors",
+ "tracing",
 ]
 
 [[package]]
@@ -6643,7 +6670,6 @@ name = "talaria-routes-workbench"
 version = "0.1.0"
 dependencies = [
  "axum",
- "futures-util",
  "redis",
  "serde",
  "serde_json",

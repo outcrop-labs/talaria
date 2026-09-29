@@ -77,6 +77,20 @@ export function toolsUnlockedBy(kind: string): string[] {
       return ['draft_email']
     case 'calendar_create':
       return ['draft_calendar_event']
+    case 'calendar_update':
+      return ['update_google_event']
+    case 'calendar_cancel':
+      return ['cancel_google_event']
+    case 'meeting_create':
+      return ['create_google_meeting']
+    case 'doc_update':
+      return ['update_google_doc', 'append_google_doc']
+    case 'sheet_update':
+      return ['update_google_sheet']
+    case 'drive_move':
+      return ['move_google_file']
+    case 'drive_rename':
+      return ['rename_google_file']
     case 'ticket_move':
       return ['triage_ticket']
     case 'board_access':

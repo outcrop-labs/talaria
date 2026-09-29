@@ -50,9 +50,9 @@ source.
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_flow.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_flow.rs)
 
-> /api/workbench/flow. Per-repo git flow (PR base + optional testing
-> branch). GET → configured flows + the reachable pool; PUT → set one
-> repo's flow. agents.manage.
+> /api/workbench/flow. Per-repo git flow (the branch PRs target). GET →
+> configured flows + the reachable pool; PUT → set one repo's flow.
+> agents.manage.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -108,7 +108,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_jobs.rs`](
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `jobId` | `uuid` |  |
-| `action` | `enum(approve|reject|merge_testing)` |  |
+| `action` | `enum(approve|reject)` |  |
 | `note` | `string?(500)` |  |
 
 ## `/api/workbench/repo-requests`

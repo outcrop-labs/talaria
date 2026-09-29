@@ -12,7 +12,7 @@ bun talaria box enter demo opencode
 
 A devbox is the containerized alternative to a
 [worktree](./WORKTREES.md): instead of a second checkout sharing the host, it's
-a full stack per task — its own Postgres/Redis/Qdrant/MinIO, its own fleet
+a full stack per task — its own Postgres/Redis/Qdrant/storage, its own fleet
 project, its own agent-CLI home — while the heavyweight *stateless* services
 (embeddings, search) are shared with the primary dev stack. Multiple agents
 (or humans) can run boxes side by side without touching each other or the
@@ -90,7 +90,7 @@ the symlink spelling never leaks into config the box must resolve.
                            │ default       │ talaradev     │ fleet
         ┌──────────────────▼──┐  ┌─────────▼──────────┐  ┌─▼─────────────────┐
         │ postgres redis      │  │ talaria-embeddings │  │ devbox-<name>-fleet│
-        │ qdrant    minio     │  │ talaria-searxng    │  │ (spawned agents)   │
+        │ qdrant    storage   │  │ talaria-searxng    │  │ (spawned agents)   │
         │ (per box, private)  │  │ (shared, from the  │  │ (per box, private) │
         │ nothing published   │  │  primary dev stack)│  │                   │
         └─────────────────────┘  └────────────────────┘  └───────────────────┘
@@ -181,7 +181,7 @@ Auth options:
 | What | Always? | How |
 |---|---|---|
 | Postgres | yes | point-in-time `pg_dump` restore — everything the UI shows |
-| MinIO | yes | `mc mirror` of the primary bucket through a dual-homed throwaway (no-op when the primary never uploaded) |
+| Object storage | yes | `rclone copy` of the primary bucket through a dual-homed throwaway (no-op when the primary never uploaded) |
 | chassis + `fleet/.env` | yes | template with the network repointed at this box's fleet; LLM endpoint copied from the primary |
 | Qdrant | `--qdrant` | snapshot round-trip — **derived** data; default is to re-run the KB backfill in the box's app instead |
 | Redis | never | sessions/queues are transient by design |

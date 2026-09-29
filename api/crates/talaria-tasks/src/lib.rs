@@ -51,6 +51,7 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   (trunc(extract(epoch from t.created_at) * 1000))::bigint as created_at_ms, \
   (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_at_ms, \
   (trunc(extract(epoch from t.completed_at) * 1000))::bigint as completed_at_ms, \
+  (trunc(extract(epoch from t.approved_at) * 1000))::bigint as approved_at_ms, \
   (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms \
   from tasks t join boards b on b.id = t.board_id";
 
@@ -85,6 +86,7 @@ struct TaskRow {
     created_at_ms: i64,
     updated_at_ms: i64,
     completed_at_ms: Option<i64>,
+    approved_at_ms: Option<i64>,
     archived_at_ms: Option<i64>,
 }
 
@@ -116,6 +118,7 @@ impl From<TaskRow> for Task {
             created_at: epoch_ms_to_iso(r.created_at_ms),
             updated_at: epoch_ms_to_iso(r.updated_at_ms),
             completed_at: r.completed_at_ms.map(epoch_ms_to_iso),
+            approved_at: r.approved_at_ms.map(epoch_ms_to_iso),
             archived_at: r.archived_at_ms.map(epoch_ms_to_iso),
         }
     }
@@ -1021,6 +1024,7 @@ pub async fn update_task(
         .or(promoted_to)
         .unwrap_or_else(|| cur.status.clone());
     let completed_at = completed_at_for(&meta, &next_status, cur.completed_at.as_deref());
+    let approved_at = approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
     let archived_at = match patch.archived {
         None => cur.archived_at.clone(),
         Some(true) => Some(
@@ -1037,7 +1041,7 @@ pub async fn update_task(
          assignees=$7, due_date=$8::timestamptz, start_date=$9::timestamptz, color=$10, \
          estimated_hours=$11::numeric, parent_id=$12::uuid, tags=$13, attachments=$14, \
          outcome=$15, resolution=$16, error_message=$17, completed_at=$18::timestamptz, \
-         archived_at=$19::timestamptz, \
+         archived_at=$19::timestamptz, approved_at=$21::timestamptz, \
          time_spent_seconds=time_spent_seconds + $20, updated_at=now() \
          where id=$1::uuid",
     )
@@ -1061,6 +1065,7 @@ pub async fn update_task(
     .bind(&completed_at)
     .bind(&archived_at)
     .bind(add_seconds)
+    .bind(&approved_at)
     .execute(pg)
     .await?;
 
@@ -1981,8 +1986,65 @@ fn completed_at_for(meta: &StatusMeta, status: &str, previous: Option<&str>) -> 
     }
 }
 
-/// The reviewer's sign-off, moving the ticket out of review in the same
-/// transaction that records the review.
+/// Does this status change invalidate a human sign-off?
+///
+/// Approval is a MARK that must SURVIVE column moves — that is the whole
+/// point of it: a signed-off ticket gets carried through "merging",
+/// "releasing" or whatever else a board models before a person calls it done.
+/// So the mark is carried through by default.
+///
+/// The one thing that clears it is the ticket ENTERING review again from
+/// outside review: that is a fresh round on work that changed since the
+/// sign-off, and the old approval no longer describes it. Moving between two
+/// review columns is not a new round, so it keeps the mark.
+fn approved_at_for(
+    meta: &StatusMeta,
+    status: &str,
+    previous: &str,
+    approved_at: Option<&str>,
+) -> Option<String> {
+    let entering_review = meta.review_keys.iter().any(|k| k == status)
+        && !meta.review_keys.iter().any(|k| k == previous);
+    if entering_review {
+        None
+    } else {
+        approved_at.map(|s| s.to_string())
+    }
+}
+
+/// Stamp or clear the human sign-off mark. The ONE place either approval path
+/// writes it — the ticket's review gate and the inbox/brief review card — so
+/// the two cannot drift on what approving a ticket means.
+pub async fn set_task_approved(
+    pg: &PgPool,
+    task_id: &str,
+    approved: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update tasks set approved_at = case when $2 then now() else null end, \
+         updated_at = now() where id = $1::uuid",
+    )
+    .bind(task_id)
+    .bind(approved)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The reviewer's verdict, recorded in the same transaction that marks the
+/// ticket.
+///
+/// APPROVAL IS A MARK, NOT A MOVE. It stamps `approved_at` and leaves the
+/// column exactly where it is, because a signed-off ticket usually still has
+/// merges, a deploy or a release ahead of it — forcing it into `done` said
+/// work had shipped when it had not, and there was no way to park it in the
+/// column that told the truth. A person moves it to done when it really is.
+/// `next_status` is therefore the REJECTION destination only, and is ignored
+/// for an approval.
+///
+/// A rejection is still the move — back to `next_status` — and it clears any
+/// earlier sign-off, because the ticket is going back for more work.
+///
 /// None when the ticket is gone or no longer sitting in review (the
 /// CAS-where makes the second a race resolving to nothing).
 pub async fn complete_quality_review(
@@ -2000,21 +2062,32 @@ pub async fn complete_quality_review(
     if !meta.review_keys.contains(&current.status) {
         return Ok(None);
     }
-    if !meta.keys.iter().any(|k| k == next_status) {
+    let approved = review_status == "approved";
+    // An approval keeps the ticket where it is, so only a rejection needs a
+    // destination — and only a rejection can be refused for lacking one.
+    if !approved && !meta.keys.iter().any(|k| k == next_status) {
         return Err(TaskError::Refusal(format!(
             "\"{next_status}\" is not a status on this board"
         )));
     }
+    // The status the ticket ends on: unchanged for an approval.
+    let next_status = if approved {
+        &current.status
+    } else {
+        next_status
+    };
     let completed_at = completed_at_for(&meta, next_status, current.completed_at.as_deref());
     let mut tx = pg.begin().await?;
     let rows: Vec<(String,)> = sqlx::query_as(
-        "update tasks set status = $1, completed_at = $2::timestamptz, updated_at = now() \
+        "update tasks set status = $1, completed_at = $2::timestamptz, \
+         approved_at = case when $5 then now() else null end, updated_at = now() \
          where id = $3::uuid and status = $4 returning id::text",
     )
     .bind(next_status)
     .bind(&completed_at)
     .bind(task_id)
     .bind(&current.status)
+    .bind(approved)
     .fetch_all(&mut *tx)
     .await?;
     if rows.is_empty() {
@@ -2032,20 +2105,29 @@ pub async fn complete_quality_review(
     .bind(review_status)
     .execute(&mut *tx)
     .await?;
-    sqlx::query(
-        "insert into task_activity (task_id, actor, type, description) values \
-         ($1::uuid, $2, 'review', $3), ($1::uuid, $2, 'status', $4)",
-    )
-    .bind(task_id)
-    .bind(reviewer)
-    .bind(if review_status == "approved" {
-        "approved this task"
+    // An approval does not move the ticket, so it gets the review line only —
+    // a "moved to quality_review" line on a ticket that never left review was
+    // just noise in the audit trail.
+    if approved {
+        sqlx::query(
+            "insert into task_activity (task_id, actor, type, description) values \
+             ($1::uuid, $2, 'review', 'approved this task — a person moves it to done')",
+        )
+        .bind(task_id)
+        .bind(reviewer)
+        .execute(&mut *tx)
+        .await?;
     } else {
-        "requested changes"
-    })
-    .bind(format!("moved to {next_status}"))
-    .execute(&mut *tx)
-    .await?;
+        sqlx::query(
+            "insert into task_activity (task_id, actor, type, description) values \
+             ($1::uuid, $2, 'review', 'requested changes'), ($1::uuid, $2, 'status', $3)",
+        )
+        .bind(task_id)
+        .bind(reviewer)
+        .bind(format!("moved to {next_status}"))
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     if meta.agent_start_keys.iter().any(|k| k == next_status)
@@ -2054,11 +2136,12 @@ pub async fn complete_quality_review(
         spawn_dispatch_id(deps, task_id.to_string(), None);
     }
 
-    // The engine fires on terminal sign-offs here too — a reviewer's
-    // APPROVE is the other human-approved done the workchain engine knows
-    // (inbox_focus approve moves the ticket into the board's first done
-    // column via this very call). Firing only on terminal keeps the
-    // trigger surface exactly the one the update_task hook documents.
+    // Firing only on terminal keeps the trigger surface exactly the one the
+    // update_task hook documents. Note that an APPROVAL no longer reaches it:
+    // approval is a mark and leaves the ticket in review, which is Live, so
+    // the chain advances when a PERSON moves the ticket to done (through
+    // update_task's own hook) rather than on the sign-off. That is the point —
+    // the next step should start when the work has actually landed.
     if talaria_workchains::terminal_of(&meta, next_status) != talaria_workchains::Terminal::Live {
         let deps = deps.clone();
         let board_id = current.board_id.clone();
@@ -2571,6 +2654,77 @@ mod tests {
         // A non-done column clears it — the ticket is no longer finished.
         assert_eq!(
             completed_at_for(&meta, "inbox", Some("2026-01-01T00:00:00.000Z")),
+            None
+        );
+    }
+
+    // ── approved_at_for: the sign-off mark's survival rule ──────────────────
+
+    fn meta_with_review(review: &[&str]) -> StatusMeta {
+        StatusMeta {
+            keys: vec![
+                "inbox".into(),
+                "doing".into(),
+                "review".into(),
+                "merging".into(),
+                "done".into(),
+            ],
+            agent_start_keys: vec![],
+            review_key: review.first().map(|k| k.to_string()),
+            review_keys: review.iter().map(|k| k.to_string()).collect(),
+            done_keys: vec!["done".into()],
+            default_key: Some("inbox".into()),
+            assigned_key: None,
+            pickup_keys: vec![],
+            working_keys: vec![],
+            active_key: None,
+        }
+    }
+
+    const STAMP: &str = "2026-01-01T00:00:00.000Z";
+
+    #[test]
+    fn approval_survives_the_moves_it_exists_to_allow() {
+        let meta = meta_with_review(&["review"]);
+        // THE WHOLE POINT: a signed-off ticket gets carried on through whatever
+        // a board models between review and done, and keeps its mark.
+        assert_eq!(
+            approved_at_for(&meta, "merging", "review", Some(STAMP)),
+            Some(STAMP.into())
+        );
+        assert_eq!(
+            approved_at_for(&meta, "done", "merging", Some(STAMP)),
+            Some(STAMP.into())
+        );
+        // Staying put keeps it too (any other field's patch lands here).
+        assert_eq!(
+            approved_at_for(&meta, "review", "review", Some(STAMP)),
+            Some(STAMP.into())
+        );
+        // Nothing to carry stays nothing — this never invents a sign-off.
+        assert_eq!(approved_at_for(&meta, "done", "merging", None), None);
+    }
+
+    #[test]
+    fn re_entering_review_retires_a_stale_sign_off() {
+        let meta = meta_with_review(&["review"]);
+        // Work changed after the sign-off and came back for another round, so
+        // the old approval no longer describes what is being reviewed.
+        assert_eq!(approved_at_for(&meta, "review", "doing", Some(STAMP)), None);
+    }
+
+    #[test]
+    fn moving_between_two_review_columns_is_not_a_new_round() {
+        // A board with two review stages (say "code review" then "sign-off"):
+        // walking from one to the other is the same round, so the mark stands.
+        let meta = meta_with_review(&["review", "signoff"]);
+        assert_eq!(
+            approved_at_for(&meta, "signoff", "review", Some(STAMP)),
+            Some(STAMP.into())
+        );
+        // …but arriving from outside review still clears it.
+        assert_eq!(
+            approved_at_for(&meta, "signoff", "doing", Some(STAMP)),
             None
         );
     }

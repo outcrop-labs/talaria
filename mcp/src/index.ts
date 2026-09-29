@@ -1174,6 +1174,53 @@ server.registerTool(
 )
 
 server.registerTool(
+  'read_google_slides',
+  {
+    description:
+      "Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Reading only — there is no tool that edits a deck, so summarise it, check it, or draft copy for a person to paste, but never say you changed it. External content: do not cite it as knowledge-base evidence.",
+    inputSchema: { id: z.string().describe('Google presentation id') },
+  },
+  async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/slides/${encodeURIComponent(id)}`)),
+)
+
+server.registerTool(
+  'read_google_sheet',
+  {
+    description:
+      "Read a Google Sheet's cells. The id comes from find_google_files or search_drive. Returns the document title, every tab's name, the A1 range the rows actually came from, and the rows themselves. Omit range to read the first tab whole; pass one (\"Q3\", \"'Q3 forecast'!A1:D50\") to read part of it. Trailing empty cells are omitted, so rows can be ragged. External content: do not cite it as knowledge-base evidence.",
+    inputSchema: {
+      id: z.string().describe('Google spreadsheet id'),
+      range: z.string().max(200).optional().describe("A1 range, e.g. \"Sheet1\" or \"'Q3 forecast'!A1:D50\""),
+    },
+  },
+  async ({ id, range }) =>
+    ok(
+      await api(
+        'GET',
+        `/api/integrations/google/agent/sheets/${encodeURIComponent(id)}${range ? `?range=${encodeURIComponent(range)}` : ''}`,
+      ),
+    ),
+)
+
+server.registerTool(
+  'update_google_sheet',
+  {
+    description:
+      'Write cells to a Google Sheet. Read it first so you know the shape you are writing into. It is ALWAYS queued for a human to approve — say it is queued, never that it is done, and confirm the id with list_pending_sends. Only the range you name changes; other tabs, formatting and formulas outside it are untouched. Cells are strings and are interpreted the way a typed cell is, so "=SUM(A1:A9)" becomes a formula and "42%" a percentage — send numbers as strings ("42").',
+    inputSchema: {
+      id: z.string().describe('Google spreadsheet id'),
+      range: z.string().max(200).describe("A1 range the rows fill, e.g. \"'Q3 forecast'!A2:D10\""),
+      rows: z
+        .array(z.array(z.string()))
+        .max(5000)
+        .describe('Row-major cells, each a string'),
+      note: z.string().max(500).optional().describe('Why this write, for the person approving it'),
+    },
+  },
+  async ({ id, ...rest }) => ok(await api('POST', `/api/integrations/google/agent/sheets/${encodeURIComponent(id)}`, rest)),
+)
+
+server.registerTool(
   'find_google_files',
   {
     description:

@@ -22,7 +22,9 @@
   }: {
     runId: string
     taskId: string
-    onEnded: () => void
+    /** A notification, not a close signal. A run ending is exactly when the
+     *  record becomes worth reading, so no caller tears the pane down here. */
+    onEnded?: () => void
     history?: WatchFrame[]
     resetKey?: number
     onFrame?: (ev: WatchFrame) => void
@@ -35,6 +37,7 @@
   let ended = $state(false)
   let lines = $state<string[]>([])
   let terminal = $state('')
+  let watchError = $state<string | null>(null)
 
   // ── Run state: phases and the end. ────────────────────────────────────────
   $effect(() => {
@@ -50,7 +53,11 @@
       void qc.invalidateQueries({ queryKey: ['task', taskId] })
       if (ev.state && ['done', 'error', 'cancelled'].includes(ev.state)) {
         ended = true
-        onEnded()
+        // The last turn's transcript is captured as the run ends, so the
+        // artifacts behind the Turns tab are stale exactly now. Refresh them
+        // rather than leave the finished record a turn short.
+        void qc.invalidateQueries({ queryKey: ['artifacts-for', 'task', taskId] })
+        onEnded?.()
       }
     })
   })
@@ -63,14 +70,19 @@
     void resetKey
     lines = []
     terminal = ''
+    watchError = null
     let closed = false
     const ctl = new AbortController()
     const feed = (async () => {
       let res: Response & { body: ReadableStream<Uint8Array> }
       try {
         res = await getStream(`/api/runs/${runId}/watch`, { signal: ctl.signal })
-      } catch {
-        return // a stream that cannot open is a pane that stays quiet; the run SSE still reports state
+      } catch (e) {
+        // Say so. A silent return renders as "waiting for the agent's next
+        // output", which is what a working stream and a broken one both
+        // looked like — the reason this pane's failures went unnoticed.
+        if (!closed) watchError = e instanceof Error ? e.message : 'the watch stream could not be opened'
+        return
       }
       const reader = res.body.getReader()
       const dec = new TextDecoder()
@@ -185,7 +197,9 @@
     {/each}
     {#each lines as l, i (i)}<div class="whitespace-pre-wrap">{l}</div>{/each}
     {#if terminal}<div class="whitespace-pre-wrap">{terminal}<span class="animate-pulse">▍</span></div>{/if}
-    {#if !ended && history.length === 0 && lines.length === 0 && !terminal}
+    {#if watchError}
+      <div class="text-danger">the watch stream is not connected — {watchError}</div>
+    {:else if !ended && history.length === 0 && lines.length === 0 && !terminal}
       <div class="text-muted">waiting for the agent's next output</div>
     {/if}
   </div>

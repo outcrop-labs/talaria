@@ -166,7 +166,7 @@ describe('runRestore — the restore itself', () => {
     }
   })
 
-  test('an s3 snapshot with creds mirrors into the bucket', async () => {
+  test('an s3 snapshot with creds copies into the bucket', async () => {
     const snap = await makeSnap({ manifest: 'talaria_backup=1\nstorage_mode=s3\nstorage_endpoint=https://s3\nstorage_bucket=b\nstorage_prefix=p/\n' })
     try {
       const ctx = fakeCtx({
@@ -175,10 +175,12 @@ describe('runRestore — the restore itself', () => {
         env: { TALARIA_BACKUP_S3_ACCESS_KEY: 'AK', TALARIA_BACKUP_S3_SECRET_KEY: 'SK' },
       })
       await runRestore(ctx, snap, { what: 'uploads', target: TARGET })
-      const mirror = ctx.calls.find((c) => c.cmd === 'mc' && c.args.includes('mirror'))!
-      expect(mirror.args).toContain('t/b/p/uploads')
-      // the alias was set against the manifest's endpoint first
-      expect(ctx.calls.some((c) => c.cmd === 'mc' && c.args.includes('alias') && c.args.includes('https://s3'))).toBe(true)
+      const copy = ctx.calls.find((c) => c.cmd === 'rclone' && c.args.includes('copy'))!
+      expect(copy.args).toContain('t:b/p/uploads')
+      // No alias step to assert any more — the remote is pure env, so what
+      // matters is that rclone will dial the endpoint the MANIFEST named.
+      expect(ctx.env.RCLONE_CONFIG_T_ENDPOINT).toBe('https://s3')
+      expect(ctx.calls.some((c) => c.args.includes('sync'))).toBe(false)
     } finally {
       rmSync(snap, { recursive: true, force: true })
     }

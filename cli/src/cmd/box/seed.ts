@@ -5,9 +5,9 @@
 // Scope, and why:
 //   Postgres   REQUIRED — a point-in-time dump of the primary dev DB (the
 //              worktree.sh shape). Everything the app shows comes from here.
-//   MinIO      REQUIRED — DB rows reference s3:// blobs; without the mirror
-//              the seeded UI shows broken attachments. Box minio runs the
-//              same creds as primary, so the mirror is pure bytes.
+//   Storage    REQUIRED — DB rows reference s3:// blobs; without the copy
+//              the seeded UI shows broken attachments. Box storage runs the
+//              same creds as primary, so the copy is pure bytes.
 //   chassis    fleet config — the template with the network repointed at this
 //   + fleet/.env  box's private fleet network, and the LLM endpoint copied
 //              from the primary fleet/.env (agents need values present; the
@@ -27,9 +27,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf } from '../../cli'
-import { DEV_NETWORK, MINIO_CONTAINER, PG_CONTAINER, QDRANT_CONTAINER, containerExists } from '../../containers'
+import { DEV_NETWORK, PG_CONTAINER, QDRANT_CONTAINER, STORAGE_CONTAINER, containerExists } from '../../containers'
 import { readEnvFile, writeSecret } from '../../envfile'
-import { mcImage } from '../../backup/lib'
+import { rcloneImage } from '../../backup/lib'
 import { boxFleetNetwork, boxHost, boxProject, boxSvc, boxState } from './shared'
 
 /** Repoint the chassis's fleet network at THIS box's own — the template
@@ -67,7 +67,7 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
   const state = boxState(ctx, name)
   // NOT requireBox: `new` calls this before it writes box.env.
   const MAIN_PGC = ctx.env.TALARIA_PG_CONTAINER ?? PG_CONTAINER
-  const MAIN_MINIOC = ctx.env.TALARIA_MINIO_CONTAINER ?? MINIO_CONTAINER
+  const MAIN_STORAGEC = ctx.env.TALARIA_STORAGE_CONTAINER ?? ctx.env.TALARIA_MINIO_CONTAINER ?? STORAGE_CONTAINER
   const MAIN_QDRANT = ctx.env.TALARIA_QDRANT_CONTAINER ?? QDRANT_CONTAINER
   const PGC = boxSvc(name, 'postgres')
 
@@ -105,38 +105,45 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
     ctx.log.ok('seeded')
   }
 
-  // ── MinIO ──────────────────────────────────────────────────────────────────
-  ctx.log.say('MinIO — mirroring the primary dev bucket (DB rows reference these blobs)')
+  // ── Object storage ─────────────────────────────────────────────────────────
+  ctx.log.say('Object storage — mirroring the primary dev bucket (DB rows reference these blobs)')
   const uiEnv = readEnvFile(ctx, 'ui/.env')
   const s3Key = uiEnv.TALARIA_S3_ACCESS_KEY ?? 'talaria'
   const s3Secret = uiEnv.TALARIA_S3_SECRET_KEY ?? 'talaria-dev-secret'
   const s3Bucket = uiEnv.TALARIA_S3_BUCKET ?? 'talaria'
-  const DSTC = boxSvc(name, 'minio')
-  const mirrorFails = 'mirror failed — attachments in the seeded UI will be broken until re-uploaded'
-  // The two minios live on different networks (primary dev vs this box's
-  // own), so the mirror runs through a throwaway mc container joined to
+  const DSTC = boxSvc(name, 'storage')
+  const mirrorFails = 'copy failed — attachments in the seeded UI will be broken until re-uploaded'
+  // The two stores live on different networks (primary dev vs this box's
+  // own), so the copy runs through a throwaway rclone container joined to
   // both. Created stopped (networks attach to stopped containers), then
-  // started with a sleep PID — the image's `mc` entrypoint with no arguments
-  // exits instantly, and exec needs a live container.
-  const MCT = boxSvc(name, 'seed-mc')
+  // started with a sleep PID — the image's `rclone` entrypoint with no
+  // arguments exits instantly, and exec needs a live container.
+  const RCT = boxSvc(name, 'seed-rclone')
+  // BOTH remotes are pure env (RCLONE_CONFIG_<NAME>_<KEY>), so there is no
+  // alias step and no `sh -c` around the copy. The creds still ride the
+  // docker argv the same way mc's did — what goes away is the shell, and
+  // with it the quoting that had to be trusted to hold.
+  const remote = (n: string, host: string): string[] => [
+    '-e', `RCLONE_CONFIG_${n}_TYPE=s3`,
+    '-e', `RCLONE_CONFIG_${n}_PROVIDER=Other`,
+    '-e', `RCLONE_CONFIG_${n}_ENDPOINT=http://${host}:9000`,
+    '-e', `RCLONE_CONFIG_${n}_ACCESS_KEY_ID=${s3Key}`,
+    '-e', `RCLONE_CONFIG_${n}_SECRET_ACCESS_KEY=${s3Secret}`,
+    '-e', `RCLONE_CONFIG_${n}_REGION=us-east-1`,
+  ]
   try {
-    await ctx.exec('docker', ['rm', '-f', MCT]).catch(() => {})
-    // mc from the pinned GHCR mirror — the same spelling and override rules
-    // as backup/restore (MinIO is dead upstream; see backup/lib.ts).
-    await ctx.exec('docker', ['create', '--name', MCT, '--entrypoint', 'sh', mcImage(ctx), '-c', 'sleep infinity'])
-    await ctx.exec('docker', ['network', 'connect', `${boxProject(name)}_default`, MCT])
-    await ctx.exec('docker', ['network', 'connect', DEV_NETWORK, MCT])
-    await ctx.exec('docker', ['start', MCT])
-    // Single quotes guard the creds from the inner sh — dev keys are hex/simple.
-    // A throw from the exec IS the failure signal.
+    await ctx.exec('docker', ['rm', '-f', RCT]).catch(() => {})
     await ctx.exec('docker', [
-      'exec', MCT, 'sh', '-c',
-      `mc alias set src http://${MAIN_MINIOC}:9000 '${s3Key}' '${s3Secret}' >/dev/null && ` +
-        `mc alias set dst http://${DSTC}:9000 '${s3Key}' '${s3Secret}' >/dev/null`,
+      'create', '--name', RCT, '-e', 'RCLONE_CONFIG=/dev/null',
+      ...remote('SRC', MAIN_STORAGEC), ...remote('DST', DSTC),
+      '--entrypoint', 'sh', rcloneImage(ctx), '-c', 'sleep infinity',
     ])
+    await ctx.exec('docker', ['network', 'connect', `${boxProject(name)}_default`, RCT])
+    await ctx.exec('docker', ['network', 'connect', DEV_NETWORK, RCT])
+    await ctx.exec('docker', ['start', RCT])
     let srcHasBucket = false
     try {
-      await ctx.exec('docker', ['exec', MCT, 'sh', '-c', `mc stat src/${s3Bucket} >/dev/null 2>&1`])
+      await ctx.exec('docker', ['exec', RCT, 'rclone', 'lsf', `src:${s3Bucket}`])
       srcHasBucket = true
     } catch {
       srcHasBucket = false
@@ -147,17 +154,16 @@ export async function runSeed(ctx: Ctx, name: string, o: { force?: boolean; qdra
       // to mirror.
       ctx.log.ok(`primary has no '${s3Bucket}' bucket yet (no uploads ever) — nothing to mirror`)
     } else {
-      await ctx.exec('docker', [
-        'exec', MCT, 'sh', '-c',
-        `mc mb --ignore-existing dst/${s3Bucket} >/dev/null 2>&1; ` +
-          `mc mirror --overwrite src/${s3Bucket} dst/${s3Bucket} >/dev/null`,
-      ])
+      // mkdir is idempotent on an existing bucket; copy (never sync) leaves
+      // anything already in the box's bucket alone.
+      await ctx.exec('docker', ['exec', RCT, 'rclone', 'mkdir', `dst:${s3Bucket}`])
+      await ctx.exec('docker', ['exec', RCT, 'rclone', 'copy', `src:${s3Bucket}`, `dst:${s3Bucket}`])
       ctx.log.ok('mirrored')
     }
   } catch {
-    ctx.log.warn(`couldn't complete the mirror — ${mirrorFails}`)
+    ctx.log.warn(`couldn't complete the copy — ${mirrorFails}`)
   } finally {
-    await ctx.exec('docker', ['rm', '-f', MCT]).catch(() => {})
+    await ctx.exec('docker', ['rm', '-f', RCT]).catch(() => {})
   }
 
   // ── Fleet config plane ─────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
-// /api/workbench/flow. Per-repo git flow (PR base + optional testing
-// branch). GET → configured flows + the reachable pool; PUT → set one
-// repo's flow. agents.manage.
+// /api/workbench/flow. Per-repo git flow (the branch PRs target). GET →
+// configured flows + the reachable pool; PUT → set one repo's flow.
+// agents.manage.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -38,20 +38,15 @@ pub async fn put(
         Ok(r) => r,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // Max-100 nullable-optional strings, then trim-or-null: absent, null,
-    // and blank-after-trim ALL land as null, so the PUT always sets both
-    // columns (a PUT with only one field clears the other).
+    // Max-100 nullable-optional string, then trim-or-null: absent, null, and
+    // blank-after-trim ALL land as null, so the PUT always sets the column.
     let read = |key: &str| nullish_max_string_member(obj, key, 100);
     let norm = |v: Option<String>| Some(v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
     let base = match read("baseBranch") {
         Ok(v) => norm(v),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let testing = match read("testingBranch") {
-        Ok(v) => norm(v),
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-    };
-    if let Err(e) = gh::set_repo_flow(&state.pg, &repo, base, testing).await {
+    if let Err(e) = gh::set_repo_flow(&state.pg, &repo, base).await {
         return Ok(internal("[workbench/flow] flow write failed", e));
     }
     let flows = match gh::list_repo_flows(&state.pg).await {
