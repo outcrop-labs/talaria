@@ -289,4 +289,43 @@ describe('talaria dev — rust api sidecar', () => {
       expect(ctx.env.TALARIA_RUST_API_URL).toBe('http://10.0.0.5:5274')
     })
   })
+
+  test("ui/.env's TALARIA_API_PORT is read — a worktree's api port lives in that file", async () => {
+    await withListener(async (port) => {
+      // Nothing in the shell: the port comes from the file, which is where
+      // `talaria worktree` writes it. Reading only ctx.env meant a worktree's
+      // own api port was ignored and every stack fell back to the shared
+      // :5274 — where `talaria dev` ADOPTS whatever is already listening, so
+      // the second worktree proxied /api/* to the first one's database.
+      const ctx = fakeCtx()
+      await rustApi(ctx, `DATABASE_URL=x\nTALARIA_API_PORT=${port}\n`)
+      expect(ctx.logLines[0]).toMatchObject({
+        kind: 'say',
+        msg: `rust api → already listening on :${port}; adopting it`,
+      })
+      expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
+    })
+  })
+
+  test('the shell still wins over ui/.env for the api port', async () => {
+    await withListener(async (port) => {
+      // Same precedence as the S3 lift: the environment is the override point.
+      const ctx = fakeCtx({ env: { TALARIA_API_PORT: String(port) } })
+      await rustApi(ctx, 'DATABASE_URL=x\nTALARIA_API_PORT=59999\n')
+      expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
+    })
+  })
+
+  test('the api port is lifted into the cargo child — the api BINDS it', async () => {
+    const port = await closedPort()
+    // cargo is missing, so the spawn never happens and this stops at the warn —
+    // but the lift list is what matters, and it is read before that. The api
+    // reads TALARIA_API_PORT for its own bind (talaria-config, default 5274),
+    // so a port the proxy dials but the child never sees would leave the api
+    // bound to the shared port while the app looked at the private one.
+    const ctx = fakeCtx()
+    ctx.plant(['cargo', ['--version']], new Error('not found'))
+    await rustApi(ctx, `DATABASE_URL=x\nTALARIA_API_PORT=${port}\n`)
+    expect(ctx.env.TALARIA_RUST_API_URL).toBe(`http://127.0.0.1:${port}`)
+  })
 })

@@ -1,8 +1,8 @@
 // `talaria worktree` — an ISOLATED dev worktree: its own git worktree, its own
-// Postgres + Redis (seeded from the main dev DB), its own ui/.env on unique
-// ports. It shares nothing mutable with the main environment, so you can hack
-// in it without any risk of breaking your primary dev stack. Port of
-// scripts/worktree.sh.
+// Postgres + Redis (seeded from the main dev DB), its own Rust api, and its own
+// ui/.env on unique ports. It shares nothing mutable with the main environment,
+// so you can hack in it without any risk of breaking your primary dev stack.
+// Port of scripts/worktree.sh.
 
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -13,15 +13,28 @@ import { envValue } from '../envfile'
 import { PG_CONTAINER } from '../containers'
 import { NAME_RE, portTaken } from '../paths'
 
-/** The shared port slot: first c in 1..89 with app/pg/redis (53xx/56xx/65xx)
- *  all free, so any number of worktrees run at once without colliding.
- *  Injectable probe for tests. */
+/** The shared port slot: first c in 1..89 with app/api/pg/redis
+ *  (53xx/54xx/56xx/65xx) all free, so any number of worktrees run at once
+ *  without colliding. Injectable probe for tests.
+ *
+ *  THE API PORT IS IN HERE FOR A REASON. It was not, and the Rust api stayed on
+ *  the fixed :5274 for every stack — while `talaria dev` ADOPTS an api already
+ *  listening there rather than double-binding. So the second worktree to start
+ *  silently proxied every /api/* request to the FIRST worktree's api, which is
+ *  pointed at the first worktree's database. Two app servers, one database, by
+ *  default — the exact thing docs/WORKTREES.md and AGENTS.md forbid, and
+ *  invisible, because the app answered normally with someone else's data. */
 export async function worktreeSlot(
   taken: (port: number) => Promise<boolean> = (p) => portTaken(p),
-): Promise<{ app: number; pg: number; redis: number } | null> {
+): Promise<{ app: number; api: number; pg: number; redis: number } | null> {
   for (let c = 1; c <= 89; c++) {
-    if (!(await taken(5300 + c)) && !(await taken(5600 + c)) && !(await taken(6500 + c))) {
-      return { app: 5300 + c, pg: 5600 + c, redis: 6500 + c }
+    if (
+      !(await taken(5300 + c)) &&
+      !(await taken(5400 + c)) &&
+      !(await taken(5600 + c)) &&
+      !(await taken(6500 + c))
+    ) {
+      return { app: 5300 + c, api: 5400 + c, pg: 5600 + c, redis: 6500 + c }
     }
   }
   return null
@@ -50,6 +63,34 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     await ctx.exec('docker', ['inspect', mainPgc])
   } catch {
     ctx.log.die(`main Postgres (${mainPgc}) isn't running — start the main stack first`)
+  }
+  // `inspect` only proves the CONTAINER exists. The seed below runs pg_dump
+  // against the `talaria` DATABASE, and a just-started postgres has not created
+  // it yet (the image's entrypoint does that during init), so a worktree
+  // created moments after `talaria dev` died with
+  //   psql: FATAL: database "talaria" does not exist
+  // half way through — after the git worktree and both containers existed, and
+  // before ui/.env was written, which is the one step that makes the checkout
+  // usable. `pg_isready -d` is the honest precondition: it answers for the
+  // database this is about to read, not just the process.
+  if (
+    !(await waitFor(
+      ctx,
+      'main postgres',
+      async () => {
+        try {
+          await ctx.exec('docker', ['exec', mainPgc, 'pg_isready', '-U', 'talaria', '-d', 'talaria'])
+          return true
+        } catch {
+          return false
+        }
+      },
+      30,
+    ))
+  ) {
+    ctx.log.die(
+      `main Postgres (${mainPgc}) is up but its 'talaria' database never became ready — is the main stack mid-boot, or did setup not finish?`,
+    )
   }
   if (existsSync(wt)) ctx.log.die(`${wt} already exists`)
 
@@ -113,7 +154,10 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
   const secretKey = envValue(uiEnv, 'TALARIA_SECRET_KEY')
   const kept = uiEnv
     .split('\n')
-    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT)=/.test(l))
+    // TALARIA_API_PORT joins the stripped set because envValue returns the
+    // FIRST match: leaving main's line in place would shadow the one appended
+    // below, and the worktree would silently go back to sharing :5274.
+    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT|TALARIA_API_PORT)=/.test(l))
     .join('\n')
   const note = secretKey
     ? ''
@@ -133,6 +177,12 @@ TALARIA_WORKTREE=${name}
 DATABASE_URL=postgres://talaria:talaria@127.0.0.1:${slot.pg}/talaria
 REDIS_URL=redis://127.0.0.1:${slot.redis}
 PORT=${slot.app}
+# The Rust api's own port for THIS stack. Without it every worktree's api wants
+# the same :5274, and \`talaria dev\` adopts whichever one got there first — so
+# this app would proxy /api/* to another worktree's api, on another worktree's
+# database. The api binds it (talaria-config reads TALARIA_API_PORT) and the
+# app's proxy dials it (TALARIA_RUST_API_URL derives from it in dev.ts).
+TALARIA_API_PORT=${slot.api}
 `,
   )
   ctx.log.ok('ui/.env written')
@@ -147,7 +197,7 @@ PORT=${slot.app}
 Worktree "${name}" ready — fully isolated from main.
 
   Run it:   cd ${wt} && bun talaria dev
-  App:      http://localhost:${slot.app}   (Postgres :${slot.pg} · Redis :${slot.redis})
+  App:      http://localhost:${slot.app}   (api :${slot.api} · Postgres :${slot.pg} · Redis :${slot.redis})
 
   Tear down when done:
     docker compose -p ${project} down -v
