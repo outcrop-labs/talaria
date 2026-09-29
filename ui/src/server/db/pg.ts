@@ -3278,6 +3278,25 @@ alter table tasks drop column if exists conversation_id`,
           join mcp_servers s on s.id = a.server_id
           where s.name = 'workbench'
         )`,
+  // Merge-to-testing is gone: the agent verb, the ticket button, the per-repo
+  // testing branch and the merge stamp. Talaria's job ends at the pull request,
+  // and how a branch is promoted or merged after that is the consuming
+  // repository's own branch policy and CI, not a shape this product should
+  // assume.
+  //
+  // ADD-FIRST, so no statement here. Two columns are now retired and unread —
+  // `workbench_jobs.merged_testing_at` and `workbench_repo_flow.testing_branch`
+  // — and they STAY, because the previous image's job wire still selects
+  // merged_testing_at by name: dropping it now would leave a rollback unable to
+  // read its own workbench_jobs table. Same call the developer-flag migration
+  // above made for the columns it retired. A later release drops both.
+  // Human sign-off is a MARK, not a move. Approving used to force the ticket
+  // into the board's done column, which was routinely a lie — merges still
+  // had to land, releases still had to ship. Approval now stamps this and
+  // leaves the status alone, so a person moves the ticket to done when it
+  // really is. The review queues read it to stop nagging about a ticket
+  // somebody already signed off.
+  `alter table tasks add column if not exists approved_at timestamptz`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

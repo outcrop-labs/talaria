@@ -173,7 +173,16 @@ pub fn item_fingerprint(item: &RawFocusItem) -> String {
 /// review, or waiting in triage — the read ACL (board membership or the owning
 /// team's) carried in the WHERE.
 pub async fn task_items(pg: &PgPool, user_id: &str) -> Result<Vec<RawFocusItem>, sqlx::Error> {
-    let review = status_category_sql("review", &["quality_review"]);
+    // An APPROVED ticket is not awaiting review any more: the sign-off is the
+    // answer to the question this queue asks. Folding `approved_at is null`
+    // into the review fragment itself covers both uses below — the is_review
+    // flag the card reads and the WHERE that admits the row at all — so a
+    // ticket a person already signed off stops turning up in the brief while
+    // it waits for its merge or release.
+    let review = format!(
+        "( {} and t.approved_at is null )",
+        status_category_sql("review", &["quality_review"])
+    );
     let sql = format!(
         "select t.id::text, t.board_id::text, \
                 t.title, t.description, t.status, t.priority, \
@@ -191,7 +200,7 @@ pub async fn task_items(pg: &PgPool, user_id: &str) -> Result<Vec<RawFocusItem>,
            and ( t.status in ('failed', 'blocked') \
                  or {review} \
                  or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start) \
-                 or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status in ('inbox', 'quality_review')) ) \
+                 or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'inbox') ) \
          order by t.created_at asc limit 200",
         vis = board_visibility_sql("$1", "$1", false),
     );

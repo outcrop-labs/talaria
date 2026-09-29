@@ -113,9 +113,11 @@ pub async fn home_queues(pg: &PgPool, user_id: &str) -> Result<HomeQueues, sqlx:
          where {} \
            and t.archived_at is null \
            and ( t.status = 'blocked' \
-                 or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review') \
+                 or ( t.approved_at is null \
+                      and ( t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'review') \
+                            or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'quality_review') ) ) \
                  or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start) \
-                 or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status in ('inbox', 'quality_review')) ) \
+                 or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'inbox') ) \
          order by t.updated_at desc",
         board_visibility_sql("$1", "$1", false),
     );

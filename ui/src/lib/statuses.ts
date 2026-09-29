@@ -45,6 +45,22 @@ export function useBoardStatuses(boardId: MaybeGetter<string | null>) {
 export const statusLabelOf = (key: string, statuses: BoardStatus[]): string =>
   statuses.find((s) => s.key === key)?.label ?? STATUS_LABEL[key as keyof typeof STATUS_LABEL] ?? key
 
+/** Is this status the board's REVIEW stage — the one a person signs off from?
+ *
+ *  Mirrors the server's review predicate exactly (`status_category_sql('review',
+ *  ['quality_review'])` in talaria-statuses): the board's own category when it
+ *  has a status set, and the legacy `quality_review` key only when it has none.
+ *
+ *  The ticket's approval gate reads THIS rather than `status === 'quality_review'`,
+ *  which is what it used to spell. That was a silent hole: a board that renamed
+ *  or re-keyed its review column still had a review stage the server would
+ *  accept a sign-off for, but the gate that offers the sign-off never rendered,
+ *  so the ticket sat in review with no way to approve it from the ticket. */
+export const isReviewStatus = (key: string, statuses: BoardStatus[]): boolean =>
+  statuses.length
+    ? statuses.some((s) => s.key === key && s.category === 'review')
+    : key === 'quality_review'
+
 /** THE STATUS PALETTE — the colour of every status key that no board row
  *  answers for: the virtual defaults before a board's status set arrives, and
  *  the OFF-BOARD terminals (`failed`, `cancelled`), which are legal on every
