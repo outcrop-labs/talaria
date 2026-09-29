@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-40 routes.
+42 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -37,6 +37,9 @@
 | [`/api/integrations/google/agent/gmail/organize`](#apiintegrationsgoogleagentgmailorganize) | POST | `agent` |
 | [`/api/integrations/google/agent/pending`](#apiintegrationsgoogleagentpending) | GET | `agent` |
 | [`/api/integrations/google/agent/pending/{id}`](#apiintegrationsgoogleagentpendingid) | GET | `agent` |
+| [`/api/integrations/google/agent/sheets/{id}`](#apiintegrationsgoogleagentsheetsid) | GET | `agent` |
+| [`/api/integrations/google/agent/sheets/{id}`](#apiintegrationsgoogleagentsheetsid) | POST | `agent` |
+| [`/api/integrations/google/agent/slides/{id}`](#apiintegrationsgoogleagentslidesid) | GET | `agent` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | GET | `session` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | POST | `session` |
 | [`/api/integrations/google/callback`](#apiintegrationsgooglecallback) | GET | `public` |
@@ -440,6 +443,42 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `{pending, approver}` | 200, 404 | — |
+
+## `/api/integrations/google/agent/sheets/{id}`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_sheets.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_sheets.rs)
+
+> Agent Google Sheets. Reads are free. A write ALWAYS queues for a human —
+> there is no create-it-yourself exemption here as there is for Docs, because
+> there is no "sheet this agent created" to exempt: the agent has no tool that
+> makes a Google Sheet, only ones that change an existing person's.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `…` | 200, 409 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentsheetsid-body) | `{pending, message}` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/sheets/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `range` | `string(1, 200)` |  |
+| `note` | `string?(500)` |  |
+
+## `/api/integrations/google/agent/slides/{id}`
+
+Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_slides.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_slides.rs)
+
+> Agent Google Slides, read only. There is no write half: see the crate
+> header in talaria-google-slides for why editing a deck is a different
+> problem than editing a doc.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `agent` | — | `…` | 200, 409 | — |
 
 ## `/api/integrations/google/calendar/events`
 

@@ -1,5 +1,6 @@
 // /api/conversations. GET
-// ?kind=plan → the user's plan conversations; anything else → their chats.
+// ?kind=plan → the user's plan conversations; ?kind=work → their work
+// sessions; anything else → their chats.
 // ?archived=1 → the retired set (exact string '1'); everything else is live.
 // Newest activity first; the client groups them by agent.
 
@@ -23,7 +24,10 @@ pub async fn get(
     uri: Uri,
 ) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
-    // ?kind=plan selects plans; every other value (absent included) → chats.
+    // ?kind=plan selects plans and ?kind=work selects work sessions; every
+    // other value (absent included) → chats. A whitelist, not a pass-through:
+    // `kind` reaches a SQL bind, and an unknown one would silently list
+    // nothing rather than the chats the caller asked for by omission.
     let kind = uri
         .query()
         .and_then(|q| {
@@ -32,7 +36,11 @@ pub async fn get(
                 .map(|(_, v)| v.into_owned())
         })
         .unwrap_or_default();
-    let kind = if kind == "plan" { "plan" } else { "chat" };
+    let kind = match kind.as_str() {
+        "plan" => "plan",
+        "work" => "work",
+        _ => "chat",
+    };
     // ?archived=1 — the exact string '1' — asks for the retired rows;
     // everything else sees the live ones. Same spelling as /api/boards.
     let archived = uri

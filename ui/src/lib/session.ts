@@ -2,6 +2,7 @@
 // Like the query hooks everywhere in lib/, these call createQuery and so must
 // run during component init (same rule React hooks had).
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { getJson, postJson } from '@/lib/fetch-json'
 import { toastError } from '@/lib/toast.svelte'
 import type { ProviderMeta } from '@/server/auth/config'
@@ -54,12 +55,18 @@ export function useSession() {
  *
  *  Returns a `{ current }` box, not a bare boolean: a primitive computed once
  *  at init would freeze before the session resolves. Read `.current` where the
- *  answer is used (template or `$derived`). */
-export function useHasPerm(perm: string): { readonly current: boolean } {
+ *  answer is used (template or `$derived`).
+ *
+ *  `perm` may be a getter, the same `MaybeGetter` every other hook in lib/
+ *  takes. A component that gets its permission as a PROP needs that: reading
+ *  the prop once at init is the `state_referenced_locally` warning, and the
+ *  query is keyed on the session rather than the permission, so re-reading it
+ *  costs nothing. */
+export function useHasPerm(perm: MaybeGetter<string>): { readonly current: boolean } {
   const query = createQuery(() => ({ queryKey: ['session'], queryFn: fetchSession, select: (d: SessionResult) => d.perms }))
   return {
     get current() {
-      return (query.data ?? []).includes(perm)
+      return (query.data ?? []).includes(resolve(perm))
     },
   }
 }

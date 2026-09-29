@@ -316,6 +316,10 @@ talaria-google-docs = { path = "crates/talaria-google-docs" }
 
 talaria-google-errors = { path = "crates/talaria-google-errors" }
 
+talaria-google-sheets = { path = "crates/talaria-google-sheets" }
+
+talaria-google-slides = { path = "crates/talaria-google-slides" }
+
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }
 
 talaria-google-oauth = { path = "crates/talaria-google-oauth" }

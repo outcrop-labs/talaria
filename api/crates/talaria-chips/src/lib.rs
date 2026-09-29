@@ -23,10 +23,59 @@ pub fn tools_unlocked(kind: &str) -> &'static [&'static str] {
     match kind {
         "gmail_send" => &["draft_email"],
         "calendar_create" => &["draft_calendar_event"],
+        "calendar_update" => &["update_google_event"],
+        "calendar_cancel" => &["cancel_google_event"],
+        "meeting_create" => &["create_google_meeting"],
+        "doc_update" => &["update_google_doc", "append_google_doc"],
+        "sheet_update" => &["update_google_sheet"],
+        "drive_move" => &["move_google_file"],
+        "drive_rename" => &["rename_google_file"],
         "ticket_move" => &["triage_ticket"],
         "board_access" => &["join_board"],
         _ => &[],
     }
+}
+
+/// Approval kinds whose row lives in `google_pending_actions` and executes
+/// through the confirm-send plane (`decide_action`). The chip approve route
+/// asks this rather than re-listing the kinds: a kind that queues a Google
+/// write but is missing here would be marked approved and never sent.
+pub fn is_google_action(kind: &str) -> bool {
+    matches!(
+        kind,
+        "gmail_send"
+            | "calendar_create"
+            | "calendar_update"
+            | "calendar_cancel"
+            | "meeting_create"
+            | "doc_update"
+            | "sheet_update"
+            | "drive_move"
+            | "drive_rename"
+    )
+}
+
+/// The pending-action kind a queued Google tool produces, with the card's
+/// fallback wording. EVERY tool whose route answers through `answer_queued`
+/// belongs here: the queue is not the surface, the chip is, and a queued
+/// write with no chip is one the person only finds by asking the agent to
+/// list pending sends. Immediate tools (`create_google_doc`,
+/// `create_google_folder`, `import_drive_file`) are deliberately absent —
+/// they never queue.
+fn google_approval_for(tool: &str) -> Option<(&'static str, &'static str)> {
+    Some(match tool {
+        "draft_email" => ("gmail_send", "Send email"),
+        "draft_calendar_event" => ("calendar_create", "Create event"),
+        "update_google_event" => ("calendar_update", "Change an event"),
+        "cancel_google_event" => ("calendar_cancel", "Cancel an event"),
+        "create_google_meeting" => ("meeting_create", "Create a meeting"),
+        "update_google_doc" => ("doc_update", "Edit a Google Doc"),
+        "update_google_sheet" => ("sheet_update", "Write to a Google Sheet"),
+        "append_google_doc" => ("doc_update", "Add to a Google Doc"),
+        "move_google_file" => ("drive_move", "Move a Drive file"),
+        "rename_google_file" => ("drive_rename", "Rename a Drive file"),
+        _ => return None,
+    })
 }
 
 fn is_id(s: &str) -> bool {
@@ -329,18 +378,14 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
                 ));
             }
         }
-        "draft_email" | "draft_calendar_event" => {
+        _ if google_approval_for(tool).is_some() => {
+            // A queued Google write answers `{ pending: { id }, message }`
+            // (integrations_google_agent_queue::answer_queued). An immediate
+            // one — the agent editing a doc it created — answers without
+            // `pending`, and correctly produces no card.
             if let Some(pending) = result_v.get("pending").and_then(|p| str_field(p, "id")) {
-                let kind = if tool == "draft_email" {
-                    "gmail_send"
-                } else {
-                    "calendar_create"
-                };
-                let summary = str_field(&result_v, "message").unwrap_or(if tool == "draft_email" {
-                    "Send email"
-                } else {
-                    "Create event"
-                });
+                let (kind, fallback) = google_approval_for(tool).expect("guarded by the arm above");
+                let summary = str_field(&result_v, "message").unwrap_or(fallback);
                 out.push(approval_chip(pending, kind, summary));
             }
         }

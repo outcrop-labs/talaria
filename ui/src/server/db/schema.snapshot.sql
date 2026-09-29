@@ -386,7 +386,8 @@ CREATE TABLE public.conversations (
     archived boolean DEFAULT false NOT NULL,
     kind text DEFAULT 'chat'::text NOT NULL,
     plan_template_id uuid,
-    unlocked_tools jsonb DEFAULT '[]'::jsonb NOT NULL
+    unlocked_tools jsonb DEFAULT '[]'::jsonb NOT NULL,
+    pinned_files jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 CREATE TABLE public.daily_brief_entries (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

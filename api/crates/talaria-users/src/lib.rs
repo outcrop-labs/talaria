@@ -861,6 +861,7 @@ mod tests {
                 "agents.manage",
                 "research.run",
                 "plans.create",
+                "work.sessions",
                 "boards.create",
                 "comms.channels",
                 "comms.relays",
@@ -884,6 +885,7 @@ mod tests {
             vec![
                 ("research.run", true),
                 ("plans.create", true),
+                ("work.sessions", true),
                 ("boards.create", true),
                 ("comms.channels", true),
                 ("comms.relays", true),

@@ -15,7 +15,8 @@ export interface Conversation {
   working?: boolean
   /** The latest assistant turn errored — needs a re-run. */
   failed?: boolean
-  /** Multiplayer plans: your standing; ownerLabel set on plans shared with you. */
+  /** Multiplayer plans and work sessions: your standing; ownerLabel set on
+   *  ones shared with you. */
   role?: 'owner' | 'collaborator'
   ownerLabel?: string | null
   /** Landed messages past your read cursor — the rail pill. */
@@ -122,7 +123,7 @@ export const markConversationRead = async (
   )
 
 export function useConversations(
-  kind: MaybeGetter<'chat' | 'plan'> = 'chat',
+  kind: MaybeGetter<'chat' | 'plan' | 'work'> = 'chat',
   archived: MaybeGetter<boolean> = false,
 ) {
   return createQuery(() => {
@@ -141,13 +142,25 @@ export function useConversations(
 }
 
 
+/** What the confirm/prompt copy calls the thing being renamed or deleted.
+ *  The helpers are shared by every conversation surface, so the noun is a
+ *  parameter rather than four copies of the same function — 'plan' stays the
+ *  default so existing call sites read exactly as they did. */
+export type ConversationNoun = 'plan' | 'session'
+
+const Noun = (noun: ConversationNoun) => noun.charAt(0).toUpperCase() + noun.slice(1)
+
 /** Rename, the same PATCH the Comms rail already sends. Unchanged text is
  *  not a write. Returns whether the row moved. */
-export async function renameConversation(id: string, current: string | null): Promise<boolean> {
+export async function renameConversation(
+  id: string,
+  current: string | null,
+  noun: ConversationNoun = 'plan',
+): Promise<boolean> {
   const name = await prompt({
-    title: 'Rename plan',
+    title: `Rename ${noun}`,
     defaultValue: current ?? '',
-    placeholder: 'Plan name',
+    placeholder: `${Noun(noun)} name`,
     confirmLabel: 'Rename',
   })
   const next = name?.trim()
@@ -161,7 +174,8 @@ export async function renameConversation(id: string, current: string | null): Pr
   }
 }
 
-/** Hide the plan. Reversible — the rail's Archived section is the way back. */
+/** Hide the plan or session. Reversible — the rail's Archived section is the
+ *  way back. */
 export async function archiveConversation(id: string): Promise<boolean> {
   try {
     await delJson(`/api/conversations/${id}`)
@@ -182,13 +196,23 @@ export async function restoreConversation(id: string): Promise<boolean> {
   }
 }
 
-/** Hard delete. The living document, if the plan grew one, stays in Artifacts. */
-export async function deleteConversation(id: string, title: string | null): Promise<boolean> {
-  const name = title?.trim() || 'Untitled plan'
+/** Hard delete. Documents the conversation touched — a plan's living document,
+ *  a session's pinned files — outlive it: they live in Artifacts or in Google
+ *  Drive, and deleting the conversation does not reach them. */
+export async function deleteConversation(
+  id: string,
+  title: string | null,
+  noun: ConversationNoun = 'plan',
+): Promise<boolean> {
+  const name = title?.trim() || `Untitled ${noun}`
+  const fate =
+    noun === 'session'
+      ? 'The conversation goes away. Files it opened are untouched — they stay where they live.'
+      : 'The conversation goes away. The living document, if any, stays in Artifacts.'
   if (
     !(await confirm({
-      title: 'Delete plan',
-      message: `Delete "${name}"? The conversation goes away. The living document, if any, stays in Artifacts.`,
+      title: `Delete ${noun}`,
+      message: `Delete "${name}"? ${fate}`,
       confirmLabel: 'Delete',
       danger: true,
     }))

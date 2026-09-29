@@ -17,7 +17,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { queueChatMessage, streamChat } from '@/lib/chat'
+  import { queueChatMessage, streamChat, type ChatKind } from '@/lib/chat'
   import { mergeTool } from '@/lib/sse-parse'
   import { loadConversation, markConversationRead } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
@@ -57,7 +57,7 @@
      *  same multiplayer shape, shared through the RUN's members. 'ticket'
      *  conversations are a board ticket's discussion thread: the room is the
      *  board, and the thread only ever exists — this view never creates one. */
-    kind?: 'chat' | 'plan' | 'research' | 'ticket'
+    kind?: ChatKind
     /** Plan surface: the template the living doc seeds from, chosen before the
      *  first turn (which creates the conversation). Ignored once it exists. */
     templateId?: string | null
@@ -600,14 +600,22 @@
       <div class="grid h-full place-items-center px-6 py-6 text-center">
         <div>
           <div class="mb-1 font-sans text-lg font-semibold text-fg">
-            {kind === 'plan' ? `Plan with ${agentLabel}` : kind === 'ticket' ? 'Discuss the ticket' : `Talk to ${agentLabel}`}
+            {kind === 'plan'
+              ? `Plan with ${agentLabel}`
+              : kind === 'ticket'
+                ? 'Discuss the ticket'
+                : kind === 'work'
+                  ? `Work with ${agentLabel}`
+                  : `Talk to ${agentLabel}`}
           </div>
           <div class="font-sans text-sm text-muted">
             {kind === 'plan'
               ? 'Think through the work together, then draft tickets and send them to a board.'
               : kind === 'ticket'
                 ? 'Everyone who can see this board is in the room — @mention to notify, attach files for the work.'
-                : 'Ask anything. Memory, skills, and tools intact.'}
+                : kind === 'work'
+                  ? 'Say what needs doing. Writes to your documents queue for your approval — nothing is sent until you say so.'
+                  : 'Ask anything. Memory, skills, and tools intact.'}
           </div>
         </div>
       </div>

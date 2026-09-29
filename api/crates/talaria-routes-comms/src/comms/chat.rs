@@ -60,7 +60,7 @@ struct ChatBody {
     effort: Option<String>,
     attachment_ids: Option<Vec<String>>,
     refs: Option<Vec<MessageRef>>,
-    kind: Option<String>, // 'chat' | 'plan' | 'research' | 'ticket'
+    kind: Option<String>, // 'chat' | 'plan' | 'research' | 'ticket' | 'work'
     template_id: Option<String>,
     queue: bool,
 }
@@ -95,7 +95,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
             Some(out)
         }
     };
-    let kind = optional_enum_member(obj, "kind", &["chat", "plan", "research", "ticket"])?;
+    let kind = optional_enum_member(obj, "kind", &["chat", "plan", "research", "ticket", "work"])?;
     let template_id = optional_uuid_member(obj, "templateId")?;
     let queue = optional_boolean_member(obj, "queue")?.unwrap_or(false);
     Ok(ChatBody {
@@ -161,7 +161,9 @@ pub async fn post(
         // can tell voices apart — research reads its roster off the RUN's
         // members rather than `conversation_members`, the same rule its
         // access follows.
-        if kind == "plan" {
+        // A work session carries the plan's membership, so it reads its
+        // roster the same way — the shared idiom, not a second one.
+        if kind == "plan" || kind == "work" {
             multi_voice = list_plan_members(&state.pg, cid)
                 .await
                 .map(|m| m.len() > 1)
@@ -307,15 +309,18 @@ pub async fn post(
                 "ticket threads are opened on the ticket",
             ));
         }
-        if kind == "plan" {
-            let allowed = has_perm(&state.pg, &user.id, &user.role, "plans.create")
+        // Creating one of the shared surfaces is a permission; talking in one
+        // you were added to is membership, checked above.
+        if let Some((perm, refusal)) = match kind.as_str() {
+            "plan" => Some(("plans.create", "no permission to create plans")),
+            "work" => Some(("work.sessions", "no permission to start work sessions")),
+            _ => None,
+        } {
+            let allowed = has_perm(&state.pg, &user.id, &user.role, perm)
                 .await
                 .unwrap_or(false);
             if !allowed {
-                return Ok(house_error(
-                    StatusCode::FORBIDDEN,
-                    "no permission to create plans",
-                ));
+                return Ok(house_error(StatusCode::FORBIDDEN, refusal));
             }
         }
         let created = create_conversation(
