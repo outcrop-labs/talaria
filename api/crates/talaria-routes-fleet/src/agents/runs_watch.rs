@@ -72,7 +72,13 @@ pub async fn get(
         Err(_) => String::new(),
     };
 
-    let rt = RealtimeDeps::publish_only(state.redis().await.ok());
+    // streams_only, like the runs_events sibling. `publish_only`'s subscribe
+    // edge is `quiet_subscribe()` by construction — its own doc says nothing
+    // on that plane will ever open a stream — so `recv()` resolved to None
+    // immediately and the body ended the moment the replay ran out. The pane
+    // showed a tail of history and then sat on "waiting for the agent's next
+    // output" forever, however much the agent went on to say.
+    let rt = RealtimeDeps::streams_only(&state.cfg.redis_url);
     let rx = (rt.subscribe)(channel).await;
 
     let replay_lines: Vec<String> = replay
