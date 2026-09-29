@@ -83,6 +83,77 @@ if [ "$mode" = remove ]; then rm -rf -- "$dir"; fi
 /// seconds. Generous on purpose: a timed-out removal just retries next sweep.
 const TEARDOWN_TIMEOUT_MS: u64 = 15 * 60_000;
 
+/// Reclaim — the rung between Stop and Remove.
+///
+/// Stop keeps the artifacts and kills the processes; Remove takes the whole
+/// workdir. Neither helps the case that actually fills a disk: a job that is
+/// alive and legitimate, holding a build tree nobody is using this minute.
+/// Reclaim drops only what the project said it can rebuild and leaves the
+/// checkout, the branch, `.git` and every uncommitted edit untouched, so a
+/// reclaimed job that resumes pays a rebuild and nothing else.
+///
+/// It REFUSES while anything is running in the workdir — Stop's own
+/// predicate, inverted — because a build whose `target/` disappears mid-link
+/// fails in a way nobody can read. Positional args only ($1 = workdir,
+/// $2.. = repo-relative paths), and each one is re-checked here even though
+/// `valid_rel_path` already passed it: this is the last thing before
+/// `rm -rf`, and it is running inside somebody else's container.
+const RECLAIM_SH: &str = r#"
+dir="$1"; shift
+[ -d "$dir" ] || exit 0
+for p in /proc/[0-9]*; do
+  [ "${p#/proc/}" = "$$" ] && continue
+  cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
+  case "$cwd/" in "$dir"/*) echo BUSY; exit 0 ;; esac
+done
+before=$(du -sb -- "$dir" 2>/dev/null | cut -f1)
+for rel in "$@"; do
+  case "$rel" in "") continue ;; /*) continue ;; *..*) continue ;; .git|.git/*|*/.git|*/.git/*) continue ;; esac
+  [ -e "$dir/$rel" ] || continue
+  rm -rf -- "$dir/$rel"
+done
+after=$(du -sb -- "$dir" 2>/dev/null | cut -f1)
+echo "FREED $((before - after))"
+"#;
+
+/// Drop a job's rebuildable output. `Ok(None)` means the job was busy and
+/// nothing was touched; `Ok(Some(bytes))` is what came back.
+pub async fn reclaim_job(
+    pg: &PgPool,
+    department: &str,
+    job_id: &str,
+    paths: &[String],
+) -> Result<Option<u64>, String> {
+    let Some(dir) = job_workdir(job_id) else {
+        return Err(format!("not a job id: {job_id:?}"));
+    };
+    // Validated once more on the way out. A path that fails here is a bug
+    // upstream, not a thing to pass to a shell and hope.
+    let safe: Vec<&str> = paths
+        .iter()
+        .map(String::as_str)
+        .filter(|p| crate::devenv::valid_rel_path(p))
+        .collect();
+    if safe.is_empty() {
+        return Ok(Some(0));
+    }
+    let container = managed_container(pg, department).await;
+    let mut cmd: Vec<&str> = vec!["sh", "-c", RECLAIM_SH, "sh", &dir];
+    cmd.extend(safe);
+    let (stdout, _) = docker_exec(&container, &cmd, TEARDOWN_TIMEOUT_MS).await?;
+    if stdout.contains("BUSY") {
+        return Ok(None);
+    }
+    Ok(Some(
+        stdout
+            .split_whitespace()
+            .skip_while(|t| *t != "FREED")
+            .nth(1)
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0),
+    ))
+}
+
 pub async fn teardown_job(
     pg: &PgPool,
     department: &str,
