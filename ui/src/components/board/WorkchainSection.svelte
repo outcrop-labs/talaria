@@ -9,7 +9,7 @@
   import Section from './Section.svelte'
   import { toastError } from '@/lib/toast.svelte'
   import { removeWorkchainStep, updateWorkchain } from '@/lib/workchain-client'
-  import { moveStepOrder, type Workchain, type WorkchainStep } from '@/lib/workchain-rules'
+  import { chainIsLinear, moveStepOrder, type Workchain, type WorkchainStep } from '@/lib/workchain-rules'
 
   let {
     chain,
@@ -28,6 +28,13 @@
 
   const failure = (what: string) => (e: unknown) =>
     toastError(`${what} failed`, e)
+
+  /** The move verbs ship the linear `positions` payload, and the api rewrites
+   *  the chain's edges to ONE line through it. On a branched chain that is a
+   *  silent flattening — a nudge here would erase every fan-out and join the
+   *  canvas drew. So they only appear on a chain that is already a line;
+   *  a branched chain is reordered by moving its wires. */
+  const linear = $derived(chain ? chainIsLinear(chain) : false)
 
   const move = (delta: -1 | 1) => {
     if (!chain || !step) return
@@ -56,24 +63,33 @@
       </span>
       {#if canEdit}
         <span class="flex items-center gap-0.5">
-          <button
-            type="button"
-            title="Move earlier in the chain"
-            disabled={step.position === 0}
-            class="rounded p-1 text-muted transition-colors hover:text-fg disabled:opacity-30"
-            onclick={() => move(-1)}
-          >
-            <ArrowLeft size={13} />
-          </button>
-          <button
-            type="button"
-            title="Move later in the chain"
-            disabled={step.position === chain.steps.length - 1}
-            class="rounded p-1 text-muted transition-colors hover:text-fg disabled:opacity-30"
-            onclick={() => move(1)}
-          >
-            <ArrowRight size={13} />
-          </button>
+          {#if linear}
+            <button
+              type="button"
+              title="Move earlier in the chain"
+              disabled={step.position === 0}
+              class="rounded p-1 text-muted transition-colors hover:text-fg disabled:opacity-30"
+              onclick={() => move(-1)}
+            >
+              <ArrowLeft size={13} />
+            </button>
+            <button
+              type="button"
+              title="Move later in the chain"
+              disabled={step.position === chain.steps.length - 1}
+              class="rounded p-1 text-muted transition-colors hover:text-fg disabled:opacity-30"
+              onclick={() => move(1)}
+            >
+              <ArrowRight size={13} />
+            </button>
+          {:else}
+            <span
+              class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted"
+              title="This chain branches — its order is its wiring. Rewire it on the workchains canvas."
+            >
+              branched
+            </span>
+          {/if}
           <button
             type="button"
             title="Leave the chain (the ticket stays)"

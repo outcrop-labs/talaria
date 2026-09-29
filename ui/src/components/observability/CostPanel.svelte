@@ -127,7 +127,7 @@
           label="Cloud spend · 30 days"
           value={formatCost(t?.month.cost ?? 0)}
           sub={t?.providerReported
-            ? `${t.providerReported.source}${t.providerReported.fetchedAt ? ` · ${t.providerReported.fetchedAt}` : ''}`
+            ? `${t.providerReported.source}${t.providerReported.stale ? ' (stale)' : ''}${t.providerReported.fetchedAt ? ` · ${t.providerReported.fetchedAt}` : ''}`
             : `today ${formatCost(t?.today.cost ?? 0)} · ${t?.month.generations ?? 0} generations`}
         />
       </div>

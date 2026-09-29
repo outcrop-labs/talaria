@@ -33,6 +33,8 @@ talaria-secretbox = { workspace = true }
 talaria-statuses = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-work-wait = { workspace = true }
+talaria-workbench = { workspace = true }
+talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
 toml_edit = { workspace = true }
 tracing = { workspace = true }

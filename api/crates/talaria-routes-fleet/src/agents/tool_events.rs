@@ -80,7 +80,8 @@ pub async fn post(
             .await
             .ok()
             .and_then(|principal| principal.owner_user_id);
-            if let Err(e) = talaria_chips::surface_tool_chips(
+            let agent = &caller.model;
+            match talaria_chips::surface_tool_chips(
                 &state.pg,
                 redis,
                 &caller.model,
@@ -89,7 +90,13 @@ pub async fn post(
             )
             .await
             {
-                tracing::warn!("[tool-events] chip surface failed: {e}");
+                Ok(Some(_)) => {}
+                // Chips computed but nowhere to land: no streaming turn and
+                // nothing recent — a silent drop without this line.
+                Ok(None) => tracing::warn!(
+                    "[tool-events] chips from {tool} for {agent} had no turn to land on — dropped"
+                ),
+                Err(e) => tracing::warn!("[tool-events] chip surface failed: {e}"),
             }
         }
     }

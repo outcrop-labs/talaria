@@ -187,7 +187,9 @@ export async function recordUsage(u: UsageInput): Promise<void> {
     void sql`
       select 1 as ok from llm_endpoints
       where name = ${cls.endpoint}
-        and (model_prices ? ${cls.llmModel} or auto_prices ? ${cls.llmModel} or price_in_per_mtok is not null)
+        and (model_prices ? ${cls.llmModel} or auto_prices ? ${cls.llmModel} or price_in_per_mtok is not null
+             or exists (select 1 from provider_prices pp
+                        where pp.endpoint_id = llm_endpoints.id and pp.model = ${cls.llmModel}))
     `
       .then((rows) => {
         if (rows.length === 0) nudgeAutoPrices()

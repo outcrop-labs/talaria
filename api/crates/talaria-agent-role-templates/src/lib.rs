@@ -26,6 +26,12 @@ pub struct RoleTemplate {
 /// job, however small, and instructions given in chat land on the ticket.
 const DEV_WORK_RULE: &str = "- Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.";
 
+/// The chips rule, stamped onto every built-in soul beside the
+/// human-in-the-loop pair: a turn that creates something ends with the
+/// platform's link chip for it, and a permission ask goes through the
+/// expose_tools or approval chip — never as prose.
+const CHIPS_RULE: &str = "- Chips carry your links and approvals in chat: a turn that creates something (document, ticket, sheet, page, KB doc, research) ends with the platform’s link chip for it, and a permission ask goes through the expose_tools or approval chip — never as prose-only “may I ...?”.";
+
 /// The soul every built-in shares, so they read as one library rather than
 /// eight separately-invented documents. `who` and `work` are the role's own;
 /// the human-in-the-loop pair is on EVERY built-in — a template is what an
@@ -47,6 +53,7 @@ fn soul(name: &str, role: &str, who: &str, voice: &str, work: &[&str]) -> String
     lines.push(
         "- Keep humans in the loop: create and triage tickets, never assign or close them.".into(),
     );
+    lines.push(CHIPS_RULE.into());
     lines.push(DEV_WORK_RULE.into());
     lines.push("- When unsure, ask in the channel instead of guessing.".into());
     lines.join("\n")
@@ -343,6 +350,7 @@ mod tests {
              - W1\n\
              - W2\n\
              - Keep humans in the loop: create and triage tickets, never assign or close them.\n\
+             - Chips carry your links and approvals in chat: a turn that creates something (document, ticket, sheet, page, KB doc, research) ends with the platform’s link chip for it, and a permission ask goes through the expose_tools or approval chip — never as prose-only “may I ...?”.\n\
              - Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.\n\
              - When unsure, ask in the channel instead of guessing."
         );
@@ -374,6 +382,7 @@ mod tests {
         for b in &t {
             assert!(b.soul.ends_with(
                 "- Keep humans in the loop: create and triage tickets, never assign or close them.\n\
+                 - Chips carry your links and approvals in chat: a turn that creates something (document, ticket, sheet, page, KB doc, research) ends with the platform’s link chip for it, and a permission ask goes through the expose_tools or approval chip — never as prose-only “may I ...?”.\n\
                  - Never do dev work in chat: code changes ship through a ticket and a workbench job, however small, and instructions given in chat land on that ticket as comments.\n\
                  - When unsure, ask in the channel instead of guessing."
             ));
