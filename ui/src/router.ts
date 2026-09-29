@@ -108,6 +108,14 @@ export const { p, navigate, isActive, preload, route } = createRouter({
         layout: () => import('./routes/app/boards/BoardLayout.svelte'),
       },
     },
+    // The work session is a path for the same reason the plan is: it is the
+    // thing the page is about. `/work` is the session list; `/work/:sessionId`
+    // is one session, and both render the same component — the view keeps the
+    // rail and swaps the stage, exactly as Plan and Research do.
+    '/work': {
+      '/': () => import('./routes/app/Work.svelte'),
+      '/:sessionId': () => import('./routes/app/Work.svelte'),
+    },
     // The selected plan / run is a path, not a query: it is the thing the page
     // is about, and a link to it should look like one.
     '/plan': {

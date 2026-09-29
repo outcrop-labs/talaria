@@ -17,7 +17,7 @@ import { readText, writeText } from '@/lib/persist'
 /** React returned a `[selected, select]` tuple; destructuring a rune would
  *  freeze it, so Svelte callers read `sticky.selected` and call
  *  `sticky.select(id)`. */
-export function useStickyAgent(surface: 'chat' | 'plan' | 'research', agents: MaybeGetter<AgentModel[]>) {
+export function useStickyAgent(surface: 'chat' | 'plan' | 'research' | 'work', agents: MaybeGetter<AgentModel[]>) {
   const key = `talaria.agent.${surface}`
   let selected = $state<string | null>(null)
   // Guards INITIALIZATION, not truthiness: once a value is settled — including

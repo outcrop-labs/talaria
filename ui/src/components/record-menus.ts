@@ -19,7 +19,8 @@ export function planRowMenu(
     ...openCopyItems(opts.path, opts.open),
     { label: 'Rename', onSelect: opts.onRename },
   ]
-  // Archive and delete hide the plan from every member. Only the owner.
+  // Archive and delete hide the row from every member of a shared surface
+  // (a plan, a work session). Only the owner.
   if (c.role === 'owner') {
     items.push(
       'sep',

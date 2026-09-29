@@ -34,9 +34,9 @@ pub async fn conversation_accessible(
 ) -> Result<bool, sqlx::Error> {
     let row: Option<(i32,)> = sqlx::query_as(
         "select 1 from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
            and (c.user_id = $2::uuid \
-             or (c.kind = 'plan' and ( \
+             or (c.kind in ('plan', 'work') and ( \
                exists(select 1 from conversation_members cm \
                       where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
                or exists(select 1 from conversation_teams ct \
@@ -72,9 +72,9 @@ pub async fn accessible_conversation_agent(
 ) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(String,)> = sqlx::query_as(
         "select agent_model from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
            and (c.user_id = $2::uuid \
-             or (c.kind = 'plan' and ( \
+             or (c.kind in ('plan', 'work') and ( \
                exists(select 1 from conversation_members cm \
                       where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
                or exists(select 1 from conversation_teams ct \
@@ -198,11 +198,12 @@ pub async fn prior_messages(
 
 /// The full row the chat route gates and reads on: whose conversation this
 /// is, which kind, which agent, and the caller's standing. Chats never admit
-/// collaborators; that rule lives in the WHERE clause.
+/// collaborators; that rule lives in the WHERE clause. Work sessions share
+/// the plan's membership clause — one idiom, two surfaces.
 #[derive(Debug)]
 pub struct AccessibleConversation {
     pub agent_model: String,
-    pub kind: String, // 'chat' | 'plan'
+    pub kind: String, // 'chat' | 'plan' | 'research' | 'work'
     pub title: Option<String>,
     pub owner_user_id: String,
     pub role: String, // 'owner' | 'collaborator'
@@ -229,9 +230,9 @@ pub async fn accessible_conversation(
                     case when user_id = $2::uuid then 'owner' else 'collaborator' end, \
                     plan_template_id::text \
              from conversations c \
-             where id = $1::uuid and kind in ('chat', 'plan', 'research') \
+             where id = $1::uuid and kind in ('chat', 'plan', 'research', 'work') \
                and (user_id = $2::uuid \
-                 or (kind = 'plan' and ( \
+                 or (kind in ('plan', 'work') and ( \
                    exists(select 1 from conversation_members cm \
                           where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
                    or exists(select 1 from conversation_teams ct \
@@ -295,8 +296,8 @@ pub struct ConversationListRow {
 }
 
 /// The user's conversations of a given kind, newest activity first. Plans
-/// are multiplayer: your own AND
-/// ones shared with you; chats stay strictly your own. `archived` selects
+/// and work sessions are multiplayer: your own AND ones shared with you;
+/// chats stay strictly your own. `archived` selects
 /// the retired set (`true`) or the live one (`false`) — the same flag the
 /// list has always filtered, now a parameter so a plan the owner archived
 /// can be found again. Decay only ever sets it on kind = 'chat'.
@@ -344,7 +345,7 @@ pub async fn list_conversations(
          join users o on o.id = c.user_id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
          where c.archived = $3 and c.kind = $2 \
-           and (c.user_id = $1::uuid or ($2 = 'plan' and ( \
+           and (c.user_id = $1::uuid or ($2 in ('plan', 'work') and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
              or exists(select 1 from conversation_teams ct \
@@ -489,10 +490,10 @@ pub async fn get_conversation(
                 (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
                 case when c.user_id = $2::uuid then 'owner' else 'collaborator' end \
          from conversations c \
-         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research') \
+         where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
            and ( \
              c.user_id = $2::uuid \
-             or (c.kind = 'plan' and ( \
+             or (c.kind in ('plan', 'work') and ( \
                exists(select 1 from conversation_members cm \
                       where cm.conversation_id = c.id and cm.user_id = $2::uuid) \
                or exists(select 1 from conversation_teams ct \
@@ -738,8 +739,8 @@ pub async fn remove_plan_team(
 
 /// The caller's total unread messages across conversations of one kind — a
 /// rail badge's number. The SAME predicate `list_conversations` counts per
-/// thread (keep the two in lockstep), including the plan-membership scoping
-/// and the -1 no-cursor floor.
+/// thread (keep the two in lockstep), including the plan/work membership
+/// scoping and the -1 no-cursor floor.
 pub async fn conversation_unread_total(
     pg: &PgPool,
     user_id: &str,
@@ -753,7 +754,7 @@ pub async fn conversation_unread_total(
            and m.seq > coalesce(cr.last_read_seq, -1) \
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
-           and (c.user_id = $1::uuid or ($2 = 'plan' and ( \
+           and (c.user_id = $1::uuid or ($2 in ('plan', 'work') and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
              or exists(select 1 from conversation_teams ct \

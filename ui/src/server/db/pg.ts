@@ -3290,6 +3290,20 @@ alter table tasks drop column if exists conversation_id`,
   // .github/workflows/migrations.yml is what does.
   `alter table workbench_jobs add column if not exists queued_at timestamptz`,
   `alter table workbench_jobs add column if not exists queued_reason text`,
+  // The Work view's session store. A work session is NOT a new table: it is a
+  // conversation with kind='work', which buys the Plan idiom whole — members,
+  // teams, presence, per-turn author labels, the read cursor, the SSE stream —
+  // instead of a parallel set of all of them. The only thing a session has
+  // that a plan does not is the document pane's memory, and that is this
+  // column: the files pinned to the right pane, in pane order, each
+  // `{ kind: 'google' | 'artifact', id, title?, mime? }`. Reopening a session
+  // restores the pane it had, which is the whole reason it is stored per
+  // session rather than per user. Default '[]' so every existing row (and
+  // every chat, plan and research row that will never use it) reads as
+  // "nothing pinned" without a backfill.
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX — see the note above.
+  `alter table conversations add column if not exists pinned_files jsonb not null default '[]'::jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

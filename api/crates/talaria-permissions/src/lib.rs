@@ -24,7 +24,7 @@ pub struct PermCat {
     pub member_default: bool,
 }
 
-pub const PERMISSIONS: [PermCat; 13] = [
+pub const PERMISSIONS: [PermCat; 14] = [
     PermCat {
         id: "agents.manage",
         label: "Manage agents",
@@ -43,6 +43,13 @@ pub const PERMISSIONS: [PermCat; 13] = [
         id: "plans.create",
         label: "Create plans",
         hint: "Start plan conversations and their living documents.",
+        group: "Work",
+        member_default: true,
+    },
+    PermCat {
+        id: "work.sessions",
+        label: "Start work sessions",
+        hint: "Open work sessions — an agent and a document, side by side.",
         group: "Work",
         member_default: true,
     },
@@ -118,10 +125,11 @@ pub const PERMISSIONS: [PermCat; 13] = [
     },
 ];
 
-pub const PERM_IDS: [&str; 13] = [
+pub const PERM_IDS: [&str; 14] = [
     "agents.manage",
     "research.run",
     "plans.create",
+    "work.sessions",
     "boards.create",
     "comms.channels",
     "comms.relays",

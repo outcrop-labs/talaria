@@ -34,7 +34,7 @@
 | [`/api/channels/{id}/read`](#apichannelsidread) | POST | `session` |
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | POST | `session` |
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | DELETE | `session` |
-| [`/api/chat`](#apichat) | POST | `session` + `perm:plans.create` |
+| [`/api/chat`](#apichat) | POST | `session` |
 | [`/api/chat/chips/approvals/{id}`](#apichatchipsapprovalsid) | POST | `session` |
 | [`/api/chat/chips/resolve`](#apichatchipsresolve) | POST | `session` |
 | [`/api/conversations`](#apiconversations) | GET | `session` |
@@ -314,7 +314,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:plans.create` | [body](#post-apichat-body) | `{role, content}` | 200, 202, 400, 403, 404, 500 | SSE |
+| POST | `session` | [body](#post-apichat-body) | `{role, content}` | 200, 202, 400, 403, 404, 500 | SSE |
 
 ### POST `/api/chat` body
 
@@ -326,7 +326,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 | `tier` | `string?(60)` |  |
 | `effort` | `string?(24)` |  |
 | `attachmentIds` | `uuid[]?(10)` |  |
-| `kind` | `enum(chat|plan|research|ticket)?` |  |
+| `kind` | `enum(chat|plan|research|ticket|work)?` |  |
 | `templateId` | `uuid?` |  |
 | `queue` | `bool?` |  |
 
@@ -376,9 +376,10 @@ source.
 Source: [`api/crates/talaria-routes-comms/src/comms/conversations.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations.rs)
 
 > /api/conversations. GET
-> ?kind=plan → the user's plan conversations; anything else → their chats.
+> ?kind=plan → the user's plan conversations; ?kind=work → their work
+> sessions; anything else → their chats.
 > ?archived=1 → the retired set (exact string '1'); everything else is live.
-> Newest activity first; the client groups them by agent.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
