@@ -26,6 +26,11 @@ sccache = "0.18"
 # not at all. The workbench does the same for agent jobs with its own cache
 # dir — see SCCACHE_DIR in api/crates/talaria-workbench-mcp/src/devenv.rs.
 [env]
-RUSTC_WRAPPER = "sccache"
+# Not `sccache` directly: cargo runs the wrapper for its `rustc -vV` probe
+# before anything else, so a wrapper that is not installed yet fails cargo
+# at startup rather than degrading. mise applies this env the moment you are
+# in the directory; the binary only exists after `mise install`. The shim
+# spans that gap — sccache when present, plain rustc when not.
+RUSTC_WRAPPER = "{{config_root}}/scripts/rustc-wrapper.sh"
 SCCACHE_DIR = "{{env.HOME}}/.cache/sccache"
 SCCACHE_CACHE_SIZE = "20G"
