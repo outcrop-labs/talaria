@@ -10,19 +10,30 @@
 // workdirs (78 GiB) and seven concurrent cargo trees, which is what pinned
 // the VM's disk and the hypervisor behind it.
 //
-// Two moves, both platform-side, both by docker exec into the agent's
+// Three moves, all platform-side, all by docker exec into the agent's
 // managed container (the agent never has to remember):
-//   · Stop:   kill every process whose cwd is inside the workdir. A PR
+//   · Stop:    kill every process whose cwd is inside the workdir. A PR
 //                opening ends the job's builds; the checkout stays, because a
 //                revise bounce pushes to the same branch from it.
-//   · Remove: Stop, then delete the workdir. The job is over: abandoned,
+//   · Reclaim: drop what the repo says it can rebuild, keeping the checkout,
+//                the branch and every uncommitted edit. For a job that is
+//                alive and legitimate but holding a build tree nobody is
+//                using this minute. Refuses while anything is running there.
+//   · Remove:  Stop, then delete the workdir. The job is over: abandoned,
 //                or its ticket closed.
 //
-// The sweep is the backstop for everything that never calls a verb: jobs
-// whose ticket reached a terminal column or was archived while `started`
-// (abandoned here), pr_open jobs whose ticket closed, and abandoned jobs a
-// failed inline teardown left behind. `workspace_cleared_at` is the
-// done-marker, so a job is removed once and never scanned again.
+// The sweep is the backstop for everything that never calls a verb, and it
+// runs in two passes. The STATUS pass asks "is this job over?": jobs whose
+// ticket reached a terminal column or was archived while `started` (abandoned
+// here), pr_open jobs whose ticket closed, and abandoned jobs a failed inline
+// teardown left behind. `workspace_cleared_at` is the done-marker, so a job is
+// removed once and never scanned again.
+//
+// The SIZE pass asks the question the status pass cannot: "how big is this?"
+// A job can be entirely legitimate and still hold 20 GiB, and ten of those is
+// a full volume made of work nobody should cancel. It measures each live job,
+// asks its repo what is rebuildable, and reclaims oldest-first — either
+// because one job is over its ceiling, or because the volume is tight.
 
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -115,6 +126,75 @@ done
 after=$(du -sb -- "$dir" 2>/dev/null | cut -f1)
 echo "FREED $((before - after))"
 "#;
+
+/// A workdir bigger than this is worth reclaiming even when the volume has
+/// room, because one job is not entitled to a disk. A repo's own
+/// `maxWorkdirGib` overrides it either way.
+pub const DEFAULT_MAX_WORKDIR_GIB: u64 = 25;
+
+/// Reclaim oldest-idle-first once the workbench volume is this full. The
+/// per-job ceiling is the routine pass; this is the backstop for the case it
+/// cannot help with — several genuinely active large jobs at once.
+pub const VOLUME_BUDGET_PCT: u64 = 80;
+
+/// $1 = path. Bytes used, and the percentage full of the filesystem holding
+/// it, as `BYTES <n>` and `PCT <n>`.
+const MEASURE_SH: &str = r#"
+p="$1"
+[ -e "$p" ] || { echo "BYTES 0"; echo "PCT 0"; exit 0; }
+echo "BYTES $(du -sb -- "$p" 2>/dev/null | cut -f1)"
+echo "PCT $(df -P -- "$p" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+"#;
+
+fn field(out: &str, key: &str) -> Option<u64> {
+    out.lines()
+        .find_map(|l| l.strip_prefix(key)?.trim().parse::<u64>().ok())
+}
+
+/// Bytes in a path inside the agent's container, and how full its filesystem
+/// is. `du` on a cold target is slow, so this is only asked of jobs the
+/// sweep is already considering.
+async fn measure(pg: &PgPool, department: &str, path: &str) -> Option<(u64, u64)> {
+    let container = managed_container(pg, department).await;
+    let (out, _) = docker_exec(
+        &container,
+        &["sh", "-c", MEASURE_SH, "sh", path],
+        5 * 60_000,
+    )
+    .await
+    .ok()?;
+    Some((field(&out, "BYTES ")?, field(&out, "PCT ").unwrap_or(0)))
+}
+
+/// Is this job worth reclaiming? Pure, so the rule is pinned by tests.
+///
+/// `over_budget` is the volume backstop: once the disk is tight, any idle job
+/// with something to give back is fair game, oldest first. Otherwise a job
+/// has to be over its own ceiling — its repo's `maxWorkdirGib`, or the
+/// platform default.
+pub fn should_reclaim(
+    bytes: u64,
+    max_workdir_gib: Option<u64>,
+    over_budget: bool,
+    has_artifacts: bool,
+) -> bool {
+    if !has_artifacts {
+        return false;
+    }
+    if over_budget {
+        return true;
+    }
+    let ceiling = max_workdir_gib.unwrap_or(DEFAULT_MAX_WORKDIR_GIB);
+    bytes >= ceiling.saturating_mul(1024 * 1024 * 1024)
+}
+
+/// A job status that could still be building. `pr_open` and
+/// `awaiting_approval` cannot be, by definition — the agent is waiting on a
+/// person. `started` might be, so the script checks for live processes and
+/// refuses; this only decides who is worth asking.
+fn reclaim_candidate(status: &str) -> bool {
+    matches!(status, "started" | "awaiting_approval" | "pr_open")
+}
 
 /// Drop a job's rebuildable output. `Ok(None)` means the job was busy and
 /// nothing was touched; `Ok(Some(bytes))` is what came back.
@@ -288,17 +368,113 @@ pub async fn sweep_job_workspaces(pg: &PgPool) -> Result<Option<String>, String>
     for (department, agent_id) in &budgets {
         crate::sync_agent_budget(pg, department, agent_id).await;
     }
-    if abandoned + removed + failed == 0 {
+    let reclaimed = match reclaim_pass(pg).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("[workbench] reclaim pass failed: {e}");
+            0
+        }
+    };
+    if abandoned + removed + failed == 0 && reclaimed == 0 {
         return Ok(None);
     }
     Ok(Some(format!(
-        "closed {abandoned} job(s) whose ticket closed, cleared {removed} workdir(s){}",
+        "closed {abandoned} job(s) whose ticket closed, cleared {removed} workdir(s){}{}",
+        if reclaimed > 0 {
+            format!(", reclaimed {} from live jobs", human_bytes(reclaimed))
+        } else {
+            String::new()
+        },
         if failed > 0 {
             format!(", {failed} left for the next sweep")
         } else {
             String::new()
         }
     )))
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "MiB", "GiB", "TiB"];
+    if n < 1024 * 1024 {
+        return format!("{n} B");
+    }
+    let mut v = n as f64 / (1024.0 * 1024.0);
+    let mut i = 1;
+    while v >= 1024.0 && i < UNITS.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    format!("{v:.1} {}", UNITS[i])
+}
+
+/// The size half of the sweep: what the status pass cannot see.
+///
+/// A job that is alive and legitimate still holds whatever its toolchain
+/// wrote, and nothing was measuring it. This asks each live job how big it
+/// is, and drops what its repo says is rebuildable — oldest first, so the
+/// job most likely to be resumed keeps its cache longest.
+///
+/// Everything here is best-effort and per job: a container that cannot be
+/// reached, a repo with no policy, or a busy workdir is skipped, never
+/// retried in a tight loop, and never allowed to fail the sweep.
+async fn reclaim_pass(pg: &PgPool) -> Result<u64, String> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "select j.id::text, j.status, d.department \
+         from workbench_jobs j \
+         join agent_defs d on d.id = j.agent_id \
+         where j.workspace_cleared_at is null \
+           and j.status in ('started', 'awaiting_approval', 'pr_open') \
+         order by j.updated_at",
+    )
+    .fetch_all(pg)
+    .await
+    .map_err(|e| format!("reclaim scan: {e}"))?;
+
+    let mut freed = 0u64;
+    for (job_id, status, department) in rows {
+        if !reclaim_candidate(&status) {
+            continue;
+        }
+        let Some(dir) = job_workdir(&job_id) else {
+            continue;
+        };
+        let Some((bytes, pct)) = measure(pg, &department, &dir).await else {
+            continue;
+        };
+        if bytes == 0 {
+            continue;
+        }
+        let over_budget = pct >= VOLUME_BUDGET_PCT;
+        // Ask the repo what it is willing to lose. No checkout, no policy,
+        // nothing to do — the platform does not guess on a repo it cannot read.
+        let Some(files) = crate::devenv::scan_repo_files(pg, &department, &dir).await else {
+            continue;
+        };
+        let plan = crate::devenv::plan_cleanup(&files);
+        if !should_reclaim(
+            bytes,
+            plan.max_workdir_gib,
+            over_budget,
+            !plan.artifacts.is_empty(),
+        ) {
+            continue;
+        }
+        match reclaim_job(pg, &department, &job_id, &plan.artifacts).await {
+            // None = a live build. Left alone; the next sweep asks again.
+            Ok(None) => {}
+            Ok(Some(n)) if n > 0 => {
+                freed += n;
+                tracing::info!(
+                    "[workbench] reclaimed {} from job {job_id} ({})",
+                    human_bytes(n),
+                    plan.artifacts.join(", ")
+                );
+            }
+            Ok(Some(_)) => {}
+            Err(e) => tracing::warn!("[workbench] reclaim of job {job_id} failed: {e}"),
+        }
+    }
+    Ok(freed)
 }
 
 /// Ten minutes: a closed ticket's builds stop within one interval, and a
@@ -336,6 +512,55 @@ mod tests {
         assert_eq!(job_workdir(""), None);
         assert_eq!(job_workdir("../../etc"), None);
         assert_eq!(job_workdir("x; rm -rf /"), None);
+    }
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn a_job_over_its_ceiling_is_reclaimed_and_a_small_one_is_left() {
+        // The platform default applies when the repo names no ceiling.
+        assert!(should_reclaim(30 * GIB, None, false, true));
+        assert!(!should_reclaim(2 * GIB, None, false, true));
+        // The repo's own ceiling wins in both directions.
+        assert!(should_reclaim(5 * GIB, Some(4), false, true));
+        assert!(!should_reclaim(30 * GIB, Some(100), false, true));
+    }
+
+    #[test]
+    fn a_repo_with_nothing_to_give_back_is_never_touched() {
+        // Not even when the volume is tight: an opted-out repo has no
+        // rebuildable paths, so there is nothing to take.
+        assert!(!should_reclaim(500 * GIB, None, true, false));
+        assert!(!should_reclaim(500 * GIB, Some(1), true, false));
+    }
+
+    #[test]
+    fn a_tight_volume_reclaims_a_job_under_its_ceiling() {
+        // The backstop: several legitimately active jobs, none individually
+        // over its ceiling, together filling the disk.
+        assert!(!should_reclaim(GIB, None, false, true));
+        assert!(should_reclaim(GIB, None, true, true));
+    }
+
+    #[test]
+    fn only_a_job_that_could_still_be_holding_a_workdir_is_asked() {
+        assert!(reclaim_candidate("started"));
+        assert!(reclaim_candidate("awaiting_approval"));
+        assert!(reclaim_candidate("pr_open"));
+        // Abandoned is the status pass's business — it removes the whole
+        // workdir, so reclaiming part of it first would be wasted work.
+        assert!(!reclaim_candidate("abandoned"));
+        assert!(!reclaim_candidate("merged"));
+    }
+
+    #[test]
+    fn measured_fields_are_read_off_the_script_output() {
+        let out = "BYTES 1234\nPCT 91\n";
+        assert_eq!(field(out, "BYTES "), Some(1234));
+        assert_eq!(field(out, "PCT "), Some(91));
+        assert_eq!(field("", "BYTES "), None);
+        // A df that printed nothing must not read as 0% free-and-clear.
+        assert_eq!(field("BYTES 5\nPCT \n", "PCT "), None);
     }
 
     #[test]
