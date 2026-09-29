@@ -11,3 +11,21 @@ rust = "1.97.1"
 bun = "1.4.0"
 node = "22"
 mold = "2"
+sccache = "0.18"
+
+# The shared compile cache. Every worktree builds into its OWN api/target —
+# that is what keeps two stacks from locking each other out — so without a
+# cache behind them, N worktrees means N cold builds and N copies of the same
+# 30-odd GiB. sccache makes the second one cheap: the target dirs stay
+# separate, the compiled dependencies are shared, and `talaria cleanup` can
+# reclaim a spent target knowing the rebuild is a cache hit, not an hour.
+#
+# It lives here rather than in api/.cargo/config.toml on purpose. A tracked
+# `rustc-wrapper` would fail every cargo on a machine that has no sccache;
+# mise hands out the binary and this env together, so they arrive as a pair or
+# not at all. The workbench does the same for agent jobs with its own cache
+# dir — see SCCACHE_DIR in api/crates/talaria-workbench-mcp/src/devenv.rs.
+[env]
+RUSTC_WRAPPER = "sccache"
+SCCACHE_DIR = "{{env.HOME}}/.cache/sccache"
+SCCACHE_CACHE_SIZE = "20G"

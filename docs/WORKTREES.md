@@ -63,6 +63,19 @@ It prints the exact `talaria dev` command and the teardown steps.
   that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and
   what the stop gate blocks on once it is stale. A `.talaria-keep` file in the
   worktree root opts it out.
+- **Once the pull request merges, the stack stops itself.** The work is finished, so
+  the sweep does not wait out the seven-day idle clock: the next stop gate in any
+  checkout runs `docker compose down -v` on that worktree's stack, and the checkout
+  becomes removable by `bun talaria cleanup --apply`. Nothing on disk is deleted
+  without that explicit apply, and `talaria dev` restarts a stack that was stopped too
+  early. This is why a worktree costs RAM and two containers only while its work is
+  live — five stale stacks quietly running Postgres was the thing this fixed.
+- **Each worktree builds into its own `api/target`**, which is what keeps two stacks
+  from locking each other out of cargo. `mise.toml` puts every cargo behind a shared
+  **sccache**, so the second worktree's build reuses the first's compiled dependencies
+  instead of paying for the graph again. A side worktree's build dir untouched for 14
+  days is reclaimed by `--apply`; the primary's is a warm cache the sweep only ever
+  names.
 
 ## Manual worktrees
 

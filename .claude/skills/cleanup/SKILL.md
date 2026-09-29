@@ -9,9 +9,18 @@ This is the last step of every task, on every harness. Do it before you claim do
 The stop gate is the backstop, not the step: [`scripts/hooks/stop-check.mjs`](../../../scripts/hooks/stop-check.mjs)
 runs [`scripts/cleanup-sweep.mjs`](../../../scripts/cleanup-sweep.mjs) `--gate` after `bun run check`, and exit 2
 means you are not done. It does not delete a fresh worktree for you. The numbers live in `POLICY` in that script. Today: a worktree or box
-untouched for 7 days, scratch under `/tmp/talaria-*` older than a day, disk use at 85%, or
+untouched for 7 days, a side worktree's build dir untouched for 14, scratch under
+`/tmp/talaria-*` older than a day, disk use at 85%, or
 2 GiB of artifacts the sweep is willing to remove. Harnesses whose stop event can block a
 turn run that script themselves (see [`scripts/hooks/README.md`](../../../scripts/hooks/README.md)); the rest still do this step.
+
+**A merged pull request ends the idle clock.** A worktree whose PR has merged is finished
+work, so the sweep stops waiting seven days for it: the `--gate` run **stops its docker
+stack** the next time any session ends, and the checkout itself becomes removable by
+`--apply`. Stopping a stack frees RAM and CPU, removes nothing from disk, and `talaria dev`
+brings it back — which is why the gate is allowed to do it unasked. Merged means *the pull
+request merged*, never mere ancestry: a worktree cut an hour ago from `main` is also an
+ancestor of `rc`, and tearing that down would take out a colleague's running stack.
 
 ## When the task ends
 
@@ -36,8 +45,15 @@ flag it once it is stale.
 - `node_modules` (worktrees symlink the primary's)
 - the cargo registry, the bun cache, `../devboxes/shared` (the tools layer every box mounts)
 - the primary checkout's `api/target` and `desktop/src-tauri/target` — a warm cache. The
-  sweep names them when the disk is already over the line; it does not delete them.
-  `cargo clean --manifest-path api/Cargo.toml` is a human decision
+  sweep **always names them and their size**, at any disk reading, because an artifact
+  nobody can see is the one that fills the disk; it never deletes them on a timer.
+  `cargo clean --manifest-path api/Cargo.toml` is a human decision.
+  A *side* worktree's build dir is different: untouched for 14 days it is spent, and
+  `--apply` reclaims it. Reclaiming is cheap to undo — `mise.toml` puts every cargo
+  behind a shared **sccache**, so the rebuild is a cache hit rather than an hour
+- docker images, volumes and exited containers outside a swept project. The sweep reports
+  what docker says is reclaimable; `docker system prune` is a human's call, because an
+  exited container is as often a one-shot init sidecar as it is garbage
 - another session's checkout. A worktree is ours only when it is the `wt/<name>` +
   `../talaria-<name>` pair `talaria worktree` creates. A long-lived checkout on another
   branch is not yours to remove
