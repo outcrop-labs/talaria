@@ -137,9 +137,9 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 
 Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_review.rs)
 
-> /api/tasks/{id}/review. The human quality gate. Approve moves the ticket
-> to the board's done column; reject sends it back to the board's first
-> working column. Board owner/editor only.
+> /api/tasks/{id}/review. The human quality gate. Approve MARKS the ticket
+> signed off and leaves it where it is; reject sends it back to the board's
+> first working column. Board owner/editor only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

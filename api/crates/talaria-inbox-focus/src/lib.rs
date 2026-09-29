@@ -1789,8 +1789,14 @@ async fn execute_action_arms(
             .await;
         }
         let approved = action_id == "approve_task";
+        // An approval is a MARK, not a move: it signs the ticket off and leaves
+        // it in its column, because there is usually a merge or a release still
+        // to come and a person decides when it is really done. So an approval
+        // has no destination to resolve — passing the current status keeps the
+        // one shape `complete_quality_review` takes — and a board with no done
+        // column can no longer refuse a sign-off.
         let next_status = if approved {
-            meta.done_keys.first().cloned()
+            Some(task.status.clone())
         } else if meta.keys.iter().any(|k| k == "in_progress") {
             Some("in_progress".to_string())
         } else {

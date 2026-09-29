@@ -2,10 +2,11 @@
 // the ticket's jobs (board members — this is how the plan-approval gate and
 // PR links surface on the ticket). PUT → approve / reject an awaiting job
 // (board editors; rejection abandons with the reason in the ticket's audit
-// trail), or merge a started job into the repo's testing branch.
+// trail).
 //
 // This is the TICKET strip's job wire, not workbench-mcp's: agentId absent,
-// plan and mergedTestingAt present, testingBranch appended by the handler.
+// plan present. Talaria's job ends at the pull request — how a branch is then
+// promoted or merged is the consuming repo's own CI and branch policy.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -17,21 +18,17 @@ use sqlx::AssertSqlSafe;
 use sqlx::PgPool;
 
 use talaria_agent_auth::epoch_ms_to_iso;
-use talaria_api_facades::workbench::mcp::{
-    MergeJob, WorkbenchActor, WorkbenchDeps, merge_job_to_testing,
-};
 use talaria_boards::{board_role, can_edit};
 use talaria_body::{enum_member, optional_max_string_member, parse, uuid_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_github as gh;
 use talaria_session::{actor_of, require_user};
 use talaria_state::AppState;
 use talaria_tasks::{get_task, log_activity};
 
-/// The route's JOB_ROW — the full strip: plan included, mergedTestingAt
-/// present, agentId absent (workbench-mcp's row is the other shape).
+/// The route's JOB_ROW — the full strip: plan included, agentId absent
+/// (workbench-mcp's row is the other shape).
 const JOB_ROW: &str = "id::text, agent_model, task_id::text, repo, branch, effort, plan, \
-                       status, pr_url, summary, merged_testing_at, \
+                       status, pr_url, summary, \
                        (trunc(extract(epoch from created_at) * 1000))::bigint, \
                        (trunc(extract(epoch from updated_at) * 1000))::bigint";
 
@@ -46,12 +43,11 @@ type Row = (
     String,
     Option<String>,
     String,
-    Option<i64>,
     i64,
     i64,
 );
 
-fn row_wire(r: &Row, testing_branch: Option<String>) -> serde_json::Value {
+fn row_wire(r: &Row) -> serde_json::Value {
     json!({
         "id": r.0,
         "agentModel": r.1,
@@ -63,10 +59,8 @@ fn row_wire(r: &Row, testing_branch: Option<String>) -> serde_json::Value {
         "status": r.7,
         "prUrl": r.8,
         "summary": r.9,
-        "mergedTestingAt": r.10.map(epoch_ms_to_iso),
-        "createdAt": epoch_ms_to_iso(r.11),
-        "updatedAt": epoch_ms_to_iso(r.12),
-        "testingBranch": testing_branch,
+        "createdAt": epoch_ms_to_iso(r.10),
+        "updatedAt": epoch_ms_to_iso(r.11),
     })
 }
 
@@ -118,22 +112,7 @@ pub async fn get(
         Ok(r) => r,
         Err(e) => return Ok(internal("[workbench/jobs] jobs read failed", e)),
     };
-    // Per-row read, fanned out: each wire gets its repo's testing branch
-    // appended — testingBranch is null only when the flow read SAYS so; an
-    // infra failure is the 500. join_all keeps the rows' order.
-    let pg = state.pg.clone();
-    let flows = futures_util::future::join_all(rows.iter().map(|r| {
-        let pg = pg.clone();
-        async move { gh::repo_flow(&pg, &r.3).await }
-    }))
-    .await;
-    let mut wires = Vec::with_capacity(rows.len());
-    for (r, flow) in rows.iter().zip(flows) {
-        match flow {
-            Ok(f) => wires.push(row_wire(r, f.testing_branch)),
-            Err(e) => return Ok(internal("[workbench/jobs] repo flow read failed", e)),
-        }
-    }
+    let wires: Vec<serde_json::Value> = rows.iter().map(row_wire).collect();
     Ok(Json(json!({ "jobs": wires })).into_response())
 }
 
@@ -149,7 +128,7 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let action = match enum_member(obj, "action", &["approve", "reject", "merge_testing"]) {
+    let action = match enum_member(obj, "action", &["approve", "reject"]) {
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
@@ -177,33 +156,6 @@ pub async fn put(
         return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
     let actor = actor_of(&user);
-    if action == "merge_testing" {
-        let deps = WorkbenchDeps {
-            pg: state.pg.clone(),
-            sb: state.secretbox().await.unwrap_or_default(),
-            redis: None,
-        };
-        let merge = MergeJob {
-            id: job.0.clone(),
-            repo: job.3.clone(),
-            branch: job.4.clone(),
-            status: job.7.clone(),
-            task_id: job.2.clone(),
-        };
-        // BOTH engine flavors — the tool sentence and the thrown infra
-        // error — fold into one 400 {error}.
-        let r = merge_job_to_testing(&deps, &merge, &WorkbenchActor::Human(actor.clone())).await;
-        return Ok(match r {
-            Ok(_) => Json(json!({ "ok": true })).into_response(),
-            Err(e) => {
-                let msg = match e {
-                    talaria_api_facades::workbench::mcp::MergeJobError::Fail(m) => m,
-                    talaria_api_facades::workbench::mcp::MergeJobError::Throw(m) => m,
-                };
-                house_error(StatusCode::BAD_REQUEST, &msg)
-            }
-        });
-    }
     if job.7 != "awaiting_approval" {
         return Ok(house_error(
             StatusCode::BAD_REQUEST,

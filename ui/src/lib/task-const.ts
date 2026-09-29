@@ -114,6 +114,12 @@ export interface Task {
   createdAt: string
   updatedAt: string
   completedAt: string | null
+  /** When a person signed this ticket off. Approval is a MARK, not a move: it
+   *  says a human reviewed the work and it passed, and leaves the column
+   *  alone, because a signed-off ticket usually still has a merge or a release
+   *  ahead of it. A person moves it to done when it really is. The review
+   *  queues read this to stop asking about a ticket somebody already cleared. */
+  approvedAt: string | null
   archivedAt: string | null
 }
 

@@ -51,7 +51,15 @@ pub async fn task_items(
     user_id: &str,
     source_id: Option<&str>,
 ) -> Result<Vec<RawFocusItem>, sqlx::Error> {
-    let review = talaria_statuses::status_category_sql("review", &["quality_review"]);
+    // An APPROVED ticket is no longer awaiting review, so it must not come
+    // back as a review card offering Approve a second time. Folding
+    // `approved_at is null` into the fragment covers the is_review flag (which
+    // decides the card's buttons and its recommendation) and the WHERE that
+    // admits the row at all.
+    let review = format!(
+        "( {} and t.approved_at is null )",
+        talaria_statuses::status_category_sql("review", &["quality_review"])
+    );
     let sql = format!(
         "select t.id::text, t.board_id::text, b.name as board, \
                 case when t.ticket_no is not null then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end as ticket_ref, \
@@ -71,7 +79,7 @@ pub async fn task_items(
            and ( t.status in ('failed', 'blocked') \
                  or {review} \
                  or t.status in (select bs.key from board_statuses bs where bs.board_id = t.board_id and bs.category = 'open' and not bs.agent_start) \
-                 or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status in ('inbox', 'quality_review')) ) \
+                 or (not exists (select 1 from board_statuses bs where bs.board_id = t.board_id) and t.status = 'inbox') ) \
          order by t.created_at asc limit 200",
         review = review,
         vis = talaria_boards::board_visibility_sql("$1", "$1", false),

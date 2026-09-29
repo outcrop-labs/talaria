@@ -1,6 +1,6 @@
-// /api/tasks/{id}/review. The human quality gate. Approve moves the ticket
-// to the board's done column; reject sends it back to the board's first
-// working column. Board owner/editor only.
+// /api/tasks/{id}/review. The human quality gate. Approve MARKS the ticket
+// signed off and leaves it where it is; reject sends it back to the board's
+// first working column. Board owner/editor only.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -13,7 +13,9 @@ use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
 use talaria_statuses::status_meta;
-use talaria_tasks::{TaskActor, TaskDeps, TaskPatch, add_review, get_task, update_task};
+use talaria_tasks::{
+    TaskActor, TaskDeps, TaskPatch, add_review, get_task, set_task_approved, update_task,
+};
 
 pub async fn post(
     State(state): State<AppState>,
@@ -57,50 +59,52 @@ pub async fn post(
     if let Err(e) = add_review(&deps, &id, &reviewer, &status, notes.as_deref()).await {
         return Ok(internal("[tasks] review record failed", e));
     }
-    // Boards rename and recategorize their columns, so resolve the target
-    // from the BOARD — hardcoding 'done'/'in_progress' 400s human sign-off
-    // on any board that renamed them. And resolve it from status_meta, not
-    // from list_statuses: the reject destination is a DESTINATION, and
-    // spelling `find(category == active)` here does not exclude terminal
-    // columns, so on a board whose first active column is labelled
-    // "Cancelled" (an off-board terminal key) "request changes" would
-    // CANCEL the ticket. `active_key` is picked from the one placeable list
-    // every other destination comes from. `done_keys[0]` stays the approve
-    // target on purpose: sign-off is the one move whose destination IS
-    // terminal, it is a person's call, and the membership check below
-    // catches the legacy fallback.
+    let approved = status == "approved";
+    // APPROVING DOES NOT MOVE THE TICKET. It marks it signed off and leaves
+    // the column alone: a reviewed ticket routinely still has a merge, a
+    // deploy or a release in front of it, and forcing it into `done` claimed
+    // the work had shipped when it had not — with nowhere to park it that told
+    // the truth. A person moves it to done when it really is done, and the
+    // review queues read the mark so an approved ticket stops asking to be
+    // reviewed again.
+    if approved {
+        if let Err(e) = set_task_approved(&state.pg, &id, true).await {
+            return Ok(internal("[tasks] approval mark failed", e));
+        }
+        return Ok(match get_task(&state.pg, &id).await {
+            Ok(Some(t2)) => Json(json!({ "task": t2 })).into_response(),
+            Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
+            Err(e) => internal("[tasks] read after approval failed", e),
+        });
+    }
+    // A REJECTION is the move. Boards rename and recategorize their columns,
+    // so resolve the destination from the BOARD — hardcoding 'in_progress'
+    // 400s the gate on any board that renamed it. And resolve it from
+    // status_meta, not from list_statuses: the reject destination is a
+    // DESTINATION, and spelling `find(category == active)` here does not
+    // exclude terminal columns, so on a board whose first active column is
+    // labelled "Cancelled" (an off-board terminal key) "request changes"
+    // would CANCEL the ticket. `active_key` is picked from the one placeable
+    // list every other destination comes from.
     let meta = match status_meta(&state.pg, &task.board_id).await {
         Ok(m) => m,
         Err(e) => return Ok(internal("[tasks] status meta on POST review failed", e)),
     };
-    let approved = status == "approved";
-    let target = if approved {
-        // done_keys falls back to ['done'], so entry zero always exists.
-        Some(meta.done_keys[0].clone())
-    } else {
-        meta.active_key
-            .clone()
-            .or_else(|| meta.assigned_key.clone())
-    };
+    let target = meta
+        .active_key
+        .clone()
+        .or_else(|| meta.assigned_key.clone())
+        .filter(|t| meta.keys.contains(t));
     let Some(target) = target else {
         return Ok(house_error(
             StatusCode::BAD_REQUEST,
-            if approved {
-                "this board has no done column to move the ticket into"
-            } else {
-                "this board has no working column to move the ticket into"
-            },
+            "this board has no working column to move the ticket into",
         ));
     };
-    if !meta.keys.contains(&target) {
-        return Ok(house_error(
-            StatusCode::BAD_REQUEST,
-            if approved {
-                "this board has no done column to move the ticket into"
-            } else {
-                "this board has no working column to move the ticket into"
-            },
-        ));
+    // Sending it back for more work retires any earlier sign-off; update_task
+    // carries `approved_at` through a move, so clear it explicitly.
+    if let Err(e) = set_task_approved(&state.pg, &id, false).await {
+        return Ok(internal("[tasks] approval clear failed", e));
     }
     // Any update_task throw here is the house 500, never a refusal shape.
     let patch = TaskPatch {

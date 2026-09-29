@@ -942,29 +942,27 @@ pub async fn list_installations(pg: &PgPool, sb: &SecretBox) -> Vec<(i64, String
         .unwrap_or_default()
 }
 
-// ── Per-repo git flow (PR target + optional testing branch) ──────────────────
+// ── Per-repo git flow (the branch PRs target) ────────────────────────────────
 
-/// workbench_repo_flow's row — `{repo, baseBranch, testingBranch}` on the
-/// wire, null branches meaning "not set".
+/// workbench_repo_flow's row — `{repo, baseBranch}` on the wire, a null
+/// branch meaning "not set".
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoFlow {
     pub repo: String,
     pub base_branch: Option<String>,
-    pub testing_branch: Option<String>,
 }
 
-type FlowRow = (String, Option<String>, Option<String>);
+type FlowRow = (String, Option<String>);
 
 pub async fn repo_flow(pg: &PgPool, repo: &str) -> Result<RepoFlow, String> {
-    let row: Option<FlowRow> = sqlx::query_as(
-        "select repo, base_branch, testing_branch from workbench_repo_flow where repo = $1",
-    )
-    .bind(repo)
-    .fetch_optional(pg)
-    .await
-    .map_err(|e| format!("repo flow read: {e}"))?;
-    Ok(row.unwrap_or((repo.to_string(), None, None)).into())
+    let row: Option<FlowRow> =
+        sqlx::query_as("select repo, base_branch from workbench_repo_flow where repo = $1")
+            .bind(repo)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| format!("repo flow read: {e}"))?;
+    Ok(row.unwrap_or((repo.to_string(), None)).into())
 }
 
 impl From<FlowRow> for RepoFlow {
@@ -972,42 +970,36 @@ impl From<FlowRow> for RepoFlow {
         RepoFlow {
             repo: r.0,
             base_branch: r.1,
-            testing_branch: r.2,
         }
     }
 }
 
 pub async fn list_repo_flows(pg: &PgPool) -> Result<Vec<RepoFlow>, String> {
-    let rows: Vec<FlowRow> = sqlx::query_as(
-        "select repo, base_branch, testing_branch from workbench_repo_flow order by repo",
-    )
-    .fetch_all(pg)
-    .await
-    .map_err(|e| format!("repo flows read: {e}"))?;
+    let rows: Vec<FlowRow> =
+        sqlx::query_as("select repo, base_branch from workbench_repo_flow order by repo")
+            .fetch_all(pg)
+            .await
+            .map_err(|e| format!("repo flows read: {e}"))?;
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
-/// Upsert one repo's flow. Each side is `PatchField`-shaped semantics via
-/// Option<Option>: None keeps the current value, Some(None) clears it.
+/// Upsert one repo's flow. `PatchField`-shaped semantics via Option<Option>:
+/// None keeps the current value, Some(None) clears it.
 pub async fn set_repo_flow(
     pg: &PgPool,
     repo: &str,
     base_branch: Option<Option<String>>,
-    testing_branch: Option<Option<String>>,
 ) -> Result<(), String> {
     let cur = repo_flow(pg, repo).await?;
     let base = base_branch.unwrap_or(cur.base_branch);
-    let testing = testing_branch.unwrap_or(cur.testing_branch);
     sqlx::query(
-        "insert into workbench_repo_flow (repo, base_branch, testing_branch) \
-         values ($1, $2, $3) \
+        "insert into workbench_repo_flow (repo, base_branch) \
+         values ($1, $2) \
          on conflict (repo) do update set \
-           base_branch = excluded.base_branch, testing_branch = excluded.testing_branch, \
-           updated_at = now()",
+           base_branch = excluded.base_branch, updated_at = now()",
     )
     .bind(repo)
     .bind(base)
-    .bind(testing)
     .execute(pg)
     .await
     .map_err(|e| format!("repo flow write: {e}"))?;
@@ -1056,85 +1048,6 @@ fn enc(segment: &str) -> String {
         }
     }
     out
-}
-
-/// Merge head into base via GitHub's merge API (e.g. feature → testing).
-/// Ensures the target exists (created from the effective base if missing).
-/// The 201/204/409 ladder is the whole contract: 204 is SUCCESS ("already up
-/// to date"), 409 is the one conflict message, anything else failed.
-pub async fn merge_into(
-    pg: &PgPool,
-    sb: &SecretBox,
-    repo: &str,
-    target_branch: &str,
-    head: &str,
-) -> Result<MergeOutcome, String> {
-    let token = github_token(pg, sb, Some(repo))
-        .await?
-        .ok_or("GitHub is not connected")?;
-    let existing = gh(
-        &format!("/repos/{repo}/git/ref/heads/{}", enc(target_branch)),
-        &token,
-        "GET",
-        None,
-    )
-    .await?;
-    if !existing.status().is_success() {
-        let base = effective_base(pg, sb, repo).await?;
-        let head_ref = gh_json(
-            &format!("/repos/{repo}/git/ref/heads/{}", enc(&base)),
-            &token,
-            "GET",
-            None,
-        )
-        .await?;
-        let sha = head_ref
-            .get("object")
-            .and_then(|o| o.get("sha"))
-            .and_then(|v| v.as_str())
-            .ok_or("github ref read: no sha in reply")?;
-        gh_json(
-            &format!("/repos/{repo}/git/refs"),
-            &token,
-            "POST",
-            Some(&format!(
-                r#"{{"ref":"refs/heads/{target_branch}","sha":"{sha}"}}"#
-            )),
-        )
-        .await?;
-    }
-    let res = gh(
-        &format!("/repos/{repo}/merges"),
-        &token,
-        "POST",
-        Some(&format!(
-            r#"{{"base":"{target_branch}","head":"{head}","commit_message":"Merge {head} into {target_branch} (Talaria workbench, for testing)"}}"#
-        )),
-    )
-    .await?;
-    match res.status().as_u16() {
-        201 => Ok(MergeOutcome {
-            merged: true,
-            reason: None,
-        }),
-        204 => Ok(MergeOutcome {
-            merged: true,
-            reason: Some("already up to date".into()),
-        }),
-        409 => Ok(MergeOutcome {
-            merged: false,
-            reason: Some("merge conflict. Resolve on the branch first".into()),
-        }),
-        status => Ok(MergeOutcome {
-            merged: false,
-            reason: Some(format!("GitHub merge failed ({status})")),
-        }),
-    }
-}
-
-pub struct MergeOutcome {
-    pub merged: bool,
-    pub reason: Option<String>,
 }
 
 /// Create a repo in an org (App must hold org Administration permission).
