@@ -6,10 +6,10 @@
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
 
-  /** Per-repo git flow — every reachable repo is a row; blank fields mean the
-   *  defaults, so there is no separate "add" ceremony to learn. */
+  /** Per-repo git flow — every reachable repo is a row; a blank field means the
+   *  default, so there is no separate "add" ceremony to learn. */
   interface FlowData {
-    flows: Array<{ repo: string; baseBranch: string | null; testingBranch: string | null }>
+    flows: Array<{ repo: string; baseBranch: string | null }>
     repos: string[]
   }
 
@@ -21,13 +21,12 @@
   const data = $derived(query.data)
   const savedFlash = useSavedFlash()
 
-  const save = async (repo: string, patch: { baseBranch?: string | null; testingBranch?: string | null }) => {
+  const save = async (repo: string, patch: { baseBranch?: string | null }) => {
     const cur = data?.flows.find((f) => f.repo === repo)
     try {
       await putJson<{ ok: true }>('/api/workbench/flow', {
         repo,
         baseBranch: patch.baseBranch !== undefined ? patch.baseBranch : (cur?.baseBranch ?? null),
-        testingBranch: patch.testingBranch !== undefined ? patch.testingBranch : (cur?.testingBranch ?? null),
       })
     } catch (e) {
       toastError('Save failed', e)
@@ -41,9 +40,9 @@
   const rows = $derived(data ? [...new Set([...data.repos, ...data.flows.map((f) => f.repo)])].sort() : [])
 </script>
 
-<!-- A failed read used to REMOVE the whole section, so per-repo base and
-     testing branches looked unconfigured — and re-entering them would have
-     overwritten the real flow. -->
+<!-- A failed read used to REMOVE the whole section, so per-repo base branches
+     looked unconfigured — and re-entering them would have overwritten the real
+     flow. -->
 {#if !data}
   {#if query.isError}
     <div class="border-t border-line-subtle pt-3">
@@ -59,21 +58,20 @@
   <div class="space-y-2 border-t border-line-subtle pt-3">
     <div class="flex items-baseline gap-2">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Repository flow</span>
-      <span class="text-xs text-muted">how workbench branches and PRs move, per repo</span>
+      <span class="text-xs text-muted">which branch workbench PRs target, per repo</span>
       {#if savedFlash.saved}<span class="ml-auto text-xs text-success">Saved</span>{/if}
     </div>
     <div class="overflow-x-auto">
-      <div class="min-w-[36rem]">
-        <div class="grid grid-cols-[minmax(0,1fr)_11rem_11rem] gap-2 pb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+      <div class="min-w-[28rem]">
+        <div class="grid grid-cols-[minmax(0,1fr)_11rem] gap-2 pb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
           <span>Repository</span>
           <span>PRs land on</span>
-          <span>Testing branch</span>
         </div>
         <div class="space-y-1.5">
           {#each rows as repo (repo)}
             {@const f = data.flows.find((x) => x.repo === repo)}
             {@const unreachable = !data.repos.includes(repo)}
-            <div class="grid grid-cols-[minmax(0,1fr)_11rem_11rem] items-center gap-2">
+            <div class="grid grid-cols-[minmax(0,1fr)_11rem] items-center gap-2">
               <span class="min-w-0 truncate font-mono text-xs text-fg">
                 {repo}
                 {#if unreachable}<span class="ml-2 font-sans text-xs text-warning">no longer reachable</span>{/if}
@@ -84,12 +82,6 @@
                 placeholder="default branch"
                 onblur={(e) => e.currentTarget.value.trim() !== (f?.baseBranch ?? '') && void save(repo, { baseBranch: e.currentTarget.value.trim() || null })}
               />
-              <Input
-                size="sm"
-                value={f?.testingBranch ?? ''}
-                placeholder="none"
-                onblur={(e) => e.currentTarget.value.trim() !== (f?.testingBranch ?? '') && void save(repo, { testingBranch: e.currentTarget.value.trim() || null })}
-              />
             </div>
           {/each}
           {#if rows.length === 0}<p class="text-xs text-muted">No repositories reachable yet. Finish the install on GitHub.</p>{/if}
@@ -97,8 +89,7 @@
       </div>
     </div>
     <p class="text-[11px] text-muted">
-      <span class="text-fg">PRs land on</span>: the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch.{' '}
-      <span class="text-fg">Testing branch</span>: optional integration branch a feature can be merged into (from the ticket or by the agent) before its PR ships; blank disables it. Testing merges never replace review; the PR still lands normally.
+      <span class="text-fg">PRs land on</span>: the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch. Talaria's job ends at the pull request — how it is then reviewed and merged belongs to the repository's own branch protection and CI.
     </p>
   </div>
 {/if}

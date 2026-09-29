@@ -27,7 +27,7 @@ Oh My Pi is the only harness. There is no profile registry, no per-agent harness
 
 Admin → Org → **GitHub · Workbench**: connect via a **GitHub App** (recommended — short-lived installation tokens, per-repo installs) or a **fine-grained PAT**. The *Setup guide* modal walks every field on GitHub's actual forms. Secrets seal via secretbox and never render back; status live-verifies.
 
-Connecting grants nothing by itself. **Repo access is an explicit per-agent grant** (toggle chips on the agent), validated against the connection's reachable pool. Per-repo **flow** config sets which branch PRs land on (blank = the repo's default) and an optional **testing branch** — features can be merged into it for integration testing (agent verb or ticket button), but testing merges never replace review: the PR still ships normally.
+Connecting grants nothing by itself. **Repo access is an explicit per-agent grant** (toggle chips on the agent), validated against the connection's reachable pool. Per-repo **flow** config sets which branch PRs land on (blank = the repo's default). Talaria's job ends at the pull request: how that branch is then reviewed, promoted or merged belongs to the repository's own branch protection and CI, not to anything Talaria assumes.
 
 ## The job lifecycle (why git never gets messy)
 
@@ -38,7 +38,6 @@ Agents **never run raw git against origin**. The workbench MCP (a Talaria-owned 
 - `start_job(repo, taskId, effort, plan)`: Talaria cuts `talaria/<ticket-ref>-<slug>` (or, when the repo grant carries a configured branch prefix, `<prefix>/<ticket-ref>-<slug>`, named to satisfy the repo's own branch rules so its pushes are accepted) from the flow's base branch, records the job (one live job per ticket), and returns a short-lived authenticated clone URL, a **per-job workspace** (`/opt/data/workbench/jobs/<id>`, so concurrent jobs never collide), omp's model roles, and the Oh My Pi invocation lines (default model filled in). Effort decides planning and how much RAM the job reserves, not the model. **Plans are required for standard/heavy effort**, post to the ticket as a comment *and* as a markdown artifact, and **heavy jobs wait for human approval** from the ticket's workbench strip before any clone URL exists.
 - `prepare_env(jobId)`: sets up the job's dev environment after the clone (see "Dev environments" below).
 - `job_status` — jobs with fresh clone URLs (tokens expire by design).
-- `merge_to_testing(jobId)` — into the repo's testing branch, when configured.
 - `finish_job(jobId, summary)` — verifies the branch has real commits, then opens the PR with a templated ticket-linked body (title from the ticket ref, plan + summary inside, the acting agent named). `abandon: true` closes out a dead job from any live state.
 
 **Teardown is the platform's, not the agent's.** When `finish_job` opens the PR, Talaria stops every process still running in the job's workdir (the checkout stays for a revise bounce). Abandoning removes the workdir outright. The `workbench-job-sweep` (every 10 minutes) covers what never calls a verb: a `started` or awaiting-approval job whose ticket reached a done column or was archived is abandoned, and it and any `pr_open` job on a closed ticket lose their workdir. Jobs with no ticket are left alone. `workspace_cleared_at` marks a job whose workdir is gone.

@@ -237,11 +237,6 @@ pub fn workbench_tools() -> Vec<Value> {
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
         }),
         json!({
-            "name": "merge_to_testing",
-            "description": "Merge a job's branch into the repo's TESTING branch for integration testing (only when the repo has one configured). The PR to the base branch stays open and unmerged — testing is a sideline, never the way work ships.",
-            "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job or job_status. Not a ticket ref." } }, "required": ["jobId"] },
-        }),
-        json!({
             "name": "request_repo",
             "description": "Request a NEW repository in an approved org — a human approves before anything is created (you will see it in list_repos once granted). Use only when the work genuinely needs a fresh repo; explain why.",
             "inputSchema": {
@@ -1011,49 +1006,6 @@ async fn call_tool(
             }
         }
 
-        "merge_to_testing" => {
-            let job_id = arg_str(args, "jobId");
-            if let Some(error) = bad_job_id(&job_id) {
-                return CallOutcome::Fail(error);
-            }
-            let rows: Vec<JobRow> = match sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "select {JOB_COLS} from workbench_jobs where id = $1::uuid and agent_id = $2::uuid"
-            )))
-            .bind(&job_id)
-            .bind(&agent.id)
-            .fetch_all(pg)
-            .await
-            {
-                Ok(rows) => rows,
-                Err(e) => return thrown(format!("job read: {e}")),
-            };
-            let Some(row) = rows.into_iter().next() else {
-                return CallOutcome::Fail("unknown job".into());
-            };
-            let job = WorkbenchJob::of(row);
-            let r = merge_job_to_testing(
-                deps,
-                &MergeJob {
-                    id: job.id.clone(),
-                    repo: job.repo.clone(),
-                    branch: job.branch.clone(),
-                    status: job.status.clone(),
-                    task_id: job.task_id.clone(),
-                },
-                &WorkbenchActor::Agent(subject.clone()),
-            )
-            .await;
-            match r {
-                Ok(testing_branch) => CallOutcome::Ok(json!({
-                    "merged": true,
-                    "testingBranch": testing_branch,
-                    "note": "Testing merge only — the PR still ships through review.",
-                })),
-                Err(MergeJobError::Fail(error)) => CallOutcome::Fail(error),
-                Err(MergeJobError::Throw(message)) => CallOutcome::Throw(message),
-            }
-        }
-
         "request_repo" => {
             let cfg = gh::get_github_config(pg).await;
             let org = arg_str(args, "org").trim().to_string();
@@ -1525,83 +1477,6 @@ async fn job_branch_name(
     composed_job_branch(prefix.as_deref(), repo, ticket_ref, title_slug)
 }
 
-/// The job slice `merge_job_to_testing` reads — the agent verb passes a fresh
-/// row; the ticket strip passes its own select's row.
-pub struct MergeJob {
-    pub id: String,
-    pub repo: String,
-    pub branch: String,
-    pub status: String,
-    pub task_id: Option<String>,
-}
-
-/// Why a testing merge did not happen. The two failure flavors, kept apart
-/// because the two CALLERS answer them differently: `Fail` is a tool failure —
-/// a sentence for the operator/agent (`{ ok: false, error }` through the
-/// route, `Error: …` through the verb); `Throw` is the infra/REST failure,
-/// which propagates rather than answers (rpc `error:` for the verb, a 500
-/// for the route).
-pub enum MergeJobError {
-    Fail(String),
-    Throw(String),
-}
-
-/// Merge a job's branch into the repo's testing branch — ONE implementation
-/// for both the agent verb and the human ticket-strip action, which is
-/// exactly why `by` is a WorkbenchActor and not an actor string: the two
-/// callers are not the same kind of writer, and the audit line it emits has
-/// to know. The human route passes the user's email and is unaffected; the
-/// agent verb passes the subject and is gated. The merge itself is a GitHub
-/// operation and proceeds either way.
-pub async fn merge_job_to_testing(
-    deps: &WorkbenchDeps,
-    job: &MergeJob,
-    by: &WorkbenchActor,
-) -> Result<String, MergeJobError> {
-    use MergeJobError::*;
-    if job.status != "started" && job.status != "pr_open" {
-        return Err(Fail(format!("job is {}", job.status)));
-    }
-    let flow = gh::repo_flow(&deps.pg, &job.repo).await.map_err(Throw)?;
-    let Some(testing_branch) = flow.testing_branch else {
-        return Err(Fail(
-            "this repo has no testing branch configured — an admin can set one on the GitHub panel"
-                .into(),
-        ));
-    };
-    let r = gh::merge_into(&deps.pg, &deps.sb, &job.repo, &testing_branch, &job.branch)
-        .await
-        .map_err(Throw)?;
-    if !r.merged {
-        return Err(Fail(
-            r.reason.clone().unwrap_or_else(|| "merge failed".into()),
-        ));
-    }
-    sqlx::query(
-        "update workbench_jobs set merged_testing_at = now(), updated_at = now() where id = $1::uuid",
-    )
-    .bind(&job.id)
-    .execute(&deps.pg)
-    .await
-    .map_err(|e| Throw(format!("job update: {e}")))?;
-    log_ticket(
-        &deps.pg,
-        job.task_id.as_deref(),
-        by,
-        &format!(
-            "workbench: merged {} into {} for testing{}",
-            job.branch,
-            testing_branch,
-            r.reason
-                .as_deref()
-                .map(|reason| format!(" ({reason})"))
-                .unwrap_or_default()
-        ),
-    )
-    .await;
-    Ok(testing_branch)
-}
-
 // ── JSON-RPC surface (the shared dispatcher; this surface's tools + call) ────
 
 /// The in-process dispatcher the MCP gateway hands `talaria-workbench://`
@@ -1893,24 +1768,37 @@ mod tests {
                 "list_repos",
                 "start_job",
                 "job_status",
-                "merge_to_testing",
                 "request_repo",
                 "finish_job",
                 "prepare_env"
             ]
         );
+        // The per-tool schema assertions below look their tool up BY NAME. The
+        // `names` assertion above is what pins the wire order; indexing these
+        // positionally as well meant that removing a tool (merge_to_testing)
+        // silently pointed them at a different one — which is how this test
+        // came to assert request_repo's required set against finish_job's.
+        let tool = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("no {name} tool"))
+        };
         // start_job's properties ride in declaration order, required last.
-        let props: Vec<&str> = tools[2]["inputSchema"]["properties"]
+        let props: Vec<&str> = tool("start_job")["inputSchema"]["properties"]
             .as_object()
             .unwrap()
             .keys()
             .map(|s| s.as_str())
             .collect();
         assert_eq!(props, vec!["taskId", "repo", "effort", "plan"]);
-        assert_eq!(tools[2]["inputSchema"]["required"], json!(["repo"]));
+        assert_eq!(
+            tool("start_job")["inputSchema"]["required"],
+            json!(["repo"])
+        );
         // request_repo's required set, in declaration order.
         assert_eq!(
-            tools[5]["inputSchema"]["required"],
+            tool("request_repo")["inputSchema"]["required"],
             json!(["org", "name", "why"])
         );
     }
