@@ -23,7 +23,7 @@ import { COMPOSE_BASE, composeArgs, composeFileArgs, composeFileEnv, SIDECARS_CO
 import { fakeCtx } from './testing'
 
 const ROOT = join(import.meta.dir, '..', '..')
-const SIDECARS = ['postgres', 'redis', 'qdrant', 'embeddings', 'minio', 'searxng']
+const SIDECARS = ['postgres', 'redis', 'qdrant', 'embeddings', 'storage', 'searxng']
 const STACKS = ['docker/compose.yml', 'docker/dev-compose.yml', 'docker/devbox.compose.yml']
 const FRAGMENT = join(ROOT, SIDECARS_COMPOSE)
 
@@ -148,7 +148,7 @@ describe('sidecar plane — one definition, in the fragment', () => {
   test('every stack keeps the four sidecars all three run', () => {
     for (const stack of STACKS) {
       const names = Object.keys(serviceBlocks(join(ROOT, stack)))
-      expect([stack, ...['postgres', 'redis', 'qdrant', 'minio'].filter((n) => !names.includes(n))]).toEqual([stack])
+      expect([stack, ...['postgres', 'redis', 'qdrant', 'storage'].filter((n) => !names.includes(n))]).toEqual([stack])
     }
   })
 

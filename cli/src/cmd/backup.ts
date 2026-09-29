@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import {
-  argvOf, bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, localAppDataDir, localUploadsDir, mcRun,
+  argvOf, bucketUploadsPath, clientFor, dbLabel, humanSize, isoSecond, liftAppEnv, localAppDataDir, localUploadsDir, rcloneRun,
   stampOf, storageFromDb, writeSums,
 } from '../backup/lib'
 import { canonicalDir } from '../paths'
@@ -189,19 +189,15 @@ export async function runBackup(ctx: Ctx, dest: string, keep: number): Promise<n
     } else {
       mkdirSync(join(stageAbs, 'blobs'), { recursive: true })
       const src = bucketUploadsPath(st)
-      if (
-        !(await mcRun(ctx, stageAbs, st, ['mirror', '--quiet', '--overwrite', src, join(stageAbs, 'blobs')]))
-      ) {
-        // An empty prefix is not an error — but an unreachable bucket is, and
-        // mc reports both by exiting non-zero. Tell them apart before
-        // continuing.
-        if (!(await mcRun(ctx, stageAbs, st, ['ls', `t/${st.bucket}`]))) {
-          ctx.log.die(`bucket ${st.bucket} at ${st.endpoint} is unreachable — check the endpoint and credentials`)
-        }
-        ctx.log.warn(`no objects under ${src} yet`)
+      // `copy`, not `sync` — see rcloneRun. rclone answers 0 for an absent or
+      // empty prefix and non-zero only when the remote could not be read, so
+      // a failure here is unambiguous where mc's was not: mc exited non-zero
+      // for BOTH and needed a second `ls` to tell them apart.
+      if (!(await rcloneRun(ctx, stageAbs, st, ['copy', src, join(stageAbs, 'blobs')]))) {
+        ctx.log.die(`bucket ${st.bucket} at ${st.endpoint} is unreachable — check the endpoint and credentials`)
       }
       await ctx.run('tar', ['-czf', tarPath, '-C', join(stageAbs, 'blobs'), '.'])
-      rmSync(join(stageAbs, 'blobs'), { recursive: true, force: true }) // the tar is the artifact; the mirror was scratch
+      rmSync(join(stageAbs, 'blobs'), { recursive: true, force: true }) // the tar is the artifact; the copy was scratch
       ctx.log.ok(`bucket ${st.bucket} at ${st.endpoint} (${st.mode})`)
     }
     const blobs = (await ctx.exec('tar', ['-tzf', tarPath])).stdout
