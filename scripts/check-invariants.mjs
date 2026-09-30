@@ -2182,6 +2182,91 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// ── Boot-injected seams that nothing injects ─────────────────────────────────
+// A `pub static X: OnceLock<Arc<dyn Fn…>>` is a SEAM: a crate that must not
+// depend on another asks for a function to be handed in at boot, and
+// `register_all` hands it in. When nothing does, `X.get()` is None for the
+// life of the process and every caller quietly takes its fallback — no
+// error, no log, no failing test, because a unit test supplies its own fake
+// and the fake is always present.
+//
+// This has now shipped three times:
+//   · CONVERSATION_OWNER  — the attribution ladder's chatter rung, "dead in
+//                           production for as long as it did"
+//   · KB_DOC_ALLOWS_READ  — every non-owner read of a kb-embedded upload
+//                           answered 404; caught only by review
+//   · TASK_BOARD_ID       — every run whose subject was a ticket was
+//                           unwatchable by anyone: the agent pane, the Turns
+//                           transcript and the run's event stream all 403
+//
+// KNOWN_DEAD is a census in the sense used above: the seams that are unset
+// TODAY. A NEW one fails this check. Removing a name from the list because
+// it is now set is always correct; adding one needs a reason in the PR.
+{
+  // Found by the audit that TASK_BOARD_ID prompted. Each is read and never
+  // set, so each is a fallback taken forever. The consequence is spelled out
+  // where it was traced and marked "needs triage" where it was not — an
+  // honest list beats a confident wrong one, and every entry here is a bug
+  // to fix rather than a decision to keep.
+  const KNOWN_DEAD = new Map([
+    ['ANNOUNCE_APPROVAL', 'a queued Google action announces nothing'],
+    ['COMPUTE_ALERT_COUNT', "an admin's home always reads zero alerts"],
+    ['GENERATE_TITLE', 'chats and plans are never auto-titled'],
+    ['OWNS_AGENT', 'the "your personal assistant" skill grant never applies'],
+    ['SYNC_PRIVATE_DOCS', 'a personal agent never syncs private docs'],
+    ['WORKBENCH_TOOLS', 'the registry caches an EMPTY Workbench tool catalog'],
+    ['SUMMARIZE_SKILL', 'needs triage'],
+    ['ROOM_COMMENT_FANOUT', 'needs triage'],
+    ['AUDIENCE', 'needs triage'],
+    ['RESOLVE_KB_REF', 'needs triage — a kb ref may never resolve'],
+    ['RESOLVE_ARTIFACT_REF', 'needs triage — an artifact ref may never resolve'],
+    ['UPDATE_TASK', 'needs triage'],
+    // Dispatch itself is wired through BUILD_DISPATCH, which IS set, so this
+    // looks like a second seam left behind rather than a broken dispatch.
+    ['MAYBE_DISPATCH_TICKET', 'needs triage — likely redundant with BUILD_DISPATCH'],
+    ['TICKET_RELEVANT', 'needs triage'],
+  ])
+
+  const seamSources = new Map(rustSources)
+  for (const rel of ['api/src/lib.rs', 'api/src/main.rs']) {
+    const abs = join(ROOT, rel)
+    if (existsSync(abs)) seamSources.set(rel, stripComments(readFileSync(abs, 'utf8')))
+  }
+  const all = [...seamSources.values()].join('\n')
+
+  const DECL = /pub static ([A-Z][A-Z0-9_]*)\s*:\s*OnceLock<([\s\S]*?)>\s*=\s*OnceLock::new\(\)/g
+  const dead = []
+  for (const [rel, text] of seamSources) {
+    for (const m of text.matchAll(DECL)) {
+      const [, name, ty] = m
+      // Only function seams. A OnceLock holding a Regex or a cache is not a
+      // thing anybody forgets to wire — it initialises itself on first use.
+      if (!/dyn\s+Fn|OnceLock<\s*fn|^\s*fn\s*\(/.test(ty) && !/\bfn\s*\(/.test(ty)) continue
+      if (!new RegExp(`\\b${name}\\.get\\b`).test(all)) continue // declared, never read
+      if (new RegExp(`\\b${name}\\.set\\s*\\(`).test(all)) continue // wired somewhere
+      if (KNOWN_DEAD.has(name)) continue
+      const line = text.slice(0, m.index).split('\n').length
+      dead.push({ path: rel, line, text: `pub static ${name}: OnceLock<…> — read, never set` })
+    }
+  }
+  if (dead.length) {
+    failures.push({
+      id: 'unset-boot-seam',
+      what: 'a boot-injected seam is read but nothing ever sets it, so its callers silently take the fallback',
+      fix: [
+        'Set it where the others are set — `register_all` in api/crates/talaria-jobs/src/lib.rs —',
+        'and add the same closure to `wire_boot_seams` in api/tests/it/support so the test',
+        'binary matches production. A test binary never runs register_all, which is how two of',
+        'these went dead before.',
+        'Better still: if the crate can reach the function directly, delete the seam. TASK_BOARD_ID',
+        'looked like a dependency-cycle break and was not — the module already called its',
+        'neighbours directly, and the indirection only bought a way to forget.',
+      ],
+      found: dead,
+    })
+  }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 
 const BAR = '─'.repeat(78)
