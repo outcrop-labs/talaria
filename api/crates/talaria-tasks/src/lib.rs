@@ -221,20 +221,26 @@ pub fn parse_ticket_address(raw: &str) -> TicketAddress {
     }
 }
 
-/// One row, none, or more than one board sharing the ref.
+/// How an address resolved. `One` is the row (the uuid straight through, or
+/// a ref joined); `Missing` is a well-shaped address with no row behind it —
+/// the honest 404; `Malformed` is a string that is neither a uuid nor
+/// `PREFIX-<n>`, the caller's own fix, answerable without a database trip;
+/// `Ambiguous` names the ref collision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedTaskId {
     One(String),
     Missing,
+    Malformed,
     Ambiguous,
 }
 
 /// Uuid passes through. `PREFIX-N` resolves against the same expression the
 /// wire uses (`coalesce(ticket_prefix,'TASK') || '-' || ticket_no`). Anything
-/// else is missing — a 404, never a uuid-cast 500.
+/// else is Malformed — a 400 at the route, the caller's own fix; never a
+/// uuid-cast 500.
 pub async fn resolve_task_id(pg: &PgPool, raw: &str) -> Result<ResolvedTaskId, sqlx::Error> {
     match parse_ticket_address(raw) {
-        TicketAddress::Unknown => Ok(ResolvedTaskId::Missing),
+        TicketAddress::Unknown => Ok(ResolvedTaskId::Malformed),
         TicketAddress::Id(id) => Ok(ResolvedTaskId::One(id)),
         TicketAddress::Ref { prefix, no } => {
             let rows: Vec<(String,)> = sqlx::query_as(
