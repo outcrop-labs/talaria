@@ -40,7 +40,7 @@ use serde_json::Value;
 
 use talaria_harness::define::{
     CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
-    OnFailure, Output, RenderContext, Role, RoleFloor, define_harness,
+    OnFailure, Output, RenderContext, RoleFloor, define_harness,
 };
 use talaria_harness::transport::ToolPolicy;
 use talaria_harness_model::ModelSpec;
@@ -361,6 +361,10 @@ pub fn work_mode_harness() -> HarnessDefinition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the render assertion needs it, so it is imported here rather than at
+    // file scope where it would be an unused import in a non-test build — and
+    // clippy runs with -D warnings.
+    use talaria_harness::define::Role;
 
     #[test]
     fn a_two_sentence_reply_is_never_a_pasted_document() {

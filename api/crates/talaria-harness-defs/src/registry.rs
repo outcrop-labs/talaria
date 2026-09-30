@@ -105,7 +105,7 @@ impl RegisteredHarness {
 /// An admin reading the panel top to bottom therefore reads "here is what you
 /// control" before "here is what your agents are doing with the models you
 /// already gave them".
-static DEFS: [LazyLock<HarnessDefinition>; 39] = [
+static DEFS: [LazyLock<HarnessDefinition>; 40] = [
     // ── Assigned in Admin ─────────────────────────────────────────────────────
     LazyLock::new(defs::titler::titler_harness),
     LazyLock::new(defs::summarizer::summarizer_harness),
