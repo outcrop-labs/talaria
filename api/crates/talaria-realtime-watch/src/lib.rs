@@ -3,18 +3,9 @@
 pub use talaria_realtime::*;
 
 use futures_util::FutureExt;
-use futures_util::future::BoxFuture;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use talaria_runs_run::{PublishFn as RunPublishFn, RunEvent};
 use talaria_runs_store::RunStore;
-
-pub static TASK_BOARD_ID: OnceLock<
-    Arc<
-        dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, Result<Option<String>, String>>
-            + Send
-            + Sync,
-    >,
-> = OnceLock::new();
 
 /// The real `RunDeps.publish` assembly the driver's deps point at.
 pub fn run_publish(deps: RealtimeDeps) -> RunPublishFn {
@@ -93,10 +84,27 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         task_board_id: Arc::new(move |task_id| {
             let pg = task_pg.clone();
             async move {
-                match TASK_BOARD_ID.get() {
-                    Some(f) => f(pg, task_id).await,
-                    None => Ok(None),
-                }
+                // Asked here, directly. This used to indirect through a
+                // TASK_BOARD_ID OnceLock that NOTHING EVER SET, so it
+                // answered None for every task — and None on this edge means
+                // NotAudience, which the routes render as 403. Every run
+                // whose subject is a ticket was therefore unwatchable by
+                // everyone, permanently and silently: the agent pane, the
+                // Turns transcript and the run's own event stream all refuse
+                // together, because all three gate on may_watch_run.
+                //
+                // The indirection bought nothing. It reads as a
+                // dependency-cycle break, but this module already calls
+                // talaria_boards, talaria_channels, talaria_conversations
+                // and talaria_users directly on the edges either side of
+                // this one, and the question is one column.
+                let row: Option<(String,)> =
+                    sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+                        .bind(&task_id)
+                        .fetch_optional(&pg)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                Ok(row.map(|(board_id,)| board_id))
             }
             .boxed()
         }),
