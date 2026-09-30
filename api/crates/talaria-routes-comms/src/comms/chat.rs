@@ -50,6 +50,7 @@ use talaria_state::AppState;
 use talaria_uploads::{
     attachment_as_data_url, attachment_text_blocks, is_image, resolve_attachments,
 };
+use talaria_work_mode::WORK_MODE_PROMPT;
 use talaria_workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 
 struct ChatBody {
@@ -597,6 +598,14 @@ pub async fn post(
     if kind == "plan" {
         let block = plan_routing_block(&state.pg).await;
         messages.push(json!({ "role": "system", "content": format!("{PLAN_MODE_PROMPT}{block}") }));
+    }
+    // A work turn carries the work-mode harness: the surface, the document
+    // beside the chat, and — the part that matters — which of its writes
+    // happen now and which sit in a queue until a person approves them. The
+    // prompt is not the gate (decide_action is); it is what stops the agent
+    // telling someone their spreadsheet was updated when it was not.
+    if kind == "work" {
+        messages.push(json!({ "role": "system", "content": WORK_MODE_PROMPT }));
     }
     if kind == "research" {
         messages.push(json!({
