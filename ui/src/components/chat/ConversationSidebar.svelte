@@ -10,6 +10,8 @@
   // second copy of this file that would drift from it.
   import { Plus } from '@lucide/svelte'
   import { useHasPerm } from '@/lib/session'
+  import Button from '@/components/ui/Button.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
   import { listStagger } from '@/lib/motion'
   import AgentPicker from '@/components/chat/AgentPicker.svelte'
   import SessionRowBody from '@/components/chat/SessionRowBody.svelte'
@@ -42,6 +44,9 @@
     noun = 'plan',
     newPerm = 'plans.create',
     newTitle = 'New plan: think it through, then draft tickets',
+    emptyHint,
+    collapseKey,
+    class: className,
   }: {
     agents: AgentModel[]
     conversations: Conversation[]
@@ -65,6 +70,15 @@
     newPerm?: string
     /** The `+` button's tooltip — the surface says what it is for. */
     newTitle?: string
+    /** What this surface IS, for the zero state. A rail that has never held a
+     *  row is the first thing a new person sees on the surface, so it gets a
+     *  sentence about what will live here rather than a bare "No plans yet".
+     *  Omitted, the zero state keeps the title and drops the hint. */
+    emptyHint?: string
+    /** Opt this rail into collapsing (see Rail.svelte); the key is where the
+     *  preference is remembered. */
+    collapseKey?: string
+    class?: string
   } = $props()
 
   // A getter, not the bare prop: `newPerm` arrives as a prop, and reading it
@@ -79,7 +93,14 @@
   let archivedOpen = $state(false)
 </script>
 
-<Rail>
+{#snippet startAction()}
+  <Button size="sm" onclick={onNewChat}>
+    <Plus size={14} />
+    New {noun}
+  </Button>
+{/snippet}
+
+<Rail {collapseKey} collapsedLabel={`${noun}s`} class={className}>
   {#snippet actions()}
     {#if canCreate.current}
       <IconButton size="sm" title={newTitle} onclick={onNewChat} disabled={!selectedAgent}><Plus size={15} /></IconButton>
@@ -110,7 +131,12 @@
       onRetry={conversationsFailure.retry}
     />
   {:else if agentConvs.length === 0}
-    <div class="px-2 py-6 text-center text-xs text-muted">No {noun}s yet with this agent.</div>
+    <!-- THE FIRST THING A NEW PERSON SEES on this surface, so it says what
+         will live here and offers the one action that makes it happen — a
+         bare "No plans yet with this agent." was a dead end that named the
+         absence and nothing else. `compact`: this sits inside a rail that
+         already has texture, not in a pane of its own. -->
+    <EmptyState variant="compact" icon="◇" title={`No ${noun}s yet`} hint={emptyHint} action={canCreate.current && selectedAgent ? startAction : undefined} />
   {:else}
     <!-- div, not ul: RailRow renders div rows. -->
     <div class="space-y-0.5" use:listStagger>

@@ -16,6 +16,9 @@
   import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import { useHasPerm } from '@/lib/session'
   import { useAgents } from '@/lib/agents'
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
@@ -44,6 +47,7 @@
   // this file already draws.
 
   const qc = useQueryClient()
+  const mayManageAgents = useHasPerm('agents.manage')
   // Both reads keep their query object: the rail and the stage each render a
   // sentence ("No sessions yet with this agent.", "No agents available.")
   // that is only true of a request that SUCCEEDED and came back empty.
@@ -197,6 +201,10 @@
   })
 </script>
 
+{#snippet hireAction()}
+  <Button size="sm" onclick={() => void navigate('/agents')}>Hire an agent</Button>
+{/snippet}
+
 {#snippet headerActions()}
   <div class="flex items-center gap-3">
     {#if selectedSessionId && selected}
@@ -257,6 +265,8 @@
     noun="session"
     newPerm="work.sessions"
     newTitle="New session: work alongside the agent on a document"
+    emptyHint="A session is you and the agent working on one file together — its stream here, the document beside it. Reads are free; anything it writes to Google waits for your approval."
+    collapseKey="work"
   />
 
   <Stage header={stageHeader}>
@@ -289,11 +299,15 @@
             <div class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
               <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</span>
             </div>
-            <div class="grid flex-1 place-items-center p-8 text-center">
-              <div class="max-w-56 font-sans text-xs leading-relaxed text-muted">
-                The file you and {current.label} are working on opens here, beside the session.
-              </div>
-            </div>
+            <!-- EmptyState, not a centred sentence: `full` carries the
+                 dithered vignette, which is what keeps a 44% column that owns
+                 half the stage from reading as a dead void before a file is
+                 open. -->
+            <EmptyState
+              icon="◫"
+              title="No file open"
+              hint={`The file you and ${current.label} are working on opens here, beside the session.`}
+            />
           </div>
         </div>
       </div>
@@ -326,7 +340,17 @@
         <QueryError error={agentsFailure.error} title="Could not load your agents" onRetry={agentsFailure.retry} />
       </div>
     {:else}
-      <div class="grid h-full place-items-center font-sans text-sm text-muted">No agents available.</div>
+      <!-- A statement about the FLEET, so it says what to do about it —
+           bare "No agents available." named the absence and offered no way
+           out of it. The action only appears for someone who can act on it:
+           /agents is a Manage view, and offering a button that bounces is
+           worse than offering none. -->
+      <EmptyState
+        icon="◇"
+        title="No agents yet"
+        hint="A work session is a conversation with one of your agents. Hire one and it shows up here."
+        action={mayManageAgents.current ? hireAction : undefined}
+      />
     {/if}
   </Stage>
 
