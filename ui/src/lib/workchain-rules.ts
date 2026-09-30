@@ -86,6 +86,27 @@ export function moveStepOrder(taskIds: string[], taskId: string, delta: -1 | 1):
   return taskIds.map((id, k) => (k === i ? b : k === j ? a : id))
 }
 
+/** The tickets the workchain picker may offer: the ones no chain already
+ *  holds, minus the ones whose work is OVER.
+ *
+ *  A finished ticket is not a candidate for a pipeline — you do not queue work
+ *  that is already done — and the picker filling up with them is what made it
+ *  hard to sift. This holds whatever the board's filters say, including the
+ *  status facet: "not in the picker" is a property of the ticket, not a view
+ *  the reader can talk their way out of.
+ *
+ *  `closed` is the CALLER's predicate, so this module stays free of the status
+ *  registry and no board can end up with a second opinion about what closed
+ *  means — the board's own `isClosedStatus` (done category, the bare `done`
+ *  key, and the off-board terminals) is the one that gets passed in. */
+export function chainCandidates<T extends { id: string; status: string }>(
+  tasks: T[],
+  chained: Set<string>,
+  closed: (status: string) => boolean,
+): T[] {
+  return tasks.filter((t) => !chained.has(t.id) && !closed(t.status))
+}
+
 /** The chain a focus-holding view should show: the focused id while it
  *  still names a chain in the list, else the FIRST chain in the list's
  *  own order — null only when the list is empty. Null focus, an unknown

@@ -35,6 +35,7 @@
   import { useAgents } from '@/lib/agents'
   import { copyAppLink } from '@/lib/links'
   import { useBoardStatuses } from '@/lib/statuses'
+  import { isClosedStatus } from './field-pills'
   import type { Task } from '@/lib/task-const'
   import type { Board, BoardLabel, BoardMember } from '@/lib/boards.svelte'
   import type { BoardFilters } from './filter-bar'
@@ -51,6 +52,7 @@
     buildPositions,
     chainIsLinear,
     chainProgress,
+    chainCandidates,
     chainedTaskIds,
     pickFocusedChain,
     stepReadOrder,
@@ -152,8 +154,15 @@
     w.steps.length === 0 || w.steps.some(stepShows)
 
   const visibleChains = $derived(chains.filter(chainShows))
-  const unchained = $derived(tasks.filter((t) => !chained.has(t.id)))
-  const chainedShown = $derived(tasks.length - unchained.length)
+  /** The panel's rows: unchained AND unfinished. `isClosedStatus` is the
+   *  board's own one closed predicate, so the panel cannot disagree with the
+   *  pills about what done means. */
+  const isClosed = (status: string) => isClosedStatus(status, boardStatuses)
+  const unchained = $derived(chainCandidates(tasks, chained, isClosed))
+  const chainedShown = $derived(tasks.filter((t) => chained.has(t.id)).length)
+  /** Tickets the panel is holding back because they are finished — the empty
+   *  state says so rather than reading as "this board has nothing". */
+  const doneHidden = $derived(tasks.filter((t) => !chained.has(t.id) && isClosed(t.status)).length)
 
   // ── Which chain fills the view ────────────────────────────────────────────
   const focused = $derived(pickFocusedChain(chains, chainId))
@@ -301,6 +310,7 @@
     <WorkchainSidebar
       {unchained}
       chainedCount={chainedShown}
+      {doneHidden}
       {boardStatuses}
       {members}
       agents={filterCtx.agents}

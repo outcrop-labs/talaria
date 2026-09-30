@@ -5,6 +5,7 @@ import {
   chainBranches,
   chainProgress,
   chainedTaskIds,
+  chainCandidates,
   chainIsLinear,
   gridLayout,
   moveStepOrder,
@@ -135,6 +136,36 @@ describe('chainBranches', () => {
 
   it('no edges does not branch', () => {
     expect(chainBranches({ edges: [] })).toBe(false)
+  })
+})
+
+describe('chainCandidates', () => {
+  const t = (id: string, status: string) => ({ id, status })
+  const closed = (status: string) => status === 'done' || status === 'cancelled'
+
+  it('drops the tickets a chain already holds', () => {
+    const rows = [t('a', 'inbox'), t('b', 'inbox')]
+    expect(chainCandidates(rows, new Set(['a']), closed).map((r) => r.id)).toEqual(['b'])
+  })
+
+  it('drops FINISHED tickets — you do not queue work that is over', () => {
+    const rows = [t('a', 'inbox'), t('b', 'done'), t('c', 'cancelled'), t('d', 'in_progress')]
+    expect(chainCandidates(rows, new Set(), closed).map((r) => r.id)).toEqual(['a', 'd'])
+  })
+
+  it('a done ticket stays out even when nothing is chained and nothing is filtered', () => {
+    expect(chainCandidates([t('a', 'done')], new Set(), closed)).toEqual([])
+  })
+
+  it('closed is the CALLER’s predicate, not a hard-coded key', () => {
+    // a board whose 'shipped' status carries the done category
+    const rows = [t('a', 'shipped'), t('b', 'inbox')]
+    const boardClosed = (s: string) => s === 'shipped'
+    expect(chainCandidates(rows, new Set(), boardClosed).map((r) => r.id)).toEqual(['b'])
+  })
+
+  it('an empty board offers nothing', () => {
+    expect(chainCandidates([], new Set(), closed)).toEqual([])
   })
 })
 

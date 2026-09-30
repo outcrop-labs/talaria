@@ -44,10 +44,21 @@
   tangle to a pipeline, and its confirm names the real cost ("4 wire(s) replaced
   by 3"). It disables itself on a chain that is already a line.
 
+  **Finished tickets never appear in the panel.** You do not queue work that is
+  already over, and the picker filling up with it was half of what made it hard
+  to sift. The predicate is the board's own `isClosedStatus` — the done
+  category, the bare `done` key, and the off-board terminals (failed,
+  cancelled) — so the panel cannot end up with a second opinion about what
+  closed means. It holds whatever the filters say: selecting the Done facet
+  does not talk them back in, because "not in the picker" is a property of the
+  ticket, not a view the reader can argue with. The count being held back rides
+  under the list (`3 finished hidden`), and the empty state says which kind of
+  empty it is.
+
   `filterCandidates` and `WorkchainCandidate` go with the popover they served.
 
   Verified: `bun run gate` exit 0 (check, svelte-check 0 errors with the 2
-  pre-existing a11y warnings, 1318 ui tests across 82 files; no Rust surface
+  pre-existing a11y warnings, 1323 ui tests across 82 files; no Rust surface
   in the diff, so no cargo). Driven in a real browser against a dev stack:
   right-click on empty canvas opens the menu and creates nothing; *New ticket
   here* opens the composer, which then closes on an outside click AND on Escape
@@ -59,4 +70,7 @@
   Straighten turns `WL-1→WL-2 WL-2→WL-3 WL-3→WL-4 WL-1→WL-3` into the three-wire
   line after a confirm that counts the wires; Copy link yields
   `?view=workchains&chain=…` and opening it lands on that chain (and a second
-  link on the other one).
+  link on the other one). Marking two tickets `done` and one `cancelled` drops
+  all three out of the panel (`WL-8 WL-7 WL-6 WL-5` left, `3 finished hidden`
+  under the list), and neither the Done status facet nor the archived chip puts
+  any of them back — both leave the list empty.

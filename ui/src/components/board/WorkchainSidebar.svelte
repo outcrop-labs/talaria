@@ -30,6 +30,7 @@
   let {
     unchained,
     chainedCount,
+    doneHidden,
     boardStatuses,
     members,
     agents,
@@ -51,6 +52,10 @@
     /** How many of the filtered tickets ARE in a chain: the other half of the
      *  count, so an empty list reads as "all chained" rather than "no tickets". */
     chainedCount: number
+    /** Finished tickets the panel is holding back. Never offered — you do not
+     *  queue work that is over — but counted, so an empty list can say which
+     *  kind of empty it is. */
+    doneHidden: number
     boardStatuses: BoardStatus[]
     members: BoardMember[]
     agents: Array<{ id: string; label: string }>
@@ -124,16 +129,28 @@
 
   <div class="min-h-0 flex-1 overflow-y-auto p-2">
     {#if unchained.length === 0}
+      <!-- Which KIND of empty: everything chained, everything finished, or a
+           filter holding the rest back. A bare "no tickets" over a board with
+           forty of them is the panel lying. -->
       <EmptyState
         variant="compact"
         icon="⭆"
-        title={chainedCount > 0 ? 'Every ticket is chained' : 'No tickets here'}
-        hint={anyFilter ? 'The filters above are hiding the rest.' : 'Tickets you add to the board show up here.'}
+        title={chainedCount > 0 ? 'Every open ticket is chained' : doneHidden > 0 ? 'Nothing left to chain' : 'No tickets here'}
+        hint={anyFilter
+          ? 'The filters above are hiding the rest.'
+          : doneHidden > 0
+            ? `${doneHidden} finished ticket${doneHidden === 1 ? '' : 's'} stay out of the picker.`
+            : 'Tickets you add to the board show up here.'}
       />
     {:else}
       <p class="px-1 pb-1.5 font-mono text-[9px] uppercase tracking-[0.05em] text-muted">
         {canEdit ? 'drag onto the canvas, or click to append' : 'not in any workchain'}
       </p>
+      {#if doneHidden > 0}
+        <p class="px-1 pb-1.5 font-mono text-[9px] uppercase tracking-[0.05em] text-ink-dim">
+          {doneHidden} finished hidden
+        </p>
+      {/if}
       <div class="flex flex-col gap-0.5">
         {#each unchained as t (t.id)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
