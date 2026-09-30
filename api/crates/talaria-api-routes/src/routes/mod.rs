@@ -727,11 +727,12 @@ pub fn router(state: AppState) -> Router {
         )
         // Sheets: read cells freely, queue every write. Sibling of the Docs
         // pair above and gated the same way.
-        // Slides: read only — a deck's text, slide by slide.
+        // Slides: read a deck's text; replacing text in one queues.
         .route(
             "/api/integrations/google/agent/slides/{id}",
             get(talaria_routes_integrations::integrations::integrations_google_agent_slides::get)
-                .fallback(|| async { method_not_allowed("GET") }),
+                .post(talaria_routes_integrations::integrations::integrations_google_agent_slides::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/integrations/google/agent/sheets/{id}",

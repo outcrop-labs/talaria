@@ -18,6 +18,7 @@ talaria-google-agent = { workspace = true }
 talaria-google-calendar = { workspace = true }
 talaria-google-docs = { workspace = true }
 talaria-google-sheets = { workspace = true }
+talaria-google-slides = { workspace = true }
 talaria-google-drive = { workspace = true }
 talaria-google-connections = { workspace = true }
 talaria-google-gmail = { workspace = true }
