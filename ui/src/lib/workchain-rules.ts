@@ -86,30 +86,6 @@ export function moveStepOrder(taskIds: string[], taskId: string, delta: -1 | 1):
   return taskIds.map((id, k) => (k === i ? b : k === j ? a : id))
 }
 
-/** A ticket the "+ Add ticket" picker may offer — the board's UNCHAINED
- *  tasks, reshaped by the caller (Workchains) from its filtered tasks. */
-export interface WorkchainCandidate {
-  id: string
-  ticketRef: string | null
-  title: string
-  effort?: Effort | null
-}
-
-/** The "+ Add ticket" picker's rows — the candidates whose ticketRef or
- *  title matches the draft, case-insensitively; a blank draft shows every
- *  candidate. The caller's list is already unchained-only — the filter is
- *  the only pure shape here. */
-export function filterCandidates(
-  candidates: WorkchainCandidate[],
-  draft: string,
-): WorkchainCandidate[] {
-  const q = draft.trim().toLowerCase()
-  if (!q) return candidates
-  return candidates.filter(
-    (c) => c.title.toLowerCase().includes(q) || (c.ticketRef ?? '').toLowerCase().includes(q),
-  )
-}
-
 /** The chain a focus-holding view should show: the focused id while it
  *  still names a chain in the list, else the FIRST chain in the list's
  *  own order — null only when the list is empty. Null focus, an unknown
@@ -135,6 +111,17 @@ export function chainBranches(w: Pick<Workchain, 'edges'>): boolean {
   for (const e of w.edges) out.set(e.fromTaskId, (out.get(e.fromTaskId) ?? 0) + 1)
   for (const n of out.values()) if (n > 1) return true
   return false
+}
+
+/** The chain's steps as task ids in READ order — position, with the task id
+ *  as a stable tiebreak so two steps that share a position never swap between
+ *  renders. This is the order "Straighten" collapses the graph onto: the api
+ *  answers a `positions` write by rewriting every edge into one line through
+ *  the order it is sent, so the order has to be the one the reader can see. */
+export function stepReadOrder(w: Pick<Workchain, 'steps'>): string[] {
+  return [...w.steps]
+    .sort((a, b) => a.position - b.position || a.taskId.localeCompare(b.taskId))
+    .map((s) => s.taskId)
 }
 
 /** Is the chain ONE straight line — every step with at most one predecessor

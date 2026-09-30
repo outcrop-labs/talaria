@@ -8,6 +8,7 @@ import {
   chainIsLinear,
   gridLayout,
   moveStepOrder,
+  stepReadOrder,
   NODE_W,
   wirePath,
   wireState,
@@ -134,6 +135,24 @@ describe('chainBranches', () => {
 
   it('no edges does not branch', () => {
     expect(chainBranches({ edges: [] })).toBe(false)
+  })
+})
+
+describe('stepReadOrder', () => {
+  const stepAt = (taskId: string, position: number) => ({ ...step(taskId, 'blocked'), position })
+
+  it('sorts by position, not by the array the api happened to send', () => {
+    const w = { steps: [stepAt('c', 2), stepAt('a', 0), stepAt('b', 1)] }
+    expect(stepReadOrder(w)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('a shared position breaks on the task id, so two renders never disagree', () => {
+    const w = { steps: [stepAt('z', 1), stepAt('a', 1), stepAt('m', 1)] }
+    expect(stepReadOrder(w)).toEqual(['a', 'm', 'z'])
+  })
+
+  it('an empty chain has no order', () => {
+    expect(stepReadOrder({ steps: [] })).toEqual([])
   })
 })
 

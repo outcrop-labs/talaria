@@ -15,6 +15,13 @@ export type WiringStepLike = Pick<WorkchainStep, 'taskId' | 'state'>
  *  tighter than a port's touch target: wires run close together, ports don't. */
 export const WIRE_HIT_RADIUS = 8
 
+/** The dataTransfer type a ticket dragged out of the workchain sidebar carries.
+ *  A TYPED payload, not `text/plain`: the canvas must be able to tell "a ticket
+ *  is being dragged in" from any other drag crossing it, and `types` is all
+ *  dragover is allowed to see (the data itself is only readable on drop). The
+ *  Gantt chart's unscheduled list sets the precedent with `text/gantt-task`. */
+export const SIDEBAR_TICKET_MIME = 'text/workchain-task'
+
 /** Find the exact edge (or undefined). Direction matters: the wire is the
  *  pair, not the unordered join. */
 export function findEdge(

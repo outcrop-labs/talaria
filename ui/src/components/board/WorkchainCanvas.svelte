@@ -22,12 +22,13 @@
   // The pure halves live in lib: workchain-rules.ts (layout, paths, states),
   // wiring-overlay.ts (geometry + viewport math), wiring-canvas.ts (the drop
   // resolution + candidate sets) — this component is the DOM half.
-  import { Check, Maximize2, Wand, ZoomIn, ZoomOut } from '@lucide/svelte'
+  import { Check, Maximize2, Wand, X, ZoomIn, ZoomOut } from '@lucide/svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Input from '@/components/ui/Input.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
+  import { outsidePointer } from '@/lib/outside-click'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
   import { createTask } from '@/lib/boards.svelte'
   import { assigneeInfo } from '@/lib/assignees'
@@ -65,7 +66,8 @@
     wheelZoomGesture,
     zoomAt,
   } from '@/lib/wiring-overlay'
-  import { edgeCandidateSteps, edgeDropOutcome, WIRE_HIT_RADIUS } from '@/lib/wiring-canvas'
+  import { edgeCandidateSteps, edgeDropOutcome, SIDEBAR_TICKET_MIME, WIRE_HIT_RADIUS } from '@/lib/wiring-canvas'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import type { AgentModel } from '@/lib/agents'
   import type { BoardMember } from '@/lib/boards.svelte'
 
@@ -78,6 +80,8 @@
     onOpen,
     onChanged,
     canEdit = false,
+    onDropTicket,
+    onOpenSidebar,
   }: {
     workchain: Workchain
     /** The chain's board — the create-and-connect composer files the new
@@ -92,6 +96,13 @@
     /** Owner/editor: the canvas writes (wires, placements, Tidy up). A reader
      *  still pans, zooms and opens tickets. */
     canEdit?: boolean
+    /** A ticket dragged out of the sidebar was dropped ON the canvas, at that
+     *  canvas point. The caller owns the write (it owns the query); the canvas
+     *  only knows where the pointer let go. */
+    onDropTicket?: (taskId: string, at: { x: number; y: number }) => void
+    /** The toolbar's "show me the tickets" — the context menu offers it too,
+     *  because a blank canvas is exactly where you go looking for one. */
+    onOpenSidebar?: () => void
   } = $props()
 
   /** Show the whole graph. The lens calls this after a ticket joins the chain
@@ -330,6 +341,33 @@
    *  where on the canvas it was opened so the card lands THERE. */
   let composer = $state<{ fromTaskId: string | null; at: { x: number; y: number }; title: string } | null>(null)
   let composerAt = $state<{ left: number; top: number } | null>(null)
+  let composerEl = $state<HTMLDivElement | null>(null)
+
+  // THE COMPOSER MUST BE DISMISSABLE FROM OUTSIDE ITSELF. It used to close on
+  // exactly two things: Escape while its own input held focus, and a 9px "esc"
+  // link. Click anywhere else — the canvas, another card, the toolbar — and it
+  // stayed open with no way back, because the surface's keydown returns early
+  // while it is open (so the input's own handler can own Space and Delete).
+  // A document mousedown outside it closes it, the same test Popover and
+  // DropdownMenu make; Escape closes it wherever the focus is.
+  $effect(() => {
+    if (!composer) return
+    const onDown = (e: MouseEvent) => {
+      if (outsidePointer(e, null, composerEl)) cancelComposer()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        cancelComposer()
+      }
+    }
+    document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  })
 
   /** The steps this drag may legally land on — the highlight set. */
   const edgeCandidates = $derived(
@@ -544,15 +582,66 @@
     if (e.target instanceof Element && e.target.closest('[data-wire]')) clickWire(e)
   }
 
-  /** Double-click on empty canvas seeds a node. The acceptance gesture is
-   *  "authored entirely by dragging", and a chain with NO steps has no
-   *  out-port to drag from — the composer was unreachable and the picker was
-   *  the only way in. This is the same composer, with no wire to draw. */
-  const onSurfaceDoubleClick = (e: MouseEvent) => {
-    if (!onEmptyCanvas(e.target)) return
+  /** The canvas point a mouse event landed on. */
+  const pointOf = (e: MouseEvent | DragEvent): { x: number; y: number } | null => {
     const rect = surface?.getBoundingClientRect()
-    if (!rect) return
-    openComposer(null, clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport))
+    return rect ? clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport) : null
+  }
+
+  /** Double-click on empty canvas seeds a node — the accelerator, not the
+   *  discoverable path (that is the context menu below). A chain with NO steps
+   *  has no out-port to drag from, so without one of these two the composer is
+   *  unreachable and a picker is the only way in. */
+  const onSurfaceDoubleClick = (e: MouseEvent) => {
+    if (!onEmptyCanvas(e.target) || !canEdit) return
+    const at = pointOf(e)
+    if (at) openComposer(null, at)
+  }
+
+  /** Right-click on empty canvas: the MENU, which is what a reader reaches for
+   *  and what makes the canvas's verbs discoverable at all. Creating a ticket
+   *  is one item on it rather than a bare gesture with no way back. */
+  const onSurfaceContextMenu = (e: MouseEvent) => {
+    if (!onEmptyCanvas(e.target)) return
+    e.preventDefault()
+    const at = pointOf(e)
+    const items: ContextMenuEntry[] = []
+    if (canEdit && at) {
+      items.push({ label: 'New ticket here', onSelect: () => openComposer(null, at) })
+      if (onOpenSidebar) items.push({ label: 'Add an existing ticket', onSelect: () => onOpenSidebar() })
+      items.push('sep')
+    }
+    items.push({ label: 'Zoom to fit', onSelect: zoomToFit })
+    if (canEdit && workchain.steps.length > 0) {
+      items.push({ label: 'Tidy up', onSelect: tidyUp })
+    }
+    menu.openMenu(e, items)
+  }
+
+  // ── Tickets dragged in from the sidebar ──────────────────────────────────
+  // The house pattern (Gantt's unscheduled list drops rows onto the chart):
+  // HTML5 DnD with a typed payload. Port-to-port wiring cannot use it — that is
+  // the pointer overlay above — but a row leaving one component and landing in
+  // another is exactly what it is for.
+  let dropHint = $state<{ x: number; y: number } | null>(null)
+
+  const dragHasTicket = (e: DragEvent) => !!e.dataTransfer?.types.includes(SIDEBAR_TICKET_MIME)
+
+  const onSurfaceDragOver = (e: DragEvent) => {
+    if (!canEdit || !onDropTicket || !dragHasTicket(e)) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    dropHint = pointOf(e)
+  }
+
+  const onSurfaceDrop = (e: DragEvent) => {
+    dropHint = null
+    if (!canEdit || !onDropTicket || !dragHasTicket(e)) return
+    e.preventDefault()
+    const taskId = e.dataTransfer?.getData(SIDEBAR_TICKET_MIME)
+    const at = pointOf(e)
+    // The card lands centred on the pointer, the same offset the composer uses.
+    if (taskId && at) onDropTicket(taskId, { x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 })
   }
 
 </script>
@@ -574,6 +663,9 @@
   aria-label="Workchain canvas — drag between ports to wire steps"
   tabindex="0"
   ondblclick={onSurfaceDoubleClick}
+  ondragover={onSurfaceDragOver}
+  ondragleave={() => (dropHint = null)}
+  ondrop={onSurfaceDrop}
   onpointerdown={onSurfacePointerDown}
   onpointermove={(e) => {
     if (panning) movePan(e)
@@ -599,10 +691,7 @@
   onkeyup={(e) => {
     if (e.code === 'Space') spaceHeld = false
   }}
-  oncontextmenu={(e) => {
-    // empty canvas: no menu noise
-    if (onEmptyCanvas(e.target)) e.preventDefault()
-  }}
+  oncontextmenu={onSurfaceContextMenu}
 >
   <div
     class="absolute left-0 top-0 origin-top-left"
@@ -684,7 +773,21 @@
           />
         {/if}
       {/each}
-      {#if wireDrag}
+      {#if dropHint}
+      <!-- where a dragged-in ticket will land: the card's own box, ghosted. -->
+      <rect
+        x={dropHint.x - NODE_W / 2}
+        y={dropHint.y - NODE_H / 2}
+        width={NODE_W}
+        height={NODE_H}
+        rx="8"
+        fill="none"
+        stroke-width="2"
+        stroke-dasharray="6 4"
+        class="stroke-accent opacity-80"
+      />
+    {/if}
+    {#if wireDrag}
         <!-- wirePath treats `to` as a card left edge and adds NODE_H/2,
              so pre-subtract to land the tip exactly on the pointer dot. -->
         {@const preview = wirePath(nodePos(wireDrag.fromTaskId), {
@@ -845,29 +948,29 @@
   </div>
   {#if composer}
     <div
-      class="absolute z-10 w-56 rounded-lg border border-accent-border bg-panel p-2 shadow-[var(--theme-shadow-2)]"
+      bind:this={composerEl}
+      class="absolute z-10 w-60 rounded-lg border border-accent-border bg-panel p-2 shadow-[var(--theme-shadow-2)]"
       style="left: {composerAt?.left ?? 8}px; top: {composerAt?.top ?? 8}px"
     >
-      <Input
-        autofocus
-        bind:value={composer.title}
-        placeholder="New ticket title"
-        size="sm"
-        onkeydown={(e) => {
-          if (e.key === 'Enter') submitComposer()
-          else if (e.key === 'Escape') cancelComposer()
-        }}
-      />
-      <div class="mt-1 flex items-center justify-between">
-        <span class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted">enter to wire it in</span>
-        <button
-          type="button"
-          class="font-mono text-[9px] uppercase tracking-[0.05em] text-muted hover:text-fg"
-          onclick={cancelComposer}
-        >
-          esc
-        </button>
+      <div class="flex items-center gap-1">
+        <Input
+          autofocus
+          bind:value={composer.title}
+          placeholder="New ticket title"
+          size="sm"
+          class="min-w-0 flex-1"
+          onkeydown={(e) => {
+            if (e.key === 'Enter') submitComposer()
+            else if (e.key === 'Escape') cancelComposer()
+          }}
+        />
+        <IconButton size="sm" title="Discard this ticket" onclick={cancelComposer}>
+          <X size={14} />
+        </IconButton>
       </div>
+      <p class="mt-1 px-1 font-mono text-[9px] uppercase tracking-[0.05em] text-muted">
+        enter to {composer.fromTaskId ? 'wire it in' : 'add it'} · esc to discard
+      </p>
     </div>
   {/if}
   <!-- This surface owns the card/wire menus: its controller's open state
