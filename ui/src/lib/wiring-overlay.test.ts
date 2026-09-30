@@ -3,12 +3,13 @@ import {
   clientToCanvas,
   distanceToWire,
   fitTransform,
+  nearestWire,
+  snapToGrid,
   hitTestNode,
   hitTestPort,
   portPoint,
   portRadius,
   wheelZoomGesture,
-  wireMidpoint,
   zoomAt,
   TOUCH_PORT_RADIUS,
 } from '@/lib/wiring-overlay'
@@ -166,11 +167,56 @@ describe('distanceToWire', () => {
   })
 })
 
-describe('wireMidpoint', () => {
-  it('lands between the two endpoints', () => {
-    const m = wireMidpoint({ x: 0, y: 0 }, { x: 300, y: 0 })
-    expect(m.x).toBeGreaterThan(NODE_W)
-    expect(m.x).toBeLessThan(300)
-    expect(m.y).toBeCloseTo(NODE_H / 2, 5)
+
+describe('snapToGrid', () => {
+  it('lands on the nearest intersection', () => {
+    expect(snapToGrid({ x: 26, y: 61 }, 24)).toEqual({ x: 24, y: 72 })
+    expect(snapToGrid({ x: -10, y: -13 }, 24)).toEqual({ x: -0, y: -24 })
+  })
+
+  it('a point already on the grid does not move', () => {
+    expect(snapToGrid({ x: 48, y: 96 }, 24)).toEqual({ x: 48, y: 96 })
+  })
+
+  it('free placement (Alt) passes the point straight through', () => {
+    expect(snapToGrid({ x: 26, y: 61 }, 24, true)).toEqual({ x: 26, y: 61 })
+  })
+
+  it('a nonsense pitch cannot divide by zero', () => {
+    expect(snapToGrid({ x: 26, y: 61 }, 0)).toEqual({ x: 26, y: 61 })
+  })
+})
+
+describe('nearestWire', () => {
+  const edges = [
+    { fromTaskId: 'a', toTaskId: 'b' },
+    { fromTaskId: 'c', toTaskId: 'd' },
+  ]
+  // two parallel wires, 400 apart vertically
+  const positions = new Map([
+    ['a', { x: 0, y: 0 }],
+    ['b', { x: 400, y: 0 }],
+    ['c', { x: 0, y: 400 }],
+    ['d', { x: 400, y: 400 }],
+  ])
+
+  it('picks the wire under the point', () => {
+    const mid = { x: (NODE_W + 400) / 2, y: NODE_H / 2 }
+    expect(nearestWire(mid, edges, positions, wirePath, 8)?.fromTaskId).toBe('a')
+  })
+
+  it('picks the NEARER of two when both are in range', () => {
+    const nearC = { x: (NODE_W + 400) / 2, y: 400 + NODE_H / 2 }
+    expect(nearestWire(nearC, edges, positions, wirePath, 8)?.fromTaskId).toBe('c')
+  })
+
+  it('past the radius it is a miss, not the closest anyway', () => {
+    const far = { x: (NODE_W + 400) / 2, y: 200 }
+    expect(nearestWire(far, edges, positions, wirePath, 8)).toBeNull()
+  })
+
+  it('an edge whose endpoints are not placed is skipped, not thrown on', () => {
+    const orphan = [{ fromTaskId: 'zz', toTaskId: 'yy' }]
+    expect(nearestWire({ x: 0, y: 0 }, orphan, positions, wirePath, 8)).toBeNull()
   })
 })

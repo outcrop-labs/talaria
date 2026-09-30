@@ -124,16 +124,6 @@ export function pickFocusedChain(
 
 // ── TALA-35: the canvas ──────────────────────────────────────────────────────
 
-/** A chain BRANCHES when any step has two or more outgoing wires — the
- *  condition that makes the canvas (not the rails) the honest render. A
- *  straight line renders either way; the lens picks rails for it. */
-export function chainBranches(w: Pick<Workchain, 'edges'>): boolean {
-  const out = new Map<string, number>()
-  for (const e of w.edges) out.set(e.fromTaskId, (out.get(e.fromTaskId) ?? 0) + 1)
-  for (const n of out.values()) if (n > 1) return true
-  return false
-}
-
 /** The chain's steps as task ids in READ order — position, with the task id
  *  as a stable tiebreak so two steps that share a position never swap between
  *  renders. This is the order "Straighten" collapses the graph onto: the api
@@ -168,8 +158,9 @@ export function chainIsLinear(w: Pick<Workchain, 'steps' | 'edges'>): boolean {
   return w.steps.filter((s) => (inn.get(s.taskId) ?? 0) === 0).length <= 1
 }
 
-/** Successor list per task — the adjacency the canvas and the derive walk. */
-export function successorsOf(edges: WorkchainEdge[]): Map<string, string[]> {
+/** Successor list per task — the adjacency `wouldCycle` walks. Private: the
+ *  one caller is right below, and an exported shape is a promise to keep. */
+function successorsOf(edges: WorkchainEdge[]): Map<string, string[]> {
   const m = new Map<string, string[]>()
   for (const e of edges) {
     const list = m.get(e.fromTaskId) ?? []

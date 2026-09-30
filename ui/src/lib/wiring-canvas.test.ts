@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   edgeCandidateSteps,
   edgeDropOutcome,
-  findEdge,
+  invertWireOps,
+  spliceIntoWire,
   WIRE_HIT_RADIUS,
   type WiringStepLike,
 } from '@/lib/wiring-canvas'
@@ -19,14 +20,6 @@ const step = (taskId: string, state: WiringStepLike['state']): WiringStepLike =>
 const edges = (...pairs: Array<[string, string]>): WorkchainEdge[] =>
   pairs.map(([fromTaskId, toTaskId]) => ({ fromTaskId, toTaskId }))
 
-describe('findEdge', () => {
-  it('names the exact edge', () => {
-    const list = edges(['a', 'b'], ['b', 'c'])
-    expect(findEdge(list, 'a', 'b')).toEqual({ fromTaskId: 'a', toTaskId: 'b' })
-    expect(findEdge(list, 'b', 'a')).toBeUndefined()
-    expect(findEdge([], 'a', 'b')).toBeUndefined()
-  })
-})
 
 describe('edgeCandidateSteps', () => {
   it('excludes the source and anything already wired from it', () => {
@@ -92,5 +85,51 @@ describe('WIRE_HIT_RADIUS', () => {
   it('stays tighter than the port target — wires are dense, ports are not', () => {
     expect(WIRE_HIT_RADIUS).toBeLessThanOrEqual(12)
     expect(WIRE_HIT_RADIUS).toBeGreaterThan(0)
+  })
+})
+
+describe('spliceIntoWire', () => {
+  it('threads the ticket through the wire it was dropped on', () => {
+    expect(spliceIntoWire({ fromTaskId: 'a', toTaskId: 'b' }, 'n')).toEqual([
+      { kind: 'add', fromTaskId: 'a', toTaskId: 'n' },
+      { kind: 'add', fromTaskId: 'n', toTaskId: 'b' },
+      { kind: 'cut', fromTaskId: 'a', toTaskId: 'b' },
+    ])
+  })
+
+  it('adds BEFORE it cuts — a half-applied splice must not sever the chain', () => {
+    const ops = spliceIntoWire({ fromTaskId: 'a', toTaskId: 'b' }, 'n')
+    expect(ops.findIndex((o) => o.kind === 'cut')).toBe(ops.length - 1)
+  })
+})
+
+describe('invertWireOps', () => {
+  it('turns every add into a cut and back', () => {
+    expect(invertWireOps([{ kind: 'add', fromTaskId: 'a', toTaskId: 'b' }])).toEqual([
+      { kind: 'cut', fromTaskId: 'a', toTaskId: 'b' },
+    ])
+    expect(invertWireOps([{ kind: 'cut', fromTaskId: 'a', toTaskId: 'b' }])).toEqual([
+      { kind: 'add', fromTaskId: 'a', toTaskId: 'b' },
+    ])
+  })
+
+  it('runs backwards, so the graph retraces its own steps', () => {
+    const undo = invertWireOps(spliceIntoWire({ fromTaskId: 'a', toTaskId: 'b' }, 'n'))
+    expect(undo).toEqual([
+      { kind: 'add', fromTaskId: 'a', toTaskId: 'b' },
+      { kind: 'cut', fromTaskId: 'n', toTaskId: 'b' },
+      { kind: 'cut', fromTaskId: 'a', toTaskId: 'n' },
+    ])
+  })
+
+  it('undoing an undo is the original plan', () => {
+    const ops = spliceIntoWire({ fromTaskId: 'a', toTaskId: 'b' }, 'n')
+    expect(invertWireOps(invertWireOps(ops))).toEqual(ops)
+  })
+
+  it('does not mutate what it is handed', () => {
+    const ops = [{ kind: 'add' as const, fromTaskId: 'a', toTaskId: 'b' }]
+    invertWireOps(ops)
+    expect(ops).toEqual([{ kind: 'add', fromTaskId: 'a', toTaskId: 'b' }])
   })
 })

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   autoLayout,
   buildPositions,
-  chainBranches,
   chainProgress,
   chainedTaskIds,
   chainCandidates,
@@ -125,19 +124,6 @@ describe('chainedTaskIds', () => {
 
 // ── TALA-35: the canvas ──────────────────────────────────────────────────────
 
-describe('chainBranches', () => {
-  it('a line does not branch', () => {
-    expect(chainBranches({ edges: [wire('a', 'b'), wire('b', 'c')] })).toBe(false)
-  })
-
-  it('a fan-out does', () => {
-    expect(chainBranches({ edges: [wire('a', 'b'), wire('a', 'c')] })).toBe(true)
-  })
-
-  it('no edges does not branch', () => {
-    expect(chainBranches({ edges: [] })).toBe(false)
-  })
-})
 
 describe('chainCandidates', () => {
   const t = (id: string, status: string) => ({ id, status })

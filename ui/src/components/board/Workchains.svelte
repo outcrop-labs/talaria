@@ -39,12 +39,15 @@
   import type { Task } from '@/lib/task-const'
   import type { Board, BoardLabel, BoardMember } from '@/lib/boards.svelte'
   import type { BoardFilters } from './filter-bar'
+  import { spliceIntoWire } from '@/lib/wiring-canvas'
   import WorkchainCanvas from './WorkchainCanvas.svelte'
   import WorkchainSidebar from './WorkchainSidebar.svelte'
   import {
+    addWorkchainEdge,
     addWorkchainStep,
     createWorkchain,
     deleteWorkchain,
+    removeWorkchainEdge,
     updateWorkchain,
     useBoardWorkchains,
   } from '@/lib/workchain-client'
@@ -290,13 +293,27 @@
       .catch(failure('Adding the ticket'))
   }
 
-  const dropOnCanvas = (taskId: string, at: { x: number; y: number }) => {
+  const dropOnCanvas = (
+    taskId: string,
+    at: { x: number; y: number },
+    onWire?: { fromTaskId: string; toTaskId: string },
+  ) => {
     const c = focusedChain
     if (!c) return
     void (async () => {
       try {
         await addWorkchainStep(c.id, taskId, { wire: false })
         await updateWorkchain(c.id, { nodes: [{ taskId, x: Math.round(at.x), y: Math.round(at.y) }] })
+        // Dropped ON a wire: thread it through that connection. The api's
+        // `after:` wedge is the other shape — it moves EVERY one of the
+        // anchor's successors onto the new step, which is right for "insert
+        // into a line" and wrong for "insert into this one wire".
+        if (onWire) {
+          for (const op of spliceIntoWire(onWire, taskId)) {
+            if (op.kind === 'add') await addWorkchainEdge(c.id, op.fromTaskId, op.toTaskId)
+            else await removeWorkchainEdge(c.id, op.fromTaskId, op.toTaskId)
+          }
+        }
         invalidate()
       } catch (e) {
         failure('Adding the ticket')(e)

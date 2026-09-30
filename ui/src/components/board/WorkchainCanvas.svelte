@@ -58,15 +58,23 @@
   } from '@/lib/workchain-rules'
   import {
     clientToCanvas,
-    distanceToWire,
     fitTransform,
     hitTestNode,
     hitTestPort,
+    nearestWire,
     portRadius,
+    snapToGrid,
     wheelZoomGesture,
     zoomAt,
   } from '@/lib/wiring-overlay'
-  import { edgeCandidateSteps, edgeDropOutcome, SIDEBAR_TICKET_MIME, WIRE_HIT_RADIUS } from '@/lib/wiring-canvas'
+  import {
+    edgeCandidateSteps,
+    edgeDropOutcome,
+    invertWireOps,
+    SIDEBAR_TICKET_MIME,
+    WIRE_HIT_RADIUS,
+    type WireOp,
+  } from '@/lib/wiring-canvas'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import type { AgentModel } from '@/lib/agents'
   import type { BoardMember } from '@/lib/boards.svelte'
@@ -99,7 +107,13 @@
     /** A ticket dragged out of the sidebar was dropped ON the canvas, at that
      *  canvas point. The caller owns the write (it owns the query); the canvas
      *  only knows where the pointer let go. */
-    onDropTicket?: (taskId: string, at: { x: number; y: number }) => void
+    onDropTicket?: (
+      taskId: string,
+      at: { x: number; y: number },
+      /** The wire it was dropped ON, if any — the caller splices the ticket
+       *  into that connection instead of landing it loose. */
+      onWire?: { fromTaskId: string; toTaskId: string },
+    ) => void
     /** The toolbar's "show me the tickets" — the context menu offers it too,
      *  because a blank canvas is exactly where you go looking for one. */
     onOpenSidebar?: () => void
@@ -124,6 +138,65 @@
 
   const menu = useContextMenu()
 
+  // ── Undo ─────────────────────────────────────────────────────────────────
+  // A graph editor without one is a graph editor you edit nervously. Every
+  // destructive canvas verb pushes the writes that put it back, and ⌘/Ctrl+Z
+  // runs the top of the stack; the context menu names it so it is not a
+  // keyboard secret.
+  //
+  // SESSION-LOCAL AND SHALLOW, on purpose. The truth is the server's, several
+  // people share a chain, and a deep stack replayed over someone else's edits
+  // would put back a world nobody was in. Each entry is one request or a short
+  // burst of them, the read that follows is the arbiter, and a failed undo says
+  // so rather than pretending.
+  type UndoEntry = { label: string; run: () => Promise<unknown> }
+  const UNDO_DEPTH = 20
+  let undoStack = $state<UndoEntry[]>([])
+  const undoTop = $derived(undoStack.at(-1) ?? null)
+
+  const pushUndo = (entry: UndoEntry) => {
+    undoStack = [...undoStack, entry].slice(-UNDO_DEPTH)
+  }
+  // A chain SWITCH is a different graph, so its predecessor's undos do not
+  // apply. Compared by VALUE against a plain variable, not by tracking the
+  // prop: `workchain` is a fresh object on every refetch, so an effect that
+  // depended on it emptied the stack one tick after every push — undo was
+  // wired end to end and never had anything in it.
+  let undoChain: string | null = null
+  $effect(() => {
+    const id = workchain.id
+    if (undoChain === id) return
+    undoChain = id
+    undoStack = []
+  })
+
+  const undoLast = () => {
+    const entry = undoStack.at(-1)
+    if (!entry) return
+    undoStack = undoStack.slice(0, -1)
+    void entry
+      .run()
+      .then(onChanged)
+      .catch(failure(`Undoing the ${entry.label}`))
+  }
+
+  /** Run a planned burst of wire writes in order, then re-read once. */
+  const runWireOps = async (ops: readonly WireOp[]): Promise<void> => {
+    for (const op of ops) {
+      if (op.kind === 'add') await addWorkchainEdge(workchain.id, op.fromTaskId, op.toTaskId)
+      else await removeWorkchainEdge(workchain.id, op.fromTaskId, op.toTaskId)
+    }
+  }
+
+  /** Apply wire ops and register their inverse as one undo step. */
+  const applyWires = (label: string, ops: WireOp[]) => {
+    if (ops.length === 0) return
+    pushUndo({ label, run: () => runWireOps(invertWireOps(ops)) })
+    void runWireOps(ops)
+      .then(onChanged)
+      .catch(failure(`${label[0]?.toUpperCase()}${label.slice(1)}`))
+  }
+
   // ── The graph layout ─────────────────────────────────────────────────────
   const byTask = $derived(new Map(workchain.steps.map((s) => [s.taskId, s])))
   const positions = $derived(autoLayout(workchain.steps, workchain.edges))
@@ -143,6 +216,10 @@
     dragId === taskId && dragPos ? dragPos : (positions.get(taskId) ?? { x: 0, y: 0 })
 
   const startDrag = (taskId: string, e: PointerEvent) => {
+    // A new gesture clears the last one's click guard: a drag that ended in a
+    // pointercancel never got the click it was waiting to swallow, and a stale
+    // flag would eat the reader's next honest click on that card.
+    draggedId = null
     const p = positions.get(taskId) ?? { x: 0, y: 0 }
     dragId = taskId
     dragPos = { ...p }
@@ -153,19 +230,37 @@
   const moveDrag = (e: PointerEvent) => {
     if (!dragId || !dragStart || e.pointerId !== dragStart.pointerId) return
     // Screen pixels ÷ the zoom: the card must sit under the cursor at every
-    // scale, and positions are canvas units.
-    dragPos = {
-      x: dragStart.ox + (e.clientX - dragStart.mx) / viewport.k,
-      y: dragStart.oy + (e.clientY - dragStart.my) / viewport.k,
-    }
+    // scale, and positions are canvas units. Then SNAP: hand-placed cards line
+    // up with each other and with the dot field, which is most of what makes a
+    // canvas someone arranged by hand look arranged. Alt drops that for the one
+    // card that wants to sit between the dots.
+    dragPos = snapToGrid(
+      {
+        x: dragStart.ox + (e.clientX - dragStart.mx) / viewport.k,
+        y: dragStart.oy + (e.clientY - dragStart.my) / viewport.k,
+      },
+      GRID,
+      e.altKey,
+    )
   }
 
-  const endDrag = () => {
-    if (!dragId || !dragPos || !dragStart) return
+  /** Drop the drag state without writing — a cancelled pointer (a touch turned
+   *  into a scroll, the card removed by a refetch mid-drag) used to leave
+   *  dragId set for ever, and nodePos then pinned that card to a position
+   *  nothing was updating. */
+  const cancelDrag = () => {
+    dragId = null
+    dragPos = null
+    dragStart = null
+    draggedId = null
+  }
+
+  const endDrag = (e: PointerEvent) => {
+    if (!dragId || !dragPos || !dragStart || e.pointerId !== dragStart.pointerId) return
     const { x, y } = dragPos
     const id = dragId
-    const moved =
-      Math.abs(x - dragStart.ox) > 1 || Math.abs(y - dragStart.oy) > 1
+    const from = { x: dragStart.ox, y: dragStart.oy }
+    const moved = Math.abs(x - from.x) > 1 || Math.abs(y - from.y) > 1
     dragId = null
     dragPos = null
     dragStart = null
@@ -174,6 +269,10 @@
     // user placement. Only a real drag writes.
     if (!moved) return
     draggedId = id
+    pushUndo({
+      label: 'card move',
+      run: () => updateWorkchain(workchain.id, { nodes: [{ taskId: id, x: Math.round(from.x), y: Math.round(from.y) }] }),
+    })
     void updateWorkchain(workchain.id, { nodes: [{ taskId: id, x: Math.round(x), y: Math.round(y) }] })
       .then(onChanged)
       .catch(failure('Moving the card'))
@@ -228,6 +327,16 @@
       return { taskId: s.taskId, x: Math.round(p.x), y: Math.round(p.y) }
     })
     if (nodes.length === 0) return
+    // The undo restores the RESOLVED positions — what was on screen, including
+    // the ones auto-layout had decided. (`nodes` can set coordinates but never
+    // clear them, so an exact "put it back to unplaced" is not expressible;
+    // restoring where they actually were is both possible and what the reader
+    // means.)
+    const before = workchain.steps.map((st) => {
+      const p = positions.get(st.taskId) ?? { x: 0, y: 0 }
+      return { taskId: st.taskId, x: Math.round(p.x), y: Math.round(p.y) }
+    })
+    pushUndo({ label: 'tidy up', run: () => updateWorkchain(workchain.id, { nodes: before }) })
     void updateWorkchain(workchain.id, { nodes })
       .then(() => {
         onChanged()
@@ -433,9 +542,7 @@
     const hit = port ?? (nodeHit ? { taskId: nodeHit, side: null } : null)
     const outcome = edgeDropOutcome(workchain.steps, workchain.edges, drag.fromTaskId, hit)
     if (outcome.kind === 'create') {
-      void addWorkchainEdge(workchain.id, drag.fromTaskId, outcome.toTaskId)
-        .then(onChanged)
-        .catch(failure('Wiring the step'))
+      applyWires('wire', [{ kind: 'add', fromTaskId: drag.fromTaskId, toTaskId: outcome.toTaskId }])
     } else if (outcome.kind === 'cycle') {
       // The api refuses it too; the drag ending IS the feedback.
     } else if (!port && !nodeHit) {
@@ -494,40 +601,31 @@
   let selectedEdge = $state<{ fromTaskId: string; toTaskId: string } | null>(null)
   let hoveredEdge = $state<{ fromTaskId: string; toTaskId: string } | null>(null)
 
+  /** The wire under a canvas point. Distance is in canvas units, so the screen
+   *  tolerance is divided by the zoom and the target stays the same size under
+   *  the pointer at every scale. */
+  const wireUnder = (at: { x: number; y: number }) =>
+    nearestWire(at, workchain.edges, positions, wirePath, WIRE_HIT_RADIUS / viewport.k)
+
   const clickWire = (e: PointerEvent) => {
     const rect = surface?.getBoundingClientRect()
     if (!rect) return
-    const at = clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport)
-    let best: { fromTaskId: string; toTaskId: string } | null = null
-    // Distance is in canvas units; divide by k so the screen-space
-    // tolerance stays constant across zoom levels.
-    let bestDist = WIRE_HIT_RADIUS / viewport.k
-    for (const edge of workchain.edges) {
-      const f = positions.get(edge.fromTaskId)
-      const t = positions.get(edge.toTaskId)
-      if (!f || !t) continue
-      const d = distanceToWire(at, f, t, wirePath)
-      if (d <= bestDist) {
-        bestDist = d
-        best = { fromTaskId: edge.fromTaskId, toTaskId: edge.toTaskId }
-      }
-    }
-
-    selectedEdge = best
+    const hit = wireUnder(clientToCanvas({ x: e.clientX, y: e.clientY }, rect, viewport))
+    selectedEdge = hit ? { fromTaskId: hit.fromTaskId, toTaskId: hit.toTaskId } : null
   }
 
   const deleteSelected = () => {
     const sel = selectedEdge
     if (!sel) return
     selectedEdge = null
-    void removeWorkchainEdge(workchain.id, sel.fromTaskId, sel.toTaskId)
-      .then(onChanged)
-      .catch(failure('Cutting the wire'))
+    applyWires('wire cut', [{ kind: 'cut', fromTaskId: sel.fromTaskId, toTaskId: sel.toTaskId }])
   }
 
   const wireMenu = (e: MouseEvent, edge: WorkchainEdge) => {
     selectedEdge = { fromTaskId: edge.fromTaskId, toTaskId: edge.toTaskId }
-    menu.openMenu(e, [{ label: 'Cut wire', danger: true, onSelect: deleteSelected }])
+    const items: ContextMenuEntry[] = [{ label: 'Cut wire', danger: true, onSelect: deleteSelected }]
+    if (undoTop) items.unshift({ label: `Undo ${undoTop.label}`, onSelect: undoLast }, 'sep')
+    menu.openMenu(e, items)
   }
 
   const cardMenu = (e: MouseEvent, step: WorkchainStep) => {
@@ -551,10 +649,10 @@
   const edgesFrom = (taskId: string) => workchain.edges.filter((e) => e.fromTaskId === taskId)
 
   const cutAllFrom = (taskId: string) => {
-    const list = edgesFrom(taskId)
-    void Promise.all(list.map((e) => removeWorkchainEdge(workchain.id, e.fromTaskId, e.toTaskId)))
-      .then(onChanged)
-      .catch(failure('Cutting the wires'))
+    applyWires(
+      'wire cut',
+      edgesFrom(taskId).map((e) => ({ kind: 'cut' as const, fromTaskId: e.fromTaskId, toTaskId: e.toTaskId })),
+    )
   }
 
   /** Empty canvas = anything that is not a card, a port or a wire. The
@@ -615,6 +713,9 @@
     if (canEdit && workchain.steps.length > 0) {
       items.push({ label: 'Tidy up', onSelect: tidyUp })
     }
+    if (canEdit && undoTop) {
+      items.push('sep', { label: `Undo ${undoTop.label}`, onSelect: undoLast })
+    }
     menu.openMenu(e, items)
   }
 
@@ -627,21 +728,38 @@
 
   const dragHasTicket = (e: DragEvent) => !!e.dataTransfer?.types.includes(SIDEBAR_TICKET_MIME)
 
+  /** A ticket dragged over a WIRE splices into it rather than landing loose —
+   *  the connection lights up to say so before the reader lets go. */
+  let spliceTarget = $state<WorkchainEdge | null>(null)
+
   const onSurfaceDragOver = (e: DragEvent) => {
     if (!canEdit || !onDropTicket || !dragHasTicket(e)) return
     e.preventDefault()
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    dropHint = pointOf(e)
+    const at = pointOf(e)
+    dropHint = at
+    // A fatter radius than a click's: this is a drag with a card-sized payload,
+    // not a 1px selection, and the wire it lights up is the promise it makes.
+    spliceTarget = at ? nearestWire(at, workchain.edges, positions, wirePath, (WIRE_HIT_RADIUS * 2) / viewport.k) : null
+  }
+
+  const clearDrop = () => {
+    dropHint = null
+    spliceTarget = null
   }
 
   const onSurfaceDrop = (e: DragEvent) => {
-    dropHint = null
+    const onWire = spliceTarget
+    clearDrop()
     if (!canEdit || !onDropTicket || !dragHasTicket(e)) return
     e.preventDefault()
     const taskId = e.dataTransfer?.getData(SIDEBAR_TICKET_MIME)
     const at = pointOf(e)
-    // The card lands centred on the pointer, the same offset the composer uses.
-    if (taskId && at) onDropTicket(taskId, { x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 })
+    if (!taskId || !at) return
+    // The card lands centred on the pointer, the same offset the composer uses,
+    // snapped like a hand-placed one.
+    const corner = snapToGrid({ x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 }, GRID, e.altKey)
+    onDropTicket(taskId, corner, onWire ? { fromTaskId: onWire.fromTaskId, toTaskId: onWire.toTaskId } : undefined)
   }
 
 </script>
@@ -654,7 +772,7 @@
 <!-- The canvas: wires UNDER the cards, cards above, ports on every card.
      Pointer events ride the surface; the viewport transform carries pan
      and zoom; the overlay is the wiring editor's hit plane. -->
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -- reason: role=application is a focus STOP on purpose. The canvas owns its own keys (space to pan, Delete to cut the selected wire, ⌘/Ctrl+Z to undo), which a reader cannot reach unless the surface can take focus; the role is exactly the announcement that keys here belong to the widget, not the page. -->
 <div
   bind:this={surface}
   class="relative h-full w-full overflow-hidden rounded-lg border border-line-subtle bg-surface"
@@ -664,7 +782,7 @@
   tabindex="0"
   ondblclick={onSurfaceDoubleClick}
   ondragover={onSurfaceDragOver}
-  ondragleave={() => (dropHint = null)}
+  ondragleave={clearDrop}
   ondrop={onSurfaceDrop}
   onpointerdown={onSurfacePointerDown}
   onpointermove={(e) => {
@@ -687,6 +805,10 @@
     if (e.code === 'Space') { e.preventDefault(); spaceHeld = true }
     if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected()
     if (e.key === 'Escape') { selectedEdge = null }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault()
+      undoLast()
+    }
   }}
   onkeyup={(e) => {
     if (e.code === 'Space') spaceHeld = false
@@ -737,7 +859,8 @@
           {@const sel =
             selectedEdge?.fromTaskId === e.fromTaskId && selectedEdge?.toTaskId === e.toTaskId}
           {@const hov =
-            hoveredEdge?.fromTaskId === e.fromTaskId && hoveredEdge?.toTaskId === e.toTaskId}
+            (hoveredEdge?.fromTaskId === e.fromTaskId && hoveredEdge?.toTaskId === e.toTaskId) ||
+              (spliceTarget?.fromTaskId === e.fromTaskId && spliceTarget?.toTaskId === e.toTaskId)}
           <path
             d={wirePath(nodePos(e.fromTaskId), nodePos(e.toTaskId))}
             fill="none"
@@ -765,16 +888,14 @@
             class="pointer-events-auto cursor-pointer"
             onpointerenter={() => (hoveredEdge = { fromTaskId: e.fromTaskId, toTaskId: e.toTaskId })}
             onpointerleave={() => (hoveredEdge = null)}
-            onclick={(ev) => {
-              ev.stopPropagation()
-              selectedEdge = { fromTaskId: e.fromTaskId, toTaskId: e.toTaskId }
-            }}
             oncontextmenu={(ev) => wireMenu(ev, e)}
           />
         {/if}
       {/each}
-      {#if dropHint}
-      <!-- where a dragged-in ticket will land: the card's own box, ghosted. -->
+      {#if dropHint && !spliceTarget}
+      <!-- where a dragged-in ticket will land: the card's own box, ghosted.
+           Over a wire the WIRE lights instead — the promise there is "into
+           this connection", not "at this spot". -->
       <rect
         x={dropHint.x - NODE_W / 2}
         y={dropHint.y - NODE_H / 2}
@@ -823,6 +944,7 @@
         }}
         onpointermove={moveDrag}
         onpointerup={endDrag}
+        onpointercancel={cancelDrag}
         oncontextmenu={(e) => cardMenu(e, step)}
         class={cn(
           'absolute cursor-grab rounded-lg border border-line bg-panel p-3 text-left transition-colors active:cursor-grabbing',
