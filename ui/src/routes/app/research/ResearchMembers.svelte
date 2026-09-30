@@ -6,7 +6,7 @@
   import { toastError } from '@/lib/toast.svelte'
   import { useSession } from '@/lib/session'
   import { useTeamsDirectory } from '@/lib/teams'
-  import { useResearchMembers } from '@/lib/research'
+  import { useResearchMembers, useResearchPresence } from '@/lib/research'
 
   // Members + share, in the run header. Mirrors plan sharing: the owner adds
   // teammates (they get the run AND its report), a collaborator can leave. The
@@ -24,8 +24,13 @@
   // same list for its @mentions — and a second spelling would eventually offer
   // a mention to somebody who cannot open the report being discussed.
   const query = useResearchMembers(() => runId)
+  // Ping while this header is mounted, so the rings mean "here now" rather
+  // than "has access" — the half of multiplayer that makes two people working
+  // at once feel like two people.
+  useResearchPresence(() => runId)
   const members = $derived(query.data?.members ?? [])
   const teams = $derived(query.data?.teams ?? [])
+  const active = $derived(new Set(query.data?.active ?? []))
   const isOwner = $derived(!!session?.id && session.id === members.find((m) => m.role === 'owner')?.userId)
   const refresh = () => qc.invalidateQueries({ queryKey: ['research-members', runId] })
   // Only the share picker reads the directory, and only the owner sees it.
@@ -45,6 +50,7 @@
 
 <!-- Org-wide runs (no owner) have nothing to share. -->
 <MembersHeader
+  {active}
   {members}
   {teams}
   {isOwner}

@@ -40,6 +40,7 @@
 | [`/api/integrations/google/agent/sheets/{id}`](#apiintegrationsgoogleagentsheetsid) | GET | `agent` |
 | [`/api/integrations/google/agent/sheets/{id}`](#apiintegrationsgoogleagentsheetsid) | POST | `agent` |
 | [`/api/integrations/google/agent/slides/{id}`](#apiintegrationsgoogleagentslidesid) | GET | `agent` |
+| [`/api/integrations/google/agent/slides/{id}`](#apiintegrationsgoogleagentslidesid) | POST | `agent` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | GET | `session` |
 | [`/api/integrations/google/calendar/events`](#apiintegrationsgooglecalendarevents) | POST | `session` |
 | [`/api/integrations/google/callback`](#apiintegrationsgooglecallback) | GET | `public` |
@@ -470,15 +471,22 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_slides.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_agent_slides.rs)
 
-> Agent Google Slides, read only. There is no write half: see the crate
-> header in talaria-google-slides for why editing a deck is a different
-> problem than editing a doc.
+> Agent Google Slides. Reading is free; replacing text ALWAYS queues for a
+> human — there is no deck an agent owns, so there is no immediate path.
 >
+> There is no authoring here, on purpose: see the crate header in
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `…` | 200, 409 | — |
+| POST | `agent` | [body](#post-apiintegrationsgoogleagentslidesid-body) | `{pending, message}` | 200, 400 | — |
+
+### POST `/api/integrations/google/agent/slides/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `matchCase` | `bool?` |  |
 
 ## `/api/integrations/google/calendar/events`
 

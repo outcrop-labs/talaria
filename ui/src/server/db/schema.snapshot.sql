@@ -590,14 +590,16 @@ CREATE TABLE public.judge_reviews (
 );
 CREATE TABLE public.kb_comments (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    doc_id uuid NOT NULL,
+    doc_id uuid,
     parent_id uuid,
     author_user_id uuid,
     author text NOT NULL,
     quote text,
     content text NOT NULL,
     resolved boolean DEFAULT false NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    artifact_id uuid,
+    CONSTRAINT kb_comments_one_target CHECK (((doc_id IS NULL) <> (artifact_id IS NULL)))
 );
 CREATE TABLE public.kb_docs (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1618,6 +1620,7 @@ CREATE INDEX inbox_focus_state_snooze_idx ON public.inbox_focus_state USING btre
 CREATE INDEX internal_versions_idx ON public.internal_versions USING btree (kind, owner_key, created_at DESC);
 CREATE INDEX invites_email_idx ON public.invites USING btree (email);
 CREATE INDEX judge_reviews_task_idx ON public.judge_reviews USING btree (task_id, created_at DESC);
+CREATE INDEX kb_comments_artifact_idx ON public.kb_comments USING btree (artifact_id, created_at);
 CREATE INDEX kb_comments_doc_idx ON public.kb_comments USING btree (doc_id, created_at);
 CREATE INDEX kb_docs_fts_idx ON public.kb_docs USING gin (to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(body, ''::text))));
 CREATE INDEX kb_docs_space_idx ON public.kb_docs USING btree (space_id, parent_id, sort);
@@ -1800,6 +1803,8 @@ ALTER TABLE ONLY public.invites
     ADD CONSTRAINT invites_accepted_user_id_fkey FOREIGN KEY (accepted_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.judge_reviews
     ADD CONSTRAINT judge_reviews_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.kb_comments
+    ADD CONSTRAINT kb_comments_artifact_id_fkey FOREIGN KEY (artifact_id) REFERENCES public.artifacts(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.kb_comments
     ADD CONSTRAINT kb_comments_author_user_id_fkey FOREIGN KEY (author_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.kb_comments

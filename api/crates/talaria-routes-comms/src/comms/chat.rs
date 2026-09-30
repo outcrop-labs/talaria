@@ -50,6 +50,7 @@ use talaria_state::AppState;
 use talaria_uploads::{
     attachment_as_data_url, attachment_text_blocks, is_image, resolve_attachments,
 };
+use talaria_work_mode::WORK_MODE_PROMPT;
 use talaria_workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 
 struct ChatBody {
@@ -396,10 +397,17 @@ pub async fn post(
         .clone()
         .or_else(|| user.email.clone())
         .unwrap_or_else(|| "someone".into());
-    let plan_meta = if kind == "plan" {
+    // BOTH SHARED SURFACES GET A LIVING DOCUMENT. A landed turn rewrites the
+    // conversation's document from the conversation so far — that is the whole
+    // draw of the Work surface, not a plan-only nicety, so `kind='work'` opts
+    // in here alongside `plan`. The kind rides along because the rewrite prompt
+    // and the template seeding differ: a plan converges on goals and owners, a
+    // work session's document IS the deliverable.
+    let plan_meta = if kind == "plan" || kind == "work" {
         Some(PlanMeta {
             owner_user_id: plan_owner_id.clone(),
             title: plan_title.clone(),
+            surface: kind.clone(),
         })
     } else {
         None
@@ -597,6 +605,14 @@ pub async fn post(
     if kind == "plan" {
         let block = plan_routing_block(&state.pg).await;
         messages.push(json!({ "role": "system", "content": format!("{PLAN_MODE_PROMPT}{block}") }));
+    }
+    // A work turn carries the work-mode harness: the surface, the document
+    // beside the chat, and — the part that matters — which of its writes
+    // happen now and which sit in a queue until a person approves them. The
+    // prompt is not the gate (decide_action is); it is what stops the agent
+    // telling someone their spreadsheet was updated when it was not.
+    if kind == "work" {
+        messages.push(json!({ "role": "system", "content": WORK_MODE_PROMPT }));
     }
     if kind == "research" {
         messages.push(json!({

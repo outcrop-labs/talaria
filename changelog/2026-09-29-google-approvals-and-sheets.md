@@ -31,10 +31,10 @@
 
   **Google Slides, read.** `read_google_slides` returns a deck slide by slide
   — every text run on each slide plus its speaker notes, which do not bleed
-  into the slide body. Reading only: editing a deck means batched requests
-  against shape and placeholder ids, and a tool that did not understand
-  layouts would produce decks nobody wants. Importing a deck as a PDF artifact
-  still works as it did.
+  into the slide body. Importing a deck as a PDF artifact still works as it
+  did. (Replacing text in a deck landed separately, later in this same
+  release; authoring one — adding slides, moving boxes — is still deliberately
+  absent.)
 
   Neither new surface needs anyone to reconnect: the Sheets and Slides APIs
   both accept the full Drive scope every Talaria connection already carries.

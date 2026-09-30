@@ -3,18 +3,9 @@
 pub use talaria_realtime::*;
 
 use futures_util::FutureExt;
-use futures_util::future::BoxFuture;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use talaria_runs_run::{PublishFn as RunPublishFn, RunEvent};
 use talaria_runs_store::RunStore;
-
-pub static TASK_BOARD_ID: OnceLock<
-    Arc<
-        dyn Fn(sqlx::PgPool, String) -> BoxFuture<'static, Result<Option<String>, String>>
-            + Send
-            + Sync,
-    >,
-> = OnceLock::new();
 
 /// The real `RunDeps.publish` assembly the driver's deps point at.
 pub fn run_publish(deps: RealtimeDeps) -> RunPublishFn {
@@ -93,10 +84,36 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
         task_board_id: Arc::new(move |task_id| {
             let pg = task_pg.clone();
             async move {
-                match TASK_BOARD_ID.get() {
-                    Some(f) => f(pg, task_id).await,
-                    None => Ok(None),
+                // Asked here, directly. This used to indirect through a
+                // TASK_BOARD_ID OnceLock that NOTHING EVER SET, so it
+                // answered None for every task — and None on this edge means
+                // NotAudience, which the routes render as 403. Every run
+                // whose subject is a ticket was therefore unwatchable by
+                // everyone, permanently and silently: the agent pane, the
+                // Turns transcript and the run's own event stream all refuse
+                // together, because all three gate on may_watch_run.
+                //
+                // The indirection bought nothing. It reads as a
+                // dependency-cycle break, but this module already calls
+                // talaria_boards, talaria_channels, talaria_conversations
+                // and talaria_users directly on the edges either side of
+                // this one, and the question is one column.
+                // `runs.subject_id` is TEXT and `tasks.id` is uuid, so a
+                // subject that is not uuid-shaped makes the `::uuid` cast
+                // RAISE rather than simply not match — a 500 where a 403 is
+                // meant (the bind-cast trap in docs/RUST-MIGRATION.md). The
+                // shape is checked before the cast can see it; anything else
+                // is "no such task", which is what it is.
+                if !uuid_shaped(&task_id) {
+                    return Ok(None);
                 }
+                let row: Option<(String,)> =
+                    sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+                        .bind(&task_id)
+                        .fetch_optional(&pg)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                Ok(row.map(|(board_id,)| board_id))
             }
             .boxed()
         }),
@@ -119,5 +136,41 @@ pub fn real_watch_deps(pg: sqlx::PgPool) -> RunWatchDeps {
             }
             .boxed()
         }),
+    }
+}
+
+/// Is this string shaped like a uuid? Checked in Rust because the only
+/// alternatives are adding a dependency or dropping the primary-key index by
+/// comparing `id::text`, and the question is eight hyphens and thirty-two
+/// hex digits.
+fn uuid_shaped(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uuid_shaped;
+
+    #[test]
+    fn only_a_uuid_shaped_subject_reaches_the_cast() {
+        assert!(uuid_shaped("e83e6699-938e-474f-a90e-9b90048c69d4"));
+        // The work-session ids are deterministic rather than v4, so the
+        // version nibble must not be part of the test.
+        assert!(uuid_shaped("ce077850-d91b-8c9a-ae81-882d44dbe8a1"));
+        assert!(uuid_shaped("E83E6699-938E-474F-A90E-9B90048C69D4"));
+        assert!(!uuid_shaped(""));
+        assert!(!uuid_shaped("not-a-uuid"));
+        assert!(!uuid_shaped("e83e6699938e474fa90e9b90048c69d4"));
+        assert!(!uuid_shaped("e83e6699-938e-474f-a90e-9b90048c69d"));
+        assert!(!uuid_shaped("e83e6699-938e-474f-a90e-9b90048c69d4x"));
+        assert!(!uuid_shaped("e83e6699_938e_474f_a90e_9b90048c69d4"));
+        assert!(!uuid_shaped("zzzzzzzz-938e-474f-a90e-9b90048c69d4"));
+        // The shape guard is what keeps a hostile subject away from the cast.
+        assert!(!uuid_shaped("'; drop table tasks; --"));
     }
 }

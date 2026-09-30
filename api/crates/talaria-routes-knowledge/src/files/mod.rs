@@ -7,6 +7,7 @@ pub mod artifact_folders_id_duplicate;
 pub mod artifacts;
 pub mod artifacts_for;
 pub mod artifacts_id;
+pub mod artifacts_id_comments;
 pub mod artifacts_id_duplicate;
 pub mod artifacts_id_export_google;
 pub mod artifacts_id_links;

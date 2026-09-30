@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The editor half of PlanDoc.svelte — mounts once the plan's doc artifact id
+  // The editor half of LivingDoc.svelte — mounts once the conversation doc id
   // is known.
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Maximize2, Minimize2 } from '@lucide/svelte'
@@ -17,7 +17,7 @@
   import { onUserEvent } from '@/lib/user-events.svelte'
   import { p } from '@/router'
 
-  let { id, planId, syncSignal = 0 }: { id: string; planId: string; syncSignal?: number } = $props()
+  let { id, conversationId, syncSignal = 0 }: { id: string; conversationId: string; syncSignal?: number } = $props()
 
   const qc = useQueryClient()
   const artifactQuery = useArtifact(() => id)
@@ -38,7 +38,7 @@
   // observed, and writes from other members' tabs.
   $effect(() => {
     const off = onUserEvent((event) => {
-      if (event.type === 'conversation' && event.conversationId === planId) {
+      if (event.type === 'conversation' && event.conversationId === conversationId) {
         void qc.invalidateQueries({ queryKey: ['artifact', id] })
       }
     })
@@ -61,7 +61,7 @@
     syncing = true
     syncErr = null
     try {
-      await postJson(`/api/plans/${planId}/doc`, {})
+      await postJson(`/api/conversations/${conversationId}/doc`, {})
       await qc.invalidateQueries({ queryKey: ['artifact', id] })
       syncNonce += 1
     } catch (e) {

@@ -1,12 +1,19 @@
 // /api/research/{id}/members.
-// Multiplayer research, mirroring plan membership. GET → members (any member).
-// POST { email } → share (owner only; grants the report, notifies). DELETE
-// { userId } → unshare (owner, or a collaborator leaving).
+// Multiplayer research, mirroring plan membership. GET → { members, active,
+// teams } (any member); `active` is who is looking right now. POST { email } →
+// share (owner only; grants the report, notifies). DELETE { userId } → unshare
+// (owner, or a collaborator leaving). PUT → the presence heartbeat.
+//
+// PRESENCE MIRRORS THE PLAN'S, key namespace included: a short-lived Redis key
+// per (run, viewer) that the open view refreshes. Sharing without presence is
+// half a multiplayer surface — you can see WHO has access but never who is here,
+// which is the half that makes two people working at once feel like two people.
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use redis::AsyncCommands;
 use serde_json::json;
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
 use talaria_body::{email_member, parse, uuid_member};
@@ -18,6 +25,12 @@ use talaria_research::{
 };
 use talaria_session::require_user;
 use talaria_state::AppState;
+
+const PRESENCE_TTL_S: u64 = 60;
+
+fn presence_key(run_id: &str, user_id: &str) -> String {
+    format!("research:presence:{run_id}:{user_id}")
+}
 
 async fn sync_report_grant(
     state: &AppState,
@@ -61,10 +74,56 @@ pub async fn get(
         Ok(m) => m,
         Err(e) => return Ok(internal("[research] member list failed", e)),
     };
+    let mut conn = match state.redis().await {
+        Ok(c) => c,
+        Err(e) => return Ok(internal("[research] presence redis unavailable", e)),
+    };
+    let mut active = Vec::new();
+    for m in &members {
+        let flag: i64 = match conn.exists(presence_key(&id, &m.user_id)).await {
+            Ok(n) => n,
+            Err(e) => return Ok(internal("[research] presence read failed", e)),
+        };
+        if flag == 1 {
+            active.push(m.user_id.clone());
+        }
+    }
     Ok(match list_research_teams(&state.pg, &id).await {
-        Ok(teams) => Json(json!({ "members": members, "teams": teams })).into_response(),
+        Ok(teams) => {
+            Json(json!({ "members": members, "active": active, "teams": teams })).into_response()
+        }
         Err(e) => internal("[research] team list failed", e),
     })
+}
+
+/// The presence heartbeat. The open view pings while it is mounted; the key
+/// expires on its own, so a closed tab stops counting without anyone
+/// telling us.
+pub async fn put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let user = require_user(&state, &headers).await?;
+    if let Some(gate) = talaria_params::uuid_gate("research", "PUT members", &id) {
+        return Ok(gate);
+    }
+    match research_role(&state.pg, Some(&user.id), &id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[research] role read on PUT members failed", e)),
+    }
+    let mut conn = match state.redis().await {
+        Ok(c) => c,
+        Err(e) => return Ok(internal("[research] presence redis unavailable", e)),
+    };
+    if let Err(e) = conn
+        .set_ex::<_, _, ()>(presence_key(&id, &user.id), "1", PRESENCE_TTL_S)
+        .await
+    {
+        return Ok(internal("[research] presence write failed", e));
+    }
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 pub async fn post(

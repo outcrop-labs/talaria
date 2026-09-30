@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
 use talaria_body::{parse, uuid_member};
-use talaria_conversations::{add_plan_team, plan_role, remove_plan_team};
+use talaria_conversations::{add_plan_team, remove_plan_team, shared_conversation_role};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_params::uuid_gate;
 use talaria_plan_doc::plan_doc_for;
@@ -45,7 +45,7 @@ async fn owner_gate(state: &AppState, user_id: &str, id: &str, action: &str) -> 
     if let Some(gate) = uuid_gate("plans", action, id) {
         return Some(gate);
     }
-    match plan_role(&state.pg, user_id, id).await {
+    match shared_conversation_role(&state.pg, user_id, id).await {
         Ok(Some(role)) if role == "owner" => None,
         Ok(_) => Some(house_error(
             StatusCode::FORBIDDEN,

@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use talaria_api_facades::kb::perms::{EditorGrant, list_editors, set_editors};
 use talaria_body::{email_member, parse, uuid_member};
 use talaria_conversations::{
-    add_plan_member, list_plan_members, list_plan_teams, plan_role, remove_plan_member,
+    add_plan_member, list_plan_members, list_plan_teams, remove_plan_member,
+    shared_conversation_role,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
@@ -77,7 +78,7 @@ pub async fn get(
     if let Some(gate) = uuid_gate("plans", "GET members", &id) {
         return Ok(gate);
     }
-    match plan_role(&state.pg, &user.id, &id).await {
+    match shared_conversation_role(&state.pg, &user.id, &id).await {
         // Nothing and "not a plan" are the same answer here.
         Ok(Some(_)) => {}
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -121,7 +122,7 @@ pub async fn post(
     if let Some(gate) = uuid_gate("plans", "POST members", &id) {
         return Ok(gate);
     }
-    match plan_role(&state.pg, &user.id, &id).await {
+    match shared_conversation_role(&state.pg, &user.id, &id).await {
         Ok(Some(role)) if role == "owner" => {}
         Ok(_) => {
             return Ok(house_error(
@@ -210,7 +211,7 @@ pub async fn delete(
     // the role read precedes the body parse: the role read has no failure
     // surface of its own, and the body's 400 comes ahead of the permission
     // verdict.
-    let role = match plan_role(&state.pg, &user.id, &id).await {
+    let role = match shared_conversation_role(&state.pg, &user.id, &id).await {
         Ok(r) => r,
         Err(e) => {
             return Ok(internal(
@@ -252,7 +253,7 @@ pub async fn put(
     if let Some(gate) = uuid_gate("plans", "PUT members", &id) {
         return Ok(gate);
     }
-    match plan_role(&state.pg, &user.id, &id).await {
+    match shared_conversation_role(&state.pg, &user.id, &id).await {
         Ok(Some(_)) => {}
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
         Err(e) => return Ok(internal("[plans] plan role read on PUT members failed", e)),

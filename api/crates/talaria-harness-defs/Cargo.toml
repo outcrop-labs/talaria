@@ -23,6 +23,7 @@ talaria-fitness-world = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-harness = { workspace = true }
 talaria-harness-model = { workspace = true }
+talaria-work-mode = { workspace = true }
 talaria-harness-prompt-rules = { workspace = true }
 talaria-harness-schema = { workspace = true }
 talaria-harness-text = { workspace = true }

@@ -320,6 +320,8 @@ talaria-google-sheets = { path = "crates/talaria-google-sheets" }
 
 talaria-google-slides = { path = "crates/talaria-google-slides" }
 
+talaria-work-mode = { path = "crates/talaria-work-mode" }
+
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }
 
 talaria-google-oauth = { path = "crates/talaria-google-oauth" }

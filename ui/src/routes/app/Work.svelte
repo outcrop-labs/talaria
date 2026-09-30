@@ -16,17 +16,36 @@
   import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import { useHasPerm } from '@/lib/session'
   import { useAgents } from '@/lib/agents'
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
+  import ArtifactEditor from './ArtifactEditor.svelte'
+  import ConversationMembers from '@/components/chat/ConversationMembers.svelte'
+  import LivingDoc from '@/components/chat/LivingDoc.svelte'
+  import GoogleFilePane from '@/components/chat/GoogleFilePane.svelte'
+  import KbCommentsPanel from './KbCommentsPanel.svelte'
+  import { createQuery } from '@tanstack/svelte-query'
+  import { getJson } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
+  import type { KbComment } from './knowledge.svelte'
   import {
     archiveConversation,
     deleteConversation,
     renameConversation,
     restoreConversation,
     useConversations,
+    useConversationMembers,
+    loadConversation,
+    setPinnedFiles,
     type Conversation,
+    type PinnedFile,
   } from '@/lib/conversations.svelte'
+  import { userMentionInsert } from '@/components/chat/mentions.svelte'
+  import { parseGoogleFileUrl } from '@/lib/google-embed'
+  import { alert, prompt } from '@/components/ui/confirm.svelte'
 
   // Work surface: an agentic work session on the LEFT (the stream, its live
   // tool calls, and — from W4 — the approval cards the agent's writes queue
@@ -44,6 +63,8 @@
   // this file already draws.
 
   const qc = useQueryClient()
+  const mayManageAgents = useHasPerm('agents.manage')
+  const session = useSession()
   // Both reads keep their query object: the rail and the stage each render a
   // sentence ("No sessions yet with this agent.", "No agents available.")
   // that is only true of a request that SUCCEEDED and came back empty.
@@ -72,6 +93,19 @@
       ? { error: archivedQuery.error, retry: () => void archivedQuery.refetch() }
       : null,
   )
+  // @mention the session's MEMBERS — the people a mention will actually reach.
+  // Same rule as Plan: offering the whole org invites mentions that notify
+  // nobody. A brand-new session has only you, so it is inert until shared.
+  const membersQuery = useConversationMembers(() => selectedSessionId)
+  const mentionables = $derived(
+    (membersQuery.data?.members ?? [])
+      .map((u) => ({
+        insert: userMentionInsert({ name: u.name, email: u.email }),
+        label: u.name ?? u.email ?? u.userId,
+        sub: u.email ?? undefined,
+      }))
+      .filter((m) => m.insert),
+  )
   const sticky = useStickyAgent('work', () => agents)
   const selectedAgent = $derived(sticky.selected)
   const pickAgent = sticky.select
@@ -82,6 +116,101 @@
     else void navigate('/work', { replace: opts.replace })
   }
   let newChatSignal = $state(0)
+  // THE PANE FOLLOWS THE AGENT'S WORK. The document the session last touched,
+  // reported by ChatView from the landed turn's link chips — so opening a
+  // session puts you back in front of the file it was about, and an agent that
+  // creates a document mid-session brings it into view without anybody
+  // clicking. Per-session `pinned_files` is the next turn of this: the column
+  // exists, and it will let a person override what the agent chose.
+  // A GOOGLE FILE PINNED TO THIS SESSION, if any — the pane's Tier A. Held
+  // per session on the conversation row (`pinned_files`), so reopening a
+  // session puts the same file back in front of you, and a collaborator who
+  // opens it sees the file the session is about rather than an empty pane.
+  let pinnedGoogle = $state<PinnedFile | null>(null)
+  $effect(() => {
+    const id = selectedSessionId
+    if (!id) {
+      pinnedGoogle = null
+      return
+    }
+    // Read through the detail endpoint rather than the list: `pinned_files` is
+    // a per-conversation column and the rail's rows do not carry it.
+    void loadConversation(id).then((d) => {
+      if (selectedSessionId !== id) return
+      pinnedGoogle = (d?.conversation.pinnedFiles ?? []).find((f) => f.kind === 'google') ?? null
+    })
+  })
+  // PASTE A LINK. The smallest honest way in: people already have the URL,
+  // and a Drive browser is a bigger surface than this pane needs to prove
+  // itself. The type is read from the URL's own shape — a link that is not a
+  // Google file is refused here rather than pinned into a blank frame.
+  const pinGoogle = async () => {
+    const id = selectedSessionId
+    if (!id) return
+    const raw = await prompt({
+      title: 'Open a Google file',
+      message: 'Paste the link to a Google Doc, Sheet, Slides deck or Drive file.',
+      placeholder: 'https://docs.google.com/document/d/…',
+      confirmLabel: 'Open',
+    })
+    if (!raw?.trim()) return
+    const hit = parseGoogleFileUrl(raw)
+    if (!hit) {
+      await alert({
+        title: 'Not a Google file link',
+        message: 'That did not look like a docs.google.com or drive.google.com file URL.',
+      })
+      return
+    }
+    const file: PinnedFile = { kind: 'google', id: hit.id, ...(hit.mime ? { mime: hit.mime } : {}) }
+    if (await setPinnedFiles(id, [file])) pinnedGoogle = file
+  }
+  const unpinGoogle = () => {
+    const id = selectedSessionId
+    pinnedGoogle = null
+    if (id) void setPinnedFiles(id, [])
+  }
+  let paneArtifactId = $state<string | null>(null)
+  // COMMENTS ON THE DOCUMENT IN THE PANE. The pane is narrow, so they swap in
+  // rather than sitting beside the editor — a 44% column split again would give
+  // neither half enough room to be worth having.
+  let showComments = $state(false)
+  let livingDocId = $state<string | null>(null)
+  // The artifact the comments belong to: whatever the pane is actually showing.
+  // A pinned Google file has Google's own comments inside the embed, so this is
+  // null there and the control is hidden.
+  const commentTargetId = $derived(paneArtifactId ?? livingDocId)
+  const commentsQuery = createQuery(() => {
+    const id = commentTargetId
+    return {
+      queryKey: ['artifact-comments', id],
+      enabled: !!id && showComments,
+      queryFn: (): Promise<{ comments: KbComment[] }> =>
+        getJson<{ comments: KbComment[] }>(`/api/artifacts/${id}/comments`),
+    }
+  })
+  // Bumped when an agent turn lands; the living document asks for its new body
+  // on the bump. The server also rewrites the document on a landed turn, and
+  // its recency guard means whichever gets there first does the one rewrite.
+  let turnSignal = $state(0)
+  // Tools whose completion means the OPEN document changed underneath us. Only
+  // the artifact writers: a Google write of someone else's file queues rather
+  // than landing, so re-reading on it would show the unchanged document and
+  // imply the write went through.
+  const MUTATES_ARTIFACT = new Set([
+    'create_document',
+    'update_document',
+    'create_sheet',
+    'create_page',
+    'save_image_artifact',
+  ])
+  const onToolDone = (name: string) => {
+    // Invalidate rather than remount: the pane keeps its scroll and any
+    // in-progress edit, and TanStack refetches the one key that changed.
+    if (paneArtifactId && MUTATES_ARTIFACT.has(name)) {
+      void qc.invalidateQueries({ queryKey: ['artifact', paneArtifactId] })
+    }
+  }
   // The model-tier pick lives in the VIEW, not the composer: a session's chat
   // surface is attach + text + submit only, and the sidebar owns the agent.
   // A new session starts on the agent's main model ('').
@@ -197,8 +326,18 @@
   })
 </script>
 
+{#snippet hireAction()}
+  <Button size="sm" onclick={() => void navigate('/agents')}>Hire an agent</Button>
+{/snippet}
+
 {#snippet headerActions()}
   <div class="flex items-center gap-3">
+    {#if selectedSessionId}
+      <!-- Sharing and presence, the Plan idiom's own controls: a work session
+           is a conversation with members, so it gets the same header row
+           rather than a second one built for it. -->
+      <ConversationMembers conversationId={selectedSessionId} />
+    {/if}
     {#if selectedSessionId && selected}
       {@const session = selected}
       <button type="button" class={quiet} onclick={() => renameSession(session)}>Rename</button>
@@ -257,6 +396,8 @@
     noun="session"
     newPerm="work.sessions"
     newTitle="New session: work alongside the agent on a document"
+    emptyHint="A session is you and the agent working on one file together — its stream here, the document beside it. Reads are free; anything it writes to Google waits for your approval."
+    collapseKey="work"
   />
 
   <Stage header={stageHeader}>
@@ -277,6 +418,10 @@
                 kind="work"
                 minimal
                 tier={sessionTier}
+                {onToolDone}
+                {mentionables}
+                onTurnComplete={() => (turnSignal += 1)}
+                onDocumentTouched={(id) => (paneArtifactId = id)}
               />
             {/key}
           </div>
@@ -288,12 +433,82 @@
           <div class="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
             <div class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
               <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</span>
+              {#if commentTargetId && !pinnedGoogle}
+                <button
+                  type="button"
+                  class={`${quiet} ml-auto`}
+                  onclick={() => (showComments = !showComments)}
+                >
+                  {showComments ? 'Document' : 'Comments'}
+                </button>
+              {/if}
+              {#if paneArtifactId}
+                <button type="button" class={quiet} onclick={() => (paneArtifactId = null)}>Close</button>
+              {:else if pinnedGoogle}
+                <button type="button" class={`${quiet} ml-auto`} onclick={unpinGoogle}>Unpin</button>
+              {:else if selectedSessionId}
+                <button type="button" class={`${quiet} ml-auto`} onclick={() => void pinGoogle()}>Open a Google file</button>
+              {/if}
             </div>
-            <div class="grid flex-1 place-items-center p-8 text-center">
-              <div class="max-w-56 font-sans text-xs leading-relaxed text-muted">
-                The file you and {current.label} are working on opens here, beside the session.
-              </div>
-            </div>
+            {#if showComments && commentTargetId}
+              <!-- Swapped IN rather than beside: the pane is 44% of the stage
+                   and splitting it again would leave neither half usable. A
+                   pinned Google file never gets here — Google's own comments
+                   live inside the embed. -->
+              <KbCommentsPanel
+                docId={commentTargetId}
+                basePath="/api/artifacts"
+                queryKey="artifact-comments"
+                comments={commentsQuery.data?.comments ?? []}
+                loadFailed={commentsQuery.isError}
+                loadError={commentsQuery.error}
+                onRetryLoad={() => void commentsQuery.refetch()}
+                meId={session.data?.id ?? null}
+                docOwnerId={null}
+                pendingQuote={null}
+                onQuoteConsumed={() => {}}
+                onClose={() => (showComments = false)}
+              />
+            {:else if paneArtifactId}
+              <!-- The agent opened or wrote a DIFFERENT file, so the pane
+                   follows the work. Keyed on the id ALONE, not on a refresh
+                   counter: a tool landing invalidates the artifact query
+                   instead, so the editor keeps its scroll and any unsaved edit
+                   while the new body arrives. -->
+              {#key paneArtifactId}
+                <div class="min-h-0 flex-1 overflow-hidden">
+                  <ArtifactEditor id={paneArtifactId} onDeleted={() => (paneArtifactId = null)} />
+                </div>
+              {/key}
+            {:else if pinnedGoogle}
+              <!-- TIER A: the real Google editor, with Google's own presence
+                   doing the collaboration. Pinned to the session, so it
+                   outlives a reload and a collaborator sees the same file. -->
+              <GoogleFilePane
+                fileId={pinnedGoogle.id}
+                mime={pinnedGoogle.mime ?? null}
+                title={pinnedGoogle.title ?? null}
+              />
+            {:else if selectedSessionId}
+              <!-- THE SESSION'S LIVING DOCUMENT is the default, which is the
+                   whole draw of the surface: you talk, and the document builds
+                   itself beside you. The server rewrites it when a turn lands
+                   and `turnSignal` asks the pane for the new body. -->
+              <LivingDoc
+                conversationId={selectedSessionId}
+                syncSignal={turnSignal}
+                onDocId={(id) => (livingDocId = id)}
+              />
+            {:else}
+              <!-- No session yet, so there is no document to build. `full`
+                   carries the dithered vignette, which keeps a 44% column that
+                   owns half the stage from reading as a dead void. -->
+              <EmptyState
+                icon="◫"
+                title="No document yet"
+                hint={`Say what you are working on and the document builds here as you and ${current.label} talk.`}
+              />
+            {/if}
           </div>
         </div>
       </div>
@@ -326,7 +541,17 @@
         <QueryError error={agentsFailure.error} title="Could not load your agents" onRetry={agentsFailure.retry} />
       </div>
     {:else}
-      <div class="grid h-full place-items-center font-sans text-sm text-muted">No agents available.</div>
+      <!-- A statement about the FLEET, so it says what to do about it —
+           bare "No agents available." named the absence and offered no way
+           out of it. The action only appears for someone who can act on it:
+           /agents is a Manage view, and offering a button that bounces is
+           worse than offering none. -->
+      <EmptyState
+        icon="◇"
+        title="No agents yet"
+        hint="A work session is a conversation with one of your agents. Hire one and it shows up here."
+        action={mayManageAgents.current ? hireAction : undefined}
+      />
     {/if}
   </Stage>
 

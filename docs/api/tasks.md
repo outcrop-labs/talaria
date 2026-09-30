@@ -44,9 +44,9 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id.rs`](../../api/cra
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200, 403, 404, 409 | — |
+| GET | `dual` | — | `…` | 200, 400, 403, 404, 409 | — |
 | PUT | `dual` | [body](#put-apitasksid-body) | `{task}` | 200, 400, 403, 404, 409 | — |
-| DELETE | `session` | — | `{ok}` | 200, 403, 404, 409 | — |
+| DELETE | `session` | — | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ### PUT `/api/tasks/{id}` body
 
@@ -83,7 +83,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_channel.rs`](../..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{channelId}` | 200, 404, 409 | — |
+| POST | `session` | — | `{channelId}` | 200, 400, 404, 409 | — |
 
 ## `/api/tasks/{id}/comments`
 
@@ -97,7 +97,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_comments.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{comments}` | 200, 403, 404, 409 | — |
+| GET | `dual` | — | `{comments}` | 200, 400, 403, 404, 409 | — |
 | POST | `dual` | [body](#post-apitasksidcomments-body) | `{comment}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/comments` body
@@ -163,7 +163,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_usage.rs`](../../a
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `…` | 200, 403, 404, 409 | — |
+| GET | `dual` | — | `…` | 200, 400, 403, 404, 409 | — |
 | POST | `agent` | [body](#post-apitasksidusage-body) | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/tasks/{id}/usage` body
@@ -214,7 +214,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{session, wait}` | 200, 403, 404, 409 | — |
+| GET | `session` | — | `{session, wait}` | 200, 400, 403, 404, 409 | — |
 
 ## `/api/tasks/{id}/work-session/stop`
 
@@ -228,7 +228,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_session_stop.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | — | `{ok}` | 200, 403, 404, 409 | — |
+| POST | `session` | — | `{ok}` | 200, 400, 403, 404, 409 | — |
 
 ## `/api/tasks/{id}/work-sessions`
 
@@ -242,7 +242,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_sessions.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{sessions}` | 200, 403, 404, 409 | — |
+| GET | `session` | — | `{sessions}` | 200, 400, 403, 404, 409 | — |
 
 ## `/api/workflows`
 

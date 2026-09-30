@@ -46,6 +46,7 @@ mod runs_store;
 mod secretbox;
 mod sender_identity_live;
 mod streamed_at_liveness;
+mod task_refs_live;
 mod teams_move_live;
 mod ticket_threads_live;
 mod typed_binds;

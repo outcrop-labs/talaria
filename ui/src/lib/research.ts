@@ -1,7 +1,7 @@
 // Research client: runs list + detail, mode catalog, start/rename/delete.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
-import { createQuery } from '@tanstack/svelte-query'
-import { delJson, errorMessage, getJson, getList, patchJson, postJson, postJsonOr } from '@/lib/fetch-json'
+import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { delJson, errorMessage, getJson, getList, patchJson, postJson, postJsonOr, putJson } from '@/lib/fetch-json'
 import { confirm, prompt } from '@/components/ui/confirm.svelte'
 import { toastError } from '@/lib/toast.svelte'
 
@@ -197,6 +197,28 @@ export interface ResearchTeam {
 export const useResearchMembers = (runId: () => string) =>
   createQuery(() => ({
     queryKey: ['research-members', runId()],
-    queryFn: (): Promise<{ members: ResearchMember[]; teams?: ResearchTeam[] }> =>
-      getJson<{ members: ResearchMember[]; teams?: ResearchTeam[] }>(`/api/research/${runId()}/members`),
+    queryFn: (): Promise<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }> =>
+      getJson<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }>(
+        `/api/research/${runId()}/members`,
+      ),
   }))
+
+/** Presence for a run, the same shape the shared conversations use: ping while
+ *  the view is mounted and re-read so everyone's rings stay current. A dropped
+ *  ping just means a stale ring until the next tick, so a failure is swallowed
+ *  rather than surfaced — and the server key expires on its own, so a closed
+ *  tab stops counting without telling anyone. */
+export function useResearchPresence(runId: () => string | null) {
+  const qc = useQueryClient()
+  $effect(() => {
+    const id = runId()
+    if (!id) return
+    const ping = () => putJson<{ ok: true }>(`/api/research/${id}/members`).catch(() => {})
+    void ping()
+    const t = setInterval(() => {
+      void ping()
+      void qc.invalidateQueries({ queryKey: ['research-members', id] })
+    }, 25_000)
+    return () => clearInterval(t)
+  })
+}
