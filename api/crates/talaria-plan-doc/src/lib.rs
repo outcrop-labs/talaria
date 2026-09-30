@@ -264,6 +264,12 @@ pub fn plan_tier(agent_model: &str, routed_model: &str) -> Option<String> {
 /// all: a plan converges on who will do the work, so routing belongs there; a
 /// work session's document is the deliverable, and appending an "Agent routing"
 /// section to somebody's memo would be nonsense.
+// Eight, and each one names a fact the rewrite needs: who owns the document,
+// what it is called, which agent writes it, which model that resolves to, the
+// template it seeds from, and which surface it belongs to. Bundling them into
+// a struct would move the same eight names one level down and add a type whose
+// only job is to hold them.
+#[allow(clippy::too_many_arguments)]
 pub async fn sync_plan_doc(
     state: &AppState,
     conversation_id: &str,
