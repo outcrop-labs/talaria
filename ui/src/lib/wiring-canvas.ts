@@ -15,15 +15,12 @@ export type WiringStepLike = Pick<WorkchainStep, 'taskId' | 'state'>
  *  tighter than a port's touch target: wires run close together, ports don't. */
 export const WIRE_HIT_RADIUS = 8
 
-/** Find the exact edge (or undefined). Direction matters: the wire is the
- *  pair, not the unordered join. */
-export function findEdge(
-  edges: WorkchainEdge[],
-  fromTaskId: string,
-  toTaskId: string,
-): WorkchainEdge | undefined {
-  return edges.find((e) => e.fromTaskId === fromTaskId && e.toTaskId === toTaskId)
-}
+/** The dataTransfer type a ticket dragged out of the workchain sidebar carries.
+ *  A TYPED payload, not `text/plain`: the canvas must be able to tell "a ticket
+ *  is being dragged in" from any other drag crossing it, and `types` is all
+ *  dragover is allowed to see (the data itself is only readable on drop). The
+ *  Gantt chart's unscheduled list sets the precedent with `text/gantt-task`. */
+export const SIDEBAR_TICKET_MIME = 'text/workchain-task'
 
 /** The steps a drag from `fromTaskId` may legally land on: not the source,
  *  not a step already wired FROM the source (the api 400s a duplicate — the
@@ -37,6 +34,45 @@ export function edgeCandidateSteps(
   return steps.filter(
     (s) => s.taskId !== fromTaskId && !wired.has(s.taskId) && !wouldCycle(edges, fromTaskId, s.taskId),
   )
+}
+
+/** One write against the chain's graph. The canvas plans a gesture as a list
+ *  of these and then executes it, which is what makes both the plan and its
+ *  INVERSE testable without a server: `add` is POST /edges, `cut` is DELETE. */
+export interface WireOp {
+  kind: 'add' | 'cut'
+  fromTaskId: string
+  toTaskId: string
+}
+
+/** Dropping a ticket ON a wire splices it into that connection: A → new → B,
+ *  and the A → B the reader dropped onto goes. The api has a `after:` wedge
+ *  that looks similar and is NOT this — it moves every one of the anchor's
+ *  successors onto the new step, which is right for "insert into a line" and
+ *  wrong for "insert into this one wire". Three explicit edges say exactly
+ *  what the gesture meant.
+ *
+ *  Order matters: the two adds land before the cut, so a failure part-way
+ *  leaves the reader with a graph that has MORE structure than they drew,
+ *  never a chain silently severed in the middle. */
+export function spliceIntoWire(
+  edge: { fromTaskId: string; toTaskId: string },
+  taskId: string,
+): WireOp[] {
+  return [
+    { kind: 'add', fromTaskId: edge.fromTaskId, toTaskId: taskId },
+    { kind: 'add', fromTaskId: taskId, toTaskId: edge.toTaskId },
+    { kind: 'cut', fromTaskId: edge.fromTaskId, toTaskId: edge.toTaskId },
+  ]
+}
+
+/** The undo of a list of wire ops: every add becomes a cut and back, applied
+ *  in REVERSE order so the graph passes back through the same intermediate
+ *  states it came forward through. */
+export function invertWireOps(ops: readonly WireOp[]): WireOp[] {
+  return [...ops]
+    .reverse()
+    .map((op) => ({ ...op, kind: op.kind === 'add' ? ('cut' as const) : ('add' as const) }))
 }
 
 /** What a drop resolves to. The component ships `create` to the api, and

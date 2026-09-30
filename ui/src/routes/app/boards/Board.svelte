@@ -66,6 +66,9 @@
     label?: string
     due?: 'overdue' | 'today' | 'week' | 'none'
     archived?: boolean
+    /** Workchains lens: which chain fills the canvas. A chain is a thing you
+     *  send someone, so it is a link, not component state. */
+    chain?: string
   }
 
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
@@ -88,6 +91,7 @@
       label: sp('label'),
       due: sp('due'),
       archived: searchParams.get('archived') === true,
+      chain: sp('chain'),
     }
     return {
       ...(s.view === 'list' || s.view === 'gantt' || s.view === 'workchains' ? { view: s.view } : {}),
@@ -102,6 +106,7 @@
       ...(str(s.label) ? { label: str(s.label) } : {}),
       ...(['overdue', 'today', 'week', 'none'].includes(s.due as string) ? { due: s.due as BoardSearch['due'] } : {}),
       ...(s.archived === true ? { archived: true } : {}),
+      ...(str(s.chain) ? { chain: str(s.chain) } : {}),
     }
   })
 
@@ -483,7 +488,12 @@
       <ContextMenu {menu} />
     </div>
 
-    <!-- Row 2 — the QUERY: search + filters left; display options right. -->
+    <!-- Row 2 — the QUERY: search + filters left; display options right.
+         NOT on the workchains lens: there the same controls live in that
+         view's ticket panel, beside the list they filter, and this row's
+         width goes to the chain's own verbs. The state is the route's either
+         way — the lens gets it as `filterCtx`, and nothing below changes. -->
+    {#if view !== 'workchains'}
     <div class="flex flex-wrap items-center gap-2 border-b border-line-subtle px-5 py-1.5">
       <Input value={q} oninput={(e) => setSearch({ q: e.currentTarget.value }, true)} placeholder="Search" size="sm" class="w-40" />
       {#if fleetLoading || cfgLoading}
@@ -531,6 +541,7 @@
         </Chip>
       </span>
     </div>
+    {/if}
 
     <div class="relative min-h-0 min-w-0 flex-1">
       {#if view === 'board'}
@@ -538,7 +549,25 @@
       {:else if view === 'gantt'}
         <Gantt {board} {tasks} onOpen={openTicket} />
       {:else if view === 'workchains'}
-        <Workchains {board} {tasks} {members} onOpen={openTicket} />
+        <Workchains
+          {board}
+          {tasks}
+          {members}
+          onOpen={openTicket}
+          chainId={search.chain ?? null}
+          onChain={(id) => setSearch({ chain: id ?? undefined })}
+          filterCtx={{
+            q,
+            onQ: (v) => setSearch({ q: v }, true),
+            filters,
+            onFilters: setFilters,
+            agents: boardAgents,
+            labels: boardLabels,
+            meId: me?.id,
+            showArchived,
+            onArchived: (v) => setSearch({ archived: v }),
+          }}
+        />
       {:else}
         <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} />
       {/if}

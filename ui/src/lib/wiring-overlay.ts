@@ -149,21 +149,50 @@ export function distanceToWire(
   return best
 }
 
-/** The midpoint of a cubic bezier at t=0.5 — where a wire's selection state
- *  (and any delete affordance) reads best. */
-export function wireMidpoint(
-  from: { x: number; y: number },
-  to: { x: number; y: number },
+/** A dragged card's resting place: the nearest grid intersection, so
+ *  hand-placed cards line up with each other and with the dot field the canvas
+ *  draws. `free` (Alt held) turns it off for the one placement that wants to
+ *  sit between the dots.
+ *
+ *  Snapping the CARD's own corner, not the pointer: the offset the drag picked
+ *  up when it grabbed the card is preserved by the caller, so a card grabbed
+ *  by its edge still lands on the grid rather than a pitch away from it. */
+export function snapToGrid(
+  p: { x: number; y: number },
+  pitch: number,
+  free = false,
 ): { x: number; y: number } {
-  const x1 = from.x + NODE_W
-  const y1 = from.y + NODE_H / 2
-  const x2 = to.x
-  const y2 = to.y + NODE_H / 2
-  const dx = Math.max(40, Math.abs(x2 - x1) / 2)
-  const c1x = x1 + dx
-  const c1y = y1
-  const c2x = x2 - dx
-  const c2y = y2
-  // B(0.5) = (P0 + 3P1 + 3P2 + P3) / 8
-  return { x: (x1 + 3 * c1x + 3 * c2x + x2) / 8, y: (y1 + 3 * c1y + 3 * c2y + y2) / 8 }
+  if (free || pitch <= 0) return p
+  return { x: Math.round(p.x / pitch) * pitch, y: Math.round(p.y / pitch) * pitch }
+}
+
+/** The wire nearest a canvas point, or null past `radius`.
+ *
+ *  ONE walk, two callers: selecting a wire by clicking near it, and deciding
+ *  whether a ticket dropped on the canvas landed ON a wire (which splices it
+ *  into that connection instead of dropping it loose). They agreed by accident
+ *  while the loop lived inside the component; here they cannot drift.
+ *
+ *  `radius` is in CANVAS units — the caller divides its screen tolerance by the
+ *  zoom, so the target stays the same size under the pointer at every scale. */
+export function nearestWire<E extends { fromTaskId: string; toTaskId: string }>(
+  point: { x: number; y: number },
+  edges: readonly E[],
+  positions: Map<string, { x: number; y: number }>,
+  pathOf: (from: { x: number; y: number }, to: { x: number; y: number }) => string,
+  radius: number,
+): E | null {
+  let best: E | null = null
+  let bestDist = radius
+  for (const edge of edges) {
+    const f = positions.get(edge.fromTaskId)
+    const t = positions.get(edge.toTaskId)
+    if (!f || !t) continue
+    const d = distanceToWire(point, f, t, pathOf)
+    if (d <= bestDist) {
+      bestDist = d
+      best = edge
+    }
+  }
+  return best
 }
