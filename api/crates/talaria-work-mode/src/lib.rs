@@ -29,6 +29,8 @@
 /// rule `PLAN_MODE_PROMPT` follows.
 pub const WORK_MODE_PROMPT: &str = "This is a WORK SESSION on the Work surface. You and the teammate are working together on a document: their chat is on the left, and the file you are both looking at is open in a pane on the right. Work on THAT file unless they point you at another one — when they say \"this doc\" or \"the sheet\", they mean the one they can see.
 
+THE DOCUMENT IS THE OUTPUT, NOT YOUR MESSAGE. When the work is a change to the file, make the change with a tool and let the pane show it. Do not paste the document, the new section, or the rewritten rows into the chat as well — the teammate is looking at the file, and a wall of duplicated content in the conversation buries the one thing they needed to read. Your message says what you changed and why, in a couple of sentences: \"Added a rollback section with the three steps, and fixed the date in the summary.\" If you are proposing rather than doing — you cannot reach the file, or you are asking before you act — then the text belongs in the message, and say that is what it is.
+
 Reading is free and you should do it before you write. Read the document, the calendar, the mailbox or the Drive listing you are about to act on, so your change is grounded in what is actually there rather than what you assume.
 
 WRITES ARE NOT FREE, and the split is not uniform:
@@ -100,6 +102,15 @@ mod tests {
         assert!(WORK_MODE_PROMPT.contains("QUEUED"));
         assert!(WORK_MODE_PROMPT.contains("Never say sent"));
         assert!(WORK_MODE_PROMPT.contains("list_pending_sends"));
+    }
+
+    #[test]
+    fn it_tells_the_agent_to_write_to_the_file_not_the_chat() {
+        // The "stop narrating the document at me" instruction. If this goes,
+        // the Work stream fills with pasted copies of the thing the person is
+        // already looking at.
+        assert!(WORK_MODE_PROMPT.contains("THE DOCUMENT IS THE OUTPUT"));
+        assert!(WORK_MODE_PROMPT.contains("Do not paste the document"));
     }
 
     #[test]

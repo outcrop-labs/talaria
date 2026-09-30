@@ -22,6 +22,7 @@
   import { useAgents } from '@/lib/agents'
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
+  import ArtifactEditor from './ArtifactEditor.svelte'
   import {
     archiveConversation,
     deleteConversation,
@@ -86,6 +87,31 @@
     else void navigate('/work', { replace: opts.replace })
   }
   let newChatSignal = $state(0)
+  // THE PANE FOLLOWS THE AGENT'S WORK. The document the session last touched,
+  // reported by ChatView from the landed turn's link chips — so opening a
+  // session puts you back in front of the file it was about, and an agent that
+  // creates a document mid-session brings it into view without anybody
+  // clicking. Per-session `pinned_files` is the next turn of this: the column
+  // exists, and it will let a person override what the agent chose.
+  let paneArtifactId = $state<string | null>(null)
+  // Tools whose completion means the OPEN document changed underneath us. Only
+  // the artifact writers: a Google write of someone else's file queues rather
+  // than landing, so re-reading on it would show the unchanged document and
+  // imply the write went through.
+  const MUTATES_ARTIFACT = new Set([
+    'create_document',
+    'update_document',
+    'create_sheet',
+    'create_page',
+    'save_image_artifact',
+  ])
+  const onToolDone = (name: string) => {
+    // Invalidate rather than remount: the pane keeps its scroll and any
+    // in-progress edit, and TanStack refetches the one key that changed.
+    if (paneArtifactId && MUTATES_ARTIFACT.has(name)) {
+      void qc.invalidateQueries({ queryKey: ['artifact', paneArtifactId] })
+    }
+  }
   // The model-tier pick lives in the VIEW, not the composer: a session's chat
   // surface is attach + text + submit only, and the sidebar owns the agent.
   // A new session starts on the agent's main model ('').
@@ -287,6 +313,8 @@
                 kind="work"
                 minimal
                 tier={sessionTier}
+                {onToolDone}
+                onDocumentTouched={(id) => (paneArtifactId = id)}
               />
             {/key}
           </div>
@@ -298,16 +326,32 @@
           <div class="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
             <div class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
               <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</span>
+              {#if paneArtifactId}
+                <button type="button" class={`${quiet} ml-auto`} onclick={() => (paneArtifactId = null)}>Close</button>
+              {/if}
             </div>
-            <!-- EmptyState, not a centred sentence: `full` carries the
-                 dithered vignette, which is what keeps a 44% column that owns
-                 half the stage from reading as a dead void before a file is
-                 open. -->
-            <EmptyState
-              icon="◫"
-              title="No file open"
-              hint={`The file you and ${current.label} are working on opens here, beside the session.`}
-            />
+            {#if paneArtifactId}
+              <!-- Keyed on the id ALONE, not on a refresh counter: a tool
+                   landing invalidates the artifact query instead, so the
+                   editor keeps its scroll and any unsaved edit while the new
+                   body arrives. Re-keying here would throw both away on every
+                   write the agent makes. -->
+              {#key paneArtifactId}
+                <div class="min-h-0 flex-1 overflow-hidden">
+                  <ArtifactEditor id={paneArtifactId} onDeleted={() => (paneArtifactId = null)} />
+                </div>
+              {/key}
+            {:else}
+              <!-- EmptyState, not a centred sentence: `full` carries the
+                   dithered vignette, which is what keeps a 44% column that owns
+                   half the stage from reading as a dead void before a file is
+                   open. -->
+              <EmptyState
+                icon="◫"
+                title="No file open"
+                hint={`Ask ${current.label} to draft or open something and it appears here — its edits land in the pane, not as a wall of text in the chat.`}
+              />
+            {/if}
           </div>
         </div>
       </div>
