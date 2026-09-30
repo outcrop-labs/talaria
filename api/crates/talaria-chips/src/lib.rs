@@ -28,6 +28,7 @@ pub fn tools_unlocked(kind: &str) -> &'static [&'static str] {
         "meeting_create" => &["create_google_meeting"],
         "doc_update" => &["update_google_doc", "append_google_doc"],
         "sheet_update" => &["update_google_sheet"],
+        "slides_update" => &["update_google_slides"],
         "drive_move" => &["move_google_file"],
         "drive_rename" => &["rename_google_file"],
         "ticket_move" => &["triage_ticket"],
@@ -50,6 +51,7 @@ pub fn is_google_action(kind: &str) -> bool {
             | "meeting_create"
             | "doc_update"
             | "sheet_update"
+            | "slides_update"
             | "drive_move"
             | "drive_rename"
     )
@@ -71,6 +73,7 @@ fn google_approval_for(tool: &str) -> Option<(&'static str, &'static str)> {
         "create_google_meeting" => ("meeting_create", "Create a meeting"),
         "update_google_doc" => ("doc_update", "Edit a Google Doc"),
         "update_google_sheet" => ("sheet_update", "Write to a Google Sheet"),
+        "update_google_slides" => ("slides_update", "Replace text in a Slides deck"),
         "append_google_doc" => ("doc_update", "Add to a Google Doc"),
         "move_google_file" => ("drive_move", "Move a Drive file"),
         "rename_google_file" => ("drive_rename", "Rename a Drive file"),

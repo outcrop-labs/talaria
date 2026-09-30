@@ -87,6 +87,8 @@ export function toolsUnlockedBy(kind: string): string[] {
       return ['update_google_doc', 'append_google_doc']
     case 'sheet_update':
       return ['update_google_sheet']
+    case 'slides_update':
+      return ['update_google_slides']
     case 'drive_move':
       return ['move_google_file']
     case 'drive_rename':

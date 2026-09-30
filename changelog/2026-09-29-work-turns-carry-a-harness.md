@@ -13,8 +13,10 @@
   "everything queues" and the agent reports a doc it really did create as
   merely pending, and the person waits for an approval that never comes. Round
   toward "I can act" and it says a spreadsheet was updated while the write sits
-  in a queue. It also says plainly that no tool edits a Slides deck, so an
-  agent asked to change one offers the copy instead of claiming it did.
+  in a queue. It is also precise about Slides, where the line
+  is narrow: an agent can replace a deck's words and cannot restyle or extend
+  it, so a request to reword is work it does and a request for a new slide is
+  one it declines plainly.
 
   Four new fixtures grade the queue in the Google eval group, which previously
   covered only a queued Doc edit. Three ask the question the rest of that group

@@ -1273,6 +1273,39 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             }))
         }
 
+        "read_google_slides" => {
+            google_only(w, "read_google_slides")?;
+            let id = req_str(&a["id"], "id")?;
+            let Some(file) = w.drive.iter().find(|f| f.id == id) else {
+                return Err(refuse(format!("no Slides deck {id}")));
+            };
+            // Two slides with real words on them, so a fixture that asks for a
+            // reword has something specific to find and replace.
+            Ok(json!({
+                "id": file.id,
+                "title": file.name,
+                "url": format!("https://docs.google.com/presentation/d/{}/edit", file.id),
+                "slides": [
+                    { "number": 1, "id": "p1", "text": format!("{}\nQ3 review", file.name), "notes": "" },
+                    { "number": 2, "id": "p2", "text": "Retention held at 91%", "notes": "mention churn" }
+                ],
+            }))
+        }
+
+        "update_google_slides" => {
+            google_only(w, "update_google_slides")?;
+            let id = req_str(&a["id"], "id")?;
+            if !w.drive.iter().any(|f| f.id == id) {
+                return Err(refuse(format!("no Slides deck {id}")));
+            }
+            // ALWAYS queued — there is no deck an agent owns, so unlike a Doc
+            // there is no immediate branch to model.
+            Ok(json!({
+                "pending": { "id": format!("slides-{id}"), "status": "pending", "kind": "slides_update" },
+                "message": "Queued — waiting for a human to approve before the deck changes. Do not say this is done.",
+            }))
+        }
+
         "update_google_doc" | "append_google_doc" => {
             google_only(w, "update_google_doc")?;
             let id = req_str(&a["id"], "id")?;
@@ -1749,6 +1782,8 @@ pub const BACKED_TOOLS: &[&str] = &[
     "read_pending_send",
     "create_google_doc",
     "read_google_doc",
+    "read_google_slides",
+    "update_google_slides",
     "update_google_doc",
     "append_google_doc",
     "find_google_files",

@@ -1,13 +1,18 @@
-// Google Slides, read only.
+// Google Slides: read a deck, and replace text in one.
 //
-// WHY READ ONLY. A deck's text is what an agent can actually use — summarise
-// it, check it against a plan, draft the next slide's copy for a person to
-// paste. Writing one back is a different order of problem: the Slides API
-// edits through batched requests against shape and placeholder ids, and a
-// "replace this deck's text" tool that did not understand layouts would
-// produce decks nobody wants. Reading is the whole of the useful half, so it
-// is the whole of this crate; `import_drive_file` still exists for anyone who
-// wants the deck as a PDF artifact.
+// WHAT IS DELIBERATELY ABSENT. There is no authoring here — nothing creates a
+// slide, moves a box or adds a bullet. The Slides API edits through batched
+// requests against shape and placeholder ids, so inserting content means
+// knowing which placeholder on which layout it belongs to, and a tool that
+// guessed would produce decks with text off the edge of the slide and boxes
+// stacked on each other. The two operations below need none of that: reading
+// walks what is there, and replacing swaps strings inside boxes a designer
+// already placed, so the deck keeps the shape a person gave it.
+//
+// That is not a stage on the way to authoring. It is the line: the deck's
+// LAYOUT belongs to whoever made it, and an agent changing its words is a
+// different act from an agent building it. `import_drive_file` still exists for
+// anyone who wants the deck as a PDF artifact.
 //
 // WHY NOT THE PDF EXPORT. Drive can export a deck to PDF (talaria-google-drive
 // does exactly that on import), but a PDF is bytes an agent cannot read
@@ -185,6 +190,29 @@ mod tests {
     }
 
     #[test]
+    fn occurrences_sum_across_replies_and_absent_counts_read_as_zero() {
+        // Two pairs, one of which matched nothing: Google omits the count
+        // rather than sending 0, and a caller that read the first reply only
+        // would report a partial success as a whole one.
+        let body = serde_json::json!({ "replies": [
+            { "replaceAllText": { "occurrencesChanged": 3 } },
+            { "replaceAllText": {} }
+        ]});
+        assert_eq!(occurrences_changed(&body), 3);
+    }
+
+    #[test]
+    fn nothing_matched_is_zero_not_a_failure() {
+        // The honest answer when the text was not found. A caller must report
+        // it rather than call the write a success.
+        assert_eq!(
+            occurrences_changed(&serde_json::json!({ "replies": [ { "replaceAllText": {} } ] })),
+            0
+        );
+        assert_eq!(occurrences_changed(&serde_json::json!({})), 0);
+    }
+
+    #[test]
     fn notes_do_not_leak_into_the_slide_body() {
         let slide = serde_json::json!({
             "objectId": "s1",
@@ -202,4 +230,112 @@ mod tests {
         assert_eq!(notes, "For the speaker");
         assert_eq!(body, "On the slide");
     }
+}
+
+// ── The write half ───────────────────────────────────────────────────────────
+//
+// TEXT REPLACEMENT AND NOTHING ELSE, and the narrowness is the design rather
+// than a stage on the way to more. The Slides API edits through batched
+// requests against shape and placeholder ids: inserting a bullet means knowing
+// which placeholder on which layout it belongs to, and a tool that guessed
+// would produce decks with text off the edge of the slide and boxes stacked on
+// each other. `replaceAllText` needs none of that — it swaps strings wherever
+// they already appear, inside boxes a designer already placed, so the deck
+// stays the shape a person made it.
+//
+// That covers the ask people actually have: the number changed, the date moved,
+// the client's name is spelled wrong on nine slides. What it deliberately does
+// not cover is authoring a deck, and the tool description says so rather than
+// letting an agent discover it by producing something unusable.
+
+/// What a replacement pass changed, from Google's own reply.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeckUpdate {
+    pub id: String,
+    pub url: String,
+    /// Total matches replaced across every requested pair. Zero is a real
+    /// answer and an important one — it means the text was not found, which a
+    /// caller must report rather than call success.
+    pub occurrences_changed: i64,
+}
+
+/// One find/replace pair.
+#[derive(Debug, Clone)]
+pub struct TextReplacement<'a> {
+    pub find: &'a str,
+    pub replace: &'a str,
+}
+
+/// Total matches across every reply. A batch of N replacements answers with N
+/// replies, and a reply for a pair that matched nothing simply omits the count
+/// rather than reporting zero — so this sums what is there and treats an absent
+/// count as the zero it means. Separated from the request so it can be tested
+/// against the shapes Google actually returns.
+fn occurrences_changed(body: &serde_json::Value) -> i64 {
+    body.get("replies")
+        .and_then(|r| r.as_array())
+        .map(|replies| {
+            replies
+                .iter()
+                .filter_map(|r| {
+                    r.get("replaceAllText")
+                        .and_then(|v| v.get("occurrencesChanged"))
+                        .and_then(serde_json::Value::as_i64)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Replace text across a deck. `match_case` is passed through rather than
+/// assumed: "Q3" and "q3" are usually the same intent, and a name usually is
+/// not, so the caller decides.
+#[tracing::instrument(skip(token, pairs))]
+pub async fn replace_text_with_token(
+    token: &str,
+    id: &str,
+    pairs: &[TextReplacement<'_>],
+    match_case: bool,
+) -> Result<DeckUpdate, GoogleError> {
+    if pairs.is_empty() {
+        return Err(GoogleError::Failed("no replacements given".into()));
+    }
+    let requests: Vec<serde_json::Value> = pairs
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "replaceAllText": {
+                    "containsText": { "text": p.find, "matchCase": match_case },
+                    "replaceText": p.replace,
+                }
+            })
+        })
+        .collect();
+    let res = http()
+        .post(format!(
+            "{SLIDES_ENDPOINT}/{}:batchUpdate",
+            percent_encode(id)
+        ))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "requests": requests }).to_string())
+        .send()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("slides update request: {e}")))?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(GoogleError::Failed(format!(
+            "slides update failed: {status} {body}"
+        )));
+    }
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| GoogleError::Failed(format!("slides update body: {e}")))?;
+    Ok(DeckUpdate {
+        id: id.to_string(),
+        url: format!("https://docs.google.com/presentation/d/{id}/edit"),
+        occurrences_changed: occurrences_changed(&body),
+    })
 }

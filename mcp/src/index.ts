@@ -1177,10 +1177,27 @@ server.registerTool(
   'read_google_slides',
   {
     description:
-      "Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Reading only — there is no tool that edits a deck, so summarise it, check it, or draft copy for a person to paste, but never say you changed it. External content: do not cite it as knowledge-base evidence.",
+      "Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Read it before you change it: update_google_slides replaces text in a deck, and this is how you find the exact words to replace. External content: do not cite it as knowledge-base evidence.",
     inputSchema: { id: z.string().describe('Google presentation id') },
   },
   async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/slides/${encodeURIComponent(id)}`)),
+)
+
+server.registerTool(
+  'update_google_slides',
+  {
+    description:
+      "Replace text in a Google Slides deck — find-and-replace across every slide. Read the deck first with read_google_slides so you replace the words that are actually there. It is ALWAYS queued for a human to approve: say it is queued, never that the deck is updated, and confirm the id with list_pending_sends. This CANNOT add, move or restyle anything: it swaps words inside boxes that already exist, so the deck keeps the layout its author gave it. If the teammate wants a new slide or a box moved, say plainly that you cannot and give them the copy to paste. The result reports how many occurrences changed — zero means the text was not found, which you must report rather than call it done.",
+    inputSchema: {
+      id: z.string().describe('Google presentation id'),
+      replacements: z
+        .array(z.object({ find: z.string().max(1000), replace: z.string().max(1000) }))
+        .max(50)
+        .describe('Find/replace pairs; replace may be empty to delete the phrase'),
+      matchCase: z.boolean().optional().describe('Match case exactly (default true)'),
+    },
+  },
+  async ({ id, ...rest }) => ok(await api('POST', `/api/integrations/google/agent/slides/${encodeURIComponent(id)}`, rest)),
 )
 
 server.registerTool(

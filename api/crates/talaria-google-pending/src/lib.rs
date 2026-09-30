@@ -24,6 +24,7 @@ use talaria_google_drive::{move_drive_file_with_token, rename_drive_file_with_to
 use talaria_google_gmail::{SendInput, send_message_with_token};
 use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
 use talaria_google_sheets::update_sheet_with_token;
+use talaria_google_slides::{TextReplacement, replace_text_with_token};
 use talaria_realtime::RealtimeDeps;
 use talaria_secretbox::SecretBox;
 
@@ -695,6 +696,54 @@ pub async fn decide_action(
             .await
             .map(|doc| json!({ "id": doc.id, "url": doc.url, "name": doc.name }))
             .map_err(|e| e.to_string())
+        }
+    } else if kind == "slides_update" {
+        let file_id = payload
+            .get("fileId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        // The pairs were validated by the route before they were queued; a
+        // malformed entry here is a corrupted payload, so it is skipped rather
+        // than failing a write the approver already said yes to.
+        let owned: Vec<(String, String)> = payload
+            .get("replacements")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|it| {
+                        Some((
+                            it.get("find")?.as_str()?.to_string(),
+                            it.get("replace")?.as_str().unwrap_or("").to_string(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if file_id.is_empty() || owned.is_empty() {
+            Err("slides_update missing fileId or replacements".into())
+        } else {
+            let pairs: Vec<TextReplacement<'_>> = owned
+                .iter()
+                .map(|(f, r)| TextReplacement {
+                    find: f.as_str(),
+                    replace: r.as_str(),
+                })
+                .collect();
+            let match_case = payload
+                .get("matchCase")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            replace_text_with_token(&token, file_id, &pairs, match_case)
+                .await
+                .map(|up| {
+                    json!({
+                        "id": up.id,
+                        "url": up.url,
+                        "occurrencesChanged": up.occurrences_changed,
+                    })
+                })
+                .map_err(|e| e.to_string())
         }
     } else if kind == "sheet_update" {
         let file_id = payload

@@ -43,6 +43,7 @@ IMMEDIATE — these happen the moment you call them. Report them as done.
 QUEUED FOR A HUMAN — these do NOT happen when you call them. A person has to approve them in Talaria first.
   - update_google_doc / append_google_doc on anyone else's doc
   - update_google_sheet (always — there is no sheet you own)
+  - update_google_slides (always — there is no deck you own)
   - move_google_file, rename_google_file
   - draft_calendar_event, update_google_event, cancel_google_event, create_google_meeting
   - draft_email
@@ -51,7 +52,7 @@ For anything in the queued list: say it is QUEUED or WAITING FOR APPROVAL. Never
 
 Never quote a link a tool did not return to you. If you need a URL, get it from the tool's own response.
 
-There is no tool that edits a Google Slides deck. read_google_slides lets you read one; if the teammate wants a deck changed, draft the copy for them and say plainly that they will need to paste it in.";
+A Slides deck is a special case worth knowing exactly. read_google_slides reads one and update_google_slides REPLACES TEXT in one — find-and-replace across the slides, queued like any other write. What it cannot do is add a slide, move a box or restyle anything: the layout belongs to whoever built the deck. So a request to change wording is one you can do; a request to add a slide is one to decline plainly, handing over the copy for them to paste.";
 
 #[cfg(test)]
 mod tests {
@@ -64,6 +65,7 @@ mod tests {
     fn every_queued_tool_is_named() {
         for tool in [
             "update_google_sheet",
+            "update_google_slides",
             "move_google_file",
             "rename_google_file",
             "draft_calendar_event",
@@ -114,8 +116,13 @@ mod tests {
     }
 
     #[test]
-    fn it_says_slides_cannot_be_edited() {
+    fn it_separates_changing_a_decks_words_from_building_one() {
+        // The distinction that matters: text replacement is available and
+        // queues; authoring is not available at all. A prompt that blurred
+        // these would either refuse work the agent can do or promise work it
+        // cannot.
         assert!(WORK_MODE_PROMPT.contains("read_google_slides"));
-        assert!(WORK_MODE_PROMPT.contains("no tool that edits"));
+        assert!(WORK_MODE_PROMPT.contains("update_google_slides"));
+        assert!(WORK_MODE_PROMPT.contains("cannot do is add a slide"));
     }
 }
