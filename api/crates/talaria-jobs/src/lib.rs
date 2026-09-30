@@ -30,6 +30,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use talaria_agent_auth::now_ms as wall_ms;
 use talaria_comms_decay::real_decay_deps;
 use talaria_daily_brief::real_brief_deps;
 use talaria_digest::real_digest_deps;
@@ -92,6 +93,29 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
         Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
     }));
+    // THE ANNOUNCE EDGE FOR A QUEUED GOOGLE WRITE. `queue_action` calls this
+    // the instant a confirm-send lands, so the person who has to approve it
+    // hears immediately rather than on the approval sweep's next tick — which
+    // is what its own comment says it does.
+    //
+    // It was declared and never set. The call site reads
+    // `if let Some(f) = ANNOUNCE_APPROVAL.get()`, so an unwired edge is not a
+    // compile error and not a log line: the announce silently did nothing and
+    // every queued write waited up to five minutes for the sweep, with an
+    // agent stopped in front of it. Same completeness rule as the roll edges
+    // above — an edge nothing sets is a feature nothing runs.
+    let _ =
+        talaria_google_pending::ANNOUNCE_APPROVAL.set(std::sync::Arc::new(|pg, realtime, key| {
+            Box::pin(async move {
+                let deps = talaria_approvals::ApprovalDeps::new(
+                    pg,
+                    realtime,
+                    std::sync::Arc::new(run_definition),
+                    std::sync::Arc::new(wall_ms),
+                );
+                talaria_approvals::announce_approval(&deps, &key).await;
+            })
+        }));
     // THE ROLL'S OWN TWO EDGES. `roll_agent` reaches the renderer through
     // them — a roll renders the incoming slot, brings it up, flips the
     // manifest, then re-renders — and an edge nothing sets is a roll that
@@ -445,6 +469,16 @@ mod tests {
         assert!(
             talaria_update_job::ROLL_FLEET.get().is_some(),
             "the post-deploy fleet roll fell out of the boot wiring — an update would land and leave every agent on the old container"
+        );
+        // The announce edge a queued Google write calls. This assertion is the
+        // one that was missing, and its absence is the whole story: the edge
+        // was declared, the call site was written with a careful comment about
+        // the five minutes it saves, and nothing ever set it. The call site
+        // reads `if let Some(f) = …get()`, so an unwired edge compiles, logs
+        // nothing, and quietly reverts to the sweep.
+        assert!(
+            talaria_google_pending::ANNOUNCE_APPROVAL.get().is_some(),
+            "the queued-write announce fell out of the boot wiring — every confirm-send would wait for the approval sweep with an agent stopped in front of it"
         );
         // THE RUN ASSEMBLY request-path enqueues use. Unset, every plan-draft
         // POST is a 500 ("dispatch not wired" → "could not start the plan
