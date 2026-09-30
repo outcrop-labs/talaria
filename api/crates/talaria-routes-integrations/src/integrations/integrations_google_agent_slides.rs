@@ -159,11 +159,13 @@ pub async fn post(
         }))
         .into_response());
     }
+    // The count is taken BEFORE the vec moves into the payload, so there is no
+    // clone here just to read a length.
+    let summary = format!("Replace {} phrase(s) in a Slides deck", replacements.len());
     let mut payload = serde_json::Map::new();
     payload.insert("fileId".into(), json!(id));
-    payload.insert("replacements".into(), Value::Array(replacements.clone()));
+    payload.insert("replacements".into(), Value::Array(replacements));
     payload.insert("matchCase".into(), json!(match_case));
-    let summary = format!("Replace {} phrase(s) in a Slides deck", replacements.len());
     let realtime = RealtimeDeps::publish_only(state.redis().await.ok());
     let queued = match queue_action(
         &state.pg,
