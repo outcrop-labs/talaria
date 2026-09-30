@@ -175,7 +175,11 @@
 {/snippet}
 
 <RailSurface>
-  <Rail>
+  <!-- Collapsible like Plan's and Work's rails, and for the same reason: the
+       stage is where the work happens, and a run's report wants the width.
+       "runs" rather than "research" on the collapsed strip — it is read
+       sideways, so the shorter true word wins. -->
+  <Rail collapseKey="research" collapsedLabel="runs">
     <div class="mb-3">
       <!-- The picker does double duty: it chooses who RUNS the next research
            and FILTERS the history below by who ran it — one control, because

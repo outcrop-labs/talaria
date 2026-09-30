@@ -20,6 +20,7 @@
 | [`/api/research/{id}/decide`](#apiresearchiddecide) | POST | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | GET | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | POST | `session` |
+| [`/api/research/{id}/members`](#apiresearchidmembers) | PUT | `session` |
 | [`/api/research/{id}/members`](#apiresearchidmembers) | DELETE | `session` |
 | [`/api/research/{id}/teams`](#apiresearchidteams) | POST | `session` |
 | [`/api/research/{id}/teams`](#apiresearchidteams) | DELETE | `session` |
@@ -109,14 +110,16 @@ Source: [`api/crates/talaria-routes-workbench/src/research/research_id_decide.rs
 Source: [`api/crates/talaria-routes-workbench/src/research/research_id_members.rs`](../../api/crates/talaria-routes-workbench/src/research/research_id_members.rs)
 
 > /api/research/{id}/members.
-> Multiplayer research, mirroring plan membership. GET → members (any member).
-> POST { email } → share (owner only; grants the report, notifies). DELETE
-> { userId } → unshare (owner, or a collaborator leaving).
+> Multiplayer research, mirroring plan membership. GET → { members, active,
+> teams } (any member); `active` is who is looking right now. POST { email } →
+> share (owner only; grants the report, notifies). DELETE { userId } → unshare
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{members, teams}` | 200, 404 | — |
+| GET | `session` | — | `{members, active, teams}` | 200, 404 | — |
 | POST | `session` | [body](#post-apiresearchidmembers-body) | `{members}` | 200, 400, 403 | — |
+| PUT | `session` | — | `{ok}` | 200, 404 | — |
 | DELETE | `session` | [body](#delete-apiresearchidmembers-body) | `{members}` | 200, 400, 403 | — |
 
 ### POST `/api/research/{id}/members` body

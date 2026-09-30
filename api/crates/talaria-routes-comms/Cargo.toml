@@ -34,6 +34,7 @@ talaria-permissions = { workspace = true }
 talaria-persona = { workspace = true }
 talaria-personal-agent = { workspace = true }
 talaria-plan-doc = { workspace = true }
+talaria-work-mode = { workspace = true }
 talaria-plan-drafts = { workspace = true }
 talaria-push = { workspace = true }
 talaria-realtime-watch = { workspace = true }

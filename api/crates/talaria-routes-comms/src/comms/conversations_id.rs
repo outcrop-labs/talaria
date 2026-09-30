@@ -14,8 +14,9 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use serde_json::Value;
 use talaria_body::{optional_boolean_member, trimmed_string_member};
-use talaria_conversations::get_conversation;
+use talaria_conversations::{get_conversation, set_pinned_files};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::{
     NotifyDeps, conversation_audience_ids, fan_conversation_event, fan_known_conversation,
@@ -48,6 +49,64 @@ pub async fn get(
         Ok(None) => house_error(StatusCode::NOT_FOUND, "not found"),
         Err(e) => internal("[conversations] detail read failed", e),
     })
+}
+
+/// `pinnedFiles` → a validated jsonb array. Each entry must name a kind this
+/// client knows how to render and an id of a sane shape; anything else is a
+/// 400 rather than a pane that renders an empty iframe and blames Google.
+///
+/// The cap is deliberate and small: this is the pane's memory, not a file
+/// manager, and an unbounded array is a jsonb column somebody can grow for
+/// ever.
+fn pinned_files_member(obj: &serde_json::Map<String, Value>) -> Result<Value, String> {
+    const MAX_FILES: usize = 12;
+    let Some(items) = obj.get("pinnedFiles").and_then(Value::as_array) else {
+        return Err("Invalid input: expected pinnedFiles to be an array".into());
+    };
+    if items.len() > MAX_FILES {
+        return Err(format!("Too many pinned files: {MAX_FILES} at most"));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(entry) = item.as_object() else {
+            return Err("Invalid input: expected each pinned file to be an object".into());
+        };
+        let kind = entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if kind != "google" && kind != "artifact" {
+            return Err("Invalid option: expected kind to be \"google\" or \"artifact\"".into());
+        }
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
+        // Google file ids and Talaria uuids are both in this alphabet; the
+        // length cap is what keeps a pasted URL out of the column.
+        if id.is_empty()
+            || id.len() > 200
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("Invalid input: expected id to be a file id".into());
+        }
+        let mut kept = serde_json::Map::new();
+        kept.insert("kind".into(), Value::String(kind.to_string()));
+        kept.insert("id".into(), Value::String(id.to_string()));
+        for optional in ["title", "mime"] {
+            if let Some(v) = entry
+                .get(optional)
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty())
+            {
+                kept.insert(
+                    optional.into(),
+                    Value::String(v.chars().take(400).collect()),
+                );
+            }
+        }
+        out.push(Value::Object(kept));
+    }
+    Ok(Value::Array(out))
 }
 
 #[derive(serde::Serialize)]
@@ -114,10 +173,21 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    if title.is_none() && archived.is_none() {
+    // The document pane's memory. Validated for SHAPE here rather than trusted:
+    // it is rendered as an embed target, so an entry with a junk kind or a
+    // missing id would become a broken pane rather than a refused write.
+    let pinned = if obj.contains_key("pinnedFiles") {
+        match pinned_files_member(obj) {
+            Ok(v) => Some(v),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        }
+    } else {
+        None
+    };
+    if title.is_none() && archived.is_none() && pinned.is_none() {
         return Ok(house_error(
             StatusCode::BAD_REQUEST,
-            "expected title or archived",
+            "expected title, archived or pinnedFiles",
         ));
     }
     // Archive is DELETE. PATCH only restores, so there is one door that
@@ -129,6 +199,11 @@ pub async fn patch(
     // able to put back what the owner put away.
     if archived.is_some() && role != "owner" {
         return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+    }
+    if let Some(files) = &pinned
+        && let Err(e) = set_pinned_files(&state.pg, &id, files).await
+    {
+        return Ok(internal("[conversations] pinned files write failed", e));
     }
     if let Some(title) = &title {
         let updated = sqlx::query("update conversations set title = $1 where id = $2::uuid")

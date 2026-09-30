@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-19 routes.
+22 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -41,7 +41,15 @@
 | [`/api/conversations/{id}`](#apiconversationsid) | GET | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | PATCH | `session` |
 | [`/api/conversations/{id}`](#apiconversationsid) | DELETE | `session` |
+| [`/api/conversations/{id}/doc`](#apiconversationsiddoc) | GET | `session` |
+| [`/api/conversations/{id}/doc`](#apiconversationsiddoc) | POST | `session` |
+| [`/api/conversations/{id}/members`](#apiconversationsidmembers) | GET | `session` |
+| [`/api/conversations/{id}/members`](#apiconversationsidmembers) | POST | `session` |
+| [`/api/conversations/{id}/members`](#apiconversationsidmembers) | PUT | `session` |
+| [`/api/conversations/{id}/members`](#apiconversationsidmembers) | DELETE | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
+| [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
+| [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
 ## `/api/channels`
@@ -408,6 +416,56 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id.rs`](../../
 | `title` | `string trimmed(1, 120)` |  |
 | `archived` | `bool?` |  |
 
+## `/api/conversations/{id}/doc`
+
+Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_doc.rs`](../../api/crates/talaria-routes-boards/src/plans/plans_id_doc.rs)
+
+> /api/plans/{id}/doc.
+> The plan's living document (a linked doc artifact). GET → find-or-create
+> it, seeded from the agent's plan template when one is bound. POST → the
+> plan's agent rewrites it from the conversation so far. Owner or plan
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{artifact}` | 200, 404 | — |
+| POST | `session` | [body](#post-apiconversationsiddoc-body) | `{artifactId}` | 200, 400, 403, 404, 502 | — |
+
+### POST `/api/conversations/{id}/doc` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `tier` | `string? nullish(60)` |  |
+
+## `/api/conversations/{id}/members`
+
+Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_members.rs`](../../api/crates/talaria-routes-boards/src/plans/plans_id_members.rs)
+
+> /api/plans/{id}/members.
+> Multiplayer plan membership + presence.
+>   GET    → { members, active, teams } — any member; active = user ids seen in the
+>            last minute (Redis presence keys, 60s TTL).
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{members, active, teams}` | 200, 404 | — |
+| POST | `session` | [body](#post-apiconversationsidmembers-body) | `{members}` | 200, 400, 403 | — |
+| PUT | `session` | — | `{ok}` | 200, 404 | — |
+| DELETE | `session` | [body](#delete-apiconversationsidmembers-body) | `{members}` | 200, 400, 403 | — |
+
+### POST `/api/conversations/{id}/members` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `email` | `email` |  |
+
+### DELETE `/api/conversations/{id}/members` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `userId` | `uuid` |  |
+
 ## `/api/conversations/{id}/read`
 
 Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs)
@@ -427,6 +485,31 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs`](.
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `seq` | `number?(0, 9007)` | seq: optional integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
+
+## `/api/conversations/{id}/teams`
+
+Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs`](../../api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs)
+
+> /api/plans/{id}/teams.
+> POST { teamId } → grant a team (owner). DELETE { teamId } → revoke (owner).
+> Keeps the plan doc's editor grants in step with the team principal.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiconversationsidteams-body) | `{ok}` | 200, 400, 403 | — |
+| DELETE | `session` | [body](#delete-apiconversationsidteams-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/conversations/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
+
+### DELETE `/api/conversations/{id}/teams` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `teamId` | `uuid` |  |
 
 ## `/api/dms`
 

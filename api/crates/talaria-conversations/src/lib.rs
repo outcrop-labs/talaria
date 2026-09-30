@@ -437,6 +437,10 @@ pub struct ConversationDetail {
     pub title: Option<String>,
     pub updated_at: String,
     pub role: String,
+    /// The document pane's memory for this conversation, in pane order. Each
+    /// entry is `{ kind: 'google' | 'artifact', id, title?, mime? }`. Empty on
+    /// every kind that has no pane, which is most of them.
+    pub pinned_files: serde_json::Value,
 }
 
 /// One message row — the nullable jsonb trio serializes as null (the keys
@@ -485,10 +489,18 @@ pub async fn get_conversation(
     user_id: &str,
     conversation_id: &str,
 ) -> Result<Option<(ConversationDetail, Vec<MessageRow>)>, sqlx::Error> {
-    let conv: Option<(String, String, Option<String>, i64, String)> = sqlx::query_as(
+    let conv: Option<(
+        String,
+        String,
+        Option<String>,
+        i64,
+        String,
+        serde_json::Value,
+    )> = sqlx::query_as(
         "select c.id::text, c.agent_model, c.title, \
                 (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
-                case when c.user_id = $2::uuid then 'owner' else 'collaborator' end \
+                case when c.user_id = $2::uuid then 'owner' else 'collaborator' end, \
+                c.pinned_files \
          from conversations c \
          where c.id = $1::uuid and c.kind in ('chat', 'plan', 'research', 'work') \
            and ( \
@@ -513,7 +525,7 @@ pub async fn get_conversation(
     .bind(user_id)
     .fetch_optional(pg)
     .await?;
-    let Some((id, agent_model, title, updated_ms, role)) = conv else {
+    let Some((id, agent_model, title, updated_ms, role, pinned_files)) = conv else {
         return Ok(None);
     };
     // The message select's row, pre-mapping into MessageRow.
@@ -548,6 +560,7 @@ pub async fn get_conversation(
             title,
             updated_at: epoch_ms_to_iso(updated_ms),
             role,
+            pinned_files,
         },
         messages
             .into_iter()
@@ -627,10 +640,33 @@ pub async fn list_plan_members(
         .collect())
 }
 
-/// The user's standing on a plan: owner, collaborator, or nothing.
-/// Nothing is also "not a plan" — the `kind = 'plan'` clause keeps chat
-/// conversations out, and callers treat null as absent.
-pub async fn plan_role(
+/// Replace the conversation's pinned files — the document pane's memory.
+/// Whole-array, not a patch: the pane's order is part of what is stored, and a
+/// per-entry API would have to describe moves as well as adds. The caller has
+/// already been access-checked; this only writes.
+pub async fn set_pinned_files(
+    pg: &PgPool,
+    conversation_id: &str,
+    files: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update conversations set pinned_files = $2 where id = $1::uuid")
+        .bind(conversation_id)
+        .bind(files)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// The caller's standing on a SHARED conversation — a plan or a work session:
+/// owner, collaborator, or nothing. Nothing is also "not a shareable kind":
+/// the kind clause keeps plain chats out, and callers treat null as absent.
+///
+/// This was `plan_role` and grew a second kind rather than a second function,
+/// because its only callers are the membership and team routes — the question
+/// they ask is "may you share this", which is the same question for both
+/// surfaces. The plan's living document and its ticket drafts gate themselves
+/// elsewhere on `kind = 'plan'`, so widening here does not reach them.
+pub async fn shared_conversation_role(
     pg: &PgPool,
     user_id: &str,
     conversation_id: &str,
@@ -644,7 +680,7 @@ pub async fn plan_role(
                          then 'collaborator' end as role \
          from conversations c \
          left join conversation_members cm on cm.conversation_id = c.id and cm.user_id = $2::uuid \
-         where c.id = $1::uuid and c.kind = 'plan'",
+         where c.id = $1::uuid and c.kind in ('plan', 'work')",
     )
     .bind(conversation_id)
     .bind(user_id)

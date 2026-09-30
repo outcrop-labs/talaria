@@ -32,11 +32,13 @@ pub async fn get(
         Ok(c) => c,
         Err(e) => return Ok(internal("[plans] accessible read on GET doc failed", e)),
     };
-    // A chat conversation is reachable through the same helper; only plans
-    // have a document.
-    let Some(conv) = conv.filter(|c| c.kind == "plan") else {
-        return Ok(house_error(StatusCode::NOT_FOUND, "plan not found"));
+    // A chat conversation is reachable through the same helper; the surfaces
+    // with a living document are plans and work sessions.
+    let Some(conv) = conv.filter(|c| c.kind == "plan" || c.kind == "work") else {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
+    // A work session's document takes no plan template — see sync_plan_doc.
+    let is_work = conv.kind == "work";
     let label = user
         .name
         .clone()
@@ -51,8 +53,16 @@ pub async fn get(
                 label: &label,
             },
             conv.title.as_deref(),
-            Some(&conv.agent_model),
-            conv.plan_template_id.as_deref(),
+            if is_work {
+                None
+            } else {
+                Some(&conv.agent_model)
+            },
+            if is_work {
+                None
+            } else {
+                conv.plan_template_id.as_deref()
+            },
         )
         .await
         {
@@ -76,8 +86,8 @@ pub async fn post(
         Ok(c) => c,
         Err(e) => return Ok(internal("[plans] accessible read on POST doc failed", e)),
     };
-    let Some(conv) = conv.filter(|c| c.kind == "plan") else {
-        return Ok(house_error(StatusCode::NOT_FOUND, "plan not found"));
+    let Some(conv) = conv.filter(|c| c.kind == "plan" || c.kind == "work") else {
+        return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     // The gate checks the plan's OWN agent, so a member who cannot drive this
     // agent cannot spend it rewriting the document either.
@@ -124,6 +134,7 @@ pub async fn post(
             &conv.agent_model,
             &routed,
             conv.plan_template_id.as_deref(),
+            &conv.kind,
         )
         .await
         {

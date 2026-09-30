@@ -817,8 +817,9 @@ pub fn router(state: AppState) -> Router {
             "/api/research/{id}/members",
             get(talaria_routes_workbench::research::research_id_members::get)
                 .post(talaria_routes_workbench::research::research_id_members::post)
+                .put(talaria_routes_workbench::research::research_id_members::put)
                 .delete(talaria_routes_workbench::research::research_id_members::delete)
-                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
             "/api/research/{id}/teams",
@@ -1137,6 +1138,15 @@ pub fn router(state: AppState) -> Router {
             "/api/artifacts/{id}/duplicate",
             post(talaria_routes_knowledge::files::artifacts_id_duplicate::post)
                 .fallback(|| async { method_not_allowed("POST") }),
+        )
+        // Comment threads on a Talaria document — the twin of the kb-doc route,
+        // same engine and same table, gated on the artifact's own read
+        // permission.
+        .route(
+            "/api/artifacts/{id}/comments",
+            get(talaria_routes_knowledge::files::artifacts_id_comments::get)
+                .post(talaria_routes_knowledge::files::artifacts_id_comments::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/artifacts/{id}/export/google",
@@ -1577,6 +1587,16 @@ pub fn router(state: AppState) -> Router {
                 .post(talaria_routes_boards::plans::plans_id_doc::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
+        // The living document at a kind-agnostic address — same handlers.
+        // Plans and work sessions both have one; only the prompt and the
+        // template seeding differ, and those are decided from the
+        // conversation's own kind inside.
+        .route(
+            "/api/conversations/{id}/doc",
+            get(talaria_routes_boards::plans::plans_id_doc::get)
+                .post(talaria_routes_boards::plans::plans_id_doc::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
         .route(
             "/api/plans/{id}/members",
             get(talaria_routes_boards::plans::plans_id_members::get)
@@ -1587,6 +1607,27 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/plans/{id}/teams",
+            post(talaria_routes_boards::plans::plans_id_teams::post)
+                .delete(talaria_routes_boards::plans::plans_id_teams::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        // THE SAME HANDLERS, at a kind-agnostic path. Membership lives on
+        // `conversation_members` / `conversation_teams` and the question the
+        // handlers ask — `shared_conversation_role` — is the same for a plan
+        // and a work session, so this is one implementation at two addresses
+        // rather than a second copy that would drift. The `/api/plans/…` pair
+        // above stays because Plan's client already speaks it and a URL is a
+        // promise; new surfaces use these.
+        .route(
+            "/api/conversations/{id}/members",
+            get(talaria_routes_boards::plans::plans_id_members::get)
+                .post(talaria_routes_boards::plans::plans_id_members::post)
+                .put(talaria_routes_boards::plans::plans_id_members::put)
+                .delete(talaria_routes_boards::plans::plans_id_members::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/conversations/{id}/teams",
             post(talaria_routes_boards::plans::plans_id_teams::post)
                 .delete(talaria_routes_boards::plans::plans_id_teams::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),

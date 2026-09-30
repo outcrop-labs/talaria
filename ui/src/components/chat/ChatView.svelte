@@ -5,6 +5,7 @@
   import { type Mentionable } from '@/components/chat/mentions.svelte'
   import EmojiButton from '@/components/chat/EmojiButton.svelte'
   import { bottomStick } from '@/lib/stick-to-bottom'
+  import { classifyPlatformHref } from '@/lib/chips'
   import ChatComposer from '@/components/chat/ChatComposer.svelte'
   import type { ChatComposerHandle } from '@/components/chat/chat-composer'
   import AttachButton from '@/components/chat/AttachButton.svelte'
@@ -38,6 +39,8 @@
     templateId,
     mentionables = [],
     onTurnComplete,
+    onToolDone,
+    onDocumentTouched,
     minimal = false,
     tier = $bindable(''),
   }: {
@@ -69,6 +72,16 @@
      *  streamed it or the poller observed a server-chained one (the plan
      *  surface syncs its living document on this). */
     onTurnComplete?: () => void
+    /** A tool the agent ran has FINISHED. Fired per completion, mid-turn — the
+     *  Work surface uses it to re-read the document its pane is showing, so an
+     *  edit appears while the turn is still going rather than after it. */
+    onToolDone?: (name: string) => void
+    /** The newest Talaria document this conversation has touched, from the
+     *  link chips the server attaches to a landed turn. Chips are computed
+     *  server-side, so this arrives with the persisted message rather than
+     *  mid-stream — which is why the live refresh above is a separate signal
+     *  and not this one. */
+    onDocumentTouched?: (artifactId: string) => void
     /** The view OWNS the conversation partner: the surface's sidebar picks the
      *  agent, its chrome picks the harness/model. So the composer rail drops
      *  the relay/emoji affordances — the surface is left with exactly attach,
@@ -81,6 +94,29 @@
   } = $props()
 
   let messages = $state<DisplayMessage[]>([])
+
+  // THE NEWEST DOCUMENT THIS CONVERSATION TOUCHED, reported outward so a
+  // surface with a document pane can follow the agent's work without holding
+  // the transcript itself. Derived from the link chips the server attaches to
+  // a landed turn, newest message first — no new endpoint, because the chip
+  // already carries the artifact in its href.
+  let lastReported: string | null = null
+  $effect(() => {
+    if (!onDocumentTouched) return
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const hit = (messages[i]?.chips ?? [])
+        .map((c) => (c.kind === 'link' && c.href ? classifyPlatformHref(c.href) : null))
+        .find((l) => l?.entity === 'document')
+      if (!hit) continue
+      // Same document as last time is not news; re-reporting it would restart
+      // whatever the consumer does on change.
+      if (hit.id !== lastReported) {
+        lastReported = hit.id
+        onDocumentTouched(hit.id)
+      }
+      return
+    }
+  })
   const qc = useQueryClient()
   let composerEmpty = $state(true)
   /** Measured height of the floating composer — what the transcript reserves. */
@@ -495,7 +531,12 @@
       )) {
         if (ev.type === 'content') patchLast((m) => ({ ...m, content: m.content + ev.text }))
         else if (ev.type === 'reasoning') patchLast((m) => ({ ...m, reasoning: (m.reasoning ?? '') + ev.text }))
-        else if (ev.type === 'tool') patchLast((m) => ({ ...m, tools: mergeTool(m.tools ?? [], ev) }))
+        else if (ev.type === 'tool') {
+          patchLast((m) => ({ ...m, tools: mergeTool(m.tools ?? [], ev) }))
+          // Only the completion edge: a 'running' frame means the write has
+          // not landed, and re-reading then shows the document as it was.
+          if (ev.status === 'completed') onToolDone?.(ev.name)
+        }
         else if (ev.type === 'queued') {
           // A reply was already streaming server-side (e.g. a chained turn we
           // hadn't seen) — drop the placeholder; the sync below shows reality.

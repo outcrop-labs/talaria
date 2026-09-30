@@ -29,5 +29,6 @@ pub mod secret_handles;
 pub mod summarizer;
 pub mod ticket_relevance;
 pub mod titler;
+pub mod work_mode;
 pub mod work_session;
 pub mod workbench;
