@@ -37,10 +37,10 @@
     renameConversation,
     restoreConversation,
     useConversations,
-    usePlanMembers,
+    useConversationMembers,
     type Conversation,
   } from '@/lib/conversations.svelte'
-  import PlanMembers from './plan/PlanMembers.svelte'
+  import ConversationMembers from '@/components/chat/ConversationMembers.svelte'
 
   // Plan surface: think through the work with an agent, then draft tickets and
   // send them to a board. A plan is a durable MULTIPLAYER conversation
@@ -89,7 +89,7 @@
   // @mention the plan's MEMBERS — the people a mention will actually reach.
   // (Offering the whole org invited mentions that silently notified nobody.)
   // Tokens mirror the server's; a brand-new plan has only you, so it's inert.
-  const membersQuery = usePlanMembers(() => selectedConversationId)
+  const membersQuery = useConversationMembers(() => selectedConversationId)
   const mentionables = $derived(
     (membersQuery.data?.members ?? [])
       .map((u) => ({ insert: userMentionInsert({ name: u.name, email: u.email }), label: u.name ?? u.email ?? u.userId, sub: u.email ?? undefined }))
@@ -257,7 +257,7 @@
 {#snippet headerActions()}
   <div class="flex items-center gap-3">
     {#if selectedConversationId}
-      <PlanMembers planId={selectedConversationId} />
+      <ConversationMembers conversationId={selectedConversationId} />
       {#if selected}
         {@const plan = selected}
         <button type="button" class={quiet} onclick={() => renamePlan(plan)}>Rename</button>

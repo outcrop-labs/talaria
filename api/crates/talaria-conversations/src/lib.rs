@@ -627,10 +627,16 @@ pub async fn list_plan_members(
         .collect())
 }
 
-/// The user's standing on a plan: owner, collaborator, or nothing.
-/// Nothing is also "not a plan" — the `kind = 'plan'` clause keeps chat
-/// conversations out, and callers treat null as absent.
-pub async fn plan_role(
+/// The caller's standing on a SHARED conversation — a plan or a work session:
+/// owner, collaborator, or nothing. Nothing is also "not a shareable kind":
+/// the kind clause keeps plain chats out, and callers treat null as absent.
+///
+/// This was `plan_role` and grew a second kind rather than a second function,
+/// because its only callers are the membership and team routes — the question
+/// they ask is "may you share this", which is the same question for both
+/// surfaces. The plan's living document and its ticket drafts gate themselves
+/// elsewhere on `kind = 'plan'`, so widening here does not reach them.
+pub async fn shared_conversation_role(
     pg: &PgPool,
     user_id: &str,
     conversation_id: &str,
@@ -644,7 +650,7 @@ pub async fn plan_role(
                          then 'collaborator' end as role \
          from conversations c \
          left join conversation_members cm on cm.conversation_id = c.id and cm.user_id = $2::uuid \
-         where c.id = $1::uuid and c.kind = 'plan'",
+         where c.id = $1::uuid and c.kind in ('plan', 'work')",
     )
     .bind(conversation_id)
     .bind(user_id)

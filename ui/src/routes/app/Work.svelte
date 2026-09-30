@@ -23,14 +23,17 @@
   import { useStickyAgent } from '@/lib/sticky-agent.svelte'
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
   import ArtifactEditor from './ArtifactEditor.svelte'
+  import ConversationMembers from '@/components/chat/ConversationMembers.svelte'
   import {
     archiveConversation,
     deleteConversation,
     renameConversation,
     restoreConversation,
     useConversations,
+    useConversationMembers,
     type Conversation,
   } from '@/lib/conversations.svelte'
+  import { userMentionInsert } from '@/components/chat/mentions.svelte'
 
   // Work surface: an agentic work session on the LEFT (the stream, its live
   // tool calls, and — from W4 — the approval cards the agent's writes queue
@@ -76,6 +79,19 @@
     archivedQuery.isError && archivedQuery.data === undefined
       ? { error: archivedQuery.error, retry: () => void archivedQuery.refetch() }
       : null,
+  )
+  // @mention the session's MEMBERS — the people a mention will actually reach.
+  // Same rule as Plan: offering the whole org invites mentions that notify
+  // nobody. A brand-new session has only you, so it is inert until shared.
+  const membersQuery = useConversationMembers(() => selectedSessionId)
+  const mentionables = $derived(
+    (membersQuery.data?.members ?? [])
+      .map((u) => ({
+        insert: userMentionInsert({ name: u.name, email: u.email }),
+        label: u.name ?? u.email ?? u.userId,
+        sub: u.email ?? undefined,
+      }))
+      .filter((m) => m.insert),
   )
   const sticky = useStickyAgent('work', () => agents)
   const selectedAgent = $derived(sticky.selected)
@@ -233,6 +249,12 @@
 
 {#snippet headerActions()}
   <div class="flex items-center gap-3">
+    {#if selectedSessionId}
+      <!-- Sharing and presence, the Plan idiom's own controls: a work session
+           is a conversation with members, so it gets the same header row
+           rather than a second one built for it. -->
+      <ConversationMembers conversationId={selectedSessionId} />
+    {/if}
     {#if selectedSessionId && selected}
       {@const session = selected}
       <button type="button" class={quiet} onclick={() => renameSession(session)}>Rename</button>
@@ -314,6 +336,7 @@
                 minimal
                 tier={sessionTier}
                 {onToolDone}
+                {mentionables}
                 onDocumentTouched={(id) => (paneArtifactId = id)}
               />
             {/key}

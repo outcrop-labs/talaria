@@ -1591,6 +1591,27 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_boards::plans::plans_id_teams::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
         )
+        // THE SAME HANDLERS, at a kind-agnostic path. Membership lives on
+        // `conversation_members` / `conversation_teams` and the question the
+        // handlers ask — `shared_conversation_role` — is the same for a plan
+        // and a work session, so this is one implementation at two addresses
+        // rather than a second copy that would drift. The `/api/plans/…` pair
+        // above stays because Plan's client already speaks it and a URL is a
+        // promise; new surfaces use these.
+        .route(
+            "/api/conversations/{id}/members",
+            get(talaria_routes_boards::plans::plans_id_members::get)
+                .post(talaria_routes_boards::plans::plans_id_members::post)
+                .put(talaria_routes_boards::plans::plans_id_members::put)
+                .delete(talaria_routes_boards::plans::plans_id_members::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/conversations/{id}/teams",
+            post(talaria_routes_boards::plans::plans_id_teams::post)
+                .delete(talaria_routes_boards::plans::plans_id_teams::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
         // The fleet defs detail trio: identity PATCH, the versioned edit,
         // and the version history.
         .route(

@@ -42,14 +42,14 @@ export interface StoredMessage {
   chips?: ChatChip[]
 }
 
-export interface PlanMember {
+export interface ConversationMember {
   userId: string
   name: string | null
   email: string | null
   role: 'owner' | 'collaborator'
 }
 
-export interface PlanTeam {
+export interface ConversationTeam {
   id: string
   name: string
 }
@@ -57,52 +57,59 @@ export interface PlanTeam {
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
 
-/** Plan membership + live presence. Pings presence while mounted and polls so
- *  everyone's avatars/dots stay current. */
-export function usePlanMembers(planId: MaybeGetter<string | null>) {
+/** Membership + live presence for a SHARED conversation — a plan or a work
+ *  session. Pings presence while mounted and polls so everyone's avatars/dots
+ *  stay current.
+ *
+ *  One path for both surfaces: `/api/conversations/{id}/…` is the kind-agnostic
+ *  address, and the server answers it for every kind whose membership is a real
+ *  question (`shared_conversation_role`). The older `/api/plans/{id}/members`
+ *  still exists server-side for anything that speaks it, but nothing in this
+ *  client needs two spellings of one call. */
+export function useConversationMembers(conversationId: MaybeGetter<string | null>) {
   const qc = useQueryClient()
   $effect(() => {
-    const id = resolve(planId)
+    const id = resolve(conversationId)
     if (!id) return
     // Best-effort presence ping — a dropped one just means a stale dot until
     // the next tick, so a failure is swallowed rather than surfaced.
-    const ping = () => putJson<{ ok: true }>(`/api/plans/${id}/members`).catch(() => {})
+    const ping = () => putJson<{ ok: true }>(`/api/conversations/${id}/members`).catch(() => {})
     void ping()
     const t = setInterval(() => {
       void ping()
-      void qc.invalidateQueries({ queryKey: ['plan-members', id] })
+      void qc.invalidateQueries({ queryKey: ['conversation-members', id] })
     }, 25_000)
     return () => clearInterval(t)
   })
   return createQuery(() => {
-    const id = resolve(planId)
+    const id = resolve(conversationId)
     return {
-      queryKey: ['plan-members', id],
+      queryKey: ['conversation-members', id],
       enabled: !!id,
-      queryFn: (): Promise<{ members: PlanMember[]; active: string[]; teams?: PlanTeam[] }> =>
-        getJson<{ members: PlanMember[]; active: string[]; teams?: PlanTeam[] }>(`/api/plans/${id}/members`),
+      queryFn: (): Promise<{ members: ConversationMember[]; active: string[]; teams?: ConversationTeam[] }> =>
+        getJson<{ members: ConversationMember[]; active: string[]; teams?: ConversationTeam[] }>(`/api/conversations/${id}/members`),
     }
   })
 }
 
-export const sharePlan = async (planId: string, email: string): Promise<void> => {
-  await postJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { email })
+export const shareConversation = async (conversationId: string, email: string): Promise<void> => {
+  await postJson<{ members: ConversationMember[] }>(`/api/conversations/${conversationId}/members`, { email })
 }
 
-export const unsharePlan = async (planId: string, userId: string): Promise<void> => {
+export const unshareConversation = async (conversationId: string, userId: string): Promise<void> => {
   // The call site fires and forgets (`.then(refresh)`, no catch), so a refused
   // remove is surfaced here rather than left as an unhandled rejection.
-  await delJson<{ members: PlanMember[] }>(`/api/plans/${planId}/members`, { userId }).catch((e: unknown) =>
+  await delJson<{ members: ConversationMember[] }>(`/api/conversations/${conversationId}/members`, { userId }).catch((e: unknown) =>
     toastError('Remove failed', e),
   )
 }
 
-export const sharePlanTeam = async (planId: string, teamId: string): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/plans/${planId}/teams`, { teamId })
+export const shareConversationTeam = async (conversationId: string, teamId: string): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/conversations/${conversationId}/teams`, { teamId })
 }
 
-export const unsharePlanTeam = async (planId: string, teamId: string): Promise<void> => {
-  await delJson<{ ok: true }>(`/api/plans/${planId}/teams`, { teamId }).catch((e: unknown) =>
+export const unshareConversationTeam = async (conversationId: string, teamId: string): Promise<void> => {
+  await delJson<{ ok: true }>(`/api/conversations/${conversationId}/teams`, { teamId }).catch((e: unknown) =>
     toastError('Remove failed', e),
   )
 }
