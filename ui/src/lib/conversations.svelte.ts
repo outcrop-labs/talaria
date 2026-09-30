@@ -21,6 +21,31 @@ export interface Conversation {
   ownerLabel?: string | null
   /** Landed messages past your read cursor — the rail pill. */
   unreadCount?: number
+  /** The document pane's memory, on the detail read. Absent on list rows. */
+  pinnedFiles?: PinnedFile[]
+}
+
+/** A file pinned to a conversation's document pane. `google` is a Drive file
+ *  shown in Google's own editor; `artifact` is a Talaria document shown in
+ *  ours. The pane's order is the array's order. */
+export interface PinnedFile {
+  kind: 'google' | 'artifact'
+  id: string
+  title?: string
+  mime?: string
+}
+
+/** Replace the pane's pinned files. Whole-array, matching the server: the order
+ *  is part of what is stored, so a per-entry call would have to describe moves
+ *  as well as adds. */
+export async function setPinnedFiles(conversationId: string, files: PinnedFile[]): Promise<boolean> {
+  try {
+    await patchJson(`/api/conversations/${conversationId}`, { pinnedFiles: files })
+    return true
+  } catch (e) {
+    toastError('Could not pin that file', e)
+    return false
+  }
 }
 
 export interface StoredMessage {

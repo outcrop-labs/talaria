@@ -25,6 +25,7 @@
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ConversationMembers from '@/components/chat/ConversationMembers.svelte'
   import LivingDoc from '@/components/chat/LivingDoc.svelte'
+  import GoogleFilePane from '@/components/chat/GoogleFilePane.svelte'
   import {
     archiveConversation,
     deleteConversation,
@@ -32,9 +33,14 @@
     restoreConversation,
     useConversations,
     useConversationMembers,
+    loadConversation,
+    setPinnedFiles,
     type Conversation,
+    type PinnedFile,
   } from '@/lib/conversations.svelte'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
+  import { parseGoogleFileUrl } from '@/lib/google-embed'
+  import { alert, prompt } from '@/components/ui/confirm.svelte'
 
   // Work surface: an agentic work session on the LEFT (the stream, its live
   // tool calls, and — from W4 — the approval cards the agent's writes queue
@@ -110,6 +116,54 @@
   // creates a document mid-session brings it into view without anybody
   // clicking. Per-session `pinned_files` is the next turn of this: the column
   // exists, and it will let a person override what the agent chose.
+  // A GOOGLE FILE PINNED TO THIS SESSION, if any — the pane's Tier A. Held
+  // per session on the conversation row (`pinned_files`), so reopening a
+  // session puts the same file back in front of you, and a collaborator who
+  // opens it sees the file the session is about rather than an empty pane.
+  let pinnedGoogle = $state<PinnedFile | null>(null)
+  $effect(() => {
+    const id = selectedSessionId
+    if (!id) {
+      pinnedGoogle = null
+      return
+    }
+    // Read through the detail endpoint rather than the list: `pinned_files` is
+    // a per-conversation column and the rail's rows do not carry it.
+    void loadConversation(id).then((d) => {
+      if (selectedSessionId !== id) return
+      pinnedGoogle = (d?.conversation.pinnedFiles ?? []).find((f) => f.kind === 'google') ?? null
+    })
+  })
+  // PASTE A LINK. The smallest honest way in: people already have the URL,
+  // and a Drive browser is a bigger surface than this pane needs to prove
+  // itself. The type is read from the URL's own shape — a link that is not a
+  // Google file is refused here rather than pinned into a blank frame.
+  const pinGoogle = async () => {
+    const id = selectedSessionId
+    if (!id) return
+    const raw = await prompt({
+      title: 'Open a Google file',
+      message: 'Paste the link to a Google Doc, Sheet, Slides deck or Drive file.',
+      placeholder: 'https://docs.google.com/document/d/…',
+      confirmLabel: 'Open',
+    })
+    if (!raw?.trim()) return
+    const hit = parseGoogleFileUrl(raw)
+    if (!hit) {
+      await alert({
+        title: 'Not a Google file link',
+        message: 'That did not look like a docs.google.com or drive.google.com file URL.',
+      })
+      return
+    }
+    const file: PinnedFile = { kind: 'google', id: hit.id, ...(hit.mime ? { mime: hit.mime } : {}) }
+    if (await setPinnedFiles(id, [file])) pinnedGoogle = file
+  }
+  const unpinGoogle = () => {
+    const id = selectedSessionId
+    pinnedGoogle = null
+    if (id) void setPinnedFiles(id, [])
+  }
   let paneArtifactId = $state<string | null>(null)
   // Bumped when an agent turn lands; the living document asks for its new body
   // on the bump. The server also rewrites the document on a landed turn, and
@@ -357,6 +411,10 @@
               <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</span>
               {#if paneArtifactId}
                 <button type="button" class={`${quiet} ml-auto`} onclick={() => (paneArtifactId = null)}>Close</button>
+              {:else if pinnedGoogle}
+                <button type="button" class={`${quiet} ml-auto`} onclick={unpinGoogle}>Unpin</button>
+              {:else if selectedSessionId}
+                <button type="button" class={`${quiet} ml-auto`} onclick={() => void pinGoogle()}>Open a Google file</button>
               {/if}
             </div>
             {#if paneArtifactId}
@@ -370,6 +428,15 @@
                   <ArtifactEditor id={paneArtifactId} onDeleted={() => (paneArtifactId = null)} />
                 </div>
               {/key}
+            {:else if pinnedGoogle}
+              <!-- TIER A: the real Google editor, with Google's own presence
+                   doing the collaboration. Pinned to the session, so it
+                   outlives a reload and a collaborator sees the same file. -->
+              <GoogleFilePane
+                fileId={pinnedGoogle.id}
+                mime={pinnedGoogle.mime ?? null}
+                title={pinnedGoogle.title ?? null}
+              />
             {:else if selectedSessionId}
               <!-- THE SESSION'S LIVING DOCUMENT is the default, which is the
                    whole draw of the surface: you talk, and the document builds
