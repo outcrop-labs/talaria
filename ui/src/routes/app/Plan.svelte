@@ -17,7 +17,7 @@
   import PlanModal from '@/components/chat/PlanModal.svelte'
   import { hydratePlanDraft, planDraft } from '@/components/chat/plan-drafts.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import PlanDoc from '@/components/chat/PlanDoc.svelte'
+  import LivingDoc from '@/components/chat/LivingDoc.svelte'
   import PlanDocSkeleton from '@/components/chat/PlanDocSkeleton.svelte'
   import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
   import { userMentionInsert } from '@/components/chat/mentions.svelte'
@@ -397,7 +397,7 @@
              the conversation exists, the pane shows what will grow here. -->
         <div class="hidden min-w-0 basis-[44%] lg:flex">
           {#if selectedConversationId}
-            <PlanDoc planId={selectedConversationId} planTitle={selected?.title ?? null} syncSignal={turnSignal} />
+            <LivingDoc conversationId={selectedConversationId} planTitle={selected?.title ?? null} syncSignal={turnSignal} />
           {:else}
             <div class="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
               <div class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">

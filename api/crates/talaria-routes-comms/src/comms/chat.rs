@@ -397,10 +397,17 @@ pub async fn post(
         .clone()
         .or_else(|| user.email.clone())
         .unwrap_or_else(|| "someone".into());
-    let plan_meta = if kind == "plan" {
+    // BOTH SHARED SURFACES GET A LIVING DOCUMENT. A landed turn rewrites the
+    // conversation's document from the conversation so far — that is the whole
+    // draw of the Work surface, not a plan-only nicety, so `kind='work'` opts
+    // in here alongside `plan`. The kind rides along because the rewrite prompt
+    // and the template seeding differ: a plan converges on goals and owners, a
+    // work session's document IS the deliverable.
+    let plan_meta = if kind == "plan" || kind == "work" {
         Some(PlanMeta {
             owner_user_id: plan_owner_id.clone(),
             title: plan_title.clone(),
+            surface: kind.clone(),
         })
     } else {
         None

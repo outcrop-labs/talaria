@@ -257,6 +257,13 @@ pub fn plan_tier(agent_model: &str, routed_model: &str) -> Option<String> {
 /// maps an error to a 502 with this message, and silently returning the old
 /// document would show a "synced" document that never synced. The error
 /// String is exactly the sentence that lands in that 502.
+/// Rewrite the conversation's living document from the conversation so far.
+///
+/// `surface` is the conversation's own kind. It picks the prompt's opening
+/// paragraph and it decides whether the org's ticket-routing map is offered at
+/// all: a plan converges on who will do the work, so routing belongs there; a
+/// work session's document is the deliverable, and appending an "Agent routing"
+/// section to somebody's memo would be nonsense.
 pub async fn sync_plan_doc(
     state: &AppState,
     conversation_id: &str,
@@ -265,8 +272,17 @@ pub async fn sync_plan_doc(
     agent_model: &str,
     routed_model: &str,
     template_id: Option<&str>,
+    surface: &str,
 ) -> Result<Artifact, String> {
     let pg = state.pg.clone();
+    // A WORK SESSION GETS NO PLAN TEMPLATE. Template resolution below looks up
+    // templates of kind "plan" — the agent's bound one when an agent is named —
+    // so handing the agent through here would seed somebody's memo with a
+    // project-plan skeleton and then keep reconciling it against that shape.
+    // The work document starts empty and takes the shape the work asks for.
+    let is_work = surface == "work";
+    let seed_agent = if is_work { None } else { Some(agent_model) };
+    let seed_template = if is_work { None } else { template_id };
     let doc = ensure_plan_doc(
         &pg,
         conversation_id,
@@ -275,8 +291,8 @@ pub async fn sync_plan_doc(
             label: owner.label,
         },
         plan_title,
-        Some(agent_model),
-        template_id,
+        seed_agent,
+        seed_template,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -305,26 +321,38 @@ pub async fn sync_plan_doc(
         return Ok(doc);
     }
 
-    let template = resolve_template(
-        &pg,
-        "plan",
-        &ResolveContext {
-            explicit_id: template_id,
-            agent_model: Some(agent_model),
-            board_id: None,
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let template = if is_work {
+        None
+    } else {
+        resolve_template(
+            &pg,
+            "plan",
+            &ResolveContext {
+                explicit_id: template_id,
+                agent_model: Some(agent_model),
+                board_id: None,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    };
     let current = doc.body.trim().to_string();
-    let routing_map = routing_context(&pg).await.ok().filter(|m| !m.is_empty());
+    let routing_map = if surface == "work" {
+        None
+    } else {
+        routing_context(&pg).await.ok().filter(|m| !m.is_empty())
+    };
+    let doc_noun = if surface == "work" {
+        "the document"
+    } else {
+        "the plan document"
+    };
     let input = serde_json::to_value(PlanDocInput {
         current: current.clone(),
         transcript,
-        template_prompt: template
-            .as_ref()
-            .map(|t| template_prompt(t, "the plan document")),
+        template_prompt: template.as_ref().map(|t| template_prompt(t, doc_noun)),
         routing_map,
+        surface: Some(surface.to_string()),
     })
     .expect("the plan-doc input serializes");
 

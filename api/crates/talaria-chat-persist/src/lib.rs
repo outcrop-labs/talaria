@@ -47,6 +47,10 @@ use talaria_workspace_handles::{HANDLE_TURN_NOTE, mentions_handle};
 pub struct PlanMeta {
     pub owner_user_id: String,
     pub title: Option<String>,
+    /// The conversation's kind — `"plan"` or `"work"`. Both have a living
+    /// document rewritten after a landed turn; the kind decides which prompt
+    /// the rewrite uses and whether a plan template seeds it.
+    pub surface: String,
 }
 
 // TALA-33: the server-side auto-sync of a plan's living document. The
@@ -160,6 +164,7 @@ fn spawn_plan_doc_auto_sync(
             &base_model,
             &routed_model,
             None,
+            &plan.surface,
         )
         .await;
         AUTO_SYNCING
@@ -917,6 +922,7 @@ mod tests {
             PlanMeta {
                 owner_user_id: "owner-1".into(),
                 title: Some("The plan".into()),
+                surface: "plan".into(),
             }
         }
 

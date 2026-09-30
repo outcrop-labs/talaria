@@ -24,6 +24,7 @@
   import NoModelBump from '@/components/setup/NoModelBump.svelte'
   import ArtifactEditor from './ArtifactEditor.svelte'
   import ConversationMembers from '@/components/chat/ConversationMembers.svelte'
+  import LivingDoc from '@/components/chat/LivingDoc.svelte'
   import {
     archiveConversation,
     deleteConversation,
@@ -110,6 +111,10 @@
   // clicking. Per-session `pinned_files` is the next turn of this: the column
   // exists, and it will let a person override what the agent chose.
   let paneArtifactId = $state<string | null>(null)
+  // Bumped when an agent turn lands; the living document asks for its new body
+  // on the bump. The server also rewrites the document on a landed turn, and
+  // its recency guard means whichever gets there first does the one rewrite.
+  let turnSignal = $state(0)
   // Tools whose completion means the OPEN document changed underneath us. Only
   // the artifact writers: a Google write of someone else's file queues rather
   // than landing, so re-reading on it would show the unchanged document and
@@ -337,6 +342,7 @@
                 tier={sessionTier}
                 {onToolDone}
                 {mentionables}
+                onTurnComplete={() => (turnSignal += 1)}
                 onDocumentTouched={(id) => (paneArtifactId = id)}
               />
             {/key}
@@ -354,25 +360,30 @@
               {/if}
             </div>
             {#if paneArtifactId}
-              <!-- Keyed on the id ALONE, not on a refresh counter: a tool
-                   landing invalidates the artifact query instead, so the
-                   editor keeps its scroll and any unsaved edit while the new
-                   body arrives. Re-keying here would throw both away on every
-                   write the agent makes. -->
+              <!-- The agent opened or wrote a DIFFERENT file, so the pane
+                   follows the work. Keyed on the id ALONE, not on a refresh
+                   counter: a tool landing invalidates the artifact query
+                   instead, so the editor keeps its scroll and any unsaved edit
+                   while the new body arrives. -->
               {#key paneArtifactId}
                 <div class="min-h-0 flex-1 overflow-hidden">
                   <ArtifactEditor id={paneArtifactId} onDeleted={() => (paneArtifactId = null)} />
                 </div>
               {/key}
+            {:else if selectedSessionId}
+              <!-- THE SESSION'S LIVING DOCUMENT is the default, which is the
+                   whole draw of the surface: you talk, and the document builds
+                   itself beside you. The server rewrites it when a turn lands
+                   and `turnSignal` asks the pane for the new body. -->
+              <LivingDoc conversationId={selectedSessionId} syncSignal={turnSignal} />
             {:else}
-              <!-- EmptyState, not a centred sentence: `full` carries the
-                   dithered vignette, which is what keeps a 44% column that owns
-                   half the stage from reading as a dead void before a file is
-                   open. -->
+              <!-- No session yet, so there is no document to build. `full`
+                   carries the dithered vignette, which keeps a 44% column that
+                   owns half the stage from reading as a dead void. -->
               <EmptyState
                 icon="◫"
-                title="No file open"
-                hint={`Ask ${current.label} to draft or open something and it appears here — its edits land in the pane, not as a wall of text in the chat.`}
+                title="No document yet"
+                hint={`Say what you are working on and the document builds here as you and ${current.label} talk.`}
               />
             {/if}
           </div>

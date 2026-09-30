@@ -1,14 +1,16 @@
 <script lang="ts">
-  // The plan's living document — a real `doc` artifact, side-by-side with the chat.
-  // One per plan (linked via artifact_links target_type='plan'); found-or-created
-  // server-side on first open, seeded from the agent's plan template when one is
-  // bound. Editable on the fly, autosaved, referenceable anywhere in the app.
+  // THE LIVING DOCUMENT — a real `doc` artifact, side-by-side with the chat, for
+  // either surface that has one: a plan or a work session. One per conversation
+  // (linked via artifact_links), found-or-created server-side on first open. A
+  // plan's is seeded from the agent's plan template when one is bound; a work
+  // session's starts empty, because the shape belongs to the work rather than to
+  // a project-plan skeleton. Editable on the fly, autosaved, referenceable anywhere in the app.
   import QueryError from '@/components/ui/QueryError.svelte'
   import DocEditor from './DocEditor.svelte'
   import PlanDocSkeleton from './PlanDocSkeleton.svelte'
   import { getJson } from '@/lib/fetch-json'
 
-  let { planId, syncSignal = 0 }: { planId: string; planTitle?: string | null; syncSignal?: number } = $props()
+  let { conversationId, syncSignal = 0 }: { conversationId: string; planTitle?: string | null; syncSignal?: number } = $props()
 
   let docId = $state<string | null>(null)
   // `r.ok ? r.json() : null` folded every failure into the same `null` the
@@ -22,7 +24,7 @@
     docId = null
     error = null
     let cancelled = false
-    void getJson<{ artifact: { id: string } }>(`/api/plans/${planId}/doc`)
+    void getJson<{ artifact: { id: string } }>(`/api/conversations/${conversationId}/doc`)
       .then((j) => {
         if (!cancelled) docId = j.artifact.id
       })
@@ -45,7 +47,7 @@
       onRetry={() => (reload += 1)}
     />
   {:else if docId}
-    <DocEditor id={docId} {planId} {syncSignal} />
+    <DocEditor id={docId} {conversationId} {syncSignal} />
   {:else}
     <PlanDocSkeleton />
   {/if}

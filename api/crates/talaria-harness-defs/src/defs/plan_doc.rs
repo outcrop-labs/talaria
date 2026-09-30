@@ -69,15 +69,40 @@ pub struct PlanDocInput {
     /// `routingContext()`, already rendered: match rules → skills → agents.
     #[serde(default)]
     pub routing_map: Option<String>,
+    /// Which surface's living document this is — `"work"` for a work session,
+    /// anything else (including absent) for a plan. It selects the OPENING
+    /// paragraph only; the rewrite contract, the preservation rule and the
+    /// widened reconciliation pass below are the same for both, because they
+    /// are properties of "rewrite a whole document without losing it" rather
+    /// than of what the document is about.
+    #[serde(default)]
+    pub surface: Option<String>,
 }
 
 // ── The prompts ──────────────────────────────────────────────────────────────
 
 /// The wording is pinned: the last paragraph is the contract `clean_plan_doc`
 /// enforces, stated to the model in the same words it is checked by.
-fn sync_prompt() -> String {
+/// The opening paragraph, and the only part of the prompt a surface changes.
+///
+/// A WORK DOCUMENT IS NOT A PLAN and must not be pushed into a plan's shape. A
+/// plan converges on goals, scope, decisions and next steps, and saying so
+/// helps. A work session's document is the deliverable itself — a memo, a spec,
+/// an analysis, a set of notes — so naming plan headings here would make the
+/// model reorganise somebody's draft into a project plan every time it synced.
+/// What a work document needs stated instead is that its SHAPE belongs to the
+/// work, and that the conversation is the source it is written from.
+fn opening(surface: Option<&str>) -> &'static str {
+    if surface == Some("work") {
+        "You maintain the living document for a work session: a person and an agent working on one document together, talking beside it. Rewrite the document so it reflects the work so far. Let the document take whatever shape the work actually calls for — a memo, a brief, a spec, an analysis, notes under headings — and do NOT impose a project-plan structure on it. If the conversation has settled on a shape, keep that shape."
+    } else {
+        "You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable."
+    }
+}
+
+fn sync_prompt(surface: Option<&str>) -> String {
     [
-        "You maintain the living plan document for a planning conversation. Rewrite the document so it reflects the conversation so far: goals, scope, decisions, open questions, and next steps — organized under markdown headings, tight and actionable.",
+        opening(surface),
         "Start from the current version when one is given: keep what still holds, fold in what changed, never silently drop sections the conversation didn't overturn.",
         "Return ONLY the complete updated markdown document, starting with its \"# \" title heading as your very first characters — no commentary, no lead-in sentence, no code fences. Anything before the first heading corrupts the document.",
         UNTRUSTED_INPUT,
@@ -669,7 +694,7 @@ pub fn plan_doc_harness() -> HarnessDefinition {
                 serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
             // Truthiness drops an empty template block along with a missing
             // one.
-            let mut parts = vec![sync_prompt()];
+            let mut parts = vec![sync_prompt(pi.surface.as_deref())];
             if let Some(t) = pi.template_prompt.as_deref().filter(|t| !t.is_empty()) {
                 parts.push(t.to_string());
             }
