@@ -66,15 +66,16 @@ never delete a good one in favour of a broken one.
 
 `pg_dump` and `psql` on the `PATH`, **or** Docker — the CLI borrows the clients
 from a throwaway `postgres:16-alpine` container on the host network when the
-host has none. Bucket storage additionally needs `mc` or Docker; the fallback
-image is our own digest-pinned mirror, `ghcr.io/outcrop-labs/talaria-mc`
-(MinIO is dead upstream — archived repos, frozen registries — so we mirror
-and pin; provenance in [`.github/workflows/minio-mirror.yml`](../.github/workflows/minio-mirror.yml)).
-Override the images with `TALARIA_PG_IMAGE` / `TALARIA_MC_IMAGE`; bump the
-Postgres one together with the server, since `pg_dump` refuses a server newer
-than itself. A `TALARIA_MC_IMAGE` naming the deleted `docker.io/minio`
-namespace (a short `minio/…` ref resolves there) is ignored with a warning in
-favour of the pin — it can never pull.
+host has none. Bucket storage additionally needs `rclone` or Docker; the
+fallback image is `rclone/rclone:1.71`. Override the images with
+`TALARIA_PG_IMAGE` / `TALARIA_RCLONE_IMAGE`; bump the Postgres one together
+with the server, since `pg_dump` refuses a server newer than itself.
+
+`mc` used to fill this role and no longer exists anywhere public — MinIO
+deleted the `docker.io/minio` namespace, `quay.io/minio/mc` answers 401 to an
+anonymous pull, and `dl.min.io` returns 410 Gone. A leftover `TALARIA_MC_IMAGE`
+is therefore **ignored with a warning** rather than honoured: the argv is
+rclone's, so an mc image would fail on the first flag instead of at the pull.
 
 The container fallback uses `--network host`, which is a Linux thing. On
 macOS/Windows install the Postgres client instead.
@@ -87,7 +88,7 @@ Storage writes — and handles whichever mode is configured:
 | Mode | Where the blobs are | What the command needs |
 |---|---|---|
 | `local` | `TALARIA_UPLOADS_DIR` (default the api process's `cwd/.uploads` — `api/.uploads` in dev) | nothing |
-| `internal` | the bundled MinIO container | `TALARIA_S3_*` from `ui/.env` — the same values the app uses |
+| `internal` | the bundled object-storage container | `TALARIA_S3_*` from `ui/.env` — the same values the app uses |
 | `s3` | your external bucket | endpoint/bucket/key come from the database; **the secret key must be supplied** |
 
 That last row is deliberate. An external bucket's secret is *sealed* in
@@ -99,6 +100,68 @@ you own. So hand it over out of band:
 export TALARIA_BACKUP_S3_ACCESS_KEY=…   # restore only; backup reads it from the DB
 export TALARIA_BACKUP_S3_SECRET_KEY=…
 ```
+
+## Migrating off MinIO
+
+The built-in bucket used to be MinIO. It is now
+[versitygw](https://github.com/versity/versitygw) with its posix backend, because
+MinIO withdrew public distribution entirely in September 2026: the repository is
+archived, the `docker.io/minio` namespace was deleted, `quay.io/minio/minio` and
+`quay.io/minio/mc` answer 401 to an anonymous pull, and `dl.min.io` returns 410
+Gone. There is no public source for those images any more.
+
+**The two engines do not share an on-disk format**, so the swap uses a new
+`storage-data` volume and leaves `minio-data` untouched. An instance with
+uploads has to carry them across, and the copy has to happen **while the old
+MinIO container can still be started** — it is the only thing that can read
+`minio-data`.
+
+Stage through the host, so the two engines never need to be up at once:
+
+```sh
+# 1 ─ BEFORE updating the checkout, with the old stack still running,
+#     copy every object out to the host.
+mkdir -p ~/talaria-blobs
+docker run --rm --network container:talaria-minio-1 \
+  -e RCLONE_CONFIG=/dev/null \
+  -e RCLONE_CONFIG_OLD_TYPE=s3 -e RCLONE_CONFIG_OLD_PROVIDER=Other \
+  -e RCLONE_CONFIG_OLD_ENDPOINT=http://127.0.0.1:9000 \
+  -e RCLONE_CONFIG_OLD_ACCESS_KEY_ID="$TALARIA_S3_ACCESS_KEY" \
+  -e RCLONE_CONFIG_OLD_SECRET_ACCESS_KEY="$TALARIA_S3_SECRET_KEY" \
+  -e RCLONE_CONFIG_OLD_REGION=us-east-1 \
+  -v ~/talaria-blobs:/out \
+  rclone/rclone:1.71 copy old:talaria /out
+
+# 2 ─ update and bring the stack up: `storage` replaces `minio`, empty.
+bun talaria deploy update
+
+# 3 ─ copy the staged objects into the new bucket.
+docker run --rm --network container:talaria-storage-1 \
+  -e RCLONE_CONFIG=/dev/null \
+  -e RCLONE_CONFIG_NEW_TYPE=s3 -e RCLONE_CONFIG_NEW_PROVIDER=Other \
+  -e RCLONE_CONFIG_NEW_ENDPOINT=http://127.0.0.1:9000 \
+  -e RCLONE_CONFIG_NEW_ACCESS_KEY_ID="$TALARIA_S3_ACCESS_KEY" \
+  -e RCLONE_CONFIG_NEW_SECRET_ACCESS_KEY="$TALARIA_S3_SECRET_KEY" \
+  -e RCLONE_CONFIG_NEW_REGION=us-east-1 \
+  -v ~/talaria-blobs:/in \
+  rclone/rclone:1.71 copy /in new:talaria
+```
+
+`copy`, never `sync`: `sync` deletes anything at the destination that is not at
+the source, and step 3 runs against the bucket you are trying to fill.
+
+Verify before deleting anything — open an attachment in the UI, or count both
+sides. The blobs are plain files under the new engine, so the destination is
+directly inspectable:
+
+```sh
+docker exec talaria-storage-1 find /data/talaria -type f | wc -l
+find ~/talaria-blobs -type f | wc -l
+```
+
+Keep `minio-data` until that matches. `talaria deploy down --volumes` removes
+`storage-data` but not the orphaned `minio-data`; drop it by hand with
+`docker volume rm talaria_minio-data` once the new bucket is proven.
 
 ## Configuration
 

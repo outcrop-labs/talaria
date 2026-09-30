@@ -580,6 +580,23 @@ pub struct Scan {
     pub files: Vec<(String, String)>,
 }
 
+/// The marker scan on its own, for a caller that wants a repo's policy
+/// without setting anything up. The sweep reads it to learn what a job may
+/// give back, and pays a `head -c 8192` of a handful of files rather than a
+/// column on `workbench_jobs` that would then have to be kept in step with
+/// the repo — the repo is the authority, so ask the repo.
+pub async fn scan_repo_files(
+    pg: &PgPool,
+    department: &str,
+    workdir: &str,
+) -> Option<Vec<(String, String)>> {
+    let container = managed_container(pg, department).await;
+    let mut cmd: Vec<&str> = vec!["sh", "-c", SCAN_SH, "sh", workdir];
+    cmd.extend(MARKERS.iter().copied());
+    let (out, _) = docker_exec(&container, &cmd, 60_000).await.ok()?;
+    parse_scan(&out).map(|s| s.files)
+}
+
 /// Parses SCAN_SH's output. None = no git checkout under the workdir yet.
 pub fn parse_scan(out: &str) -> Option<Scan> {
     let (head, rest) = out.split_once('\u{1e}').unwrap_or((out, ""));

@@ -1,5 +1,10 @@
 # Node / bridge
-node_modules/
+# No trailing slash: `node_modules/` matches a DIRECTORY only, and a worktree
+# shares the primary's by SYMLINK (talaria worktree), so every worktree showed
+# `?? ui/node_modules` in git status for ever — noise in front of real changes,
+# and one careless `git add` away from committing a link to a path that exists
+# on one machine.
+node_modules
 dist/
 *.tsbuildinfo
 

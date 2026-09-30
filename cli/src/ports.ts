@@ -6,8 +6,8 @@
 //
 // Strings, not numbers on purpose: every consumer either prints the value or
 // hands it to docker as an argv, and both want the spelling. The runtime
-// port SLOTS (worktrees: 53xx/56xx/65xx; boxes: 5301-5389) are allocated by
-// paths.ts, not defaults.
+// port SLOTS (worktrees: 53xx/54xx/56xx/65xx; boxes: 5301-5389) are allocated
+// by paths.ts, not defaults.
 
 /** TALARIA_PG_PORT — dev-compose's `127.0.0.1:<port>:5432`. */
 export const PG_PORT = '5544'
@@ -15,13 +15,23 @@ export const PG_PORT = '5544'
 /** TALARIA_REDIS_PORT. */
 export const REDIS_PORT = '6399'
 
-/** TALARIA_MINIO_PORT — the built-in S3 bucket (Admin → Storage). */
-export const MINIO_PORT = '9010'
+/** TALARIA_STORAGE_PORT — the built-in S3 bucket (Admin → Storage). The
+ *  MinIO-era TALARIA_MINIO_PORT is still read as a fallback, so a ui/.env
+ *  written before the engine swap keeps the port it already had. */
+export const STORAGE_PORT = '9010'
 
 /** TALARIA_SEARCH_PORT — the SearXNG host port. */
 export const SEARCH_PORT = '8888'
 
-/** TALARIA_API_PORT — the Rust api sidecar's in-box loopback bind. */
+/** TALARIA_API_PORT — the Rust api sidecar's in-box loopback bind. The api
+ *  itself reads this variable for its bind (talaria-config, same default), and
+ *  the app's proxy dials it, so the two halves stay one setting.
+ *
+ *  This is the DEFAULT, not the only value: a worktree is given its own api
+ *  port (54xx, from worktreeSlot) and writes it into its ui/.env. Before that,
+ *  every stack shared this one port and `talaria dev` adopts an api already
+ *  listening on it — so a second worktree served its app against the first
+ *  worktree's database without a word. */
 export const API_PORT = '5274'
 
 /** TALARIA_HTTP_PORT — the app itself: vite in dev, the published container

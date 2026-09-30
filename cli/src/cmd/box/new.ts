@@ -61,7 +61,7 @@ TALARIA_DEVBOX=${o.name}
 DATABASE_URL=postgres://talaria:talaria@postgres:5432/talaria
 REDIS_URL=redis://redis:6379
 TALARIA_QDRANT_URL=http://qdrant:6333
-TALARIA_S3_URL=http://minio:9000
+TALARIA_S3_URL=http://storage:9000
 TALARIA_S3_BUCKET=${o.s3.bucket}
 TALARIA_S3_ACCESS_KEY=${o.s3.key}
 TALARIA_S3_SECRET_KEY=${o.s3.secret}
@@ -305,7 +305,7 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   }
   ctx.log.ok(`compose.env written (app → 127.0.0.1:${appPort})`)
 
-  ctx.log.say('Box stack (devbox + postgres + redis + qdrant + minio)')
+  ctx.log.say('Box stack (devbox + postgres + redis + qdrant + storage)')
   if ((await compose(ctx, { files: stackComposeFiles(root, COMPOSE_FILE), project: boxProject(name), envFile: join(box, 'compose.env') }, ['up', '-d', '--quiet-pull'])) !== 0) {
     ctx.log.die('box stack failed to start')
   }

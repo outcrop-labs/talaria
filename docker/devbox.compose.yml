@@ -6,10 +6,10 @@
 # The sidecars' DEFINITIONS — images, restart, data volumes, env defaults,
 # healthchecks — are docker/sidecars.compose.yml, layered IN FRONT of this file
 # by `talaria box …`. What is left below is the box's own part: per-box
-# container names, the seeded minio pair, and the two services RESET out.
+# container names, the seeded storage pair, and the two services RESET out.
 #
 # Three networks, the production shape (docker/compose.yml) applied to dev:
-#   default (this project's own)  devbox + postgres + redis + qdrant + minio;
+#   default (this project's own)  devbox + postgres + redis + qdrant + storage;
 #                                 nothing published; the app reaches its
 #                                 sidecars by service DNS.
 #   talaradev (external)          the primary dev stack's TEI embeddings +
@@ -103,14 +103,14 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
-      minio:
+      storage:
         condition: service_healthy
 
   # ── Sidecars: the stateful plane, defined in docker/sidecars.compose.yml and
   # layered IN FRONT of this file. A box adds only what is its own: the per-box
-  # container names and the seeded minio pair. Published ports stay REMOVED —
+  # container names and the seeded storage pair. Published ports stay REMOVED —
   # in-container DNS replaces the dev stack's loopback publishing, and several
-  # of these (qdrant, minio) are unauthenticated; the box network is the
+  # of these (qdrant, storage) are unauthenticated; the box network is the
   # boundary.
   postgres:
     container_name: devbox-${BOX_NAME}-postgres
@@ -125,13 +125,13 @@ services:
   qdrant:
     container_name: devbox-${BOX_NAME}-qdrant
 
-  minio:
-    container_name: devbox-${BOX_NAME}-minio
+  storage:
+    container_name: devbox-${BOX_NAME}-storage
     environment:
       # The app and this container share the pair; `talaria box new` lifts
       # the values from the primary ui/.env so the seed mirror is pure bytes.
-      MINIO_ROOT_USER: ${BOX_S3_ACCESS_KEY:-talaria}
-      MINIO_ROOT_PASSWORD: ${BOX_S3_SECRET_KEY:-talaria-dev-secret}
+      ROOT_ACCESS_KEY: ${BOX_S3_ACCESS_KEY:-talaria}
+      ROOT_SECRET_KEY: ${BOX_S3_SECRET_KEY:-talaria-dev-secret}
 
   # RESET, not overridden: a box runs NO retrieval plane of its own. TEI and
   # SearXNG are stateless and identical for every box, so the primary dev stack

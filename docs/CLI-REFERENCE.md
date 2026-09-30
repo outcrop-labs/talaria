@@ -191,7 +191,7 @@ talaria deploy down [--volumes]
 
 | Flag | Kind | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--volumes` | bool | — | also remove named volumes: pg-data, qdrant-data, minio-data — the DATABASE goes with them |
+| `--volumes` | bool | — | also remove named volumes: pg-data, qdrant-data, storage-data — the DATABASE goes with them |
 
 ### `talaria deploy update`
 
