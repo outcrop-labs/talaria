@@ -85,7 +85,7 @@ pub enum CommentTarget<'a> {
     Artifact(&'a str),
 }
 
-impl CommentTarget<'_> {
+impl<'a> CommentTarget<'a> {
     /// The column this target filters and inserts on. Returned as a literal
     /// rather than interpolated from an id, so the SQL below stays a constant
     /// this crate wrote.
@@ -96,7 +96,7 @@ impl CommentTarget<'_> {
         }
     }
 
-    fn id(self) -> &str {
+    fn id(self) -> &'a str {
         match self {
             CommentTarget::Doc(id) | CommentTarget::Artifact(id) => id,
         }
