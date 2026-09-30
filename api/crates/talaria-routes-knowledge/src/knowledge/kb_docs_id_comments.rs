@@ -11,7 +11,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_api_facades::kb::comments::{NewComment, add_comment, can_discuss_doc, list_comments};
+use talaria_api_facades::kb::comments::{
+    CommentTarget, NewComment, add_comment, can_discuss_doc, list_comments,
+};
 use talaria_body::{optional_uuid_member, parse, trimmed_string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
@@ -28,10 +30,12 @@ pub async fn get(
     if !can_discuss_doc(&state.pg, &id, &user.id, who.as_deref()).await {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     }
-    Ok(match list_comments(&state.pg, &id).await {
-        Ok(comments) => Json(json!({ "comments": comments })).into_response(),
-        Err(e) => internal("[kb] comment list failed", e),
-    })
+    Ok(
+        match list_comments(&state.pg, CommentTarget::Doc(&id)).await {
+            Ok(comments) => Json(json!({ "comments": comments })).into_response(),
+            Err(e) => internal("[kb] comment list failed", e),
+        },
+    )
 }
 
 pub async fn post(
@@ -45,6 +49,15 @@ pub async fn post(
     if !can_discuss_doc(&state.pg, &id, &user.id, who.as_deref()).await {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     }
+    // The title and owner the notification fan-out needs. The engine used to
+    // re-read the doc itself; it cannot do that for an artifact, so the caller
+    // supplies both for every target. The gate above has already proven this
+    // row is readable, so a miss here is a race, not an ACL.
+    let doc = match talaria_api_facades::kb::get_doc(&state.pg, &id).await {
+        Ok(Some(d)) => d,
+        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Ok(internal("[kb] doc read for comment failed", e)),
+    };
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     // content/quote are trim-then-validate members — the length bounds apply
@@ -70,7 +83,9 @@ pub async fn post(
             &state.pg,
             &notify,
             &NewComment {
-                doc_id: &id,
+                target: CommentTarget::Doc(&id),
+                target_title: doc.title.as_str(),
+                target_owner_user_id: doc.owner_user_id.as_deref(),
                 parent_id: parent_id.as_deref(),
                 author_user_id: &user.id,
                 author: user

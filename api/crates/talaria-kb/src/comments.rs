@@ -1,7 +1,16 @@
-// Comment threads on knowledge docs — Notion-shaped: a root comment may
-// anchor to a QUOTE from the doc, replies thread under it, threads resolve.
-// Access rides the doc's effective permissions (space-inherited + grants):
-// anyone who can READ a doc can discuss it. Participants get notified.
+// Comment threads on a document — Notion-shaped: a root comment may anchor to
+// a QUOTE from it, replies thread under it, threads resolve.
+//
+// TWO KINDS OF DOCUMENT, ONE ENGINE. A knowledge-base doc and a Talaria
+// artifact both get commented on, and a comment is a comment: the thread
+// shape, the resolve rule, the quote anchor and the notification fan-out do
+// not care which they hang off. So `CommentTarget` names the two and every
+// function takes it, rather than a second table and a second set of routes
+// that would drift from these within a release.
+//
+// Access rides the TARGET's own read permission — the doc's effective
+// permissions (space-inherited + grants), or the artifact's. Anyone who can
+// READ a thing can discuss it. Participants get notified.
 //
 // The engine takes the notification deps in (the comment fan-out is
 // detached), so the routes decide which realtime plane a write publishes
@@ -19,7 +28,11 @@ use talaria_notify::{NotificationInput, NotifyDeps, add_notification};
 #[serde(rename_all = "camelCase")]
 pub struct KbComment {
     pub id: String,
-    pub doc_id: String,
+    /// Set on a knowledge-doc comment, null on an artifact's — the wire keeps
+    /// both keys so a client can tell what it is looking at without a second
+    /// read.
+    pub doc_id: Option<String>,
+    pub artifact_id: Option<String>,
     pub parent_id: Option<String>,
     pub author_user_id: Option<String>,
     pub author: String,
@@ -29,14 +42,15 @@ pub struct KbComment {
     pub created_at: String,
 }
 
-const ROW_COLS: &str = "id::text, doc_id::text, parent_id::text, author_user_id::text, \
+const ROW_COLS: &str = "id::text, doc_id::text, artifact_id::text, parent_id::text, author_user_id::text, \
                         author, quote, content, resolved, \
                         (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms";
 
 #[derive(sqlx::FromRow)]
 struct CommentRow {
     id: String,
-    doc_id: String,
+    doc_id: Option<String>,
+    artifact_id: Option<String>,
     parent_id: Option<String>,
     author_user_id: Option<String>,
     author: String,
@@ -51,6 +65,7 @@ impl From<CommentRow> for KbComment {
         KbComment {
             id: r.id,
             doc_id: r.doc_id,
+            artifact_id: r.artifact_id,
             parent_id: r.parent_id,
             author_user_id: r.author_user_id,
             author: r.author,
@@ -61,6 +76,40 @@ impl From<CommentRow> for KbComment {
         }
     }
 }
+
+/// What a comment hangs off. Copy, because it is two borrowed ids and every
+/// function here takes one by value.
+#[derive(Debug, Clone, Copy)]
+pub enum CommentTarget<'a> {
+    Doc(&'a str),
+    Artifact(&'a str),
+}
+
+impl CommentTarget<'_> {
+    /// The column this target filters and inserts on. Returned as a literal
+    /// rather than interpolated from an id, so the SQL below stays a constant
+    /// this crate wrote.
+    fn column(self) -> &'static str {
+        match self {
+            CommentTarget::Doc(_) => "doc_id",
+            CommentTarget::Artifact(_) => "artifact_id",
+        }
+    }
+
+    fn id(self) -> &str {
+        match self {
+            CommentTarget::Doc(id) | CommentTarget::Artifact(id) => id,
+        }
+    }
+}
+
+// THE READ GATE LIVES WITH THE CALLER, not here. An artifact's permissions
+// are `talaria-artifacts`' to answer, and that crate already depends on this
+// one — asking it from here would be a dependency cycle. So each route gates
+// its own target before calling in: the kb route with `can_discuss_doc`
+// below, the artifact route with the `guarded(&artifact)` + `can_read` pair
+// every other artifact route uses. The engine below takes an
+// already-authorised target.
 
 /// Gate: the viewer can read the doc (comments are part of the doc). Errors
 /// (doc gone, perms unreadable) are false — fail closed.
@@ -79,20 +128,31 @@ pub async fn can_discuss_doc(pg: &PgPool, doc_id: &str, user_id: &str, who: Opti
     }
 }
 
-pub async fn list_comments(pg: &PgPool, doc_id: &str) -> Result<Vec<KbComment>, sqlx::Error> {
-    // AssertSqlSafe: the interpolation is this crate's ROW_COLS column list.
+pub async fn list_comments(
+    pg: &PgPool,
+    target: CommentTarget<'_>,
+) -> Result<Vec<KbComment>, sqlx::Error> {
+    // AssertSqlSafe: both interpolations are this crate's own literals —
+    // ROW_COLS and the target's column name. The id is bound.
+    let col = target.column();
     let sql = format!(
-        "select {ROW_COLS} from kb_comments where doc_id = $1::uuid order by created_at asc"
+        "select {ROW_COLS} from kb_comments where {col} = $1::uuid order by created_at asc"
     );
     let rows: Vec<CommentRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(doc_id)
+        .bind(target.id())
         .fetch_all(pg)
         .await?;
     Ok(rows.into_iter().map(KbComment::from).collect())
 }
 
 pub struct NewComment<'a> {
-    pub doc_id: &'a str,
+    pub target: CommentTarget<'a>,
+    /// The target's title and owner, resolved by the CALLER. The engine cannot
+    /// read an artifact (that crate depends on this one), and asking it to
+    /// would be the cycle described at the top of this file. The caller has
+    /// already loaded the row to gate the write, so it has both in hand.
+    pub target_title: &'a str,
+    pub target_owner_user_id: Option<&'a str>,
     pub parent_id: Option<&'a str>,
     pub author_user_id: &'a str,
     pub author: &'a str,
@@ -105,13 +165,15 @@ pub async fn add_comment(
     notify: &NotifyDeps,
     input: &NewComment<'_>,
 ) -> Result<KbComment, sqlx::Error> {
-    // AssertSqlSafe: the interpolation is this crate's ROW_COLS column list.
+    // AssertSqlSafe: both interpolations are this crate's own literals —
+    // ROW_COLS and the target's column name. Every value is bound.
+    let col = input.target.column();
     let sql = format!(
-        "insert into kb_comments (doc_id, parent_id, author_user_id, author, quote, content) \
+        "insert into kb_comments ({col}, parent_id, author_user_id, author, quote, content) \
          values ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6) returning {ROW_COLS}"
     );
     let row: CommentRow = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(input.doc_id)
+        .bind(input.target.id())
         .bind(input.parent_id)
         .bind(input.author_user_id)
         .bind(input.author)
@@ -127,7 +189,12 @@ pub async fn add_comment(
     let fanout = CommentFanout {
         pg: pg.clone(),
         notify: notify.clone(),
-        doc_id: input.doc_id.to_string(),
+        href: match input.target {
+            CommentTarget::Doc(id) => format!("/knowledge?d={id}"),
+            CommentTarget::Artifact(id) => format!("/artifacts?a={id}"),
+        },
+        title: input.target_title.to_string(),
+        owner_user_id: input.target_owner_user_id.map(str::to_string),
         parent_id: input.parent_id.map(str::to_string),
         author_user_id: input.author_user_id.to_string(),
         author: input.author.to_string(),
@@ -145,7 +212,10 @@ pub async fn add_comment(
 struct CommentFanout {
     pg: PgPool,
     notify: NotifyDeps,
-    doc_id: String,
+    /// Where the notification points — the target's own place in the app.
+    href: String,
+    title: String,
+    owner_user_id: Option<String>,
     parent_id: Option<String>,
     author_user_id: String,
     author: String,
@@ -154,12 +224,9 @@ struct CommentFanout {
 
 impl CommentFanout {
     async fn run(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let Some(doc) = get_doc(&self.pg, &self.doc_id).await? else {
-            return Ok(());
-        };
         // Deduped below: the owner may also be in the thread.
         let mut targets: Vec<String> = Vec::new();
-        if let Some(owner) = &doc.owner_user_id {
+        if let Some(owner) = &self.owner_user_id {
             targets.push(owner.clone());
         }
         if let Some(parent) = &self.parent_id {
@@ -185,9 +252,12 @@ impl CommentFanout {
                 user_id,
                 &NotificationInput {
                     kind: "kb-comment",
-                    title: &format!("{} commented on \u{201c}{}\u{201d}", self.author, doc.title),
+                    title: &format!(
+                        "{} commented on \u{201c}{}\u{201d}",
+                        self.author, self.title
+                    ),
                     body: Some(&body),
-                    href: Some(&format!("/knowledge?d={}", self.doc_id)),
+                    href: Some(&self.href),
                 },
             )
             .await;
@@ -204,7 +274,7 @@ pub async fn set_resolved(
     resolved: bool,
     user_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let c: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+    let c: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "select doc_id::text, author_user_id::text, parent_id::text from kb_comments where id = $1::uuid",
     )
     .bind(comment_id)
@@ -214,7 +284,16 @@ pub async fn set_resolved(
         return Ok(false);
     };
     let root_id = parent_id.as_deref().unwrap_or(comment_id);
-    let doc = get_doc(pg, &doc_id).await?;
+    // ON A KB DOC, its owner may resolve a thread they did not start. On an
+    // ARTIFACT there is no owner check here, because reading the artifact is
+    // this crate's cycle again — the author and the thread starter still can,
+    // which is the rule that matters, and an artifact owner who wants a thread
+    // gone can delete the comment through the route that already gates on the
+    // artifact. Narrower than the doc case on purpose rather than by accident.
+    let doc = match doc_id.as_deref() {
+        Some(id) => get_doc(pg, id).await?,
+        None => None,
+    };
     let root: Option<(Option<String>,)> =
         sqlx::query_as("select author_user_id::text from kb_comments where id = $1::uuid")
             .bind(root_id)

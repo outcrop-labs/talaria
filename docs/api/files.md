@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-16 routes.
+17 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -24,6 +24,8 @@
 | [`/api/artifacts/{id}`](#apiartifactsid) | GET | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | PUT | `dual` |
 | [`/api/artifacts/{id}`](#apiartifactsid) | DELETE | `session` |
+| [`/api/artifacts/{id}/comments`](#apiartifactsidcomments) | GET | `session` |
+| [`/api/artifacts/{id}/comments`](#apiartifactsidcomments) | POST | `session` |
 | [`/api/artifacts/{id}/duplicate`](#apiartifactsidduplicate) | POST | `session` |
 | [`/api/artifacts/{id}/export/google`](#apiartifactsidexportgoogle) | POST | `dual` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | POST | `session` |
@@ -185,6 +187,29 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id.rs`](../../
 | `editPolicy` | `enum(owner|org|restricted)?` |  |
 | `official` | `bool?` |  |
 | `ragRouting` | `string?(60)` |  |
+
+## `/api/artifacts/{id}/comments`
+
+Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_comments.rs`](../../api/crates/talaria-routes-knowledge/src/files/artifacts_id_comments.rs)
+
+> /api/artifacts/{id}/comments. Comment threads on a Talaria document. GET →
+> all comments (the client assembles threads). POST { content, parentId?,
+> quote? } → comment or reply.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{comments}` | 200, 404 | — |
+| POST | `session` | [body](#post-apiartifactsidcomments-body) | `{comment}` | 200, 400, 404 | — |
+
+### POST `/api/artifacts/{id}/comments` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `content` | `string trimmed(1, 8000)` | The same bounds the doc route uses, trimmed-then-validated so the length applies to what is actually stored. |
+| `parentId` | `uuid?` |  |
+| `quote` | `string trimmed(0, 500)` |  |
 
 ## `/api/artifacts/{id}/duplicate`
 

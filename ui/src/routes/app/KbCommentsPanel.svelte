@@ -27,6 +27,8 @@
     focusId,
     onFocusConsumed,
     onClose,
+    basePath = '/api/kb/docs',
+    queryKey = 'kb-comments',
   }: {
     docId: string
     comments: KbComment[]
@@ -41,6 +43,13 @@
     focusId?: string | null
     onFocusConsumed?: () => void
     onClose: () => void
+    /** Which collection the target lives in. A Talaria document's threads hang
+     *  off `/api/artifacts`; a knowledge doc's off `/api/kb/docs`. Same engine,
+     *  same table, same panel — only the address differs. */
+    basePath?: string
+    /** The caller owns the READ, so it also owns the cache key this panel
+     *  invalidates after a write. */
+    queryKey?: string
   } = $props()
 
   const qc = useQueryClient()
@@ -48,11 +57,11 @@
   let replyTo = $state<string | null>(null)
   let replyDraft = $state('')
   let showResolved = $state(false)
-  const refresh = () => qc.invalidateQueries({ queryKey: ['kb-comments', docId] })
+  const refresh = () => qc.invalidateQueries({ queryKey: [queryKey, docId] })
 
   const post = async (content: string, parentId: string | null, quote: string | null) => {
     if (!content.trim()) return
-    await postJson(`/api/kb/docs/${docId}/comments`, { content: content.trim(), parentId, quote })
+    await postJson(`${basePath}/${docId}/comments`, { content: content.trim(), parentId, quote })
     await refresh()
   }
   const setResolved = async (id: string, resolved: boolean) => {

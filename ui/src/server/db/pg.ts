@@ -3323,6 +3323,28 @@ alter table tasks drop column if exists conversation_id`,
   // AT THE END, not beside the conversations table: MIGRATIONS is append-only
   // and keyed by INDEX — see the note above.
   `alter table conversations add column if not exists pinned_files jsonb not null default '[]'::jsonb`,
+  // COMMENTS STOP BEING KB-ONLY. A work session's living document is an
+  // artifact, and a surface where two people work on a document together needs
+  // somewhere to say "this paragraph is wrong" — which until now existed only
+  // for knowledge-base docs.
+  //
+  // The same table rather than a second one: a comment is a comment, and a
+  // parallel `artifact_comments` would duplicate the thread shape, the resolve
+  // rule, the quote and every route that reads them, then drift. `doc_id`
+  // becomes nullable and `artifact_id` joins it, with a constraint that exactly
+  // one is set — a row pointing at both, or at neither, is a bug this refuses
+  // to store rather than one that renders somewhere strange.
+  //
+  // Existing rows all carry doc_id and none carries artifact_id, so the
+  // constraint holds over the whole table the moment it is added.
+  `alter table kb_comments alter column doc_id drop not null`,
+  `alter table kb_comments add column if not exists artifact_id uuid references artifacts(id) on delete cascade`,
+  `alter table kb_comments
+     drop constraint if exists kb_comments_one_target`,
+  `alter table kb_comments
+     add constraint kb_comments_one_target
+     check ((doc_id is null) <> (artifact_id is null))`,
+  `create index if not exists kb_comments_artifact_idx on kb_comments(artifact_id, created_at)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

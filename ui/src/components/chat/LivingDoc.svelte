@@ -10,7 +10,19 @@
   import PlanDocSkeleton from './PlanDocSkeleton.svelte'
   import { getJson } from '@/lib/fetch-json'
 
-  let { conversationId, syncSignal = 0 }: { conversationId: string; planTitle?: string | null; syncSignal?: number } = $props()
+  let {
+    conversationId,
+    syncSignal = 0,
+    onDocId,
+  }: {
+    conversationId: string
+    planTitle?: string | null
+    syncSignal?: number
+    /** The artifact this document resolved to. Reported outward so a surface
+     *  can hang things off the same document — the Work view's comments, for
+     *  one — without repeating the find-or-create lookup. */
+    onDocId?: (id: string | null) => void
+  } = $props()
 
   let docId = $state<string | null>(null)
   // `r.ok ? r.json() : null` folded every failure into the same `null` the
@@ -22,11 +34,15 @@
   $effect(() => {
     void reload // re-run the lookup when Retry bumps it
     docId = null
+    onDocId?.(null)
     error = null
     let cancelled = false
     void getJson<{ artifact: { id: string } }>(`/api/conversations/${conversationId}/doc`)
       .then((j) => {
-        if (!cancelled) docId = j.artifact.id
+        if (!cancelled) {
+          docId = j.artifact.id
+          onDocId?.(docId)
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) error = e
@@ -42,7 +58,7 @@
     <QueryError
       class="p-6"
       variant="compact"
-      title="Could not open this plan’s document"
+      title="Could not open this document"
       {error}
       onRetry={() => (reload += 1)}
     />

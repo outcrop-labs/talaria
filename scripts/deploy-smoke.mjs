@@ -28,8 +28,12 @@
 //      about the commit being deployed.
 //   3. GET / serves the SPA shell — text/html, real HTML. This is the
 //      2026-09-17 assertion, from outside the container.
-//   4. GET /home/inbox serves it too — the client-route fallback, which is a
-//      different code path from the bare root.
+//   4. GET /home/inbox and /work serve it too — the client-route fallback,
+//      which is a different code path from the bare root. Two routes rather
+//      than one because the fallback is per-PATH-SHAPE in front of the SPA: a
+//      nested route and a single-segment one are not the same match, and a
+//      newly added top-level view is exactly the thing that would 404 while
+//      every other page looked fine.
 //   5. GET /api/well-known/talaria-instance returns the Rust api's JSON. A
 //      public route, so it needs no session: it proves the proxy, the spawn and
 //      the handler chain, not just that something is listening.
@@ -274,7 +278,7 @@ function assertHealth(health, expectVersion) {
 }
 
 async function assertSpaShell(port) {
-  for (const path of ['/', '/home/inbox']) {
+  for (const path of ['/', '/home/inbox', '/work']) {
     const res = await get(port, path)
     if (res.status !== 200) fail(`GET ${path} answered ${res.status}, expected 200`)
     if (!res.type.startsWith('text/html')) fail(`GET ${path} served content-type "${res.type}", expected text/html`)

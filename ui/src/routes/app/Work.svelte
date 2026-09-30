@@ -26,6 +26,11 @@
   import ConversationMembers from '@/components/chat/ConversationMembers.svelte'
   import LivingDoc from '@/components/chat/LivingDoc.svelte'
   import GoogleFilePane from '@/components/chat/GoogleFilePane.svelte'
+  import KbCommentsPanel from './KbCommentsPanel.svelte'
+  import { createQuery } from '@tanstack/svelte-query'
+  import { getJson } from '@/lib/fetch-json'
+  import { useSession } from '@/lib/session'
+  import type { KbComment } from './knowledge.svelte'
   import {
     archiveConversation,
     deleteConversation,
@@ -59,6 +64,7 @@
 
   const qc = useQueryClient()
   const mayManageAgents = useHasPerm('agents.manage')
+  const session = useSession()
   // Both reads keep their query object: the rail and the stage each render a
   // sentence ("No sessions yet with this agent.", "No agents available.")
   // that is only true of a request that SUCCEEDED and came back empty.
@@ -165,6 +171,24 @@
     if (id) void setPinnedFiles(id, [])
   }
   let paneArtifactId = $state<string | null>(null)
+  // COMMENTS ON THE DOCUMENT IN THE PANE. The pane is narrow, so they swap in
+  // rather than sitting beside the editor — a 44% column split again would give
+  // neither half enough room to be worth having.
+  let showComments = $state(false)
+  let livingDocId = $state<string | null>(null)
+  // The artifact the comments belong to: whatever the pane is actually showing.
+  // A pinned Google file has Google's own comments inside the embed, so this is
+  // null there and the control is hidden.
+  const commentTargetId = $derived(paneArtifactId ?? livingDocId)
+  const commentsQuery = createQuery(() => {
+    const id = commentTargetId
+    return {
+      queryKey: ['artifact-comments', id],
+      enabled: !!id && showComments,
+      queryFn: (): Promise<{ comments: KbComment[] }> =>
+        getJson<{ comments: KbComment[] }>(`/api/artifacts/${id}/comments`),
+    }
+  })
   // Bumped when an agent turn lands; the living document asks for its new body
   // on the bump. The server also rewrites the document on a landed turn, and
   // its recency guard means whichever gets there first does the one rewrite.
@@ -409,15 +433,43 @@
           <div class="flex min-w-0 flex-1 flex-col border-l border-line-subtle">
             <div class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
               <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</span>
+              {#if commentTargetId && !pinnedGoogle}
+                <button
+                  type="button"
+                  class={`${quiet} ml-auto`}
+                  onclick={() => (showComments = !showComments)}
+                >
+                  {showComments ? 'Document' : 'Comments'}
+                </button>
+              {/if}
               {#if paneArtifactId}
-                <button type="button" class={`${quiet} ml-auto`} onclick={() => (paneArtifactId = null)}>Close</button>
+                <button type="button" class={quiet} onclick={() => (paneArtifactId = null)}>Close</button>
               {:else if pinnedGoogle}
                 <button type="button" class={`${quiet} ml-auto`} onclick={unpinGoogle}>Unpin</button>
               {:else if selectedSessionId}
                 <button type="button" class={`${quiet} ml-auto`} onclick={() => void pinGoogle()}>Open a Google file</button>
               {/if}
             </div>
-            {#if paneArtifactId}
+            {#if showComments && commentTargetId}
+              <!-- Swapped IN rather than beside: the pane is 44% of the stage
+                   and splitting it again would leave neither half usable. A
+                   pinned Google file never gets here — Google's own comments
+                   live inside the embed. -->
+              <KbCommentsPanel
+                docId={commentTargetId}
+                basePath="/api/artifacts"
+                queryKey="artifact-comments"
+                comments={commentsQuery.data?.comments ?? []}
+                loadFailed={commentsQuery.isError}
+                loadError={commentsQuery.error}
+                onRetryLoad={() => void commentsQuery.refetch()}
+                meId={session.data?.id ?? null}
+                docOwnerId={null}
+                pendingQuote={null}
+                onQuoteConsumed={() => {}}
+                onClose={() => (showComments = false)}
+              />
+            {:else if paneArtifactId}
               <!-- The agent opened or wrote a DIFFERENT file, so the pane
                    follows the work. Keyed on the id ALONE, not on a refresh
                    counter: a tool landing invalidates the artifact query
@@ -442,7 +494,11 @@
                    whole draw of the surface: you talk, and the document builds
                    itself beside you. The server rewrites it when a turn lands
                    and `turnSignal` asks the pane for the new body. -->
-              <LivingDoc conversationId={selectedSessionId} syncSignal={turnSignal} />
+              <LivingDoc
+                conversationId={selectedSessionId}
+                syncSignal={turnSignal}
+                onDocId={(id) => (livingDocId = id)}
+              />
             {:else}
               <!-- No session yet, so there is no document to build. `full`
                    carries the dithered vignette, which keeps a 44% column that

@@ -1139,6 +1139,15 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_knowledge::files::artifacts_id_duplicate::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // Comment threads on a Talaria document — the twin of the kb-doc route,
+        // same engine and same table, gated on the artifact's own read
+        // permission.
+        .route(
+            "/api/artifacts/{id}/comments",
+            get(talaria_routes_knowledge::files::artifacts_id_comments::get)
+                .post(talaria_routes_knowledge::files::artifacts_id_comments::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
         .route(
             "/api/artifacts/{id}/export/google",
             post(talaria_routes_knowledge::files::artifacts_id_export_google::post)
