@@ -154,6 +154,11 @@ static DEFS: [LazyLock<HarnessDefinition>; 39] = [
     // The third: who can SEE things. Runs as a personal assistant because five of
     // its six tools refuse a general org agent outright.
     LazyLock::new(defs::hermes_governance::hermes_governance_harness),
+    // The Work surface's turn — the one whose prompt asks for restraint about
+    // OUTPUT (put the change in the document, not in the message), which
+    // nothing else in the registry measures. Named for the mode, not the
+    // session: `work_session` above is the ticket reply, a different surface.
+    LazyLock::new(defs::work_mode::work_mode_harness),
     // The fourth: calendar and mail, where a wrong answer reaches somebody
     // outside the company.
     LazyLock::new(defs::hermes_google::hermes_google_harness),
