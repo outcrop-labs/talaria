@@ -4,7 +4,7 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { getStream } from '@/lib/fetch-json'
   import { useWorkSession } from '@/lib/work-session.svelte'
-  import { frameLabel, isHarnessFrame, type WatchFrame } from '@/lib/work-watch'
+  import { frameLabel, isHarnessFrame, toolDetail, type WatchFrame } from '@/lib/work-watch'
 
   // The agent pane: Hermes replies and its own tool calls. Harness
   // invocations are reported upward and rendered on Turns, not here. Two
@@ -143,7 +143,7 @@
               : `⚠ ${ev.v}`
     lines = [...lines, mark]
     if ((ev.t === 'tool' || ev.t === 'toolfull' || ev.t === 'wtool') && (ev.p || ev.r)) {
-      const detail = [ev.p, ev.r ? `→ ${ev.r}` : ''].filter(Boolean).join('\n')
+      const detail = toolDetail(ev)
       lines = [...lines, `  ${detail.split('\n').join('\n  ')}`]
     }
   }
@@ -190,8 +190,7 @@
       <div class="whitespace-pre-wrap">{frameLabel(ev)}</div>
       {#if (ev.t === 'tool' || ev.t === 'toolfull' || ev.t === 'wtool') && (ev.p || ev.r)}
         <div class="mb-1 whitespace-pre-wrap border-l-2 border-line-subtle pl-2 text-muted">
-          {#if ev.p}<div>{ev.p}</div>{/if}
-          {#if ev.r}<div class="mt-0.5">→ {ev.r}</div>{/if}
+          <div class="whitespace-pre-wrap">{toolDetail(ev)}</div>
         </div>
       {/if}
     {/each}
