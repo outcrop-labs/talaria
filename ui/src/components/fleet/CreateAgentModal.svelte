@@ -7,6 +7,14 @@
   import GeneratingSplash from '@/components/ui/GeneratingSplash.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import {
+    adoptDesign,
+    clearDesign,
+    currentDesign,
+    refineDesign,
+    setModalOpen,
+    startDesign,
+  } from '@/lib/agent-design.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
   import Select from '@/components/ui/Select.svelte'
@@ -14,8 +22,7 @@
   import { hireFleetAgent, type AgentDef } from '@/lib/fleet-defs'
   import { useRoleTemplates } from '@/lib/agent-role-templates'
   import { fade, listStagger, slide, staggerIn } from '@/lib/motion'
-  import { draftAgent, type AgentDraft } from '@/lib/muse.svelte'
-  import { appliedFields, summarizeSoul } from '@/lib/agent-onboard-refine'
+  import type { AgentDraft } from '@/lib/muse.svelte'
   import RefineBar from './RefineBar.svelte'
   import SkillPreviewRow from './SkillPreviewRow.svelte'
 
@@ -36,6 +43,13 @@
   //
   // Create does not boot anything: it enqueues an agent-hire RUN and closes.
   // The roster's hiring strip shows the phases from there.
+  //
+  // TALA-11 part 2: the generation survives the modal. The whole draftAgent()
+  // orchestration — fields, chat window, elapsed tick, refine receipt — lives
+  // in lib/agent-design.svelte (module state, next to the toast store),
+  // because this component REMOUNTS per open (Agents.svelte renders it under
+  // `{#if creating}`) and a background run must not die with its window.
+  // Closing mid-generation leaves the store running; reopening re-enters it.
   let {
     open,
     onClose,
@@ -50,28 +64,58 @@
   } = $props()
 
   const qc = useQueryClient()
-  // svelte-ignore state_referenced_locally -- reason: opening step chosen from the preselect once at mount; the modal remounts per open
+  // svelte-ignore state_referenced_locally -- reason: opening step chosen from the preselect/store once at mount; the modal remounts per open
   let step = $state<'describe' | 'review'>(preselect ? 'review' : 'describe')
 
-  // Describe → generate. There is no token stream to show any more: an agent
-  // design is a JSON contract, so the server parses and validates it (and gets
-  // a repair turn when a small model fumbles the shape) and answers with the
-  // finished draft. What used to be a live preview of raw JSON scrolling past
-  // is a progress label — the thing worth watching was never the braces.
-  let purpose = $state('')
-  let generating = $state(false)
-  let genSeconds = $state(0)
-  let chat = $state<Array<{ role: 'user' | 'assistant'; content: string }>>([])
-  let genErr = $state<string | null>(null)
+  // The store's design, or null. Every reactive read below flows from here —
+  // the modal owns NO generation state of its own any more.
+  const design = $derived(currentDesign())
+  const generating = $derived(design?.status === 'generating')
+  const genSeconds = $derived(design?.genSeconds ?? 0)
+  const genErr = $derived(design?.status === 'error' ? design.error : null)
+  const generated = $derived((design?.chat.length ?? 0) > 0)
+  // svelte-ignore state_referenced_locally -- reason: seeded once at mount from the store's purpose; the modal remounts per open, and editing must not fight the store
+  let purpose = $state(design?.purpose ?? '')
+  // Report open/closed to the store — it gates the "the design landed" toast
+  // (the person standing in the modal already knows). setModalOpen on mount
+  // AND close, because the component unmounts when the modal goes away.
+  setModalOpen(true)
+  $effect(() => {
+    return () => setModalOpen(false)
+  })
 
-  // Review fields (filled by generation or by hand)
-  let displayName = $state('')
-  let slug = $state('')
-  let department = $state('')
-  let role = $state('')
-  let soul = $state('')
-  let soulRev = $state(0)
-  let skills = $state<AgentDraft['skills']>([])
+  // A design that landed while the modal was closed: reopen straight onto the
+  // review step, fields applied — the same applyDraft path as before, just
+  // already-applied by the store. An error lands the person back on describe
+  // svelte-ignore state_referenced_locally -- reason: opening step chosen from the store once at mount (the modal remounts per open); later status changes are handled reactively via `generating`
+  if (design?.status === 'ready') step = 'review'
+  // Review fields, bound to the store's fields. Hand edits write straight
+  // through to the store (that is what the refine's `current` reads), except
+  // templateId/start/busy/err, which are genuinely per-hire local state.
+  const displayName = $derived(design?.name ?? '')
+  const slug = $derived(design?.handle ?? '')
+  const department = $derived(design?.department ?? '')
+  const role = $derived(design?.role ?? '')
+  const soul = $derived(design?.soul ?? '')
+  const soulRev = $derived(design?.soulRev ?? 0)
+  const skills = $derived(design?.skills ?? [])
+  const lastChange = $derived(design?.lastChange ?? null)
+
+  const set = (patch: Partial<{ name: string; handle: string; department: string; role: string; soul: string; skills: AgentDraft['skills'] }>) => {
+    const d = currentDesign()
+    if (!d) return
+    Object.assign(d, patch)
+  }
+
+  const onName = (v: string) => {
+    const d = currentDesign()
+    if (!d) return
+    const prev = d.name
+    d.name = v
+    if (!d.handle || d.handle === prev.toLowerCase().replace(/[^a-z0-9]/g, '')) {
+      d.handle = v.toLowerCase().replace(/[^a-z0-9]/g, '')
+    }
+  }
   // svelte-ignore state_referenced_locally -- reason: chassis pick seeded from the preselect/roster once at mount; the modal remounts per open
   let templateId = $state(preselect ?? templates[0]?.id ?? '') // '' = platform defaults
   // Role templates, as a query (cached across opens, no hand-rolled fetch to
@@ -81,96 +125,25 @@
   const roleTemplatesQuery = useRoleTemplates()
   const roleTemplates = $derived(roleTemplatesQuery.data ?? [])
   let roleSlug = $state('')
-  const applyRole = (slugPicked: string) => {
-    roleSlug = slugPicked
-    const t = roleTemplates.find((x) => x.slug === slugPicked)
-    if (!t) return
-    displayName = t.name
-    slug = t.slug.replace(/-/g, '')
-    department = t.department
-    role = t.role
-    soul = t.soul
-    soulRev += 1
-    step = 'review'
-  }
   let start = $state(true)
   let busy = $state(false)
   let err = $state<string | null>(null)
 
-  const applyDraft = (d: AgentDraft) => {
-    displayName = d.name
-    slug = d.handle
-    department = d.department
-    role = d.role
-    soul = d.soul
-    soulRev += 1 // reseed the editor with the new draft
-    skills = d.skills
-  }
-
-  // TALA-4 (onboarding surface): the refine used to end in a silent swap — the
-  // review fields just changed. The receipt says WHAT changed (±lines on the
-  // soul, which fields the design touched) and holds until the next refine.
-  type AppliedField = ReturnType<typeof appliedFields>[number]
-  let lastChange = $state<{ fields: AppliedField[]; soul: ReturnType<typeof summarizeSoul> } | null>(null)
-
-  const currentDraftJson = () =>
-    JSON.stringify({ name: displayName, handle: slug, department, role, soul, skills })
-
-  const generate = async (instruction: string, refining: boolean) => {
-    if (!instruction.trim()) return
-    generating = true
-    genErr = null
-    lastChange = null
-    // A design is a whole-agent generation — tens of seconds normally, minutes
-    // on a slow provider day. The elapsed count (shown once it's genuinely
-    // taking a while) is what separates "working, slowly" from "wedged" — the
-    // difference between waiting it out and canceling a turn that was about to
-    // land.
-    genSeconds = 0
-    const tick = setInterval(() => (genSeconds += 1), 1000)
-    try {
-      const draft = await draftAgent({
-        instruction: instruction.trim(),
-        ...(refining ? { current: currentDraftJson() } : {}),
-        chat,
-      })
-      // The turn the model sees on the next refine is the VALIDATED draft, not
-      // whatever text it happened to emit — so a reply that needed a repair turn
-      // does not teach the model its own broken shape on the way round again.
-      chat = [...chat.slice(-8), { role: 'user', content: instruction.trim() }, { role: 'assistant', content: JSON.stringify(draft) }]
-      if (refining) {
-        // The receipt compares against what the viewer was looking at — the
-        // form's live values, not the last chat turn (hand edits between
-        // refines are changes too, and the model saw them via `current`).
-        lastChange = {
-          fields: appliedFields(
-            { role, soul, skills },
-            { role: draft.role, soul: draft.soul, skills: draft.skills },
-            [
-              { label: 'Role', key: 'role' },
-              { label: 'Soul', key: 'soul' },
-              { label: 'Starter skills', key: 'skills' },
-            ],
-          ),
-          soul: summarizeSoul(soul, draft.soul),
-        }
-      }
-      applyDraft(draft)
-      step = 'review'
-    } catch (e) {
-      genErr = (e as Error).message
-    } finally {
-      clearInterval(tick)
-      generating = false
-    }
-  }
-
-  const onName = (v: string) => {
-    const prev = displayName
-    displayName = v
-    if (!slug || slug === prev.toLowerCase().replace(/[^a-z0-9]/g, '')) {
-      slug = v.toLowerCase().replace(/[^a-z0-9]/g, '')
-    }
+  const applyRole = (slugPicked: string) => {
+    roleSlug = slugPicked
+    const t = roleTemplates.find((x) => x.slug === slugPicked)
+    if (!t) return
+    // A role pick is a manual start, not a design: it seeds the store with
+    // a ready record and no muse run, so the review step's store bindings
+    // and the refine's `current` read it like any other starting point.
+    adoptDesign({
+      name: t.name,
+      handle: t.slug.replace(/-/g, ''),
+      department: t.department,
+      role: t.role,
+      soul: t.soul,
+    })
+    step = 'review'
   }
 
   // Enqueue the hire and close. The boot (render, up, health wait — minutes on
@@ -178,7 +151,8 @@
   // for it is what made creation feel broken — a stuck spinner, a proxy
   // timeout, an agent that only existed after a refresh. The roster strip
   // shows the phases; the only error that belongs HERE is one the open form
-  // can fix (a taken handle).
+  // can fix (a taken handle). The design is claimed — the store's run is
+  // over and the hire's phases take over the story.
   const create = async () => {
     err = null
     busy = true
@@ -198,6 +172,7 @@
         return
       }
       await qc.invalidateQueries({ queryKey: ['fleet-hires'] })
+      clearDesign()
       onClose()
     } catch (e) {
       err = (e as Error).message
@@ -205,9 +180,8 @@
       busy = false
     }
   }
-
-  const generated = $derived(chat.length > 0)
 </script>
+
 {#if step === 'describe'}
   <!-- ── Step 1: describe ─────────────────────────────────────────────────── -->
   <Modal {open} {onClose} title="New agent" width="max-w-lg">
@@ -217,7 +191,9 @@
          AutoHeight wrapper is load-bearing: the splash is far taller than
          the form, and a resize the user watches must glide. The footer row
          stays outside the key so the Designing button (its WaitingMark) and
-         Cancel remain reachable for the whole wait. -->
+         Cancel remain reachable for the whole wait — and Cancel now really
+         is an exit, not a cancel: the generation keeps running in the store
+         and the roster's status row re-enters it. -->
     <AutoHeight>
       {#key generating}
         {#if generating}
@@ -227,6 +203,11 @@
                how far along; the elapsed count (once it is genuinely taking
                a while) is what separates "working, slowly" from "wedged". -->
           <div use:staggerIn>
+            <!-- What was asked for, kept visible on a reopen: the splash says
+                 the work is running, the purpose line says what it is for. -->
+            {#if design?.purpose}
+              <p class="mb-3 truncate font-sans text-xs text-muted">{design.purpose}</p>
+            {/if}
             <GeneratingSplash
               label="Designing the agent: identity, soul, and starter skills"
               seconds={genSeconds}
@@ -292,7 +273,7 @@
       <Button variant="ghost" size="sm" onclick={onClose}>
         Cancel
       </Button>
-      <Button onclick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
+      <Button onclick={() => (generating ? undefined : startDesign(purpose))} disabled={generating || !purpose.trim()}>
         {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
         {generating ? 'Designing' : 'Design agent'}
       </Button>
@@ -309,17 +290,17 @@
         </div>
         <div>
           <label for="cam-handle" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
-          <Input id="cam-handle" bind:value={slug} placeholder="analyst" />
+          <Input id="cam-handle" value={slug} oninput={(e) => set({ handle: e.currentTarget.value })} placeholder="analyst" />
         </div>
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <label for="cam-role" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
-          <Input id="cam-role" bind:value={role} placeholder="Research Analyst" />
+          <Input id="cam-role" value={role} oninput={(e) => set({ role: e.currentTarget.value })} placeholder="Research Analyst" />
         </div>
         <div>
           <label for="cam-department" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-          <Input id="cam-department" bind:value={department} placeholder="research" />
+          <Input id="cam-department" value={department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" />
         </div>
       </div>
       <p class="-mt-2 font-sans text-xs text-muted">
@@ -346,7 +327,7 @@
                fresh for create + refine, reseeded whenever muse redrafts. -->
           <div class="max-h-72 overflow-y-auto">
             {#key soulRev}
-              <RichEditor value={soul} onSave={(md) => (soul = md)} autosave minHeight="9rem" />
+              <RichEditor value={soul} onSave={(md) => set({ soul: md })} autosave minHeight="9rem" />
             {/key}
           </div>
         {:else}
@@ -359,7 +340,7 @@
           <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</span>
           <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
             {#each skills as s (s.name)}
-              <SkillPreviewRow skill={s} onRemove={() => (skills = skills.filter((x) => x.name !== s.name))} />
+              <SkillPreviewRow skill={s} onRemove={() => set({ skills: skills.filter((x) => x.name !== s.name) })} />
             {/each}
           </ul>
         </div>
@@ -370,7 +351,7 @@
           busy={generating}
           preview={null}
           error={genErr}
-          onRefine={(text) => void generate(text, true)}
+          onRefine={(text) => refineDesign(text)}
         />
       {/if}
 
