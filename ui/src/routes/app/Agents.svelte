@@ -1,8 +1,10 @@
 <script lang="ts">
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { CircleAlert, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { currentDesign } from '@/lib/agent-design.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
   import Panel from '@/components/ui/Panel.svelte'
@@ -86,6 +88,16 @@
   let creating = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
+  // The background design row (TALA-11): headline = first words of the
+  // purpose while generating/erroring, the designed agent's name once
+  // landed. Null when the store holds nothing.
+  const design = $derived(currentDesign())
+  const designRow = $derived.by(() => {
+    if (!design) return null
+    if (design.status === 'ready') return { status: 'ready' as const, headline: design.name || 'the design' }
+    const first = design.purpose.split(/\s+/).slice(0, 7).join(' ').replace(/[.,;:!?]+$/, '')
+    return { status: design.status, headline: first || 'the new agent' }
+  })
 
   // Defs AND containers gate the roster together: tiles built from
   // `containers: null` read every agent as stopped, then flip. (A disabled
@@ -232,6 +244,36 @@
          Nothing renders once the work is done — the tile materializing over
          the strip IS the completion event. -->
     <HiringStrip hires={hiresQuery.data?.hires ?? []} />
+
+    <!-- TALA-11: an agent DESIGN running in the background (or finished but
+         unclaimed) — the same shelf the hires use, one slim status row. It
+         is a pointer into the modal, not a surface of its own: click to
+         re-enter the work. Renders nothing when there is no design. -->
+    {#if designRow}
+      <div transition:slide={{ duration: 150 }}>
+        <Panel class="px-4 py-3">
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 text-left"
+            onclick={() => {
+              creating = true
+            }}
+          >
+            {#if designRow.status === 'generating'}
+              <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
+              <span class="truncate font-sans text-sm text-muted">Designing {designRow.headline}</span>
+            {:else if designRow.status === 'error'}
+              <CircleAlert size={14} class="shrink-0 text-danger" />
+              <span class="truncate font-sans text-sm text-danger">The design failed: {designRow.headline}</span>
+            {:else}
+              <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
+              <span class="truncate font-sans text-sm text-fg">{designRow.headline} is designed and waiting for review</span>
+            {/if}
+            <span class="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">design</span>
+          </button>
+        </Panel>
+      </div>
+    {/if}
 
     <!-- "No agents yet" is a claim about the fleet, and for months a 500 from
          /api/fleet/defs made this surface state it — the owner reading that
