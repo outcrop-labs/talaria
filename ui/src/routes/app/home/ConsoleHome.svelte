@@ -13,12 +13,11 @@
 
   const home = useHome()
 
-  // No strip claim from the console: the strip's route fallback names each
-  // tab by its segment (TopStrip's viewName — "Boards", "Comms", …), which is
-  // the honest title for a tabbed digest and needs no per-tab wiring here. A
-  // mount-time greeting claim was tried and rotted: tab switches change the
-  // path without remounting, so the claim's key went stale and every tab
-  // after the first fell back to "Inbox".
+  // No view-title claim from the console, and nothing would read one anyway
+  // (lib/view-title.svelte.ts has no reader since the strip was deleted). A
+  // mount-time greeting claim was tried and rotted even while the strip
+  // existed: tab switches change the path without remounting, so the claim's
+  // key went stale and every tab after the first fell back to "Inbox".
 </script>
 
 <PageSurface>

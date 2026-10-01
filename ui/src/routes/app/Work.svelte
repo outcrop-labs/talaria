@@ -315,10 +315,11 @@
   // the fallback honest on deep links. An unsaved "New session" claims
   // nothing: it isn't a place yet.
   //
-  // The claim is INERT right now: the dock-era top strip dropped its title row
-  // (TopStrip's own doctrine), so nothing reads `viewTitleClaim` today. It
-  // stays because the three sibling views all make it, and the day a surface
-  // wants view titles again this one should not be the view that forgot.
+  // The claim is INERT right now: the dock era dropped the title row, and the
+  // strip that would have read it is deleted, so nothing reads
+  // `viewTitleClaim` today (see lib/view-title.svelte.ts). It stays because
+  // the three sibling views all make it, and the day a surface wants view
+  // titles again this one should not be the view that forgot.
   $effect(() => {
     if (!selected) return
     const name = selected.title || 'Untitled session'
