@@ -1784,6 +1784,47 @@ pub async fn dispatch_workbench_mcp(
                 CallOutcome::Fail(error) => ToolOutcome::Fail(error),
                 CallOutcome::Throw(message) => ToolOutcome::Throw(message),
             };
+            // SERVER-SIDE, always. `log_wtool_line` below reaches the
+            // agent's own watch stream and only while a work session is
+            // live — so a doctor or a start_job that failed outside a run
+            // left no trace anywhere at all. The workbench verbs logged
+            // nothing to the server for their whole life, which is why
+            // diagnosing a harness that could not start took ssh and
+            // hand-run probes instead of `docker logs`.
+            //
+            // The job id and repo ride along because "start_job failed" with
+            // no subject is a line you cannot act on. Arguments do not: a
+            // plan is long and a clone URL is a credential.
+            let who = subject_model(&agent);
+            let ms = started.elapsed().as_millis();
+            let about = [
+                args.get("jobId")
+                    .and_then(Value::as_str)
+                    .map(|v| format!(" job={v}")),
+                args.get("repo")
+                    .and_then(Value::as_str)
+                    .map(|v| format!(" repo={v}")),
+                args.get("taskId")
+                    .and_then(Value::as_str)
+                    .map(|v| format!(" task={v}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<String>();
+            match &outcome {
+                ToolOutcome::Ok(_) => {
+                    tracing::info!("[workbench] {name} ok — {who}{about} ({ms}ms)")
+                }
+                // Refused is the agent being told no (no grant, cap reached,
+                // plan missing). Expected, but the reason is worth having.
+                ToolOutcome::Fail(why) => {
+                    tracing::warn!("[workbench] {name} refused — {who}{about}: {why} ({ms}ms)")
+                }
+                // Thrown is Talaria failing, not the agent. Always an error.
+                ToolOutcome::Throw(why) => {
+                    tracing::error!("[workbench] {name} FAILED — {who}{about}: {why} ({ms}ms)")
+                }
+            }
             log_wtool_line(&deps, &agent, &name, &args, &outcome, started.elapsed()).await;
             outcome
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send>>
