@@ -183,6 +183,12 @@ if [ -n "$sccache_dir" ]; then
   wrapper=$(mise which sccache)
   mise set --file mise.local.toml RUSTC_WRAPPER="$wrapper" SCCACHE_DIR="$sccache_dir" SCCACHE_CACHE_SIZE=20G
 fi
+# The coding harness is a bun program (omp's bin is `#!/usr/bin/env bun`),
+# and `bun` on PATH is a mise SHIM — which resolves only where a mise config
+# pins bun. This repo may pin rust and mold and no bun at all, and doctor
+# probes the harness from the agent's home rather than from here, so the pin
+# has to be GLOBAL or omp dies before it starts wherever it is run.
+mise use -g bun@1.4.0 >/dev/null 2>&1 || true
 echo "=== resolved"
 mise ls --current 2>&1
 "#;
