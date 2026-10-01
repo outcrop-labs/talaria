@@ -13,7 +13,7 @@ use serde_json::json;
 use talaria_body::{parse, string_array_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_github as gh;
-use talaria_session::require_perm;
+use talaria_session::{require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
 
 async fn agent_exists(pg: &sqlx::PgPool, id: &str) -> bool {
@@ -30,7 +30,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<Response, Response> {
-    require_perm(&state, &headers, "agents.manage").await?;
+    require_agent_reader(&state, &headers, &agent_id).await?;
     if !agent_exists(&state.pg, &agent_id).await {
         return Ok(house_error(StatusCode::NOT_FOUND, "unknown agent"));
     }
@@ -63,7 +63,7 @@ pub async fn put(
     Path(agent_id): Path<String>,
     body: Bytes,
 ) -> Result<Response, Response> {
-    require_perm(&state, &headers, "agents.manage").await?;
+    require_agent_manager(&state, &headers, &agent_id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     // Required array (min 0 — an empty PUT clears the grants), elements ≤200,

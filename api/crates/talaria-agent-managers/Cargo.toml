@@ -1,5 +1,5 @@
 [package]
-name = "talaria-skill-access"
+name = "talaria-agent-managers"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-talaria-agent-managers = { workspace = true }
+serde = { workspace = true }
 sqlx = { workspace = true }
-talaria-agent-skills = { workspace = true }
 talaria-permissions = { workspace = true }

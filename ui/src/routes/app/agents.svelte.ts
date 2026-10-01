@@ -4,7 +4,6 @@ import { useQueryClient } from '@tanstack/svelte-query'
 import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { useContextMenu, type ContextMenuController, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-import { useSession } from '@/lib/session'
 import { controlAgent, type AgentContainers, type AgentDef, type FleetAction } from '@/lib/fleet-defs'
 
 // ── Health: one word from container reality. 'warming' = the healthcheck's
@@ -85,8 +84,8 @@ export interface AgentMenu {
 }
 
 // Right-click menu for a tile / list row — the same actions as the Controls
-// cluster (same admin guards, same confirms), reachable from anywhere on the
-// row. Its own useAgentControls instance drives the acts; AgentRetireModal
+// cluster (same manager guards, same confirms), reachable from anywhere on
+// the row. Its own useAgentControls instance drives the acts; AgentRetireModal
 // keeps its double opt-in. The caller renders `<ContextMenu menu={x.menu} />`
 // plus the retire modal off `x.retiring` (this was the `overlays` JSX the
 // React hook returned).
@@ -96,22 +95,25 @@ export function useAgentMenu(
   onManage: () => void,
   onDuplicate: () => void,
 ): AgentMenu {
-  const session = useSession()
   const controls = useAgentControls(def)
   const menu = useContextMenu()
   let retiring = $state(false)
 
   const onContextMenu = (e: MouseEvent) => {
     const d = def()
-    const isAdmin = session.data?.role === 'admin'
+    // Changing an agent belongs to its managers — the same answer the write
+    // routes give (docs/PERMISSIONS.md, "Agent managers"). Duplicate and
+    // Manage stay open: one writes a NEW agent, the other opens read-only.
+    const canManage = d.canManage
     const act = controls.act
     if (!d.enabled) {
-      // Retired: re-hire, duplicate as a template, delete forever (admin).
+      // Retired: duplicate as a template for anyone; re-hire and delete
+      // forever for the people who manage it.
       const entries: ContextMenuEntry[] = [
         { label: 'Duplicate to a new agent', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
-        { label: 'Re-hire', icon: [UserPlus, { size: 14 }], onSelect: () => void act('unretire', 're-hiring') },
-        ...(isAdmin
+        ...(canManage
           ? ([
+              { label: 'Re-hire', icon: [UserPlus, { size: 14 }], onSelect: () => void act('unretire', 're-hiring') },
               'sep',
               {
                 label: 'Delete forever',
@@ -126,20 +128,24 @@ export function useAgentMenu(
       return
     }
     const entries: ContextMenuEntry[] = [
-      { label: 'Manage', icon: [SlidersHorizontal, { size: 14 }], onSelect: onManage },
+      { label: canManage ? 'Manage' : 'View', icon: [SlidersHorizontal, { size: 14 }], onSelect: onManage },
       { label: 'Duplicate to a new agent', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
-      'sep',
-      ...(running()
+      ...(canManage
         ? ([
-            { label: 'Stop', icon: [Square, { size: 13, fill: 'currentColor' }], onSelect: () => void act('stop', 'stopping') },
-            { label: 'Restart', icon: [RotateCw, { size: 13 }], onSelect: () => void act('restart', 'restarting', RESTART_CONFIRM) },
-            ...(isAdmin ? ([{ label: 'Roll', icon: [Repeat, { size: 13 }], onSelect: () => void act('roll', 'rolling') }] as ContextMenuEntry[]) : []),
+            'sep',
+            ...(running()
+              ? ([
+                  { label: 'Stop', icon: [Square, { size: 13, fill: 'currentColor' }], onSelect: () => void act('stop', 'stopping') },
+                  { label: 'Restart', icon: [RotateCw, { size: 13 }], onSelect: () => void act('restart', 'restarting', RESTART_CONFIRM) },
+                  { label: 'Roll', icon: [Repeat, { size: 13 }], onSelect: () => void act('roll', 'rolling') },
+                ] as ContextMenuEntry[])
+              : ([
+                  { label: 'Start', icon: [Play, { size: 13, fill: 'currentColor' }], onSelect: () => void act('up', 'starting') },
+                ] as ContextMenuEntry[])),
+            'sep',
+            { label: 'Retire', icon: [Archive, { size: 14 }], danger: true, onSelect: () => (retiring = true) },
           ] as ContextMenuEntry[])
-        : ([
-            { label: 'Start', icon: [Play, { size: 13, fill: 'currentColor' }], onSelect: () => void act('up', 'starting') },
-          ] as ContextMenuEntry[])),
-      'sep',
-      { label: 'Retire', icon: [Archive, { size: 14 }], danger: true, onSelect: () => (retiring = true) },
+        : []),
     ]
     menu.openMenu(e, entries)
   }

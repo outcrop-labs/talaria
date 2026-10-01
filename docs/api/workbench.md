@@ -22,8 +22,8 @@
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | PUT | `session` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | GET | `admin` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | PUT | `admin` |
-| [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | GET | `session` + `perm:agents.manage` |
-| [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | PUT | `session` + `perm:agents.manage` |
+| [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | GET | `session` + `agent-reader` |
+| [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | PUT | `session` + `agent-manager` |
 
 ## `/api/workbench/env/{*repo}`
 
@@ -142,8 +142,8 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agen
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{available, granted, rules, branches}` | 200, 404 | — |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | — |
+| GET | `session` + `agent-reader` | — | `{available, granted, rules, branches}` | 200, 404 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | — |
 
 ### PUT `/api/workbench/repos/{agentId}` body
 

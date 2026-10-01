@@ -3,7 +3,6 @@
 // tick, ≤60s). PUT { name? schedule? prompt? } → edit in place. Admin or
 // owner.
 
-use super::can_manage_agent;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -15,17 +14,14 @@ use talaria_agent_crons::{
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, optional_max_string_member, parse};
 use talaria_error::{house_error, object_or_400};
-use talaria_session::{actor_of, require_user};
+use talaria_session::{actor_of, require_agent_manager};
 use talaria_state::AppState;
 pub async fn delete(
     State(state): State<AppState>,
     Path((id, job_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !can_manage_agent(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    let user = require_agent_manager(&state, &headers, &id).await?;
     Ok(match remove_cron_job(&state.pg, &id, &job_id).await {
         Ok(()) => {
             audit(
@@ -49,10 +45,7 @@ pub async fn put(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !can_manage_agent(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let name = match optional_max_string_member(obj, "name", 80) {
@@ -123,10 +116,7 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !can_manage_agent(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let action = match enum_member(obj, "action", &["pause", "resume", "run"]) {

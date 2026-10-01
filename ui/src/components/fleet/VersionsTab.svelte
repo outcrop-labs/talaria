@@ -23,7 +23,7 @@
     createdAt: string
   }
 
-  let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
+  let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
   // 404 stays a failure: this tab only renders for a def we are already showing,
@@ -88,7 +88,7 @@
           <span class={cn('w-12 shrink-0 font-mono', v.version === def.currentVersion ? 'text-accent' : 'text-muted')}>v{v.version}</span>
           <span class="min-w-0 flex-1 truncate font-sans text-fg">{v.note ?? '—'}</span>
           <span class="shrink-0 font-mono text-[11px] text-muted">{v.createdBy ?? 'system'} · {relativeTime(v.createdAt)}</span>
-          {#if isAdmin && v.version !== def.currentVersion}
+          {#if canManage && v.version !== def.currentVersion}
             <Button variant="ghost" size="xs" class="shrink-0 gap-1 hover:text-accent" disabled={busy !== null} onclick={() => void revert(v.version)}>
               <RotateCcw size={12} /> {busy === v.version ? 'reverting' : 'revert'}
             </Button>

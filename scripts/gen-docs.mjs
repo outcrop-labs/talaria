@@ -299,6 +299,7 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
  *  logs it, so a new guard spelling fails loudly until it's added here. */
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
+  'require_agent_manager', 'require_agent_manager_by_model', 'require_agent_reader',
   'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key',
   'authenticate_key', 'presented', 'subject_model', 'epoch_ms_to_iso',
   'get_session_user', 'update_sessions_for_user', 'destroy_session',
@@ -326,8 +327,23 @@ function authClassRust(combined, locals, fileRaw) {
   // the SESSION inside session.rs, so any handler that leads with it is dual
   // by construction, whatever guard spelling follows.
   if (has('acting_user(')) return { auth: 'dual' }
-  const session = has('require_user(') || has('require_admin(') || has('require_perm(') || has('require_view(') || has('has_perm(')
+  const manager = has('require_agent_manager(') || has('require_agent_manager_by_model(')
+  const agentReader = has('require_agent_reader(')
+  const session =
+    has('require_user(') ||
+    has('require_admin(') ||
+    has('require_perm(') ||
+    has('require_view(') ||
+    has('has_perm(') ||
+    manager ||
+    agentReader
   if (has('agent_caller(')) return { auth: session ? 'dual' : 'agent' }
+  // manager → perm → admin → view. The per-agent gate outranks a permission
+  // read in the same file: a route that asks both is gated on the agent, and
+  // the `has_perm` beside it is a widening (the fleet-wide reader), not the
+  // guard.
+  if (manager) return { auth: 'session', manager: true }
+  if (agentReader) return { auth: 'session', agentReader: true }
   // perm → admin → view, the same precedence the TS extractor used, so a
   // before/after diff of the auth column means the ROUTE changed, not the
   // classifier.
@@ -914,6 +930,8 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | \`session\` | any signed-in member (\`require_user\`) |
 | \`session\` + \`perm:x\` | signed-in member holding permission \`x\` (\`require_perm\`) |
 | \`session\` + \`view:p\` | signed-in member granted view \`p\` (\`require_view\`) |
+| \`session\` + \`agent-manager\` | a manager of the agent in the path, or an admin (\`require_agent_manager\`) |
+| \`session\` + \`agent-reader\` | the above, or anyone who reads the whole fleet — \`agents.manage\` (\`require_agent_reader\`) |
 | \`admin\` | an admin session (\`require_admin\`) |
 | \`agent\` | an agent credential (\`tak_\` key, \`require_agent\`/\`agent_caller\`) |
 | \`dual\` | session path and agent path both reach the handler |
@@ -934,6 +952,8 @@ const prettyPath = (p) =>
 
 function authCell(m) {
   let a = '`' + m.auth + '`'
+  if (m.auth === 'session' && m.manager) a += ' + `agent-manager`'
+  if (m.auth === 'session' && m.agentReader) a += ' + `agent-reader`'
   if (m.auth === 'session' && m.perms) a += ' + ' + m.perms.map((p) => `\`perm:${p}\``).join(' ')
   if (m.auth === 'session' && m.view) a += ` + \`view:${m.view}\``
   return a

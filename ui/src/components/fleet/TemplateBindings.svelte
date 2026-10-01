@@ -11,7 +11,7 @@
 
   // This agent's template overrides — they beat the board default wherever the
   // agent drafts or creates tickets, and shape its plan documents.
-  let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
+  let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
   // `{ data: templates = [] }` made a failed /api/templates look like "there
@@ -55,7 +55,7 @@
         <Skeleton class="h-9 w-full" />
       </div>
     </div>
-  {:else if isAdmin}
+  {:else if canManage}
     <div class="grid grid-cols-2 gap-3">
       <div>
         <div class="mb-1 text-[11px] text-muted">Tickets</div>

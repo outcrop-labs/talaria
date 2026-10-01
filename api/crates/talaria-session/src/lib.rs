@@ -485,6 +485,75 @@ pub async fn require_perm(
     Ok(user)
 }
 
+/// Route gate for ONE agent: session + "do you manage this agent". The
+/// per-agent twin of `require_perm` — `agents.manage` runs the fleet, this
+/// says who may change a given agent (admins always; the people named on it
+/// otherwise). `agent_id` is the def id the route's path carries.
+pub async fn require_agent_manager(
+    state: &AppState,
+    headers: &HeaderMap,
+    agent_id: &str,
+) -> Result<SessionUser, Response> {
+    let user = require_user(state, headers).await?;
+    if !talaria_agent_managers::manages_agent(&state.pg, &user.id, &user.role, agent_id)
+        .await
+        .map_err(|e| internal("[session] agent-manager read failed", e))?
+    {
+        return Err(talaria_error::house_error(
+            StatusCode::FORBIDDEN,
+            "only this agent's managers can change it",
+        ));
+    }
+    Ok(user)
+}
+
+/// READ gate for one agent's internals: a manager, or anyone who reads the
+/// whole fleet (`agents.manage`, admins). Looking is not changing — a
+/// fleet-wide reader already sees every def and its live config on the
+/// roster, so refusing them the version history or the Google binding beside
+/// it would be an inconsistency, not a tightening. The WRITE half of the
+/// same route still asks `require_agent_manager`.
+pub async fn require_agent_reader(
+    state: &AppState,
+    headers: &HeaderMap,
+    agent_id: &str,
+) -> Result<SessionUser, Response> {
+    let user = require_user(state, headers).await?;
+    let allowed = talaria_agent_managers::manages_agent(&state.pg, &user.id, &user.role, agent_id)
+        .await
+        .map_err(|e| internal("[session] agent-manager read failed", e))?
+        || talaria_agent_managers::reads_whole_fleet(&state.pg, &user.id, &user.role)
+            .await
+            .map_err(|e| internal("[session] permission read failed", e))?;
+    if !allowed {
+        return Err(talaria_error::house_error(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+        ));
+    }
+    Ok(user)
+}
+
+/// The same gate keyed by the agent's MODEL id, for the routes whose path
+/// carries the model rather than the def id.
+pub async fn require_agent_manager_by_model(
+    state: &AppState,
+    headers: &HeaderMap,
+    model: &str,
+) -> Result<SessionUser, Response> {
+    let user = require_user(state, headers).await?;
+    if !talaria_agent_managers::manages_agent_model(&state.pg, &user.id, &user.role, model)
+        .await
+        .map_err(|e| internal("[session] agent-manager read failed", e))?
+    {
+        return Err(talaria_error::house_error(
+            StatusCode::FORBIDDEN,
+            "only this agent's managers can change it",
+        ));
+    }
+    Ok(user)
+}
+
 /// Attach a Set-Cookie (or several) to a JSON body — the login/logout shape.
 pub fn json_with_cookies(body: impl IntoResponse, cookies: &[String]) -> Response {
     let mut res = body.into_response();

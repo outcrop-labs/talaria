@@ -13,7 +13,7 @@ use talaria_agent_defs::{
 };
 use talaria_body::{NumKind, number_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::require_perm;
+use talaria_session::{require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
 
 fn version_wire(v: &AgentVersionRow) -> Value {
@@ -34,7 +34,9 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    require_perm(&state, &headers, "agents.manage").await?;
+    // Reading the history is not rewriting it — a fleet-wide reader keeps
+    // the view they always had; the rollback below is managers only.
+    require_agent_reader(&state, &headers, &id).await?;
     let def = match get_agent_def_wire(&state.pg, &id).await {
         Ok(d) => d,
         Err(e) => return Ok(internal("[fleet/defs/versions] def read failed", e)),
@@ -62,7 +64,7 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_perm(&state, &headers, "agents.manage").await?;
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     // exclusive lower bound, so the folded helper's >= min cannot say it.
