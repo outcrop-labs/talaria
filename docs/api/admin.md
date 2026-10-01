@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -15,6 +15,8 @@
 | [`/api/admin/apps`](#apiadminapps) | POST | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | PUT | `admin` |
 | [`/api/admin/apps`](#apiadminapps) | DELETE | `admin` |
+| [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | GET | `admin` |
+| [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | PUT | `admin` |
 | [`/api/admin/domains`](#apiadmindomains) | GET | `admin` |
 | [`/api/admin/domains`](#apiadmindomains) | POST | `admin` |
 | [`/api/admin/domains`](#apiadmindomains) | DELETE | `admin` |
@@ -106,6 +108,32 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_apps.rs`](../../api/cr
 | :--- | :--- | :--- |
 | `app` | `string(1)` | app: required, min 1 char; wipeData: optional boolean. |
 | `wipeData` | `bool?` |  |
+
+## `/api/admin/coding-accounts`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_coding_accounts.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_coding_accounts.rs)
+
+> /api/admin/coding-accounts. The org's policy for coding accounts: whether
+> the feature exists at all, and which services it may reach.
+>
+> TWO CONTROLS, ON PURPOSE. Turning the feature on does not permit anything —
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{enabled, permitted, services, rosterError}` | 200 | — |
+| PUT | `admin` | [body](#put-apiadmincoding-accounts-body) | `{enabled, services}` | 200, 400 | audit |
+
+**GET** — The org's coding-account policy, with omp's full sign-in roster so an admin can see every service the harness could reach — not only the ones already allowed. A roster read failure answers an empty roster rather than a 500: the toggle and the current allowlist still render.
+
+**PUT** — Set the feature toggle and the permitted-service allowlist. Services not on omp's roster are refused by name rather than stored as typos.
+
+### PUT `/api/admin/coding-accounts` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `enabled` | `bool` |  |
+| `services` | `string[](0, 100, 0, 100)` | An empty array clears the allowlist, which is a real choice: the feature on and nothing permitted yet is the state a fresh install should be in. |
 
 ## `/api/admin/domains`
 

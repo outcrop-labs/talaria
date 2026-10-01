@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_secrets::{delete_agent_secret, list_agent_secrets, set_agent_secret};
-use talaria_audit::{AuditEntry, log_audit};
+use talaria_audit::spawn_audit;
 use talaria_body::{as_object, parse, string_member, trimmed_string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_personal_agent::owns_agent;
@@ -62,12 +62,14 @@ pub async fn put(
     Ok(
         match set_agent_secret(&state.pg, &sb, &id, &name, &value, actor.as_deref()).await {
             Ok(()) => {
-                audit(
-                    &state,
-                    &user,
+                // Names only, never values, and never on the caller's clock.
+                spawn_audit(
+                    &state.pg,
+                    actor_of(&user),
                     "agent.secret_set",
-                    &id,
-                    json!({ "name": name }),
+                    "agent",
+                    Some(id.clone()),
+                    Some(json!({ "name": name })),
                 );
                 Json(json!({ "ok": true })).into_response()
             }
@@ -104,12 +106,14 @@ pub async fn delete(
     if let Err(e) = delete_agent_secret(&state.pg, &id, &name).await {
         return Ok(internal("[fleet] query_param failed", e));
     }
-    audit(
-        &state,
-        &user,
+    // Names only, never values, and never on the caller's clock.
+    spawn_audit(
+        &state.pg,
+        actor_of(&user),
         "agent.secret_delete",
-        &id,
-        json!({ "name": name }),
+        "agent",
+        Some(id.clone()),
+        Some(json!({ "name": name })),
     );
     Ok(Json(json!({ "ok": true })).into_response())
 }
@@ -164,33 +168,4 @@ fn percent_decode(v: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// The family's audit — names only, never values, fire-and-forget.
-fn audit(
-    state: &AppState,
-    user: &talaria_session::SessionUser,
-    action: &str,
-    id: &str,
-    after: serde_json::Value,
-) {
-    let actor = actor_of(user);
-    let action = action.to_string();
-    let id = id.to_string();
-    let pg = state.pg.clone();
-    tokio::spawn(async move {
-        log_audit(
-            &pg,
-            AuditEntry {
-                actor: &actor,
-                action: &action,
-                target_type: "agent",
-                target_id: Some(&id),
-                target_label: None,
-                before: None,
-                after: Some(after),
-            },
-        )
-        .await;
-    });
 }

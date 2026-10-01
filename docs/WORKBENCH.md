@@ -21,7 +21,117 @@ Per agent there is exactly one control, on the agent's Summary tab:
 
 On sets the agent up end to end, and nothing else needs wiring: the dev sandbox, **Oh My Pi** as its coding harness, and the Workbench tools (`doctor`, `start_job`, `finish_job`, …). Flipping it rolls the agent so the change lands. The switch is the *only* grant of the Workbench MCP server: the registry derives it from `agent_defs.developer` and ignores assignment or team rows for it, and the MCP page shows the Workbench as "every Developer Agent" with no access controls. Which repos the agent may touch stays an explicit pick, shown under the switch once it is on.
 
-Oh My Pi is the only harness. There is no profile registry, no per-agent harness pick, and no per-agent effort→model table. Models come from the org-wide **Workbench model roles** on /models: `code-standard` is omp's default (the `--model` on every invocation line), `code-light` its `smol` role, and `code-heavy` its `slow` and `plan` roles (rendered as `PI_SMOL_MODEL` / `PI_SLOW_MODEL` / `PI_PLAN_MODEL`). omp moves between them on its own (subagents and small steps on smol, the advisor on slow, plan mode on plan), so a job is not pinned to one model. Unset roles fall down (heavy → standard → light → utility), so a missing slot never strands a job.
+Oh My Pi is the only harness. There is no profile registry, no per-agent harness pick, and no per-agent effort→model table. Models come from the org-wide **Workbench model roles** on /models: `code-standard` is omp's default (the `--model` on every invocation line), `code-light` its `smol` role, and `code-heavy` its `slow` and `plan` roles (rendered as `PI_SMOL_MODEL` / `PI_SLOW_MODEL` / `PI_PLAN_MODEL`). omp moves between them on its own (subagents and small steps on smol, the advisor on slow, plan mode on plan), so a job is not pinned to one model. Unset roles fall down (heavy → standard → light → utility), so a missing slot never strands a job. An agent with a **coding account** signed in runs its harness on that subscription's models instead — see [Coding accounts](#coding-accounts-the-harness-on-your-own-subscription).
+
+## Coding accounts: the harness on your own subscription
+
+By default a workbench harness reaches models through Talaria's gateway on the
+workbench credential, metered and attributed. **Coding accounts** are the other
+option: sign an agent in to a coding subscription — Claude Pro/Max, ChatGPT
+Codex, GitHub Copilot, Gemini, Cursor, Z.AI, and the rest of omp's roster — and
+its harness runs on that account instead.
+
+What this does *not* change: the agent itself. The persona driving the harness
+keeps the model its agent def configures, through the gateway, metered as
+always. Coding accounts move the **harness's** models and nothing else.
+
+The one consequence worth saying out loud: a harness run on a subscription does
+not pass through the gateway, so **it does not land in Talaria's ledger**. The
+provider's own dashboard is the record of that spend.
+
+### Turning it on
+
+`Admin → Agents → Coding accounts` carries two controls, and they are two on
+purpose. The first enables the feature. The second is the **allowlist**: which
+services this org permits. "Developers may sign agents in to coding
+subscriptions" and "to anything omp supports" are different decisions, and an
+org that wants Copilot and Codex but not a personal Claude Max subscription
+needs to be able to say exactly that. While nothing is permitted, nobody can
+sign anything in.
+
+Removing a service stops its accounts driving any harness immediately — jobs
+fall back to the gateway — but **keeps the credentials**, so re-permitting it
+needs no fresh sign-in. Throwing a credential away takes someone pressing
+*Sign out*.
+
+### Signing in
+
+On the agent's Summary tab, under the Developer Agent switch: one account per
+service, per agent, signed in by anyone who can edit that agent (the
+`agents.manage` permission, or owning a personal assistant). Picking the same
+service again replaces the account rather than adding a second one, even
+through a different door — `openai-codex` and its headless device variant are
+one subscription reached two ways.
+
+The flows are **omp's own**, run by a bridge beside the api
+([`omp-auth/`](../omp-auth/README.md)): nothing in Talaria encodes a provider's
+client id, PKCE quirk or token endpoint. Three shapes come out of it, and the
+sign-in dialog is one state machine over all three:
+
+- **a link to open** — most authorization-code providers. They redirect to
+  `http://localhost:<port>` on the machine running the flow, which is the
+  instance. On a dev stack (same machine as your browser) the redirect
+  completes the login by itself; on a deployed instance it lands nowhere, and
+  you paste the code or the failed redirect URL back instead. That fallback is
+  the provider's own, declared in omp's auth rules.
+- **a link and a user code** — device-code providers. Approve it and the dialog
+  finishes on its own; there is nothing to paste.
+- **a question first** — some providers ask for an enterprise domain, a region
+  or a login method before they hand over a link.
+
+### Who holds the credential
+
+**This instance does.** The whole credential, refresh token included, seals with
+secretbox into Postgres and shows up in `Admin → Secrets` like every other
+sealed secret. The agent's omp reads it over omp's own **auth-broker protocol**,
+served at `/api/workbench/auth/v1/*` and scoped by the agent's own key — so an
+agent reads exactly its own accounts and nothing else.
+
+A snapshot hands the harness an access token with `__remote__` where the refresh
+token would be, which is what makes Talaria the only thing that can refresh one:
+when the token expires, omp calls back and the bridge runs the provider's own
+refresher. A credential the provider declares dead is disabled with its reason,
+stops being served, and says "sign in again" in the UI rather than retrying for
+ever. `POST /v1/credential` — the protocol's upload — is **refused by design**:
+logins are a human action in the UI, and a sandbox that could write its own
+credential could grant itself a subscription.
+
+A volume reset cannot lose these, and nothing OAuth-shaped ever reaches an
+agent's config files.
+
+### Which plan runs a job, and on which model
+
+A **plan** is either one of the agent's coding accounts or the Talaria gateway.
+The gateway is a *choice*, not only a fallback: an agent with subscriptions
+signed in can still be told to run some or all of its coding work through the
+gateway, on models the org picked. Three layers decide, narrowest first:
+
+1. **the ticket's pin** — this ticket on that plan, optionally naming one
+   model;
+2. **the agent's default plan** — what a job that pins nothing gets. No account
+   marked default means the gateway;
+3. **nothing configured** — the org's Workbench model roles, exactly as before
+   this feature existed.
+
+Role picks hang off the **plan**, not the agent, and that is the point: a plan
+is a coherent set of models, so swapping plans swaps the set with it instead of
+leaving `smol` on the subscription that just ran out. Within a plan, a role it
+does not fill inherits its `default`; a plan that names nothing leaves the org's
+roles standing.
+
+**The per-ticket pin** is on the ticket, above the workbench jobs, because a
+subscription runs out mid-ticket and the fix has to be local: move *this* ticket
+onto the other account — and name the model too, since the other plan's flagship
+is not always what the first plan's default role would have chosen — without
+re-pointing the agent and every other ticket with it.
+
+`start_job` resolves the plan per job and puts it **on the invocation line**:
+`--model <provider>/<model>` plus inline `PI_SMOL_MODEL` / `PI_SLOW_MODEL` /
+`PI_PLAN_MODEL`. Container env can only ever carry the agent's default (it is
+rendered per agent, not per ticket), so the line is what makes a pinned plan —
+and an account signed in since the last roll — actually take effect. `doctor`
+reports which plan the agent codes on, so an agent debugging an unexpected model
+has something to read.
 
 ## GitHub, connected once
 
@@ -178,7 +288,7 @@ What the live stream cannot show on its own: tool RESULTS for tools that execute
 
 ## The harness: Oh My Pi
 
-The workbench runs one coding harness, **Oh My Pi** (omp), defined once in `api/crates/talaria-workbench-harnesses`. It authenticates through Talaria's gateway on the workbench credential (metered and attributed), keeps its config and sessions in `PI_CODING_AGENT_DIR` on the department state volume, reads the agent's MCP grants from a rendered `mcp.json`, and is invoked unattended (`npx @latest`, print/json mode, `--auto-approve`, no TUI). Claude Code, Codex, OpenCode and Pi are not offered; their skill names are signposts pointing at Oh My Pi.
+The workbench runs one coding harness, **Oh My Pi** (omp), defined once in `api/crates/talaria-workbench-harnesses`. It authenticates through Talaria's gateway on the workbench credential (metered and attributed) unless the agent has a coding account signed in (see above), keeps its config and sessions in `PI_CODING_AGENT_DIR` on the department state volume, reads the agent's MCP grants from a rendered `mcp.json`, and is invoked unattended (`npx @latest`, print/json mode, `--auto-approve`, no TUI). Claude Code, Codex, OpenCode and Pi are not offered; their skill names are signposts pointing at Oh My Pi.
 
 omp runs via `npx` on the stock image, no custom image required; first use installs into the persistent cache. The agents' built-in browser is that pattern taken literally: its engine is fetched from npm on first use, which makes the chassis's pinned external resolvers (`AGENT_DNS_1`/`_2` in `fleet/.env`) a hard dependency: no DNS, no browser, and nothing in a health check to say so. For instant first-runs, build the **workbench image** (`scripts/build-workbench-image.sh`: Hermes chassis + Oh My Pi + Playwright/chromium) and set `TALARIA_WORKBENCH_IMAGE` in the app's env; Developer Agents render on it.
 

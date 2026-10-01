@@ -1,0 +1,17 @@
+[package]
+name = "talaria-coding-accounts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+talaria-agent-auth = { workspace = true }
+talaria-secretbox = { workspace = true }
+talaria-settings = { workspace = true }

@@ -300,6 +300,10 @@ function handlerWithHelpers(stripped, span, locals, depth = 2, seen = new Set(),
 const KNOWN_HEADER_TAKERS = new Set([
   'require_user', 'require_admin', 'require_perm', 'require_view',
   'agent_caller', 'require_agent', 'fleet_caller', 'check_fleet_key',
+  // Coding accounts' three gates, each a thin wrapper classified below:
+  // the broker's per-agent scope, the feature toggle, and "may edit this
+  // agent" (agents.manage OR the agent's owner).
+  'broker_agent', 'require_feature', 'require_agent_editor',
   'authenticate_key', 'presented', 'subject_model', 'epoch_ms_to_iso',
   'get_session_user', 'update_sessions_for_user', 'destroy_session',
   'resolve_origin', 'json_with_cookies', 'acting_user',
@@ -318,6 +322,14 @@ function authClassRust(combined, locals, fileRaw) {
   const has = (s) => combined.includes(s)
   const perms = [...combined.matchAll(/(?:require_perm|has_perm)\([^)]*?"([\w.:-]+)"/g)].map((m) => m[1])
   const view = /require_view\([^)]*?"([^"]+)"/.exec(combined)
+  // Coding-account gates. `broker_agent` wraps require_agent and additionally
+  // refuses the fleet-wide key, so it is strictly agent auth.
+  // `require_agent_editor` and `require_feature` both resolve a session;
+  // the editor's "permission OR owns the agent" has no vocabulary of its own,
+  // so it reads as `session` — the same answer the agent-secrets routes get
+  // for the same admin-or-owner shape.
+  if (has('broker_agent(')) return { auth: 'agent' }
+  if (has('require_agent_editor(') || has('require_feature(')) return { auth: 'session' }
   if (has('check_fleet_key(') || has('fleet_caller(')) return { auth: 'fleet' }
   if (has('authenticate_key(')) return { auth: 'bearer-key' }
   if (has('require_agent(')) return { auth: 'agent' }

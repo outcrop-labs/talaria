@@ -7,7 +7,7 @@
 use axum::Router;
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use talaria_state::AppState;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -1333,6 +1333,91 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_workbench::workbench::workbench_env_repo::get)
                 .patch(talaria_routes_workbench::workbench::workbench_env_repo::patch)
                 .fallback(|| async { method_not_allowed("GET, PATCH") }),
+        )
+        // Coding accounts, the human half: the sign-in roster out of omp's own
+        // auth rules, one agent's accounts and per-plan model roles, the login
+        // flow (start / poll / answer / cancel), and the per-ticket plan pick.
+        // Gated by an admin toggle and a per-service allowlist; editable by
+        // `agents.manage` or the agent's owner.
+        .route(
+            "/api/admin/coding-accounts",
+            get(talaria_routes_admin::admin::admin_coding_accounts::get)
+                .put(talaria_routes_admin::admin::admin_coding_accounts::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/coding/services",
+            get(talaria_routes_workbench::workbench::workbench_coding_services::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/workbench/coding/accounts/{agentId}",
+            get(talaria_routes_workbench::workbench::workbench_coding_accounts_agent_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_coding_accounts_agent_id::put)
+                .delete(talaria_routes_workbench::workbench::workbench_coding_accounts_agent_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/coding/login",
+            post(talaria_routes_workbench::workbench::workbench_coding_login::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workbench/coding/login/{id}",
+            get(talaria_routes_workbench::workbench::workbench_coding_login::get)
+                .put(talaria_routes_workbench::workbench::workbench_coding_login::put)
+                .delete(talaria_routes_workbench::workbench::workbench_coding_login::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/coding/pin/{taskId}",
+            get(talaria_routes_workbench::workbench::workbench_coding_pin_task_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_coding_pin_task_id::put)
+                .delete(talaria_routes_workbench::workbench::workbench_coding_pin_task_id::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        // Coding accounts, the agent half: omp's auth-broker protocol, scoped
+        // by the calling agent's own key so a harness reads exactly its own
+        // credentials. The snapshot hands out access tokens with `__remote__`
+        // where the refresh token would be, which is what keeps this instance
+        // the only thing that can refresh them. `/v1/snapshot/stream`,
+        // `/v1/credentials/disabled` and `/v1/usage*` are deliberately absent:
+        // the client's documented fallback for each is to stop asking.
+        .route(
+            "/api/workbench/auth/v1/healthz",
+            get(talaria_routes_workbench::workbench::workbench_auth_healthz::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/workbench/auth/v1/snapshot",
+            get(talaria_routes_workbench::workbench::workbench_auth_snapshot::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/workbench/auth/v1/credential",
+            post(talaria_routes_workbench::workbench::workbench_auth_credential::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workbench/auth/v1/credential/{id}/refresh",
+            post(talaria_routes_workbench::workbench::workbench_auth_credential_id_refresh::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workbench/auth/v1/credential/{id}/disable",
+            post(talaria_routes_workbench::workbench::workbench_auth_credential_id_disable::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workbench/auth/v1/credential/{id}/block",
+            post(talaria_routes_workbench::workbench::workbench_auth_credential_id_block::post)
+                .delete(talaria_routes_workbench::workbench::workbench_auth_credential_id_block::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/workbench/auth/v1/credential/{id}/blocks",
+            delete(talaria_routes_workbench::workbench::workbench_auth_credential_id_blocks::delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
         )
         // The MCP family — the registry plane: the roster read (agent wire +
         // the fleet's own config), server CRUD with oauth sniffing, the

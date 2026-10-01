@@ -218,6 +218,20 @@ LLM_MODEL=
   if (build !== 0) ctx.log.die('mcp/ failed to build — the fleet toolkit will not start; fix mcp/src and re-run')
   ctx.log.ok('mcp/dist built')
 
+  // omp-auth/ is the coding-account auth bridge: a self-contained bundle the
+  // Rust api spawns to run Oh My Pi's own OAuth flows and token refreshes.
+  // NON-FATAL, unlike the toolkit above — coding accounts are opt-in behind an
+  // admin toggle, so a setup that cannot build this still yields a working
+  // instance; only that one feature reports the bridge as missing.
+  ctx.log.say('Coding-account auth bridge (omp-auth/)')
+  if (!existsSync(join(root, 'omp-auth/node_modules'))) {
+    const code = await ctx.run('bun', ['install'], { cwd: join(root, 'omp-auth') })
+    if (code !== 0) ctx.log.warn('bun install failed in omp-auth/ — coding accounts will be unavailable')
+  }
+  const bridge = await ctx.run('bun', ['run', 'build'], { cwd: join(root, 'omp-auth') })
+  if (bridge !== 0) ctx.log.warn('omp-auth/ failed to build — coding accounts will be unavailable')
+  else ctx.log.ok('omp-auth/dist built')
+
   ctx.log.say('Git convenience')
   // `git wt <name>` → an isolated dev worktree (own DB seeded from main).
   // Using this instead of a plain `git worktree add` keeps a second app off

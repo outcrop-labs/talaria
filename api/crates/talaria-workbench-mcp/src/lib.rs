@@ -53,7 +53,7 @@ use talaria_tasks::{
 pub mod devenv;
 pub mod teardown;
 
-use talaria_workbench_harnesses::{MCP_CONFIG_FILE, OMP, fill_cmd, omp_roles};
+use talaria_workbench_harnesses::{MCP_CONFIG_FILE, OMP, fill_cmd_arg, omp_roles, role_env_prefix};
 use teardown::{Teardown, spawn_teardown};
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
@@ -564,6 +564,28 @@ async fn call_tool(
                 Ok(r) => r.wire(),
                 Err(e) => return thrown(e),
             };
+            // A coding account changes which models a job actually runs on, so
+            // the self-diagnosis has to say so — otherwise `models` above
+            // reads as the whole truth and an agent debugging a model it never
+            // asked for has nothing to look at.
+            checks.push(
+                match talaria_coding_accounts::resolve(pg, &agent.id, None)
+                    .await
+                    .unwrap_or(None)
+                {
+                    Some(plan) if plan.is_gateway() => {
+                        "coding account: none in use — your harness runs on the org's Talaria gateway"
+                            .to_string()
+                    }
+                    Some(plan) => format!(
+                        "coding account: {} ({}) — your harness runs on this subscription, not the gateway; a ticket can pin a different one",
+                        plan.provider,
+                        plan.email.as_deref().unwrap_or("signed in")
+                    ),
+                    None => "coding account: none — your harness runs on the org's Talaria gateway"
+                        .to_string(),
+                },
+            );
             CallOutcome::Ok(json!({
                 "checks": checks,
                 "harness": {
@@ -935,9 +957,44 @@ async fn call_tool(
                 Ok(r) => r,
                 Err(e) => return thrown(e),
             };
-            let model = roles.default.clone();
             let session_dir = format!("/opt/data/workbench/sessions/{}", job.id);
-            let fill = |tmpl: &str| fill_cmd(tmpl, model.as_deref(), &session_dir);
+            // A coding account overrides those roles for THIS job: the
+            // ticket's pinned plan if it has one, else the agent's default
+            // plan. Resolved per job rather than read off the container env
+            // because only this call knows the ticket — and because the
+            // container's env is only ever as fresh as the last render, while
+            // these lines are built now.
+            let plan = talaria_coding_accounts::resolve(pg, &agent.id, task_id.as_deref())
+                .await
+                .unwrap_or(None);
+            let (model, model_arg, env_prefix) = match &plan {
+                Some(p) => (
+                    p.model_for("default").map(str::to_string),
+                    p.model_arg("default"),
+                    role_env_prefix(
+                        &p.roles
+                            .iter()
+                            .filter_map(|(role, _)| {
+                                p.model_arg(role).map(|arg| (role.clone(), arg))
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+                None => (
+                    roles.default.clone(),
+                    roles
+                        .default
+                        .as_deref()
+                        .map(talaria_workbench_harnesses::model_arg),
+                    String::new(),
+                ),
+            };
+            let fill = |tmpl: &str| {
+                format!(
+                    "{env_prefix}{}",
+                    fill_cmd_arg(tmpl, model_arg.as_deref(), &session_dir)
+                )
+            };
             // One entry, in the shape every start_job has answered with, so a
             // driver that reads `harnesses[0]` keeps working.
             let harnesses = vec![json!({
@@ -988,6 +1045,23 @@ async fn call_tool(
                 model.map(Value::String).unwrap_or(Value::Null),
             );
             value.insert("models".into(), roles.wire());
+            // Which plan this job's harness runs on. Absent when it is the
+            // org's gateway with no coding account involved — the shape every
+            // start_job has always answered with.
+            if let Some(p) = &plan {
+                value.insert(
+                    "codingAccount".into(),
+                    json!({
+                        "provider": p.provider,
+                        "email": p.email,
+                        "source": p.source,
+                        "gateway": p.is_gateway(),
+                        "models": p.roles.iter().map(|(role, m)| json!({
+                            "role": role, "model": m,
+                        })).collect::<Vec<_>>(),
+                    }),
+                );
+            }
             value.insert("harnesses".into(), Value::Array(harnesses));
             value.insert("rules".into(), json!(rules));
             if !gated {

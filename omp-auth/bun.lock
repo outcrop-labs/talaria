@@ -1,0 +1,52 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "talaria-omp-auth",
+      "dependencies": {
+        "@oh-my-pi/pi-ai": "18.4.8",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.2.0",
+        "@types/node": "^22.15.0",
+        "typescript": "^5.8.0",
+      },
+    },
+  },
+  "packages": {
+    "@oh-my-pi/omptype": ["@oh-my-pi/omptype@18.4.8", "", {}, "sha512-YRqUJFD475hWa5mQZUl9pXFKbkmeswE+KXrrS2DjUq+9aBltKZyD9Nvb62AU0RxJyZPKXfgTEWUWoryPShhsgg=="],
+
+    "@oh-my-pi/pi-ai": ["@oh-my-pi/pi-ai@18.4.8", "", { "dependencies": { "@oh-my-pi/omptype": "18.4.8", "@oh-my-pi/pi-catalog": "18.4.8", "@oh-my-pi/pi-natives": "18.4.8", "@oh-my-pi/pi-utils": "18.4.8", "@oh-my-pi/pi-wire": "18.4.8" } }, "sha512-PN/8ZiJUo93MJ0aU2pu1HzSCjD5nhEmCq9gMi1v5FHW7Z95pKGKdEyndo7NPxR+MC8fhtQuu7Wlm8QWpr/Wcgw=="],
+
+    "@oh-my-pi/pi-catalog": ["@oh-my-pi/pi-catalog@18.4.8", "", { "dependencies": { "@oh-my-pi/omptype": "18.4.8", "@oh-my-pi/pi-utils": "18.4.8" } }, "sha512-QdL+GA4CpSO2Ocx6Ikg/YrxAGJtRcyFKUZ3oPXjh3UOt/MMjzRJF3aFnsgV3Z7xp9NOw2EV9ur68Kwpw86trQA=="],
+
+    "@oh-my-pi/pi-natives": ["@oh-my-pi/pi-natives@18.4.8", "", { "optionalDependencies": { "@oh-my-pi/pi-natives-darwin-arm64": "18.4.8", "@oh-my-pi/pi-natives-darwin-x64": "18.4.8", "@oh-my-pi/pi-natives-linux-arm64": "18.4.8", "@oh-my-pi/pi-natives-linux-x64": "18.4.8", "@oh-my-pi/pi-natives-win32-arm64": "18.4.8", "@oh-my-pi/pi-natives-win32-x64": "18.4.8" } }, "sha512-vsvulBMEKJCnWcBXv/bTF5ML3f2N9rikpZjcY2jjBCrIjcjwb7EhuBt7Gj5t8hOL6T/yFkV7dVkRu79T+nxaaw=="],
+
+    "@oh-my-pi/pi-natives-darwin-arm64": ["@oh-my-pi/pi-natives-darwin-arm64@18.4.8", "", { "os": "darwin", "cpu": "arm64" }, "sha512-xDPjrsQiTH3IoZtvBv+ZQnHMS+wnSypP4jA9C+4dEKWKVxYhK1eYDtXOL68bwF35i6yavMAqKOR3ldj5SlKpuw=="],
+
+    "@oh-my-pi/pi-natives-darwin-x64": ["@oh-my-pi/pi-natives-darwin-x64@18.4.8", "", { "os": "darwin", "cpu": "x64" }, "sha512-6Rfaf474LP0SEMbC2+FXobs4rHh5iUjDrvVktuw8qdf1xzRhJelGun9sNNk9EP1LhX/Tt1lcaXFTENZFFmgPLg=="],
+
+    "@oh-my-pi/pi-natives-linux-arm64": ["@oh-my-pi/pi-natives-linux-arm64@18.4.8", "", { "os": "linux", "cpu": "arm64" }, "sha512-Y97/TPG6TtnJQbDZOKEr97ffrLMIZRODJTO+X3NwaZse4TzBYK0LJQNJi9w5ToUS3oGSsq2/CCHNCcIbPBYzXQ=="],
+
+    "@oh-my-pi/pi-natives-linux-x64": ["@oh-my-pi/pi-natives-linux-x64@18.4.8", "", { "os": "linux", "cpu": "x64" }, "sha512-l+fel7Lu982nIcO1UUIbArRr04VNOffepOBtQ7SKeEDjZfCG8cacXU3jO9WIxibDgImNTOTaNvLGNKcxam6FuA=="],
+
+    "@oh-my-pi/pi-natives-win32-arm64": ["@oh-my-pi/pi-natives-win32-arm64@18.4.8", "", { "os": "win32", "cpu": "arm64" }, "sha512-BOhIQ0BeUW2Wn/63YGaJTB2lBz6Flr5JLyusxqHB2sYp80xyB24fC2N5XiIBoS0K30pYKJC8pJERAgnvdzSKww=="],
+
+    "@oh-my-pi/pi-natives-win32-x64": ["@oh-my-pi/pi-natives-win32-x64@18.4.8", "", { "os": "win32", "cpu": "x64" }, "sha512-ZUOIRji3rBcylWn23FrQrPJOiatCKnMiL/hHeGzxIXh++sxxqSMursyZxQ40SdC4AB5oZjoDoFKLPl5/EGdXrg=="],
+
+    "@oh-my-pi/pi-utils": ["@oh-my-pi/pi-utils@18.4.8", "", { "dependencies": { "@oh-my-pi/pi-natives": "18.4.8" } }, "sha512-Y+wNp884l4KBpX4r8lKck1rOOx2PCVIHSIJhS9yYu3FZCS7h4CKJpILXSSDeCqDc9sBqiUjMKP2fr6weQJNUXA=="],
+
+    "@oh-my-pi/pi-wire": ["@oh-my-pi/pi-wire@18.4.8", "", {}, "sha512-f4IXVSwDPle91zV04NOzzaqvOMz/DaxKpXJs7L9ScVQEazDQY3pQeOC5qJneTCZARb7u29ZT6EJPXHKeq31/Gw=="],
+
+    "@types/bun": ["@types/bun@1.4.2", "", { "dependencies": { "bun-types": "1.4.2" } }, "sha512-GimotNn7+ZV0uVArItBbriZsR1oNf0+WTzPkdcFrzShI7k2norL0uzEaJT8T33dWr7O/c9ZDuAFQrctKCi72oQ=="],
+
+    "@types/node": ["@types/node@22.20.4", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-zJRE40jpHtKqE/C4fgHrAKQLJuSpzEnP9ff9Y7YtoR3Wd2pwqzlekDeEuUQXjRd+QCYnVnNwuJYmhdk9XV8gvA=="],
+
+    "bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@6.21.0", "", {}, "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ=="],
+  }
+}

@@ -6,13 +6,13 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-285 routes across 23 groups.
+298 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 13 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
-| [`admin`](./admin.md) | Instance administration (admin session required). | 24 |
+| [`admin`](./admin.md) | Instance administration (admin session required). | 25 |
 | [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 22 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
@@ -32,7 +32,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 12 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 6 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 18 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):
