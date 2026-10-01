@@ -47,8 +47,7 @@
   import { ADMIN_TABS, useAdminPermissions, useAdminUsers, type AdminTab } from './admin'
 
   // The admin console: people, their roles, and which agents each may use.
-  // The title lives in the top strip (lib/view-title); the body opens on its
-  // tabs.
+  // The claim is unread (lib/view-title); the body opens on its tabs.
   claimViewTitle('Admin')
   const qc = useQueryClient()
   const session = useSession()

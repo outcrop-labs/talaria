@@ -6,7 +6,7 @@
   import { useMarkNotificationsRead, useNotifications } from '@/lib/notifications'
   import { navigateHref } from '@/router'
 
-  // The strip's bell: the notification inbox as a dropdown beside the account
+  // The dock's bell: the notification inbox as a dropdown beside the account
   // chip. Clicking a row is "take me there AND clear it" in one motion — the
   // mark-read that this bell finally wires to a real click is what lets an
   // unread row ever leave the count, the brief, and (once push lands) the OS.
@@ -42,9 +42,9 @@
       type="button"
       aria-expanded={open}
       aria-label="Notifications"
-      class="relative flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors duration-[120ms] dither-fill"
+      class="relative flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
     >
-      <Bell size={15} class="shrink-0" />
+      <Bell size={16} strokeWidth={1.5} class="shrink-0" />
       {#if unread === null || unread > 0}
         <span
           title={unreadTitle}
@@ -67,7 +67,7 @@
       <div class="px-3 py-6 text-center text-sm text-muted">All caught up.</div>
     {:else}
       <!-- max-h + overflow: the dropdown lists the last 50; a list that grew
-           the page (or the strip) instead of scrolling would be a popover
+           the page (or the dock) instead of scrolling would be a popover
            engine bug wearing a notifications badge. -->
       <div class="max-h-80 overflow-y-auto">
         {#each rows as n (n.id)}

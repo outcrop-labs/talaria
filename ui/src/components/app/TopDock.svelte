@@ -42,6 +42,10 @@
   import RailTooltip from './RailTooltip.svelte'
   import DesktopSwitcher from './DesktopSwitcher.svelte'
   import SidebarAssistant from './SidebarAssistant.svelte'
+  import BoardsSearch from './BoardsSearch.svelte'
+  import NotificationBell from './NotificationBell.svelte'
+  import UserMenu from './UserMenu.svelte'
+  import { isUnder } from '@/lib/route-tabs'
   import { badgeTitle, useNavBadges } from '@/lib/nav-badges.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { useDeniedViews } from '@/lib/session'
@@ -49,13 +53,23 @@
   import { cn } from '@/lib/cn'
   import { route } from '@/router'
 
-  // THE DOCK, the shell's primary nav: a full-width band of icon tiles above
-  // everything, replacing the rail as the place a person moves through views.
-  // Same tiles as the rail's collapsed mode — h-9 w-9, data-status=active,
-  // RailTooltip, the badge doctrine — laid out horizontally instead of in a
-  // column. The manage section does not get tiles: it lives behind the gear,
-  // in the ManageSidebar, exactly where the rail kept it last.
-  let { user }: { user: SessionUser } = $props()
+  // THE DOCK, the shell's primary nav AND THE SHELL'S ONLY CHROME ROW: a
+  // full-width band of icon tiles above everything, replacing the rail as the
+  // place a person moves through views. Same tiles as the rail's collapsed
+  // mode — h-9 w-9, data-status=active, RailTooltip, the badge doctrine —
+  // laid out horizontally instead of in a column. The manage section does not
+  // get tiles: it lives behind the gear, in the ManageSidebar, exactly where
+  // the rail kept it last.
+  //
+  // THE TOP STRIP IS GONE, and its three controls live here. The dock era
+  // shipped with a second full-width band under the dock holding nothing but
+  // search, the bell and the account chip — a 37px rule across every view,
+  // carrying one word of breadcrumb at most. Two stacked chrome bands for one
+  // row of controls is the thing the dock was supposed to end, so the
+  // controls moved up into the band that was already there and the strip was
+  // deleted. The band is the shell's top edge, and the view below it owns
+  // every remaining pixel.
+  let { user, onLogout }: { user: SessionUser; onLogout: () => void } = $props()
 
   const denied = useDeniedViews()
   const badges = useNavBadges(() => route.pathname)
@@ -68,6 +82,19 @@
   const appsQuery = useEnabledApps()
   const appsList = listQuery(appsQuery, { title: 'App links unavailable', variant: 'inline' })
   const appsBroken = $derived(appsList.failed || appsList.stale)
+
+  // The boards view carries its own sidebar, and the board's toolbar holds
+  // its own search, so the global box stays out of the way there — the rule
+  // the strip set, kept verbatim now that the box lives in the dock.
+  const onBoardsHere = $derived(isUnder(route.pathname, '/boards'))
+  // Settings and Admin are the two views with NO tile anywhere in the dock:
+  // they live in the account menu, because they are about the person and the
+  // instance rather than the work. The strip used to name them with a
+  // "System" breadcrumb, and that word was the only thing on either screen
+  // saying where you were (neither view renders a title). So the chip that
+  // owns them lights for them, which is the dock's own grammar — the gear
+  // lights for the manage half the same way.
+  const onSystemHere = $derived(isUnder(route.pathname, '/settings') || isUnder(route.pathname, '/admin'))
 
   const { row, manage: manageSection } = $derived(dockSections(user, appsList.rows, denied.current))
   const activePath = $derived(
@@ -82,7 +109,8 @@
 <!-- h-14 (56px): tile h-9 plus breathing room — the same band weight as the
      rail's 64px column, read horizontally. The dock is shell chrome, not a
      stage header, so it deliberately does not join the h-12 stage-header
-     line (UI-CONVENTIONS): the strip below owns that line.
+     line (UI-CONVENTIONS); with the strip deleted it is the ONLY line above
+     the view, and the view's own header is the next one down.
      `shrink-0` keeps it out of the shell's min-h-0 flex chain; the row of
      tiles scrolls in x only, never wrapping and never pushing the right
      cluster off the band. -->
@@ -171,13 +199,16 @@
     {/if}
   </div>
 
-  <!-- The right cluster: everything personal or instance-wide that used to
-       live in the rail's footer. The assistant launcher keeps its collapsed
-       form (the drawer itself is a peer of the dock in AppLayout, spanning
-       below it, exactly the role the rail played); the apps-broken retry
-       keeps its tile here, matching the rail's footer placement. -->
+  <!-- THE RIGHT CLUSTER, read right to left: who you are, what is waiting
+       for you, what you are looking for — then the workspace affordances
+       (the assistant, and the apps-read failure when there is one). The
+       divider is the seam the strip used to be: everything left of it is
+       about the workspace, everything right of it is about the person.
+       The assistant launcher keeps its collapsed form (the drawer itself is
+       a peer of the dock in AppLayout, spanning below it, exactly the role
+       the rail played); the apps-broken retry keeps its tile here, matching
+       the rail's footer placement. -->
   <div class="flex shrink-0 items-center gap-2">
-    <SidebarAssistant collapsed />
     {#if appsBroken}
       <RailTooltip label="App links unavailable; retry">
         <button
@@ -190,5 +221,14 @@
         </button>
       </RailTooltip>
     {/if}
+    <SidebarAssistant collapsed />
+    <div class="my-2 h-6 w-px shrink-0 bg-line"></div>
+    {#if !onBoardsHere}
+      <BoardsSearch />
+    {/if}
+    <!-- The bell before the account chip: what is waiting for you, then who
+         you are. -->
+    <NotificationBell />
+    <UserMenu {user} {onLogout} active={onSystemHere} />
   </div>
 </nav>
