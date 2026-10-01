@@ -1449,8 +1449,7 @@ async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> 
     let why = text
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("npm notice"))
-        .next_back()
+        .rfind(|l| !l.is_empty() && !l.starts_with("npm notice"))
         .unwrap_or("no output");
     Err(format!("`{}` said: {why}", OMP.probe))
 }
