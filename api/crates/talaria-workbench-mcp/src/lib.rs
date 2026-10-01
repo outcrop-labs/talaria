@@ -39,6 +39,7 @@ use talaria_approvals::{ApprovalDeps, announce_approval};
 use talaria_artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
 use talaria_boards::board_allows_agent;
 use talaria_body::truncate_utf16;
+use talaria_fleet_docker::{docker_exec, managed_container};
 use talaria_fleet_layout::describe_agent;
 use talaria_github as gh;
 use talaria_github::github_status;
@@ -53,7 +54,10 @@ use talaria_tasks::{
 pub mod devenv;
 pub mod teardown;
 
-use talaria_workbench_harnesses::{MCP_CONFIG_FILE, OMP, fill_cmd_arg, omp_roles, role_env_prefix};
+use talaria_workbench_harnesses::{
+    MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE, SANDBOX_SHAPE_FILE, fill_cmd_arg, model_arg, omp_roles,
+    role_env_prefix,
+};
 use teardown::{Teardown, spawn_teardown};
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
@@ -264,7 +268,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "job_status",
-            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
+            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir — and for a STARTED job the harness invocation lines (harnesses[0].jsonRun / continueJsonRun), sessionDir and models, so a job you did not start this turn is still drivable. This is where you get the command after a resume; do not go looking for a binary on disk. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
         }),
         json!({
@@ -539,10 +543,33 @@ async fn call_tool(
             let repos = gh::granted_repos(pg, &agent.id).await;
             let mut checks: Vec<String> = Vec::new();
             checks.push("developer agent: on, dev sandbox attached".into());
-            checks.push(format!(
-                "harness: {} ({}), auth through the Talaria gateway, no key needed on your side",
-                OMP.label, OMP.slug
-            ));
+            // RUN the probe, do not print it. This answer used to say
+            // "harness: Oh My Pi, auth through the Talaria gateway" whatever
+            // the truth was, and tell the agent to run the probe itself — so
+            // a harness that could not start read as healthy. On the live
+            // instance omp exited 127 for weeks behind that sentence, because
+            // `bun` on PATH is a mise shim with no version outside a repo
+            // that pins bun, and every Rust job pins rust and not bun. The
+            // agent saw a green doctor, found no runnable binary, and built
+            // the ticket by hand. A self-diagnosis that cannot fail is not one.
+            let probe = harness_probe(pg, &agent.department).await;
+            let writable = harness_writable(pg, &agent.department).await;
+            checks.push(match &probe {
+                Ok(version) => format!(
+                    "harness: {} ({}) runs — {version}, auth through the Talaria gateway, no key needed on your side",
+                    OMP.label, OMP.slug
+                ),
+                Err(why) => format!(
+                    "harness: {} ({}) DOES NOT RUN — {why}. Report this with report_problem; do not hand-code the ticket instead.",
+                    OMP.label, OMP.slug
+                ),
+            });
+            if let Err(why) = &writable {
+                checks.push(format!("harness state dir: NOT WRITABLE — {why}"));
+            }
+            if let Some(why) = sandbox_stale(pg, &agent.department).await {
+                checks.push(format!("sandbox: STALE — {why}"));
+            }
             checks.push(match gh_status.configured {
                 true => format!(
                     "github: connected{}",
@@ -597,7 +624,13 @@ async fn call_tool(
                 "models": models,
                 "workspaceRoot": "/opt/data/workbench/jobs/<jobId>",
                 "sessionHistory": "/opt/data/workbench/harness (persistent, shared with your department)",
-                "next": format!("Run the probe in your shell to verify the harness binary: {}", OMP.probe),
+                // The probe already ran, above. Telling the agent to run it
+                // itself is how its failure stayed invisible.
+                "probeResult": match &probe { Ok(v) => json!({ "ok": true, "version": v }), Err(e) => json!({ "ok": false, "error": e }) },
+                "next": match &probe {
+                    Ok(_) => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
+                    Err(e) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
+                },
             }))
         }
 
@@ -953,59 +986,16 @@ async fn call_tool(
             // default / smol / slow / plan (rendered into the sandbox), and
             // the invocation lines carry the default so they run as written.
             // Effort decided planning and the RAM reserve above, not the model.
-            let roles = match omp_roles(pg).await {
-                Ok(r) => r,
+            let HarnessAnswer {
+                harnesses,
+                session_dir,
+                model,
+                models,
+                coding,
+            } = match harness_answer(pg, &job.id, &agent.id, task_id.as_deref()).await {
+                Ok(a) => a,
                 Err(e) => return thrown(e),
             };
-            let session_dir = format!("/opt/data/workbench/sessions/{}", job.id);
-            // A coding account overrides those roles for THIS job: the
-            // ticket's pinned plan if it has one, else the agent's default
-            // plan. Resolved per job rather than read off the container env
-            // because only this call knows the ticket — and because the
-            // container's env is only ever as fresh as the last render, while
-            // these lines are built now.
-            let plan = talaria_coding_accounts::resolve(pg, &agent.id, task_id.as_deref())
-                .await
-                .unwrap_or(None);
-            let (model, model_arg, env_prefix) = match &plan {
-                Some(p) => (
-                    p.model_for("default").map(str::to_string),
-                    p.model_arg("default"),
-                    role_env_prefix(
-                        &p.roles
-                            .iter()
-                            .filter_map(|(role, _)| {
-                                p.model_arg(role).map(|arg| (role.clone(), arg))
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                ),
-                None => (
-                    roles.default.clone(),
-                    roles
-                        .default
-                        .as_deref()
-                        .map(talaria_workbench_harnesses::model_arg),
-                    String::new(),
-                ),
-            };
-            let fill = |tmpl: &str| {
-                format!(
-                    "{env_prefix}{}",
-                    fill_cmd_arg(tmpl, model_arg.as_deref(), &session_dir)
-                )
-            };
-            // One entry, in the shape every start_job has answered with, so a
-            // driver that reads `harnesses[0]` keeps working.
-            let harnesses = vec![json!({
-                "harness": OMP.slug,
-                "chosen": true,
-                "run": fill(OMP.invoke),
-                "jsonRun": fill(OMP.json_invoke),
-                "continueRun": fill(OMP.continue_invoke),
-                "continueJsonRun": fill(OMP.continue_json_invoke),
-                "guide": OMP.guide,
-            })];
             // One WORKSPACE per job — concurrent jobs never collide — under
             // the persistent volume, so clones and harness sessions survive
             // restarts.
@@ -1044,23 +1034,12 @@ async fn call_tool(
                 "model".into(),
                 model.map(Value::String).unwrap_or(Value::Null),
             );
-            value.insert("models".into(), roles.wire());
-            // Which plan this job's harness runs on. Absent when it is the
-            // org's gateway with no coding account involved — the shape every
+            value.insert("models".into(), models);
+            // Which plan this job's harness runs on. Absent when nothing is
+            // configured and it is the org's gateway roles — the shape every
             // start_job has always answered with.
-            if let Some(p) = &plan {
-                value.insert(
-                    "codingAccount".into(),
-                    json!({
-                        "provider": p.provider,
-                        "email": p.email,
-                        "source": p.source,
-                        "gateway": p.is_gateway(),
-                        "models": p.roles.iter().map(|(role, m)| json!({
-                            "role": role, "model": m,
-                        })).collect::<Vec<_>>(),
-                    }),
-                );
+            if let Some(plan) = coding {
+                value.insert("codingAccount".into(), plan);
             }
             value.insert("harnesses".into(), Value::Array(harnesses));
             value.insert("rules".into(), json!(rules));
@@ -1119,6 +1098,28 @@ async fn call_tool(
                         "workdir".into(),
                         json!(format!("/opt/data/workbench/jobs/{}", job.id)),
                     );
+                    // The commands, every poll. A started job is one an agent
+                    // is about to drive, and until now this answer told it
+                    // where to work without telling it what to run.
+                    // The job's own ticket, so a RESUMED job's lines carry the
+                    // same pinned plan the first turn got. Reading the agent's
+                    // default here instead would silently move a pinned
+                    // ticket's work onto another plan on its second turn.
+                    match harness_answer(pg, &job.id, &agent.id, job.task_id.as_deref()).await {
+                        Ok(a) => {
+                            obj.insert("harnesses".into(), Value::Array(a.harnesses));
+                            obj.insert("sessionDir".into(), json!(a.session_dir));
+                            obj.insert(
+                                "model".into(),
+                                a.model.map(Value::String).unwrap_or(Value::Null),
+                            );
+                            obj.insert("models".into(), a.models);
+                            if let Some(plan) = a.coding {
+                                obj.insert("codingAccount".into(), plan);
+                            }
+                        }
+                        Err(e) => return thrown(e),
+                    }
                 }
                 if job.status == "queued" {
                     let position = talaria_workbench_queue::queue_position(pg, &job.id)
@@ -1448,6 +1449,240 @@ async fn call_tool(
 }
 
 /// `String(args.x ?? '')` — anything non-string reads as the empty string.
+/// Run the harness probe in the agent's own sandbox and say what happened.
+///
+/// As the AGENT USER in a LOGIN shell, because that is the only environment
+/// the answer is about: root has a bare PATH, and the agent's PATH is built
+/// by the profile block prepare_env writes. Probing as anybody else measures
+/// a machine nobody works on.
+///
+/// Ok(version) is the harness's own version line. Err is the reason it could
+/// not run, which is the whole point of the check.
+async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> {
+    let container = managed_container(pg, department).await;
+    // `runuser` keeps the login shell, so the probe sees the PATH the agent
+    // sees — mise shims included, which is where this has gone wrong before.
+    let script = format!("{} 2>&1", OMP.probe);
+    let out = docker_exec(
+        &container,
+        &["runuser", "-u", HARNESS_USER, "--", "sh", "-lc", &script],
+        PROBE_TIMEOUT_MS,
+    )
+    .await;
+    let (stdout, stderr) = match out {
+        Ok(pair) => pair,
+        Err(e) => return Err(format!("the probe could not be run in the sandbox: {e}")),
+    };
+    let text = format!("{stdout}\n{stderr}");
+    // omp answers `omp/<version>`; anything else is a failure to start, and
+    // the last non-empty line is the reason worth repeating.
+    if let Some(v) = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("omp/") || l.starts_with("pi/"))
+    {
+        return Ok(v.to_string());
+    }
+    let why = text
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty() && !l.starts_with("npm notice"))
+        .unwrap_or("no output");
+    Err(format!("`{}` said: {why}", OMP.probe))
+}
+
+/// Can the agent actually WRITE where its harness keeps state?
+///
+/// A render change only reaches a container when the agent is re-rendered
+/// and ROLLED, and nothing forces that or notices it has not happened. The
+/// cont-init hook that hands these directories to the runtime user has been
+/// in the render — with a test — while the live fleet ran containers from
+/// before it existed, whose `/etc/cont-init.d` never had it. Docker had
+/// created the bind-mount parents as root:root 755, so omp could read its
+/// mounted config and not write a byte of session state beside it.
+///
+/// Checked separately from the probe because the probe can pass while this
+/// fails: `--version` writes nothing.
+async fn harness_writable(pg: &PgPool, department: &str) -> Result<(), String> {
+    let container = managed_container(pg, department).await;
+    // Positional arg, and a probe file that names itself.
+    let script = "d=\"$1\"; [ -d \"$d\" ] || { echo \"missing: $d\"; exit 1; }; \
+                  t=\"$d/.talaria-write-probe\"; \
+                  if touch \"$t\" 2>/dev/null; then rm -f \"$t\"; echo OK; \
+                  else echo \"not writable by $(id -un): $d ($(stat -c %U:%a \"$d\"))\"; fi";
+    let out = docker_exec(
+        &container,
+        &[
+            "runuser",
+            "-u",
+            HARNESS_USER,
+            "--",
+            "sh",
+            "-c",
+            script,
+            "sh",
+            PI_STATE_DIR,
+        ],
+        30_000,
+    )
+    .await;
+    let (stdout, stderr) =
+        out.map_err(|e| format!("could not check the harness state dir: {e}"))?;
+    let text = format!("{stdout}{stderr}");
+    if text.contains("OK") {
+        return Ok(());
+    }
+    Err(format!(
+        "{} — roll the agent so the sandbox picks up the current render",
+        text.trim()
+    ))
+}
+
+/// Is this container the one the CURRENT render builds?
+///
+/// A render change reaches a container only when the agent is re-rendered
+/// and rolled. Nothing forces that, so a merged fix can be absent from every
+/// running agent with no symptom but the thing it was meant to fix. The
+/// render leaves its shape token in the config dir; a container carrying a
+/// different one — or none, because it predates the token — is stale.
+async fn sandbox_stale(pg: &PgPool, department: &str) -> Option<String> {
+    let container = managed_container(pg, department).await;
+    let (stdout, _) = docker_exec(
+        &container,
+        &[
+            "sh",
+            "-c",
+            "cat \"$1\" 2>/dev/null",
+            "sh",
+            SANDBOX_SHAPE_FILE,
+        ],
+        20_000,
+    )
+    .await
+    .ok()?;
+    let found = stdout.trim();
+    if found == SANDBOX_SHAPE {
+        return None;
+    }
+    Some(format!(
+        "this sandbox was built by an older render ({}) and this Talaria expects {SANDBOX_SHAPE} — roll the agent to pick up the current mounts",
+        if found.is_empty() {
+            "no shape token"
+        } else {
+            found
+        },
+    ))
+}
+
+/// Where omp keeps its agent state, per `PI_CODING_AGENT_DIR`.
+const PI_STATE_DIR: &str = "/opt/data/workbench/harness/pi";
+
+/// The unprivileged user every sandbox runs its agent as.
+const HARNESS_USER: &str = "hermes";
+
+/// Long enough for a cold `npx` fetch on a slow link, short enough that
+/// doctor still answers.
+const PROBE_TIMEOUT_MS: u64 = 4 * 60_000;
+
+/// What a driver needs to actually run the pair programmer: the filled
+/// invocation lines and the session dir they continue against.
+struct HarnessAnswer {
+    harnesses: Vec<Value>,
+    session_dir: String,
+    model: Option<String>,
+    models: Value,
+    /// The coding account this job's harness runs on, for the answer — absent
+    /// when nothing is configured and the org's gateway roles stand.
+    coding: Option<Value>,
+}
+
+/// Built in ONE place because two answers need it and they drifted.
+///
+/// `start_job` returned the invocation lines; `job_status` returned a workdir
+/// and a clone URL and no way to run anything. A job is started once and
+/// resumed on every later turn, so from the second turn onward the agent held
+/// a guide saying "First turn: jsonRun" and no definition of `jsonRun`
+/// anywhere it could still reach — the only copy was in a response from a
+/// session that had ended.
+///
+/// On the 2026-09-30 dogfood run that is exactly what happened: the agent
+/// called doctor and job_status, never start_job, ran
+/// `find /opt/data/workbench/harness -name '*oh-my-pi*'`, read the oh-my-pi
+/// skill looking for a command, found none, and built the ticket itself with
+/// cargo. There was no agent-to-harness transcript to show because the
+/// harness was never invoked.
+///
+/// A CODING ACCOUNT overrides the org's roles for this job: the ticket's
+/// pinned plan if it has one, else the agent's default plan. Resolved here
+/// rather than read off the container env for two reasons — only the caller
+/// knows the ticket, and the container's env is only ever as fresh as the last
+/// render, while these lines are built now. The roles that ride env rather
+/// than `--model` go on the line as inline assignments, so a pinned plan takes
+/// effect without rolling the agent.
+async fn harness_answer(
+    pg: &PgPool,
+    job_id: &str,
+    agent_id: &str,
+    task_id: Option<&str>,
+) -> Result<HarnessAnswer, String> {
+    let roles = omp_roles(pg).await?;
+    let plan = talaria_coding_accounts::resolve(pg, agent_id, task_id)
+        .await
+        .unwrap_or(None);
+    let (model, arg, env_prefix) = match &plan {
+        Some(p) => (
+            p.model_for("default").map(str::to_string),
+            p.model_arg("default"),
+            role_env_prefix(
+                &p.roles
+                    .iter()
+                    .filter_map(|(role, _)| p.model_arg(role).map(|a| (role.clone(), a)))
+                    .collect::<Vec<_>>(),
+            ),
+        ),
+        None => (
+            roles.default.clone(),
+            roles.default.as_deref().map(model_arg),
+            String::new(),
+        ),
+    };
+    let session_dir = format!("/opt/data/workbench/sessions/{job_id}");
+    let fill = |tmpl: &str| {
+        format!(
+            "{env_prefix}{}",
+            fill_cmd_arg(tmpl, arg.as_deref(), &session_dir)
+        )
+    };
+    // One entry, in the shape every start_job has answered with, so a driver
+    // that reads `harnesses[0]` keeps working.
+    let harnesses = vec![json!({
+        "harness": OMP.slug,
+        "chosen": true,
+        "run": fill(OMP.invoke),
+        "jsonRun": fill(OMP.json_invoke),
+        "continueRun": fill(OMP.continue_invoke),
+        "continueJsonRun": fill(OMP.continue_json_invoke),
+        "guide": OMP.guide,
+    })];
+    Ok(HarnessAnswer {
+        harnesses,
+        models: roles.wire(),
+        session_dir,
+        model,
+        coding: plan.map(|p| {
+            json!({
+                "provider": p.provider,
+                "email": p.email,
+                "source": p.source,
+                "gateway": p.is_gateway(),
+                "models": p.roles.iter().map(|(role, m)| json!({
+                    "role": role, "model": m,
+                })).collect::<Vec<_>>(),
+            })
+        }),
+    })
+}
+
 fn arg_str(args: &Map<String, Value>, key: &str) -> String {
     args.get(key)
         .and_then(Value::as_str)
@@ -1677,6 +1912,47 @@ pub async fn dispatch_workbench_mcp(
                 CallOutcome::Fail(error) => ToolOutcome::Fail(error),
                 CallOutcome::Throw(message) => ToolOutcome::Throw(message),
             };
+            // SERVER-SIDE, always. `log_wtool_line` below reaches the
+            // agent's own watch stream and only while a work session is
+            // live — so a doctor or a start_job that failed outside a run
+            // left no trace anywhere at all. The workbench verbs logged
+            // nothing to the server for their whole life, which is why
+            // diagnosing a harness that could not start took ssh and
+            // hand-run probes instead of `docker logs`.
+            //
+            // The job id and repo ride along because "start_job failed" with
+            // no subject is a line you cannot act on. Arguments do not: a
+            // plan is long and a clone URL is a credential.
+            let who = subject_model(&agent);
+            let ms = started.elapsed().as_millis();
+            let about = [
+                args.get("jobId")
+                    .and_then(Value::as_str)
+                    .map(|v| format!(" job={v}")),
+                args.get("repo")
+                    .and_then(Value::as_str)
+                    .map(|v| format!(" repo={v}")),
+                args.get("taskId")
+                    .and_then(Value::as_str)
+                    .map(|v| format!(" task={v}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<String>();
+            match &outcome {
+                ToolOutcome::Ok(_) => {
+                    tracing::info!("[workbench] {name} ok — {who}{about} ({ms}ms)")
+                }
+                // Refused is the agent being told no (no grant, cap reached,
+                // plan missing). Expected, but the reason is worth having.
+                ToolOutcome::Fail(why) => {
+                    tracing::warn!("[workbench] {name} refused — {who}{about}: {why} ({ms}ms)")
+                }
+                // Thrown is Talaria failing, not the agent. Always an error.
+                ToolOutcome::Throw(why) => {
+                    tracing::error!("[workbench] {name} FAILED — {who}{about}: {why} ({ms}ms)")
+                }
+            }
             log_wtool_line(&deps, &agent, &name, &args, &outcome, started.elapsed()).await;
             outcome
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send>>

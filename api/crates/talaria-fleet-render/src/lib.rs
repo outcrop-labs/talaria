@@ -1362,6 +1362,15 @@ pub async fn render_fleet(
             )
             .await
             .map_err(|e| e.to_string())?;
+            // The token that says which render built this sandbox. doctor
+            // compares it with the one this build expects, so a container
+            // that was never rolled stops being invisible.
+            tokio::fs::write(
+                wb_dir.join("render-shape"),
+                talaria_workbench_harnesses::SANDBOX_SHAPE,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             tokio::fs::write(
                 wb_dir.join("pi-settings.json"),
                 "{\n  \"defaultProjectTrust\": \"always\"\n}\n",
@@ -1407,7 +1416,7 @@ pub async fn render_fleet(
             // executable on the host; s6 runs `/etc/cont-init.d/*` as root
             // before the hermes drop, so the chown lands before any harness.
             let own_path = agent_dir.join("workbench-own");
-            tokio::fs::write(&own_path, HARNESS_OWN_SCRIPT)
+            tokio::fs::write(&own_path, &harness_own_script())
                 .await
                 .map_err(|e| format!("{}: {e}", own_path.display()))?;
             set_executable(&own_path).await;
@@ -1657,7 +1666,32 @@ own /opt/data/workbench/harness/playwright
 own /opt/data/workbench/harness/npm
 own /opt/data/workbench/jobs
 own /opt/data/workbench/sessions
+
+# The coding harness is a bun program — omp's own bin is `#!/usr/bin/env
+# bun`, whichever way it is installed; there is no standalone build. And
+# `bun` on the agent's PATH is a mise SHIM, which resolves only where a mise
+# config pins bun. A Rust job pins rust and mold, so the shim has no version
+# to run and omp dies before it starts, wherever the agent is standing.
+#
+# Pin bun GLOBALLY for the runtime user, so the shim always resolves. Writes
+# to the user's own mise config on the persistent volume, so it survives the
+# container and costs nothing after the first boot. Best effort: no mise yet
+# means prepare_env has not run on this volume, and it pins bun too.
+mise=/opt/data/.local/bin/mise
+if [ -x "$mise" ]; then
+  runuser -u hermes -- sh -lc "\"$mise\" use -g bun@__BUN__ >/dev/null 2>&1" || true
+fi
 "#;
+
+/// The bun the coding harness runs on. omp declares a floor of 1.3.14; this
+/// is a pin so every sandbox agrees, and it is the harness runtime rather
+/// than the repo's own toolchain (`mise.toml`), which is a separate choice.
+const HARNESS_BUN: &str = "1.4.0";
+
+/// `HARNESS_OWN_SCRIPT` with the bun pin filled in.
+fn harness_own_script() -> String {
+    HARNESS_OWN_SCRIPT.replace("__BUN__", HARNESS_BUN)
+}
 
 /// Policy files Oh My Pi reads inside [`PI_CODING_AGENT_DIR`].
 fn pi_config_mounts(wb_dir: &Path, fleet_skills: &Path) -> Vec<String> {
@@ -2552,7 +2586,8 @@ empty_list: []
             std::env::temp_dir().join(format!("talaria-render-tests-{}-own", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("workbench-own");
-        std::fs::write(&p, HARNESS_OWN_SCRIPT).unwrap();
+        // The FILLED script is what ships; the template never reaches a disk.
+        std::fs::write(&p, harness_own_script()).unwrap();
         let out = std::process::Command::new("sh")
             .arg("-n")
             .arg(&p)
@@ -2566,6 +2601,13 @@ empty_list: []
         assert!(HARNESS_OWN_SCRIPT.contains("chown hermes:hermes"));
         assert!(HARNESS_OWN_SCRIPT.contains(PI_CODING_AGENT_DIR));
         assert!(HARNESS_OWN_SCRIPT.contains("chmod 0775"));
+        // The harness runtime is pinned, and the placeholder never ships.
+        let filled = harness_own_script();
+        assert!(!filled.contains("__BUN__"), "the bun pin was not filled in");
+        assert!(filled.contains(&format!("bun@{HARNESS_BUN}")));
+        // Globally, because a shim with no version is the whole bug: a Rust
+        // job pins rust and mold, and omp is a bun program wherever it runs.
+        assert!(filled.contains("use -g bun@"));
         assert!(
             !HARNESS_OWN_SCRIPT.contains("chown -R"),
             "a recursive chown retakes the :ro policy files"

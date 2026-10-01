@@ -3,9 +3,11 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import { cn } from '@/lib/cn'
   import type { AgentBrainHealth, AgentContainers, AgentDef, LlmEndpoint } from '@/lib/fleet-defs'
+  import AgentDraftChip from './AgentDraftChip.svelte'
   import AgentBrainChip from './AgentBrainChip.svelte'
   import AgentControls from './AgentControls.svelte'
   import AgentStatusDot from './AgentStatusDot.svelte'
+  import { healthOf } from './agents.svelte'
 
   let {
     def: d,
@@ -33,8 +35,9 @@
         <span class="text-sm font-medium text-fg">{d.displayName}</span>
         {#if d.role}<span class="ml-2 text-xs text-muted">{d.role}</span>{/if}
       </button>
+      {#if healthOf(d, containers).health === 'draft'}<AgentDraftChip />{/if}
       <AgentBrainChip {brain} />
-      <AgentControls def={d} {running} onManage={openManage} {onDuplicate} />
+      <AgentControls def={d} {containers} {running} onManage={openManage} {onDuplicate} />
     </div>
   {/snippet}
 </AgentItem>

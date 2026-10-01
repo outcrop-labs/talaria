@@ -361,3 +361,27 @@ mod tests {
         assert!(OmpRoles::default().model_ids().is_empty());
     }
 }
+
+// ── Is the sandbox the one the current render builds? ───────────────────────
+
+/// The shape of the rendered sandbox, as a token the container carries.
+///
+/// A render change only reaches a container when the agent is re-rendered
+/// and ROLLED, and nothing forced that or noticed it had not happened. The
+/// cont-init hook that hands the harness directories to the runtime user sat
+/// in the render, with a test, while the live fleet ran containers whose
+/// `/etc/cont-init.d` had never contained it — so a fix that was correct,
+/// reviewed and merged was absent from every agent, and the only symptom was
+/// a harness that would not start.
+///
+/// The render writes this token into the workbench config dir; `doctor`
+/// compares what the container carries against what this build expects and
+/// says "roll the agent" when they differ. **Bump it whenever the rendered
+/// sandbox shape changes** — a new mount, a changed hook, a new config file.
+/// Getting a stale answer is the failure this exists to make loud, so a
+/// forgotten bump is the one way it can still be quiet; the writability
+/// check in `doctor` is the backstop for that.
+pub const SANDBOX_SHAPE: &str = "2026-10-01.bun-global+own-hook";
+
+/// Where the render leaves it, read-only, inside the container.
+pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";
