@@ -3572,6 +3572,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-managers"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sqlx",
+ "talaria-permissions",
+]
+
+[[package]]
 name = "talaria-agent-mcp"
 version = "0.1.0"
 dependencies = [
@@ -3738,6 +3747,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-media",
  "talaria-agent-memory",
@@ -4749,6 +4759,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-defs",
+ "talaria-agent-managers",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
@@ -6542,6 +6553,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
@@ -6647,6 +6659,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-agent-media",
  "talaria-agent-memory",
  "talaria-api-facades",
@@ -6681,6 +6694,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-api-facades",
  "talaria-attribution",
  "talaria-audit",
@@ -7018,6 +7032,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-body",
  "talaria-error",
  "talaria-password",
@@ -7041,10 +7056,9 @@ dependencies = [
 name = "talaria-skill-access"
 version = "0.1.0"
 dependencies = [
- "futures-util",
  "sqlx",
+ "talaria-agent-managers",
  "talaria-agent-skills",
- "talaria-fleet-agents",
  "talaria-permissions",
 ]
 
@@ -7415,6 +7429,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-gateway",
  "talaria-permissions",
  "talaria-teams",

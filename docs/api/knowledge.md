@@ -32,8 +32,8 @@
 | [`/api/kb/spaces/{id}`](#apikbspacesid) | DELETE | `session` |
 | [`/api/kb/spaces/{id}/docs`](#apikbspacesiddocs) | GET | `dual` |
 | [`/api/kb/spaces/{id}/docs`](#apikbspacesiddocs) | POST | `dual` |
-| [`/api/memory/{id}`](#apimemoryid) | GET | `session` |
-| [`/api/memory/{id}`](#apimemoryid) | PUT | `session` |
+| [`/api/memory/{id}`](#apimemoryid) | GET | `session` + `agent-manager` |
+| [`/api/memory/{id}`](#apimemoryid) | PUT | `session` + `agent-manager` |
 | [`/api/rag/collections`](#apiragcollections) | GET | `session` |
 | [`/api/rag/collections`](#apiragcollections) | POST | `admin` |
 | [`/api/rag/collections/{id}`](#apiragcollectionsid) | PUT | `admin` |
@@ -286,13 +286,13 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/kb_spaces_id_docs.rs
 Source: [`api/crates/talaria-routes-knowledge/src/knowledge/memory_id.rs`](../../api/crates/talaria-routes-knowledge/src/knowledge/memory_id.rs)
 
 > /api/memory/{id}. One managed agent's MEMORY.md, read/written through its
-> running container. Writes: admin, or the owner of a personal assistant for
-> its own memory.
+> running container. This agent's managers, and admins — an agent's memory
+> is part of the agent (docs/PERMISSIONS.md, "Agent managers").
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{content, container}` | 200, 400, 403 | — |
-| PUT | `session` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400, 403 | — |
+| GET | `session` + `agent-manager` | — | `{content, container}` | 200, 400 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400 | — |
 
 ### PUT `/api/memory/{id}` body
 

@@ -1,7 +1,7 @@
 // Harness registry client (admin): agent definitions + LLM endpoints.
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 import { createQuery } from '@tanstack/svelte-query'
-import { errorMessage, getJson, getList, patchJson, postJson } from '@/lib/fetch-json'
+import { errorMessage, getJson, getList, patchJson, postJson, putJson } from '@/lib/fetch-json'
 
 /** A reactive argument: pass a plain value, or a getter for values that change
  *  over a component's life (route params, selections). */
@@ -46,6 +46,11 @@ export interface AgentDef {
   emailAlias: string | null
   /** The human a PERSONAL assistant belongs to (null = an org agent). */
   ownerUserId: string | null
+  /** Who OWNS this agent: the only people (admins aside) who may change it. */
+  managers: AgentManager[]
+  /** Whether THIS viewer is one of them — every per-agent affordance reads
+   *  this, and the matching 403 is what the server answers if it doesn't. */
+  canManage: boolean
   enabled: boolean
   managed: boolean
   source: 'imported' | 'created'
@@ -56,6 +61,15 @@ export interface AgentDef {
   planTemplateId: string | null
   currentVersion: number
   latest: AgentVersion | null
+}
+
+/** One of an agent's managers. `role` is their org role, so the roster can
+ *  mark the admins (who hold reach over every agent regardless). */
+export interface AgentManager {
+  userId: string
+  email: string | null
+  name: string | null
+  role: string
 }
 
 export interface LlmEndpoint {
@@ -107,13 +121,41 @@ export interface AgentBrainHealth {
   targets: BrainTarget[]
 }
 
+/** The roster read. `defs` is what this viewer may see — the whole fleet for
+ *  `agents.manage` and admins, otherwise the agents they manage — and
+ *  `canHire` says which it was, so an empty list can tell "no agents yet"
+ *  apart from "not yours to see". */
+export interface FleetDefs {
+  defs: AgentDef[]
+  endpoints: LlmEndpoint[]
+  brains?: AgentBrainHealth[]
+  canHire: boolean
+}
+
 export function useFleetDefs(enabled: MaybeGetter<boolean>) {
   return createQuery(() => ({
     queryKey: ['fleet-defs'],
     enabled: resolve(enabled),
-    queryFn: (): Promise<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] }> =>
-      getJson<{ defs: AgentDef[]; endpoints: LlmEndpoint[]; brains?: AgentBrainHealth[] }>('/api/fleet/defs'),
+    queryFn: (): Promise<FleetDefs> => getJson<FleetDefs>('/api/fleet/defs'),
   }))
+}
+
+/** One agent's manager roster. Read through the def on the roster; this is
+ *  the modal's own read, so a change shows without a full roster refetch. */
+export function useAgentManagers(id: MaybeGetter<string>) {
+  return createQuery(() => ({
+    queryKey: ['agent-managers', resolve(id)],
+    queryFn: (): Promise<AgentManager[]> =>
+      getList<AgentManager>(`/api/fleet/defs/${resolve(id)}/managers`, 'managers'),
+  }))
+}
+
+/** Replace an agent's manager roster. The set is never empty — the server
+ *  refuses that, because a manager who cleared it would lock themselves out
+ *  of their own agent. */
+export async function setAgentManagers(id: string, userIds: string[]): Promise<AgentManager[]> {
+  const body = await putJson<{ managers: AgentManager[] }>(`/api/fleet/defs/${id}/managers`, { userIds })
+  return body.managers
 }
 
 export interface ReconcileResult {

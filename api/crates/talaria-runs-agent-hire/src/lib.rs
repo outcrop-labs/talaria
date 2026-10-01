@@ -68,6 +68,13 @@ pub struct AgentHireInput {
     pub start: bool,
     /// Audit actor — the email/name of the admin who clicked Create.
     pub actor: String,
+    /// Who the agent will BELONG to: the id of the person who hired it, its
+    /// first manager (docs/PERMISSIONS.md, "Agent managers"). Defaulted so a
+    /// hire row enqueued by the previous image still parses on resume — one
+    /// without it lands admin-managed, which is where those agents already
+    /// were.
+    #[serde(default)]
+    pub manager_user_id: Option<String>,
 }
 
 /// One starter skill: a name and the SKILL.md content.
@@ -310,6 +317,7 @@ pub fn real_agent_hire_deps(state: talaria_state::AppState) -> AgentHireDeps {
                             template_id: input.template_id,
                             created_by: input.actor,
                             soul: input.soul,
+                            manager_user_id: input.manager_user_id,
                         },
                     )
                     .await?;
@@ -535,6 +543,7 @@ mod tests {
             }],
             start,
             actor: "jon@example.com".into(),
+            manager_user_id: Some("00000000-0000-0000-0000-00000000beef".into()),
         }
     }
 

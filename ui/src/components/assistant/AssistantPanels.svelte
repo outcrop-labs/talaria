@@ -28,7 +28,9 @@
   <AutoHeight>
     {#key tab}
       <div in:fly={{ y: 6, duration: 200 }}>
-        {#if tab === 'Schedules'}<CronsPanel agentId={assistant.id} />{/if}
+        <!-- canManage: this is the viewer's OWN assistant, and its human is one of
+             its managers by definition (docs/PERMISSIONS.md). -->
+        {#if tab === 'Schedules'}<CronsPanel agentId={assistant.id} canManage />{/if}
         {#if tab === 'Skills'}<SkillsLibrary owner={assistant.slug} ownerLabel={assistant.displayName} surface="well" class="h-[38rem]" />{/if}
         {#if tab === 'Memory'}
           <MemoryEditor

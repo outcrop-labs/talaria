@@ -70,6 +70,12 @@ CREATE TABLE public.agent_keys (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     last_used_at timestamp with time zone
 );
+CREATE TABLE public.agent_managers (
+    agent_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    added_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.agent_principals (
     agent_model text NOT NULL,
     principal_kind text NOT NULL,
@@ -1297,6 +1303,8 @@ ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_key_hash_key UNIQUE (key_hash);
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_pkey PRIMARY KEY (agent_id);
+ALTER TABLE ONLY public.agent_managers
+    ADD CONSTRAINT agent_managers_pkey PRIMARY KEY (agent_id, user_id);
 ALTER TABLE ONLY public.agent_principals
     ADD CONSTRAINT agent_principals_pkey PRIMARY KEY (agent_model);
 ALTER TABLE ONLY public.agent_resource_samples
@@ -1583,6 +1591,7 @@ ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_name_key UNIQUE (name);
 ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_pkey PRIMARY KEY (id);
+CREATE INDEX agent_managers_user_idx ON public.agent_managers USING btree (user_id);
 CREATE INDEX agent_resource_samples_agent_time ON public.agent_resource_samples USING btree (agent_model, taken_at);
 CREATE INDEX app_data_updated_idx ON public.app_data USING btree (app, collection, updated_at DESC);
 CREATE INDEX artifact_folders_owner_idx ON public.artifact_folders USING btree (owner_user_id);
@@ -1667,6 +1676,12 @@ ALTER TABLE ONLY public.agent_google_oauth_states
     ADD CONSTRAINT agent_google_oauth_states_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_keys
     ADD CONSTRAINT agent_keys_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_managers
+    ADD CONSTRAINT agent_managers_added_by_fkey FOREIGN KEY (added_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.agent_managers
+    ADD CONSTRAINT agent_managers_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_managers
+    ADD CONSTRAINT agent_managers_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_principals
     ADD CONSTRAINT agent_principals_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_principals
