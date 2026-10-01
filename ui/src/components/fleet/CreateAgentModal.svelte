@@ -1,9 +1,10 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { Sparkles } from '@lucide/svelte'
+  import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
-  import Generating from '@/components/ui/Generating.svelte'
+  import GeneratingSplash from '@/components/ui/GeneratingSplash.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
@@ -12,7 +13,7 @@
   import Textarea from '@/components/ui/Textarea.svelte'
   import { hireFleetAgent, type AgentDef } from '@/lib/fleet-defs'
   import { useRoleTemplates } from '@/lib/agent-role-templates'
-  import { fade, listStagger, slide } from '@/lib/motion'
+  import { fade, listStagger, slide, staggerIn } from '@/lib/motion'
   import { draftAgent, type AgentDraft } from '@/lib/muse.svelte'
   import { appliedFields, summarizeSoul } from '@/lib/agent-onboard-refine'
   import RefineBar from './RefineBar.svelte'
@@ -207,71 +208,94 @@
 
   const generated = $derived(chat.length > 0)
 </script>
-
 {#if step === 'describe'}
   <!-- ── Step 1: describe ─────────────────────────────────────────────────── -->
   <Modal {open} {onClose} title="New agent" width="max-w-lg">
-    <div class="space-y-5">
-      <p class="text-sm leading-relaxed text-muted">
-        Describe what this agent should do: its job, what it watches, what it produces. The AI designs the whole
-        agent (identity, soul, starter skills) for you to review before anything is created.
-      </p>
-      <div class="flex items-end gap-2.5">
-        <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
-        <Textarea
-          autoGrow
-          rows={3}
-          bind:value={purpose}
-          placeholder="e.g. “A release manager that tracks our deploy trains, chases sign-offs before each cut, and posts a go/no-go summary.”"
-          class="max-h-48 text-sm"
-          autofocus
-        />
-      </div>
-      {#if generating}
-        <Generating site="fleet/agent-design" label={`Designing the agent: identity, soul, and starter skills${genSeconds > 10 ? ` — ${genSeconds}s` : ''}`} lines={3} />
-      {/if}
-      {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
-      <!-- The other entry path, a peer of describing: pick a role, the fields
-           fill, the review step opens. Nothing is bound — everything stays
-           editable over there. -->
-      {#if !generating && roleTemplates.length}
-        <div class="flex items-center gap-2.5">
-          <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">or start from a role</span>
-          <Select
-            bind:value={roleSlug}
-            onchange={() => roleSlug && applyRole(roleSlug)}
-            class="min-w-0 flex-1"
-            aria-label="Start from a role template"
-          >
-            <option value="">Pick a role…</option>
-            {#if roleTemplates.some((t) => !t.builtIn)}
-              <optgroup label="Your organization">
-                {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
-                  <option value={t.slug}>{t.name}</option>
-                {/each}
-              </optgroup>
+    <!-- The body's two faces — the describe form, and the full-panel splash
+         the moment generation starts (TALA-11). Keyed on `generating` with
+         the stagger as the entrance (ANIMATIONS.md step grammar), and the
+         AutoHeight wrapper is load-bearing: the splash is far taller than
+         the form, and a resize the user watches must glide. The footer row
+         stays outside the key so the Designing button (its WaitingMark) and
+         Cancel remain reachable for the whole wait. -->
+    <AutoHeight>
+      {#key generating}
+        {#if generating}
+          <!-- No token stream to show: an agent design is a JSON contract, so
+               this is the same progress moment the inline block carried, at
+               the scale of the thing being made. Drift says working, never
+               how far along; the elapsed count (once it is genuinely taking
+               a while) is what separates "working, slowly" from "wedged". -->
+          <div use:staggerIn>
+            <GeneratingSplash
+              label="Designing the agent: identity, soul, and starter skills"
+              seconds={genSeconds}
+              site="fleet/agent-design"
+            />
+          </div>
+        {:else}
+          <div class="space-y-5" use:staggerIn>
+            <p class="text-sm leading-relaxed text-muted">
+              Describe what this agent should do: its job, what it watches, what it produces. The AI designs the whole
+              agent (identity, soul, starter skills) for you to review before anything is created.
+            </p>
+            <div class="flex items-end gap-2.5">
+              <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
+              <Textarea
+                autoGrow
+                rows={3}
+                bind:value={purpose}
+                placeholder="e.g. “A release manager that tracks our deploy trains, chases sign-offs before each cut, and posts a go/no-go summary.”"
+                class="max-h-48 text-sm"
+                autofocus
+              />
+            </div>
+            <!-- The other entry path, a peer of describing: pick a role, the fields
+                 fill, the review step opens. Nothing is bound — everything stays
+                 editable over there. Hidden while generating (the splash owns the
+                 body), so its old `!generating` guard now lives in the branch. -->
+            {#if roleTemplates.length}
+              <div class="flex items-center gap-2.5">
+                <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">or start from a role</span>
+                <Select
+                  bind:value={roleSlug}
+                  onchange={() => roleSlug && applyRole(roleSlug)}
+                  class="min-w-0 flex-1"
+                  aria-label="Start from a role template"
+                >
+                  <option value="">Pick a role…</option>
+                  {#if roleTemplates.some((t) => !t.builtIn)}
+                    <optgroup label="Your organization">
+                      {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
+                        <option value={t.slug}>{t.name}</option>
+                      {/each}
+                    </optgroup>
+                  {/if}
+                  <optgroup label="Common roles">
+                    {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
+                      <option value={t.slug}>{t.name}</option>
+                    {/each}
+                  </optgroup>
+                </Select>
+              </div>
             {/if}
-            <optgroup label="Common roles">
-              {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
-                <option value={t.slug}>{t.name}</option>
-              {/each}
-            </optgroup>
-          </Select>
-        </div>
-      {/if}
-      <div class="flex items-center gap-3 border-t border-line pt-4">
-        <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
-          Configure manually →
-        </button>
-        <span class="ml-auto"></span>
-        <Button variant="ghost" size="sm" onclick={onClose}>
-          Cancel
-        </Button>
-        <Button onclick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
-          {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
-          {generating ? 'Designing' : 'Design agent'}
-        </Button>
-      </div>
+          </div>
+        {/if}
+      {/key}
+    </AutoHeight>
+    {#if genErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr}</p>{/if}
+    <div class="flex items-center gap-3 border-t border-line pt-4">
+      <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
+        Configure manually →
+      </button>
+      <span class="ml-auto"></span>
+      <Button variant="ghost" size="sm" onclick={onClose}>
+        Cancel
+      </Button>
+      <Button onclick={() => void generate(purpose, false)} disabled={generating || !purpose.trim()}>
+        {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
+        {generating ? 'Designing' : 'Design agent'}
+      </Button>
     </div>
   </Modal>
 {:else}
