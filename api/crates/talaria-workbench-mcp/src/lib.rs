@@ -264,7 +264,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "job_status",
-            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
+            "description": "Your workbench jobs (optionally one by id): branch, status, PR link, workdir — and for a STARTED job the harness invocation lines (harnesses[0].jsonRun / continueJsonRun), sessionDir and models, so a job you did not start this turn is still drivable. This is where you get the command after a resume; do not go looking for a binary on disk. jobId is the uuid start_job returned — not a ticket ref. Omit jobId to list yours. A job with status 'queued' is waiting for host headroom: its answer carries queuePosition (1 is next), waitReason (why it is waiting), queuedAt, and phase ('next up — waiting for RAM' / 'queued · N ahead') — poll until it flips to started, which happens automatically when resources free up. Queued jobs have no cloneUrl or workdir yet.",
             "inputSchema": { "type": "object", "properties": { "jobId": { "type": "string", "description": "Job uuid from start_job. Not a ticket ref (TALA-35, omp-tala35). Omit to list your jobs." } } },
         }),
         json!({
@@ -931,24 +931,15 @@ async fn call_tool(
             // default / smol / slow / plan (rendered into the sandbox), and
             // the invocation lines carry the default so they run as written.
             // Effort decided planning and the RAM reserve above, not the model.
-            let roles = match omp_roles(pg).await {
-                Ok(r) => r,
+            let HarnessAnswer {
+                harnesses,
+                session_dir,
+                model,
+                models,
+            } = match harness_answer(pg, &job.id).await {
+                Ok(a) => a,
                 Err(e) => return thrown(e),
             };
-            let model = roles.default.clone();
-            let session_dir = format!("/opt/data/workbench/sessions/{}", job.id);
-            let fill = |tmpl: &str| fill_cmd(tmpl, model.as_deref(), &session_dir);
-            // One entry, in the shape every start_job has answered with, so a
-            // driver that reads `harnesses[0]` keeps working.
-            let harnesses = vec![json!({
-                "harness": OMP.slug,
-                "chosen": true,
-                "run": fill(OMP.invoke),
-                "jsonRun": fill(OMP.json_invoke),
-                "continueRun": fill(OMP.continue_invoke),
-                "continueJsonRun": fill(OMP.continue_json_invoke),
-                "guide": OMP.guide,
-            })];
             // One WORKSPACE per job — concurrent jobs never collide — under
             // the persistent volume, so clones and harness sessions survive
             // restarts.
@@ -987,7 +978,7 @@ async fn call_tool(
                 "model".into(),
                 model.map(Value::String).unwrap_or(Value::Null),
             );
-            value.insert("models".into(), roles.wire());
+            value.insert("models".into(), models);
             value.insert("harnesses".into(), Value::Array(harnesses));
             value.insert("rules".into(), json!(rules));
             if !gated {
@@ -1045,6 +1036,21 @@ async fn call_tool(
                         "workdir".into(),
                         json!(format!("/opt/data/workbench/jobs/{}", job.id)),
                     );
+                    // The commands, every poll. A started job is one an agent
+                    // is about to drive, and until now this answer told it
+                    // where to work without telling it what to run.
+                    match harness_answer(pg, &job.id).await {
+                        Ok(a) => {
+                            obj.insert("harnesses".into(), Value::Array(a.harnesses));
+                            obj.insert("sessionDir".into(), json!(a.session_dir));
+                            obj.insert(
+                                "model".into(),
+                                a.model.map(Value::String).unwrap_or(Value::Null),
+                            );
+                            obj.insert("models".into(), a.models);
+                        }
+                        Err(e) => return thrown(e),
+                    }
                 }
                 if job.status == "queued" {
                     let position = talaria_workbench_queue::queue_position(pg, &job.id)
@@ -1374,6 +1380,54 @@ async fn call_tool(
 }
 
 /// `String(args.x ?? '')` — anything non-string reads as the empty string.
+/// What a driver needs to actually run the pair programmer: the filled
+/// invocation lines and the session dir they continue against.
+struct HarnessAnswer {
+    harnesses: Vec<Value>,
+    session_dir: String,
+    model: Option<String>,
+    models: Value,
+}
+
+/// Built in ONE place because two answers need it and they drifted.
+///
+/// `start_job` returned the invocation lines; `job_status` returned a workdir
+/// and a clone URL and no way to run anything. A job is started once and
+/// resumed on every later turn, so from the second turn onward the agent held
+/// a guide saying "First turn: jsonRun" and no definition of `jsonRun`
+/// anywhere it could still reach — the only copy was in a response from a
+/// session that had ended.
+///
+/// On the 2026-09-30 dogfood run that is exactly what happened: the agent
+/// called doctor and job_status, never start_job, ran
+/// `find /opt/data/workbench/harness -name '*oh-my-pi*'`, read the oh-my-pi
+/// skill looking for a command, found none, and built the ticket itself with
+/// cargo. There was no agent-to-harness transcript to show because the
+/// harness was never invoked.
+async fn harness_answer(pg: &PgPool, job_id: &str) -> Result<HarnessAnswer, String> {
+    let roles = omp_roles(pg).await?;
+    let model = roles.default.clone();
+    let session_dir = format!("/opt/data/workbench/sessions/{job_id}");
+    let fill = |tmpl: &str| fill_cmd(tmpl, model.as_deref(), &session_dir);
+    // One entry, in the shape every start_job has answered with, so a driver
+    // that reads `harnesses[0]` keeps working.
+    let harnesses = vec![json!({
+        "harness": OMP.slug,
+        "chosen": true,
+        "run": fill(OMP.invoke),
+        "jsonRun": fill(OMP.json_invoke),
+        "continueRun": fill(OMP.continue_invoke),
+        "continueJsonRun": fill(OMP.continue_json_invoke),
+        "guide": OMP.guide,
+    })];
+    Ok(HarnessAnswer {
+        harnesses,
+        models: roles.wire(),
+        session_dir,
+        model,
+    })
+}
+
 fn arg_str(args: &Map<String, Value>, key: &str) -> String {
     args.get(key)
         .and_then(Value::as_str)
