@@ -39,6 +39,7 @@ use talaria_approvals::{ApprovalDeps, announce_approval};
 use talaria_artifacts::{SaveArtifactPatch, agent_category_folder, create_artifact, save_artifact};
 use talaria_boards::board_allows_agent;
 use talaria_body::truncate_utf16;
+use talaria_fleet_docker::{docker_exec, managed_container};
 use talaria_fleet_layout::describe_agent;
 use talaria_github as gh;
 use talaria_github::github_status;
@@ -539,10 +540,30 @@ async fn call_tool(
             let repos = gh::granted_repos(pg, &agent.id).await;
             let mut checks: Vec<String> = Vec::new();
             checks.push("developer agent: on, dev sandbox attached".into());
-            checks.push(format!(
-                "harness: {} ({}), auth through the Talaria gateway, no key needed on your side",
-                OMP.label, OMP.slug
-            ));
+            // RUN the probe, do not print it. This answer used to say
+            // "harness: Oh My Pi, auth through the Talaria gateway" whatever
+            // the truth was, and tell the agent to run the probe itself — so
+            // a harness that could not start read as healthy. On the live
+            // instance omp exited 127 for weeks behind that sentence, because
+            // `bun` on PATH is a mise shim with no version outside a repo
+            // that pins bun, and every Rust job pins rust and not bun. The
+            // agent saw a green doctor, found no runnable binary, and built
+            // the ticket by hand. A self-diagnosis that cannot fail is not one.
+            let probe = harness_probe(pg, &agent.department).await;
+            let writable = harness_writable(pg, &agent.department).await;
+            checks.push(match &probe {
+                Ok(version) => format!(
+                    "harness: {} ({}) runs — {version}, auth through the Talaria gateway, no key needed on your side",
+                    OMP.label, OMP.slug
+                ),
+                Err(why) => format!(
+                    "harness: {} ({}) DOES NOT RUN — {why}. Report this with report_problem; do not hand-code the ticket instead.",
+                    OMP.label, OMP.slug
+                ),
+            });
+            if let Err(why) = &writable {
+                checks.push(format!("harness state dir: NOT WRITABLE — {why}"));
+            }
             checks.push(match gh_status.configured {
                 true => format!(
                     "github: connected{}",
@@ -575,7 +596,13 @@ async fn call_tool(
                 "models": models,
                 "workspaceRoot": "/opt/data/workbench/jobs/<jobId>",
                 "sessionHistory": "/opt/data/workbench/harness (persistent, shared with your department)",
-                "next": format!("Run the probe in your shell to verify the harness binary: {}", OMP.probe),
+                // The probe already ran, above. Telling the agent to run it
+                // itself is how its failure stayed invisible.
+                "probeResult": match &probe { Ok(v) => json!({ "ok": true, "version": v }), Err(e) => json!({ "ok": false, "error": e }) },
+                "next": match &probe {
+                    Ok(_) => "start_job with the ticket, then clone into the workdir and call prepare_env.".to_string(),
+                    Err(e) => format!("The harness cannot start in this sandbox ({e}). report_problem — do NOT hand-code the ticket."),
+                },
             }))
         }
 
@@ -1380,6 +1407,106 @@ async fn call_tool(
 }
 
 /// `String(args.x ?? '')` — anything non-string reads as the empty string.
+/// Run the harness probe in the agent's own sandbox and say what happened.
+///
+/// As the AGENT USER in a LOGIN shell, because that is the only environment
+/// the answer is about: root has a bare PATH, and the agent's PATH is built
+/// by the profile block prepare_env writes. Probing as anybody else measures
+/// a machine nobody works on.
+///
+/// Ok(version) is the harness's own version line. Err is the reason it could
+/// not run, which is the whole point of the check.
+async fn harness_probe(pg: &PgPool, department: &str) -> Result<String, String> {
+    let container = managed_container(pg, department).await;
+    // `runuser` keeps the login shell, so the probe sees the PATH the agent
+    // sees — mise shims included, which is where this has gone wrong before.
+    let script = format!("{} 2>&1", OMP.probe);
+    let out = docker_exec(
+        &container,
+        &["runuser", "-u", HARNESS_USER, "--", "sh", "-lc", &script],
+        PROBE_TIMEOUT_MS,
+    )
+    .await;
+    let (stdout, stderr) = match out {
+        Ok(pair) => pair,
+        Err(e) => return Err(format!("the probe could not be run in the sandbox: {e}")),
+    };
+    let text = format!("{stdout}\n{stderr}");
+    // omp answers `omp/<version>`; anything else is a failure to start, and
+    // the last non-empty line is the reason worth repeating.
+    if let Some(v) = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("omp/") || l.starts_with("pi/"))
+    {
+        return Ok(v.to_string());
+    }
+    let why = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("npm notice"))
+        .next_back()
+        .unwrap_or("no output");
+    Err(format!("`{}` said: {why}", OMP.probe))
+}
+
+/// Can the agent actually WRITE where its harness keeps state?
+///
+/// A render change only reaches a container when the agent is re-rendered
+/// and ROLLED, and nothing forces that or notices it has not happened. The
+/// cont-init hook that hands these directories to the runtime user has been
+/// in the render — with a test — while the live fleet ran containers from
+/// before it existed, whose `/etc/cont-init.d` never had it. Docker had
+/// created the bind-mount parents as root:root 755, so omp could read its
+/// mounted config and not write a byte of session state beside it.
+///
+/// Checked separately from the probe because the probe can pass while this
+/// fails: `--version` writes nothing.
+async fn harness_writable(pg: &PgPool, department: &str) -> Result<(), String> {
+    let container = managed_container(pg, department).await;
+    // Positional arg, and a probe file that names itself.
+    let script = "d=\"$1\"; [ -d \"$d\" ] || { echo \"missing: $d\"; exit 1; }; \
+                  t=\"$d/.talaria-write-probe\"; \
+                  if touch \"$t\" 2>/dev/null; then rm -f \"$t\"; echo OK; \
+                  else echo \"not writable by $(id -un): $d ($(stat -c %U:%a \"$d\"))\"; fi";
+    let out = docker_exec(
+        &container,
+        &[
+            "runuser",
+            "-u",
+            HARNESS_USER,
+            "--",
+            "sh",
+            "-c",
+            script,
+            "sh",
+            PI_STATE_DIR,
+        ],
+        30_000,
+    )
+    .await;
+    let (stdout, stderr) =
+        out.map_err(|e| format!("could not check the harness state dir: {e}"))?;
+    let text = format!("{stdout}{stderr}");
+    if text.contains("OK") {
+        return Ok(());
+    }
+    Err(format!(
+        "{} — roll the agent so the sandbox picks up the current render",
+        text.trim()
+    ))
+}
+
+/// Where omp keeps its agent state, per `PI_CODING_AGENT_DIR`.
+const PI_STATE_DIR: &str = "/opt/data/workbench/harness/pi";
+
+/// The unprivileged user every sandbox runs its agent as.
+const HARNESS_USER: &str = "hermes";
+
+/// Long enough for a cold `npx` fetch on a slow link, short enough that
+/// doctor still answers.
+const PROBE_TIMEOUT_MS: u64 = 4 * 60_000;
+
 /// What a driver needs to actually run the pair programmer: the filled
 /// invocation lines and the session dir they continue against.
 struct HarnessAnswer {
