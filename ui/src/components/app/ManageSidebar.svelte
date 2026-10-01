@@ -10,9 +10,8 @@
   import { appManageItem, navActiveItem, navSections } from '@/lib/nav-sections'
   import { listQuery } from '@/components/ui/query-state'
   import { useEnabledApps } from '@/lib/apps'
-  import { useDeniedViews } from '@/lib/session'
+  import { useDeniedViews, type SessionUser } from '@/lib/session'
   import { NAV, type NavItem } from '@/lib/nav'
-  import type { SessionUser } from '@/lib/session'
   import { useManageSidebar, closeManageSidebar } from './nav-dock.svelte'
   import { cn } from '@/lib/cn'
   import { route } from '@/router'
@@ -37,16 +36,21 @@
   // Escape. The popover census scans for portal/fixed panels with document
   // listeners; this file holds the listener but no panel of that kind, so
   // the conjunction cannot fire. It is a SIDEBAR.
-  //  THE STATE IS READ THROUGH THE OBJECT, NEVER DESTRUCTURED. `useManageSidebar()`
-  //  hands back a GETTER over module `$state`; `const { manageOpen } = ...` evaluates
-  //  that getter once, at component init, and freezes the answer at `false` — which is
-  //  exactly how this pane shipped unable to open at all. The gear lit (TopDock holds
-  //  the object and stays live) and nothing appeared. Keep the object; read
-  //  `manage.manageOpen` at every use.
+  //
+  // `user` is the viewer whose grants decide the rows — the same value the
+  // dock derives from, handed down rather than re-read, so the two cannot
+  // drift.
   let { user }: { user: SessionUser } = $props()
 
   const denied = useDeniedViews()
   const badges = useNavBadges(() => route.pathname)
+  // THE OPEN STATE IS READ THROUGH THE OBJECT, NEVER DESTRUCTURED.
+  // `useManageSidebar()` hands back a GETTER over module `$state`; the
+  // `const { manageOpen } = ...` this replaces evaluated that getter once, at
+  // component init, and froze the answer at `false` for the component's life —
+  // which is exactly how this pane shipped unable to open at all. The gear lit
+  // (TopDock holds the object, so it stayed live) and nothing appeared. Keep
+  // the object; read `manage.manageOpen` at every use.
   const manage = useManageSidebar()
 
   // The apps read, same doctrine as the rail: keep the query, default off
