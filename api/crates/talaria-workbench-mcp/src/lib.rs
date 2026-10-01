@@ -54,7 +54,9 @@ use talaria_tasks::{
 pub mod devenv;
 pub mod teardown;
 
-use talaria_workbench_harnesses::{MCP_CONFIG_FILE, OMP, fill_cmd, omp_roles};
+use talaria_workbench_harnesses::{
+    MCP_CONFIG_FILE, OMP, SANDBOX_SHAPE, SANDBOX_SHAPE_FILE, fill_cmd, omp_roles,
+};
 use teardown::{Teardown, spawn_teardown};
 
 /// Everything a verb reaches for past its own SQL: the pool, the secretbox
@@ -563,6 +565,9 @@ async fn call_tool(
             });
             if let Err(why) = &writable {
                 checks.push(format!("harness state dir: NOT WRITABLE — {why}"));
+            }
+            if let Some(why) = sandbox_stale(pg, &agent.department).await {
+                checks.push(format!("sandbox: STALE — {why}"));
             }
             checks.push(match gh_status.configured {
                 true => format!(
@@ -1494,6 +1499,42 @@ async fn harness_writable(pg: &PgPool, department: &str) -> Result<(), String> {
     Err(format!(
         "{} — roll the agent so the sandbox picks up the current render",
         text.trim()
+    ))
+}
+
+/// Is this container the one the CURRENT render builds?
+///
+/// A render change reaches a container only when the agent is re-rendered
+/// and rolled. Nothing forces that, so a merged fix can be absent from every
+/// running agent with no symptom but the thing it was meant to fix. The
+/// render leaves its shape token in the config dir; a container carrying a
+/// different one — or none, because it predates the token — is stale.
+async fn sandbox_stale(pg: &PgPool, department: &str) -> Option<String> {
+    let container = managed_container(pg, department).await;
+    let (stdout, _) = docker_exec(
+        &container,
+        &[
+            "sh",
+            "-c",
+            "cat \"$1\" 2>/dev/null",
+            "sh",
+            SANDBOX_SHAPE_FILE,
+        ],
+        20_000,
+    )
+    .await
+    .ok()?;
+    let found = stdout.trim();
+    if found == SANDBOX_SHAPE {
+        return None;
+    }
+    Some(format!(
+        "this sandbox was built by an older render ({}) and this Talaria expects {SANDBOX_SHAPE} — roll the agent to pick up the current mounts",
+        if found.is_empty() {
+            "no shape token"
+        } else {
+            found
+        },
     ))
 }
 

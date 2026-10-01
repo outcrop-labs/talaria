@@ -1319,6 +1319,15 @@ pub async fn render_fleet(
             )
             .await
             .map_err(|e| e.to_string())?;
+            // The token that says which render built this sandbox. doctor
+            // compares it with the one this build expects, so a container
+            // that was never rolled stops being invisible.
+            tokio::fs::write(
+                wb_dir.join("render-shape"),
+                talaria_workbench_harnesses::SANDBOX_SHAPE,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
             tokio::fs::write(
                 wb_dir.join("pi-settings.json"),
                 "{\n  \"defaultProjectTrust\": \"always\"\n}\n",
