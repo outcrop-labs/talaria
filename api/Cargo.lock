@@ -6739,7 +6739,6 @@ dependencies = [
  "talaria-omp-auth",
  "talaria-params",
  "talaria-permissions",
- "talaria-personal-agent",
  "talaria-realtime-watch",
  "talaria-repo-env",
  "talaria-research",
