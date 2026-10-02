@@ -13,23 +13,15 @@ use talaria_agent_secrets::{delete_agent_secret, list_agent_secrets, set_agent_s
 use talaria_audit::spawn_audit;
 use talaria_body::{as_object, parse, string_member, trimmed_string_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_personal_agent::owns_agent;
-use talaria_session::{actor_of, require_user, secretbox_or_500};
+use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
 use talaria_state::AppState;
-
-async fn gate(state: &AppState, user_id: &str, role: &str, id: &str) -> bool {
-    role == "admin" || owns_agent(&state.pg, user_id, None, Some(id)).await
-}
 
 pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !gate(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    require_agent_manager(&state, &headers, &id).await?;
     Ok(match list_agent_secrets(&state.pg, &id).await {
         Ok(secrets) => Json(json!({ "secrets": secrets })).into_response(),
         Err(e) => internal("[fleet] list_agent_secrets failed", e),
@@ -42,10 +34,7 @@ pub async fn put(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !gate(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let name = match trimmed_string_member(obj, "name", 2, 64) {
@@ -85,10 +74,7 @@ pub async fn delete(
     uri: Uri,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !gate(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    let user = require_agent_manager(&state, &headers, &id).await?;
     // Body { name } — matches PUT's transport. When the body doesn't parse
     // (unparseable JSON, wrong shape, failed validation), the old ?name=
     // query spelling still works, and THAT path is only length-checked by

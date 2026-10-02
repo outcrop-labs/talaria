@@ -10,8 +10,8 @@
   import { appManageItem, navActiveItem, navSections } from '@/lib/nav-sections'
   import { listQuery } from '@/components/ui/query-state'
   import { useEnabledApps } from '@/lib/apps'
-  import { useDeniedViews } from '@/lib/session'
-  import { NAV, MANAGE_VIEWS, type NavItem } from '@/lib/nav'
+  import { useDeniedViews, type SessionUser } from '@/lib/session'
+  import { NAV, type NavItem } from '@/lib/nav'
   import { useManageSidebar, closeManageSidebar } from './nav-dock.svelte'
   import { cn } from '@/lib/cn'
   import { route } from '@/router'
@@ -36,9 +36,22 @@
   // Escape. The popover census scans for portal/fixed panels with document
   // listeners; this file holds the listener but no panel of that kind, so
   // the conjunction cannot fire. It is a SIDEBAR.
+  //
+  // `user` is the viewer whose grants decide the rows — the same value the
+  // dock derives from, handed down rather than re-read, so the two cannot
+  // drift.
+  let { user }: { user: SessionUser } = $props()
+
   const denied = useDeniedViews()
   const badges = useNavBadges(() => route.pathname)
-  const { manageOpen } = useManageSidebar()
+  // THE OPEN STATE IS READ THROUGH THE OBJECT, NEVER DESTRUCTURED.
+  // `useManageSidebar()` hands back a GETTER over module `$state`; the
+  // `const { manageOpen } = ...` this replaces evaluated that getter once, at
+  // component init, and froze the answer at `false` for the component's life —
+  // which is exactly how this pane shipped unable to open at all. The gear lit
+  // (TopDock holds the object, so it stayed live) and nothing appeared. Keep
+  // the object; read `manage.manageOpen` at every use.
+  const manage = useManageSidebar()
 
   // The apps read, same doctrine as the rail: keep the query, default off
   // it, surface the failure. App manage surfaces slot into the manage
@@ -57,7 +70,9 @@
   // and apps discarded — so the sidebar and the dock can never disagree
   // about what the manage half contains. Core manage items ride NAV; the
   // gateable list is the cross-check the grants surface uses.
-  const sections = $derived(navSections(NAV, [], appManage, { isAdmin: false, denied: denied.current }))
+  const sections = $derived(
+    navSections(NAV, [], appManage, { isAdmin: user.role === 'admin', denied: denied.current }),
+  )
   const manageSection = $derived(sections.find((s) => s.id === 'manage') ?? null)
 
   // Empty-manage edge: a member with zero visible manage items gets nothing.
@@ -79,24 +94,14 @@
   // dock's own toggle must not be double-handled here).
   let paneEl = $state<HTMLElement | null>(null)
   function onDocMousedown(e: MouseEvent) {
-    if (!manageOpen || isEmpty) return
+    if (!manage.manageOpen || isEmpty) return
     const tile = (e.target as HTMLElement | null)?.closest('[data-manage-tile]')
     if (tile) return
     if (outsidePointer(e, paneEl, paneEl)) closeManageSidebar()
   }
   function onDocKeydown(e: KeyboardEvent) {
-    if (manageOpen && e.key === 'Escape') closeManageSidebar()
+    if (manage.manageOpen && e.key === 'Escape') closeManageSidebar()
   }
-
-  // Navigating to a manage view IS the choice made — close behind it, so the
-  // pane is a door, not a resident overlay.
-  $effect(() => {
-    if (!manageOpen) return
-    if (route.pathname === '/' || activePath === null) return
-    if (MANAGE_VIEWS.some((v) => route.pathname === v.to || route.pathname.startsWith(v.to + '/'))) {
-      closeManageSidebar()
-    }
-  })
 
   // Pin: keep the pane open while walking between manage views. A second
   // click unpins; closing the pane clears the pin, so a reopen is fresh.
@@ -109,18 +114,59 @@
     }
   }
 
+  // Navigating to a manage view IS the choice made — close behind it, so the
+  // pane is a door, not a resident overlay. Three things about this effect,
+  // each of which it got wrong before:
+  //
+  //  1. IT IS ABOUT A CHANGE OF ROUTE, NOT ABOUT WHERE YOU ALREADY ARE. The
+  //     old version asked only "is the current path a manage view?", which is
+  //     true the whole time you are standing on one — so opening the pane
+  //     from /models closed it again in the same flush, and the gear was dead
+  //     on every one of the eight views the pane exists to reach. `seenPath`
+  //     is a PLAIN let, not `$state`, on purpose: it is this effect's own
+  //     memory of the last path it saw, and writing it must not re-run the
+  //     effect that wrote it.
+  //  2. PINNED MEANS PINNED. The pin is for walking between manage views, and
+  //     the old effect closed on every manage navigation regardless, so the
+  //     pinned state only ever changed its own icon.
+  //  3. THE TEST IS "the pane has a row for where you just went" —
+  //     `activePath`, the same derivation the rows paint with — not a scan of
+  //     MANAGE_VIEWS, which lists the eight core views and misses every app
+  //     manage surface the pane also carries.
+  //
+  // Navigating AWAY to a work view is not this effect's business: a click on
+  // a dock tile is a pointer outside the pane, and `onDocMousedown` closes it.
+  let seenPath = route.pathname
+  $effect(() => {
+    const at = route.pathname
+    const open = manage.manageOpen
+    const landedOnARow = activePath !== null
+    const moved = at !== seenPath
+    seenPath = at
+    if (!open || pinned || !moved) return
+    if (landedOnARow) closeManageSidebar()
+  })
+
+  // A close clears the pin — stated in the comment above since the pane
+  // shipped, and nothing did it: an outside-click on a pinned pane left
+  // `pinned` true, so the next open came back pinned and the pin button's
+  // first click UNpinned. One line, so a reopen is genuinely fresh.
+  $effect(() => {
+    if (!manage.manageOpen) pinned = false
+  })
+
   const statusFor = (item: NavItem): 'active' | undefined => (item.to === activePath ? 'active' : undefined)
 </script>
 
 <svelte:document onmousedown={onDocMousedown} onkeydown={onDocKeydown} />
 
-{#if manageOpen && !isEmpty}
-  <!-- z-[45]: above the strip's z-40 band, below modals (z-50) and portaled
+{#if manage.manageOpen && !isEmpty}
+  <!-- z-[45]: above the dock's z-40 band, below modals (z-50) and portaled
        popovers (z-[60]) — the pane is navigation chrome, and a dialog opened
        from a manage view must sit above it. `inset-y-0 left-0` spans the
        below-dock row (the pane's parent is the relative row that holds the
-       strip and the page), so it covers the strip AND the view — matching
-       the rail's footprint, which also stood above both. -->
+       page), so it covers the view's full height — matching the rail's
+       footprint, which also stood beside the whole page. -->
   <aside
     bind:this={paneEl}
     transition:fly={{ ...PANEL_X, x: -20 }}

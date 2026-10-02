@@ -57,8 +57,10 @@ needs no fresh sign-in. Throwing a credential away takes someone pressing
 ### Signing in
 
 On the agent's Summary tab, under the Developer Agent switch: one account per
-service, per agent, signed in by anyone who can edit that agent (the
-`agents.manage` permission, or owning a personal assistant). Picking the same
+service, per agent, signed in by the agent's own **managers** — the same people
+who can change its soul or rotate its secrets. Deliberately not every holder of
+`agents.manage`: that permission runs the fleet, and running the fleet is not a
+licence to put a subscription behind one particular agent. Picking the same
 service again replaces the account rather than adding a second one, even
 through a different door — `openai-codex` and its headless device variant are
 one subscription reached two ways.

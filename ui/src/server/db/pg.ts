@@ -3346,6 +3346,34 @@ alter table tasks drop column if exists conversation_id`,
      check ((doc_id is null) <> (artifact_id is null))`,
   `create index if not exists kb_comments_artifact_idx on kb_comments(artifact_id, created_at)`,
 
+  // ── Agent managers (2026-10-01): an agent is somebody's. `agents.manage`
+  // stays the FLEET-wide gate (hire, endpoints, MCP servers, the role
+  // library); who may change ONE agent — its identity, soul, skills, memory,
+  // crons, secrets, MCP binds and lifecycle — is this table. Admins keep
+  // reach over every agent, so a manager who leaves cannot take one with
+  // them.
+  `create table if not exists agent_managers (
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     added_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (agent_id, user_id)
+   )`,
+  // The reverse lookup: "which agents does this person manage", asked on
+  // every /agents view resolution and roster read.
+  `create index if not exists agent_managers_user_idx on agent_managers(user_id)`,
+  // Backfill, half one: a personal assistant belongs to its human, and that
+  // was already recorded.
+  `insert into agent_managers (agent_id, user_id)
+   select d.id, d.owner_user_id from agent_defs d where d.owner_user_id is not null
+   on conflict do nothing`,
+  // Backfill, half two: every other agent starts managed by the admins who
+  // could already change it, so the upgrade takes nothing away from anyone.
+  // Admins added LATER are not written in — they hold reach by role.
+  `insert into agent_managers (agent_id, user_id)
+   select d.id, u.id from agent_defs d, users u
+   where d.owner_user_id is null and u.role = 'admin'
+   on conflict do nothing`,
   // CODING ACCOUNTS — a Developer Agent signing in to a coding-agent
   // subscription (Claude Pro/Max, ChatGPT Codex, Copilot, Gemini, …), one
   // account per service per agent, so its harness bills that account instead

@@ -1337,8 +1337,8 @@ pub fn router(state: AppState) -> Router {
         // Coding accounts, the human half: the sign-in roster out of omp's own
         // auth rules, one agent's accounts and per-plan model roles, the login
         // flow (start / poll / answer / cancel), and the per-ticket plan pick.
-        // Gated by an admin toggle and a per-service allowlist; editable by
-        // `agents.manage` or the agent's owner.
+        // Gated by an admin toggle and a per-service allowlist; changing one
+        // is a change to the agent, so it takes the agent's own manager ACL.
         .route(
             "/api/admin/coding-accounts",
             get(talaria_routes_admin::admin::admin_coding_accounts::get)
@@ -1736,6 +1736,12 @@ pub fn router(state: AppState) -> Router {
             "/api/fleet/defs/{id}/google/connect",
             get(talaria_routes_fleet::fleet::fleet_defs_id_google::connect)
                 .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/fleet/defs/{id}/managers",
+            get(talaria_routes_fleet::fleet::fleet_defs_id_managers::get)
+                .put(talaria_routes_fleet::fleet::fleet_defs_id_managers::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/fleet/defs/{id}/edit",

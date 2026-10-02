@@ -23,7 +23,7 @@ use talaria_body::{
     utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, require_perm, secretbox_or_500};
+use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
 use talaria_state::AppState;
 
 /// One Target: `{ endpoint, model, contextLength?, effort? }`. The effort is
@@ -111,7 +111,7 @@ pub async fn post(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_perm(&state, &headers, "agents.manage").await?;
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let soul = match string_member(obj, "soul", 0, 200_000) {

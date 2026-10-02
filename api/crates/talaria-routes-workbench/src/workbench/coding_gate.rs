@@ -1,10 +1,14 @@
 // Who may see and change an agent's coding accounts.
 //
-// "Agents they can edit" is two things in this product, and both belong here
-// so no route invents a third: the `agents.manage` permission (org agents),
-// or owning the agent (a personal assistant its owner configures without an
-// admin role). The same pair gates the agent's own secrets panel, which is the
-// closest existing analogue — these credentials are at least as sensitive.
+// AN AGENT IS SOMEBODY'S. Signing an agent in to a coding subscription is a
+// change to that agent, so the gate is the agent's own manager ACL —
+// `require_agent_manager`, the same gate that guards its soul, its secrets and
+// its lifecycle. It is deliberately NOT `agents.manage`: that permission says
+// "may run the fleet", and a fleet-wide holder who does not manage this
+// particular agent has no business putting a subscription behind it. Admins
+// reach every agent, and a personal assistant's owner manages their own, both
+// of which `manages_agent` already answers — so this file asks one question
+// and gets one answer rather than inventing a second.
 //
 // The feature gate is separate and comes first: while an admin has not turned
 // coding accounts on, every one of these routes answers 404 rather than 403.
@@ -15,8 +19,7 @@ use axum::response::Response;
 
 use talaria_coding_accounts as ca;
 use talaria_error::house_error;
-use talaria_personal_agent::owns_agent;
-use talaria_session::{SessionUser, require_user};
+use talaria_session::{SessionUser, require_agent_manager, require_user};
 use talaria_state::AppState;
 
 /// The session user, once the feature is on. 404 while it is off.
@@ -34,21 +37,16 @@ pub async fn require_feature(
     Ok(user)
 }
 
-/// The session user who may edit this agent, or a ready-to-return error.
+/// The session user who manages this agent, or a ready-to-return error.
 pub async fn require_agent_editor(
     state: &AppState,
     headers: &HeaderMap,
     agent_id: &str,
 ) -> Result<SessionUser, Response> {
-    let user = require_feature(state, headers).await?;
-    let allowed = talaria_users::has_perm(&state.pg, &user.id, &user.role, "agents.manage")
-        .await
-        .unwrap_or(false)
-        || owns_agent(&state.pg, &user.id, None, Some(agent_id)).await;
-    if !allowed {
-        return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
-    Ok(user)
+    // Feature first, so a disabled feature reads as absent for everyone rather
+    // than as "forbidden" for the people who could not have used it anyway.
+    require_feature(state, headers).await?;
+    require_agent_manager(state, headers, agent_id).await
 }
 
 /// Whether the agent exists at all — checked after the gate, so a probe

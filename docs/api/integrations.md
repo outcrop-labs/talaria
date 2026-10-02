@@ -18,7 +18,7 @@
 | [`/api/integrations/google/agent/calendar/cancel`](#apiintegrationsgoogleagentcalendarcancel) | POST | `agent` |
 | [`/api/integrations/google/agent/calendar/meeting`](#apiintegrationsgoogleagentcalendarmeeting) | POST | `agent` |
 | [`/api/integrations/google/agent/calendar/update`](#apiintegrationsgoogleagentcalendarupdate) | POST | `agent` |
-| [`/api/integrations/google/agent/callback`](#apiintegrationsgoogleagentcallback) | GET | `session` + `perm:agents.manage` |
+| [`/api/integrations/google/agent/callback`](#apiintegrationsgoogleagentcallback) | GET | `session` + `agent-manager` |
 | [`/api/integrations/google/agent/docs`](#apiintegrationsgoogleagentdocs) | POST | `agent` |
 | [`/api/integrations/google/agent/docs/{id}`](#apiintegrationsgoogleagentdocsid) | GET | `agent` |
 | [`/api/integrations/google/agent/docs/{id}`](#apiintegrationsgoogleagentdocsid) | POST | `agent` |
@@ -172,11 +172,12 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 > GET /api/integrations/google/agent/callback — store the agent's own Google
 > connection and set its principal to that identity. The state cookie is the
-> CSRF check; the state row says which agent the admin started this for.
+> CSRF check; the state row says which agent this was started for, and whose
+> managers are the people allowed to finish it.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `…` | 302 | — |
+| GET | `session` + `agent-manager` | — | `…` | 302 | — |
 
 ## `/api/integrations/google/agent/docs`
 

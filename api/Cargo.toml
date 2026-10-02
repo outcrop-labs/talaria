@@ -170,6 +170,8 @@ talaria-agent-crons = { path = "crates/talaria-agent-crons" }
 
 talaria-agent-defs = { path = "crates/talaria-agent-defs" }
 
+talaria-agent-managers = { path = "crates/talaria-agent-managers" }
+
 talaria-agent-mcp = { path = "crates/talaria-agent-mcp" }
 
 talaria-agent-media = { path = "crates/talaria-agent-media" }
@@ -643,6 +645,7 @@ talaria-activity = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-crons = { workspace = true }
 talaria-agent-defs = { workspace = true }
+talaria-agent-managers = { workspace = true }
 talaria-agent-mcp = { workspace = true }
 talaria-agent-media = { workspace = true }
 talaria-agent-memory = { workspace = true }

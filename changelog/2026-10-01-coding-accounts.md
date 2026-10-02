@@ -3,8 +3,10 @@
   Cursor, Z.AI, xAI, Kimi, Perplexity and the rest of Oh My Pi's roster, 23
   OAuth sign-in flows in all — and its workbench harness runs on that account
   instead of the org's Talaria gateway. One account per service, per agent,
-  signed in by whoever can edit the agent (`agents.manage`, or owning a
-  personal assistant). Off until an admin turns it on, and then only for the
+  signed in by the agent's own managers — the same people who can change its
+  soul or its secrets, not every holder of `agents.manage`, because a
+  fleet-wide permission is not a licence to put a subscription behind somebody
+  else's agent. Off until an admin turns it on, and then only for the
   services the org allowlists: "developers may use coding subscriptions" and
   "may use anything omp supports" are different decisions.
 

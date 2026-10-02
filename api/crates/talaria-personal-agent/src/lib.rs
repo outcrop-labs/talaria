@@ -353,6 +353,7 @@ pub async fn create_personal_agent(
             template_id: tmpl.map(|(id,)| id),
             created_by: user.email.or(user.name).unwrap_or("user").to_string(),
             soul: Some(personal_soul(&display_name, &owner_name, personality)),
+            manager_user_id: Some(user.id.to_string()),
         },
     )
     .await?;

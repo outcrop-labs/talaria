@@ -1,7 +1,7 @@
-// POST /api/fleet/agents/{id}/control. Lifecycle control for one agent
-// (admin; owners of a personal assistant may up/stop/restart their own).
+// POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
+// this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 //   up | stop | restart   the managed service (renders first on `up`)
-//   roll                  zero-downtime replacement (admin) — detached
+//   roll                  zero-downtime replacement — detached
 // `up`/`unretire`/`roll` return IMMEDIATELY; the roster's polled container
 // health shows the warm-up ('starting') phase instead of blocking the call.
 
@@ -21,9 +21,7 @@ use talaria_api_facades::fleet::render::render_fleet;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_permissions::has_perm;
-use talaria_personal_agent::owns_agent;
-use talaria_session::{actor_of, require_user};
+use talaria_session::{actor_of, require_agent_manager};
 use talaria_state::AppState;
 
 pub async fn post(
@@ -32,7 +30,9 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
+    // The gate runs before the body parses: lifecycle is this agent's
+    // managers' to drive, whatever they asked for.
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let action = match enum_member(
@@ -45,14 +45,6 @@ pub async fn post(
         Ok(a) => a,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let owner_allowed = matches!(action.as_str(), "up" | "stop" | "restart")
-        && owns_agent(&state.pg, &user.id, None, Some(&id)).await;
-    let perm = has_perm(&state.pg, &user.id, &user.role, "agents.manage")
-        .await
-        .unwrap_or(false);
-    if !perm && !owner_allowed {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
     let def = match agent_def_by_id(&state.pg, &id).await {
         Ok(Some(d)) => d,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "not found")),
@@ -131,9 +123,6 @@ pub async fn post(
             // Zero-downtime replacement — fresh container, old one drains.
             // Long (health wait + drain), so it runs detached; the roster's
             // health polling tells the story.
-            if !perm {
-                return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-            }
             if !def.managed {
                 return Ok(house_error(StatusCode::BAD_REQUEST, "not a managed agent"));
             }
@@ -201,10 +190,8 @@ pub async fn post(
         }
         "delete" => {
             // Permanent: def + versions + secrets + rendered files + (for
-            // created agents) the state volume. Admin only, retired only.
-            if !perm {
-                return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-            }
+            // created agents) the state volume. Retired agents only — the
+            // agent's managers, like every other act on this route.
             let sb = match state.secretbox().await {
                 Ok(sb) => sb,
                 Err(e) => return Ok(catch(e)),

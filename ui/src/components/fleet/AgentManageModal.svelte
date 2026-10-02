@@ -10,13 +10,14 @@
   import ReadOnlyConfig from '@/components/fleet/ReadOnlyConfig.svelte'
   import SecretsTab from '@/components/fleet/SecretsTab.svelte'
   import SkillsLibrary from '@/components/skills/SkillsLibrary.svelte'
+  import ManagersTab from '@/components/fleet/ManagersTab.svelte'
   import SummaryTab from '@/components/fleet/SummaryTab.svelte'
   import VersionsTab from '@/components/fleet/VersionsTab.svelte'
   import type { AgentDef, LlmEndpoint } from '@/lib/fleet-defs'
   import { fly } from '@/lib/motion'
   import { cn } from '@/lib/cn'
 
-  type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions'
+  type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions' | 'managers'
   const TABS: TabItem<Tab>[] = [
     { id: 'summary', label: 'Summary' },
     { id: 'config', label: 'Config' },
@@ -26,23 +27,28 @@
     { id: 'secrets', label: 'Secrets' },
     { id: 'mcp', label: 'MCP' },
     { id: 'versions', label: 'Versions' },
+    // Last on purpose: who owns the agent is read far less often than what
+    // it is, and it is the one tab that changes who can open the rest.
+    { id: 'managers', label: 'Managers' },
   ]
 
   // The whole of an agent's internal stack in one modal: model config, skills,
-  // memory, MCP servers, and version history — no more hopping between top-level
-  // pages. Read-only for non-admins.
+  // memory, MCP servers, version history, and who owns it — no more hopping
+  // between top-level pages. Read-only for anyone who does not manage this
+  // agent (docs/PERMISSIONS.md, "Agent managers"); `canManage` is the def's
+  // own answer, the same one the write routes give.
   let {
     open,
     onClose,
     def,
     endpoints,
-    isAdmin,
+    canManage,
   }: {
     open: boolean
     onClose: () => void
     def: AgentDef
     endpoints: LlmEndpoint[]
-    isAdmin: boolean
+    canManage: boolean
   } = $props()
 
   let tab = $state<Tab>('summary')
@@ -69,21 +75,21 @@
            by design. No stagger — several panes are dense data lists. -->
       {#key tab}
         <div in:fly={{ y: 6, duration: 200 }} class={cn(fills && 'h-full')}>
-          {#if tab === 'summary'}<SummaryTab {def} {isAdmin} />{/if}
+          {#if tab === 'summary'}<SummaryTab {def} {canManage} />{/if}
           {#if tab === 'config'}
-            {#if isAdmin}
+            {#if canManage}
               <AgentConfigForm {def} {endpoints} onSaved={onClose} />
             {:else}
               <ReadOnlyConfig {def} />
             {/if}
           {/if}
-          {#if tab === 'skills'}<SkillsLibrary owner={def.slug} ownerLabel={def.displayName ?? def.model} canEdit={isAdmin} surface="well" class="h-full" />{/if}
+          {#if tab === 'skills'}<SkillsLibrary owner={def.slug} ownerLabel={def.displayName ?? def.model} canEdit={canManage} surface="well" class="h-full" />{/if}
           {#if tab === 'memory'}
             {#if def.managed}
               <MemoryEditor
                 id={def.id}
                 label={def.displayName ?? def.model}
-                canEdit={isAdmin}
+                canEdit={canManage}
                 class="h-full"
                 note="It lives in the agent's own container."
                 museContext={`The memory of the "${def.slug}" agent (${def.role ?? def.department}).`}
@@ -92,12 +98,13 @@
               <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
             {/if}
           {/if}
-          {#if tab === 'crons'}<CronsPanel agentId={def.id} />{/if}
+          {#if tab === 'crons'}<CronsPanel agentId={def.id} {canManage} />{/if}
           {#if tab === 'secrets'}
-            {#if isAdmin}<SecretsTab agentId={def.id} agentModel={def.model} agentLabel={def.displayName ?? def.model} />{:else}<div class="text-sm text-muted">Admins only.</div>{/if}
+            {#if canManage}<SecretsTab agentId={def.id} agentModel={def.model} agentLabel={def.displayName ?? def.model} />{:else}<div class="text-sm text-muted">Only this agent's managers can see its secrets.</div>{/if}
           {/if}
-          {#if tab === 'mcp'}<McpTab {def} {isAdmin} />{/if}
-          {#if tab === 'versions'}<VersionsTab {def} {isAdmin} />{/if}
+          {#if tab === 'mcp'}<McpTab {def} {canManage} />{/if}
+          {#if tab === 'versions'}<VersionsTab {def} {canManage} />{/if}
+          {#if tab === 'managers'}<ManagersTab {def} {canManage} />{/if}
         </div>
       {/key}
     </div>

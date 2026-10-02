@@ -21,7 +21,7 @@
     else void navigate('/observability/:tab', { params: { tab: t } })
   }
 
-  // The view's title lives in the top strip (lib/view-title) — the body opens
+  // The view's title claim is unread (lib/view-title) — the body opens
   // straight onto its tabs.
   claimViewTitle('Observability')
 </script>

@@ -12,7 +12,6 @@
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
   import NotificationToasts from '@/components/app/NotificationToasts.svelte'
   import Toasts from '@/components/app/Toasts.svelte'
-  import TopStrip from '@/components/app/TopStrip.svelte'
   import InboxFocusShell from '@/components/inbox/InboxFocusShell.svelte'
   import UnreadableSecretsBanner from '@/components/setup/UnreadableSecretsBanner.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -26,8 +25,16 @@
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
   // Authenticated app shell (Mercury, spec §5–6): the dock is a full-width
-  // band of nav tiles above everything; below it, the top strip sits above
-  // the active view (children). The brand lives in the dock, not the strip.
+  // band of nav tiles above everything, and it is the shell's ONLY chrome
+  // row — the brand, the nav tiles, search, the bell and the account chip all
+  // live in it, and the active view (children) starts immediately below.
+  //
+  // THE TOP STRIP IS GONE. It was a second full-width band under the dock
+  // holding three controls and, at most, one word of breadcrumb: a rule
+  // across every view, costing every surface 37px for furniture the dock
+  // had room for. Its contents moved into the dock's right cluster and the
+  // component was deleted.
+  //
   // The manage half of the menu lives in the sidebar the dock's gear opens
   // (ManageSidebar, a sibling below).
   let { children }: { children: Snippet } = $props()
@@ -135,6 +142,7 @@
   // The ERROR case keeps the real chrome (shellSkeleton below): the read broke,
   // not the session — the person is probably signed in, so they get the frame
   // with a retry in it, not a bounce that reads as "you have been signed out".
+  // (It used to say "skeleton dock + strip"; there is one band now.)
   //
   // The dock shell has no collapsed variant to hydrate around (the rail's
   // docked choice, in nav-dock.svelte, belongs to the shell swap's second
@@ -166,10 +174,15 @@
 {#snippet shellSkeleton(content: Snippet | undefined)}
   <MercuryBackdrop />
   <div class="flex h-full flex-col">
-    <!-- Dock-shaped skeleton: the band of tiles above the strip, exactly the
-         rows the real chrome paints, so loading never reflows. h-9 tiles and
-         the h-14 band match the real dock's geometry; the strip row keeps
-         its line box (the strip is the slim personal row now). -->
+    <!-- Dock-shaped skeleton: exactly the one band the real chrome paints, so
+         loading never reflows. h-9 tiles and the h-14 band match the real
+         dock's geometry, and the right cluster is held open too — the strip
+         it used to stand in for no longer exists, so if this band did not
+         carry the cluster's width the real chrome would land wider.
+         ThemeToggle rides here in the ERROR case (where `content` is the
+         retry): the account menu that normally holds it needs a session this
+         branch does not have, and leaving a person stuck on a session error
+         unable to change theme is a small cruelty with no reason. -->
     <nav
       aria-label="Primary"
       class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
@@ -181,14 +194,15 @@
         <Skeleton class="h-9 w-9 rounded-md" />
       {/each}
       <div class="min-w-0 flex-1"></div>
+      {#if content}
+        <ThemeToggle />
+      {:else}
+        <Skeleton class="h-9 w-9 rounded-md" />
+        <Skeleton class="h-9 w-9 rounded-md" />
+        <Skeleton class="h-9 w-32 rounded-md" />
+      {/if}
     </nav>
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
-      <!-- The strip: one slim row now — the title row is gone, so the skeleton
-           holds only its line box (py-2 + h-7). -->
-      <header class="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface px-4 py-2">
-        <div class="w-40"></div>
-        {#if content}<ThemeToggle />{:else}<Skeleton class="h-5 w-40 rounded-full" />{/if}
-      </header>
       <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
         {#if content}
           {@render content()}
@@ -238,11 +252,10 @@
          left drawer are different kinds of furniture: the drawer must still
          span the viewport's height to be a peer surface, and a dock band
          above it reads as the shell's top edge rather than a notch cut out
-         of the drawer. The strip stays inside the drawer's column, still
-         titling the view, and everything below keeps its height chain. -->
-    <TopDock {user} />
+         of the drawer. Nothing sits between it and the view any more. -->
+    <TopDock {user} onLogout={() => void logout()} />
     <div class="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-      <ManageSidebar />
+      <ManageSidebar {user} />
       <!-- THE ASSISTANT DRAWER IS A PEER OF THE DOCK'S ROW, not of the page
            body. It used to open inside `vt-view`, below the top strip and
            the banner, so a panel that is conceptually a second rail started
@@ -255,8 +268,7 @@
         attachActiveDecision={shouldAttachInboxDecision(route.pathname, tab)}
         surface={assistantSurface(route.pathname, tab)}
       >
-        <TopStrip {user} onLogout={() => void logout()} />
-        <!-- Above the content, below the strip: unreadable secrets fail at USE
+        <!-- Above the content, below the dock: unreadable secrets fail at USE
              time, so without a standing signal an admin learns about it from a
              confused colleague days later. Renders nothing for members, and
              nothing at all when there is nothing to say. -->

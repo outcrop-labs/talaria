@@ -547,6 +547,15 @@ pub async fn denied_views(
     for v in team_allowed {
         allowed.insert(v);
     }
+    // Managing an agent opens /agents by itself. Naming someone a manager is
+    // the grant (docs/PERMISSIONS.md, "Agent managers"), and a grant that
+    // leaves them unable to reach the surface where the agent lives would
+    // not be one — nobody should need a second, org-wide view grant to tend
+    // the agent they own. The roster behind the view shows only the agents
+    // they manage; `agents.manage` is what widens it to the fleet.
+    if talaria_agent_managers::manages_any_agent(pg, user_id, role).await? {
+        allowed.insert("/agents".to_string());
+    }
     let mut out = denied;
     out.extend(
         MANAGE_VIEW_ROUTES

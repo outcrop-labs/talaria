@@ -12,8 +12,11 @@
   import CronForm from './CronForm.svelte'
   import CronRow from './CronRow.svelte'
 
-  // One agent's cron jobs: list + create + edit/pause/run/delete.
-  let { agentId }: { agentId: string } = $props()
+  // One agent's cron jobs: list + create + edit/pause/run/delete. Reading is
+  // open to anyone who can see the agent; every write belongs to its managers
+  // (docs/PERMISSIONS.md, "Agent managers"), so a non-manager gets the rows
+  // without the controls rather than a row of buttons that 403.
+  let { agentId, canManage }: { agentId: string; canManage: boolean } = $props()
 
   const qc = useQueryClient()
   const key = () => ['agent-crons', agentId]
@@ -75,14 +78,14 @@
     {#snippet skeleton(i)}{@render cronRowSkeleton(i)}{/snippet}
     <QueryState {query} errorTitle="Schedules unavailable" errorVariant="compact">
       {#snippet skeleton()}{@render cronRowSkeleton(0)}{/snippet}
-      {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled" hint="Give it a recurring job below." />{/snippet}
+      {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled" hint={canManage ? 'Give it a recurring job below.' : "Only this agent's managers can schedule its jobs."} />{/snippet}
       {#snippet children(jobs)}
         {#each jobs as j (j.id)}
-          <CronRow job={j} busy={ui.busy} onAction={(a) => void act(agentId, j.id, a)} onEdit={(patch) => edit(agentId, j.id, patch)} />
+          <CronRow job={j} busy={ui.busy || !canManage} onAction={(a) => void act(agentId, j.id, a)} onEdit={(patch) => edit(agentId, j.id, patch)} />
         {/each}
       {/snippet}
     </QueryState>
   </Materialize>
-  <CronForm onCreate={(input) => create(agentId, input)} busy={ui.busy} />
+  {#if canManage}<CronForm onCreate={(input) => create(agentId, input)} busy={ui.busy} />{/if}
   {#if ui.err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{ui.err}</p>{/if}
 </div>

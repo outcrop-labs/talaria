@@ -175,6 +175,9 @@ pub async fn post(
         skills: body.skills,
         start: body.start,
         actor,
+        // Whoever hires the agent manages it. From here on only they (and
+        // admins) can change it, until they name someone else.
+        manager_user_id: Some(user.id.clone()),
     };
 
     // The enqueue needs a live Redis for the lease and the publish — the run

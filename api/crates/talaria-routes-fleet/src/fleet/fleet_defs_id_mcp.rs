@@ -16,7 +16,7 @@ use talaria_body::{
     string_msg, too_big_msg, url_member, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, require_perm, secretbox_or_500};
+use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
 use talaria_state::AppState;
 
 const NAME_PATTERN: &str = "^[a-z0-9][a-z0-9_-]*$";
@@ -111,7 +111,7 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_perm(&state, &headers, "agents.manage").await?;
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let add = match parse_add(obj) {
