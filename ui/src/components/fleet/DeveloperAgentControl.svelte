@@ -5,13 +5,14 @@
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
+  import CodingAccounts from './CodingAccounts.svelte'
   import WorkbenchRepos from './WorkbenchRepos.svelte'
 
   // The one developer setting. On sets the agent up end to end (the dev
   // sandbox, Oh My Pi as its coding harness, and the Workbench tools
   // start_job / finish_job) and rolls the agent so it lands. Which repos
   // it may touch stays an explicit pick below; the switch never grants those.
-  let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
+  let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
   let saving = $state(false)
@@ -32,7 +33,7 @@
     <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Developer Agent</span>
     <InfoTip text="Lets this agent do coding work from tickets: a sandbox, Oh My Pi as its coding harness, and the Workbench tools that open branches and PRs. Turning it on or off restarts the agent so the change takes effect. It can only touch the repos you pick below." />
   </div>
-  {#if isAdmin}
+  {#if canManage}
     <Toggle
       checked={def.developer}
       disabled={saving}
@@ -42,9 +43,15 @@
   {:else}
     <div class="text-fg">{def.developer ? 'On · Oh My Pi' : 'Off'}</div>
   {/if}
-  {#if isAdmin && def.developer}
+  {#if canManage && def.developer}
     <div transition:slide={{ duration: 150 }}>
       <WorkbenchRepos agentId={def.id} />
+      <!-- Coding accounts sit under the repo grants because they answer the
+           next question in the same breath: this agent may touch these repos,
+           and it codes on this plan. The panel renders nothing when the
+           feature is off (its route 404s, which the panel treats as "absent"
+           rather than an error). -->
+      <CodingAccounts agentId={def.id} />
     </div>
   {/if}
 </div>

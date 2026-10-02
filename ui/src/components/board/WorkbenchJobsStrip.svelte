@@ -6,6 +6,7 @@
   import { cn } from '@/lib/cn'
   import { listStagger, slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
+  import CodingPlanPick from './CodingPlanPick.svelte'
 
   interface WbJob {
     id: string
@@ -50,6 +51,12 @@
   }
   const live = $derived((jobs ?? []).filter((j) => j.status !== 'abandoned'))
 </script>
+
+<!-- Which coding plan this ticket runs on, ABOVE the jobs and outside their
+     conditions: the point of the pick is to make it before the work starts, so
+     it cannot be gated on a job already existing. It renders nothing when
+     there is nothing to choose. -->
+<div class="mb-2"><CodingPlanPick {taskId} {canEdit} /></div>
 
 <!-- A failed background refetch keeps the last good strip on screen — stale
      approval buttons beat a vanished gate. Only a failure with nothing to fall

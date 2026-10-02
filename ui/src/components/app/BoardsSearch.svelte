@@ -16,14 +16,15 @@
   import { useBoards, type Board } from '@/lib/boards.svelte'
   import { p } from '@/router'
 
-  // THE STRIP'S SEARCH — the box that left the sidebar with the rail (TALA-84).
-  // An icon beside the bell; a click expands it into the input. The search it
-  // does is the one the rail's box did (boards + tasks across all boards), not
-  // a new global search: there is no command palette backend yet, and a box
-  // that answers "which board, which ticket" is honest about that.
+  // THE DOCK'S SEARCH — the box that left the sidebar with the rail (TALA-84)
+  // and the strip when the strip was deleted. An icon beside the bell; a
+  // click expands it into the input. The search it does is the one the rail's
+  // box did (boards + tasks across all boards), not a new global search:
+  // there is no command palette backend yet, and a box that answers "which
+  // board, which ticket" is honest about that.
   //
   // One request per board fires only while a query is typed — `enabled`
-  // waits for the box to be expanded AND have text, so a resting strip makes
+  // waits for the box to be expanded AND have text, so a resting dock makes
   // no reads at all.
   let expanded = $state(false)
   let query = $state('')
@@ -149,10 +150,12 @@
 
 <section aria-label="Search" class="relative shrink-0">
   {#if expanded}
-    <!-- The expanded box, in the strip itself (spec §6's expanding search):
-         the input replaces the icon in place, results drop below, Escape or
-         the X hands the width back. Autofocused — a click on a search icon
-         IS the intent to type. -->
+    <!-- The expanded box, in the dock band itself (spec §6's expanding
+         search): the input replaces the icon in place, results drop below,
+         Escape or the X hands the width back. Autofocused — a click on a
+         search icon IS the intent to type. The input stays h-7 inside the
+         h-9 slot on purpose — a field as tall as the tiles around it reads
+         as another tile rather than as something you type in. -->
     <div class="relative w-64">
       <Search
         size={14}
@@ -181,7 +184,7 @@
          time this component reads anything. A standing error box over an idle
          search field is noise about work nobody asked for; a silent empty result
          set while a read is failing is the lie this app keeps hunting down.
-         Positioned under the box, right-aligned with the strip's cluster. -->
+         Positioned under the box, right-aligned with the dock's cluster. -->
     <div class="absolute right-0 top-9 z-50 w-80 rounded-lg border border-line bg-panel p-2 shadow-[var(--theme-shadow-2)]">
       {#if searching}
         {#if boardList.notice}
@@ -209,9 +212,9 @@
         queueMicrotask(() => inputEl?.focus())
       }}
       aria-label="Search"
-      class="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
+      class="flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors duration-[120ms] dither-fill hover:text-fg"
     >
-      <Search size={15} class="shrink-0" />
+      <Search size={16} strokeWidth={1.5} class="shrink-0" />
     </button>
   {/if}
 </section>

@@ -7,34 +7,36 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/fleet`](#apifleet) | GET | `session` + `view:/observability` |
-| [`/api/fleet/agents/{id}/control`](#apifleetagentsidcontrol) | POST | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | GET | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | POST | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | POST | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | PUT | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | DELETE | `session` + `perm:agents.manage` |
-| [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | GET | `session` |
-| [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | PUT | `session` |
-| [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | DELETE | `session` |
-| [`/api/fleet/containers`](#apifleetcontainers) | GET | `admin` |
+| [`/api/fleet/agents/{id}/control`](#apifleetagentsidcontrol) | POST | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | GET | `session` + `agent-reader` |
+| [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | POST | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | POST | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | PUT | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/crons/{jobId}`](#apifleetagentsidcronsjobid) | DELETE | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | GET | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | PUT | `session` + `agent-manager` |
+| [`/api/fleet/agents/{id}/secrets`](#apifleetagentsidsecrets) | DELETE | `session` + `agent-manager` |
+| [`/api/fleet/containers`](#apifleetcontainers) | GET | `session` |
 | [`/api/fleet/create`](#apifleetcreate) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/crons`](#apifleetcrons) | GET | `admin` |
 | [`/api/fleet/crons`](#apifleetcrons) | POST | `admin` |
-| [`/api/fleet/defs`](#apifleetdefs) | GET | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}`](#apifleetdefsid) | PATCH | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/edit`](#apifleetdefsidedit) | POST | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | GET | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | PUT | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | DELETE | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/google/connect`](#apifleetdefsidgoogleconnect) | GET | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | POST | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | GET | `session` + `perm:agents.manage` |
-| [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | POST | `session` + `perm:agents.manage` |
+| [`/api/fleet/defs`](#apifleetdefs) | GET | `session` |
+| [`/api/fleet/defs/{id}`](#apifleetdefsid) | PATCH | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/edit`](#apifleetdefsidedit) | POST | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | GET | `session` + `agent-reader` |
+| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | PUT | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/google`](#apifleetdefsidgoogle) | DELETE | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/google/connect`](#apifleetdefsidgoogleconnect) | GET | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | GET | `session` + `agent-reader` |
+| [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | PUT | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | POST | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | GET | `session` + `agent-reader` |
+| [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | POST | `session` + `agent-manager` |
 | [`/api/fleet/endpoints`](#apifleetendpoints) | GET | `admin` |
 | [`/api/fleet/endpoints`](#apifleetendpoints) | POST | `admin` |
 | [`/api/fleet/endpoints/{id}`](#apifleetendpointsid) | PUT | `admin` |
@@ -61,15 +63,15 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet.rs`](../../api/crates/
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_control.rs)
 
-> POST /api/fleet/agents/{id}/control. Lifecycle control for one agent
-> (admin; owners of a personal assistant may up/stop/restart their own).
+> POST /api/fleet/agents/{id}/control. Lifecycle control for one agent —
+> this agent's managers, and admins (docs/PERMISSIONS.md, "Agent managers").
 >   up | stop | restart   the managed service (renders first on `up`)
->   roll                  zero-downtime replacement (admin) — detached
+>   roll                  zero-downtime replacement — detached
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 403, 404, 500 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcontrol-body) | `{ok}` | 200, 400, 404, 500 | audit |
 
 ### POST `/api/fleet/agents/{id}/control` body
 
@@ -87,8 +89,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons.rs`](.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{jobs}` | 200, 400, 403 | — |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400, 403 | audit |
+| GET | `session` + `agent-reader` | — | `{jobs}` | 200, 400 | — |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcrons-body) | `{ok, id}` | 200, 400 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons` body
 
@@ -109,9 +111,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_crons_jobid.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 403 | audit |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400, 403 | audit |
-| DELETE | `session` + `perm:agents.manage` | — | `{ok}` | 200, 400, 403 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidcronsjobid-body) | `{ok}` | 200, 400 | audit |
+| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400 | audit |
 
 ### POST `/api/fleet/agents/{id}/crons/{jobId}` body
 
@@ -139,9 +141,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{secrets}` | 200, 403 | — |
-| PUT | `session` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 403 | audit |
-| DELETE | `session` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400, 403 | audit |
+| GET | `session` + `agent-manager` | — | `{secrets}` | 200 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
+| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
 
 ### PUT `/api/fleet/agents/{id}/secrets` body
 
@@ -161,11 +163,14 @@ source.
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_containers.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_containers.rs)
 
 > GET /api/fleet/containers. Container reality per agent (the managed
-> service), admin.
+> service). Admins and `agents.manage` see the whole fleet; a manager sees
+> the departments their OWN agents run in — without it their tiles would
+> render every agent as stopped, which is the one thing this read exists to
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{containers}` | 200 | — |
+| GET | `session` | — | `{containers}` | 200 | — |
 
 ## `/api/fleet/create`
 
@@ -221,12 +226,14 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/c
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs)
 
 > GET /api/fleet/defs. The harness registry: agent definitions (latest
-> version inline) + LLM endpoints + brain routability. Admins only — the
-> config surface includes infra layout.
+> version inline) + LLM endpoints + brain routability.
+>
+> Who sees what: `agents.manage` (and admins) read the whole fleet; everyone
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{defs, endpoints, brains}` | 200 | — |
+| GET | `session` | — | `{defs, endpoints, brains, canHire}` | 200 | — |
 
 ## `/api/fleet/defs/{id}`
 
@@ -238,7 +245,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| PATCH | `session` + `perm:agents.manage` | [body](#patch-apifleetdefsid-body) | `{ok}` | 200, 400, 404 | audit |
+| PATCH | `session` + `agent-manager` | [body](#patch-apifleetdefsid-body) | `{ok}` | 200, 400, 404 | audit |
 
 ### PATCH `/api/fleet/defs/{id}` body
 
@@ -260,7 +267,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
@@ -285,9 +292,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `…` | 200, 404 | — |
-| PUT | `session` + `perm:agents.manage` | [body](#put-apifleetdefsidgoogle-body) | `…` | 200, 400, 404 | audit |
-| DELETE | `session` + `perm:agents.manage` | — | `…` | 200, 404 | audit |
+| GET | `session` + `agent-reader` | — | `…` | 200, 404 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetdefsidgoogle-body) | `…` | 200, 400, 404 | audit |
+| DELETE | `session` + `agent-manager` | — | `…` | 200, 404 | audit |
 
 ### PUT `/api/fleet/defs/{id}/google` body
 
@@ -307,7 +314,28 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `…` | 302, 400, 404 | — |
+| GET | `session` + `agent-manager` | — | `…` | 302, 400, 404 | — |
+
+## `/api/fleet/defs/{id}/managers`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_managers.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_managers.rs)
+
+> /api/fleet/defs/{id}/managers. Who owns this agent. GET → the roster, for
+> anyone who can see the agent. PUT { userIds } → replace it: this agent's
+> managers and admins, because handing an agent over is itself a change to
+> the agent (docs/PERMISSIONS.md, "Agent managers").
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `agent-reader` | — | `{managers}` | 200, 404 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetdefsidmanagers-body) | `{managers}` | 200, 400, 404 | audit |
+
+### PUT `/api/fleet/defs/{id}/managers` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `userIds` | `string[](36, 36, 1, 50)` | Required array of uuids, at least one, at most fifty — the body validates before the agent lookup, as everywhere else in this family. |
 
 ## `/api/fleet/defs/{id}/mcp`
 
@@ -319,7 +347,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../..
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidmcp-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 
@@ -338,8 +366,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_versions.rs`](
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{def, versions}` | 200, 404 | — |
-| POST | `session` + `perm:agents.manage` | [body](#post-apifleetdefsidversions-body) | `{ok, version, created}` | 200, 400, 404 | — |
+| GET | `session` + `agent-reader` | — | `{def, versions}` | 200, 404 | — |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidversions-body) | `{ok, version, created}` | 200, 400, 404 | — |
 
 ### POST `/api/fleet/defs/{id}/versions` body
 

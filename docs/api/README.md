@@ -6,20 +6,20 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-285 routes across 23 groups.
+299 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 13 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 11 |
-| [`admin`](./admin.md) | Instance administration (admin session required). | 24 |
+| [`admin`](./admin.md) | Instance administration (admin session required). | 25 |
 | [`agents`](./agents.md) | Agent CRUD, registration, heartbeats, skills, runs. | 22 |
 | [`apps`](./apps.md) | The app platform surface and the app-server gateway. | 2 |
 | [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 19 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 22 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 17 |
-| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 23 |
+| [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 24 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, search. | 19 |
@@ -32,7 +32,7 @@
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
 | [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 12 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
-| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 6 |
+| [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 18 |
 
 **Auth vocabulary** (the route's guard class — resource-level ACLs like board
 membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTIONS.md)):
@@ -43,6 +43,8 @@ membership or ownership apply on top; see [API-CONVENTIONS.md](../API-CONVENTION
 | `session` | any signed-in member (`require_user`) |
 | `session` + `perm:x` | signed-in member holding permission `x` (`require_perm`) |
 | `session` + `view:p` | signed-in member granted view `p` (`require_view`) |
+| `session` + `agent-manager` | a manager of the agent in the path, or an admin (`require_agent_manager`) |
+| `session` + `agent-reader` | the above, or anyone who reads the whole fleet — `agents.manage` (`require_agent_reader`) |
 | `admin` | an admin session (`require_admin`) |
 | `agent` | an agent credential (`tak_` key, `require_agent`/`agent_caller`) |
 | `dual` | session path and agent path both reach the handler |

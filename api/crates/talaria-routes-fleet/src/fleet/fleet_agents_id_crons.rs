@@ -2,7 +2,6 @@
 // jobs (read from the container's jobs.json). POST → create. Admin, or the
 // owner of a personal assistant.
 
-use super::can_manage_agent;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -12,17 +11,14 @@ use talaria_agent_crons::{create_cron_job, list_cron_jobs};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, trimmed_string_member};
 use talaria_error::{house_error, object_or_400};
-use talaria_session::{actor_of, require_user};
+use talaria_session::{actor_of, require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
 pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !can_manage_agent(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    require_agent_reader(&state, &headers, &id).await?;
     Ok(match list_cron_jobs(&state.pg, &id).await {
         Ok(jobs) => Json(json!({ "jobs": jobs })).into_response(),
         Err(e) => house_error(StatusCode::BAD_REQUEST, &e),
@@ -35,10 +31,7 @@ pub async fn post(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_user(&state, &headers).await?;
-    if !can_manage_agent(&state, &user.id, &user.role, &id).await {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let name = match trimmed_string_member(obj, "name", 1, 80) {

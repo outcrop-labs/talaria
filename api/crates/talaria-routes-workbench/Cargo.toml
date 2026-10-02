@@ -9,17 +9,21 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+talaria-agent-managers = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-boards = { workspace = true }
+talaria-coding-accounts = { workspace = true }
 talaria-body = { workspace = true }
 talaria-db = { workspace = true }
 talaria-error = { workspace = true }
 talaria-github = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-instance = { workspace = true }
+talaria-model-roles = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-omp-auth = { workspace = true }
 talaria-params = { workspace = true }
 talaria-permissions = { workspace = true }
 talaria-realtime-watch = { workspace = true }

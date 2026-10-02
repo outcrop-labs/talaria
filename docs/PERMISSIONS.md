@@ -11,7 +11,7 @@ Four mechanisms, each with one job:
    members inherit the team's resource ACL and MCP assignments. Manage → Teams is the home;
    resource ACLs accept a team the same way they accept a person.
 
-Resource-level ACLs (board membership, KB editors, plan/research/channel shares, personal-agent ownership)
+Resource-level ACLs (board membership, KB editors, plan/research/channel shares, agent managers)
 stay on the resources themselves: a permission says what you CAN DO, an ACL says what you can do it
 TO. Adding a team to a resource does not fan out member rows — membership is expanded when the
 ACL is checked, so roster changes apply immediately.
@@ -42,7 +42,8 @@ Admins set team view grants on Manage → Teams (not the roster owner).
 13 permissions in five groups (`api/crates/talaria-permissions/src/lib.rs` is the catalog; the
 groups are what Admin → People renders):
 
-- **Agents** — `agents.manage`.
+- **Agents** — `agents.manage` (the FLEET: hiring, LLM endpoints, MCP servers, the role library.
+  Changing one agent is its managers' — see below).
 - **Work** — `research.run`, `plans.create`, `boards.create`.
 - **Comms** — `comms.channels`, `comms.relays`.
 - **Content** — `kb.edit`, `kb.official`, `artifacts.create`, `artifacts.publish`, `files.upload`,
@@ -63,6 +64,39 @@ Each ships a sensible member default; the ones that are **off** by default are `
 Admins hold everything unconditionally. The Admin → People per-person chips show effective state
 and where it came from (override dot vs inherited). Team chips on Manage → Teams show the team's
 own overrides, not a member's effective set.
+
+## Agent managers
+
+An agent is somebody's. **Only its managers may change it** — identity and role, the soul and
+model config, skills, memory, schedules, secrets, MCP binds, workbench repos, and the whole
+lifecycle (start/stop/restart/roll/retire/delete). Everyone else who can see the agent gets the
+same manage surface read-only.
+
+- **Admins manage every agent**, named or not. An agent whose manager leaves the org must not
+  leave with them, and `Managers` is where an admin hands it to someone else.
+- **Being named a manager is the whole grant.** It needs no `agents.manage`, and it opens the
+  `/agents` view by itself — a grant that left someone unable to reach the surface where their
+  agent lives would not be one. The roster then shows *their* agents; `agents.manage` is what
+  widens it to the fleet (and such a reader sees other agents read-only).
+- **`agents.manage` is the fleet, not any agent.** It still gates hiring, federating, LLM
+  endpoints, MCP servers, role templates, the shared skills root and the fleet-wide schedules —
+  none of which belong to one agent. It no longer confers the right to rewrite an agent
+  somebody else owns.
+- **Whoever hires an agent manages it**, and a personal assistant is managed by its human
+  (`agent_defs.owner_user_id` still answers for an assistant that predates its manager row).
+- **The roster is never empty.** The PUT refuses a manager list of zero, so nobody can lock
+  themselves out of their own agent: hand it over by adding the new manager in the same request
+  that drops yourself.
+
+The rows live in `agent_managers` (agent × user). Where this is asked in code:
+`talaria_agent_managers::manages_agent` and the route guard
+`talaria_session::require_agent_manager` — the per-agent twin of `require_perm`, rendered in the
+generated reference as `session` + `agent-manager`. The roster is
+`GET`/`PUT /api/fleet/defs/{id}/managers`, and the Agents → Manage modal's **Managers** tab.
+
+On upgrade, every personal assistant was written in under its owner and every other agent under
+the admins who could already change it, so nothing an admin could do before the upgrade stopped
+working after it. Admins added later hold reach by role rather than by a row.
 
 ## Personal assistants
 
@@ -130,7 +164,9 @@ courtesy, the 403 is the contract.
 
 ## Related
 
-- Agent allow-lists (which agents a member may use) live on the person in Admin → People.
+- Agent allow-lists (which agents a member may *use*) live on the person in Admin → People. Using
+  an agent and managing it are separate questions: a use grant has never implied the right to
+  rewrite how the agent works.
 - MCP tool access (per-agent, per-person, and per-team, per server) is its own governed system:
   [MCP.md](./MCP.md). Manage → Teams is where a team's platform views, permission overrides, and
   roster (people + agents) live.

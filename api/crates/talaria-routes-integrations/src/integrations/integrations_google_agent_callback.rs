@@ -1,6 +1,7 @@
 // GET /api/integrations/google/agent/callback — store the agent's own Google
 // connection and set its principal to that identity. The state cookie is the
-// CSRF check; the state row says which agent the admin started this for.
+// CSRF check; the state row says which agent this was started for, and whose
+// managers are the people allowed to finish it.
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
@@ -17,7 +18,7 @@ use talaria_api_facades::google::oauth::{
 };
 use talaria_body::percent_encode;
 use talaria_error::internal;
-use talaria_session::{STATE_COOKIE, require_perm, state_matches};
+use talaria_session::{STATE_COOKIE, require_agent_manager_by_model, require_user, state_matches};
 use talaria_state::AppState;
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) -> Response {
@@ -56,10 +57,13 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if !google_integration_enabled(&state.pg, &sb).await {
         return back("disabled");
     }
-    if require_perm(&state, &headers, "agents.manage")
-        .await
-        .is_err()
-    {
+    // Signed in at all, before anything is spent. WHICH agent this is for
+    // only becomes known when the state row resolves below, so the
+    // manager check waits for it — `agents.manage` is the wrong question
+    // here (docs/PERMISSIONS.md, "Agent managers"): the person who may
+    // connect this agent's Google account is the person who manages it, and
+    // they need no fleet-wide permission to have started the flow.
+    if require_user(&state, &headers).await.is_err() {
         return back("forbidden");
     }
 
@@ -84,6 +88,15 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
         Ok(None) => return back("bad_state"),
         Err(e) => return internal("[integrations/google/agent] oauth state read failed", e),
     };
+    // Now the agent is known: the same gate the connect start applied. The
+    // state row is already spent, which is right — a refused callback must
+    // not leave a replayable one behind.
+    if require_agent_manager_by_model(&state, &headers, &agent_model)
+        .await
+        .is_err()
+    {
+        return back("forbidden");
+    }
 
     let public_url = talaria_auth_config::get_auth_config().public_url;
     let redirect_uri = google_agent_connect_redirect_uri(public_url.as_deref(), &headers, &uri);

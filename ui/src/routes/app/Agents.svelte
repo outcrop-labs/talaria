@@ -1,8 +1,10 @@
 <script lang="ts">
   import PageSurface from '@/components/app/PageSurface.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { CircleAlert, Import, LayoutGrid, List, Plus } from '@lucide/svelte'
+  import { currentDesign } from '@/lib/agent-design.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Materialize from '@/components/ui/Materialize.svelte'
   import Panel from '@/components/ui/Panel.svelte'
@@ -19,16 +21,18 @@
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { useFleet } from '@/lib/fleet'
+  import { useSession } from '@/lib/session'
   import { fly, slide, staggerIn } from '@/lib/motion'
   import { useFleetContainers, useFleetDefs, useFleetHires, type AgentDef } from '@/lib/fleet-defs'
-  import { useSession } from '@/lib/session'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import AgentListRow from './AgentListRow.svelte'
   import AgentTile from './AgentTile.svelte'
 
-  const session = useSession()
   const queryClient = useQueryClient()
+  const session = useSession()
+  // Federating an outside fleet is instance wiring, not agent management —
+  // that route is admin-only, so the button is too.
   const isAdmin = $derived(session.data?.role === 'admin')
   // Agents is the home tab; the role library and the fleet's schedules are the
   // other two. Each was a takeover modal behind a toolbar icon — an affordance
@@ -49,11 +53,18 @@
     else void navigate('/agents/:tab', { params: { tab: id } })
   }
   const fleetQuery = useFleet()
-  const defsQuery = useFleetDefs(() => isAdmin)
-  const containersQuery = useFleetContainers(() => isAdmin)
+  // THE READS ARE NOT GATED CLIENT-SIDE ANY MORE. They used to be `isAdmin`,
+  // from before an agent had managers: now the roster read answers with the
+  // agents THIS person may see — the whole fleet for `agents.manage` and
+  // admins, their own otherwise — and `canHire` says which it was
+  // (docs/PERMISSIONS.md, "Agent managers"). Anyone who reaches this route
+  // has the /agents view, which managing an agent grants.
+  const defsQuery = useFleetDefs(() => true)
+  const containersQuery = useFleetContainers(() => true)
   // Hires in flight, for the strip above the roster. Polls only while
   // something is actually hiring (the query owns that cadence).
-  const hiresQuery = useFleetHires(() => isAdmin)
+  const canHire = $derived(defsQuery.data?.canHire ?? false)
+  const hiresQuery = useFleetHires(() => canHire)
 
   // A hire this surface watched alive reaching a terminal state is the
   // landing event: the def row (and, after a boot, its container) already
@@ -86,6 +97,16 @@
   let creating = $state(false)
   let duplicateFrom = $state<AgentDef | null>(null)
   let federateOpen = $state(false)
+  // The background design row (TALA-11): headline = first words of the
+  // purpose while generating/erroring, the designed agent's name once
+  // landed. Null when the store holds nothing.
+  const design = $derived(currentDesign())
+  const designRow = $derived.by(() => {
+    if (!design) return null
+    if (design.status === 'ready') return { status: 'ready' as const, headline: design.name || 'the design' }
+    const first = design.purpose.split(/\s+/).slice(0, 7).join(' ').replace(/[.,;:!?]+$/, '')
+    return { status: design.status, headline: first || 'the new agent' }
+  })
 
   // Defs AND containers gate the roster together: tiles built from
   // `containers: null` read every agent as stopped, then flip. (A disabled
@@ -177,20 +198,22 @@
           value={view}
           onChange={(id) => (view = id)}
         />
-        {#if isAdmin}
+        {#if canHire}
           <Button size="sm" class="w-9 px-0" onclick={() => (creating = true)} title="New agent" aria-label="New agent">
             <Plus size={16} />
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            class="w-9 px-0"
-            onclick={() => (federateOpen = true)}
-            title="Federate outside agents into Talaria"
-            aria-label="Federate agents"
-          >
-            <Import size={15} />
-          </Button>
+          {#if isAdmin}
+            <Button
+              variant="outline"
+              size="sm"
+              class="w-9 px-0"
+              onclick={() => (federateOpen = true)}
+              title="Federate outside agents into Talaria"
+              aria-label="Federate agents"
+            >
+              <Import size={15} />
+            </Button>
+          {/if}
         {/if}
         {/if}
       {/snippet}
@@ -233,6 +256,36 @@
          the strip IS the completion event. -->
     <HiringStrip hires={hiresQuery.data?.hires ?? []} />
 
+    <!-- TALA-11: an agent DESIGN running in the background (or finished but
+         unclaimed) — the same shelf the hires use, one slim status row. It
+         is a pointer into the modal, not a surface of its own: click to
+         re-enter the work. Renders nothing when there is no design. -->
+    {#if designRow}
+      <div transition:slide={{ duration: 150 }}>
+        <Panel class="px-4 py-3">
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 text-left"
+            onclick={() => {
+              creating = true
+            }}
+          >
+            {#if designRow.status === 'generating'}
+              <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
+              <span class="truncate font-sans text-sm text-muted">Designing {designRow.headline}</span>
+            {:else if designRow.status === 'error'}
+              <CircleAlert size={14} class="shrink-0 text-danger" />
+              <span class="truncate font-sans text-sm text-danger">The design failed: {designRow.headline}</span>
+            {:else}
+              <WaitingMark site="fleet/agent-design" size={12} class="shrink-0 text-accent" />
+              <span class="truncate font-sans text-sm text-fg">{designRow.headline} is designed and waiting for review</span>
+            {/if}
+            <span class="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">design</span>
+          </button>
+        </Panel>
+      </div>
+    {/if}
+
     <!-- "No agents yet" is a claim about the fleet, and for months a 500 from
          /api/fleet/defs made this surface state it — the owner reading that
          his fleet was empty while the box was down. It is now reachable ONLY
@@ -255,31 +308,37 @@
             errorTitle="Could not load the agent roster"
             errorVariant="compact"
             isEmpty={(d) => d.defs.length === 0}
+            idle={null}
           >
             {#snippet skeleton()}{@render itemSkeleton(0)}{/snippet}
-            {#snippet idle()}
-              <!-- p-0: the zero state brings its own padding and its vignette fills this
-         box, so panel padding would be a band it cannot reach. -->
-      <Panel class="p-0">
-                <EmptyState
-                  title="Roster not available to you"
-                  hint="Only accounts that manage agents can see agent definitions. Ask an admin for access."
-                />
-              </Panel>
-            {/snippet}
             {#snippet empty()}
-              <Panel>
-                <EmptyState
-                  title="No agents yet"
-                  hint="Describe the first one and Muse designs it: identity, soul, and starter skills."
-                >
-                  {#snippet action()}
-                    <Button size="sm" onclick={() => (creating = true)}>
-                      Design your first agent
-                    </Button>
-                  {/snippet}
-                </EmptyState>
-              </Panel>
+              <!-- TWO DIFFERENT EMPTIES, and the server says which. Somebody
+                   who can hire has no agents yet; somebody who cannot has
+                   none of their own, and "design your first agent" under a
+                   button they will be 403'd by is the wrong sentence. -->
+              {#if canHire}
+                <Panel>
+                  <EmptyState
+                    title="No agents yet"
+                    hint="Describe the first one and Muse designs it: identity, soul, and starter skills."
+                  >
+                    {#snippet action()}
+                      <Button size="sm" onclick={() => (creating = true)}>
+                        Design your first agent
+                      </Button>
+                    {/snippet}
+                  </EmptyState>
+                </Panel>
+              {:else}
+                <!-- p-0: the zero state brings its own padding and its vignette fills this
+         box, so panel padding would be a band it cannot reach. -->
+                <Panel class="p-0">
+                  <EmptyState
+                    title="No agents are yours to manage"
+                    hint="You see an agent here once somebody makes you one of its managers. Ask an admin, or whoever runs the agent you need."
+                  />
+                </Panel>
+              {/if}
             {/snippet}
             {#snippet children(data)}
               {@const endpoints = data.endpoints}

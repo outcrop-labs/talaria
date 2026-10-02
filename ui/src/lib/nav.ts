@@ -1,10 +1,12 @@
 // The application menu. Views speak for themselves: the Work section has no
 // header above it (the views are self-explanatory), Manage keeps one because
-// it is the control plane. The top strip's System breadcrumb for
-// settings/admin is TopStrip's own doctrine and lives there. Sections carry
-// stable `id`s that consumers branch on — Apps slotting, app-manage slotting;
-// `title` is display-only and optional, and a section without one renders as
-// a bare list (NavRail).
+// it is the control plane. Settings and Admin are deliberately absent from
+// every section — they live in the dock's account menu, and the dock lights
+// that chip for them (TopDock's `onSystemHere`), which is what replaced the
+// deleted strip's "System" breadcrumb. Sections carry stable `id`s that
+// consumers branch on — Apps slotting, app-manage slotting; `title` is
+// display-only and optional, and a section without one renders as a bare
+// list.
 
 import type { LucideIcon } from '@lucide/svelte'
 import {
@@ -120,7 +122,7 @@ export const NAV: NavSection[] = [
       { to: '/apps', label: 'Apps', icon: Hexagon },
     ],
   },
-  // Settings and Admin live in the USER MENU (top strip), not the rail: they
+  // Settings and Admin live in the USER MENU (in the dock), not the tiles: they
   // are about the person and the instance, not the work. Settings stays
   // always-reachable (never gateable); /admin stays role-locked via the
   // explicit ADMIN_VIEWS entry below.

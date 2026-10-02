@@ -20,6 +20,7 @@ talaria-approvals = { workspace = true }
 talaria-artifacts = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-boards = { workspace = true }
+talaria-coding-accounts = { workspace = true }
 talaria-body = { workspace = true }
 talaria-fleet-budget = { workspace = true }
 talaria-fleet-docker = { workspace = true }

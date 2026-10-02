@@ -15,6 +15,7 @@
 
 mod support;
 
+mod agent_managers;
 mod agent_reply_notify;
 mod artifacts_read;
 mod attribution;
