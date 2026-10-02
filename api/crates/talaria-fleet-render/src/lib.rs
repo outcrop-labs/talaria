@@ -917,6 +917,16 @@ pub async fn render_fleet(
         .await
         .unwrap_or_default();
 
+    // Which agents hold a coding account the harness may use. Those agents
+    // get the auth-broker env (so their omp reads their credentials from this
+    // instance) and their DEFAULT plan's models in the role env. The default
+    // is what a job that pins nothing runs on; a ticket that pins another
+    // plan overrides these on the invocation line at start_job, because
+    // container env cannot be re-rendered per ticket.
+    let coding_agents = talaria_coding_accounts::agents_with_accounts(pg)
+        .await
+        .unwrap_or_default();
+
     let gw_base = talaria_fleet_layout::mcp_gw_base();
     let fleet_skills = talaria_fleet_layout::fleet_dir().join("skills");
     let fleet_plugins = talaria_fleet_layout::fleet_dir()
@@ -1257,6 +1267,39 @@ pub async fn render_fleet(
             }
             for (k, v) in omp_roles.env() {
                 env.insert(k, v);
+            }
+            // Coding accounts: point this agent's omp at Talaria's own
+            // auth-broker endpoint, authenticated as the agent. The bearer is
+            // the scope — an agent reads exactly its own accounts — so no new
+            // credential is minted here; the agent key it already has is the
+            // right one. Only agents that actually hold an account get these,
+            // so a fleet with the feature off renders byte-identically.
+            if coding_agents.contains(&def.id) {
+                env.insert(
+                    "OMP_AUTH_BROKER_URL".into(),
+                    json!(format!("{}/api/workbench/auth", gateway_origin())),
+                );
+                env.insert(
+                    "OMP_AUTH_BROKER_TOKEN".into(),
+                    json!(format!(
+                        "${{{}}}",
+                        talaria_fleet_layout::agent_key_var(&def.slug)
+                    )),
+                );
+                // The agent's default plan replaces the org's role env. An
+                // unfilled role keeps the org's value, which is why this
+                // writes over `omp_roles.env()` rather than replacing it.
+                if let Ok(Some(plan)) = talaria_coding_accounts::resolve(pg, &def.id, None).await {
+                    for (role, var) in [
+                        ("smol", "PI_SMOL_MODEL"),
+                        ("slow", "PI_SLOW_MODEL"),
+                        ("plan", "PI_PLAN_MODEL"),
+                    ] {
+                        if let Some(arg) = plan.model_arg(role) {
+                            env.insert(var.into(), json!(arg));
+                        }
+                    }
+                }
             }
             obj.insert("environment".into(), Value::Object(env));
         } else {

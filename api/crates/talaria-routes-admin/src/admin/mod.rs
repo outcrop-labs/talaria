@@ -1,5 +1,6 @@
 // The admin console surface.
 pub mod admin_apps;
+pub mod admin_coding_accounts;
 pub mod admin_domains;
 pub mod admin_email;
 pub mod admin_encryption;

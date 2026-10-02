@@ -142,8 +142,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_agents_id_secrets.rs`]
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-manager` | — | `{secrets}` | 200 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | audit |
-| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
+| DELETE | `session` + `agent-manager` | [body](#delete-apifleetagentsidsecrets-body) | `{ok}` | 200, 400 | — |
 
 ### PUT `/api/fleet/agents/{id}/secrets` body
 

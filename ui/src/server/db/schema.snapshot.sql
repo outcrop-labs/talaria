@@ -12,8 +12,73 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+CREATE FUNCTION public.talaria_bump_coding_rev() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+     declare aid uuid;
+     begin
+       if tg_table_name = 'agent_coding_accounts' then
+         aid := coalesce(new.agent_id, old.agent_id);
+       else
+         select a.agent_id into aid from agent_coding_accounts a
+           where a.id = coalesce(new.account_id, old.account_id);
+       end if;
+       if aid is not null then
+         insert into agent_coding_rev (agent_id, rev) values (aid, 1)
+           on conflict (agent_id) do update
+           set rev = agent_coding_rev.rev + 1, updated_at = now();
+       end if;
+       return null;
+     end;
+   $$;
 SET default_tablespace = '';
 SET default_table_access_method = heap;
+CREATE TABLE public.agent_coding_account_blocks (
+    account_id bigint NOT NULL,
+    provider_key text NOT NULL,
+    block_scope text DEFAULT ''::text NOT NULL,
+    blocked_until_ms bigint NOT NULL,
+    updated_at_ms bigint
+);
+CREATE TABLE public.agent_coding_accounts (
+    id bigint NOT NULL,
+    agent_id uuid NOT NULL,
+    provider text NOT NULL,
+    login_provider text NOT NULL,
+    credential_enc text NOT NULL,
+    identity_key text,
+    email text,
+    account_id text,
+    org_id text,
+    org_name text,
+    is_primary boolean DEFAULT false NOT NULL,
+    expires_at timestamp with time zone,
+    authorized_at timestamp with time zone,
+    disabled_at timestamp with time zone,
+    disabled_cause text,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE SEQUENCE public.agent_coding_accounts_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.agent_coding_accounts_id_seq OWNED BY public.agent_coding_accounts.id;
+CREATE TABLE public.agent_coding_rev (
+    agent_id uuid NOT NULL,
+    rev bigint DEFAULT 1 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.agent_coding_roles (
+    agent_id uuid NOT NULL,
+    account_id bigint,
+    role text NOT NULL,
+    model text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.agent_created_google_docs (
     file_id text NOT NULL,
     agent_model text NOT NULL,
@@ -992,6 +1057,13 @@ CREATE TABLE public.task_activity (
     description text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_coding_pins (
+    task_id uuid NOT NULL,
+    account_id bigint,
+    model text,
+    pinned_by uuid,
+    pinned_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_dependencies (
     task_id uuid NOT NULL,
     depends_on_id uuid NOT NULL,
@@ -1287,6 +1359,13 @@ CREATE TABLE public.workspace_secrets (
     owner_user_id uuid,
     secret_folder_id uuid
 );
+ALTER TABLE ONLY public.agent_coding_accounts ALTER COLUMN id SET DEFAULT nextval('public.agent_coding_accounts_id_seq'::regclass);
+ALTER TABLE ONLY public.agent_coding_account_blocks
+    ADD CONSTRAINT agent_coding_account_blocks_pkey PRIMARY KEY (account_id, provider_key, block_scope);
+ALTER TABLE ONLY public.agent_coding_accounts
+    ADD CONSTRAINT agent_coding_accounts_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.agent_coding_rev
+    ADD CONSTRAINT agent_coding_rev_pkey PRIMARY KEY (agent_id);
 ALTER TABLE ONLY public.agent_created_google_docs
     ADD CONSTRAINT agent_created_google_docs_pkey PRIMARY KEY (file_id);
 ALTER TABLE ONLY public.agent_defs
@@ -1523,6 +1602,8 @@ ALTER TABLE ONLY public.skill_summaries
     ADD CONSTRAINT skill_summaries_pkey PRIMARY KEY (owner, name);
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.task_coding_pins
+    ADD CONSTRAINT task_coding_pins_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_pkey PRIMARY KEY (task_id, depends_on_id);
 ALTER TABLE ONLY public.task_watchers
@@ -1591,6 +1672,9 @@ ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_name_key UNIQUE (name);
 ALTER TABLE ONLY public.workspace_secrets
     ADD CONSTRAINT workspace_secrets_pkey PRIMARY KEY (id);
+CREATE UNIQUE INDEX agent_coding_accounts_primary_idx ON public.agent_coding_accounts USING btree (agent_id) WHERE is_primary;
+CREATE UNIQUE INDEX agent_coding_accounts_service_idx ON public.agent_coding_accounts USING btree (agent_id, provider);
+CREATE UNIQUE INDEX agent_coding_roles_plan_role_idx ON public.agent_coding_roles USING btree (agent_id, account_id, role) NULLS NOT DISTINCT;
 CREATE INDEX agent_managers_user_idx ON public.agent_managers USING btree (user_id);
 CREATE INDEX agent_resource_samples_agent_time ON public.agent_resource_samples USING btree (agent_model, taken_at);
 CREATE INDEX app_data_updated_idx ON public.app_data USING btree (app, collection, updated_at DESC);
@@ -1650,6 +1734,7 @@ CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_k
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
 CREATE INDEX task_activity_task_idx ON public.task_activity USING btree (task_id, created_at DESC);
+CREATE INDEX task_coding_pins_account_idx ON public.task_coding_pins USING btree (account_id);
 CREATE INDEX task_workchain_edges_from ON public.task_workchain_edges USING btree (workchain_id, from_step);
 CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree (workchain_id, to_step);
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
@@ -1662,6 +1747,18 @@ CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) 
 CREATE INDEX usage_events_unpriced_generation_idx ON public.usage_events USING btree (generation_id) WHERE ((generation_id IS NOT NULL) AND (provider_cost IS NULL));
 CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
+CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
+CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
+ALTER TABLE ONLY public.agent_coding_account_blocks
+    ADD CONSTRAINT agent_coding_account_blocks_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.agent_coding_accounts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_coding_accounts
+    ADD CONSTRAINT agent_coding_accounts_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_coding_accounts
+    ADD CONSTRAINT agent_coding_accounts_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.agent_coding_roles
+    ADD CONSTRAINT agent_coding_roles_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.agent_coding_accounts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_coding_roles
+    ADD CONSTRAINT agent_coding_roles_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_defs
@@ -1914,6 +2011,12 @@ ALTER TABLE ONLY public.secret_folders
     ADD CONSTRAINT secret_folders_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_coding_pins
+    ADD CONSTRAINT task_coding_pins_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.agent_coding_accounts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_coding_pins
+    ADD CONSTRAINT task_coding_pins_pinned_by_fkey FOREIGN KEY (pinned_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.task_coding_pins
+    ADD CONSTRAINT task_coding_pins_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_dependencies
     ADD CONSTRAINT task_dependencies_depends_on_id_fkey FOREIGN KEY (depends_on_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_dependencies

@@ -5,6 +5,7 @@
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
+  import CodingAccounts from './CodingAccounts.svelte'
   import WorkbenchRepos from './WorkbenchRepos.svelte'
 
   // The one developer setting. On sets the agent up end to end (the dev
@@ -45,6 +46,12 @@
   {#if canManage && def.developer}
     <div transition:slide={{ duration: 150 }}>
       <WorkbenchRepos agentId={def.id} />
+      <!-- Coding accounts sit under the repo grants because they answer the
+           next question in the same breath: this agent may touch these repos,
+           and it codes on this plan. The panel renders nothing when the
+           feature is off (its route 404s, which the panel treats as "absent"
+           rather than an error). -->
+      <CodingAccounts agentId={def.id} />
     </div>
   {/if}
 </div>

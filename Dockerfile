@@ -38,11 +38,13 @@ WORKDIR /repo
 # Manifests first so dependency install layer-caches across source changes.
 COPY ui/package.json ui/bun.lock ./ui/
 COPY mcp/package.json mcp/bun.lock ./mcp/
-# mcp's install skips lifecycle scripts: its prepare runs tsc against sources
-# that don't exist in this manifests-only layer — the explicit build below
-# compiles it instead.
+COPY omp-auth/package.json omp-auth/bun.lock ./omp-auth/
+# mcp's and omp-auth's installs skip lifecycle scripts: their prepare steps
+# build against sources that don't exist in this manifests-only layer — the
+# explicit builds below compile them instead.
 RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --frozen-lockfile \
- && cd ../mcp && bun install --frozen-lockfile --ignore-scripts
+ && cd ../mcp && bun install --frozen-lockfile --ignore-scripts \
+ && cd ../omp-auth && bun install --frozen-lockfile --ignore-scripts
 
 # Everything else. .dockerignore keeps node_modules/dist out of this copy, so
 # the installs above survive it.
@@ -51,7 +53,8 @@ RUN --mount=type=cache,target=/root/.bun/install/cache cd ui && bun install --fr
 # apps (e.g. apps/leadworks) that are part of local builds by design.
 COPY . .
 RUN cd ui && bun run build \
- && cd ../mcp && bun run build
+ && cd ../mcp && bun run build \
+ && cd ../omp-auth && bun run build
 
 # ── api ──────────────────────────────────────────────────────────────────────
 # The pre-built Rust api, consumed as a package image — never compiled in an
@@ -142,6 +145,13 @@ COPY --from=prod-deps /repo/ui/node_modules ./ui/node_modules
 COPY --from=build /repo/mcp/dist ./mcp/dist
 COPY --from=build /repo/mcp/package.json ./mcp/
 COPY --from=prod-deps /repo/mcp/node_modules ./mcp/node_modules
+# omp-auth/: the coding-account auth bridge, spawned as a child process
+# (talaria-omp-auth execs ../omp-auth/dist/server.js). Its dist is a SELF-
+# CONTAINED bundle — no node_modules ship for it, which is the point: the
+# `@oh-my-pi/pi-ai` tree it is built from pulls 364 MB of glibc-only native
+# binaries that this alpine image could neither hold nor load. omp-auth/
+# build.ts substitutes a stub for them; see omp-auth/src/natives-stub.ts.
+COPY --from=build /repo/omp-auth/dist ./omp-auth/dist
 # scripts/: seeded fleet skills + the chassis template the entrypoint copies
 # into the state dir on first boot.
 COPY scripts/skills ./scripts/skills

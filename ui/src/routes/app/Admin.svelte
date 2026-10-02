@@ -34,6 +34,7 @@
   import AdminGuardrailsPanel from './AdminGuardrailsPanel.svelte'
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
   import AdminInvitesPanel from './AdminInvitesPanel.svelte'
+  import AdminCodingAccountsPanel from './AdminCodingAccountsPanel.svelte'
   import AdminJudgePanel from './AdminJudgePanel.svelte'
   import AdminMemberDefaultsPanel from './AdminMemberDefaultsPanel.svelte'
   import AdminOrgGooglePanel from './AdminOrgGooglePanel.svelte'
@@ -122,6 +123,7 @@
       {/if}
       {#if tab === 'agents'}
         <AdminJudgePanel />
+        <AdminCodingAccountsPanel />
         <AdminGuardrailsPanel />
         <AdminOutreachPanel />
       {/if}

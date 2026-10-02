@@ -1,0 +1,24 @@
+{
+  "name": "talaria-omp-auth",
+  "version": "0.1.0",
+  "description": "The omp auth bridge — Oh My Pi's own OAuth login and token refresh, exposed to the Rust api over loopback. Talaria holds the credentials; omp performs the flows.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "scripts": {
+    "build": "bun build.ts",
+    "typecheck": "tsc --noEmit",
+    "//prepare": "dist/ is gitignored but IS what runs (the api spawns dist/server.js). npm and bun both run `prepare` after an install here, so installing can never leave you without a dist — the same last line of defence mcp/ has.",
+    "prepare": "bun build.ts"
+  },
+  "engines": { "bun": ">=1.4.0" },
+  "dependencies": {
+    "@oh-my-pi/pi-ai": "18.4.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "@types/node": "^22.15.0",
+    "@types/bun": "^1.2.0"
+  }
+}
