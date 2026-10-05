@@ -66,5 +66,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-fleet-create = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-ticket-chat = { workspace = true }
+talaria-harness-defs = { workspace = true }
+talaria-harness = { workspace = true }
 talaria-web-search = { workspace = true }
 talaria-fleet-docker = { workspace = true }

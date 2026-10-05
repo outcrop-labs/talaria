@@ -173,6 +173,61 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_conversations::conversation_owner(&pg, &id).await })
     }));
+    // THE TICKET-THREAD GATE, and it had been dark for sixteen days.
+    //
+    // `ticket_message_relevant` is the only door between a human message on a
+    // ticket's discussion and the assigned agent's turn. It settles the
+    // structural cases itself (an attachments-only handoff, a bare empty turn,
+    // a message naming the ticket ref) and hands everything else to this
+    // seam — so an unset seam is not a degraded gate, it is NO gate: the
+    // `None` arm answers `true`, every remaining message reads as the agent's
+    // business, and the agent is a roommate again. Exactly the failure the
+    // harness's own header costed as unacceptable in the other direction.
+    //
+    // HOW IT WENT DARK, because the shape is worth recognising. 82eb786e
+    // ("api: extract ticket-thread model surfaces") moved this module into its
+    // own crate and introduced the OnceLock to break the dependency on the
+    // harness runner — correctly — but never added the setter. Its own
+    // verification line reads "Verified: cargo check -p talaria-api", and
+    // `cargo check` cannot see an unset `OnceLock`: the declaration compiles,
+    // the read compiles, and the fallback is a valid answer. The live
+    // instance's `harness_runs` shows the shape precisely — nine
+    // 'ticket-relevance' rows between 2026-09-18 02:37 and 2026-09-19 00:28
+    // UTC, the extraction landing at 04:28 that morning, and not one row
+    // since.
+    //
+    // The fold below is the pre-extraction code's, verbatim in behaviour: a
+    // harness error, a null verdict, or any value that is not
+    // {"relevant": bool} all answer TRUE. The gate may cost an unneeded
+    // reply; it may never cost an unanswered one.
+    let _ = talaria_ticket_chat::TICKET_RELEVANT.set(Arc::new(
+        |state, ticket, work, message, recent| {
+            Box::pin(async move {
+                let input = serde_json::json!(
+                    talaria_harness_defs::defs::ticket_relevance::TicketRelevanceInput {
+                        ticket,
+                        work,
+                        message,
+                        recent,
+                    }
+                );
+                talaria_harness::run::run_harness(
+                    &state,
+                    &talaria_harness_defs::defs::ticket_relevance::ticket_relevance_harness(),
+                    &input,
+                    talaria_harness::run::RunContext {
+                        caller: "platform:ticket-relevance".into(),
+                        ..talaria_harness::run::RunContext::default()
+                    },
+                )
+                .await
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.get("relevant").and_then(serde_json::Value::as_bool))
+                .unwrap_or(true)
+            })
+        },
+    ));
     // THE TWO GET_TASK EDGES — same disease as CONVERSATION_OWNER, found the
     // same week by the live suite's first runs: workchains' turn/pause paths
     // and inbox-focus's focus scoring both `.expect("GET_TASK")` on a seam
@@ -488,6 +543,17 @@ mod tests {
         assert!(
             talaria_tasks_types::BUILD_DISPATCH.get().is_some(),
             "BUILD_DISPATCH fell out of the boot wiring — plan drafts, research, and reindex cannot enqueue"
+        );
+        // THE TICKET-THREAD GATE, and this assertion is the one that would
+        // have caught sixteen days of no gate at all. `ticket_message_relevant`
+        // is the only door between a human message on a ticket's discussion
+        // and the assigned agent's turn, and its `None` arm answers TRUE — so
+        // an unwired edge is not a worse gate, it is the agent answering every
+        // message in the room. The extraction that introduced the edge
+        // verified with `cargo check`, which cannot see this.
+        assert!(
+            talaria_ticket_chat::TICKET_RELEVANT.get().is_some(),
+            "the ticket-thread gate fell out of the boot wiring — the assigned agent would reply to every message on every ticket discussion, including people talking to each other"
         );
     }
 
