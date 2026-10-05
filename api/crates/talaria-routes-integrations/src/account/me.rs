@@ -1,8 +1,16 @@
 // /api/me. The signed-in person's own profile: GET reads the three preference
 // columns, PUT edits display name (users row + the live session, so the SPA's
 // corner never waits for a re-login), preferred model (the member gate runs
-// HERE, not just in the picker), platform-default reasoning effort, and IANA
-// zone.
+// HERE, not just in the picker), platform-default reasoning effort, IANA
+// zone, profile photo (`avatarUploadId` — an upload the caller made, a PNG,
+// JPEG, WebP or GIF of at most 5 MB; null restores the sign-in picture) and
+// status (`statusEmoji` 1–16 chars, `statusText` ≤ 100; null or blank clears).
+// A photo change is pushed to every one of the person's live sessions, not
+// only this cookie's; status is never stored in a session — GET
+// /api/auth/session reads it fresh from the users row.
+//
+// The photo is checked BEFORE anything is written: a refused upload (403 not
+// yours, 400 wrong type or too big, 404 no such upload) changes nothing.
 //
 // The PUT applies its fields in sequence with no transaction: name lands
 // first (DB and session), so a body carrying both a name and a refused
@@ -14,14 +22,23 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
-use talaria_body::{optional_string_member, parse, present_nullable_string_member};
+use talaria_body::{
+    optional_string_member, parse, present_nullable_max_string_member,
+    present_nullable_string_member, present_nullable_uuid_member,
+};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_me::{
     gateway_models, get_prefs, is_valid_time_zone, member_model_allowlist, model_allowed_for,
     set_preferred_effort, set_preferred_model, set_timezone, set_user_name,
 };
-use talaria_session::{require_user, update_session_user};
+use talaria_session::{
+    SessionUserWire, require_user, update_session_user, update_sessions_for_user,
+};
 use talaria_state::AppState;
+use talaria_users::{
+    avatar_refusal, avatar_upload_facts, profile_face, set_avatar_upload, set_status_emoji,
+    set_status_text,
+};
 
 /// The validated PUT body — each field Option<"present">, the very thing the
 /// at-least-one check counts. The nullable trio keeps present-and-null (the
@@ -32,10 +49,14 @@ struct MePatch {
     preferred_model: Option<Option<String>>,
     preferred_effort: Option<Option<String>>,
     timezone: Option<Option<String>>,
+    avatar_upload_id: Option<Option<String>>,
+    status_emoji: Option<Option<String>>,
+    status_text: Option<Option<String>>,
 }
 
 /// The PUT body schema, checks in declaration order (name, preferredModel,
-/// preferredEffort, timezone — the first bad field's message is the answer),
+/// preferredEffort, timezone, avatarUploadId, statusEmoji, statusText — the
+/// first bad field's message is the answer),
 /// then the at-least-one check. Every message is pinned in the test at the
 /// bottom of this file.
 fn validate_me_patch(obj: &serde_json::Map<String, Value>) -> Result<MePatch, String> {
@@ -43,10 +64,16 @@ fn validate_me_patch(obj: &serde_json::Map<String, Value>) -> Result<MePatch, St
     let preferred_model = present_nullable_string_member(obj, "preferredModel", 200)?;
     let preferred_effort = present_nullable_string_member(obj, "preferredEffort", 24)?;
     let timezone = present_nullable_string_member(obj, "timezone", 64)?;
+    let avatar_upload_id = present_nullable_uuid_member(obj, "avatarUploadId")?;
+    let status_emoji = present_nullable_string_member(obj, "statusEmoji", 16)?;
+    let status_text = present_nullable_max_string_member(obj, "statusText", 100)?;
     if name.is_none()
         && preferred_model.is_none()
         && preferred_effort.is_none()
         && timezone.is_none()
+        && avatar_upload_id.is_none()
+        && status_emoji.is_none()
+        && status_text.is_none()
     {
         return Err("nothing to update".into());
     }
@@ -55,7 +82,15 @@ fn validate_me_patch(obj: &serde_json::Map<String, Value>) -> Result<MePatch, St
         preferred_model,
         preferred_effort,
         timezone,
+        avatar_upload_id,
+        status_emoji,
+        status_text,
     })
+}
+
+/// The stored status text: trimmed, and blank means "no status text".
+fn status_text_value(raw: Option<&str>) -> Option<&str> {
+    raw.map(str::trim).filter(|t| !t.is_empty())
 }
 
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
@@ -84,6 +119,23 @@ pub async fn put(
         Ok(p) => p,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+
+    // The photo claim is decided before any write, so a refusal leaves the
+    // whole profile as it was.
+    if let Some(Some(upload_id)) = &patch.avatar_upload_id {
+        match avatar_upload_facts(&state.pg, upload_id).await {
+            Ok(Some((uploaded_by, mime, size))) => {
+                if let Some(refusal) = avatar_refusal(&user.id, uploaded_by.as_deref(), &mime, size)
+                {
+                    let status =
+                        StatusCode::from_u16(refusal.status()).unwrap_or(StatusCode::BAD_REQUEST);
+                    return Ok(house_error(status, refusal.message()));
+                }
+            }
+            Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "upload not found")),
+            Err(e) => return Ok(internal("[me] avatar upload read failed", e)),
+        }
+    }
 
     let mut updated = user.clone();
     if let Some(raw) = &patch.name {
@@ -155,7 +207,53 @@ pub async fn put(
             }
         }
     }
-    Ok(Json(json!({ "user": updated })).into_response())
+    if let Some(choice) = &patch.avatar_upload_id
+        && let Err(e) = set_avatar_upload(&state.pg, &user.id, choice.as_deref()).await
+    {
+        return Ok(internal("[me] set avatar failed", e));
+    }
+    if let Some(choice) = &patch.status_emoji
+        && let Err(e) = set_status_emoji(&state.pg, &user.id, choice.as_deref()).await
+    {
+        return Ok(internal("[me] set status emoji failed", e));
+    }
+    if let Some(choice) = &patch.status_text
+        && let Err(e) =
+            set_status_text(&state.pg, &user.id, status_text_value(choice.as_deref())).await
+    {
+        return Ok(internal("[me] set status text failed", e));
+    }
+
+    // The face the answer (and, after a photo change, every session) carries.
+    let face = match profile_face(&state.pg, &user.id).await {
+        Ok(f) => f,
+        Err(e) => return Ok(internal("[me] profile read failed", e)),
+    };
+    let (status_emoji, status_text) = match face {
+        Some(face) => {
+            if patch.avatar_upload_id.is_some() {
+                // Every tab and device the person is signed in on, not only
+                // this cookie — the corner avatar must not wait for a re-login.
+                if let Err(e) =
+                    update_sessions_for_user(&state, &user.id, &json!({ "picture": face.picture }))
+                        .await
+                {
+                    return Ok(internal("[me] session picture push failed", e));
+                }
+            }
+            updated.picture = face.picture;
+            (face.status_emoji, face.status_text)
+        }
+        None => (None, None),
+    };
+    Ok(Json(json!({
+        "user": SessionUserWire {
+            user: updated,
+            status_emoji,
+            status_text,
+        }
+    }))
+    .into_response())
 }
 
 #[cfg(test)]
@@ -252,5 +350,63 @@ mod tests {
             patch(json!({ "bogus": 1 })).unwrap_err(),
             "nothing to update"
         );
+    }
+
+    #[test]
+    fn me_patch_takes_photo_and_status() {
+        // Each new field alone is something to update.
+        let p = patch(json!({ "avatarUploadId": "a1b2c3d4-0000-4000-8000-000000000001" })).unwrap();
+        assert_eq!(
+            p.avatar_upload_id,
+            Some(Some("a1b2c3d4-0000-4000-8000-000000000001".into()))
+        );
+        let p = patch(json!({ "statusEmoji": "📅", "statusText": "In a meeting" })).unwrap();
+        assert_eq!(p.status_emoji, Some(Some("📅".into())));
+        assert_eq!(p.status_text, Some(Some("In a meeting".into())));
+        // Null clears: the photo back to the provider's, the status off.
+        let p = patch(json!({ "avatarUploadId": null, "statusEmoji": null, "statusText": null }))
+            .unwrap();
+        assert_eq!(p.avatar_upload_id, Some(None));
+        assert_eq!(p.status_emoji, Some(None));
+        assert_eq!(p.status_text, Some(None));
+        // Bounds: emoji 1–16, text ≤ 100 (an empty text is legal — it clears).
+        assert_eq!(
+            patch(json!({ "statusEmoji": "x".repeat(17) })).unwrap_err(),
+            "Too big: expected string to have <=16 characters"
+        );
+        assert_eq!(
+            patch(json!({ "statusEmoji": "" })).unwrap_err(),
+            "Too small: expected string to have >=1 characters"
+        );
+        assert!(patch(json!({ "statusEmoji": "x".repeat(16) })).is_ok());
+        assert_eq!(
+            patch(json!({ "statusText": "x".repeat(101) })).unwrap_err(),
+            "Too big: expected string to have <=100 characters"
+        );
+        assert!(patch(json!({ "statusText": "x".repeat(100) })).is_ok());
+        assert_eq!(
+            patch(json!({ "statusText": "" })).unwrap().status_text,
+            Some(Some(String::new()))
+        );
+        // The photo is an upload id, nothing else.
+        assert_eq!(
+            patch(json!({ "avatarUploadId": "not-a-uuid" })).unwrap_err(),
+            "Invalid UUID"
+        );
+        assert_eq!(
+            patch(json!({ "avatarUploadId": 5 })).unwrap_err(),
+            "Invalid input: expected string, received number"
+        );
+    }
+
+    #[test]
+    fn status_text_trims_and_empty_clears() {
+        assert_eq!(
+            status_text_value(Some("  In a meeting ")),
+            Some("In a meeting")
+        );
+        assert_eq!(status_text_value(Some("   ")), None);
+        assert_eq!(status_text_value(Some("")), None);
+        assert_eq!(status_text_value(None), None);
     }
 }

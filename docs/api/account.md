@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-13 routes.
+17 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -27,7 +27,11 @@
 | [`/api/me/events`](#apimeevents) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | GET | `session` |
 | [`/api/me/mcp`](#apimemcp) | PUT | `session` |
+| [`/api/me/presence`](#apimepresence) | PUT | `session` |
+| [`/api/me/sent`](#apimesent) | GET | `session` |
+| [`/api/me/threads`](#apimethreads) | GET | `session` |
 | [`/api/users`](#apiusers) | GET | `dual` |
+| [`/api/users/{id}/avatar`](#apiusersidavatar) | GET | `dual` |
 
 ## `/api/auth/claim`
 
@@ -128,8 +132,9 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_session.rs`](.
 
 > GET /api/auth/session. The current user + their denied views + effective
 > permissions, read from the DB each time so an admin's access change applies
-> without re-login. No session is NOT an error here:
-> {user: null, deniedViews: [], perms: []}.
+> without re-login. The user's face — effective picture, status emoji and
+> text — is read fresh from the users row the same way, so a photo or status
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -156,13 +161,13 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me.rs`](../../api/c
 > /api/me. The signed-in person's own profile: GET reads the three preference
 > columns, PUT edits display name (users row + the live session, so the SPA's
 > corner never waits for a re-login), preferred model (the member gate runs
-> HERE, not just in the picker), platform-default reasoning effort, and IANA
+> HERE, not just in the picker), platform-default reasoning effort, IANA
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{preferredModel, preferredEffort, timezone}` | 200 | — |
-| PUT | `session` | [body](#put-apime-body) | `{user}` | 200, 400, 403 | — |
+| PUT | `session` | [body](#put-apime-body) | `{user}` | 200, 400, 403, 404 | — |
 
 ### PUT `/api/me` body
 
@@ -172,6 +177,9 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me.rs`](../../api/c
 | `preferredModel` | `string? nullable` |  |
 | `preferredEffort` | `string? nullable` |  |
 | `timezone` | `string? nullable` |  |
+| `avatarUploadId` | `uuid? nullable` |  |
+| `statusEmoji` | `string? nullable` |  |
+| `statusText` | `string? nullable(100)` |  |
 
 ## `/api/me/assistant`
 
@@ -236,17 +244,72 @@ Source: [`api/crates/talaria-routes-integrations/src/account/me_mcp.rs`](../../a
 | :--- | :--- | :--- |
 | `serverId` | `uuid` |  |
 
+## `/api/me/presence`
+
+Source: [`api/crates/talaria-routes-integrations/src/account/me_presence.rs`](../../api/crates/talaria-routes-integrations/src/account/me_presence.rs)
+
+> PUT /api/me/presence. The signed-in person's heartbeat: the client calls it
+> every 30s while a Talaria tab is visible, and it sets
+> `user:presence:{id}` with a 90s TTL. `GET /api/users` reads those keys to
+> mark people online. Answers { ok: true }.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `session` | — | `{ok}` | 200 | — |
+
+## `/api/me/sent`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/me_sent.rs`](../../api/crates/talaria-routes-comms/src/comms/me_sent.rs)
+
+> GET /api/me/sent. The Comms sidebar's "Drafts & sent" view, sent half (drafts
+> live in the browser): the viewer's own latest 50 messages, newest first —
+> channel and DM messages in channels they are still in, and their turns in
+> their agent DMs. Never anyone else's message. Answers
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{messages}` | 200 | — |
+
+## `/api/me/threads`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/me_threads.rs`](../../api/crates/talaria-routes-comms/src/comms/me_threads.rs)
+
+> GET /api/me/threads. The Comms sidebar's Threads view: every thread root
+> with at least one reply, in a channel the viewer is in right now, that the
+> viewer started or replied in — newest reply first, at most 50. Answers
+> { threads: [{ channelId, channelName, channelKind, root, lastAt }] }, where
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{threads}` | 200 | — |
+
 ## `/api/users`
 
 Source: [`api/crates/talaria-routes-integrations/src/account/users.rs`](../../api/crates/talaria-routes-integrations/src/account/users.rs)
 
-> GET /api/users. Everyone who has signed in (id, email, name), for the
-> people pickers. Any signed-in user — and agents (their own tak_ key or the
-> fleet key): they need the directory to resolve "email Priya" or "add Priya
-> to the board" into an address.
+> GET /api/users. Everyone who has signed in, for the people pickers and the
+> Comms sidebar: id, email, name, the effective picture (an uploaded photo,
+> else the sign-in provider's), status emoji + text, and `online` — whether
+> they pinged `PUT /api/me/presence` within the last 90s. Any signed-in user —
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `…` | 200 | — |
+
+## `/api/users/{id}/avatar`
+
+Source: [`api/crates/talaria-routes-integrations/src/account/users_id_avatar.rs`](../../api/crates/talaria-routes-integrations/src/account/users_id_avatar.rs)
+
+> GET /api/users/{id}/avatar. A person's uploaded profile photo, for any
+> signed-in member of the org and for agents (their tak_ key or the fleet
+> key) — the one place an upload is readable outside the conversation-scoped
+> `can_access_upload`. It is narrow on purpose: the upload id comes from the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `dual` | — | `…` | — | — |
 

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-22 routes.
+23 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -47,6 +47,7 @@
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | POST | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | PUT | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | DELETE | `session` |
+| [`/api/conversations/{id}/messages/{msgId}/reactions`](#apiconversationsidmessagesmsgidreactions) | POST | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
@@ -465,6 +466,26 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_members.rs`](../..
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `userId` | `uuid` |  |
+
+## `/api/conversations/{id}/messages/{msgId}/reactions`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_messages_msgid_reactions.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_messages_msgid_reactions.rs)
+
+> /api/conversations/{id}/messages/{msgId}/reactions.
+> POST { emoji } → toggle your reaction on a message in an agent DM (or any
+> conversation you can read): add it if you haven't, remove it if you have.
+> Answers { ok: true, reacted } — `reacted` is whether your reaction is now on.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiconversationsidmessagesmsgidreactions-body) | `{ok, reacted}` | 200, 400, 404 | — |
+
+### POST `/api/conversations/{id}/messages/{msgId}/reactions` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `emoji` | `string(1, 16)` |  |
 
 ## `/api/conversations/{id}/read`
 

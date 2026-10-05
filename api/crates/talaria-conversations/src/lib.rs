@@ -446,9 +446,16 @@ pub struct ConversationDetail {
 /// One message row — the nullable jsonb trio serializes as null (the keys
 /// are always present on the wire). `guard` is the one nullable column of
 /// the set (messages table): unguarded rows carry null, not [].
+///
+/// `id` and `createdAt` lead the row and `reactions` trails it — additions
+/// for the Comms transcript (send times, reaction chips); a client that does
+/// not read them is unaffected. `reactions` is always an array, empty when
+/// nobody reacted.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageRow {
+    pub id: String,
+    pub created_at: String,
     pub role: String,
     pub content: String,
     pub reasoning: String,
@@ -461,6 +468,118 @@ pub struct MessageRow {
     pub chips: Value,
     pub author_user_id: Option<String>,
     pub author_label: Option<String>,
+    pub reactions: Vec<MessageReaction>,
+}
+
+/// One emoji's reactions on an agent-DM message, actors in the order they
+/// reacted — the same shape a channel message's `reactions` entries have, so
+/// one chip component reads both.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReaction {
+    pub emoji: String,
+    pub actors: Vec<String>,
+    pub actor_types: Vec<String>,
+}
+
+/// One grouped reaction row: (message id, emoji, actors, actor types), in the
+/// order the emoji was first used.
+pub type ReactionGroupRow = (String, String, Vec<String>, Vec<String>);
+
+/// Hang grouped reaction rows on the messages they belong to, keeping the
+/// rows' order per message. Rows for a message not in the slice are dropped.
+pub fn attach_reactions(messages: &mut [MessageRow], rows: Vec<ReactionGroupRow>) {
+    for (message_id, emoji, actors, actor_types) in rows {
+        if let Some(m) = messages.iter_mut().find(|m| m.id == message_id) {
+            m.reactions.push(MessageReaction {
+                emoji,
+                actors,
+                actor_types,
+            });
+        }
+    }
+}
+
+/// The reaction actor for a person — the same identity channel reactions
+/// record (email, else name, else "user"), so "is this chip mine" is one
+/// comparison on every transcript.
+pub fn reaction_actor(email: Option<&str>, name: Option<&str>) -> String {
+    email
+        .or(name)
+        .map(str::to_string)
+        .unwrap_or_else(|| "user".into())
+}
+
+/// Is this message part of this conversation? The reaction route's guard
+/// against a message id borrowed from somewhere else.
+pub async fn conversation_has_message(
+    pg: &PgPool,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(i32,)> =
+        sqlx::query_as("select 1 from messages where id = $1::uuid and conversation_id = $2::uuid")
+            .bind(message_id)
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.is_some())
+}
+
+/// Toggle one person's reaction on an agent-DM message: add it if absent,
+/// remove it if present. Returns true when the reaction is now ON.
+pub async fn toggle_message_reaction(
+    pg: &PgPool,
+    message_id: &str,
+    emoji: &str,
+    actor: &str,
+    actor_type: &str,
+) -> Result<bool, sqlx::Error> {
+    let removed = sqlx::query(
+        "delete from message_reactions \
+         where message_id = $1::uuid and emoji = $2 and actor = $3",
+    )
+    .bind(message_id)
+    .bind(emoji)
+    .bind(actor)
+    .execute(pg)
+    .await?;
+    if removed.rows_affected() > 0 {
+        return Ok(false);
+    }
+    sqlx::query(
+        "insert into message_reactions (message_id, emoji, actor, actor_type) \
+         values ($1::uuid, $2, $3, $4) on conflict do nothing",
+    )
+    .bind(message_id)
+    .bind(emoji)
+    .bind(actor)
+    .bind(actor_type)
+    .execute(pg)
+    .await?;
+    Ok(true)
+}
+
+/// Grouped reactions for a set of messages, one row per (message, emoji),
+/// emoji in first-use order and actors in reaction order.
+pub async fn message_reaction_groups(
+    pg: &PgPool,
+    message_ids: &[&str],
+) -> Result<Vec<ReactionGroupRow>, sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as(
+        "select message_id::text, emoji, \
+             array_agg(actor order by created_at), \
+             array_agg(actor_type order by created_at) \
+         from message_reactions where message_id = any($1::uuid[]) \
+         group by message_id, emoji \
+         order by min(created_at)",
+    )
+    .bind(message_ids)
+    .fetch_all(pg)
+    .await
 }
 
 /// The human a conversation belongs to, by id alone — no access check. The
@@ -531,6 +650,8 @@ pub async fn get_conversation(
     // The message select's row, pre-mapping into MessageRow.
     type MessageSelRow = (
         String,
+        i64,
+        String,
         String,
         String,
         Value,
@@ -544,7 +665,8 @@ pub async fn get_conversation(
         Option<String>,
     );
     let messages: Vec<MessageSelRow> = sqlx::query_as(
-        "select m.role, m.content, m.reasoning, m.tools, m.status, m.seq, \
+        "select m.id::text, (trunc(extract(epoch from m.created_at) * 1000))::bigint, \
+                    m.role, m.content, m.reasoning, m.tools, m.status, m.seq, \
                     m.attachments, m.guard, m.metadata, m.chips, \
                     m.author_user_id::text, coalesce(u.name, u.email) \
              from messages m left join users u on u.id = m.author_user_id \
@@ -553,19 +675,28 @@ pub async fn get_conversation(
     .bind(conversation_id)
     .fetch_all(pg)
     .await?;
-    Ok(Some((
-        ConversationDetail {
-            id,
-            agent_model,
-            title,
-            updated_at: epoch_ms_to_iso(updated_ms),
-            role,
-            pinned_files,
-        },
-        messages
-            .into_iter()
-            .map(
-                |(
+    let mut messages: Vec<MessageRow> = messages
+        .into_iter()
+        .map(
+            |(
+                message_id,
+                created_ms,
+                role,
+                content,
+                reasoning,
+                tools,
+                status,
+                seq,
+                attachments,
+                guard,
+                metadata,
+                chips,
+                author_user_id,
+                author_label,
+            )| {
+                MessageRow {
+                    id: message_id,
+                    created_at: epoch_ms_to_iso(created_ms),
                     role,
                     content,
                     reasoning,
@@ -575,27 +706,27 @@ pub async fn get_conversation(
                     attachments,
                     guard,
                     metadata,
-                    chips,
                     author_user_id,
                     author_label,
-                )| {
-                    MessageRow {
-                        role,
-                        content,
-                        reasoning,
-                        tools,
-                        status,
-                        seq,
-                        attachments,
-                        guard,
-                        metadata,
-                        author_user_id,
-                        author_label,
-                        chips,
-                    }
-                },
-            )
-            .collect(),
+                    chips,
+                    reactions: Vec::new(),
+                }
+            },
+        )
+        .collect();
+    let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+    let groups = message_reaction_groups(pg, &ids).await?;
+    attach_reactions(&mut messages, groups);
+    Ok(Some((
+        ConversationDetail {
+            id,
+            agent_model,
+            title,
+            updated_at: epoch_ms_to_iso(updated_ms),
+            role,
+            pinned_files,
+        },
+        messages,
     )))
 }
 
@@ -1192,4 +1323,105 @@ pub async fn create_conversation(
     .fetch_optional(pg)
     .await?;
     Ok(row.expect("insert … returning always yields a row").0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: &str, seq: i32) -> MessageRow {
+        MessageRow {
+            id: id.into(),
+            created_at: "2026-10-05T09:30:00.000Z".into(),
+            role: "assistant".into(),
+            content: "hi".into(),
+            reasoning: String::new(),
+            tools: serde_json::json!([]),
+            status: "complete".into(),
+            seq,
+            attachments: serde_json::json!([]),
+            guard: None,
+            metadata: serde_json::json!({}),
+            chips: serde_json::json!([]),
+            author_user_id: None,
+            author_label: None,
+            reactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn message_row_wire_carries_id_time_and_reactions() {
+        let mut m = row("m1", 2);
+        m.reactions.push(MessageReaction {
+            emoji: "🙌".into(),
+            actors: vec!["a@x".into()],
+            actor_types: vec!["user".into()],
+        });
+        let v: Value = serde_json::to_value(&m).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys.first(), Some(&"id"));
+        assert_eq!(keys.get(1), Some(&"createdAt"));
+        assert_eq!(keys.last(), Some(&"reactions"));
+        assert_eq!(v["createdAt"], "2026-10-05T09:30:00.000Z");
+        assert_eq!(
+            v["reactions"],
+            serde_json::json!([{ "emoji": "🙌", "actors": ["a@x"], "actorTypes": ["user"] }])
+        );
+        // Nobody reacted: an empty array, never absent.
+        assert_eq!(
+            serde_json::to_value(row("m2", 3)).unwrap()["reactions"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn reactions_land_on_their_own_message_in_row_order() {
+        let mut ms = vec![row("m1", 0), row("m2", 1)];
+        attach_reactions(
+            &mut ms,
+            vec![
+                (
+                    "m2".into(),
+                    "✅".into(),
+                    vec!["a@x".into()],
+                    vec!["user".into()],
+                ),
+                (
+                    "m1".into(),
+                    "👀".into(),
+                    vec!["b@x".into()],
+                    vec!["user".into()],
+                ),
+                (
+                    "m2".into(),
+                    "🙌".into(),
+                    vec!["a@x".into(), "b@x".into()],
+                    vec!["user".into(), "user".into()],
+                ),
+                // A row for a message not on the page is dropped.
+                (
+                    "m9".into(),
+                    "✅".into(),
+                    vec!["c@x".into()],
+                    vec!["user".into()],
+                ),
+            ],
+        );
+        let emojis = |m: &MessageRow| {
+            m.reactions
+                .iter()
+                .map(|r| r.emoji.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(emojis(&ms[0]), vec!["👀"]);
+        assert_eq!(emojis(&ms[1]), vec!["✅", "🙌"]);
+        assert_eq!(ms[1].reactions[1].actors, vec!["a@x", "b@x"]);
+    }
+
+    #[test]
+    fn a_reaction_actor_is_the_channel_identity() {
+        assert_eq!(reaction_actor(Some("a@x"), Some("A")), "a@x");
+        assert_eq!(reaction_actor(None, Some("A")), "A");
+        assert_eq!(reaction_actor(None, None), "user");
+    }
 }

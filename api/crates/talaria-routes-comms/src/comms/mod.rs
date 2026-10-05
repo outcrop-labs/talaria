@@ -17,8 +17,11 @@ pub mod chips_approvals_id;
 pub mod chips_expose;
 pub mod conversations;
 pub mod conversations_id;
+pub mod conversations_id_messages_msgid_reactions;
 pub mod conversations_id_read;
 pub mod dms;
+pub mod me_sent;
+pub mod me_threads;
 
 use talaria_channels::channel_role;
 use talaria_state::AppState;

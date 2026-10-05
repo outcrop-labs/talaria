@@ -9,6 +9,19 @@ use std::path::PathBuf;
 use talaria_agent_auth::{AgentSubject, subject_model, subject_proven};
 use talaria_gateway::settings::get_setting;
 
+/// The effective-picture column (see "Profile: photo, status, presence"
+/// below), as a SQL expression over a `users` row in
+/// scope (unqualified `id`, `avatar_upload_id`, `picture`). A macro so it can
+/// be spliced into a `concat!` and the query stays `&'static str`.
+#[macro_export]
+macro_rules! effective_picture_sql {
+    () => {
+        "case when avatar_upload_id is not null \
+           then '/api/users/' || id::text || '/avatar?v=' || left(avatar_upload_id::text, 8) \
+           else picture end"
+    };
+}
+
 /// The sign-in identity a provider hands us.
 #[derive(Debug, Clone)]
 pub struct Identity {
@@ -25,7 +38,9 @@ pub struct Identity {
 /// password-claimed address), the sign-in LINKS to that row — the email is
 /// the person, not the sub — so one human keeps one row whichever door they
 /// use. Returns the row in select order (id, sub, email, name, picture,
-/// role) — the session user's input.
+/// role) — the session user's input. The `picture` is the EFFECTIVE one
+/// (`effective_picture_sql!`): the sign-in rewrites the stored provider
+/// picture, but a person's uploaded photo still wins in the session.
 pub async fn upsert_user(
     pg: &PgPool,
     identity: &Identity,
@@ -44,17 +59,21 @@ pub async fn upsert_user(
         Some(row) => row,
         None => {
             sqlx::query_as::<_, (String, String, Option<String>, Option<String>, Option<String>, String)>(
-                "insert into users (sub, email, name, picture, role, last_seen_at) \
-                 values ($1, $2, $3, $4, 'member', now()) \
-                 on conflict (sub) do update set \
-                   email = excluded.email, \
-                   name = case \
-                     when users.name is null or users.name = '' or users.name = users.email then excluded.name \
-                     else users.name \
-                   end, \
-                   picture = excluded.picture, \
-                   last_seen_at = now() \
-                 returning id::text, sub, email, name, picture, role",
+                concat!(
+                    "insert into users (sub, email, name, picture, role, last_seen_at) \
+                     values ($1, $2, $3, $4, 'member', now()) \
+                     on conflict (sub) do update set \
+                       email = excluded.email, \
+                       name = case \
+                         when users.name is null or users.name = '' or users.name = users.email then excluded.name \
+                         else users.name \
+                       end, \
+                       picture = excluded.picture, \
+                       last_seen_at = now() \
+                     returning id::text, sub, email, name, ",
+                    effective_picture_sql!(),
+                    ", role"
+                ),
             )
             .bind(&identity.sub)
             .bind(&identity.email)
@@ -121,7 +140,8 @@ where
     // Identical except for the role line: promotion is the claim's one
     // addition to a sign-in.
     let sql = if promote {
-        "update users set \
+        concat!(
+            "update users set \
            sub = case \
              when exists (select 1 from users o where o.sub = $1 and o.id <> users.id) then users.sub \
              else $1 \
@@ -140,9 +160,13 @@ where
            order by (role = 'admin') desc, id \
            limit 1 \
          ) \
-         returning id::text, sub, email, name, picture, role"
+         returning id::text, sub, email, name, ",
+            effective_picture_sql!(),
+            ", role"
+        )
     } else {
-        "update users set \
+        concat!(
+            "update users set \
            sub = case \
              when exists (select 1 from users o where o.sub = $1 and o.id <> users.id) then users.sub \
              else $1 \
@@ -160,7 +184,10 @@ where
            order by (role = 'admin') desc, id \
            limit 1 \
          ) \
-         returning id::text, sub, email, name, picture, role"
+         returning id::text, sub, email, name, ",
+            effective_picture_sql!(),
+            ", role"
+        )
     };
     let row = sqlx::query_as::<
         _,
@@ -226,6 +253,248 @@ pub async fn list_users(
     )
     .fetch_all(pg)
     .await
+}
+
+// ── Profile: photo, status, presence ─────────────────────────────────────────
+//
+// A person's photo is `users.avatar_upload_id`, never a write to `picture`:
+// Google sign-in overwrites `picture` on every login (upsert_user above), so a
+// photo stored there would vanish on the next sign-in. Everything that hands a
+// picture to a client asks for the EFFECTIVE one — the avatar route when an
+// upload is set, else the provider's picture — through `effective_picture`
+// (Rust) or `effective_picture_sql!` (a RETURNING / select column). The two
+// spell the same URL; the version query is the upload id's first eight chars,
+// so a new photo is a new URL and the immutable cache never serves the old one.
+
+/// The image types a profile photo may be — the raster set `serve_upload`
+/// renders inline, minus AVIF (not every browser the team uses decodes it).
+pub const AVATAR_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+/// The largest profile photo, in bytes.
+pub const AVATAR_MAX_BYTES: i64 = 5 * 1024 * 1024;
+
+/// How long a presence ping keeps a person online. The client pings every
+/// 30s while the tab is visible, so three missed pings mark them away.
+pub const PRESENCE_TTL_S: u64 = 90;
+
+/// The Redis key one person's presence ping sets.
+pub fn presence_key(user_id: &str) -> String {
+    format!("user:presence:{user_id}")
+}
+
+/// The picture a client should show for this person: the avatar route when
+/// they uploaded a photo, else whatever their sign-in provider gave us.
+pub fn effective_picture(
+    user_id: &str,
+    avatar_upload_id: Option<&str>,
+    picture: Option<String>,
+) -> Option<String> {
+    match avatar_upload_id {
+        Some(upload) => Some(format!(
+            "/api/users/{user_id}/avatar?v={}",
+            upload.get(..8).unwrap_or(upload)
+        )),
+        None => picture,
+    }
+}
+
+/// Why an upload cannot become this person's photo. Each refusal carries the
+/// status the route answers with and the sentence the person reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvatarRefusal {
+    /// Someone else's upload (or one whose uploader is gone) — 403.
+    NotYours,
+    /// Not a PNG, JPEG, WebP or GIF — 400.
+    NotAnImage,
+    /// Over AVATAR_MAX_BYTES — 400.
+    TooBig,
+}
+
+impl AvatarRefusal {
+    pub fn status(self) -> u16 {
+        match self {
+            AvatarRefusal::NotYours => 403,
+            AvatarRefusal::NotAnImage | AvatarRefusal::TooBig => 400,
+        }
+    }
+
+    pub fn message(self) -> &'static str {
+        match self {
+            AvatarRefusal::NotYours => "that upload is not yours",
+            AvatarRefusal::NotAnImage => "a profile photo must be a PNG, JPEG, WebP, or GIF image",
+            AvatarRefusal::TooBig => "a profile photo must be 5 MB or smaller",
+        }
+    }
+}
+
+/// May `caller` claim this upload as their photo? Ownership first — a
+/// stranger's upload is refused before its type is even described.
+pub fn avatar_refusal(
+    caller: &str,
+    uploaded_by: Option<&str>,
+    mime: &str,
+    size: i64,
+) -> Option<AvatarRefusal> {
+    if uploaded_by != Some(caller) {
+        return Some(AvatarRefusal::NotYours);
+    }
+    if !AVATAR_MIMES.contains(&mime) {
+        return Some(AvatarRefusal::NotAnImage);
+    }
+    if size > AVATAR_MAX_BYTES {
+        return Some(AvatarRefusal::TooBig);
+    }
+    None
+}
+
+/// Presence flags for `n` people from one MGET. A failed read (`None`) — or a
+/// reply that does not line up with the ids asked about — is everyone offline:
+/// a presence outage must never fail the directory it decorates.
+pub fn online_flags(n: usize, read: Option<Vec<Option<String>>>) -> Vec<bool> {
+    match read {
+        Some(values) if values.len() == n => values.iter().map(Option::is_some).collect(),
+        _ => vec![false; n],
+    }
+}
+
+/// An upload's owner, mime and size — the avatar claim's inputs. None when
+/// the id names no upload.
+pub async fn avatar_upload_facts(
+    pg: &PgPool,
+    upload_id: &str,
+) -> Result<Option<(Option<String>, String, i64)>, sqlx::Error> {
+    sqlx::query_as("select uploaded_by::text, mime, size::bigint from uploads where id = $1::uuid")
+        .bind(upload_id)
+        .fetch_optional(pg)
+        .await
+}
+
+/// Set (or, with None, clear) a person's photo. The caller has already run
+/// `avatar_refusal`.
+pub async fn set_avatar_upload(
+    pg: &PgPool,
+    user_id: &str,
+    upload_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update users set avatar_upload_id = $2::uuid where id = $1::uuid")
+        .bind(user_id)
+        .bind(upload_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// The upload behind a person's photo — the avatar route's ONLY way to an
+/// upload id, so the route never serves an id a URL named.
+pub async fn user_avatar_upload(pg: &PgPool, user_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("select avatar_upload_id::text from users where id = $1::uuid")
+            .bind(user_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(v,)| v))
+}
+
+pub async fn set_status_emoji(
+    pg: &PgPool,
+    user_id: &str,
+    emoji: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update users set status_emoji = $2 where id = $1::uuid")
+        .bind(user_id)
+        .bind(emoji)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_status_text(
+    pg: &PgPool,
+    user_id: &str,
+    text: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update users set status_text = $2 where id = $1::uuid")
+        .bind(user_id)
+        .bind(text)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// The identity a client paints for one person: effective picture, status
+/// emoji, status text. None when the row is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileFace {
+    pub picture: Option<String>,
+    pub status_emoji: Option<String>,
+    pub status_text: Option<String>,
+}
+
+pub async fn profile_face(pg: &PgPool, user_id: &str) -> Result<Option<ProfileFace>, sqlx::Error> {
+    let row: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "select id::text, avatar_upload_id::text, picture, status_emoji, status_text \
+             from users where id = $1::uuid",
+    )
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.map(
+        |(id, avatar, picture, status_emoji, status_text)| ProfileFace {
+            picture: effective_picture(&id, avatar.as_deref(), picture),
+            status_emoji,
+            status_text,
+        },
+    ))
+}
+
+/// One directory row: who, and the face to paint for them.
+#[derive(Debug, Clone)]
+pub struct DirectoryRow {
+    pub id: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub face: ProfileFace,
+}
+
+/// Everyone who has signed in, with photo and status — the people directory
+/// (`GET /api/users`). Same order as `list_users`.
+pub async fn list_directory(pg: &PgPool) -> Result<Vec<DirectoryRow>, sqlx::Error> {
+    #[allow(clippy::type_complexity)] // the select's own columns, one each
+    let rows: Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "select id::text, email, name, avatar_upload_id::text, picture, status_emoji, status_text \
+         from users order by lower(coalesce(email, name, '')) asc",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, email, name, avatar, picture, status_emoji, status_text)| DirectoryRow {
+                face: ProfileFace {
+                    picture: effective_picture(&id, avatar.as_deref(), picture),
+                    status_emoji,
+                    status_text,
+                },
+                id,
+                email,
+                name,
+            },
+        )
+        .collect())
 }
 
 // ── View denials ─────────────────────────────────────────────────────────────
@@ -815,6 +1084,100 @@ pub async fn assistant_owner_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const UID: &str = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
+    const UPLOAD: &str = "a1b2c3d4-0000-4000-8000-000000000001";
+
+    #[test]
+    fn effective_picture_prefers_the_uploaded_photo() {
+        // An upload wins over the provider picture — the AE4 rule: a later
+        // Google sign-in rewrites `picture`, never the effective URL.
+        assert_eq!(
+            effective_picture(UID, Some(UPLOAD), Some("https://google.test/p.png".into()))
+                .as_deref(),
+            Some("/api/users/6f9619ff-8b86-d011-b42d-00c04fc964ff/avatar?v=a1b2c3d4")
+        );
+        // No upload: the provider picture, or nothing.
+        assert_eq!(
+            effective_picture(UID, None, Some("https://google.test/p.png".into())).as_deref(),
+            Some("https://google.test/p.png")
+        );
+        assert_eq!(effective_picture(UID, None, None), None);
+    }
+
+    #[test]
+    fn effective_picture_sql_spells_the_same_url() {
+        // The SQL twin must build the same path and version slice the Rust
+        // helper does; the shape is pinned here because no unit test can run it.
+        let sql = effective_picture_sql!();
+        assert!(sql.contains(
+            "'/api/users/' || id::text || '/avatar?v=' || left(avatar_upload_id::text, 8)"
+        ));
+        assert!(sql.contains("else picture end"));
+    }
+
+    #[test]
+    fn avatar_claims_check_owner_then_type_then_size() {
+        let me = UID;
+        let ok = avatar_refusal(me, Some(me), "image/png", 1024);
+        assert_eq!(ok, None);
+        for mime in AVATAR_MIMES {
+            assert_eq!(
+                avatar_refusal(me, Some(me), mime, AVATAR_MAX_BYTES),
+                None,
+                "{mime}"
+            );
+        }
+        // Another person's upload, or one whose uploader is gone: 403, and
+        // ownership outranks every other complaint.
+        assert_eq!(
+            avatar_refusal(me, Some("someone-else"), "application/pdf", 1),
+            Some(AvatarRefusal::NotYours)
+        );
+        assert_eq!(
+            avatar_refusal(me, None, "image/png", 1),
+            Some(AvatarRefusal::NotYours)
+        );
+        // A PDF, an SVG (script in an "image"), or a 6 MB photo: 400.
+        assert_eq!(
+            avatar_refusal(me, Some(me), "application/pdf", 1),
+            Some(AvatarRefusal::NotAnImage)
+        );
+        assert_eq!(
+            avatar_refusal(me, Some(me), "image/svg+xml", 1),
+            Some(AvatarRefusal::NotAnImage)
+        );
+        assert_eq!(
+            avatar_refusal(me, Some(me), "image/png", 6 * 1024 * 1024),
+            Some(AvatarRefusal::TooBig)
+        );
+        assert_eq!(
+            avatar_refusal(me, Some(me), "image/png", AVATAR_MAX_BYTES + 1),
+            Some(AvatarRefusal::TooBig)
+        );
+        assert_eq!(AvatarRefusal::NotYours.status(), 403);
+        assert_eq!(AvatarRefusal::NotAnImage.status(), 400);
+        assert_eq!(AvatarRefusal::TooBig.status(), 400);
+    }
+
+    #[test]
+    fn presence_reads_degrade_to_everyone_offline() {
+        // A good read: set keys are online, missing keys are not.
+        assert_eq!(
+            online_flags(3, Some(vec![Some("1".into()), None, Some("1".into())])),
+            vec![true, false, true]
+        );
+        // Redis down or the read failed: every user offline, never an error.
+        assert_eq!(online_flags(2, None), vec![false, false]);
+        // A reply that does not line up with the ids asked about is not
+        // trusted for anyone.
+        assert_eq!(
+            online_flags(2, Some(vec![Some("1".into())])),
+            vec![false, false]
+        );
+        assert_eq!(online_flags(0, None), Vec::<bool>::new());
+        assert_eq!(presence_key("u1"), "user:presence:u1");
+    }
 
     #[test]
     fn slug_rules_match_the_regex() {

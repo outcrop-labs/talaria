@@ -6641,6 +6641,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "redis",
  "regex",
  "serde",
  "serde_json",
@@ -6653,6 +6654,7 @@ dependencies = [
  "talaria-body",
  "talaria-chips",
  "talaria-claim",
+ "talaria-config",
  "talaria-error",
  "talaria-github",
  "talaria-invites",
@@ -6668,6 +6670,7 @@ dependencies = [
  "talaria-session",
  "talaria-state",
  "talaria-teams",
+ "talaria-uploads",
  "talaria-users",
  "talaria-workspace-secrets",
  "tokio",

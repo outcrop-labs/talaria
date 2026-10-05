@@ -810,6 +810,13 @@ CREATE TABLE public.mcp_user_credentials (
     headers_enc text NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.message_reactions (
+    message_id uuid NOT NULL,
+    emoji text NOT NULL,
+    actor text NOT NULL,
+    actor_type text DEFAULT 'user'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.messages (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     conversation_id uuid NOT NULL,
@@ -1246,7 +1253,10 @@ CREATE TABLE public.users (
     preferred_model text,
     notify_prefs jsonb DEFAULT '{}'::jsonb NOT NULL,
     preferred_effort text,
-    timezone text
+    timezone text,
+    avatar_upload_id uuid,
+    status_emoji text,
+    status_text text
 );
 CREATE TABLE public.work_wait (
     task_id uuid NOT NULL,
@@ -1534,6 +1544,8 @@ ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
     ADD CONSTRAINT mcp_user_credentials_pkey PRIMARY KEY (server_id, user_id);
+ALTER TABLE ONLY public.message_reactions
+    ADD CONSTRAINT message_reactions_pkey PRIMARY KEY (message_id, emoji, actor);
 ALTER TABLE ONLY public.messages
     ADD CONSTRAINT messages_conversation_id_seq_key UNIQUE (conversation_id, seq);
 ALTER TABLE ONLY public.messages
@@ -1955,6 +1967,8 @@ ALTER TABLE ONLY public.mcp_user_credentials
     ADD CONSTRAINT mcp_user_credentials_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_user_credentials
     ADD CONSTRAINT mcp_user_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.message_reactions
+    ADD CONSTRAINT message_reactions_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.messages(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.messages
     ADD CONSTRAINT messages_author_user_id_fkey FOREIGN KEY (author_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.messages
@@ -2057,6 +2071,8 @@ ALTER TABLE ONLY public.user_password_credentials
     ADD CONSTRAINT user_password_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.user_permissions
     ADD CONSTRAINT user_permissions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_avatar_upload_id_fkey FOREIGN KEY (avatar_upload_id) REFERENCES public.uploads(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.work_wait
     ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
