@@ -1,5 +1,6 @@
 <script lang="ts">
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
   import ThreadPanel from './ThreadPanel.svelte'
   import ChannelComposer from './ChannelComposer.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
@@ -20,6 +21,8 @@
   } from '@/lib/channels.svelte'
   import { useUsers } from '@/lib/users'
   import { useSession } from '@/lib/session'
+  import { useProfilePrefs } from '@/lib/muse.svelte'
+  import { dayDividerMap } from '@/lib/day-dividers'
   import { userMentionInsert, type Mentionable } from '@/components/chat/mentions.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { AgentModel } from '@/lib/agents'
@@ -97,6 +100,9 @@
       (usersList.failed && !!usersList.notice),
   )
   const sessionQuery = useSession()
+  // The viewer's zone preference decides what "a day" is for the dividers; a
+  // failed or unset read falls back to the browser's zone, never to an error.
+  const prefsQuery = useProfilePrefs()
   useChannelEvents(() => channelId, () => onLiveMessage?.())
   let error = $state<string | null>(null)
   let threadRoot = $state<string | null>(null)
@@ -144,13 +150,25 @@
   const userLabel = (author: string) =>
     usersList.rows.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
 
+  // Photos come from the directory's effective picture (uploaded, else
+  // Google). Agents have no photo yet — they keep their initials.
+  const pictureFor = (author: string, authorType: string) =>
+    authorType === 'agent' ? null : (usersList.rows.find((u) => u.email === author)?.picture ?? null)
+
   const ctx: MessageCtx = $derived({
     channelId,
     me: sessionQuery.data?.email ?? sessionQuery.data?.name ?? '',
     isChannelOwner: detail?.role === 'owner',
     labelFor,
     userLabel,
+    pictureFor,
+    selfMentions: [sessionQuery.data?.name, sessionQuery.data?.email?.split('@')[0]].filter((n): n is string => !!n),
+    timeZone: prefsQuery.data?.timezone ?? null,
   })
+
+  // One divider before each calendar day's first message (R1). Recomputed with
+  // the list, so "Today" rolls over the next time a message lands.
+  const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
 
   const mentionables: Mentionable[] = $derived(
     [
@@ -282,7 +300,9 @@
             transcripts — the rows' local fades then mark only messages that
             genuinely arrive/leave while you watch. -->
         {#key channelId}
-          {#each messages as m (m.id)}
+          {#each messages as m, i (m.id)}
+            {@const day = dividers.get(i)}
+            {#if day}<DayDivider label={day.label} />{/if}
             <MessageRow
               message={m}
               {ctx}
@@ -319,6 +339,7 @@
   {#if threadRoot}
     <ThreadPanel
       {channelId}
+      {channelName}
       rootId={threadRoot}
       {ctx}
       {mentionables}
