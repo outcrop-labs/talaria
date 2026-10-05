@@ -177,3 +177,25 @@ test('every Comms path counts as Comms, prefix matching included', () => {
   assert.equal(isCommsPath('/comms/channel/chan-1'), true)
   assert.equal(isCommsPath('/comms/agent/hermes/conv-4'), true)
 })
+
+// ── the two sidebar views: Threads and Drafts & sent ────────────────────────
+
+test('/comms/threads and /comms/drafts parse to their view tags', () => {
+  assert.deepEqual(commsSelectionFromPath('/comms/threads'), { t: 'threads' })
+  assert.deepEqual(commsSelectionFromPath('/comms/drafts'), { t: 'drafts' })
+  // Only under Comms: another view's /threads is not ours.
+  assert.equal(commsSelectionFromPath('/boards/threads'), null)
+})
+
+test('a Threads or Drafts selection round-trips and is always restorable', () => {
+  installStorage()
+  for (const sel of [{ t: 'threads' }, { t: 'drafts' }] as CommsSelection[]) {
+    writeCommsSelection(sel)
+    resetCommsSelection()
+    const back = readCommsSelection()
+    assert.deepEqual(back, sel)
+    // Neither depends on a roster, so the restore keeps them as they are —
+    // even before any roster has loaded anything.
+    assert.deepEqual(restorableSelection(back, rosters({ channelIds: [], agentModels: [], conversationIds: null })), sel)
+  }
+})

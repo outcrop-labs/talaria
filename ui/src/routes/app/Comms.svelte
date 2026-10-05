@@ -5,35 +5,31 @@
   import { navigate } from '@/router'
   import { CheckCheck, ClipboardList, Settings } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import Avatar from '@/components/ui/Avatar.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
-  import { alert, confirm, prompt } from '@/components/ui/confirm.svelte'
+  import { alert, confirm } from '@/components/ui/confirm.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
-  import { openCopyItems, useContextMenu, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import RailSurface from '@/components/app/RailSurface.svelte'
-  import Rail from '@/components/app/Rail.svelte'
-  import RailRow from '@/components/app/RailRow.svelte'
-  import CountPill from '@/components/app/CountPill.svelte'
   import ChannelView from '@/components/chat/ChannelView.svelte'
-  import SessionRowBody from '@/components/chat/SessionRowBody.svelte'
   import ChannelSettingsModal from '@/components/chat/ChannelSettingsModal.svelte'
   import PlanModal from '@/components/chat/PlanModal.svelte'
   import { hydratePlanDraft } from '@/components/chat/plan-drafts.svelte'
   import { useAgents } from '@/lib/agents'
-  import { errorMessage, getJson, patchJson, postJson } from '@/lib/fetch-json'
-  import { slide } from '@/lib/motion'
-  import { toastError } from '@/lib/toast.svelte'
+  import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { useSession, useHasPerm } from '@/lib/session'
   import { useUsers } from '@/lib/users'
-  import { markConversationRead, useConversations } from '@/lib/conversations.svelte'
+  import { useFleet, type AgentStatus } from '@/lib/fleet'
+  import { useConversations } from '@/lib/conversations.svelte'
   import {
     commsSelectionFromPath,
     isCommsPath,
     readCommsSelection,
     restorableSelection,
     writeCommsSelection,
+    type CommsSelection,
   } from '@/lib/comms-selection'
+  import { commsDraftKey, provideCommsDraftScope } from '@/lib/comms-drafts'
   import {
     addChannelAgent,
     addChannelMember,
@@ -46,9 +42,10 @@
     useChannels,
     type Channel,
   } from '@/lib/channels.svelte'
-  import Section from './comms/Section.svelte'
-  import Hint from './comms/Hint.svelte'
-  import RailFailure from './comms/RailFailure.svelte'
+  import CommsSidebar from './comms/CommsSidebar.svelte'
+  import ThreadsView from './comms/ThreadsView.svelte'
+  import DraftsSentView from './comms/DraftsSentView.svelte'
+  import PresenceAvatar from './comms/PresenceAvatar.svelte'
   import HeaderPicker from './comms/HeaderPicker.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import AgentDmPane from './comms/AgentDmPane.svelte'
@@ -61,8 +58,9 @@
   //              distill into the activity brain and archive when idle)
   // Talking to an agent starts a NEW thread by default — bounded context per
   // topic, no giant-scrollback bloat riding along on every turn. Recent threads
-  // nest under the agent in the sidebar for resuming deliberately.
-  type Sel = { t: 'channel'; id: string } | { t: 'agent'; model: string; conversationId: string | null } | null
+  // nest under the agent in the sidebar for resuming deliberately. The rail
+  // itself is CommsSidebar; this view keeps the selection and the routing.
+  type Sel = CommsSelection | null
 
   const qc = useQueryClient()
   const session = useSession()
@@ -78,6 +76,12 @@
   const users = $derived(usersQuery.data ?? [])
   const conversationsQuery = useConversations('chat')
   const conversations = $derived(conversationsQuery.data ?? [])
+  // Live per-agent status, for the agents' presence badges (KTD6). Advisory:
+  // a failed fleet read leaves every badge offline rather than failing a row.
+  const fleetStatusQuery = useFleet()
+  const fleetStatus = $derived(
+    new Map<string, AgentStatus>((fleetStatusQuery.data?.agents ?? []).map((a) => [a.id, a.status])),
+  )
 
   // The URL IS the selection: ?c=<channel> or ?a=<agent>&x=<thread>. Every
   // pick navigates (push), so back/forward walks your reading order and any
@@ -102,7 +106,9 @@
   const searchT = $derived(searchParams.get('t') === 'agent' ? ('agent' as const) : undefined)
   const setSel = (next: Sel, opts: { replace?: boolean } = {}) => {
     const replace = opts.replace
-    if (next?.t === 'channel') void navigate('/comms/channel/:id', { params: { id: next.id }, replace })
+    if (next?.t === 'threads') void navigate('/comms/threads', { replace })
+    else if (next?.t === 'drafts') void navigate('/comms/drafts', { replace })
+    else if (next?.t === 'channel') void navigate('/comms/channel/:id', { params: { id: next.id }, replace })
     else if (next?.t === 'agent' && next.conversationId)
       void navigate('/comms/agent/:model/:thread', { params: { model: next.model, thread: next.conversationId }, replace })
     else if (next?.t === 'agent') void navigate('/comms/agent/:model', { params: { model: next.model }, replace })
@@ -110,8 +116,6 @@
   }
   // The agent-flavored selection, pre-narrowed for the template.
   const agentSel = $derived(sel?.t === 'agent' ? sel : null)
-  // Agents whose thread list is pinned open (chevron) without being selected.
-  let expandedAgents = $state<Set<string>>(new Set())
   // Bumped on every deliberate fresh-thread start; drives ChatView's reset.
   let fresh = $state(0)
   let settingsOpen = $state(false)
@@ -146,11 +150,13 @@
     if (working) setSel({ t: 'agent', model, conversationId: working.id }, { replace: true })
   })
 
-  const rooms = $derived(channels.filter((c) => c.kind === 'channel'))
-  const relays = $derived(channels.filter((c) => c.kind === 'group'))
-  const dms = $derived(channels.filter((c) => c.kind === 'dm'))
-  const people = $derived(users.filter((u) => u.id !== session.data?.id))
-  const dmByPeer = $derived(new Map(dms.map((c) => [c.peer?.userId, c])))
+  // Composer drafts (KTD10): every composer below this view saves its unsent
+  // text under the key of what is selected — the channel id, the agent
+  // thread id, or `agent:<model>:new` for a thread not yet created.
+  provideCommsDraftScope(
+    () => session.data?.id ?? null,
+    () => commsDraftKey(sel),
+  )
 
   // REMEMBER WHAT IS SELECTED, so leaving Comms and coming back through the nav
   // rail does not land on the first channel. `sel` is derived from this view's
@@ -223,6 +229,7 @@
 
   // Right-click menus on sidebar rows — shortcuts to actions the rows already
   // perform (open/copy the URL-driven selection, advance the read cursor).
+  // CommsSidebar builds the entries; the one menu renders here.
   const menu = useContextMenu()
 
   // Sidebar "Mark read": the cursor advances to the channel's latest seq, and
@@ -239,11 +246,6 @@
       // badges are advisory; a failed mark-read fixes itself on open
     }
   }
-
-  const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
-    ...openCopyItems(`/comms/channel/${c.id}`, () => setSel({ t: 'channel', id: c.id })),
-    { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
-  ]
 
   const mayCreateChannels = useHasPerm('comms.channels')
   const mayStartRelays = useHasPerm('comms.relays')
@@ -285,274 +287,44 @@
 
   const peerLabel = (c: Channel) => c.peer?.name ?? c.peer?.email ?? 'teammate'
   const title = $derived(selected ? (selected.kind === 'dm' ? peerLabel(selected) : selected.name) : '')
-
-  const toggleExpanded = (id: string) => {
-    const next = new Set(expandedAgents)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    expandedAgents = next
-  }
-
-  // Silhouette widths for the rail-row skeletons — varied per index so the
-  // sketch doesn't look stamped.
-  const railW = ['w-24', 'w-32', 'w-20', 'w-28']
+  // A DM's header carries the other person's presence and status (R13).
+  const peer = $derived(
+    selected?.kind === 'dm' && selected.peer ? (users.find((u) => u.id === selected.peer?.userId) ?? null) : null,
+  )
 </script>
 
-<!-- One rail row's silhouette (RailRow anatomy: glyph lane + name, px-2
-     py-1.5). `avatar` swaps the glyph square for the 5×5 avatar circle. -->
-{#snippet railRowSkeleton(i: number, avatar: boolean)}
-  <div aria-hidden="true" class="rounded-md px-2 py-1.5">
-    <div class="flex h-5 items-center gap-1.5">
-      <Skeleton class={avatar ? 'h-5 w-5 shrink-0 rounded-full' : 'h-3 w-3 shrink-0 rounded'} />
-      <Skeleton class={`h-3 rounded-full ${railW[i % railW.length]}`} />
-    </div>
-  </div>
-{/snippet}
-{#snippet glyphRowSkeleton(i: number)}{@render railRowSkeleton(i, false)}{/snippet}
-{#snippet avatarRowSkeleton(i: number)}{@render railRowSkeleton(i, true)}{/snippet}
-
 <RailSurface>
-  <Rail>
-    <Section
-      label="Channels"
-      meta={rooms.length > 0 ? String(rooms.length).padStart(2, '0') : undefined}
-      createPlaceholder="channel name"
-      onCreate={mayCreateChannels.current ? (v) => void create(v, 'channel') : undefined}
-      loading={channelsQuery.isLoading}
-      count={4}
-      rowSkeleton={glyphRowSkeleton}
-    >
-      {#each rooms as c (c.id)}
-        <RailRow active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
-          <!-- display:contents wrapper — carries the context menu without touching row layout -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-          <span class="contents" oncontextmenu={(e) => menu.openMenu(e, channelRowMenu(c))}>
-            <span class="shrink-0 opacity-60">#</span>
-            <span class="min-w-0 flex-1 truncate">{c.name}</span>
-            <CountPill count={c.unreadCount} />
-          </span>
-        </RailRow>
-      {/each}
-      {#if rooms.length === 0}
-        {#if channelsQuery.isError && channelsQuery.data === undefined}
-          <RailFailure
-            error={channelsQuery.error}
-            title="Could not load channels"
-            onRetry={() => void channelsQuery.refetch()}
-          />
-        {:else}
-          <Hint>Ambient, persistent talk.</Hint>
-        {/if}
-      {/if}
-    </Section>
-
-    <Section
-      label="Relays"
-      meta={relays.length > 0 ? String(relays.length).padStart(2, '0') : undefined}
-      createPlaceholder="what's it about?"
-      onCreate={mayStartRelays.current ? (v) => void create(v, 'group') : undefined}
-      loading={channelsQuery.isLoading}
-      count={3}
-      rowSkeleton={glyphRowSkeleton}
-    >
-      {#each relays as c (c.id)}
-        <RailRow active={sel?.t === 'channel' && sel.id === c.id} onClick={() => setSel({ t: 'channel', id: c.id })}>
-          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-          <span class="contents" oncontextmenu={(e) => menu.openMenu(e, channelRowMenu(c))}>
-            <span class="shrink-0 opacity-60">⇄</span>
-            <span class="min-w-0 flex-1 truncate">{c.name}</span>
-            <CountPill count={c.unreadCount} />
-          </span>
-        </RailRow>
-      {/each}
-      {#if relays.length === 0}
-        {#if channelsQuery.isError && channelsQuery.data === undefined}
-          <RailFailure
-            error={channelsQuery.error}
-            title="Could not load relays"
-            onRetry={() => void channelsQuery.refetch()}
-          />
-        {:else}
-          <Hint>Gather people + agents around a purpose; conclude when done.</Hint>
-        {/if}
-      {/if}
-    </Section>
-
-    <Section
-      label="Teammates"
-      meta={people.length > 0 ? String(people.length).padStart(2, '0') : undefined}
-      loading={usersQuery.isLoading}
-      count={4}
-      rowSkeleton={avatarRowSkeleton}
-    >
-      {#each people as u (u.id)}
-        {@const dm = dmByPeer.get(u.id)}
-        <RailRow
-          active={sel?.t === 'channel' && sel.id === dm?.id}
-          onClick={() => (dm ? setSel({ t: 'channel', id: dm.id }) : void startDm(u.id))}
-        >
-          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-          <span
-            class="contents"
-            oncontextmenu={(e) =>
-              menu.openMenu(e, dm ? channelRowMenu(dm) : [{ label: 'Open', onSelect: () => void startDm(u.id) }])}
-          >
-            <Avatar name={u.name ?? u.email ?? '?'} class="h-5 w-5 shrink-0 text-[10px]" />
-            <span class="min-w-0 flex-1 truncate">{u.name ?? u.email}</span>
-            <CountPill count={dm?.unreadCount} />
-          </span>
-        </RailRow>
-      {/each}
-      {#if people.length === 0}
-        {#if usersQuery.isError && usersQuery.data === undefined}
-          <!-- "Just you so far." over a failed directory read is how a
-               20-person org gets told it is one person. -->
-          <RailFailure
-            error={usersQuery.error}
-            title="Could not load teammates"
-            onRetry={() => void usersQuery.refetch()}
-          />
-        {:else}
-          <Hint>Just you so far.</Hint>
-        {/if}
-      {/if}
-    </Section>
-
-    <Section
-      label="Agents"
-      meta={fleet.length > 0 ? String(fleet.length).padStart(2, '0') : undefined}
-      loading={fleetQuery.isLoading}
-      count={3}
-      rowSkeleton={avatarRowSkeleton}
-    >
-      {#each fleet as a (a.id)}
-        {@const activeAgent = agentSel?.model === a.id}
-        {@const agentThreads = conversations.filter((c) => c.agentModel === a.id)}
-        <!-- Threads unfold for the active agent, or via the chevron —
-             peeking at an agent's threads shouldn't require selecting it. -->
-        {@const expanded = activeAgent || expandedAgents.has(a.id)}
-        {@const threads = expanded ? agentThreads.slice(0, 8) : []}
-        <div>
-          <div class="space-y-0.5">
-            <!-- Clicking the agent = its working thread if one is live, else fresh. -->
-            <RailRow active={activeAgent && agentSel?.conversationId === null} onClick={() => openAgent(a.id)}>
-              <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-              <span
-                class="contents"
-                oncontextmenu={(e) => menu.openMenu(e, [{ label: 'New thread', onSelect: () => newThread(a.id) }])}
-              >
-                <span class="shrink-0 opacity-60">◍</span>
-                <span class="min-w-0 flex-1 truncate">{a.label}</span>
-                {#if conversations.some((c) => c.agentModel === a.id && c.working)}
-                  <span class="gd-breathe h-1.5 w-1.5 shrink-0 rounded-full bg-accent" title="working on a reply"></span>
-                {/if}
-                {#if activeAgent && agentSel?.conversationId === null}
-                  <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">new</span>
-                {/if}
-                {#if agentThreads.length > 0 && !activeAgent}
-                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -- reason: pointer-only peek at an agent's threads; the RailRow button carries the row's click + keyboard -->
-                  <span
-                    role="button"
-                    title={expanded ? 'Hide threads' : `Show threads (${agentThreads.length})`}
-                    class="shrink-0 rounded px-0.5 text-[10px] text-muted hover:text-fg"
-                    onclick={(e) => {
-                      e.stopPropagation()
-                      toggleExpanded(a.id)
-                    }}
-                  >
-                    {expanded ? '▾' : '▸'}
-                  </span>
-                {/if}
-              </span>
-            </RailRow>
-            {#each threads as c (c.id)}
-              <RailRow
-                active={activeAgent && agentSel?.conversationId === c.id}
-                onClick={() => setSel({ t: 'agent', model: a.id, conversationId: c.id })}
-                class="pl-7"
-              >
-                <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-                <span
-                  class="contents"
-                  oncontextmenu={(e) =>
-                    menu.openMenu(e, [
-                      ...openCopyItems(`/comms/agent/${a.id}/${c.id}`, () => setSel({ t: 'agent', model: a.id, conversationId: c.id })),
-                      // Clear the pill without opening: an absent seq tells the
-                      // server "the thread's latest", so this needs no load —
-                      // and that whole-thread read clears the bell rows too.
-                      ...(c.unreadCount
-                        ? [
-                            {
-                              label: 'Mark read',
-                              onSelect: () => {
-                                void markConversationRead(c.id)
-                                  .then((r) => {
-                                    void qc.invalidateQueries({ queryKey: ['conversations'] })
-                                    if (r.cleared > 0) {
-                                      void qc.invalidateQueries({ queryKey: ['notifications'] })
-                                      void qc.invalidateQueries({ queryKey: ['home'] })
-                                    }
-                                  })
-                                  .catch((e: unknown) =>
-                                    toastError('Mark read failed', e),
-                                  )
-                              },
-                            },
-                          ]
-                        : []),
-                      {
-                        label: 'Rename',
-                        onSelect: () => {
-                          void prompt({ title: 'Rename thread', defaultValue: c.title ?? '', placeholder: 'Thread name', confirmLabel: 'Rename' }).then(async (name) => {
-                            if (!name?.trim()) return
-                            try {
-                              await patchJson(`/api/conversations/${c.id}`, { title: name.trim() })
-                            } catch (e) {
-                              toastError('Rename failed', e)
-                            }
-                            void qc.invalidateQueries({ queryKey: ['conversations'] })
-                          })
-                        },
-                      },
-                    ])}
-                >
-                  <!-- §10 session-row anatomy, shared with the Plan rail. -->
-                  <SessionRowBody conv={c} active={activeAgent && agentSel?.conversationId === c.id} />
-                </span>
-              </RailRow>
-            {/each}
-          </div>
-        </div>
-      {/each}
-      {#if fleet.length === 0}
-        {#if fleetQuery.isError && fleetQuery.data === undefined}
-          <RailFailure
-            error={fleetQuery.error}
-            title="Could not load your agents"
-            onRetry={() => void fleetQuery.refetch()}
-          />
-        {:else}
-          <Hint>No agents yet. Hire on /agents.</Hint>
-        {/if}
-      {/if}
-      <!-- Threads nest under the agent rows above, so a failed conversation
-           read makes every agent look like it has never been talked to.
-           The rows stay (good fleet data is not thrown away) — the marker
-           says the threads are missing rather than absent. -->
-      {#if conversationsQuery.isError && conversationsQuery.data === undefined}
-        <div transition:slide={{ duration: 150 }}>
-          <RailFailure
-            error={conversationsQuery.error}
-            title="Could not load your threads"
-            onRetry={() => void conversationsQuery.refetch()}
-          />
-        </div>
-      {/if}
-    </Section>
-  </Rail>
+  <CommsSidebar
+    {sel}
+    selfId={session.data?.id ?? null}
+    {channelsQuery}
+    {usersQuery}
+    {fleetQuery}
+    {conversationsQuery}
+    {fleetStatus}
+    mayCreateChannels={mayCreateChannels.current}
+    mayStartRelays={mayStartRelays.current}
+    {menu}
+    onSelect={(next) => setSel(next)}
+    onOpenAgent={openAgent}
+    onNewThread={newThread}
+    onStartDm={(id) => void startDm(id)}
+    onCreate={(name, kind) => void create(name, kind)}
+    {markRead}
+  />
 
   <main class="min-h-0 min-w-0 flex-1">
-    {#if agentSel}
+    {#if sel?.t === 'threads'}
+      <ThreadsView {channels} {users} {fleet} onOpen={(id) => setSel({ t: 'channel', id })} />
+    {:else if sel?.t === 'drafts'}
+      <DraftsSentView
+        userId={session.data?.id ?? null}
+        {channels}
+        {conversations}
+        {fleet}
+        onOpen={(next) => setSel(next)}
+      />
+    {:else if agentSel}
       {#key agentSel.model}
         <AgentDmPane
           model={agentSel.model}
@@ -569,9 +341,23 @@
     {:else if selected}
       <div class="flex h-full min-h-0 flex-col">
         <header class="flex h-12 shrink-0 items-center gap-2 border-b border-line-subtle px-5">
+          {#if peer}
+            <PresenceAvatar
+              name={title}
+              src={peer.picture}
+              presence={peer.online ? 'online' : 'offline'}
+              cutout="ring-surface"
+            />
+          {/if}
           <span class="text-sm font-semibold text-fg">
             {selected.kind === 'channel' ? `#${title}` : selected.kind === 'group' ? `⇄ ${title}` : title}
           </span>
+          {#if peer?.statusEmoji || peer?.statusText}
+            <span class="flex min-w-0 items-center gap-1 text-xs text-muted" title={peer.statusText ?? undefined}>
+              {#if peer.statusEmoji}<span class="shrink-0">{peer.statusEmoji}</span>{/if}
+              {#if peer.statusText}<span class="truncate font-sans">{peer.statusText}</span>{/if}
+            </span>
+          {/if}
           {#if selected.topic}<span class="truncate text-xs text-muted">{selected.topic}</span>{/if}
           <span class="ml-auto"></span>
           <!-- Pill-shaped placeholders while membership loads — the header

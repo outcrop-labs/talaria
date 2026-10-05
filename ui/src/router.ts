@@ -82,6 +82,9 @@ export const { p, navigate, isActive, preload, route } = createRouter({
     // confused, and a thread hangs off the agent that owns it.
     '/comms': {
       '/': () => import('./routes/app/Comms.svelte'),
+      // The sidebar's two cross-conversation views (Threads, Drafts & sent).
+      '/threads': () => import('./routes/app/Comms.svelte'),
+      '/drafts': () => import('./routes/app/Comms.svelte'),
       '/channel': {
         '/:id': () => import('./routes/app/Comms.svelte'),
       },

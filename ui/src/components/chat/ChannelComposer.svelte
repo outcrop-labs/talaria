@@ -17,11 +17,15 @@
     placeholder,
     mentionables,
     onSend,
+    draftKey,
   }: {
     channelName: string
     placeholder?: string
     mentionables: Mentionable[]
     onSend: (text: string, attachments: Attachment[]) => Promise<void>
+    /** Unsent-text key, forwarded to ChatComposer (see its prop). Omitted
+     *  inside Comms: the channel's own key, saved and restored there. */
+    draftKey?: string | null
   } = $props()
 
   let attachments = $state<Attachment[]>([])
@@ -73,6 +77,7 @@
       onSubmit={submit}
       onFiles={uploadAll}
       onEmptyChange={(v) => (empty = v)}
+      {draftKey}
       canSend={!empty || attachments.length > 0}
     >
       <!-- No single selected agent in a channel — the generic ask (the

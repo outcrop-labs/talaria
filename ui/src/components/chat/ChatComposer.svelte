@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount, untrack } from 'svelte'
   import type { Snippet } from 'svelte'
   import type { Readable } from 'svelte/store'
   import { createEditor, EditorContent, type Editor } from 'svelte-tiptap'
@@ -16,6 +16,7 @@
   import ComposerToolbar from './ComposerToolbar.svelte'
   import { emojify } from '@/lib/emoji'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
+  import { claimDraftKey, readDraft, releaseDraftKey, saveDraft, useCommsDraftScope } from '@/lib/comms-drafts'
 
   // The Slack-shaped message editor: rich formatting with markdown under the
   // hood. Type syntax (**bold**, `code`, ``` blocks, > quotes, - lists) or use
@@ -47,6 +48,7 @@
     rightControls,
     controlRail,
     compactOnNarrow,
+    draftKey,
   }: {
     placeholder: string
     mentionables?: Mentionable[]
@@ -78,6 +80,10 @@
     controlRail?: Snippet
     /** Dense docks may hide the formatting strip below the sm breakpoint. */
     compactOnNarrow?: boolean
+    /** Where unsent text is kept (lib/comms-drafts.ts). Omitted: the key Comms
+     *  provides for its selection, if this composer is inside Comms. Null:
+     *  no draft at all. */
+    draftKey?: string | null
   } = $props()
 
   let empty = $state(true)
@@ -176,8 +182,85 @@
       onUpdate: ({ editor }) => {
         empty = editor.isEmpty
         onEmptyChange?.(editor.isEmpty)
+        queueDraftSave(editor.isEmpty ? '' : markdownOf(editor))
       },
     })
+  })
+
+  // ── Drafts (KTD10) ─────────────────────────────────────────────────────────
+  // Unsent text is saved per conversation while you type (debounced), put back
+  // when you return, and dropped on send (`clear()`). Inside Comms the key
+  // comes from the view's selection; the first composer to claim a key owns it,
+  // so a thread-reply or modal composer in the same channel stays out of it.
+  const draftScope = useCommsDraftScope()
+  const draftToken = Symbol('composer')
+  const wantedKey = $derived(draftKey !== undefined ? draftKey : (draftScope?.key() ?? null))
+  const draftUser = $derived(draftScope?.userId() ?? null)
+  /** The key this composer owns right now, and for whom. */
+  let owned: { user: string; key: string } | null = null
+  let pending: { user: string; key: string; text: string } | null = null
+  /** What the store already holds for the owned key — restoring a draft must
+   *  not re-save it (that would re-date it in the Drafts view). */
+  let stored = ''
+  let saveTimer: ReturnType<typeof setTimeout> | undefined
+
+  const markdownOf = (e: { storage: Record<string, unknown> }): string =>
+    (e.storage.markdown as { getMarkdown: () => string }).getMarkdown().trim()
+
+  const flushDraft = () => {
+    clearTimeout(saveTimer)
+    if (pending) saveDraft(pending.user, pending.key, pending.text)
+    pending = null
+  }
+
+  const queueDraftSave = (text: string) => {
+    if (!owned || text === stored) return
+    stored = text
+    pending = { ...owned, text }
+    clearTimeout(saveTimer)
+    saveTimer = setTimeout(flushDraft, 300)
+  }
+
+  const releaseOwned = () => {
+    if (owned && draftScope) releaseDraftKey(draftScope, owned.key, draftToken)
+    owned = null
+  }
+
+  // Follow the key: the agent pane keeps one composer across threads, so a
+  // switch saves the old draft and loads the new one. Unsent text in a brand
+  // new agent thread carries into the thread it just became.
+  $effect(() => {
+    const e = $editor
+    const key = wantedKey
+    const user = draftUser
+    if (!e) return
+    untrack(() => {
+      if (owned && owned.key === key && owned.user === user) return
+      flushDraft()
+      const prev = owned
+      releaseOwned()
+      if (!key || !user || !draftScope || !claimDraftKey(draftScope, key, draftToken)) return
+      owned = { user, key }
+      stored = ''
+      const carry = prev?.key.startsWith('agent:') && prev.key.endsWith(':new') && !key.startsWith('agent:')
+      if (carry && !e.isEmpty) {
+        stored = markdownOf(e)
+        saveDraft(user, key, stored)
+        return
+      }
+      const draft = readDraft(user, key)
+      // A first load into an empty editor, or a switch between conversations.
+      if (draft !== null) {
+        stored = draft
+        e.commands.setContent(draft, true)
+      }
+      else if (prev) e.commands.clearContent(true)
+    })
+  })
+
+  onDestroy(() => {
+    flushDraft()
+    releaseOwned()
   })
 
   // `disabled` can flip after mount; keep the live editor in sync. Guarded so
@@ -199,6 +282,9 @@
   }
   export function clear(): void {
     $editor?.commands.clearContent(true)
+    // Sent: the draft goes with it (the update above queued an empty save;
+    // land it now rather than leave a window where a reload restores it).
+    flushDraft()
   }
 
   // Slack's split, Mercury's skin: the inset prompt well (text only) on top;
