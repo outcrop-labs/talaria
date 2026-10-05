@@ -197,8 +197,16 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
             answered: r.try_get("answered").unwrap_or(0),
             agreed: r.try_get("agreed").unwrap_or(0),
             calibrated: r.try_get("calibrated").unwrap_or(0),
-            p50_ms: r.try_get::<Option<i32>, _>("p50").ok().flatten().map(i64::from),
-            p99_ms: r.try_get::<Option<i32>, _>("p99").ok().flatten().map(i64::from),
+            p50_ms: r
+                .try_get::<Option<i32>, _>("p50")
+                .ok()
+                .flatten()
+                .map(i64::from),
+            p99_ms: r
+                .try_get::<Option<i32>, _>("p99")
+                .ok()
+                .flatten()
+                .map(i64::from),
             mean_certainty_when_disagreed: r
                 .try_get::<Option<f64>, _>("disagree_certainty")
                 .ok()

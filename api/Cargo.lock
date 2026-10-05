@@ -3788,6 +3788,7 @@ dependencies = [
  "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-db",
+ "talaria-decide",
  "talaria-digest",
  "talaria-effort-prefs",
  "talaria-email",

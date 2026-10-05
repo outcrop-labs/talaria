@@ -26,6 +26,7 @@ mod brief_verdict_carry_live;
 mod chips_landing_live;
 mod conversation_reactions_live;
 mod conversation_reads;
+mod decide_shadow_live;
 mod developer_agent_live;
 mod fitness_arming;
 mod fitness_transcripts_live;

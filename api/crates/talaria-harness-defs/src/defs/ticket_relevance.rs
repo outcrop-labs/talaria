@@ -113,8 +113,7 @@ pub const RELEVANT_MEANS: &str = "the message asks or tells the agent to do, cha
 pub const NOT_RELEVANT_MEANS: &str = "people talking to each other about something else (another project, scheduling, general chat); thanks or acknowledgement with no new ask; or a note about a different ticket\u{2019}s work";
 
 /// The one sentence the gate is asked, in both places that ask it.
-pub const RELEVANCE_QUESTION: &str =
-    "Does the message below concern the assigned agent\u{2019}s work on this ticket? One agent is assigned to the ticket\u{2019}s work; everyone else in the thread is a person talking to other people.";
+pub const RELEVANCE_QUESTION: &str = "Does the message below concern the assigned agent\u{2019}s work on this ticket? One agent is assigned to the ticket\u{2019}s work; everyone else in the thread is a person talking to other people.";
 
 fn system() -> String {
     [
