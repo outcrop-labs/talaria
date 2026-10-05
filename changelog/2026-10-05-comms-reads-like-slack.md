@@ -13,3 +13,11 @@
     - The migrations replayed on a fresh Postgres.
     - The 17 new live API tests passed against a throwaway Postgres + Redis.
     - The full live suite was rerun on a fresh database: the only failure was one test that needs an LLM key this box does not have.
+    - Exercised in the browser against a seeded local stack:
+      - A channel showing day dividers, times and full author names.
+      - The hover toolbar: ✅ added a chip in the channel and in the thread pane.
+      - The thread rollup and the pane.
+      - Presence dots, Kari's 📅 status, and sidebar search.
+      - The Threads and Drafts & sent views.
+      - The Settings photo and status fields.
+    - Not exercised in the browser: photo upload (needs a file picker) and agent DMs (no model gateway on the box). Both are covered by API live tests.
