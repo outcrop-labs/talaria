@@ -1711,7 +1711,20 @@ const UNSET_SEAM_CENSUS = [
 {
   // `rustSources` is comment-stripped, so a seam merely NAMED in a comment
   // (this file's own history is full of them) cannot read as a setter.
-  const allRust = [...rustSources.values()].join('\n')
+  //
+  // IT COVERS `api/crates` ONLY, and both halves of that matter here. A
+  // setter in the BINARY crate would be invisible to it, so `api/src` is read
+  // in as well — otherwise wiring an edge in main.rs would fail this rule on
+  // correct code, and a rule that fires on correct code teaches people to
+  // route around it. Test code is deliberately NOT read: a seam set only in
+  // `api/tests/it/support` is wired for the suite and dead in production,
+  // which is the exact bug this rule is for, so counting it would let the
+  // rule certify the thing it exists to catch.
+  const binarySrc = []
+  for (const f of walk(join(ROOT, 'api/src'), [], ['.rs'])) {
+    binarySrc.push(stripComments(readFileSync(f, 'utf8')))
+  }
+  const allRust = [...rustSources.values(), ...binarySrc].join('\n')
   const isSet = (name) => new RegExp(`\\b${name}\\s*\\.\\s*set\\s*\\(`, 's').test(allRust)
   const isRead = (name) => new RegExp(`\\b${name}\\s*\\.\\s*get\\s*\\(`, 's').test(allRust)
 
