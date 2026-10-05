@@ -14,6 +14,8 @@ talaria-apps = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth-config = { workspace = true }
 talaria-body = { workspace = true }
+talaria-coding-accounts = { workspace = true }
+talaria-omp-auth = { workspace = true }
 talaria-config = { workspace = true }
 talaria-effort-prefs = { workspace = true }
 talaria-email = { workspace = true }

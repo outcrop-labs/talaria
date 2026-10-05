@@ -3572,6 +3572,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-managers"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sqlx",
+ "talaria-permissions",
+]
+
+[[package]]
 name = "talaria-agent-mcp"
 version = "0.1.0"
 dependencies = [
@@ -3738,6 +3747,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-media",
  "talaria-agent-memory",
@@ -4139,6 +4149,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+ "tokio",
  "tracing",
 ]
 
@@ -4378,6 +4389,18 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "talaria-coding-accounts"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-secretbox",
+ "talaria-settings",
 ]
 
 [[package]]
@@ -4749,6 +4772,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-defs",
+ "talaria-agent-managers",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
@@ -4838,6 +4862,7 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-agent-secrets",
+ "talaria-coding-accounts",
  "talaria-fleet-brain",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
@@ -5898,6 +5923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-omp-auth"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.4",
+ "reqwest",
+ "serde_json",
+ "talaria-agent-auth",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-org"
 version = "0.1.0"
 dependencies = [
@@ -6392,6 +6429,7 @@ dependencies = [
  "talaria-auth-config",
  "talaria-body",
  "talaria-capability-reach",
+ "talaria-coding-accounts",
  "talaria-config",
  "talaria-effort-prefs",
  "talaria-email",
@@ -6400,6 +6438,7 @@ dependencies = [
  "talaria-instance",
  "talaria-invites",
  "talaria-judge",
+ "talaria-omp-auth",
  "talaria-org",
  "talaria-org-domains",
  "talaria-outreach",
@@ -6542,6 +6581,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-role-templates",
  "talaria-agent-secrets",
@@ -6647,6 +6687,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-agent-media",
  "talaria-agent-memory",
  "talaria-api-facades",
@@ -6681,17 +6722,21 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-api-facades",
  "talaria-attribution",
  "talaria-audit",
  "talaria-boards",
  "talaria-body",
+ "talaria-coding-accounts",
  "talaria-db",
  "talaria-error",
  "talaria-github",
  "talaria-harness-defs",
  "talaria-instance",
+ "talaria-model-roles",
  "talaria-notify",
+ "talaria-omp-auth",
  "talaria-params",
  "talaria-permissions",
  "talaria-realtime-watch",
@@ -7018,6 +7063,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-body",
  "talaria-error",
  "talaria-password",
@@ -7041,10 +7087,9 @@ dependencies = [
 name = "talaria-skill-access"
 version = "0.1.0"
 dependencies = [
- "futures-util",
  "sqlx",
+ "talaria-agent-managers",
  "talaria-agent-skills",
- "talaria-fleet-agents",
  "talaria-permissions",
 ]
 
@@ -7415,6 +7460,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-managers",
  "talaria-gateway",
  "talaria-permissions",
  "talaria-teams",
@@ -7531,6 +7577,7 @@ dependencies = [
  "talaria-attribution",
  "talaria-boards",
  "talaria-body",
+ "talaria-coding-accounts",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",

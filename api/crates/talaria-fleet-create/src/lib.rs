@@ -119,6 +119,12 @@ pub struct CreateAgentInput {
     pub created_by: String,
     /// Override the starter-soul scaffold (e.g. a personalized soul).
     pub soul: Option<String>,
+    /// The human this agent belongs to — its first manager, and so the only
+    /// non-admin who can change it until they name others
+    /// (docs/PERMISSIONS.md, "Agent managers"). A uuid, not the `created_by`
+    /// display string. None when nobody can be traced: the agent lands
+    /// admin-managed.
+    pub manager_user_id: Option<String>,
 }
 
 pub struct CreatedAgent {
@@ -236,6 +242,15 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
     )
     .await
     .map_err(|e| e.to_string())?;
+
+    // The agent now belongs to somebody. Written here rather than at the
+    // call sites so every create path — the hire run, a personal assistant —
+    // lands with a manager and none of them can forget.
+    if let Some(manager) = input.manager_user_id.as_deref().filter(|m| !m.is_empty()) {
+        talaria_agent_managers::add_manager(pg, &def.id, manager, Some(manager))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     Ok(CreatedAgent { def, key_created })
 }
 

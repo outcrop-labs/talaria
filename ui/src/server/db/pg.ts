@@ -3345,6 +3345,214 @@ alter table tasks drop column if exists conversation_id`,
      add constraint kb_comments_one_target
      check ((doc_id is null) <> (artifact_id is null))`,
   `create index if not exists kb_comments_artifact_idx on kb_comments(artifact_id, created_at)`,
+
+  // ── Agent managers (2026-10-01): an agent is somebody's. `agents.manage`
+  // stays the FLEET-wide gate (hire, endpoints, MCP servers, the role
+  // library); who may change ONE agent — its identity, soul, skills, memory,
+  // crons, secrets, MCP binds and lifecycle — is this table. Admins keep
+  // reach over every agent, so a manager who leaves cannot take one with
+  // them.
+  `create table if not exists agent_managers (
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     user_id uuid not null references users(id) on delete cascade,
+     added_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (agent_id, user_id)
+   )`,
+  // The reverse lookup: "which agents does this person manage", asked on
+  // every /agents view resolution and roster read.
+  `create index if not exists agent_managers_user_idx on agent_managers(user_id)`,
+  // Backfill, half one: a personal assistant belongs to its human, and that
+  // was already recorded.
+  `insert into agent_managers (agent_id, user_id)
+   select d.id, d.owner_user_id from agent_defs d where d.owner_user_id is not null
+   on conflict do nothing`,
+  // Backfill, half two: every other agent starts managed by the admins who
+  // could already change it, so the upgrade takes nothing away from anyone.
+  // Admins added LATER are not written in — they hold reach by role.
+  `insert into agent_managers (agent_id, user_id)
+   select d.id, u.id from agent_defs d, users u
+   where d.owner_user_id is null and u.role = 'admin'
+   on conflict do nothing`,
+  // CODING ACCOUNTS — a Developer Agent signing in to a coding-agent
+  // subscription (Claude Pro/Max, ChatGPT Codex, Copilot, Gemini, …), one
+  // account per service per agent, so its harness bills that account instead
+  // of the org's Talaria gateway.
+  //
+  // Talaria is the custodian, not the sandbox: the credential seals here and
+  // is served to the agent's omp over omp's auth-broker protocol, which makes
+  // this instance the canonical REFRESHER too. That is why `credential_enc`
+  // holds the whole credential (the refresh token included) rather than just
+  // an access token — a broker that cannot refresh hands out a credential
+  // that dies in hours.
+  //
+  // `provider` is the STORE id, which is not always the id the person signed
+  // in through: `openai-codex-device` stores as `openai-codex`. The unique
+  // index is over the store id, so "one account per service, per agent" holds
+  // even when two login routes reach the same service — picking the device
+  // flow instead of the browser flow replaces the account rather than
+  // doubling it. `login_provider` keeps which door was used, for display and
+  // for re-authentication.
+  //
+  // The identity columns are display material lifted out of the credential at
+  // login (whose account is this? which org?) so the UI never has to unseal
+  // anything to render the list. `identity_key` is omp's own dedupe key for
+  // the row, so a re-login lands on the same account the harness already knew.
+  `create table if not exists agent_coding_accounts (
+     id bigserial primary key,
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     provider text not null,
+     login_provider text not null,
+     credential_enc text not null,
+     identity_key text,
+     email text,
+     account_id text,
+     org_id text,
+     org_name text,
+     is_primary boolean not null default false,
+     expires_at timestamptz,
+     authorized_at timestamptz,
+     disabled_at timestamptz,
+     disabled_cause text,
+     created_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists agent_coding_accounts_service_idx
+     on agent_coding_accounts(agent_id, provider)`,
+  // One primary per agent, enforced rather than hoped for: with two plans
+  // signed in, "which one runs a job that says nothing" must have exactly one
+  // answer. A partial unique index says so in the schema, so a bad write
+  // fails here instead of producing an agent whose default depends on row
+  // order.
+  `create unique index if not exists agent_coding_accounts_primary_idx
+     on agent_coding_accounts(agent_id) where is_primary`,
+
+  // Rate-limit blocks the HARNESS discovered and asked the broker to persist.
+  // omp writes these through the broker so a 429 learned by one job is not
+  // re-learned by the next; they are cache, not credentials, and a lost row
+  // only costs one wasted upstream call. `block_scope` is '' for the
+  // provider-wide block and a meter name (Codex `chat` / `spark`) otherwise,
+  // which is why it is part of the key rather than nullable.
+  `create table if not exists agent_coding_account_blocks (
+     account_id bigint not null references agent_coding_accounts(id) on delete cascade,
+     provider_key text not null,
+     block_scope text not null default '',
+     blocked_until_ms bigint not null,
+     updated_at_ms bigint,
+     primary key (account_id, provider_key, block_scope)
+   )`,
+
+  // The model override, per omp role, PER PLAN — where a plan is either one
+  // of the agent's coding accounts or the Talaria gateway itself
+  // (`account_id is null`). Keyed by plan rather than by agent because an
+  // account IS a plan, and a plan is what carries a coherent set of models:
+  // swapping which plan drives a job has to swap the whole set with it, not
+  // leave `smol` pointing at the subscription that just ran out.
+  //
+  // THE GATEWAY IS A CHOICE, NOT JUST A FALLBACK. A row with a null
+  // `account_id` is "run this role on the org's Talaria gateway, on this
+  // model" — so an agent with subscriptions signed in can still be told to do
+  // some or all of its coding work through the gateway, on models the org
+  // picked. Nothing about signing an account in takes that away. Absent
+  // entirely, a role falls back to its plan's `default` and then to the org's
+  // Workbench model role, exactly as before this feature existed.
+  //
+  // That chain is the whole of "the oauth login overrides the default
+  // configured gateway model": it moves the HARNESS's models, and the persona
+  // driving the harness keeps the model its agent def configures, which this
+  // table cannot touch.
+  //
+  // `nulls not distinct` is load-bearing: without it Postgres would treat
+  // every gateway row as unique and happily store four `default` rows for the
+  // gateway plan.
+  `create table if not exists agent_coding_roles (
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     account_id bigint references agent_coding_accounts(id) on delete cascade,
+     role text not null,
+     model text not null,
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists agent_coding_roles_plan_role_idx
+     on agent_coding_roles(agent_id, account_id, role) nulls not distinct`,
+
+  // The per-ticket pick. A person who has maxed out one plan mid-ticket wants
+  // THIS ticket moved onto another one, without re-pointing the agent and
+  // every other ticket with it — so the pin lives on the ticket and outranks
+  // the agent's primary plan for the jobs that ticket starts.
+  //
+  // A null `account_id` pins the ticket to the Talaria gateway, which is how
+  // "run this one through the gateway instead" is said on an agent whose
+  // default is a subscription. No row at all is a different thing: no pin, so
+  // the agent's own default decides.
+  //
+  // `model` is optional and overrides only the `default` role for this ticket
+  // (the model on the invocation line); null means the plan's own default pick
+  // stands. The other roles keep coming from the pinned plan, because a ticket
+  // that borrows a plan borrows its subagent and planning models too.
+  //
+  // One row per ticket (re-pinning replaces), cascading from both sides: a
+  // deleted ticket takes its pin, and an account signed out stops being
+  // pinned anywhere rather than leaving tickets pointing at a credential the
+  // broker will not serve.
+  `create table if not exists task_coding_pins (
+     task_id uuid primary key references tasks(id) on delete cascade,
+     account_id bigint references agent_coding_accounts(id) on delete cascade,
+     model text,
+     pinned_by uuid references users(id) on delete set null,
+     pinned_at timestamptz not null default now()
+   )`,
+  `create index if not exists task_coding_pins_account_idx
+     on task_coding_pins(account_id)`,
+
+  // The broker's snapshot generation, per agent.
+  //
+  // omp's auth-broker protocol is conditional-GET shaped: the client sends
+  // `If-None-Match: "<generation>"` and expects a 304 while nothing has
+  // changed. So the generation has to move on EVERY change to what the
+  // snapshot contains — and the change that matters most is a revocation,
+  // which removes a row rather than touching one. A timestamp derived from the
+  // surviving rows cannot see that, and a counter bumped by hand from each
+  // write path is a bug waiting for the next write path.
+  //
+  // So the database owns it. A trigger on the two tables the snapshot is built
+  // from — the credentials and the rate-limit blocks, not the role picks,
+  // which the snapshot does not carry — bumps the agent's revision on insert,
+  // update and delete alike. Nothing in the application can forget to.
+  //
+  // No foreign key on `agent_id` on purpose: during a cascading delete of an
+  // agent the trigger would otherwise race its own parent and fail the delete.
+  // A leftover counter for a retired agent is one harmless row.
+  `create table if not exists agent_coding_rev (
+     agent_id uuid primary key,
+     rev bigint not null default 1,
+     updated_at timestamptz not null default now()
+   )`,
+  `create or replace function talaria_bump_coding_rev() returns trigger as $$
+     declare aid uuid;
+     begin
+       if tg_table_name = 'agent_coding_accounts' then
+         aid := coalesce(new.agent_id, old.agent_id);
+       else
+         select a.agent_id into aid from agent_coding_accounts a
+           where a.id = coalesce(new.account_id, old.account_id);
+       end if;
+       if aid is not null then
+         insert into agent_coding_rev (agent_id, rev) values (aid, 1)
+           on conflict (agent_id) do update
+           set rev = agent_coding_rev.rev + 1, updated_at = now();
+       end if;
+       return null;
+     end;
+   $$ language plpgsql`,
+  `drop trigger if exists agent_coding_accounts_rev on agent_coding_accounts`,
+  `create trigger agent_coding_accounts_rev
+     after insert or update or delete on agent_coding_accounts
+     for each row execute function talaria_bump_coding_rev()`,
+  `drop trigger if exists agent_coding_blocks_rev on agent_coding_account_blocks`,
+  `create trigger agent_coding_blocks_rev
+     after insert or update or delete on agent_coding_account_blocks
+     for each row execute function talaria_bump_coding_rev()`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

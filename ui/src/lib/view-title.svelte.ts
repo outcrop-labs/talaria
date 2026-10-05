@@ -1,9 +1,17 @@
-// The top strip titles the view — but the strip renders ABOVE the outlet and
-// cannot reach into the view to ask. So the view CLAIMS its title on mount
-// (ViewHeader does it for views that keep body chrome — status, actions, a
-// blurb; views whose header was only a title call claimViewTitle directly),
-// and the strip reads the claim, falling back to the route-derived name for
-// the full-bleed surfaces that never had a body title to move.
+// NOTHING READS THIS MODULE TODAY. It existed so the top strip could title
+// the view: the strip rendered ABOVE the outlet and could not reach into the
+// view to ask, so the view CLAIMED its title on mount (ViewHeader does it for
+// views that keep body chrome — status, actions, a blurb; views whose header
+// was only a title call claimViewTitle directly) and the strip read the
+// claim. The dock era dropped the title row, and the strip itself is now
+// deleted, so `viewTitleClaim` has no caller anywhere in the app.
+//
+// It is kept rather than deleted because the claims are still made, correctly
+// and cheaply, by a dozen views — and the mechanism below is the part that
+// was hard to get right (see the keying note). Whatever names views next
+// reads `viewTitleClaim` and inherits a working surface. If the answer turns
+// out to be "nothing ever does", this module and its callers go together, in
+// one change that can say so.
 //
 // The claim is keyed by the pathname it was made under, and that key is the
 // whole correctness story. During a route change the outgoing view's claim is

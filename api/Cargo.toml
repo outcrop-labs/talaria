@@ -170,6 +170,8 @@ talaria-agent-crons = { path = "crates/talaria-agent-crons" }
 
 talaria-agent-defs = { path = "crates/talaria-agent-defs" }
 
+talaria-agent-managers = { path = "crates/talaria-agent-managers" }
+
 talaria-agent-mcp = { path = "crates/talaria-agent-mcp" }
 
 talaria-agent-media = { path = "crates/talaria-agent-media" }
@@ -229,6 +231,8 @@ talaria-chat-persist = { path = "crates/talaria-chat-persist" }
 talaria-chips = { path = "crates/talaria-chips" }
 
 talaria-claim = { path = "crates/talaria-claim" }
+
+talaria-coding-accounts = { path = "crates/talaria-coding-accounts" }
 
 talaria-collate = { path = "crates/talaria-collate" }
 
@@ -411,6 +415,8 @@ talaria-model-roles = { path = "crates/talaria-model-roles" }
 talaria-native-search = { path = "crates/talaria-native-search" }
 
 talaria-notify = { path = "crates/talaria-notify" }
+
+talaria-omp-auth = { path = "crates/talaria-omp-auth" }
 
 talaria-org = { path = "crates/talaria-org" }
 
@@ -639,6 +645,7 @@ talaria-activity = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-crons = { workspace = true }
 talaria-agent-defs = { workspace = true }
+talaria-agent-managers = { workspace = true }
 talaria-agent-mcp = { workspace = true }
 talaria-agent-media = { workspace = true }
 talaria-agent-memory = { workspace = true }

@@ -9,8 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-futures-util = { workspace = true }
+talaria-agent-managers = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-skills = { workspace = true }
-talaria-fleet-agents = { workspace = true }
 talaria-permissions = { workspace = true }

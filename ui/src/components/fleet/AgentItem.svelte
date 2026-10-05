@@ -50,8 +50,9 @@
 {#if am.retiring}
   <AgentRetireModal def={d} onClose={() => (am.retiring = false)} onConfirm={() => void am.act('retire', 'retiring')} />
 {/if}
-<!-- isAdmin: both frames showed the roster to managers only, so both passed it
-     unconditionally — the modal's read-only mode was never reached here. -->
+<!-- canManage rides on the def: the roster now shows agents somebody holds
+     `agents.manage` over but does NOT manage, and those open read-only —
+     which is the mode this modal always had and never reached. -->
 {#if manage}
-  <AgentManageModal open={manage} onClose={() => (manage = false)} def={d} {endpoints} isAdmin />
+  <AgentManageModal open={manage} onClose={() => (manage = false)} def={d} {endpoints} canManage={d.canManage} />
 {/if}

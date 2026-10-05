@@ -50,6 +50,38 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
   }
 }
 
+/** omp-auth/ bundles to omp-auth/dist/server.js, which the Rust api SPAWNS
+ *  (talaria-omp-auth) to perform coding-account OAuth logins and refreshes.
+ *  Same staleness problem as the toolkit above, and the same answer — except
+ *  that a missing bundle is NOT fatal here: coding accounts are an opt-in
+ *  feature behind an admin toggle, and a dev stack that never turns it on
+ *  should not be blocked by a bundle it will never spawn. So a failure warns
+ *  and carries on, and the feature's own routes say the bridge is not running
+ *  if someone does turn it on. TALARIA_SKIP_OMP_AUTH_BUILD=1 skips it. */
+async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
+  if (ctx.env.TALARIA_SKIP_OMP_AUTH_BUILD === '1') {
+    ctx.log.say('omp auth bridge — skipped (TALARIA_SKIP_OMP_AUTH_BUILD=1)')
+    return
+  }
+  const dist = join(ctx.root, 'omp-auth/dist/server.js')
+  const stale = !existsSync(dist) || anyNewer(join(ctx.root, 'omp-auth/src'), dist)
+  if (!stale) {
+    if (!opts.quietWhenFresh) ctx.log.say('omp auth bridge — omp-auth/dist up to date')
+    return
+  }
+  if (!existsSync(join(ctx.root, 'omp-auth/node_modules'))) {
+    await ctx.run('bun', ['install'], { cwd: join(ctx.root, 'omp-auth') })
+  }
+  ctx.log.say('omp auth bridge → omp-auth/dist')
+  const code = await ctx.run('bun', ['run', 'build'], { cwd: join(ctx.root, 'omp-auth') })
+  if (code !== 0) {
+    ctx.log.warn(
+      'omp-auth/ failed to build — coding-account sign-ins will report the bridge as not ' +
+        'running. Everything else is unaffected.',
+    )
+  }
+}
+
 /** The Rust api sidecar — the app's api since the cutover: every /api/*
  *  request the dev UI serves is proxied to it, so `talaria dev` brings it up
  *  by default. Opt OUT with TALARIA_API=off (a box that runs its own instance
@@ -216,6 +248,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
       await ctx.run('bun', ['install'], { cwd: join(ctx.root, 'ui') })
     }
     await mcpToolkit(ctx, { quietWhenFresh: true })
+    await ompAuthBridge(ctx, { quietWhenFresh: true })
     await rustApi(ctx, uiEnv)
     ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? '5273'} (published to the host by the box compose)`)
     return ctx.run('bun', ['run', 'dev'], { cwd: join(ctx.root, 'ui') })
@@ -351,6 +384,7 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string): Promise<number> {
   }
 
   await mcpToolkit(ctx)
+  await ompAuthBridge(ctx)
   await rustApi(ctx, uiEnv)
 
   // A worktree's ui/.env carries its own PORT (the allocated slot). vite's

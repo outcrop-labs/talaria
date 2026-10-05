@@ -35,7 +35,7 @@
     extras: string[]
   }
 
-  let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
+  let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
   const query = createQuery(() => ({
@@ -120,7 +120,7 @@
                 Test
               </Button>
             {/if}
-            {#if isAdmin && !s.extras.includes('built-in') && !s.extras.includes('managed')}
+            {#if canManage && !s.extras.includes('built-in') && !s.extras.includes('managed')}
               <Button variant="ghost" size="xs" class="shrink-0 hover:text-danger" disabled={busy}
                 onclick={async () => { if (await confirm({ title: 'Remove skill', message: `Remove "${s.name}"?`, confirmLabel: 'Remove', danger: true })) void edit({ remove: [s.name] }) }}>
                 Remove
@@ -131,7 +131,7 @@
       </div>
     {/snippet}
   </QueryState>
-  {#if isAdmin}
+  {#if canManage}
     <div class="flex items-center gap-2 pt-1">
       <Input size="sm" bind:value={name} onkeydown={submitOnEnter(() => !busy && name.trim() && /^https?:\/\//.test(url.trim()) && void edit({ add: [{ name: name.trim(), url: url.trim() }] }))} placeholder="name" class="w-28" />
       <Input size="sm" bind:value={url} onkeydown={submitOnEnter(() => !busy && name.trim() && /^https?:\/\//.test(url.trim()) && void edit({ add: [{ name: name.trim(), url: url.trim() }] }))} placeholder="http://host:port/mcp" class="flex-1" />

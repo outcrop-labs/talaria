@@ -13,7 +13,7 @@ import { runDev, rustApi } from './dev'
 import { fakeCtx, type FakeCtx } from '../testing'
 import { CliError } from '../ui'
 
-const makeTree = (over: { distMtime?: Date; uiEnv?: string } = {}) => {
+const makeTree = (over: { distMtime?: Date; uiEnv?: string; bridgeDistMtime?: Date } = {}) => {
   const root = mkdtempSync(join(tmpdir(), 'talaria-dev-'))
   mkdirSync(join(root, 'ui/node_modules'), { recursive: true })
   mkdirSync(join(root, 'mcp/node_modules'), { recursive: true })
@@ -22,12 +22,25 @@ const makeTree = (over: { distMtime?: Date; uiEnv?: string } = {}) => {
   writeFileSync(join(root, 'mcp/src/index.ts'), 'x')
   writeFileSync(join(root, 'mcp/src/deep/util.ts'), 'x')
   writeFileSync(join(root, 'mcp/dist/index.js'), 'built')
+  // The omp auth bridge builds on the same staleness rule. A fresh bundle
+  // here keeps the mcp cases below about mcp: `ompAuthStale` is its own
+  // describe block.
+  mkdirSync(join(root, 'omp-auth/src'), { recursive: true })
+  mkdirSync(join(root, 'omp-auth/dist'), { recursive: true })
+  mkdirSync(join(root, 'omp-auth/node_modules'), { recursive: true })
+  writeFileSync(join(root, 'omp-auth/src/server.ts'), 'x')
+  writeFileSync(join(root, 'omp-auth/dist/server.js'), 'built')
   mkdirSync(join(root, 'docker/searxng'), { recursive: true })
   writeFileSync(join(root, 'docker/searxng/settings.template.yml'), 'secret_key: "__SEARXNG_SECRET__"\n')
   writeFileSync(join(root, 'ui/.env'), over.uiEnv ?? 'DATABASE_URL=x\nREDIS_URL=y\n')
   const distTime = over.distMtime ?? new Date()
   utimesSync(join(root, 'mcp/dist/index.js'), distTime, distTime)
   utimesSync(join(root, 'mcp/src/index.ts'), distTime, distTime)
+  // Fresh by construction unless a test ages it: `new Date()` would race the
+  // source file written microseconds earlier on a coarse-granularity clock.
+  const bridgeTime = over.bridgeDistMtime ?? new Date(Date.now() + 5000)
+  utimesSync(join(root, 'omp-auth/dist/server.js'), bridgeTime, bridgeTime)
+  utimesSync(join(root, 'omp-auth/src/server.ts'), new Date(Date.now() - 5000), new Date(Date.now() - 5000))
   return root
 }
 
@@ -64,7 +77,9 @@ describe('talaria dev — mcp staleness', () => {
     ctx.root = root
     plantInfra(ctx)
     await runDev(ctx)
-    expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'build')).toBe(false)
+    expect(
+      ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'build' && c.opts?.cwd === join(root, 'mcp')),
+    ).toBe(false)
   })
 
   test('one deep src file newer than dist → rebuild', async () => {
@@ -84,7 +99,54 @@ describe('talaria dev — mcp staleness', () => {
     ctx.root = root
     plantInfra(ctx)
     await runDev(ctx)
-    expect(ctx.calls.some((c) => c.args[1] === 'build')).toBe(false)
+    expect(ctx.calls.some((c) => c.args[1] === 'build' && c.opts?.cwd === join(root, 'mcp'))).toBe(false)
+  })
+})
+
+describe('talaria dev — omp auth bridge', () => {
+  test('fresh bundle → no rebuild', async () => {
+    const root = makeTree()
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    await runDev(ctx)
+    expect(
+      ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'build' && c.opts?.cwd === join(root, 'omp-auth')),
+    ).toBe(false)
+  })
+
+  test('src newer than the bundle → rebuild', async () => {
+    const root = makeTree({ bridgeDistMtime: new Date(0) })
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    await runDev(ctx)
+    expect(
+      ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'build' && c.opts?.cwd === join(root, 'omp-auth')),
+    ).toBe(true)
+  })
+
+  test('TALARIA_SKIP_OMP_AUTH_BUILD=1 → never builds', async () => {
+    const root = makeTree({ bridgeDistMtime: new Date(0) })
+    const ctx = fakeCtx({ env: { TALARIA_SKIP_OMP_AUTH_BUILD: '1' } })
+    ctx.root = root
+    plantInfra(ctx)
+    await runDev(ctx)
+    expect(ctx.calls.some((c) => c.args[1] === 'build' && c.opts?.cwd === join(root, 'omp-auth'))).toBe(false)
+  })
+
+  // A bundle that will not build must not stop a dev stack: coding accounts
+  // are opt-in behind an admin toggle, and everything else is unaffected.
+  test('a failed build warns and dev carries on', async () => {
+    const root = makeTree({ bridgeDistMtime: new Date(0) })
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    // mcp's dist is fresh in this tree, so the only `bun run build` that
+    // runs is the bridge's — and this plants its failure.
+    ctx.plant(['bun', ['run', 'build']], new Error('bundler blew up'))
+    await runDev(ctx)
+    expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('omp-auth/ failed to build'))).toBe(true)
   })
 })
 

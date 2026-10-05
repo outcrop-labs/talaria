@@ -24,7 +24,9 @@ use talaria_api_facades::google::oauth::{
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{enum_member, parse};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, random_token, require_perm, state_cookie_for};
+use talaria_session::{
+    actor_of, random_token, require_agent_manager, require_agent_reader, state_cookie_for,
+};
 use talaria_state::AppState;
 
 const KINDS: &[&str] = &["owner", "org", "agent"];
@@ -93,7 +95,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    require_perm(&state, &headers, "agents.manage").await?;
+    require_agent_reader(&state, &headers, &id).await?;
     let Some((_, model, _)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
@@ -109,7 +111,7 @@ pub async fn put(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_perm(&state, &headers, "agents.manage").await?;
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     // The WHOLE body validates before any write — a bad user id beside a
@@ -167,7 +169,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
-    let user = require_perm(&state, &headers, "agents.manage").await?;
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let Some((def_id, model, display_name)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
@@ -200,7 +202,7 @@ pub async fn connect(
     Path(id): Path<String>,
     uri: Uri,
 ) -> Response {
-    if let Err(e) = require_perm(&state, &headers, "agents.manage").await {
+    if let Err(e) = require_agent_manager(&state, &headers, &id).await {
         return e;
     }
     let sb = state.secretbox().await.unwrap_or_default();

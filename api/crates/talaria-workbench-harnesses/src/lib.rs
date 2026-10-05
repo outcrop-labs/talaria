@@ -89,11 +89,49 @@ pub fn model_arg(model: &str) -> String {
 /// Slot model and per-job session dir into an invoke template. `<task>` stays
 /// for the driving agent to fill — that is the steer, not a platform value.
 pub fn fill_cmd(tmpl: &str, model: Option<&str>, session_dir: &str) -> String {
+    fill_cmd_arg(tmpl, model.map(model_arg).as_deref(), session_dir)
+}
+
+/// `fill_cmd` for a model argument that is ALREADY provider-qualified.
+///
+/// A coding account's models are its own provider's (`anthropic/…`), not the
+/// gateway's, so they must not take the `talaria/` prefix. Both paths go
+/// through one template filler so an invocation line can never end up with
+/// two prefixes or none.
+pub fn fill_cmd_arg(tmpl: &str, model_arg: Option<&str>, session_dir: &str) -> String {
     let mut s = tmpl.replace("<sessionDir>", session_dir);
-    if let Some(m) = model {
-        s = s.replace("<model>", &model_arg(m));
+    if let Some(arg) = model_arg {
+        s = s.replace("<model>", arg);
     }
     s
+}
+
+/// Inline `KEY=value ` assignments to prefix an invocation line with, for the
+/// roles that ride env rather than `--model`.
+///
+/// WHY INLINE AND NOT ONLY THE CONTAINER ENV. The container's role env is
+/// rendered per agent, so it can only ever carry the agent's DEFAULT plan —
+/// a ticket pinned to another plan cannot re-render a running container, and
+/// an account signed in since the last roll would otherwise be invisible to
+/// the harness until someone rolled the agent. Putting the resolved roles on
+/// the line itself makes each job self-describing and correct whatever the
+/// container was last rendered with.
+pub fn role_env_prefix(roles: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (role, arg) in roles {
+        let var = match role.as_str() {
+            "smol" => "PI_SMOL_MODEL",
+            "slow" => "PI_SLOW_MODEL",
+            "plan" => "PI_PLAN_MODEL",
+            // `default` rides `--model`; anything else is not a role omp reads.
+            _ => continue,
+        };
+        out.push_str(var);
+        out.push('=');
+        out.push_str(arg);
+        out.push(' ');
+    }
+    out
 }
 
 // ── Model roles (the org's Workbench roles, handed to omp) ──────────────────
@@ -257,6 +295,40 @@ mod tests {
     }
 
     #[test]
+    fn an_already_qualified_model_arg_is_not_prefixed_again() {
+        let out = fill_cmd_arg(
+            OMP.json_invoke,
+            Some("anthropic/claude-opus-4-5"),
+            "/opt/data/workbench/sessions/abc",
+        );
+        assert!(
+            out.contains("--model anthropic/claude-opus-4-5"),
+            "a coding account's model keeps its own provider: {out}"
+        );
+        assert!(
+            !out.contains("talaria/anthropic"),
+            "and gains no second prefix"
+        );
+    }
+
+    #[test]
+    fn the_role_env_prefix_covers_the_three_roles_that_ride_env() {
+        let prefix = role_env_prefix(&[
+            ("default".into(), "anthropic/opus".into()),
+            ("smol".into(), "anthropic/haiku".into()),
+            ("slow".into(), "anthropic/sonnet".into()),
+            ("plan".into(), "anthropic/opus".into()),
+        ]);
+        assert!(prefix.contains("PI_SMOL_MODEL=anthropic/haiku "));
+        assert!(prefix.contains("PI_SLOW_MODEL=anthropic/sonnet "));
+        assert!(prefix.contains("PI_PLAN_MODEL=anthropic/opus "));
+        assert!(
+            !prefix.contains("PI_MODEL"),
+            "the default rides --model, not the env"
+        );
+    }
+
+    #[test]
     fn roles_become_omp_env_with_the_provider_prefix_and_skip_unresolved() {
         let roles = OmpRoles {
             default: Some("mid".into()),
@@ -289,3 +361,27 @@ mod tests {
         assert!(OmpRoles::default().model_ids().is_empty());
     }
 }
+
+// ── Is the sandbox the one the current render builds? ───────────────────────
+
+/// The shape of the rendered sandbox, as a token the container carries.
+///
+/// A render change only reaches a container when the agent is re-rendered
+/// and ROLLED, and nothing forced that or noticed it had not happened. The
+/// cont-init hook that hands the harness directories to the runtime user sat
+/// in the render, with a test, while the live fleet ran containers whose
+/// `/etc/cont-init.d` had never contained it — so a fix that was correct,
+/// reviewed and merged was absent from every agent, and the only symptom was
+/// a harness that would not start.
+///
+/// The render writes this token into the workbench config dir; `doctor`
+/// compares what the container carries against what this build expects and
+/// says "roll the agent" when they differ. **Bump it whenever the rendered
+/// sandbox shape changes** — a new mount, a changed hook, a new config file.
+/// Getting a stale answer is the failure this exists to make loud, so a
+/// forgotten bump is the one way it can still be quiet; the writability
+/// check in `doctor` is the backstop for that.
+pub const SANDBOX_SHAPE: &str = "2026-10-01.bun-global+own-hook";
+
+/// Where the render leaves it, read-only, inside the container.
+pub const SANDBOX_SHAPE_FILE: &str = "/opt/workbench-config/render-shape";

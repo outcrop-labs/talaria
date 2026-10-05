@@ -11,7 +11,7 @@
   import Stat from './Stat.svelte'
   import TemplateBindings from './TemplateBindings.svelte'
 
-  let { def, isAdmin }: { def: AgentDef; isAdmin: boolean } = $props()
+  let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
   const cfg = $derived(def.latest?.config)
@@ -46,7 +46,7 @@
   }
   const googleQuery = createQuery(() => ({
     queryKey: ['agent-google', def.id],
-    enabled: isAdmin,
+    enabled: canManage,
     queryFn: (): Promise<GoogleIdentity> => getJson<GoogleIdentity>(`/api/fleet/defs/${def.id}/google`),
   }))
   let kind = $state<'owner' | 'org' | 'agent'>('org')
@@ -116,7 +116,7 @@
   <!-- Editable role — the human-readable title shown on the roster. -->
   <div>
     <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</div>
-    {#if isAdmin}
+    {#if canManage}
       <Input size="sm" bind:value={role} onblur={() => void saveRole()} placeholder="e.g. Support Lead" class="max-w-xs" />
     {:else}
       <div class="text-fg">{def.role ?? '—'}</div>
@@ -126,7 +126,7 @@
     <!-- Send address — empty means the derived org plus-address for the slug. -->
     <div>
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Email alias</div>
-      {#if isAdmin}
+      {#if canManage}
         <Input size="sm" bind:value={alias} onblur={() => void saveAlias()} placeholder={`auto: org+${def.slug}`} class="max-w-xs" />
         <div class="mt-1 text-xs text-muted">
           Empty sends from the org account’s plus-address for this agent ({def.slug}). Set an address only if it is a verified send-as on the org Google account.
@@ -136,7 +136,7 @@
       {/if}
     </div>
   {/if}
-  {#if isAdmin}
+  {#if canManage}
     <div>
       <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Google identity</div>
       {#if googleQuery.isLoading}
@@ -177,7 +177,7 @@
     </div>
   {/if}
   <!-- Developer Agent: one switch for sandbox, Oh My Pi, Workbench tools. -->
-  <DeveloperAgentControl {def} {isAdmin} />
+  <DeveloperAgentControl {def} {canManage} />
   <div class="grid grid-cols-2 gap-3">
     <Stat label="Model id" value={def.model} />
     <Stat label="Department" value={def.department} />
@@ -208,5 +208,5 @@
   {#if cfg?.mcpServers?.length}
     <Stat label="MCP" value={cfg.mcpServers.join(', ')} />
   {/if}
-  <TemplateBindings {def} {isAdmin} />
+  <TemplateBindings {def} {canManage} />
 </div>

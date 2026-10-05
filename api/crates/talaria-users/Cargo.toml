@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 talaria-gateway = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-agent-managers = { workspace = true }
 talaria-permissions = { workspace = true }
 talaria-teams = { workspace = true }
 serde = { workspace = true }

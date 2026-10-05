@@ -32,7 +32,7 @@
   // Personal settings, tabbed by concern: Profile (identity + drafting model),
   // Assistant (the member's whole personal agent), Connections, API keys —
   // plus one tab per enabled app that ships a settings surface. The title
-  // lives in the top strip (lib/view-title); the body opens on its tabs.
+  // claim is unread (lib/view-title); the body opens on its tabs.
   claimViewTitle('Settings')
 
   type SettingsTab = 'profile' | 'notifications' | 'assistant' | 'connections' | 'keys' | `app:${string}`

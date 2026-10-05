@@ -34,6 +34,7 @@
   import AdminGuardrailsPanel from './AdminGuardrailsPanel.svelte'
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
   import AdminInvitesPanel from './AdminInvitesPanel.svelte'
+  import AdminCodingAccountsPanel from './AdminCodingAccountsPanel.svelte'
   import AdminJudgePanel from './AdminJudgePanel.svelte'
   import AdminMemberDefaultsPanel from './AdminMemberDefaultsPanel.svelte'
   import AdminOrgGooglePanel from './AdminOrgGooglePanel.svelte'
@@ -47,8 +48,7 @@
   import { ADMIN_TABS, useAdminPermissions, useAdminUsers, type AdminTab } from './admin'
 
   // The admin console: people, their roles, and which agents each may use.
-  // The title lives in the top strip (lib/view-title); the body opens on its
-  // tabs.
+  // The claim is unread (lib/view-title); the body opens on its tabs.
   claimViewTitle('Admin')
   const qc = useQueryClient()
   const session = useSession()
@@ -123,6 +123,7 @@
       {/if}
       {#if tab === 'agents'}
         <AdminJudgePanel />
+        <AdminCodingAccountsPanel />
         <AdminGuardrailsPanel />
         <AdminOutreachPanel />
       {/if}

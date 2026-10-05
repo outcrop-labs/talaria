@@ -17,7 +17,7 @@ use talaria_body::{
     present_nullable_uuid_member, string_msg, too_big_msg, too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, require_perm, secretbox_or_500};
+use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
 use talaria_state::AppState;
 use talaria_templates::set_agent_templates;
 
@@ -71,7 +71,7 @@ pub async fn patch(
     Path(id): Path<String>,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
-    let user = require_perm(&state, &headers, "agents.manage").await?;
+    let user = require_agent_manager(&state, &headers, &id).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
     let role = match present_nullable_max_string_member(obj, "role", 80) {
