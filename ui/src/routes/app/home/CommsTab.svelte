@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { groupDmLabel, isGroupDm } from '@/lib/comms-dm'
   import { navigate } from '@/router'
   import HomeListPanel from '@/components/app/HomeListPanel.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -13,7 +14,12 @@
   // "All caught up." over a 500 — on the landing surface, about messages.
   const list = listQuery(useChannels(), { title: 'Could not load your channels', variant: 'compact' })
   const unread = $derived(list.rows.filter((c) => (c.unreadCount ?? 0) > 0))
-  const label = (c: Channel) => (c.kind === 'dm' ? (c.peer?.name ?? c.peer?.email ?? 'DM') : `#${c.name}`)
+  const label = (c: Channel) =>
+    c.kind === 'dm'
+      ? isGroupDm(c)
+        ? groupDmLabel(c, (m) => m)
+        : (c.peer?.name ?? c.peer?.email ?? 'DM')
+      : `#${c.name}`
 </script>
 
 <HomeListPanel

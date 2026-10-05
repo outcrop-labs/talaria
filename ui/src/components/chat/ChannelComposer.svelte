@@ -7,6 +7,7 @@
   import { cn } from '@/lib/cn'
   import { uploadFile, type Attachment } from '@/lib/attachments'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
+  import { createTypingSender } from '@/lib/comms-typing.svelte'
 
   // The channel composer (channel-view.tsx's internal `Composer`): the
   // Slack-shaped rich editor (ChatComposer.svelte) plus attachment chips.
@@ -17,12 +18,36 @@
     placeholder,
     mentionables,
     onSend,
+    draftKey,
+    channelId = null,
+    threadRootId = null,
   }: {
     channelName: string
     placeholder?: string
     mentionables: Mentionable[]
     onSend: (text: string, attachments: Attachment[]) => Promise<void>
+    /** Unsent-text key, forwarded to ChatComposer (see its prop). Omitted
+     *  inside Comms: the channel's own key, saved and restored there. */
+    draftKey?: string | null
+    /** Tell the channel's other members while you type ("Maya is typing").
+     *  Omitted (thread replies, task rooms): no typing presence. */
+    channelId?: string | null
+    /** With `channelId`: the thread this composer replies in, so the typing
+     *  signal shows in that thread rather than the channel. */
+    threadRootId?: string | null
   } = $props()
+
+  const typing = createTypingSender(
+    () => channelId,
+    () => threadRootId,
+  )
+  // Leaving the channel (or unmounting) ends the signal at once rather than
+  // leaving the other side to expire it.
+  $effect(() => {
+    void channelId
+    void threadRootId
+    return () => typing.stop()
+  })
 
   let attachments = $state<Attachment[]>([])
   let empty = $state(true)
@@ -41,6 +66,7 @@
     if (!markdown && attachments.length === 0) return
     const atts = attachments
     attachments = []
+    typing.stop()
     editorRef?.clear()
     void onSend(markdown, atts)
   }
@@ -73,6 +99,8 @@
       onSubmit={submit}
       onFiles={uploadAll}
       onEmptyChange={(v) => (empty = v)}
+      onInput={(isEmpty) => typing.input(isEmpty)}
+      {draftKey}
       canSend={!empty || attachments.length > 0}
     >
       <!-- No single selected agent in a channel — the generic ask (the

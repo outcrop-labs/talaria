@@ -13,7 +13,8 @@ use talaria_users::Identity;
 pub const CLAIM_LOCK: i64 = 8_314_208;
 
 /// The claimed admin row, in select order (id, sub, email, name, picture,
-/// role) — the SessionUser constructor's input.
+/// role) — the SessionUser constructor's input. `picture` is the effective
+/// one (an uploaded photo outranks the provider's).
 pub type ClaimedAdmin = (
     String,
     String,
@@ -69,7 +70,7 @@ pub async fn claim_admin(
     let claimed: ClaimedAdmin = match talaria_users::link_by_email(&mut *tx, identity, true).await? {
         Some(claimed) => claimed,
         None => {
-            sqlx::query_as(
+            sqlx::query_as(concat!(
                 "insert into users (sub, email, name, picture, role, last_seen_at) \
                  values ($1, $2, $3, $4, 'admin', now()) \
                  on conflict (sub) do update set \
@@ -81,8 +82,10 @@ pub async fn claim_admin(
                    picture = excluded.picture, \
                    role = 'admin', \
                    last_seen_at = now() \
-                 returning id::text, sub, email, name, picture, role",
-            )
+                 returning id::text, sub, email, name, ",
+                talaria_users::effective_picture_sql!(),
+                ", role"
+            ))
             .bind(&identity.sub)
             .bind(&identity.email)
             .bind(&identity.name)

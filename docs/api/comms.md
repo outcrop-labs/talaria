@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-22 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -34,6 +34,7 @@
 | [`/api/channels/{id}/read`](#apichannelsidread) | POST | `session` |
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | POST | `session` |
 | [`/api/channels/{id}/teams`](#apichannelsidteams) | DELETE | `session` |
+| [`/api/channels/{id}/typing`](#apichannelsidtyping) | POST | `session` |
 | [`/api/chat`](#apichat) | POST | `session` |
 | [`/api/chat/chips/approvals/{id}`](#apichatchipsapprovalsid) | POST | `session` |
 | [`/api/chat/chips/resolve`](#apichatchipsresolve) | POST | `session` |
@@ -47,6 +48,7 @@
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | POST | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | PUT | `session` |
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | DELETE | `session` |
+| [`/api/conversations/{id}/messages/{msgId}/reactions`](#apiconversationsidmessagesmsgidreactions) | POST | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
@@ -310,6 +312,27 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_teams.rs`](../..
 | :--- | :--- | :--- |
 | `teamId` | `uuid` |  |
 
+## `/api/channels/{id}/typing`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_typing.rs`](../../api/crates/talaria-routes-comms/src/comms/channels_id_typing.rs)
+
+> /api/channels/{id}/typing.
+> POST { typing?: boolean, threadRootId?: uuid } → tell the channel's other
+> members that the caller is typing (default) or has stopped — in the channel
+> itself, or in one thread when `threadRootId` is set. Ephemeral: nothing is
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apichannelsidtyping-body) | `{ok}` | 200, 400, 403 | — |
+
+### POST `/api/channels/{id}/typing` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `typing` | `bool?` |  |
+| `threadRootId` | `uuid` |  |
+
 ## `/api/chat`
 
 Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/talaria-routes-comms/src/comms/chat.rs)
@@ -466,6 +489,26 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_members.rs`](../..
 | :--- | :--- | :--- |
 | `userId` | `uuid` |  |
 
+## `/api/conversations/{id}/messages/{msgId}/reactions`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_messages_msgid_reactions.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_messages_msgid_reactions.rs)
+
+> /api/conversations/{id}/messages/{msgId}/reactions.
+> POST { emoji } → toggle your reaction on a message in an agent DM (or any
+> conversation you can read): add it if you haven't, remove it if you have.
+> Answers { ok: true, reacted } — `reacted` is whether your reaction is now on.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiconversationsidmessagesmsgidreactions-body) | `{ok, reacted}` | 200, 400, 404 | — |
+
+### POST `/api/conversations/{id}/messages/{msgId}/reactions` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `emoji` | `string(1, 16)` |  |
+
 ## `/api/conversations/{id}/read`
 
 Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs)
@@ -515,17 +558,22 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs`](../../a
 
 Source: [`api/crates/talaria-routes-comms/src/comms/dms.rs`](../../api/crates/talaria-routes-comms/src/comms/dms.rs)
 
-> /api/dms. POST { userId } → find-or-create the DM with that person (rides
-> the channel machinery: same messages, SSE feed, and composer as
-> everything else).
+> /api/dms. Find-or-create a direct message (rides the channel machinery:
+> same messages, SSE feed, and composer as everything else).
+>
+>   POST { userId }                       → the DM with that person.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apidms-body) | `…` | 200, 400 | — |
+| POST | `session` | [body](#post-apidms-body) | `…` | 200, 400, 403 | — |
 
 ### POST `/api/dms` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `userId` | `uuid` |  |
+| `userIds` | `string[]?(36, 36)` |  |
+| `agents` | `string[]?(1, 200)` |  |
+| `name` | `string?(80)` |  |
 

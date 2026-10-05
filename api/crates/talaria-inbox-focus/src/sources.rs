@@ -360,8 +360,12 @@ pub async fn channel_items(
          from channels c \
          join channel_members member on member.channel_id = c.id and member.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
-         left join channel_members peer on c.kind = 'dm' and peer.channel_id = c.id and peer.user_id <> $1::uuid \
-         left join users pu on pu.id = peer.user_id \
+         left join lateral ( \
+           select coalesce(nullif(c.name, ''), string_agg(coalesce(u.name, u.email), ', ' \
+                    order by coalesce(u.name, u.email))) as name, \
+                  case when count(*) = 1 then min(u.email) end as email \
+           from channel_members peer join users u on u.id = peer.user_id \
+           where peer.channel_id = c.id and peer.user_id <> $1::uuid) pu on true \
          where c.archived_at is null and c.kind = 'dm' \
            and ($2::text is null or c.id::text = $2) \
            and exists ( \

@@ -21,6 +21,7 @@ export type UserEvent =
   | { type: 'brief'; briefId: string; seq: number }
   | { type: 'channel'; channelId: string }
   | { type: 'conversation'; conversationId: string }
+  | { type: 'typing'; channelId: string; userId: string; typing: boolean }
 
 type Listener = (event: UserEvent) => void
 

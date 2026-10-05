@@ -14,15 +14,27 @@
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
+  import DayDivider from './DayDivider.svelte'
+  import { dayDividerMap } from '@/lib/day-dividers'
+  import { useSession } from '@/lib/session'
+  import { toastError } from '@/lib/toast.svelte'
   import AssistantTurn from './AssistantTurn.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { slide } from '@/lib/motion'
   import { useQueryClient } from '@tanstack/svelte-query'
   import { queueChatMessage, streamChat, type ChatKind } from '@/lib/chat'
   import { mergeTool } from '@/lib/sse-parse'
-  import { loadConversation, markConversationRead } from '@/lib/conversations.svelte'
+  import { loadConversation, markConversationRead, toggleConversationReaction } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
-  import { toDisplay, type DisplayMessage } from './chat-view'
+  import {
+    reactionChips,
+    stampFromServer,
+    toDisplay,
+    toggleReactionLocal,
+    turnTime,
+    type DisplayMessage,
+    type Viewer,
+  } from './chat-view'
   import { landingTransition, type TurnArm } from './turn-landing'
 
   // A durable chat thread. Server owns history; this loads an existing conversation
@@ -212,6 +224,11 @@
   // new model would 400 on.
   const prefs = useProfilePrefs()
   const preferredEffort = $derived(prefs.data?.preferredEffort ?? null)
+  // The viewer's zone decides what "a day" is for the dividers and the turn
+  // times (R1/R2); unset or unreadable falls back to the browser's.
+  const timeZone = $derived(prefs.data?.timezone ?? null)
+  const session = useSession()
+  const viewer: Viewer = $derived({ id: session.data?.id ?? null, email: session.data?.email ?? null })
   const seedEffort = $derived(agentEffort ?? preferredEffort)
   let effortPristine = $state(true)
   $effect(() => {
@@ -450,7 +467,7 @@
     // it to a queue itself when a chained turn is already streaming, via the
     // `queued` event, and when one is not the fresh turn is exactly right.)
     if (streaming) {
-      messages.push({ role: 'user', content: text, attachments: atts })
+      messages.push({ role: 'user', content: text, attachments: atts, createdAt: new Date().toISOString() })
       if (convId) void enqueue(text, atts)
       // No conversation id yet — the first turn's response headers are the
       // only place it comes from. Hold locally; the flush happens the moment
@@ -503,8 +520,11 @@
   /** One streamed assistant turn. `shown` says the user's message is already
    *  in the transcript (the flush path put it there when it was sent). */
   const startTurn = async (text: string, atts: Attachment[], shown: boolean) => {
-    if (!shown) messages.push({ role: 'user', content: text, attachments: atts })
-    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming' })
+    // Synthetic rows carry the client's clock so the day divider places them
+    // (R1); the post-turn sync swaps in the server's ids and times.
+    const now = new Date().toISOString()
+    if (!shown) messages.push({ role: 'user', content: text, attachments: atts, createdAt: now })
+    messages.push({ role: 'assistant', content: '', reasoning: '', tools: [], status: 'streaming', createdAt: now })
     streaming = true
     userStopped = false
 
@@ -571,12 +591,54 @@
       // here would hand the poller the server's still-streaming row and the
       // stopped reply would keep typing. Also the last chance to drain a
       // hold whose turn ended without ever producing an id.
+      // A stop still STAMPS the rows (ids, times, reactions) without touching
+      // their prose — the frozen turn must still be reactable, and its time is
+      // the server's, not the client's.
       if (!userStopped) void syncFromServer()
+      else void stampFromServerSync()
       void flushHeld()
     }
   }
 
   const stop = () => abortCtrl?.abort()
+
+  /** Merge the server's identity fields onto what is on screen — never its
+   *  prose (see stampFromServer). */
+  const stampFromServerSync = async () => {
+    const id = convId
+    if (!id) return
+    const res = await loadConversation(id)
+    if (res && convId === id) messages = stampFromServer(messages, res.messages)
+  }
+
+  // ── Reactions (R6 / AE2) ─────────────────────────────────────────────────
+  // Optimistic: the chip flips at once; a stamp re-read settles it (the route
+  // answers `{ ok, reacted }`, not the reactions), and a refusal flips it back. Rows pair by message id, so a sync landing mid-toggle
+  // cannot patch the wrong turn.
+  const patchReactions = (messageId: string, fn: (r: DisplayMessage['reactions']) => DisplayMessage['reactions']) => {
+    const i = messages.findIndex((x) => x.id === messageId)
+    const m = messages[i]
+    if (m) messages[i] = { ...m, reactions: fn(m.reactions) }
+  }
+  const react = (messageId: string, emoji: string) => {
+    const id = convId
+    if (!id) return
+    const flip = () => patchReactions(messageId, (r) => toggleReactionLocal(r, emoji, viewer))
+    flip()
+    toggleConversationReaction(id, messageId, emoji)
+      .then(() => {
+        if (convId === id) void stampFromServerSync()
+      })
+      .catch((e: unknown) => {
+        if (convId === id) flip()
+        toastError('Could not react', e)
+      })
+  }
+
+  // One divider before each calendar day's first turn (R1). Rows without a
+  // time (older payloads) ride with the day before them.
+  const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt ?? '', { timeZone, now: Date.now() }))
+  const agentName = (actor: string) => (actor === agentModel ? agentLabel : actor)
 
   // Esc stops the stream even when focus wandered off the textarea.
   $effect(() => {
@@ -671,6 +733,12 @@
         style:padding-bottom="calc(var(--chat-composer, 0px) + 0.5rem)"
       >
       {#each messages as m, i (i)}
+        {@const day = dividers.get(i)}
+        {@const live = (streaming || resuming) && i === messages.length - 1}
+        <!-- No bar while the turn streams or before the server has given it
+            an id — there is nothing to react to yet. -->
+        {@const onReact = m.id && !live ? (e: string) => react(m.id!, e) : undefined}
+        {#if day}<DayDivider label={day.label} />{/if}
         {#if m.role === 'user'}
           <!-- Flattened user turn (spec §10) — the author name keeps the
               multiplayer voices apart on shared plans. -->
@@ -679,6 +747,10 @@
             attachments={m.attachments}
             chips={m.chips}
             author={m.authorLabel ?? null}
+            picture={!m.authorUserId || m.authorUserId === viewer.id ? (session.data?.picture ?? null) : null}
+            time={turnTime(m.createdAt, timeZone)}
+            reactions={reactionChips(m.reactions, viewer, agentName)}
+            {onReact}
             onContextMenu={copyMenu(m)}
             onInvoke={(text) => void send(text)}
             onDecided={() => void syncFromServer()}
@@ -689,7 +761,10 @@
             turn={i}
             {agentModel}
             {agentLabel}
-            live={(streaming || resuming) && i === messages.length - 1}
+            {live}
+            time={turnTime(m.createdAt, timeZone)}
+            reactions={reactionChips(m.reactions, viewer, agentName)}
+            {onReact}
             onContextMenu={copyMenu(m)}
             onInvoke={(text) => void send(text)}
             onDecided={() => void syncFromServer()}

@@ -58,6 +58,18 @@ export const WAITING_SITES = {
   },
   'chat/tool': { role: 'tool', slot: 'inline', note: 'A tool call in flight, in the 11px mono row.' },
   'chat/attach': { role: 'submitting', slot: 'button', note: 'Uploading an attachment from the composer.' },
+
+  /* ── Comms rail ───────────────────────────────────────────────────────── */
+  'comms/thread-working': {
+    role: 'reasoning',
+    slot: 'inline',
+    note: "An agent thread's rail row while the agent writes its reply.",
+  },
+  'comms/agent-working': {
+    role: 'background',
+    slot: 'inline',
+    note: "An agent's rail row while any of its threads is being answered.",
+  },
   'chat/relay': { role: 'submitting', slot: 'button', note: 'Relaying the thread to another agent.' },
   'chat/doc-resync': {
     role: 'reasoning',

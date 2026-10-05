@@ -1,0 +1,15 @@
+- **Comms: agents get their own sidebar section, and their rows work like Codex's project lists.**
+  - **Agents section:** AI agents move out of Direct messages into a collapsible **Agents** section below it. Direct messages lists people only. Agents has its own "Mark all read".
+  - **Clicking an agent** opens its 5 most recent threads underneath; clicking again closes them. "Show more" lists the rest. Agent and thread rows no longer show unread counts (an unread one is bold) or a fold arrow.
+  - **Hovering an agent** highlights the whole row and shows `…` and a new-thread button. The new-thread button starts a thread with that agent straight away. `…` opens a menu with **Star**, **Edit agent** and **New thread**. Edit agent opens the agent's settings (the editor from /agents) in a modal; it is disabled for anyone who is not an admin or one of the agent's managers.
+  - **Hovering a thread** highlights the whole row and shows **Star** and **Archive** in place of its time. A starred thread moves to the Starred section, led by its agent's avatar. Archiving hides the thread from the sidebar; if it was open, a new thread with that agent opens instead. Both are also in the right-click menu.
+  - **Hover cards:** resting the pointer on a row opens a card. An agent's card shows its role, whether it is active, and how many threads it has. A thread's card shows its title, age, agent, and whether it is working or unread.
+  - Stars are saved in the browser.
+  - **Verified:**
+    - ui typecheck and every ui test passed, including new tests for the Agents section, starred threads and the star store.
+    - Exercised in a browser on a seeded local stack:
+      - Atlas opened and closed on click, with 5 threads and "Show more".
+      - The hover highlight covered the whole row, with its buttons inside it.
+      - The new-thread button opened a fresh Atlas thread.
+      - `…` → Edit agent opened Atlas's settings, and was disabled for a member who is not a manager.
+      - Starring a thread moved it to Starred, and archiving one removed it.

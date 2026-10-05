@@ -1,0 +1,23 @@
+- **Comms gets a UI overhaul, and still looks like Talaria.**
+  - **Transcripts:** every channel, DM, agent DM and thread shows a date divider before each day ("Today", "Yesterday", "Friday, September 4th") and a send time beside each name. Agent DMs used to show neither.
+  - **Message actions:** hovering a message, or focusing it from the keyboard, highlights it and shows a toolbar with ✅ 👀 🙌, a full emoji picker, and reply-in-thread. Reactions now work on agent DM replies too.
+  - **Threads:** a message with replies shows stacked participant avatars, "N replies" and "Last reply …", and opens the thread pane. A mention of you is highlighted more strongly than mentions of anyone else.
+  - **Sidebar:** reorganized into Find a conversation, Threads, Drafts & sent, then collapsible Channels and Direct messages.
+    - Each person and agent shows a filled green dot when online and a hollow ring when offline.
+    - Unread conversations are bold.
+    - A person's status emoji sits beside their name.
+    - Unsent drafts survive a reload.
+  - **Profile:** Settings → Profile lets you upload a photo and set a status. The photo replaces your Google picture everywhere and is not overwritten by your next Google sign-in.
+  - **Verified:**
+    - `bun run gate` (check, ui typecheck + tests, and the nine touched api crates).
+    - The migrations replayed on a fresh Postgres.
+    - The 17 new live API tests passed against a throwaway Postgres + Redis.
+    - The full live suite was rerun on a fresh database: the only failure was one test that needs an LLM key this box does not have.
+    - Exercised in the browser against a seeded local stack:
+      - A channel showing day dividers, times and full author names.
+      - The hover toolbar: ✅ added a chip in the channel and in the thread pane.
+      - The thread rollup and the pane.
+      - Presence dots, Kari's 📅 status, and sidebar search.
+      - The Threads and Drafts & sent views.
+      - The Settings photo and status fields.
+    - Not exercised in the browser: photo upload (needs a file picker) and agent DMs (no model gateway on the box). Both are covered by API live tests.

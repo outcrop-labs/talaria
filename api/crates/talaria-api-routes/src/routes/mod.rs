@@ -81,6 +81,16 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_integrations::account::users::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/users/{id}/conversations",
+            get(talaria_routes_comms::comms::users_id_conversations::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/users/{id}/avatar",
+            get(talaria_routes_integrations::account::users_id_avatar::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/agents",
             get(talaria_routes_fleet::agents::agents::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -89,6 +99,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents/register",
             post(talaria_routes_fleet::agents::agents_register::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/{id}/conversations",
+            get(talaria_routes_comms::comms::agents_id_conversations::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agents/{id}/heartbeat",
@@ -429,6 +444,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::channels_id_read::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/channels/{id}/typing",
+            post(talaria_routes_comms::comms::channels_id_typing::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/channels/{id}/plan",
             get(talaria_routes_comms::comms::channels_id_plan::get)
                 .post(talaria_routes_comms::comms::channels_id_plan::post)
@@ -458,6 +477,11 @@ pub fn router(state: AppState) -> Router {
                 .patch(talaria_routes_comms::comms::conversations_id::patch)
                 .delete(talaria_routes_comms::comms::conversations_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
+        )
+        .route(
+            "/api/conversations/{id}/messages/{msgId}/reactions",
+            post(talaria_routes_comms::comms::conversations_id_messages_msgid_reactions::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/conversations/{id}/read",
@@ -843,6 +867,19 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_integrations::account::me::get)
                 .put(talaria_routes_integrations::account::me::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/me/threads",
+            get(talaria_routes_comms::comms::me_threads::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/me/sent",
+            get(talaria_routes_comms::comms::me_sent::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/me/presence",
+            put(talaria_routes_integrations::account::me_presence::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
             "/api/workflows/{id}",

@@ -65,6 +65,34 @@ export interface StoredMessage {
    *  its stream died mid-flight. */
   metadata?: { resumed?: boolean } | null
   chips?: ChatChip[]
+  /** The row's id — what a reaction toggles against. Absent on older
+   *  payloads; a row without one shows no action bar. */
+  id?: string
+  /** When the row was written (ISO) — the turn's time and its day divider. */
+  createdAt?: string
+  /** Reactions, grouped by emoji. `actors[i]` is typed by `actorTypes[i]`. */
+  reactions?: MessageReaction[]
+}
+
+/** One emoji's reactions on an agent-DM message — the channel wire's shape. */
+export interface MessageReaction {
+  emoji: string
+  actors: string[]
+  actorTypes: string[]
+}
+
+/** Toggle the viewer's reaction on a conversation message. The route answers
+ *  `{ ok, reacted }` only, so the caller re-syncs to settle the chips. Rejects
+ *  on a refused toggle — the caller rolls back. */
+export async function toggleConversationReaction(
+  conversationId: string,
+  messageId: string,
+  emoji: string,
+): Promise<void> {
+  await postJson<{ ok: boolean; reacted: boolean }>(
+    `/api/conversations/${conversationId}/messages/${messageId}/reactions`,
+    { emoji },
+  )
 }
 
 export interface ConversationMember {

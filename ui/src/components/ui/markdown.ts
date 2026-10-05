@@ -216,6 +216,9 @@ function transformNode(node: HastNode): HastNode | null {
       const href = String(props.href ?? '')
       // Mentions render as a styled span — never a navigable link.
       if (href.startsWith('mention:')) {
+        if (isSelfMention(href.slice('mention:'.length))) {
+          return el('span', { className: SELF_MENTION_CLASS, dataSelfMention: '' }, node.children ?? [])
+        }
         return el('span', { className: 'rounded bg-accent-soft px-1 font-medium text-accent' }, node.children ?? [])
       }
       // An inline attachment chip (the editor's AttachmentChip token): a
@@ -335,6 +338,39 @@ const processor = unified()
   .use(rehypeMercury)
   .use(rehypeStringify)
 
-export function renderMarkdown(markdown: string): string {
-  return String(processor.processSync(markdown))
+export interface RenderMarkdownOpts {
+  /** The viewer's own names — display name and email local part. A mention
+   *  token matching one (case-insensitive; a full name also matches its dashed
+   *  token, and a `:tier` suffix is ignored) renders in the stronger
+   *  self-mention style (R9). Omitted or empty: rendering is unchanged. */
+  selfMentions?: readonly string[]
+}
+
+// A mention of the viewer: the accent at full fill (the primary button's
+// pairing) instead of the soft tint — no new token (KTD1).
+const SELF_MENTION_CLASS = 'rounded bg-accent px-1 font-medium text-surface'
+
+// The processor is shared and processSync is synchronous, so the current
+// render's self-names ride a module slot set for exactly one run.
+let selfNames: ReadonlySet<string> = new Set()
+
+function isSelfMention(token: string): boolean {
+  if (selfNames.size === 0) return false
+  return selfNames.has(token.split(':')[0]!.toLowerCase())
+}
+
+export function renderMarkdown(markdown: string, opts: RenderMarkdownOpts = {}): string {
+  const names = new Set<string>()
+  for (const raw of opts.selfMentions ?? []) {
+    const n = raw.trim().toLowerCase()
+    if (!n) continue
+    names.add(n)
+    names.add(n.replace(/\s+/g, '-'))
+  }
+  selfNames = names
+  try {
+    return String(processor.processSync(markdown))
+  } finally {
+    selfNames = new Set()
+  }
 }

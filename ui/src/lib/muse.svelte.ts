@@ -116,6 +116,8 @@ export interface ProfilePrefs {
   preferredModel: string | null
   preferredEffort: string | null
   timezone: string | null
+  /** Job title; absent on servers that predate it. */
+  title?: string | null
 }
 
 /** The profile preferences, including `preferredModel: null` meaning "no

@@ -208,6 +208,42 @@ pub fn publish_channel(deps: &RealtimeDeps, channel_id: &str, event: &ChannelEve
     (deps.publish)(&format!("channel:{channel_id}"), &payload);
 }
 
+/// What goes over `channel:<id>` while a member types — `{type:"typing",
+/// userId, typing}`, plus `threadRootId` when they are typing a thread reply
+/// (the thread panel shows it; the channel's own composer line does not). Its own struct rather than fields on `ChannelEvent`:
+/// typing is ephemeral presence, never stored and never re-read, and keeping
+/// it apart means no persisted event can grow a "who is typing" field by
+/// accident. Clients expire a `typing: true` on their own after a few seconds
+/// of silence, so a lost `typing: false` costs a few seconds of dots, not a
+/// stuck indicator.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TypingEvent {
+    #[serde(rename = "type")]
+    pub kind_tag: &'static str, // always "typing"
+    pub user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_root_id: Option<String>,
+    pub typing: bool,
+}
+
+pub fn publish_typing(
+    deps: &RealtimeDeps,
+    channel_id: &str,
+    user_id: &str,
+    thread_root_id: Option<&str>,
+    typing: bool,
+) {
+    let event = TypingEvent {
+        kind_tag: "typing",
+        user_id: user_id.to_string(),
+        thread_root_id: thread_root_id.map(str::to_string),
+        typing,
+    };
+    let payload = serde_json::to_string(&event).expect("typed struct serializes");
+    (deps.publish)(&format!("channel:{channel_id}"), &payload);
+}
+
 /// An SSE response of a board's events.
 pub async fn board_event_stream(deps: &RealtimeDeps, board_id: &str) -> Response {
     sse_response((deps.subscribe)(format!("board:{board_id}")).await)
@@ -292,11 +328,31 @@ pub struct RunWireEvent {
     rename_all_fields = "camelCase"
 )]
 pub enum UserEvent {
-    Run { run_id: String, state: RunState },
-    Notification { notification_id: String },
-    Brief { brief_id: String, seq: i64 },
-    Channel { channel_id: String },
-    Conversation { conversation_id: String },
+    Run {
+        run_id: String,
+        state: RunState,
+    },
+    Notification {
+        notification_id: String,
+    },
+    Brief {
+        brief_id: String,
+        seq: i64,
+    },
+    Channel {
+        channel_id: String,
+    },
+    Conversation {
+        conversation_id: String,
+    },
+    /// Someone in one of your conversations (a DM, channel or relay) started
+    /// or stopped typing — the Comms rail's dots beside the row. Ids and a
+    /// flag only, like everything here. Thread replies don't come this way.
+    Typing {
+        channel_id: String,
+        user_id: String,
+        typing: bool,
+    },
 }
 
 /// Publish a run transition to `run:<id>`.

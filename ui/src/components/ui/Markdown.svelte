@@ -12,9 +12,19 @@
   // two behaviors static HTML can't carry: the code-block copy button
   // (delegated click) and the agent-media save affordance (mounted component).
   // Reuse — do not re-render markdown inline.
-  let { children, class: className }: { children: string; class?: string } = $props()
+  let {
+    children,
+    class: className,
+    selfMentions,
+  }: {
+    children: string
+    class?: string
+    /** The viewer's display name + email local part — @mentions of them
+     *  render in the stronger self-mention style (markdown.ts). */
+    selfMentions?: readonly string[]
+  } = $props()
 
-  const html = $derived(renderMarkdown(children))
+  const html = $derived(renderMarkdown(children, { selfMentions }))
 
   let container = $state<HTMLDivElement | null>(null)
 
