@@ -16,7 +16,7 @@
   import ComposerToolbar from './ComposerToolbar.svelte'
   import { emojify } from '@/lib/emoji'
   import type { Mentionable } from '@/components/chat/mentions.svelte'
-  import { claimDraftKey, readDraft, releaseDraftKey, saveDraft, useCommsDraftScope } from '@/lib/comms-drafts'
+  import { claimDraftKey, clearDraft, parseNewAgentDraftKey, readDraft, releaseDraftKey, saveDraft, useCommsDraftScope } from '@/lib/comms-drafts'
 
   // The Slack-shaped message editor: rich formatting with markdown under the
   // hood. Type syntax (**bold**, `code`, ``` blocks, > quotes, - lists) or use
@@ -182,7 +182,10 @@
       onUpdate: ({ editor }) => {
         empty = editor.isEmpty
         onEmptyChange?.(editor.isEmpty)
-        queueDraftSave(editor.isEmpty ? '' : markdownOf(editor))
+        // No owned key (outside Comms, or another composer holds it): nothing
+        // to save, so skip even scheduling the serialization.
+        if (!owned) return
+        queueDraftSave(editor)
       },
     })
   })
@@ -198,25 +201,34 @@
   const draftUser = $derived(draftScope?.userId() ?? null)
   /** The key this composer owns right now, and for whom. */
   let owned: { user: string; key: string } | null = null
-  let pending: { user: string; key: string; text: string } | null = null
+  /** The owned key has unsaved edits; the editor is serialized at flush. */
+  let pending: { user: string; key: string; editor: DraftSource } | null = null
   /** What the store already holds for the owned key — restoring a draft must
    *  not re-save it (that would re-date it in the Drafts view). */
   let stored = ''
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
+  type DraftSource = { storage: Record<string, unknown>; isEmpty: boolean }
+
   const markdownOf = (e: { storage: Record<string, unknown> }): string =>
     (e.storage.markdown as { getMarkdown: () => string }).getMarkdown().trim()
 
+  // Serialize once per debounce window, not per keystroke. Text equal to what
+  // the store already holds is not re-saved.
   const flushDraft = () => {
     clearTimeout(saveTimer)
-    if (pending) saveDraft(pending.user, pending.key, pending.text)
+    const p = pending
     pending = null
+    if (!p) return
+    const text = p.editor.isEmpty ? '' : markdownOf(p.editor)
+    if (text === stored) return
+    stored = text
+    saveDraft(p.user, p.key, text)
   }
 
-  const queueDraftSave = (text: string) => {
-    if (!owned || text === stored) return
-    stored = text
-    pending = { ...owned, text }
+  const queueDraftSave = (e: DraftSource) => {
+    if (!owned) return
+    pending = { ...owned, editor: e }
     clearTimeout(saveTimer)
     saveTimer = setTimeout(flushDraft, 300)
   }
@@ -242,10 +254,13 @@
       if (!key || !user || !draftScope || !claimDraftKey(draftScope, key, draftToken)) return
       owned = { user, key }
       stored = ''
-      const carry = prev?.key.startsWith('agent:') && prev.key.endsWith(':new') && !key.startsWith('agent:')
+      const carry = !!prev && parseNewAgentDraftKey(prev.key) !== null && parseNewAgentDraftKey(key) === null
       if (carry && !e.isEmpty) {
         stored = markdownOf(e)
         saveDraft(user, key, stored)
+        // The text now lives under the conversation; the fresh-thread key it
+        // was typed under would otherwise pre-fill the next new thread.
+        if (prev) clearDraft(prev.user, prev.key)
         return
       }
       const draft = readDraft(user, key)

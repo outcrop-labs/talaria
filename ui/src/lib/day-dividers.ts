@@ -7,6 +7,8 @@
 // Labels are English-only ("Friday, September 4th") to match the rest of the
 // UI's copy; the zone, not the locale, is what decides the day.
 
+import { isValidTimeZone } from '@/lib/timezone'
+
 export type Instant = string | number | Date
 
 export interface DayDividerOpts {
@@ -27,15 +29,9 @@ export interface DayBoundary {
 
 const toMs = (v: Instant): number => (v instanceof Date ? v.getTime() : typeof v === 'number' ? v : Date.parse(v))
 
-const zoneOrUndefined = (tz: string | null | undefined): string | undefined => {
-  if (!tz) return undefined
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz })
-    return tz
-  } catch {
-    return undefined
-  }
-}
+/** The zone when Intl can resolve it, else undefined (the browser's zone). */
+export const zoneOrUndefined = (tz: string | null | undefined): string | undefined =>
+  tz && isValidTimeZone(tz) ? tz : undefined
 
 interface Ymd {
   y: number
