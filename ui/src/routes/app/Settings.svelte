@@ -22,6 +22,8 @@
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import PreferredModelPicker from './settings/PreferredModelPicker.svelte'
   import TimezonePicker from './settings/TimezonePicker.svelte'
+  import ProfilePhotoField from './settings/ProfilePhotoField.svelte'
+  import StatusField from './settings/StatusField.svelte'
   import NotificationsSection from './settings/NotificationsSection.svelte'
   import McpConnectionsSection from './settings/McpConnectionsSection.svelte'
   import IntegrationsSection from './settings/IntegrationsSection.svelte'
@@ -152,6 +154,10 @@
           </div>
         {/if}
         {#if savedFlash.saved}<div class="mt-2 text-xs text-success">Saved</div>{/if}
+        {#if !sessionLoading}
+          <ProfilePhotoField {user} />
+          <StatusField {user} />
+        {/if}
         <PreferredModelPicker />
         <TimezonePicker />
       </Panel>

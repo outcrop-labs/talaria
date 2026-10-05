@@ -12,9 +12,14 @@ export interface SessionUser {
   sub: string
   email: string | null
   name: string | null
+  /** The EFFECTIVE photo URL: the uploaded avatar route when one is set,
+   *  else the Google picture, else null. */
   picture: string | null
   provider: 'google' | 'password'
   role: 'admin' | 'member'
+  /** Status (e.g. 📅 "In a meeting"). Null or absent = no status. */
+  statusEmoji?: string | null
+  statusText?: string | null
 }
 
 export function useIsAdmin(user: SessionUser | null | undefined): boolean {

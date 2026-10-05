@@ -22,6 +22,7 @@
   import { upgradeDitherSurfaces } from '@/lib/dither-surface'
   import { ADMIN_VIEWS } from '@/lib/nav'
   import { useUserEventInvalidation } from '@/lib/user-events.svelte'
+  import { usePresenceHeartbeat } from '@/lib/presence.svelte'
   import { assistantSurface, shouldAttachInboxDecision } from '@/lib/inbox-focus-surface'
 
   // Authenticated app shell (Mercury, spec §5–6): the dock is a full-width
@@ -46,6 +47,10 @@
   // rides this: the bell, the rails' badges, a run finishing off-page. One
   // EventSource per tab (see user-events.svelte), opened once from the shell.
   useUserEventInvalidation()
+  // THE PRESENCE HEARTBEAT'S ONE MOUNT (KTD6): keeps this person "online" in
+  // the directory while Talaria is open — background tabs included, so a
+  // teammate with Talaria behind another window still reads as online.
+  usePresenceHeartbeat({ visibleOnly: false })
 
   const user = $derived(session.data)
   // sv-router auto-parses query values (numbers, bare flags) — the inbox
