@@ -50,6 +50,11 @@ export const draftStorageKey = (userId: string, key: string): string => `${PREFI
 /** The key for an agent thread that has not been created yet. */
 export const newAgentDraftKey = (model: string): string => `agent:${model}:new`
 
+/** The agent model of a `newAgentDraftKey` key; null for any other key. */
+export function parseNewAgentDraftKey(key: string): string | null {
+  return /^agent:(.+):new$/.exec(key)?.[1] ?? null
+}
+
 /** The draft key for whatever Comms has selected; null where there is no composer. */
 export function commsDraftKey(sel: CommsSelection | null): string | null {
   if (!sel) return null
@@ -106,8 +111,8 @@ export function draftTarget(
   key: string,
   lookup: { channelIds: string[]; conversations: { id: string; agentModel: string }[] },
 ): string | null {
-  const fresh = /^agent:(.+):new$/.exec(key)
-  if (fresh) return `/comms/agent/${encodeURIComponent(fresh[1]!)}`
+  const fresh = parseNewAgentDraftKey(key)
+  if (fresh !== null) return `/comms/agent/${encodeURIComponent(fresh)}`
   if (lookup.channelIds.includes(key)) return `/comms/channel/${encodeURIComponent(key)}`
   const conv = lookup.conversations.find((c) => c.id === key)
   if (conv) return `/comms/agent/${encodeURIComponent(conv.agentModel)}/${encodeURIComponent(conv.id)}`

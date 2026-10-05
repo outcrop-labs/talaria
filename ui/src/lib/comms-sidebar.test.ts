@@ -4,6 +4,7 @@ import {
   agentPresence,
   agentUnread,
   buildSidebar,
+  channelHeading,
   readCollapsed,
   writeCollapsed,
   type SidebarInput,
@@ -57,6 +58,12 @@ function installLocalStorage() {
 beforeEach(() => vi.unstubAllGlobals())
 
 // ── search ──────────────────────────────────────────────────────────────────
+
+test('channelHeading writes channels with #, relays with ⇄, and DMs bare', () => {
+  assert.equal(channelHeading('channel', 'general'), '#general')
+  assert.equal(channelHeading('group', 'launch'), '⇄ launch')
+  assert.equal(channelHeading('dm', 'Gigi'), 'Gigi')
+})
 
 test('an empty query returns every row, channels before relays', () => {
   const v = buildSidebar(input(), state())

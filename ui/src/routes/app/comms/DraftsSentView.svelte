@@ -6,7 +6,8 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { relativeTime } from '@/lib/fleet'
   import { useMySent, type SentMessage } from '@/lib/comms-api'
-  import { clearDraft, draftTarget, listDrafts, type CommsDraft } from '@/lib/comms-drafts'
+  import { channelHeading } from '@/lib/comms-sidebar'
+  import { clearDraft, draftTarget, listDrafts, parseNewAgentDraftKey, type CommsDraft } from '@/lib/comms-drafts'
   import { commsSelectionFromPath, type CommsSelection } from '@/lib/comms-selection'
   import type { AgentModel } from '@/lib/agents'
   import type { Channel } from '@/lib/channels.svelte'
@@ -42,12 +43,12 @@
   const lookup = $derived({ channelIds: channels.map((c) => c.id), conversations })
 
   const channelLabel = (c: Channel): string =>
-    c.kind === 'channel' ? `#${c.name}` : c.kind === 'group' ? `⇄ ${c.name}` : (c.peer?.name ?? c.peer?.email ?? 'Direct message')
+    c.kind === 'dm' ? (c.peer?.name ?? c.peer?.email ?? 'Direct message') : channelHeading(c.kind, c.name)
   const agentLabel = (model: string) => fleet.find((a) => a.id === model)?.label ?? model
 
   const draftLabel = (key: string): string => {
-    const fresh = /^agent:(.+):new$/.exec(key)
-    if (fresh) return `${agentLabel(fresh[1]!)} · new thread`
+    const fresh = parseNewAgentDraftKey(key)
+    if (fresh !== null) return `${agentLabel(fresh)} · new thread`
     const ch = channels.find((c) => c.id === key)
     if (ch) return channelLabel(ch)
     const conv = conversations.find((c) => c.id === key)

@@ -1297,16 +1297,20 @@ const MY_SENT: &str = concat!(
     "select kind, id, conversation_id, title, content, \
        (trunc(extract(epoch from created_at) * 1000))::bigint \
      from ( \
-       select 'channel' as kind, msg.id::text as id, msg.channel_id::text as conversation_id, \
+       (select 'channel' as kind, msg.id::text as id, msg.channel_id::text as conversation_id, \
          mine.title as title, msg.content as content, msg.created_at as created_at \
        from channel_messages msg join mine on mine.id = msg.channel_id \
        where msg.author_type = 'user' and msg.author = (select who from me) \
+       order by msg.created_at desc \
+       limit 50) \
        union all \
-       select 'agent', m.id::text, c.id::text, coalesce(nullif(c.title, ''), c.agent_model), \
+       (select 'agent', m.id::text, c.id::text, coalesce(nullif(c.title, ''), c.agent_model), \
          m.content, m.created_at \
        from messages m join conversations c on c.id = m.conversation_id \
        where c.kind = 'chat' and c.archived = false and c.user_id = $1::uuid \
          and m.role = 'user' \
+       order by m.created_at desc \
+       limit 50) \
      ) sent \
      order by created_at desc \
      limit 50"

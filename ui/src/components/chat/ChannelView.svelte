@@ -146,14 +146,21 @@
   })
 
   const labelFor = (model: string) => fleet.find((a) => a.id === model)?.label ?? model
-  // Human authors are stored by email (stable identity); show their display name.
-  const userLabel = (author: string) =>
-    usersList.rows.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
+  // Human authors are stored by email (stable identity). One lookup per render
+  // pass, not a scan per row; the first directory row for an email wins.
+  const usersByEmail = $derived.by(() => {
+    const m = new Map<string, (typeof usersList.rows)[number]>()
+    for (const u of usersList.rows) if (u.email && !m.has(u.email)) m.set(u.email, u)
+    return m
+  })
+
+  // Show their display name.
+  const userLabel = (author: string) => usersByEmail.get(author)?.name ?? (author.split('@')[0] || author)
 
   // Photos come from the directory's effective picture (uploaded, else
   // Google). Agents have no photo yet — they keep their initials.
   const pictureFor = (author: string, authorType: string) =>
-    authorType === 'agent' ? null : (usersList.rows.find((u) => u.email === author)?.picture ?? null)
+    authorType === 'agent' ? null : (usersByEmail.get(author)?.picture ?? null)
 
   const ctx: MessageCtx = $derived({
     channelId,

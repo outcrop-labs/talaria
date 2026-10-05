@@ -50,7 +50,7 @@
   // THE PRESENCE HEARTBEAT'S ONE MOUNT (KTD6): keeps this person "online" in
   // the directory while Talaria is open — background tabs included, so a
   // teammate with Talaria behind another window still reads as online.
-  usePresenceHeartbeat({ visibleOnly: false })
+  usePresenceHeartbeat()
 
   const user = $derived(session.data)
   // sv-router auto-parses query values (numbers, bare flags) — the inbox

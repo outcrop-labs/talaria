@@ -40,19 +40,19 @@ describe('startPresenceHeartbeat', () => {
     stop()
   })
 
-  it('skips pings while hidden, including on mount', () => {
+  it('skips pings while hidden, including on mount, when visibleOnly is true', () => {
     const doc = fakeDoc('hidden')
     const ping = vi.fn(() => Promise.resolve())
-    const stop = startPresenceHeartbeat({ doc, ping })
+    const stop = startPresenceHeartbeat({ doc, ping, visibleOnly: true })
     vi.advanceTimersByTime(120_000)
     expect(ping).not.toHaveBeenCalled()
     stop()
   })
 
-  it('pings once on becoming visible', () => {
+  it('pings once on becoming visible when visibleOnly is true', () => {
     const doc = fakeDoc('hidden')
     const ping = vi.fn(() => Promise.resolve())
-    const stop = startPresenceHeartbeat({ doc, ping })
+    const stop = startPresenceHeartbeat({ doc, ping, visibleOnly: true })
     doc.set('visible')
     expect(ping).toHaveBeenCalledTimes(1)
     // Going hidden again is not a ping.
@@ -61,10 +61,10 @@ describe('startPresenceHeartbeat', () => {
     stop()
   })
 
-  it('keeps pinging while hidden when visibleOnly is false', () => {
+  it('keeps pinging while hidden by default (background tabs count)', () => {
     const doc = fakeDoc('hidden')
     const ping = vi.fn(() => Promise.resolve())
-    const stop = startPresenceHeartbeat({ doc, ping, visibleOnly: false })
+    const stop = startPresenceHeartbeat({ doc, ping })
     expect(ping).toHaveBeenCalledTimes(1)
     vi.advanceTimersByTime(30_000)
     expect(ping).toHaveBeenCalledTimes(2)
@@ -83,7 +83,8 @@ describe('startPresenceHeartbeat', () => {
   it('cleanup stops the interval and the visibility listener', () => {
     const doc = fakeDoc()
     const ping = vi.fn(() => Promise.resolve())
-    const stop = startPresenceHeartbeat({ doc, ping })
+    const stop = startPresenceHeartbeat({ doc, ping, visibleOnly: true })
+    expect(doc.listenerCount()).toBe(1)
     stop()
     expect(doc.listenerCount()).toBe(0)
     vi.advanceTimersByTime(120_000)

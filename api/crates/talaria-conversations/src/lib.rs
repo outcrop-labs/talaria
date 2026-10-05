@@ -489,9 +489,15 @@ pub type ReactionGroupRow = (String, String, Vec<String>, Vec<String>);
 /// Hang grouped reaction rows on the messages they belong to, keeping the
 /// rows' order per message. Rows for a message not in the slice are dropped.
 pub fn attach_reactions(messages: &mut [MessageRow], rows: Vec<ReactionGroupRow>) {
+    // id -> index, built once; the first message with an id wins, as a scan would.
+    let mut index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(messages.len());
+    for (i, m) in messages.iter().enumerate() {
+        index.entry(m.id.clone()).or_insert(i);
+    }
     for (message_id, emoji, actors, actor_types) in rows {
-        if let Some(m) = messages.iter_mut().find(|m| m.id == message_id) {
-            m.reactions.push(MessageReaction {
+        if let Some(&i) = index.get(message_id.as_str()) {
+            messages[i].reactions.push(MessageReaction {
                 emoji,
                 actors,
                 actor_types,

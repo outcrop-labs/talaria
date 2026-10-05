@@ -30,6 +30,7 @@
     type CommsSelection,
   } from '@/lib/comms-selection'
   import { commsDraftKey, provideCommsDraftScope } from '@/lib/comms-drafts'
+  import { channelHeading } from '@/lib/comms-sidebar'
   import {
     addChannelAgent,
     addChannelMember,
@@ -350,7 +351,7 @@
             />
           {/if}
           <span class="text-sm font-semibold text-fg">
-            {selected.kind === 'channel' ? `#${title}` : selected.kind === 'group' ? `⇄ ${title}` : title}
+            {channelHeading(selected.kind, title)}
           </span>
           {#if peer?.statusEmoji || peer?.statusText}
             <span class="flex min-w-0 items-center gap-1 text-xs text-muted" title={peer.statusText ?? undefined}>

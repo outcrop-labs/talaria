@@ -3,6 +3,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { channelHeading } from '@/lib/comms-sidebar'
   import { relativeTime } from '@/lib/fleet'
   import { useMyThreads, type MyThread } from '@/lib/comms-api'
   import type { AgentModel } from '@/lib/agents'
@@ -26,8 +27,7 @@
   const threadsQuery = useMyThreads()
 
   const where = (t: MyThread): string => {
-    if (t.channelKind === 'channel') return `#${t.channelName}`
-    if (t.channelKind === 'group') return `⇄ ${t.channelName}`
+    if (t.channelKind !== 'dm') return channelHeading(t.channelKind, t.channelName)
     const peer = channels.find((c) => c.id === t.channelId)?.peer
     return peer?.name ?? peer?.email ?? t.channelName
   }
@@ -35,7 +35,7 @@
   const author = (t: MyThread): { name: string; picture: string | null } => {
     const m = t.root
     if (m.authorType === 'agent') return { name: fleet.find((a) => a.id === m.author)?.label ?? m.author, picture: null }
-    const u = users.find((x) => x.id === m.author)
+    const u = users.find((x) => x.email === m.author)
     return { name: u?.name ?? u?.email ?? 'Someone', picture: u?.picture ?? null }
   }
 </script>

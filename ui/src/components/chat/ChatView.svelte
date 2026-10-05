@@ -612,9 +612,8 @@
   }
 
   // ── Reactions (R6 / AE2) ─────────────────────────────────────────────────
-  // Optimistic: the chip flips at once; the server's answer (or a stamp
-  // re-read, when the route returns no reactions) settles it, and a refusal
-  // flips it back. Rows pair by message id, so a sync landing mid-toggle
+  // Optimistic: the chip flips at once; a stamp re-read settles it (the route
+  // answers `{ ok, reacted }`, not the reactions), and a refusal flips it back. Rows pair by message id, so a sync landing mid-toggle
   // cannot patch the wrong turn.
   const patchReactions = (messageId: string, fn: (r: DisplayMessage['reactions']) => DisplayMessage['reactions']) => {
     const i = messages.findIndex((x) => x.id === messageId)
@@ -627,10 +626,8 @@
     const flip = () => patchReactions(messageId, (r) => toggleReactionLocal(r, emoji, viewer))
     flip()
     toggleConversationReaction(id, messageId, emoji)
-      .then((server) => {
-        if (convId !== id) return
-        if (server) patchReactions(messageId, () => server)
-        else void stampFromServerSync()
+      .then(() => {
+        if (convId === id) void stampFromServerSync()
       })
       .catch((e: unknown) => {
         if (convId === id) flip()

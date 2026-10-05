@@ -111,6 +111,14 @@ export function agentUnread(model: string, threads: SidebarThread[]): number {
   return n
 }
 
+/** How a channel is written in a heading: `#name` for a channel, `⇄ name` for
+ *  a relay (group), the bare name otherwise — a DM's name is the caller's. */
+export function channelHeading(kind: SidebarChannel['kind'], name: string): string {
+  if (kind === 'channel') return `#${name}`
+  if (kind === 'group') return `⇄ ${name}`
+  return name
+}
+
 /** Fleet status → the presence dot. No fleet row is no evidence of life. */
 export function agentPresence(status: AgentStatus | undefined): Presence {
   return status === undefined || status === 'offline' ? 'offline' : 'online'

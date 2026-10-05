@@ -7,6 +7,7 @@ import {
   draftTarget,
   listDrafts,
   newAgentDraftKey,
+  parseNewAgentDraftKey,
   readDraft,
   saveDraft,
 } from './comms-drafts'
@@ -74,6 +75,14 @@ test('an agent:<model>:new draft round-trips and lists under its full key', () =
   assert.equal(readDraft('u1', key), 'ask hermes about the launch')
   assert.deepEqual(listDrafts('u1').map((d) => d.key), ['agent:hermes:new'])
   assert.equal(draftStorageKey('u1', key), 'comms-draft:u1:agent:hermes:new')
+})
+
+test('parseNewAgentDraftKey reads the model back out of a fresh-agent key, and nothing else', () => {
+  assert.equal(parseNewAgentDraftKey(newAgentDraftKey('hermes')), 'hermes')
+  assert.equal(parseNewAgentDraftKey(newAgentDraftKey('a:b')), 'a:b')
+  assert.equal(parseNewAgentDraftKey('chan-1'), null)
+  assert.equal(parseNewAgentDraftKey('agent:hermes'), null)
+  assert.equal(parseNewAgentDraftKey('agent::new'), null)
 })
 
 test('drafts list newest first, and garbage under the prefix is skipped', () => {

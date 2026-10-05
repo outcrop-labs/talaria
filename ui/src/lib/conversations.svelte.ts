@@ -81,19 +81,18 @@ export interface MessageReaction {
   actorTypes: string[]
 }
 
-/** Toggle the viewer's reaction on a conversation message. Resolves to the
- *  message's updated reactions when the server returns them, else null (the
- *  caller re-syncs). Rejects on a refused toggle — the caller rolls back. */
+/** Toggle the viewer's reaction on a conversation message. The route answers
+ *  `{ ok, reacted }` only, so the caller re-syncs to settle the chips. Rejects
+ *  on a refused toggle — the caller rolls back. */
 export async function toggleConversationReaction(
   conversationId: string,
   messageId: string,
   emoji: string,
-): Promise<MessageReaction[] | null> {
-  const res = await postJson<{ reactions?: MessageReaction[] } | null>(
+): Promise<void> {
+  await postJson<{ ok: boolean; reacted: boolean }>(
     `/api/conversations/${conversationId}/messages/${messageId}/reactions`,
     { emoji },
   )
-  return Array.isArray(res?.reactions) ? res.reactions : null
 }
 
 export interface ConversationMember {

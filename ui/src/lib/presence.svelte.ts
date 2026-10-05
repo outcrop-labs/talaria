@@ -2,11 +2,11 @@
 // pings `PUT /api/me/presence`; the server keeps a 90s TTL key per person and
 // the directory reports `online` from it. Mounted once, by AppLayout.
 //
-// VISIBILITY GATE: by default the heartbeat pings only while the tab is
-// visible — on mount, every 30s, and once on regaining visibility — so
-// "online" means "had Talaria in a visible tab within 90 seconds". The cost
-// is that someone with Talaria in a background tab reads as offline. That is
-// one flag (`visibleOnly`); flip it to keep pinging from hidden tabs.
+// BACKGROUND TABS COUNT: by default the heartbeat pings on mount and every 30s
+// whether or not the tab is visible, so "online" means "had Talaria open
+// within 90 seconds" — a teammate with Talaria behind another window still
+// reads as online. `visibleOnly: true` narrows it to visible tabs (pings on
+// mount, every 30s, and once on regaining visibility; hidden tabs skip).
 import { putJson } from '@/lib/fetch-json'
 
 export const PRESENCE_INTERVAL_MS = 30_000
@@ -21,7 +21,7 @@ export interface VisibilitySource {
 export interface PresenceOptions {
   doc?: VisibilitySource
   ping?: () => Promise<unknown>
-  /** Ping only while the tab is visible. Default true (the plan's rule). */
+  /** Ping only while the tab is visible. Default false: background tabs ping. */
   visibleOnly?: boolean
   intervalMs?: number
 }
@@ -32,7 +32,7 @@ const defaultPing = () => putJson<{ ok: true }>('/api/me/presence')
 export function startPresenceHeartbeat(opts: PresenceOptions = {}): () => void {
   const doc = opts.doc ?? document
   const ping = opts.ping ?? defaultPing
-  const visibleOnly = opts.visibleOnly ?? true
+  const visibleOnly = opts.visibleOnly ?? false
   const intervalMs = opts.intervalMs ?? PRESENCE_INTERVAL_MS
 
   const beat = () => {

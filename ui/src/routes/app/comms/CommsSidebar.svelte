@@ -403,7 +403,7 @@
                 <!-- R19: agents have no photo on the wire yet — initials. -->
                 <PresenceAvatar name={a.label} presence={agentPresence(fleetStatus.get(a.id))} />
                 <span class={cn('min-w-0 flex-1 truncate', unreadName(row.unread))}>{a.label}</span>
-                {#if conversations.some((c) => c.agentModel === a.id && c.working)}
+                {#if agentThreads.some((c) => c.working)}
                   <span class="gd-breathe h-1.5 w-1.5 shrink-0 rounded-full bg-accent" title="working on a reply"></span>
                 {/if}
                 {#if activeAgent && agentSel?.conversationId === null}
@@ -431,7 +431,7 @@
               <RailRow
                 active={activeThread}
                 onClick={() => onSelect({ t: 'agent', model: a.id, conversationId: c.id })}
-                class={cn('pl-7', (c.unreadCount ?? 0) > 0 && 'font-semibold text-fg')}
+                class={cn('pl-7', unreadName(c.unreadCount))}
               >
                 <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
                 <span class="contents" oncontextmenu={(e) => menu.openMenu(e, threadRowMenu(a.id, c))}>

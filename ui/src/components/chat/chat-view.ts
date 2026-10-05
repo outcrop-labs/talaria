@@ -5,6 +5,7 @@ import type { ReactionChip } from './ReactionChips.svelte'
 import type { Attachment } from '@/lib/attachments'
 import type { GuardFinding } from '@/components/chat/guard-caveat'
 import type { ChatChip } from '@/lib/chips'
+import { zoneOrUndefined } from '@/lib/day-dividers'
 
 export interface DisplayMessage {
   role: 'user' | 'assistant'
@@ -127,6 +128,8 @@ export function stampFromServer(local: readonly DisplayMessage[], remote: readon
   })
 }
 
+// One formatter per resolved zone ('' = the browser's) — turnTime runs per row.
+const turnTimeFormatters = new Map<string, Intl.DateTimeFormat>()
 
 /** A turn's send time beside its name (R2), in the viewer's zone when it is
  *  one Intl can resolve, else the browser's. Empty when there is no time. */
@@ -134,10 +137,12 @@ export function turnTime(at: string | undefined, timeZone?: string | null): stri
   if (!at) return ''
   const d = new Date(at)
   if (Number.isNaN(d.getTime())) return ''
-  const opts: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
-  try {
-    return d.toLocaleTimeString([], { ...opts, timeZone: timeZone || undefined })
-  } catch {
-    return d.toLocaleTimeString([], opts)
+  const tz = zoneOrUndefined(timeZone)
+  const k = tz ?? ''
+  let f = turnTimeFormatters.get(k)
+  if (!f) {
+    f = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit', timeZone: tz })
+    turnTimeFormatters.set(k, f)
   }
+  return f.format(d)
 }

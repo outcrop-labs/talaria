@@ -14,6 +14,7 @@
   import { resolveAgentMedia } from '@/lib/agent-media'
   import { deleteChannelMessage, editChannelMessage, toggleMessageReaction, type ChannelMessage } from '@/lib/channels.svelte'
   import { actorLabel, threadAvatars, type MessageCtx } from './channel-view'
+  import { turnTime } from './chat-view'
 
   let {
     message: m,
@@ -35,7 +36,8 @@
   } = $props()
 
   const name = $derived(m.authorType === 'agent' ? ctx.labelFor(m.author) : ctx.userLabel(m.author))
-  const time = $derived(new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+  // The viewer's zone, the same one the day dividers use.
+  const time = $derived(turnTime(m.createdAt, ctx.timeZone))
   const live = $derived(m.status === 'streaming')
   const own = $derived(m.authorType === 'user' && m.author === ctx.me)
   const picture = $derived(ctx.pictureFor(m.author, m.authorType))
