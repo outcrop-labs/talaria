@@ -127,8 +127,10 @@ pub async fn comms_lines(
         join channel_members member on member.channel_id = c.id and member.user_id = $1::uuid
         cross join me
         left join lateral (
-          select coalesce(nullif(c.name, ''), string_agg(coalesce(u.name, u.email), ', '
-                   order by coalesce(u.name, u.email))) as name,
+          select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id)
+                   then min(coalesce(u.name, u.email))
+                   else coalesce(nullif(c.name, ''), string_agg(coalesce(u.name, u.email), ', '
+                     order by coalesce(u.name, u.email))) end as name,
                  case when count(*) = 1 then min(u.email) end as email
           from channel_members peer join users u on u.id = peer.user_id
           where peer.channel_id = c.id and peer.user_id <> $1::uuid

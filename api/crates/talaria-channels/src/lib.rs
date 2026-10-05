@@ -1402,8 +1402,11 @@ macro_rules! my_channels_cte {
            select coalesce(email, name, 'user') as who from users where id = $1::uuid \
          ), mine as ( \
            select c.id, c.kind, \
-             case when c.kind = 'dm' then coalesce(nullif(c.name, ''), \
-               (select string_agg(coalesce(pu.name, pu.email), ', ' order by coalesce(pu.name, pu.email)) \
+             case when c.kind = 'dm' then coalesce( \
+               (select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
+                         then min(coalesce(pu.name, pu.email)) \
+                         else coalesce(nullif(c.name, ''), string_agg(coalesce(pu.name, pu.email), ', ' \
+                           order by coalesce(pu.name, pu.email))) end \
                   from channel_members p join users pu on pu.id = p.user_id \
                  where p.channel_id = c.id and p.user_id <> $1::uuid), c.name) \
              else c.name end as title \
@@ -1627,9 +1630,11 @@ macro_rules! shared_rooms_sql {
                select coalesce(email, name, 'user') as who from users where id = $1::uuid \
              ) \
              select c.id::text, c.kind, \
-               case when c.kind = 'dm' then coalesce(nullif(c.name, ''), \
-                 (select string_agg(coalesce(nullif(pu.name, ''), pu.email), ', ' \
-                      order by coalesce(nullif(pu.name, ''), pu.email)) \
+               case when c.kind = 'dm' then coalesce( \
+                 (select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
+                           then min(coalesce(nullif(pu.name, ''), pu.email)) \
+                           else coalesce(nullif(c.name, ''), string_agg(coalesce(nullif(pu.name, ''), pu.email), ', ' \
+                             order by coalesce(nullif(pu.name, ''), pu.email))) end \
                     from channel_members p join users pu on pu.id = p.user_id \
                    where p.channel_id = c.id and p.user_id <> $1::uuid), c.name) \
                else c.name end, \
