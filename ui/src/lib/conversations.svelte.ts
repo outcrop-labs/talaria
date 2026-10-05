@@ -65,6 +65,35 @@ export interface StoredMessage {
    *  its stream died mid-flight. */
   metadata?: { resumed?: boolean } | null
   chips?: ChatChip[]
+  /** The row's id — what a reaction toggles against. Absent on older
+   *  payloads; a row without one shows no action bar. */
+  id?: string
+  /** When the row was written (ISO) — the turn's time and its day divider. */
+  createdAt?: string
+  /** Reactions, grouped by emoji. `actors[i]` is typed by `actorTypes[i]`. */
+  reactions?: MessageReaction[]
+}
+
+/** One emoji's reactions on an agent-DM message — the channel wire's shape. */
+export interface MessageReaction {
+  emoji: string
+  actors: string[]
+  actorTypes: string[]
+}
+
+/** Toggle the viewer's reaction on a conversation message. Resolves to the
+ *  message's updated reactions when the server returns them, else null (the
+ *  caller re-syncs). Rejects on a refused toggle — the caller rolls back. */
+export async function toggleConversationReaction(
+  conversationId: string,
+  messageId: string,
+  emoji: string,
+): Promise<MessageReaction[] | null> {
+  const res = await postJson<{ reactions?: MessageReaction[] } | null>(
+    `/api/conversations/${conversationId}/messages/${messageId}/reactions`,
+    { emoji },
+  )
+  return Array.isArray(res?.reactions) ? res.reactions : null
 }
 
 export interface ConversationMember {
