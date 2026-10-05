@@ -3584,6 +3584,40 @@ alter table tasks drop column if exists conversation_id`,
   // Comms profile drawer: optional, ≤ 80 chars, trimmed and blank-clears in
   // PUT /api/me.
   `alter table users add column if not exists title text`,
+  // THE SHADOW LEDGER — one row per baseline-vs-decision-model comparison.
+  //
+  // The decision port (api/crates/talaria-decide) is measured before it is
+  // trusted: at a wired site, the existing code decides as it always did, and
+  // the port is asked the same question in the background. Both answers land
+  // here with the probability and the latency, and nothing reads the port's
+  // answer to act on. A threshold is then chosen from observed traffic rather
+  // than from a vendor's cookbook.
+  //
+  // `baseline` and `port_answer` are TEXT, not boolean, so the same table
+  // serves a yes/no gate, a pick-one router and a how-much score without a
+  // second shape. `agreed` is computed at write time by the site that knows
+  // what agreement means for its own primitive.
+  //
+  // WHAT IS DELIBERATELY NOT HERE: the text that was judged. A ticket
+  // message is somebody's words, and a comparison ledger is the wrong place
+  // to accumulate them — `subject_ref` points at the row an operator can go
+  // and read instead, under the permissions that row already has.
+  `create table if not exists decide_shadow (
+     id uuid primary key default gen_random_uuid(),
+     site text not null,
+     subject_ref text,
+     baseline text not null default '',
+     port_answer text,
+     probability real,
+     certainty real,
+     calibrated boolean not null default false,
+     provider text not null default '',
+     model text,
+     latency_ms integer,
+     agreed boolean,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists decide_shadow_site_idx on decide_shadow(site, created_at desc)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

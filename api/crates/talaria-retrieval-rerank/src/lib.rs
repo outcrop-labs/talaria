@@ -293,23 +293,10 @@ pub async fn set_rerank_config(state: &AppState, patch: RerankPatch) -> Result<V
     Ok(v)
 }
 
-/// The public fold — the stored row's own keys in their own order, keySealed
-/// gone, hasKey appended last. A passthrough, not a re-shaped struct: the
-/// wire's key order is the jsonb row's order, nothing else.
-fn public_of(stored: Value) -> Value {
-    let mut map = match stored {
-        Value::Object(m) => m,
-        _ => serde_json::Map::new(),
-    };
-    let has_key = map.get("keySealed").is_some_and(|k| !k.is_null());
-    map.remove("keySealed");
-    map.insert("hasKey".into(), json!(has_key));
-    Value::Object(map)
-}
-
 /// Redacted view for the admin UI — never carries keySealed.
 pub async fn rerank_config_public(pg: &PgPool) -> Value {
-    public_of(stored_config(pg).await)
+    // One home for the fold — see `talaria_settings::public_of`.
+    talaria_gateway::settings::public_of(stored_config(pg).await)
 }
 
 async fn json_fetch(
@@ -992,7 +979,7 @@ mod tests {
         // jsonb's canonical order (shortest key first) is the wire's key
         // order — these bytes are the live dev row's.
         assert_eq!(
-            public_of(
+            talaria_gateway::settings::public_of(
                 json!({"model": "x", "provider": "tei", "candidates": 10, "keySealed": "v1:a:b:c"})
             )
             .to_string(),
@@ -1000,12 +987,13 @@ mod tests {
         );
         // No row at all: DEFAULTS plus hasKey false, in DEFAULTS' order.
         assert_eq!(
-            public_of(defaults_value()).to_string(),
+            talaria_gateway::settings::public_of(defaults_value()).to_string(),
             r#"{"provider":"off","candidates":30,"hasKey":false}"#
         );
         // A null keySealed is as falsy as an absent one.
         assert_eq!(
-            public_of(json!({"provider": "tei", "keySealed": null})).to_string(),
+            talaria_gateway::settings::public_of(json!({"provider": "tei", "keySealed": null}))
+                .to_string(),
             r#"{"provider":"tei","hasKey":false}"#
         );
     }

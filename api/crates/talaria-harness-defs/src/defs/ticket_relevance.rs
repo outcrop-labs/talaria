@@ -99,6 +99,23 @@ const WORK_CAP: usize = 2_000;
 const MESSAGE_CAP: usize = 2_000;
 const RECENT_CAP: usize = 6_000;
 
+// ── What the judgment MEANS, once ───────────────────────────────────────────
+//
+// Public because the prompt is no longer the only thing that asks this
+// question: a shadow comparison against a decision model asks it as a
+// yes/no primitive, and a measurement of two differently-worded questions
+// measures the wording. One definition, both askers.
+
+/// What makes a message the assigned agent's business.
+pub const RELEVANT_MEANS: &str = "the message asks or tells the agent to do, change, check, or explain something about this ticket; answers a question the agent asked, or approves or pushes back on its work; hands over a file, log, or detail the work needs; or reports a symptom or blocker connected to the ticket";
+
+/// What does not, however it is phrased.
+pub const NOT_RELEVANT_MEANS: &str = "people talking to each other about something else (another project, scheduling, general chat); thanks or acknowledgement with no new ask; or a note about a different ticket\u{2019}s work";
+
+/// The one sentence the gate is asked, in both places that ask it.
+pub const RELEVANCE_QUESTION: &str =
+    "Does the message below concern the assigned agent\u{2019}s work on this ticket? One agent is assigned to the ticket\u{2019}s work; everyone else in the thread is a person talking to other people.";
+
 fn system() -> String {
     [
         "You are the gate on a ticket\u{2019}s discussion thread. One agent is assigned to the ticket\u{2019}s work; everyone else in the thread is a person. People read every message — the agent replies only when a message concerns the work it is assigned on this ticket, and stays quiet otherwise.".to_string(),
@@ -106,8 +123,8 @@ fn system() -> String {
         "Return ONLY a JSON object of the form {\"relevant\": true} or {\"relevant\": false}. No prose.".to_string(),
         // The message is somebody else's text — see the injection fixture.
         UNTRUSTED_INPUT.to_string(),
-        "RELEVANT: the message asks or tells the agent to do, change, check, or explain something about this ticket; answers a question the agent asked, or approves or pushes back on its work; hands over a file, log, or detail the work needs; or reports a symptom or blocker connected to the ticket.".to_string(),
-        "NOT RELEVANT: people talking to each other about something else (another project, scheduling, general chat); thanks or acknowledgement with no new ask; or a note about a different ticket\u{2019}s work.".to_string(),
+        format!("RELEVANT: {RELEVANT_MEANS}."),
+        format!("NOT RELEVANT: {NOT_RELEVANT_MEANS}."),
         "When genuinely uncertain, answer true — a missed instruction is worse than an occasional unneeded reply.".to_string(),
     ]
     .join("\n")

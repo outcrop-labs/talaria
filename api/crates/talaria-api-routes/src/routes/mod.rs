@@ -1044,6 +1044,17 @@ pub fn router(state: AppState) -> Router {
                 .put(talaria_routes_admin::admin::admin_model_roles::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
+        // The decision-model port's one config row: the provider catalog with
+        // its capability sheet, the sealed key, and the Test button that puts
+        // one real question through whatever is configured. `off` by default,
+        // so an instance that never visits this panel is unaffected.
+        .route(
+            "/api/admin/decide",
+            get(talaria_routes_admin::admin::admin_decide::get)
+                .put(talaria_routes_admin::admin::admin_decide::put)
+                .post(talaria_routes_admin::admin::admin_decide::post)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
+        )
         // The retrieval console — the route that kicks the rag-backfill and
         // rag-reindex runs and reads their projections.
         .route(

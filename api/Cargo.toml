@@ -256,6 +256,8 @@ talaria-daily-brief-types = { path = "crates/talaria-daily-brief-types" }
 
 talaria-db = { path = "crates/talaria-db" }
 
+talaria-decide = { path = "crates/talaria-decide" }
+
 talaria-digest = { path = "crates/talaria-digest" }
 
 talaria-effort-prefs = { path = "crates/talaria-effort-prefs" }

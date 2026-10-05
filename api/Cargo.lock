@@ -3974,6 +3974,7 @@ name = "talaria-api-facades"
 version = "0.1.0"
 dependencies = [
  "talaria-daily-brief",
+ "talaria-decide",
  "talaria-fitness",
  "talaria-fitness-code-runner",
  "talaria-fitness-toolbox",
@@ -4549,6 +4550,21 @@ version = "0.1.0"
 dependencies = [
  "sqlx",
  "talaria-config",
+ "tracing",
+]
+
+[[package]]
+name = "talaria-decide"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-retrieval-http",
+ "talaria-state",
+ "tokio",
  "tracing",
 ]
 
@@ -5523,6 +5539,7 @@ dependencies = [
  "talaria-config",
  "talaria-conversations",
  "talaria-daily-brief",
+ "talaria-decide",
  "talaria-digest",
  "talaria-fleet-create",
  "talaria-fleet-docker",

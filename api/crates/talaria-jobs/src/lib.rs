@@ -203,6 +203,16 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_ticket_chat::TICKET_RELEVANT.set(Arc::new(
         |state, ticket, work, message, recent| {
             Box::pin(async move {
+                // Kept before the move into the harness input: the shadow
+                // comparison below needs the same state, and the ticket line
+                // is the row an operator opens to audit a disagreement.
+                let ticket_line = ticket.clone();
+                let subject = serde_json::json!({
+                    "ticket": ticket,
+                    "work": work,
+                    "message": message,
+                    "recent": recent,
+                });
                 let input = serde_json::json!(
                     talaria_harness_defs::defs::ticket_relevance::TicketRelevanceInput {
                         ticket,
@@ -211,7 +221,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                         recent,
                     }
                 );
-                talaria_harness::run::run_harness(
+                // THE FAIL-OPEN FOLD, the pre-extraction code's verbatim:
+                // every way this comes back empty — harness error, null
+                // verdict, a value shaped like anything but
+                // {"relevant": bool} — is TRUE.
+                let relevant = talaria_harness::run::run_harness(
                     &state,
                     &talaria_harness_defs::defs::ticket_relevance::ticket_relevance_harness(),
                     &input,
@@ -224,7 +238,36 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                 .ok()
                 .and_then(|r| r.value)
                 .and_then(|v| v.get("relevant").and_then(serde_json::Value::as_bool))
-                .unwrap_or(true)
+                .unwrap_or(true);
+                // SHADOW MODE, and it is deliberately the last thing that
+                // happens: `relevant` is already decided and about to be
+                // returned, so nothing below can change the answer. The
+                // comparison runs detached, costs this turn nothing, and is a
+                // no-op unless an operator has configured a decision model —
+                // `off` on every install by default.
+                //
+                // Both askers get the harness's OWN definitions
+                // (`RELEVANT_MEANS` / `NOT_RELEVANT_MEANS`), because a
+                // comparison between two differently-worded questions
+                // measures the wording.
+                talaria_decide::shadow::compare(
+                    &state,
+                    talaria_decide::shadow::Compare {
+                        site: "ticket-relevance",
+                        subject_ref: Some(ticket_line),
+                        baseline: relevant.to_string(),
+                        agrees: talaria_decide::shadow::noul_agrees,
+                    },
+                    talaria_decide::Ask::new(subject).q(
+                        "relevant",
+                        talaria_decide::Question::noul_meaning(
+                            talaria_harness_defs::defs::ticket_relevance::RELEVANCE_QUESTION,
+                            talaria_harness_defs::defs::ticket_relevance::RELEVANT_MEANS,
+                            talaria_harness_defs::defs::ticket_relevance::NOT_RELEVANT_MEANS,
+                        ),
+                    ),
+                );
+                relevant
             })
         },
     ));
