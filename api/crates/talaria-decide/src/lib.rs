@@ -53,6 +53,7 @@ use talaria_state::AppState;
 pub mod config;
 pub mod guard;
 pub mod shadow;
+pub mod tools;
 mod wire;
 
 pub use config::{

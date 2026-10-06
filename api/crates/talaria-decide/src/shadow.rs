@@ -126,6 +126,51 @@ pub async fn record(pg: &PgPool, cmp: &Compare, judgment: Option<&Judgment>) {
     }
 }
 
+/// A comparison whose port answer is DERIVED rather than a single judgment.
+///
+/// WHY THIS EXISTS BESIDE `Compare`. `Compare` is shaped for one baseline and
+/// one `Judgment`, with agreement decided by a comparator over that answer.
+/// Some sites do not have that shape: tool-offer pruning asks a Noul per
+/// offered tool, and the thing worth recording is the SET those answers
+/// produced plus whether it contained every tool the reply actually called.
+/// There is no single probability behind that, so `probability`, `certainty`
+/// and `calibrated` stay null rather than carrying a summary statistic nobody
+/// could interpret.
+pub struct Derived<'a> {
+    pub site: &'a str,
+    pub subject_ref: Option<&'a str>,
+    pub baseline: &'a str,
+    pub port_answer: &'a str,
+    pub agreed: bool,
+    pub provider: &'a str,
+    pub latency_ms: Option<u64>,
+}
+
+/// Write one derived comparison. Never errors, for the same reason `record`
+/// does not.
+pub async fn record_derived(pg: &PgPool, d: Derived<'_>) {
+    let res = sqlx::query(
+        "insert into decide_shadow \
+           (site, subject_ref, baseline, port_answer, calibrated, provider, latency_ms, agreed) \
+         values ($1, $2, $3, $4, false, $5, $6, $7)",
+    )
+    .bind(d.site)
+    .bind(d.subject_ref)
+    .bind(d.baseline)
+    .bind(d.port_answer)
+    .bind(d.provider)
+    .bind(d.latency_ms.map(|l| l as i32))
+    .bind(d.agreed)
+    .execute(pg)
+    .await;
+    if let Err(e) = res {
+        tracing::warn!(
+            "[decide] derived shadow row not recorded for {}: {e}",
+            d.site
+        );
+    }
+}
+
 /// An answer as the ledger stores it. A noul renders as the boolean it would
 /// gate on, so a gate's two columns are directly comparable; a choice renders
 /// as the chosen id; a score as its position.

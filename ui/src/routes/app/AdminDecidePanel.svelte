@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
@@ -51,6 +52,7 @@
     }
     configured: boolean
     shadow: SiteShadow[]
+    toolShadow: boolean
   }
   type SiteShadow = {
     site: string
@@ -84,6 +86,7 @@
   const cfg = $derived(data?.config)
   const meta = $derived(data?.providers.find((p) => p.id === cfg?.provider))
   const shadow = $derived(data?.shadow ?? [])
+  const toolShadow = $derived(data?.toolShadow ?? false)
   const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—')
   const savedFlash = useSavedFlash()
 
@@ -258,6 +261,24 @@
             class="w-24"
           />
           <span class="text-[11px] text-muted">ms — past this the caller runs its own path instead of waiting.</span>
+        </div>
+        <!-- ITS OWN SWITCH. Configuring a decision model is not consent to put
+             every agent turn through a question per offered tool, so this is a
+             separate key and separate consent. It measures only — nothing is
+             ever pruned from a live request. -->
+        <div class="pt-2">
+          <Checkbox
+            class="gap-2 text-[11px] text-fg"
+            checked={toolShadow}
+            onChange={(on) => void apply({ toolShadow: on })}
+            label="Measure tool-offer pruning"
+          />
+          <p class="mt-1 pl-6 text-[11px] text-muted">
+            Judges the tools each agent turn was offered against the ones it actually called, so
+            the ledger can answer whether pruning would have broken the turn. Nothing is pruned.
+            Costs one question per offered tool, on every turn — leave it off unless you are
+            collecting the numbers.
+          </p>
         </div>
       </div>
     {/if}

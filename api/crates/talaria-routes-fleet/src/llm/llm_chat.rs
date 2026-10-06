@@ -34,6 +34,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use talaria_api_facades::decide::guard as decide_guard;
+use talaria_api_facades::decide::tools as decide_tools;
 use talaria_api_facades::gateway::budget::{BudgetLimits, budget_message, check_budget};
 use talaria_api_facades::gateway::guard::{
     Finding, Grounding, GuardMode, extract_tool_record, grounding_text_of, guard_completion,
@@ -323,6 +324,12 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                     extract_tool_record(client_body["messages"].as_array().unwrap_or(&Vec::new()))
                         .backing_tools;
                 decide_guard::observe(&state, &content, &tool_names, &caller, &model);
+                // TOOL-OFFER PRUNING, measured and never applied. Judges the
+                // tools this turn was OFFERED against what the reply actually
+                // CALLED, so the ledger can answer "would pruning have broken
+                // this turn" before anything prunes. Its own setting, off by
+                // default, and detached — see talaria-decide::tools.
+                decide_tools::observe(&state, &client_body, &j, &caller);
                 if !findings.is_empty() && j["choices"][0]["message"].is_object() {
                     // GROUNDED, like the findings above: redaction gets the
                     // same grounding material the findings got, or the two
