@@ -173,6 +173,234 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     let _ = talaria_attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_conversations::conversation_owner(&pg, &id).await })
     }));
+    // ── THE EXTRACTION WAVE'S TWELVE ────────────────────────────────────────
+    //
+    // Between 2026-09-18 and 2026-09-19 a burst of crate extractions moved a
+    // dozen modules out of the monolith, each correctly breaking its new
+    // crate's dependency on a heavier one by declaring an injected edge — and
+    // not one of them was set here. Every extraction verified with
+    // `cargo check`, which is exactly the tool that cannot see an unset
+    // `OnceLock`: the declaration compiles, the read compiles, and the `None`
+    // arm is a valid answer.
+    //
+    // The live instance dated the damage. `harness_runs` was active to
+    // 2026-10-05, so the instance was plainly running — and `skill_summaries`
+    // (29 rows), `gap_reported` notifications (15) and `titler` runs (49) all
+    // stopped writing on 2026-09-18, the day their crate was extracted, and
+    // wrote nothing for the eighteen days after. COUNTS LOOKED HEALTHY; the
+    // dates were the evidence.
+    //
+    // Each edge below is the pre-extraction call restored. The
+    // `oncelock-seam-never-set` invariant and the boot assertions in this
+    // crate's tests are what stop the thirteenth.
+
+    // The honesty loop's voice. Unset, `audience_for` never ran and the
+    // notification fan-out iterated two empty lists — so a capability gap was
+    // filed and NOBODY was told, which is the one promise that queue makes.
+    let _ = talaria_gaps::AUDIENCE.set(Arc::new(|pg, authority| {
+        Box::pin(async move {
+            let d = talaria_approvals::audience_for(&pg, &authority).await;
+            (d.content, d.fact)
+        })
+    }));
+
+    // Home's alert glance. Unset, an admin's Home always answered 0 — and a
+    // zero is indistinguishable from a healthy instance, which is the whole
+    // failure mode `talaria-alerts` exists to prevent.
+    let _ = talaria_home::COMPUTE_ALERT_COUNT.set(Arc::new(|state, user_id| {
+        Box::pin(async move { talaria_alerts::compute_alerts(&state, &user_id).await.len() as i32 })
+    }));
+
+    // The Titler. Unset, `generate_title` returned None on its `?` and nothing
+    // was ever renamed: every chat and plan kept its mechanical first-message
+    // truncation.
+    let _ = talaria_titler::GENERATE_TITLE.set(Arc::new(|state, kind, text| {
+        Box::pin(async move {
+            use talaria_harness_defs::defs::titler as def;
+            let kind = match kind {
+                talaria_titler::TitleKind::Chat => def::TitleKind::Chat,
+                talaria_titler::TitleKind::Plan => def::TitleKind::Plan,
+                talaria_titler::TitleKind::Research => def::TitleKind::Research,
+            };
+            let input = serde_json::json!(def::TitlerInput { kind, text });
+            talaria_harness::run::run_harness(
+                &state,
+                &def::titler_harness(),
+                &input,
+                talaria_harness::run::RunContext {
+                    caller: "platform:titler".into(),
+                    ..talaria_harness::run::RunContext::default()
+                },
+            )
+            .await
+            .ok()
+            .and_then(|r| r.value)
+            // A text harness's value is a `Value::String` (define.rs's
+            // type-erasure states it), so the title is read out of it rather
+            // than off a field.
+            .and_then(|v| v.as_str().map(str::to_string))
+        })
+    }));
+
+    // The skill summarizer. Unset, the line was always None, so nothing was
+    // ever inserted into `skill_summaries` — the catalogue kept whatever it
+    // had on 2026-09-18.
+    let _ = talaria_agent_skills::SUMMARIZE_SKILL.set(Arc::new(|state, md| {
+        Box::pin(async move {
+            let input =
+                serde_json::json!(talaria_harness_defs::defs::summarizer::SummarizerInput { md });
+            talaria_harness::run::run_harness(
+                &state,
+                &talaria_harness_defs::defs::summarizer::summarizer_harness(),
+                &input,
+                talaria_harness::run::RunContext {
+                    caller: "platform:summarizer".into(),
+                    ..talaria_harness::run::RunContext::default()
+                },
+            )
+            .await
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(str::to_string))
+        })
+    }));
+
+    // The push side. Unset, a ticket entering an agent-start column dispatched
+    // NOTHING — the agent was never handed the work.
+    let _ = talaria_tasks_types::MAYBE_DISPATCH_TICKET.set(Arc::new(
+        |pg, dispatch, ticket, only_agents| {
+            Box::pin(async move {
+                // The Option is vestigial: both callers in `talaria-tasks`
+                // already do `let Some(dispatch) = … else { return }` and pass
+                // `&Some(dispatch)`. Unreachable in practice, and a dispatch
+                // with no run assembly has nothing to dispatch WITH, so the
+                // honest answer is to do nothing rather than invent deps.
+                let Some(deps) = dispatch else { return };
+                talaria_work_dispatch::maybe_dispatch_ticket(
+                    &pg,
+                    &deps,
+                    &ticket,
+                    only_agents.as_deref(),
+                )
+                .await;
+            })
+        },
+    ));
+
+    // The task writer every non-engine caller goes through. Unset, it answered
+    // a refusal — "task update is not wired" — rather than writing.
+    let _ = talaria_tasks_types::UPDATE_TASK.set(Arc::new(|deps, id, patch, actor| {
+        Box::pin(async move {
+            // `update_task` answers `Option<Task>` — None is "no such task".
+            // The seam's contract is a `Task`, so the miss becomes a refusal
+            // rather than being flattened into a success nobody can read.
+            match talaria_tasks::update_task(&deps, &id, patch, &actor).await {
+                Ok(Some(t)) => Ok(t),
+                Ok(None) => Err(talaria_tasks_types::TaskError::Refusal(
+                    "no such task".into(),
+                )),
+                Err(e) => Err(e),
+            }
+        })
+    }));
+
+    // The ticket room's fan-out. Unset, an agent's reply in a task room stayed
+    // in the room and never became a ticket comment.
+    let _ = talaria_channel_replies::ROOM_COMMENT_FANOUT.set(Arc::new(
+        |pg, realtime, meta, mid, author, body| {
+            Box::pin(async move {
+                talaria_tasks::room_comment_fanout(&pg, &realtime, &meta, &mid, &author, &body)
+                    .await;
+            })
+        },
+    ));
+
+    // A personal assistant's private-doc sync. Unset, a fresh assistant never
+    // indexed its owner's private docs.
+    let _ = talaria_personal_agent::SYNC_PRIVATE_DOCS.set(Arc::new(|pg, user_id| {
+        Box::pin(async move {
+            // The seam carries only (pg, user_id); the retrieval edges are
+            // this layer's to supply, exactly as every other indexing caller
+            // supplies them.
+            let qd = talaria_retrieval_qdrant::real_deps();
+            let ed = talaria_retrieval_embed::real_deps();
+            let _ = talaria_kb::sync_user_private_docs(&pg, &qd, &ed, &user_id).await;
+        })
+    }));
+
+    // The Workbench's half of the agent toolkit. Unset, `workbench_tools()`
+    // answered an empty list and the toolkit simply did not offer them.
+    let _ = talaria_mcp::WORKBENCH_TOOLS.set(Arc::new(talaria_workbench_mcp::workbench_tools));
+
+    // The attach-chip resolvers, and the ACL is the point: both restore the
+    // pre-extraction read AND its permission check, so a ref to a doc the
+    // reader may not see still resolves to nothing. Unset, every `@`-reference
+    // in a message resolved to nothing at all, which looked identical to
+    // "forbidden" and was not.
+    let _ = talaria_refs::RESOLVE_KB_REF.set(Arc::new(|pg, user_id, author, ref_id| {
+        Box::pin(async move {
+            let doc = talaria_kb::get_doc(&pg, &ref_id).await.ok().flatten()?;
+            let effective = talaria_kb::effective_doc_perms(&pg, &doc).await.ok()?;
+            let team_ids = talaria_teams::team_ids_for_user(&pg, &user_id)
+                .await
+                .unwrap_or_default();
+            if !talaria_kb_perms::can_read(
+                &effective.perms,
+                Some(&user_id),
+                author.as_deref(),
+                &effective.grants,
+                &team_ids,
+            ) {
+                return None;
+            }
+            let filename = if doc.title.is_empty() {
+                "Untitled".to_string()
+            } else {
+                doc.title.clone()
+            };
+            Some((doc.id.clone(), filename, doc.body.clone()))
+        })
+    }));
+    let _ = talaria_refs::RESOLVE_ARTIFACT_REF.set(Arc::new(|pg, user_id, author, ref_id| {
+        Box::pin(async move {
+            let artifact = talaria_artifacts::get_artifact(&pg, &ref_id)
+                .await
+                .ok()
+                .flatten()?;
+            let grants =
+                talaria_kb_perms::list_editors(&pg, talaria_kb_perms::ITEM_ARTIFACT, &artifact.id)
+                    .await
+                    .ok()?;
+            let team_ids = talaria_teams::team_ids_for_user(&pg, &user_id)
+                .await
+                .unwrap_or_default();
+            if !talaria_kb_perms::can_read(
+                &talaria_artifacts::guarded(&artifact),
+                Some(&user_id),
+                author.as_deref(),
+                &grants,
+                &team_ids,
+            ) {
+                return None;
+            }
+            let filename = if artifact.title.is_empty() {
+                "Untitled".to_string()
+            } else {
+                artifact.title.clone()
+            };
+            Some((
+                artifact.id.clone(),
+                filename,
+                talaria_artifacts::artifact_to_markdown(&artifact),
+            ))
+        })
+    }));
+
+    // A plain fn pointer rather than an Arc, so it sets differently — and it
+    // is the reason a prior scan for `.get()` arms missed it. Unset, the
+    // agent's own prior messages carried no reference blocks, so an agent
+    // re-reading a thread lost every `@`-reference it had already been given.
+    let _ = talaria_conversations::REF_BLOCKS.set(talaria_refs::ref_blocks);
     // THE TICKET-THREAD GATE, and it had been dark for sixteen days.
     //
     // `ticket_message_relevant` is the only door between a human message on a
@@ -598,6 +826,64 @@ mod tests {
             talaria_ticket_chat::TICKET_RELEVANT.get().is_some(),
             "the ticket-thread gate fell out of the boot wiring — the assigned agent would reply to every message on every ticket discussion, including people talking to each other"
         );
+
+        // THE REST OF THE EXTRACTION WAVE. The ticket gate above was one of
+        // twelve edges a burst of crate extractions declared between
+        // 2026-09-18 and 2026-09-19 and set none of. One assertion each,
+        // naming what the silence costs, because the `None` arm of every one
+        // is a valid answer and therefore invisible to the compiler.
+        for (edge, cost) in [
+            (
+                talaria_gaps::AUDIENCE.get().is_some(),
+                "the capability-gap audience: a gap is filed and nobody is told",
+            ),
+            (
+                talaria_home::COMPUTE_ALERT_COUNT.get().is_some(),
+                "Home's alert count: an admin's Home always reads 0, which looks like a healthy instance",
+            ),
+            (
+                talaria_titler::GENERATE_TITLE.get().is_some(),
+                "the Titler: every chat and plan keeps its mechanical first-message truncation",
+            ),
+            (
+                talaria_agent_skills::SUMMARIZE_SKILL.get().is_some(),
+                "the skill summarizer: nothing is ever written to skill_summaries",
+            ),
+            (
+                talaria_tasks_types::MAYBE_DISPATCH_TICKET.get().is_some(),
+                "the push side: a ticket entering an agent-start column dispatches nothing",
+            ),
+            (
+                talaria_tasks_types::UPDATE_TASK.get().is_some(),
+                "the task writer: every update through it refuses with 'task update is not wired'",
+            ),
+            (
+                talaria_channel_replies::ROOM_COMMENT_FANOUT.get().is_some(),
+                "the task room's fan-out: an agent's reply never becomes a ticket comment",
+            ),
+            (
+                talaria_personal_agent::SYNC_PRIVATE_DOCS.get().is_some(),
+                "a personal assistant's private-doc sync: a fresh assistant indexes nothing",
+            ),
+            (
+                talaria_mcp::WORKBENCH_TOOLS.get().is_some(),
+                "the Workbench's half of the toolkit: agents are offered an empty tool list",
+            ),
+            (
+                talaria_refs::RESOLVE_KB_REF.get().is_some(),
+                "the KB attach chip: every @-reference to a doc resolves to nothing",
+            ),
+            (
+                talaria_refs::RESOLVE_ARTIFACT_REF.get().is_some(),
+                "the artifact attach chip: every @-reference to an artifact resolves to nothing",
+            ),
+            (
+                talaria_conversations::REF_BLOCKS.get().is_some(),
+                "reference blocks on prior turns: an agent re-reading a thread loses its own refs",
+            ),
+        ] {
+            assert!(edge, "{cost} — the edge fell out of the boot wiring");
+        }
     }
 
     #[test]

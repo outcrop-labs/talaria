@@ -66,6 +66,17 @@ talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-fleet-create = { workspace = true }
+talaria-gaps = { workspace = true }
+talaria-home = { workspace = true }
+talaria-titler = { workspace = true }
+talaria-refs = { workspace = true }
+talaria-channel-replies = { workspace = true }
+talaria-agent-skills = { workspace = true }
+talaria-personal-agent = { workspace = true }
+talaria-alerts = { workspace = true }
+talaria-artifacts = { workspace = true }
+talaria-retrieval-qdrant = { workspace = true }
+talaria-retrieval-embed = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-harness-defs = { workspace = true }

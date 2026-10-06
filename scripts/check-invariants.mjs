@@ -1694,18 +1694,11 @@ const DUPLICATE_BODY_ALLOW = [
 // delete its line — the staleness check below forces that, so the census can
 // only shrink.
 const UNSET_SEAM_CENSUS = [
-  { name: 'AUDIENCE', path: 'api/crates/talaria-gaps/src/lib.rs' },
-  { name: 'COMPUTE_ALERT_COUNT', path: 'api/crates/talaria-home/src/lib.rs' },
-  { name: 'GENERATE_TITLE', path: 'api/crates/talaria-titler/src/lib.rs' },
-  { name: 'MAYBE_DISPATCH_TICKET', path: 'api/crates/talaria-tasks-types/src/lib.rs' },
-  { name: 'REF_BLOCKS', path: 'api/crates/talaria-conversations/src/lib.rs' },
-  { name: 'RESOLVE_ARTIFACT_REF', path: 'api/crates/talaria-refs/src/lib.rs' },
-  { name: 'RESOLVE_KB_REF', path: 'api/crates/talaria-refs/src/lib.rs' },
-  { name: 'ROOM_COMMENT_FANOUT', path: 'api/crates/talaria-channel-replies/src/lib.rs' },
-  { name: 'SUMMARIZE_SKILL', path: 'api/crates/talaria-agent-skills/src/lib.rs' },
-  { name: 'SYNC_PRIVATE_DOCS', path: 'api/crates/talaria-personal-agent/src/lib.rs' },
-  { name: 'UPDATE_TASK', path: 'api/crates/talaria-tasks-types/src/lib.rs' },
-  { name: 'WORKBENCH_TOOLS', path: 'api/crates/talaria-mcp/src/lib.rs' },
+  // EMPTY, AND THAT IS THE POINT. It held twelve entries — every injected
+  // edge a burst of crate extractions on 2026-09-18/19 declared and none of
+  // them set. All twelve are now wired in `register_all` with a boot
+  // assertion each, so the backlog is gone and the rule's only job from here
+  // is to refuse the thirteenth.
 ]
 
 {
