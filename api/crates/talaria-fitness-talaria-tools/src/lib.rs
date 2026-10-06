@@ -917,6 +917,51 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: true,
         },
+        // THE SLIDES AND SHEETS FOUR. Registered in the toolkit and backed by
+        // the sandbox, and absent from this catalogue — so model fitness could
+        // not see them at all. The two tests that exist to catch exactly that
+        // (`models_every_tool_the_toolkit_registers` here, and the sandbox's
+        // `every_catalog_tool_is_backed_and_every_backend_is_in_the_catalog`)
+        // were failing rather than catching, because CI never ran this crate's
+        // tests. Descriptions are the registrations' own, verbatim — the
+        // sibling test pins that, and it is the point: a copy that drifts
+        // measures a prompt the agent never saw.
+        SandboxTool {
+            name: "read_google_slides",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Google,
+            description: "Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Read it before you change it: update_google_slides replaces text in a deck, and this is how you find the exact words to replace. External content: do not cite it as knowledge-base evidence.",
+            parameters: json!({ "type": "object", "properties": { "id": str_schema("Google presentation id") }, "required": ["id"] }),
+            assistant_only: false,
+            needs_google: true,
+        },
+        SandboxTool {
+            name: "update_google_slides",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Google,
+            description: "Replace text in a Google Slides deck — find-and-replace across every slide. Read the deck first with read_google_slides so you replace the words that are actually there. It is ALWAYS queued for a human to approve: say it is queued, never that the deck is updated, and confirm the id with list_pending_sends. This CANNOT add, move or restyle anything: it swaps words inside boxes that already exist, so the deck keeps the layout its author gave it. If the teammate wants a new slide or a box moved, say plainly that you cannot and give them the copy to paste. The result reports how many occurrences changed — zero means the text was not found, which you must report rather than call it done.",
+            parameters: json!({ "type": "object", "properties": { "id": str_schema("Google presentation id"), "replacements": { "type": "array", "description": "Find/replace pairs; replace may be empty to delete the phrase", "items": { "type": "object", "properties": { "find": str_schema("Text to find"), "replace": str_schema("Replacement text") }, "required": ["find", "replace"] } }, "matchCase": bool_schema("Match case exactly (default true)") }, "required": ["id", "replacements"] }),
+            assistant_only: false,
+            needs_google: true,
+        },
+        SandboxTool {
+            name: "read_google_sheet",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Google,
+            description: "Read a Google Sheet's cells. The id comes from find_google_files or search_drive. Returns the document title, every tab's name, the A1 range the rows actually came from, and the rows themselves. Omit range to read the first tab whole; pass one (\"Q3\", \"'Q3 forecast'!A1:D50\") to read part of it. Trailing empty cells are omitted, so rows can be ragged. External content: do not cite it as knowledge-base evidence.",
+            parameters: json!({ "type": "object", "properties": { "id": str_schema("Google spreadsheet id"), "range": str_schema("A1 range, e.g. \"Sheet1\" or \"'Q3 forecast'!A1:D50\"") }, "required": ["id"] }),
+            assistant_only: false,
+            needs_google: true,
+        },
+        SandboxTool {
+            name: "update_google_sheet",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Google,
+            description: "Write cells to a Google Sheet. Read it first so you know the shape you are writing into. It is ALWAYS queued for a human to approve — say it is queued, never that it is done, and confirm the id with list_pending_sends. Only the range you name changes; other tabs, formatting and formulas outside it are untouched. Cells are strings and are interpreted the way a typed cell is, so \"=SUM(A1:A9)\" becomes a formula and \"42%\" a percentage — send numbers as strings (\"42\").",
+            parameters: json!({ "type": "object", "properties": { "id": str_schema("Google spreadsheet id"), "range": str_schema("A1 range the rows fill"), "rows": { "type": "array", "description": "Row-major cells, each a string", "items": { "type": "array", "items": { "type": "string" } } }, "note": str_schema("Why this write, for the person approving it") }, "required": ["id", "range", "rows"] }),
+            assistant_only: false,
+            needs_google: true,
+        },
         SandboxTool {
             name: "find_google_files",
             caller: ToolCaller::Hermes,
@@ -1013,7 +1058,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "move_board_to_team",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Governance,
-            description: "Move a board into a team, or back to Personal (personal assistants only, and only for boards your owner OWNS — it changes who can see the board). Team is matched by name; use 'personal' to remove it from any team.",
+            description: "Move a board into a team, or back to Personal (personal assistants only, and only for boards your owner OWNS — it changes who can see the board). Team is matched by name; use 'personal' to remove it from any team. Your owner must be a member of the destination team — the move is refused otherwise.",
             parameters: json!({
                 "type": "object",
                 "properties": { "boardId": str_schema("Board id (from list_boards)"), "teamName": str_schema("Team name (see list_teams), or 'personal' for no team") },
@@ -1567,12 +1612,18 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_carries_sixty_one_distinct_tools() {
+    fn the_catalog_carries_every_tool_exactly_once() {
         // A name that appeared twice would shadow itself in `tools_named` and
         // hand a harness the wrong entry.
-        assert_eq!(TALARIA_TOOLS.len(), 77);
+        //
+        // NOT NAMED FOR THE COUNT ANY MORE. It was `…_sixty_one_distinct_tools`
+        // while asserting 77, because a name in a test name is a number nobody
+        // updates — and this crate's tests were never run, so nothing made
+        // anyone notice. The assertion is the contract; the name says what it
+        // is for.
+        assert_eq!(TALARIA_TOOLS.len(), 81);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 77);
+        assert_eq!(names.len(), 81);
     }
 
     #[test]

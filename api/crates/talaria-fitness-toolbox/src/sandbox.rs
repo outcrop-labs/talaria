@@ -1306,6 +1306,49 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             }))
         }
 
+        // THE SHEETS PAIR, modelled line for line on their Slides siblings
+        // above. They were registered in the toolkit and had no backend here,
+        // so the three-way invariant this module's own test asserts —
+        // registered ↔ catalogued ↔ backed — could not hold, and that test was
+        // failing rather than catching it.
+        "read_google_sheet" => {
+            google_only(w, "read_google_sheet")?;
+            let id = req_str(&a["id"], "id")?;
+            let Some(file) = w.drive.iter().find(|f| f.id == id) else {
+                return Err(refuse(format!("no Google Sheet {id}")));
+            };
+            // Ragged on purpose: the real tool omits trailing empty cells, and
+            // a fixture that assumes a rectangle should fail here rather than
+            // in production. The range is echoed the way the real read does —
+            // where the rows actually came from, not what was asked for.
+            Ok(json!({
+                "id": file.id,
+                "title": file.name,
+                "tabs": ["Q3 forecast", "Notes"],
+                "range": "'Q3 forecast'!A1:C3",
+                "rows": [
+                    ["Region", "Committed", "Stretch"],
+                    ["EMEA", "412000", "480000"],
+                    ["AMER", "655000"]
+                ],
+            }))
+        }
+
+        "update_google_sheet" => {
+            google_only(w, "update_google_sheet")?;
+            let id = req_str(&a["id"], "id")?;
+            let _range = req_str(&a["range"], "range")?;
+            if !w.drive.iter().any(|f| f.id == id) {
+                return Err(refuse(format!("no Google Sheet {id}")));
+            }
+            // ALWAYS queued, like the Slides update: there is no spreadsheet an
+            // agent owns, so there is no immediate branch to model.
+            Ok(json!({
+                "pending": { "id": format!("sheet-{id}"), "status": "pending", "kind": "sheet_update" },
+                "message": "Queued — waiting for a human to approve before the sheet changes. Do not say this is done.",
+            }))
+        }
+
         "update_google_doc" | "append_google_doc" => {
             google_only(w, "update_google_doc")?;
             let id = req_str(&a["id"], "id")?;
@@ -1784,6 +1827,8 @@ pub const BACKED_TOOLS: &[&str] = &[
     "read_google_doc",
     "read_google_slides",
     "update_google_slides",
+    "read_google_sheet",
+    "update_google_sheet",
     "update_google_doc",
     "append_google_doc",
     "find_google_files",
@@ -2609,6 +2654,56 @@ mod tests {
         assert_eq!(s.world.calendar.len(), 2);
     }
 
+    // THE SHEETS PAIR. These exist because `registry::every_backend_is_exercised_
+    // by_a_test_or_a_harness_surface` demands that a backend be driven by
+    // something — and the alternative it offers, adding the tools to a
+    // harness's dry-run surface, would change what that harness's fixtures
+    // measure. A test here drives the backends without touching anybody's
+    // measurement.
+    //
+    // Keyed off an existing drive id rather than a new spreadsheet row: the
+    // default world's `drive` is what `search_drive` fixtures assert on, and
+    // this backend finds by id without checking the mime type, exactly as the
+    // Slides pair beside it does.
+    #[test]
+    fn reads_a_sheet_as_ragged_rows_and_queues_every_write() {
+        let mut s = sb();
+        let read = s.dispatch("read_google_sheet", r#"{"id":"df-1"}"#);
+        assert!(read.text.contains("Q3 forecast"), "{}", read.text);
+        assert!(read.text.contains("Committed"), "{}", read.text);
+        // Ragged on purpose — the real tool omits trailing empty cells, so a
+        // fixture that assumes a rectangle should fail here, not in production.
+        assert!(read.text.contains("655000"), "{}", read.text);
+
+        let miss = s.dispatch("read_google_sheet", r#"{"id":"nope"}"#);
+        assert!(miss.text.contains("no Google Sheet nope"), "{}", miss.text);
+
+        // ALWAYS queued: there is no spreadsheet an agent owns, so unlike a Doc
+        // there is no immediate branch to model.
+        let write = s.dispatch(
+            "update_google_sheet",
+            r#"{"id":"df-1","range":"'Q3 forecast'!A2:C2","rows":[["EMEA","412000","480000"]]}"#,
+        );
+        assert!(write.text.contains("Queued"), "{}", write.text);
+        assert!(
+            write.text.contains("Do not say this is done"),
+            "{}",
+            write.text
+        );
+
+        s.world.google_connected = false;
+        for (tool, args) in [
+            ("read_google_sheet", r#"{"id":"df-1"}"#),
+            (
+                "update_google_sheet",
+                r#"{"id":"df-1","range":"A1:B2","rows":[["a","b"]]}"#,
+            ),
+        ] {
+            let off = s.dispatch(tool, args);
+            assert!(off.is_error, "{tool}: {}", off.text);
+        }
+    }
+
     #[test]
     fn refuses_all_nine_google_tools_when_no_account_is_connected() {
         let mut s = Sandbox::new(SandboxOptions {
@@ -2991,7 +3086,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            77,
+            81,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

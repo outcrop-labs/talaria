@@ -26,6 +26,7 @@ talaria-workchains = { workspace = true }
 talaria-kb = { workspace = true }
 talaria-kb-perms = { workspace = true }
 talaria-daily-brief = { workspace = true }
+talaria-decide = { workspace = true }
 talaria-google-pending = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-approvals = { workspace = true }

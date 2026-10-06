@@ -35,6 +35,7 @@
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
   import AdminInvitesPanel from './AdminInvitesPanel.svelte'
   import AdminCodingAccountsPanel from './AdminCodingAccountsPanel.svelte'
+  import AdminDecidePanel from './AdminDecidePanel.svelte'
   import AdminJudgePanel from './AdminJudgePanel.svelte'
   import AdminMemberDefaultsPanel from './AdminMemberDefaultsPanel.svelte'
   import AdminOrgGooglePanel from './AdminOrgGooglePanel.svelte'
@@ -122,6 +123,11 @@
         <AdminOrgGooglePanel />
       {/if}
       {#if tab === 'agents'}
+        <!-- The decision-model port leads the tab because the panels under it
+             are among the things that will run on it: the judge's verdict and
+             the guardrail checks are both judgments, and an operator reads
+             "what decides" before "what it decides about". -->
+        <AdminDecidePanel />
         <AdminJudgePanel />
         <AdminCodingAccountsPanel />
         <AdminGuardrailsPanel />

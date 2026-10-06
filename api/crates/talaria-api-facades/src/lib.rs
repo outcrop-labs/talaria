@@ -2,6 +2,7 @@
 // after the modules the route handlers address.
 
 pub mod daily_brief;
+pub mod decide;
 pub mod fitness;
 pub mod fleet;
 pub mod gateway;

@@ -256,6 +256,8 @@ talaria-daily-brief-types = { path = "crates/talaria-daily-brief-types" }
 
 talaria-db = { path = "crates/talaria-db" }
 
+talaria-decide = { path = "crates/talaria-decide" }
+
 talaria-digest = { path = "crates/talaria-digest" }
 
 talaria-effort-prefs = { path = "crates/talaria-effort-prefs" }
@@ -680,6 +682,7 @@ talaria-comms-decay = { workspace = true }
 talaria-config = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-daily-brief = { workspace = true }
+talaria-decide = { workspace = true }
 talaria-daily-brief-comms = { workspace = true }
 talaria-daily-brief-config = { workspace = true }
 talaria-daily-brief-delegation = { workspace = true }
