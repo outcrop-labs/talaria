@@ -398,18 +398,28 @@ pub fn real_work_session_deps(state: AppState) -> WorkSessionDeps {
             Box::pin(real_session_state(pg, task_id, agent_model))
         }),
         board_hint: Arc::new(|pg, board_id| Box::pin(real_board_hint(pg, board_id))),
-        workflows_for_task: Arc::new(|pg, task| {
-            Box::pin(async move {
-                let target = workflows::MatchTarget {
-                    title: &task.title,
-                    description: task.description.as_deref(),
-                    tags: &task.tags,
-                    board_id: &task.board_id,
-                };
-                workflows::workflows_for_task(&pg, &target)
-                    .await
-                    .map_err(|e| e.to_string())
-            })
+        // THE STATE RATHER THAN THE POOL, because the judged pass needs it.
+        // `WorkflowsFn` hands a `PgPool` — enough for the keyword match, not
+        // enough to ask a decision model — so the closure captures the same
+        // `AppState` the struct above holds and the pool argument goes unused.
+        // Widening the fn type instead would touch every fake in the tests for
+        // nothing: the real deps are the only ones that need the port.
+        workflows_for_task: Arc::new({
+            let state = state.clone();
+            move |_pg, task| {
+                let state = state.clone();
+                Box::pin(async move {
+                    let target = workflows::MatchTarget {
+                        title: &task.title,
+                        description: task.description.as_deref(),
+                        tags: &task.tags,
+                        board_id: &task.board_id,
+                    };
+                    workflows::workflows_for_task_judged(&state, &target)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+            }
         }),
         skill_names: Arc::new(|pg, agent_model| Box::pin(real_skill_names(pg, agent_model))),
         turn: Arc::new(|state, agent_model, task_id, prompt, liveness, run_id| {

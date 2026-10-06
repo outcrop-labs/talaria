@@ -5,6 +5,7 @@
 // through untouched — the DB's stored key order is the wire order.
 
 use sqlx::PgPool;
+use std::collections::HashSet;
 
 /// The row as LIST/CREATE serve it — ROW order:
 /// id, name, description, enabled, match, skills, toolkits, env, position.
@@ -263,9 +264,143 @@ pub async fn workflows_for_task(
     Ok(workflows_from(&all, t))
 }
 
+// ── The semantic second pass ─────────────────────────────────────────────────
+//
+// WHAT THE KEYWORD MATCH CANNOT DO. `match_workflow` is substring containment
+// over a case-folded `title\ndescription` haystack. A workflow keyed on
+// "delivery failure" does not pull in on a ticket that says "the webhook
+// retries are flaking", and nobody finds out: the hook silently does not fire,
+// the agent works the ticket without the skills and toolkits it was supposed
+// to get, and the output is merely WORSE rather than wrong. That is the kind
+// of miss a semantic judgment is for.
+//
+// ADDITIVE, AND ONLY ADDITIVE. This runs over the workflows the keyword match
+// did NOT pull in, and can only add to the delivery. It never drops a keyword
+// match, so the worst case is an agent handed a skill it did not need — not an
+// agent missing one it did. The keyword pass remains the whole answer when the
+// port is off, which is the default.
+//
+// ONE REQUEST, ONE NOUL PER CANDIDATE. The ticket is the state; each workflow
+// is a question over it. A provider that cannot fan out would make this N
+// round trips per dispatch, so the port refuses and the keyword answer stands.
+//
+// THE THRESHOLD IS HIGH ON PURPOSE. A workflow carries skills and toolkits
+// into an agent's session, so a weak yes is not worth acting on — and unlike
+// the ticket gate, there is no costed asymmetry pushing it to fail open. The
+// judgments are recorded to the shadow ledger either way, so the number can be
+// chosen from observed traffic rather than kept at a guess.
+const SEMANTIC_FLOOR: f64 = 0.75;
+
+/// Does this judgment act? Pulled out as a predicate so the floor is pinned by
+/// BEHAVIOUR at its boundaries rather than by asserting a literal against
+/// itself — and so the two conditions that gate every decision-port call site
+/// (a real distribution behind the number, and the number clearing the bar)
+/// are read in one place.
+fn acts_on(probability: Option<f64>, calibrated: bool) -> bool {
+    calibrated && probability.is_some_and(|p| p >= SEMANTIC_FLOOR)
+}
+
+/// The description a workflow is judged by. Its own `description` when it has
+/// one, else its name — a hook with neither cannot be judged and is skipped,
+/// because a Noul over an empty string is a coin flip dressed as a decision.
+fn judgeable(w: &Workflow) -> Option<String> {
+    let d = w.description.trim();
+    if !d.is_empty() {
+        return Some(format!("{} — {}", w.name.trim(), d));
+    }
+    let n = w.name.trim();
+    (!n.is_empty()).then(|| n.to_string())
+}
+
+/// The ticket as the judgment sees it. Named fields so a question can point at
+/// them, and the tags included because a workflow keyed on a label the ticket
+/// almost-but-not-quite carries is exactly the near miss being judged.
+fn ticket_subject(t: &MatchTarget<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "title": t.title,
+        "description": t.description.unwrap_or(""),
+        "tags": t.tags,
+    })
+}
+
+/// The deliveries for one ticket: every keyword match, plus any workflow a
+/// decision model says applies despite the keywords missing.
+///
+/// Falls back to exactly `workflows_from` whenever the port has nothing — off
+/// (the default), unconfigured, unable to fan out, or answering below the
+/// floor. A caller that cannot supply `AppState` keeps using
+/// `workflows_for_task`.
+pub async fn workflows_for_task_judged(
+    state: &talaria_state::AppState,
+    t: &MatchTarget<'_>,
+) -> Result<Vec<WorkflowDelivery>, sqlx::Error> {
+    let all = list_workflows(&state.pg).await?;
+    let mut delivered = workflows_from(&all, t);
+
+    // Only the misses, and only the judgeable ones.
+    let matched: HashSet<&str> = delivered.iter().map(|d| d.name.as_str()).collect();
+    let candidates: Vec<(&Workflow, String)> = all
+        .iter()
+        .filter(|w| w.enabled && !matched.contains(w.name.as_str()))
+        .filter_map(|w| judgeable(w).map(|d| (w, d)))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(delivered);
+    }
+
+    let subject = ticket_subject(t);
+    let mut ask = talaria_decide::Ask::new(subject);
+    for (w, desc) in &candidates {
+        ask = ask.q(
+            w.id.clone(),
+            talaria_decide::Question::noul_meaning(
+                format!(
+                    "Does the workflow described below apply to this ticket? THE WORKFLOW: {desc}"
+                ),
+                "the ticket is the kind of work this workflow exists to shape — an agent picking it up would want the skills and toolkits the workflow carries",
+                "the ticket is unrelated to this workflow, or only shares vocabulary with it",
+            ),
+        );
+    }
+
+    let http = talaria_retrieval_http::real_http();
+    let Some(answers) = talaria_decide::decide(state, &http, &ask).await else {
+        return Ok(delivered);
+    };
+
+    for (w, _) in &candidates {
+        let Some(j) = answers.get(&w.id) else {
+            continue;
+        };
+        // Every judgment is recorded, not only the ones that act — an
+        // agreement rate computed over the acted-on half is not one.
+        talaria_decide::shadow::record(
+            &state.pg,
+            &talaria_decide::shadow::Compare {
+                site: "workflow-match",
+                subject_ref: Some(w.name.clone()),
+                // The keyword pass said no about every candidate here; that is
+                // what makes them candidates.
+                baseline: "false".to_string(),
+                agrees: talaria_decide::shadow::noul_agrees,
+            },
+            Some(j),
+        )
+        .await;
+        if acts_on(j.answer.probability(), j.calibrated) {
+            delivered.push(WorkflowDelivery {
+                name: w.name.clone(),
+                skills: w.skills.clone(),
+                toolkits: w.toolkits.clone(),
+            });
+        }
+    }
+    Ok(delivered)
+}
+
 // ── The routing map ──────────────────────────────────────────────────────────
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// The skill-name grammar — a directory under a skills root is a skill only
@@ -476,6 +611,66 @@ mod tests {
 
     fn strs(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_hook_with_neither_name_nor_description_is_not_judgeable() {
+        // A Noul over an empty string is a coin flip dressed as a decision, so
+        // a hook with nothing to judge is skipped rather than asked about.
+        let mut w = hook(true, json!({ "keywords": ["x"] }));
+        w.name = "  ".into();
+        w.description = String::new();
+        assert_eq!(judgeable(&w), None);
+    }
+
+    #[test]
+    fn a_judgeable_hook_leads_with_its_name_then_its_description() {
+        let mut w = hook(true, json!({ "keywords": ["x"] }));
+        w.name = "Webhook triage".into();
+        w.description = "Retries, dead letters, and delivery failures.".into();
+        assert_eq!(
+            judgeable(&w).as_deref(),
+            Some("Webhook triage — Retries, dead letters, and delivery failures.")
+        );
+        // Name alone still judges: a hook whose name IS its description is
+        // common, and skipping it would silently narrow the second pass.
+        w.description = String::new();
+        assert_eq!(judgeable(&w).as_deref(), Some("Webhook triage"));
+    }
+
+    #[test]
+    fn the_judged_subject_carries_the_tags_because_a_near_miss_label_is_the_point() {
+        let tags = strs(&["webhooks", "p1"]);
+        let t = target(
+            "Retries are flaking",
+            Some("Dead letters piling up"),
+            &tags,
+            "b-1",
+        );
+        let s = ticket_subject(&t);
+        assert_eq!(s["title"], json!("Retries are flaking"));
+        assert_eq!(s["description"], json!("Dead letters piling up"));
+        assert_eq!(s["tags"], json!(["webhooks", "p1"]));
+        // An absent description is "" rather than null: the question reads it
+        // as text, and null would read as a different kind of absence.
+        let none = target("x", None, &[], "b-1");
+        assert_eq!(ticket_subject(&none)["description"], json!(""));
+    }
+
+    #[test]
+    fn only_a_confident_calibrated_yes_pulls_a_workflow_in() {
+        // Unlike the ticket gate there is no costed asymmetry pushing this to
+        // fail open: a workflow carries skills and toolkits into an agent's
+        // session, so a weak yes must not act.
+        assert!(acts_on(Some(0.75), true), "at the floor");
+        assert!(acts_on(Some(0.99), true));
+        assert!(!acts_on(Some(0.74), true), "just under");
+        assert!(!acts_on(Some(0.60), true), "a lean is not enough here");
+        // A fabricated confidence must never act, however high it reads —
+        // the same rule every other call site on this port holds.
+        assert!(!acts_on(Some(0.99), false), "uncalibrated never acts");
+        // And a non-noul answer has no probability to weigh.
+        assert!(!acts_on(None, true));
     }
 
     #[test]
