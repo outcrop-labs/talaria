@@ -2050,7 +2050,7 @@ pub async fn estimate_adversarial(
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use talaria_gateway::guard::{rule_ids, rule_severities};
+    use talaria_gateway::guard::{rule_ids, rule_severities, structural_rule_ids};
     use talaria_harness::transport::TransportReply;
 
     // ── Recorded generations ──────────────────────────────────────────────────
@@ -2291,7 +2291,7 @@ mod tests {
         // here until a seed for it exists, which is the cheapest possible
         // enforcement.
         let targeted: HashSet<&str> = SEEDS.iter().map(|s| s.target.as_str()).collect();
-        let untargeted: Vec<&str> = rule_ids()
+        let untargeted: Vec<&str> = structural_rule_ids()
             .into_iter()
             .filter(|id| !targeted.contains(id))
             .collect();
@@ -3077,7 +3077,10 @@ mod tests {
         // And the per-rule table names WHICH behaviors, which is what an admin
         // acts on — a band alone is not a finding.
         let mut scored: Vec<&str> = report.rules.iter().map(|r| r.rule.as_str()).collect();
-        let mut registry = rule_ids();
+        // The STRUCTURAL subset: this tier scores by running the real rules
+        // over a recorded reply with no model in the loop, so a judged rule
+        // has no seed and no row here. See `structural_rule_ids`.
+        let mut registry = structural_rule_ids();
         scored.sort_unstable();
         registry.sort_unstable();
         assert_eq!(scored, registry);

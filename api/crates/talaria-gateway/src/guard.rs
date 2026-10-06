@@ -818,6 +818,15 @@ struct RuleDef {
     groundable: Option<Groundable>,
     gate_safe: bool,
     needs: &'static [Need],
+    /// JUDGED, NOT MATCHED. A semantic rule has no regex and no `run_rule`
+    /// arm: it is answered by the decision port (talaria-decide), which this
+    /// crate cannot call — talaria-decide depends on it, so the call lives at
+    /// the route that already runs the structural pass. `run_guardrails`
+    /// skips these explicitly rather than relying on `run_rule`'s catch-all,
+    /// so a rule that forgot its evaluator fails loudly instead of silently
+    /// never firing — which is the shape of bug this whole file is scar
+    /// tissue from.
+    semantic: bool,
 }
 
 const RULES: &[RuleDef] = &[
@@ -828,6 +837,7 @@ const RULES: &[RuleDef] = &[
         groundable: None,
         gate_safe: false,
         needs: &[],
+        semantic: false,
     },
     RuleDef {
         id: "ungrounded_ref",
@@ -836,6 +846,7 @@ const RULES: &[RuleDef] = &[
         groundable: None,
         gate_safe: false,
         needs: &[Need::Results],
+        semantic: false,
     },
     RuleDef {
         id: "fabricated_outage",
@@ -844,6 +855,7 @@ const RULES: &[RuleDef] = &[
         groundable: None,
         gate_safe: false,
         needs: &[Need::ErrorInfo],
+        semantic: false,
     },
     RuleDef {
         id: "secret_leak",
@@ -852,6 +864,7 @@ const RULES: &[RuleDef] = &[
         groundable: Some(Groundable::Finding),
         gate_safe: true,
         needs: &[],
+        semantic: false,
     },
     RuleDef {
         id: "pii_leak",
@@ -860,6 +873,36 @@ const RULES: &[RuleDef] = &[
         groundable: Some(Groundable::FindingAndRedaction),
         gate_safe: true,
         needs: &[],
+        semantic: false,
+    },
+    // THE FIRST RULE THAT IS JUDGED RATHER THAN MATCHED, and the one the five
+    // above structurally cannot reach. `zero_tool_claim` fires on a CLAIM
+    // PHRASING — a shape — so a reply that says "the key is rotated and the
+    // deploy is clean" without ever using a claim verb walks straight past it.
+    // The question "does this reply imply an action completed that nothing in
+    // the turn's tool record did?" is about meaning, and no regex answers it.
+    //
+    // DEFAULT OFF, MEDIUM, AND OBSERVE-ONLY BY CONSTRUCTION. Off because an
+    // operator opts into sending completion text to a decision model knowingly.
+    // Medium rather than high so it stays out of `HIGH_SEVERITY_RULES`, which
+    // the fitness band rule reads to FAIL models — a rule whose false-positive
+    // rate nobody has measured must not start condemning models. And the
+    // evaluator runs detached, after the reply has been returned, so it can
+    // record a finding but can never annotate or redact: the measurement
+    // cannot change the answer it is measuring.
+    RuleDef {
+        id: "implied_completion",
+        severity: "medium",
+        default_on: false,
+        groundable: None,
+        gate_safe: false,
+        // EMPTY, and not because the judgment needs no evidence. `needs` gates
+        // the STRUCTURAL pass on what its `Available` says it was handed; the
+        // semantic pass is not run from there and supplies its own state (the
+        // reply plus the turn's tool names), so a `Need` here would be a
+        // declaration nothing reads.
+        needs: &[],
+        semantic: true,
     },
 ];
 
@@ -996,6 +1039,11 @@ pub fn run_guardrails(
     }
     RULES
         .iter()
+        // Semantic rules have no `run_rule` arm — see `RuleDef.semantic`.
+        // Skipped here by DECLARATION rather than by falling through the
+        // match's catch-all, so a structural rule that forgot its evaluator
+        // still fails loudly.
+        .filter(|r| !r.semantic)
         .filter(|r| rule_enabled(config, r))
         .filter(|r| {
             r.needs.iter().all(|n| match n {
@@ -1032,6 +1080,26 @@ fn rule_enabled(config: &GuardConfig, rule: &RuleDef) -> bool {
 /// needs the live ids, not a copy that could drift from `RULES`.
 pub fn rule_ids() -> Vec<&'static str> {
     RULES.iter().map(|r| r.id).collect()
+}
+
+/// The rules the STRUCTURAL pass can actually run — `rule_ids()` minus the
+/// judged ones.
+///
+/// ITS ONE CONSUMER IS THE ADVERSARIAL TIER, and the reason is worth stating
+/// where the subset is defined. Tier 3 scores a model by running the real
+/// rules over a recorded reply with no model, no gateway and no database in
+/// the loop. A semantic rule cannot be scored that way: `run_guardrails`
+/// skips it, so `rule_fired` is always false, and a seed targeting one would
+/// report EVERY model as perfectly resistant to it — the precise false-clean
+/// that tier's own header warns against. The escape hatch (a seed's own
+/// `fell` predicate) is worse: writing one means writing the matcher whose
+/// non-existence is the rule's entire reason for being.
+///
+/// So semantic rules are measured where a model exists — observed on real
+/// traffic through `guard_findings`, grouped by `check_type` — and the
+/// corpus covers the rules it can honestly score.
+pub fn structural_rule_ids() -> Vec<&'static str> {
+    RULES.iter().filter(|r| !r.semantic).map(|r| r.id).collect()
 }
 
 /// Every rule id WITH its severity. The fitness adversarial tier's band rule
