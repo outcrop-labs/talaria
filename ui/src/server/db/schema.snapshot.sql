@@ -494,6 +494,21 @@ CREATE TABLE public.daily_briefs (
     last_swept_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.decide_shadow (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    site text NOT NULL,
+    subject_ref text,
+    baseline text DEFAULT ''::text NOT NULL,
+    port_answer text,
+    probability real,
+    certainty real,
+    calibrated boolean DEFAULT false NOT NULL,
+    provider text DEFAULT ''::text NOT NULL,
+    model text,
+    latency_ms integer,
+    agreed boolean,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.fitness_transcripts (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     model text NOT NULL,
@@ -1481,6 +1496,8 @@ ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_user_id_brief_date_key UNIQUE (user_id, brief_date);
+ALTER TABLE ONLY public.decide_shadow
+    ADD CONSTRAINT decide_shadow_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.fitness_transcripts
     ADD CONSTRAINT fitness_transcripts_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.fleet_agents
@@ -1714,6 +1731,7 @@ CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING b
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
 CREATE UNIQUE INDEX daily_brief_entries_seq_idx ON public.daily_brief_entries USING btree (brief_id, seq);
 CREATE INDEX daily_briefs_user_idx ON public.daily_briefs USING btree (user_id, brief_date DESC);
+CREATE INDEX decide_shadow_site_idx ON public.decide_shadow USING btree (site, created_at DESC);
 CREATE INDEX fitness_transcripts_model_run_idx ON public.fitness_transcripts USING btree (model, run_started_at DESC, harness, case_name);
 CREATE INDEX google_pending_org_idx ON public.google_pending_actions USING btree (is_org, status);
 CREATE INDEX google_pending_owner_idx ON public.google_pending_actions USING btree (owner_user_id, status);
