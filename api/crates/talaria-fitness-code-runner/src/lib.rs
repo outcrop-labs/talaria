@@ -15,9 +15,9 @@
 //
 // THE TIMEOUT LIVES ON A THREAD, because boa has no wall-clock kill. The whole
 // task — definition plus every assertion — is evaluated inside one spawned
-// thread and the caller waits 250ms for its answer, counted from the moment
-// the engine is built (construction is our cost; the window times the
-// candidate's code). A wrong `while (true) {}` costs its 250ms and no more;
+// thread and the caller waits CODE_TIMEOUT_MS for its answer, counted from the
+// moment the engine is built (construction is our cost; the window times the
+// candidate's code). A wrong `while (true) {}` costs that window and no more;
 // the leaked thread is reaped shortly after by the runtime limits below, so a
 // run cannot shed unbounded threads the way a run without limits could.
 //
@@ -165,14 +165,30 @@ fn same_value(a: &Value, b: &Value) -> bool {
 /// build eats the window must fail the host, not a correct solution (CI's
 /// loaded runners proved the failure mode is real).
 ///
-/// A wrong regex loop is an ordinary small-model failure and it has to cost
-/// 250ms, not a wedged admin request. That is only true if the calls happen
+/// A wrong regex loop is an ordinary small-model failure and it has to cost a
+/// moment, not a wedged admin request. That is only true if the calls happen
 /// INSIDE the timed region: the timeout below covers the evaluation of the
 /// whole script and nothing else, so pulling the function out and calling it
 /// afterwards puts an unbounded `while (true) {}` on the host's stack with no
 /// timeout anywhere near it. Written down because the obvious shape of this
 /// function is the broken one.
-pub const CODE_TIMEOUT_MS: u64 = 250;
+///
+/// WHY TWO SECONDS AND NOT 250ms, which is what this was. The two failures are
+/// not symmetric. Too LOOSE costs a spinning candidate a little more wall
+/// clock before it is cut — and the clock is not even what bounds runaway
+/// work: `LOOP_ITERATION_LIMIT` and `RECURSION_LIMIT` below are, and they reap
+/// the thread regardless. Too TIGHT reports a CORRECT model as one whose code
+/// "did not run", on a fitness page an admin uses to choose which model to
+/// trust — a false negative that reads as a property of the model and is
+/// actually a property of how busy the box was.
+///
+/// 250ms was ample for these functions on an idle machine and provably not on
+/// a loaded one: a shared CI runner blew past it evaluating `slugify`, which
+/// is five lines. An instance grading a sweep while serving traffic is the
+/// same machine. Two seconds is three orders of magnitude more than a correct
+/// solution needs and still cuts a genuine infinite loop long before anybody
+/// notices, which is the whole range a budget here has to cover.
+pub const CODE_TIMEOUT_MS: u64 = 2_000;
 
 /// The loop and recursion ceilings for the evaluating thread. These are NOT the
 /// timeout — they are what reaps a thread whose timeout already fired, so a run
@@ -297,18 +313,17 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
 
 /// The same grading under an explicit wall-clock budget.
 ///
-/// WHY THIS EXISTS. `CODE_TIMEOUT_MS` is a PRODUCT value: it bounds how long a
-/// candidate's code may run while the fitness suite grades a model, and 250ms
-/// is five orders of headroom for the kind of function these tasks ask for —
-/// on a machine that is not doing anything else. A shared CI runner is not
-/// that machine, and three of this module's own tests began failing with
-/// "Script execution timed out after 250ms" the moment CI started running
-/// them (#517): a wall-clock budget is the one thing a unit test must never
-/// inherit from production, because the test is about whether the GRADING is
-/// right and the budget decides whether it got the chance to be.
+/// WHY THIS EXISTS. `CODE_TIMEOUT_MS` is a PRODUCT value — it bounds how long
+/// a candidate's code may run while the fitness suite grades a model — and a
+/// unit test must never inherit one. Three of this module's own tests began
+/// failing with "Script execution timed out after 250ms" the moment CI started
+/// running them (#517), because the test is about whether the GRADING is right
+/// and a wall clock decides whether it got the chance to be.
 ///
-/// So the tests grade under a generous budget and the timeout keeps its own
-/// test. Production still calls `run_code_task` and still gets 250ms.
+/// Raising the product budget (which that incident also prompted) does not
+/// remove the need for this: it moves the number at which a loaded host starts
+/// reporting correct models as broken, it does not abolish it. The grading
+/// tests stay on a budget chosen for THEM, and the timeout keeps its own test.
 pub fn run_code_task_within(task: &CodeTask, raw: &str, budget_ms: u64) -> Option<String> {
     let src = extract_code(raw);
     if src.trim().is_empty() {
@@ -483,13 +498,18 @@ mod tests {
 
     #[test]
     fn survives_an_infinite_loop_at_the_cost_of_a_timeout_not_a_wedged_request() {
+        // THE PRODUCTION BUDGET on purpose — this test is about what a real
+        // sweep costs when a model hands it a spin, so it must not borrow the
+        // generous one the grading tests use. It is fast anyway: the loop
+        // ceiling reaps a bodiless `while (true)` well before any clock, which
+        // is the point of having both.
         let started = std::time::Instant::now();
-        let spin = graded(slugify(), "function slugify(input) { while (true) {} }")
+        let spin = run_code_task(slugify(), "function slugify(input) { while (true) {} }")
             .expect("the spin fails");
         assert!(spin.contains("did not run"), "got: {spin}");
         assert!(
-            started.elapsed() < Duration::from_millis(2_000),
-            "a timeout costs its 250ms, not a hang"
+            started.elapsed() < Duration::from_millis(CODE_TIMEOUT_MS * 4),
+            "a spin costs its window, not a hang"
         );
     }
 

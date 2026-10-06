@@ -28,12 +28,29 @@
   marginal timing budget presents, and why it would have gone on intermittently
   blocking unrelated pull requests.
 
-  Worth a separate look, not changed here: 250ms may be tight for *production*
-  too. The fitness suite grades candidate code on whatever machine the instance
-  runs on, and a loaded box could fail a correct model for the same reason CI
-  did. That is a product decision about how long a graded candidate may think,
-  so it should be made deliberately rather than as a side effect of fixing a
-  test.
+  **And the production budget moves too: 250ms → 2s.** The two failures are not
+  symmetric. Too loose costs a spinning candidate a little more wall clock
+  before it is cut — and the clock is not even what bounds runaway work, since
+  `LOOP_ITERATION_LIMIT` and `RECURSION_LIMIT` reap the thread regardless. Too
+  tight reports a **correct** model as one whose code "did not run", on a
+  fitness page an admin uses to decide which model to trust — a false negative
+  that reads as a property of the model and is actually a property of how busy
+  the box was. 250ms was ample on an idle machine and provably not on a loaded
+  one; an instance grading a sweep while serving traffic is the same kind of
+  machine CI is. Two seconds is three orders of magnitude more than a correct
+  solution needs and still cuts a genuine infinite loop long before anyone
+  notices.
+
+  Raising it does not remove the need for the test budget: it moves the number
+  at which a loaded host starts reporting correct models as broken, it does not
+  abolish it.
+
+  One thing the change itself caught: `survives_an_infinite_loop_…` had been
+  swept onto the generous budget by a mechanical rename, which quietly turned a
+  test *about the production window* into one about the test window — and its
+  message still claimed "250ms". It is back on `run_code_task`, asserts against
+  `CODE_TIMEOUT_MS` rather than a literal, and the module header no longer
+  quotes a number that can drift from the constant.
 
   Verified: `cargo test -p talaria-fitness-code-runner` 11 passed (was 10 —
   the new timeout test is the extra); the three previously-failing cases now
