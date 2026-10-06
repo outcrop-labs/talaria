@@ -34,7 +34,16 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
     await ctx.run('bun', ['install'], { cwd: join(ctx.root, 'mcp') })
   }
   const dist = join(ctx.root, 'mcp/dist/index.js')
-  const stale = !existsSync(dist) || anyNewer(join(ctx.root, 'mcp/src'), dist)
+  // PRESENT and STALE are different failures, and the old message conflated
+  // them into one `die`. A dist that exists and is merely out of date still
+  // SERVES: the api spawns it, agents get the previous build's tools, and the
+  // worst case is tool descriptions that lag mcp/src — annoying, not fatal,
+  // and not a reason to refuse to bring up a stack somebody is using to work
+  // on something else entirely. A dist that is ABSENT serves nothing, so the
+  // toolkit is simply gone and a stack that came up anyway would hand every
+  // agent an empty tool list and look like a product bug.
+  const present = existsSync(dist)
+  const stale = !present || anyNewer(join(ctx.root, 'mcp/src'), dist)
   if (!stale) {
     if (!opts.quietWhenFresh) ctx.log.say('toolkit MCP — mcp/dist up to date')
     return
@@ -42,10 +51,17 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
   ctx.log.say('toolkit MCP → mcp/dist')
   const code = await ctx.run('bun', ['run', 'build'], { cwd: join(ctx.root, 'mcp') })
   if (code !== 0) {
-    ctx.log.die(
-      'mcp/ failed to build — mcp/dist is now STALE or missing and the fleet toolkit will ' +
-        'serve the old build (or nothing at all). Fix mcp/src, or re-run with ' +
-        'TALARIA_SKIP_MCP_BUILD=1 if you meant to leave it.',
+    if (!present) {
+      ctx.log.die(
+        'mcp/ failed to build and mcp/dist does not exist — the fleet toolkit would serve ' +
+          'NOTHING, so every agent would come up with an empty tool list. Fix mcp/src, or ' +
+          're-run with TALARIA_SKIP_MCP_BUILD=1 if you meant to leave it.',
+      )
+    }
+    ctx.log.warn(
+      'mcp/ failed to build — mcp/dist is STALE, so the fleet toolkit keeps serving the ' +
+        'PREVIOUS build: agents may see tool descriptions and auth that lag mcp/src. ' +
+        'Carrying on; fix mcp/src and re-run to pick it up.',
     )
   }
 }
