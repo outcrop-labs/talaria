@@ -145,6 +145,17 @@ pub async fn post(
     }
 
     let deps = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+    // WORK-SHAPE ALIGNMENT, resolved here because `NotifyDeps` carries a pool
+    // and nothing more while asking a decision model needs `AppState`. `None`
+    // — the default, and every way the port can have nothing — files under the
+    // report's own slug exactly as this always has.
+    let aligned = talaria_gaps::aligned_signature(
+        &state,
+        task.as_ref().map(|t| t.board_id.as_str()),
+        &kind,
+        &missing,
+    )
+    .await;
     let gap = match report_gap(
         &deps,
         GapInput {
@@ -154,6 +165,7 @@ pub async fn post(
             needs: needs.as_deref(),
             board_id: task.as_ref().map(|t| t.board_id.as_str()),
             task_id: task.as_ref().map(|t| t.id.as_str()),
+            signature: aligned.as_deref(),
         },
     )
     .await
