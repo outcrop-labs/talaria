@@ -12,6 +12,17 @@ export interface MessageCtx {
   isChannelOwner: boolean
   labelFor: (model: string) => string
   userLabel: (author: string) => string
+  /** The author's photo URL (users: the directory's effective picture, matched
+   *  by email), or null for the initials fallback. */
+  pictureFor: (author: string, authorType: string) => string | null
+  /** The viewer's display name + email local part — their @mentions render in
+   *  the stronger self-mention style (Markdown `selfMentions`). */
+  selfMentions: string[]
+  /** IANA zone for date dividers (profile preference), else the browser's. */
+  timeZone?: string | null
+  /** Set when the host can show a profile (Comms' drawer): the author's name
+   *  and avatar become buttons. Users arrive by email, agents by model. */
+  onOpenProfile?: (author: string, authorType: 'user' | 'agent') => void
 }
 
 export const actorLabel = (ctx: MessageCtx, actor: string, actorType: string) =>
@@ -48,5 +59,12 @@ export function rowMenuEntries(m: ChannelMessage, ctx: MessageCtx, openThread: (
   ]
 }
 
-// A quick-react palette, not an emoji browser — Slack-lite on purpose.
-export const REACTION_SET = ['👍', '✅', '👀', '🎉', '❤️', '😂', '🚀', '🙏']
+/** A thread's participants (emails or agent models) as rollup avatars —
+ *  at most `max`, in the order the server lists them. Agent models are any
+ *  author not shaped like an email. */
+export function threadAvatars(ctx: MessageCtx, authors: readonly string[], max = 3) {
+  return authors.slice(0, max).map((a) => {
+    const type = a.includes('@') ? 'user' : 'agent'
+    return { key: a, name: actorLabel(ctx, a, type), src: ctx.pictureFor(a, type) }
+  })
+}

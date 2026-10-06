@@ -50,6 +50,7 @@ talaria-teams = { workspace = true }
 talaria-ticket-chat = { workspace = true }
 talaria-titler = { workspace = true }
 talaria-uploads = { workspace = true }
+talaria-users = { workspace = true }
 talaria-workspace-handles = { workspace = true }
 talaria-yaml = { workspace = true }
 axum = { workspace = true }

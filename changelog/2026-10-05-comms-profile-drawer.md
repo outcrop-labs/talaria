@@ -1,0 +1,9 @@
+- **Click a name in Comms to see who it is.**
+  - **Profile drawer:** clicking a message author's name or avatar (in a channel, DM, relay or thread), or the name in a DM header, opens a drawer on the right. It shows their photo, name, title, Active/Away, status, local time, a Message button, their email address, and the three most recent conversations you share with them. Agents get the same drawer with their role, and Message starts a new thread with them. Esc or × closes it.
+  - **All conversations with someone:** "See all conversations with Maya" opens `/comms/with/person/<id>` (or `/comms/with/agent/<model>`). It lists every DM, channel and relay you share with that person, and for an agent your own threads with it, newest first and with unread counts.
+  - **Title:** Settings → Profile has a Title field ("Product designer"), shown under your name in the drawer.
+  - **API:** `users.title`; `PUT /api/me` accepts `title`; `GET /api/me` and `GET /api/users` return it (the directory also returns `timezone`); new `GET /api/users/{id}/conversations` and `GET /api/agents/{id}/conversations`.
+  - **Verified:**
+    - ui vitest (all) and svelte-check: 0 errors.
+    - cargo fmt, clippy `-D warnings` and tests for the five touched crates.
+    - 3 new live API tests passed against a freshly migrated Postgres + Redis.

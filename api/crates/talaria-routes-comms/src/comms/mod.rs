@@ -1,4 +1,5 @@
 // Channels, messages, reactions, plans, DMs, chat and conversations.
+pub mod agents_id_conversations;
 pub mod channels;
 pub mod channels_id;
 pub mod channels_id_agents;
@@ -11,14 +12,19 @@ pub mod channels_id_messages_msgid_reactions;
 pub mod channels_id_plan;
 pub mod channels_id_read;
 pub mod channels_id_teams;
+pub mod channels_id_typing;
 pub mod chat;
 pub mod chips;
 pub mod chips_approvals_id;
 pub mod chips_expose;
 pub mod conversations;
 pub mod conversations_id;
+pub mod conversations_id_messages_msgid_reactions;
 pub mod conversations_id_read;
 pub mod dms;
+pub mod me_sent;
+pub mod me_threads;
+pub mod users_id_conversations;
 
 use talaria_channels::channel_role;
 use talaria_state::AppState;

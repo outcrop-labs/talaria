@@ -31,6 +31,16 @@ import { viewMemory } from './view-memory'
 export type CommsSelection =
   | { t: 'channel'; id: string }
   | { t: 'agent'; model: string; conversationId: string | null }
+  // The sidebar's two cross-conversation views. They hang off no roster, so
+  // they are always restorable.
+  | { t: 'threads' }
+  | { t: 'drafts' }
+  // The "New message" pane: pick people and/or agents, then send.
+  | { t: 'new' }
+  // Every conversation you share with one person or agent (the profile
+  // drawer's "See all conversations"). Hangs off no roster either: the view
+  // answers for a subject that is gone.
+  | { t: 'with'; kind: 'person' | 'agent'; id: string }
 
 function parse(raw: unknown): CommsSelection | null {
   if (!raw || typeof raw !== 'object') return null
@@ -39,13 +49,25 @@ function parse(raw: unknown): CommsSelection | null {
   if (v.t === 'agent' && typeof v.model === 'string' && v.model) {
     return { t: 'agent', model: v.model, conversationId: typeof v.x === 'string' && v.x ? v.x : null }
   }
+  if (v.t === 'threads') return { t: 'threads' }
+  if (v.t === 'drafts') return { t: 'drafts' }
+  if (v.t === 'new') return { t: 'new' }
+  if (v.t === 'with' && (v.kind === 'person' || v.kind === 'agent') && typeof v.id === 'string' && v.id) {
+    return { t: 'with', kind: v.kind, id: v.id }
+  }
   return null
 }
 
 // `x` rather than `conversationId` in storage is the existing on-disk shape;
 // keep it, or every open tab's memory is silently discarded on upgrade.
 const memory = viewMemory<CommsSelection>('talaria:comms-selection', parse, (sel) =>
-  sel.t === 'channel' ? { t: 'channel', id: sel.id } : { t: 'agent', model: sel.model, x: sel.conversationId },
+  sel.t === 'channel'
+    ? { t: 'channel', id: sel.id }
+    : sel.t === 'agent'
+      ? { t: 'agent', model: sel.model, x: sel.conversationId }
+      : sel.t === 'with'
+        ? { t: 'with', kind: sel.kind, id: sel.id }
+        : { t: sel.t },
 )
 
 export function readCommsSelection(): CommsSelection | null {
@@ -74,6 +96,7 @@ export function restorableSelection(
   rosters: { channelIds: string[]; agentModels: string[]; conversationIds: string[] | null },
 ): CommsSelection | null {
   if (!saved) return null
+  if (saved.t === 'threads' || saved.t === 'drafts' || saved.t === 'with' || saved.t === 'new') return saved
   if (saved.t === 'channel') return rosters.channelIds.includes(saved.id) ? saved : null
   if (!rosters.agentModels.includes(saved.model)) return null
   if (saved.conversationId && rosters.conversationIds && !rosters.conversationIds.includes(saved.conversationId)) {
@@ -111,6 +134,9 @@ export function isCommsPath(pathname: string): boolean {
  *
  *   /comms/channel/<id>
  *   /comms/agent/<model>[/<thread>]
+ *   /comms/threads, /comms/drafts   (the sidebar's two views)
+ *   /comms/new                      (a new message to anyone)
+ *   /comms/with/<person|agent>/<id> (every conversation shared with someone)
  *
  * The `/comms` base check is load-bearing rather than defensive: without it any
  * path whose second segment reads `channel` or `agent` parses as a Comms
@@ -119,6 +145,10 @@ export function isCommsPath(pathname: string): boolean {
 export function commsSelectionFromPath(pathname: string): CommsSelection | null {
   if (!isCommsPath(pathname)) return null
   const [, , kind, one, two] = pathname.split('/')
+  if (kind === 'threads' || kind === 'drafts' || kind === 'new') return { t: kind }
+  if (kind === 'with' && (one === 'person' || one === 'agent') && two) {
+    return { t: 'with', kind: one, id: decodeURIComponent(two) }
+  }
   if (kind === 'channel' && one) return { t: 'channel', id: decodeURIComponent(one) }
   if (kind === 'agent' && one) {
     return { t: 'agent', model: decodeURIComponent(one), conversationId: two ? decodeURIComponent(two) : null }

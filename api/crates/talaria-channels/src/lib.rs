@@ -212,6 +212,12 @@ pub struct MemberChannel {
     pub updated_at: String,
     pub unread_count: i32,
     pub peer: Option<ChannelPeer>,
+    /// DMs only: everyone else in it (a group DM's label and avatars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<ChannelPeer>>,
+    /// DMs only: the agents seated in it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<String>>,
 }
 
 /// The agent listing and the elevated view — the bare channel columns.
@@ -278,6 +284,8 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
         Option<String>,
         Option<String>,
         i32,
+        Option<String>,
+        Option<Vec<String>>,
     );
     let rows: Vec<MemberRow> = sqlx::query_as(
         "select c.id::text, c.name, c.topic, c.kind, coalesce(m.role, 'member'), \
@@ -288,11 +296,25 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
                  and msg.status = 'complete' \
                  and not (msg.author_type = 'user' \
-                   and msg.author = coalesce(self.email, self.name, 'user'))) \
+                   and msg.author = coalesce(self.email, self.name, 'user'))), \
+             case when c.kind = 'dm' then ( \
+               select coalesce(json_agg(json_build_object( \
+                   'userId', ou.id::text, 'name', ou.name, 'email', ou.email) \
+                   order by coalesce(ou.name, ou.email)), '[]')::text \
+               from channel_members om join users ou on ou.id = om.user_id \
+               where om.channel_id = c.id and om.user_id <> $1::uuid) end, \
+             case when c.kind = 'dm' then array( \
+               select ca.agent_model from channel_agents ca \
+               where ca.channel_id = c.id order by ca.agent_model) end \
          from channels c \
          left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
          join users self on self.id = $1::uuid \
-         left join channel_members p on c.kind = 'dm' and p.channel_id = c.id and p.user_id <> $1::uuid \
+         left join lateral ( \
+           select p.user_id from channel_members p \
+           where c.kind = 'dm' and p.channel_id = c.id and p.user_id <> $1::uuid \
+             and (select count(*) from channel_members x where x.channel_id = c.id) = 2 \
+             and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
+           limit 1) p on true \
          left join users pu on pu.id = p.user_id \
          where c.archived_at is null and c.task_id is null \
            and (m.user_id is not null \
@@ -320,6 +342,8 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                 peer_name,
                 peer_email,
                 unread,
+                members_json,
+                agents,
             )| {
                 MemberChannel {
                     id,
@@ -330,11 +354,25 @@ pub async fn list_channels(pg: &PgPool, user_id: &str) -> Result<Vec<MemberChann
                     created_at: epoch_ms_to_iso(created_ms),
                     updated_at: epoch_ms_to_iso(updated_ms),
                     unread_count: unread,
+                    // `peer` only for a two-person DM — a group DM has no one
+                    // "other person"; its `members` label it instead.
                     peer: peer_id.map(|user_id| ChannelPeer {
                         user_id,
                         name: peer_name,
                         email: peer_email,
                     }),
+                    members: members_json.map(|j| {
+                        serde_json::from_str::<Vec<serde_json::Value>>(&j)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|v| ChannelPeer {
+                                user_id: v["userId"].as_str().unwrap_or_default().to_string(),
+                                name: v["name"].as_str().map(str::to_string),
+                                email: v["email"].as_str().map(str::to_string),
+                            })
+                            .collect()
+                    }),
+                    agents,
                 }
             },
         )
@@ -516,6 +554,125 @@ pub async fn ensure_dm(
     Ok(CreatedChannel {
         id,
         name,
+        topic,
+        kind,
+        created_at: epoch_ms_to_iso(created_ms),
+        updated_at: epoch_ms_to_iso(updated_ms),
+        role: "owner".into(),
+    })
+}
+
+/// Find-or-create a GROUP DM — the "New message" pane's DM with several people and/or
+/// agents at once, for a one-off task that doesn't need a channel. It is a
+/// `dm` channel like any other: same messages, feed and composer. Every human
+/// is an owner (a DM has no hierarchy); agents sit in `channel_agents`.
+///
+/// Deduped on the whole set of participants: `g:<sorted human ids>|<sorted
+/// agent models>`, so picking the same people again reopens the same
+/// conversation. A plain two-person DM (no agents) is NOT a group — it
+/// delegates to `ensure_dm` and keeps its pair key. `name` is optional; given,
+/// it labels the conversation (and renames a found one); otherwise the UI
+/// labels it with its members' names. `Err` is the sentence the route answers
+/// as a 400.
+pub async fn ensure_group_dm(
+    pg: &PgPool,
+    user_id: &str,
+    other_user_ids: &[String],
+    agent_models: &[String],
+    name: Option<&str>,
+) -> Result<CreatedChannel, String> {
+    let mut humans: Vec<&str> = other_user_ids
+        .iter()
+        .map(String::as_str)
+        .filter(|u| *u != user_id)
+        .collect();
+    humans.push(user_id);
+    humans.sort_unstable();
+    humans.dedup();
+    let mut agents: Vec<&str> = agent_models.iter().map(String::as_str).collect();
+    agents.sort_unstable();
+    agents.dedup();
+    let name = name.map(str::trim).filter(|n| !n.is_empty());
+    if humans.len() < 2 && agents.is_empty() {
+        return Err("pick at least one person or agent".into());
+    }
+    if humans.len() == 1 && agents.len() == 1 {
+        return Err("a DM with one agent is that agent's own conversation".into());
+    }
+    if humans.len() == 2 && agents.is_empty() {
+        let other = humans
+            .iter()
+            .find(|u| **u != user_id)
+            .copied()
+            .unwrap_or_default();
+        let mut dm = ensure_dm(pg, user_id, other).await?;
+        if let Some(n) = name {
+            sqlx::query("update channels set name = $2, updated_at = now() where id = $1::uuid")
+                .bind(&dm.id)
+                .bind(n)
+                .execute(pg)
+                .await
+                .map_err(|e| talaria_error::pg_message(&e))?;
+            dm.name = n.to_string();
+        }
+        return Ok(dm);
+    }
+    let dm_key = format!("g:{}|{}", humans.join(","), agents.join(","));
+    let mut tx = pg
+        .begin()
+        .await
+        .map_err(|e| talaria_error::pg_message(&e))?;
+    let (id, saved_name, topic, kind, created_ms, updated_ms): (
+        String,
+        String,
+        Option<String>,
+        String,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        "insert into channels (name, topic, kind, dm_key, created_by) \
+                 values (coalesce($2, ''), null, 'dm', $1, $3::uuid) \
+                 on conflict (dm_key) where dm_key is not null do update \
+                   set archived_at = null, updated_at = now(), \
+                       name = coalesce($2, channels.name) \
+             returning id::text, name, topic, kind, \
+               (trunc(extract(epoch from created_at) * 1000))::bigint, \
+               (trunc(extract(epoch from updated_at) * 1000))::bigint",
+    )
+    .bind(&dm_key)
+    .bind(name)
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| talaria_error::pg_message(&e))?;
+    for member in &humans {
+        sqlx::query(
+            "insert into channel_members (channel_id, user_id, role) \
+             values ($1::uuid, $2::uuid, 'owner') on conflict do nothing",
+        )
+        .bind(&id)
+        .bind(member)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| talaria_error::pg_message(&e))?;
+    }
+    for model in &agents {
+        sqlx::query(
+            "insert into channel_agents (channel_id, agent_model) values ($1::uuid, $2) \
+             on conflict do nothing",
+        )
+        .bind(&id)
+        .bind(model)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| talaria_error::pg_message(&e))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|e| talaria_error::pg_message(&e))?;
+    Ok(CreatedChannel {
+        id,
+        name: saved_name,
         topic,
         kind,
         created_at: epoch_ms_to_iso(created_ms),
@@ -1227,6 +1384,358 @@ pub async fn list_thread_messages(
     Ok(messages)
 }
 
+// ── The viewer's own threads and sent messages (Comms sidebar) ──────────────
+//
+// Both reads scope to the channels the viewer is IN right now — the same set
+// `list_channels` lists (a member row, or a team grant on a non-DM; never an
+// archived channel, never a task room) — so a thread or a sent message in a
+// channel they left does not come back through the side door. "The viewer's
+// message" is the same spelling the unread count uses: author_type 'user' and
+// author = coalesce(email, name, 'user').
+
+/// The CTE pair both reads open with: `me` (the viewer's author spelling) and
+/// `mine` (their channels, with the title a row shows — the channel's name, or
+/// the other person's for a DM). A macro so the queries stay `&'static str`.
+macro_rules! my_channels_cte {
+    () => {
+        "with me as ( \
+           select coalesce(email, name, 'user') as who from users where id = $1::uuid \
+         ), mine as ( \
+           select c.id, c.kind, \
+             case when c.kind = 'dm' then coalesce( \
+               (select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
+                         then min(coalesce(pu.name, pu.email)) \
+                         else coalesce(nullif(c.name, ''), string_agg(coalesce(pu.name, pu.email), ', ' \
+                           order by coalesce(pu.name, pu.email))) end \
+                  from channel_members p join users pu on pu.id = p.user_id \
+                 where p.channel_id = c.id and p.user_id <> $1::uuid), c.name) \
+             else c.name end as title \
+           from channels c \
+           left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
+           where c.archived_at is null and c.task_id is null \
+             and (m.user_id is not null \
+               or (c.kind <> 'dm' and exists ( \
+                 select 1 from channel_teams ct \
+                 join team_members tm on tm.team_id = ct.team_id \
+                 where ct.channel_id = c.id and tm.user_id = $1::uuid))) \
+         ) "
+    };
+}
+
+/// Thread roots with at least one reply, in the viewer's channels, that the
+/// viewer started or replied in: (root id, channel id, channel title, channel
+/// kind, last reply ms), newest reply first.
+const MY_THREADS: &str = concat!(
+    my_channels_cte!(),
+    "select r.id::text, mine.id::text, mine.title, mine.kind, \
+       (trunc(extract(epoch from t.last_at) * 1000))::bigint \
+     from ( \
+       select rep.thread_root_id as root_id, max(rep.created_at) as last_at, \
+         bool_or(rep.author_type = 'user' and rep.author = (select who from me)) as replied \
+       from channel_messages rep \
+       where rep.thread_root_id is not null \
+         and rep.channel_id in (select id from mine) \
+       group by rep.thread_root_id \
+     ) t \
+     join channel_messages r on r.id = t.root_id \
+     join mine on mine.id = r.channel_id \
+     where t.replied or (r.author_type = 'user' and r.author = (select who from me)) \
+     order by t.last_at desc \
+     limit 50"
+);
+
+/// Message rows by id, in MSG_SELECT's column order (see `msg_wire`).
+const MSG_BY_IDS: &str = "select id::text, seq, author_type, author, content, status, \
+     (trunc(extract(epoch from created_at) * 1000))::bigint, attachments, guard, \
+     thread_root_id::text, (trunc(extract(epoch from edited_at) * 1000))::bigint, chips \
+     from channel_messages where id = any($1::uuid[])";
+
+/// The viewer's latest 50 sent messages across their channels and their agent
+/// DMs: (kind, message id, conversation id, title, content, created ms).
+const MY_SENT: &str = concat!(
+    my_channels_cte!(),
+    "select kind, id, conversation_id, title, content, \
+       (trunc(extract(epoch from created_at) * 1000))::bigint \
+     from ( \
+       (select 'channel' as kind, msg.id::text as id, msg.channel_id::text as conversation_id, \
+         mine.title as title, msg.content as content, msg.created_at as created_at \
+       from channel_messages msg join mine on mine.id = msg.channel_id \
+       where msg.author_type = 'user' and msg.author = (select who from me) \
+       order by msg.created_at desc \
+       limit 50) \
+       union all \
+       (select 'agent', m.id::text, c.id::text, coalesce(nullif(c.title, ''), c.agent_model), \
+         m.content, m.created_at \
+       from messages m join conversations c on c.id = m.conversation_id \
+       where c.kind = 'chat' and c.archived = false and c.user_id = $1::uuid \
+         and m.role = 'user' \
+       order by m.created_at desc \
+       limit 50) \
+     ) sent \
+     order by created_at desc \
+     limit 50"
+);
+
+/// One Threads entry: the root (decorated with its reactions and reply
+/// rollup) and the channel it lives in.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MyThread {
+    pub channel_id: String,
+    pub channel_name: String,
+    pub channel_kind: String,
+    pub root: ChannelMessageWire,
+    pub last_at: String,
+}
+
+/// One "Drafts & sent" entry. `kind` is 'channel' (the conversation is a
+/// channel or DM) or 'agent' (an agent DM).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentMessage {
+    pub kind: String,
+    pub id: String,
+    pub conversation_id: String,
+    pub title: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+/// One MY_THREADS row: (root id, channel id, channel title, kind, last ms).
+pub type ThreadIndexRow = (String, String, String, String, i64);
+
+/// Pair the thread index (already in newest-reply order) with the fetched
+/// roots, keeping the index's order. A root that could not be read is
+/// skipped rather than shown blank.
+pub fn arrange_threads(
+    index: Vec<ThreadIndexRow>,
+    roots: Vec<ChannelMessageWire>,
+) -> Vec<MyThread> {
+    let mut by_id: std::collections::HashMap<String, ChannelMessageWire> =
+        roots.into_iter().map(|m| (m.id.clone(), m)).collect();
+    index
+        .into_iter()
+        .filter_map(
+            |(root_id, channel_id, channel_name, channel_kind, last_ms)| {
+                by_id.remove(&root_id).map(|root| MyThread {
+                    channel_id,
+                    channel_name,
+                    channel_kind,
+                    root,
+                    last_at: epoch_ms_to_iso(last_ms),
+                })
+            },
+        )
+        .collect()
+}
+
+/// The Threads view: roots the viewer started or replied in, newest reply
+/// first, at most 50.
+pub async fn list_my_threads(pg: &PgPool, user_id: &str) -> Result<Vec<MyThread>, sqlx::Error> {
+    let index: Vec<ThreadIndexRow> = sqlx::query_as(MY_THREADS)
+        .bind(user_id)
+        .fetch_all(pg)
+        .await?;
+    if index.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<&str> = index.iter().map(|r| r.0.as_str()).collect();
+    let mut roots: Vec<ChannelMessageWire> = sqlx::query_as(MSG_BY_IDS)
+        .bind(&ids)
+        .fetch_all(pg)
+        .await?
+        .into_iter()
+        .map(msg_wire)
+        .collect();
+    decorate_messages(pg, &mut roots).await?;
+    Ok(arrange_threads(index, roots))
+}
+
+/// The Sent view: the viewer's own channel messages and agent-DM turns,
+/// newest first, at most 50. Never anyone else's.
+pub async fn list_my_sent(pg: &PgPool, user_id: &str) -> Result<Vec<SentMessage>, sqlx::Error> {
+    let rows: Vec<(String, String, String, Option<String>, String, i64)> =
+        sqlx::query_as(MY_SENT).bind(user_id).fetch_all(pg).await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(kind, id, conversation_id, title, content, created_ms)| SentMessage {
+                kind,
+                id,
+                conversation_id,
+                title: title.unwrap_or_default(),
+                content,
+                created_at: epoch_ms_to_iso(created_ms),
+            },
+        )
+        .collect())
+}
+
+// ── Conversations with someone (the profile drawer) ─────────────────────────
+//
+// "What do I share with this person / this agent": the comms rooms the
+// viewer is in RIGHT NOW (the same membership `list_channels` reads — a
+// member row, or a team grant for a non-DM; never archived, never a task
+// room) that the other party is in too, plus — for an agent — the viewer's
+// own agent-DM threads with it. One row shape for both, newest activity
+// first; `lastAt` is the newest message, else the room's updated_at.
+
+/// One "conversations with" entry. `kind` is the channel kind ('dm',
+/// 'channel', 'group') or 'agent' for an agent DM thread; `name` is the
+/// other person's for a DM, the thread title (or "New thread") for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedConversation {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub last_at: String,
+    pub unread_count: i32,
+}
+
+/// (id, kind, name, last activity ms, unread) — one index row.
+pub type ConversationIndexRow = (String, String, String, i64, i32);
+
+/// Newest activity first; a tie falls back to the id so the order is stable
+/// across reads.
+pub fn arrange_conversations(mut rows: Vec<ConversationIndexRow>) -> Vec<SharedConversation> {
+    rows.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| a.0.cmp(&b.0)));
+    rows.into_iter()
+        .map(
+            |(id, kind, name, last_ms, unread_count)| SharedConversation {
+                id,
+                kind,
+                name,
+                last_at: epoch_ms_to_iso(last_ms),
+                unread_count,
+            },
+        )
+        .collect()
+}
+
+/// An agent thread's label: its title, or "New thread" when it has none yet.
+pub fn agent_thread_name(title: Option<&str>) -> String {
+    match title.map(str::trim) {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => "New thread".to_string(),
+    }
+}
+
+/// The viewer's comms rooms ($1), as index rows, narrowed by `extra` (a SQL
+/// predicate over `c`). The unread count is `list_channels`' predicate.
+macro_rules! shared_rooms_sql {
+    ($extra:expr) => {
+        concat!(
+            "with me as ( \
+               select coalesce(email, name, 'user') as who from users where id = $1::uuid \
+             ) \
+             select c.id::text, c.kind, \
+               case when c.kind = 'dm' then coalesce( \
+                 (select case when count(*) = 1 and not exists (select 1 from channel_agents xa where xa.channel_id = c.id) \
+                           then min(coalesce(nullif(pu.name, ''), pu.email)) \
+                           else coalesce(nullif(c.name, ''), string_agg(coalesce(nullif(pu.name, ''), pu.email), ', ' \
+                             order by coalesce(nullif(pu.name, ''), pu.email))) end \
+                    from channel_members p join users pu on pu.id = p.user_id \
+                   where p.channel_id = c.id and p.user_id <> $1::uuid), c.name) \
+               else c.name end, \
+               (trunc(extract(epoch from coalesce( \
+                 (select max(msg.created_at) from channel_messages msg where msg.channel_id = c.id), \
+                 c.updated_at)) * 1000))::bigint, \
+               (select count(*)::int from channel_messages msg \
+                 where msg.channel_id = c.id and msg.seq > coalesce(m.last_read_seq, 0) \
+                   and msg.status = 'complete' \
+                   and not (msg.author_type = 'user' and msg.author = (select who from me))) \
+             from channels c \
+             left join channel_members m on m.channel_id = c.id and m.user_id = $1::uuid \
+             where c.archived_at is null and c.task_id is null \
+               and (m.user_id is not null \
+                 or (c.kind <> 'dm' and exists ( \
+                   select 1 from channel_teams ct \
+                   join team_members tm on tm.team_id = ct.team_id \
+                   where ct.channel_id = c.id and tm.user_id = $1::uuid))) \
+               and ",
+            $extra
+        )
+    };
+}
+
+/// Rooms the viewer ($1) and the person ($2) are both in — the person by the
+/// same rule as the viewer (a member row, or a team grant on a non-DM).
+const SHARED_WITH_PERSON: &str = shared_rooms_sql!(
+    "(exists (select 1 from channel_members o \
+        where o.channel_id = c.id and o.user_id = $2::uuid) \
+      or (c.kind <> 'dm' and exists ( \
+        select 1 from channel_teams ct \
+        join team_members tm on tm.team_id = ct.team_id \
+        where ct.channel_id = c.id and tm.user_id = $2::uuid)))"
+);
+
+/// Rooms the viewer ($1) is in that seat the agent ($2).
+const SHARED_WITH_AGENT: &str = shared_rooms_sql!(
+    "exists (select 1 from channel_agents ca \
+       where ca.channel_id = c.id and ca.agent_model = $2)"
+);
+
+/// The viewer's ($1) live agent-DM threads with the agent ($2): id, title,
+/// last activity ms, unread (the conversation list's predicate).
+const AGENT_THREADS: &str = "select c.id::text, c.title, \
+       (trunc(extract(epoch from c.updated_at) * 1000))::bigint, \
+       coalesce(( \
+         select count(*)::int from messages m \
+         where m.conversation_id = c.id \
+           and m.seq > coalesce(cr.last_read_seq, -1) \
+           and m.status = 'complete' \
+           and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
+       ), 0) \
+     from conversations c \
+     left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
+     where c.kind = 'chat' and c.archived = false \
+       and c.user_id = $1::uuid and c.agent_model = $2";
+
+/// Every comms room the viewer shares with `other_id`, newest first. Asking
+/// about yourself lists your own rooms.
+pub async fn list_shared_with_person(
+    pg: &PgPool,
+    user_id: &str,
+    other_id: &str,
+) -> Result<Vec<SharedConversation>, sqlx::Error> {
+    let rows: Vec<ConversationIndexRow> = sqlx::query_as(SHARED_WITH_PERSON)
+        .bind(user_id)
+        .bind(other_id)
+        .fetch_all(pg)
+        .await?;
+    Ok(arrange_conversations(rows))
+}
+
+/// The rooms the viewer shares with an agent, merged with the viewer's own
+/// agent-DM threads with it, newest first.
+pub async fn list_shared_with_agent(
+    pg: &PgPool,
+    user_id: &str,
+    model: &str,
+) -> Result<Vec<SharedConversation>, sqlx::Error> {
+    let mut rows: Vec<ConversationIndexRow> = sqlx::query_as(SHARED_WITH_AGENT)
+        .bind(user_id)
+        .bind(model)
+        .fetch_all(pg)
+        .await?;
+    let threads: Vec<(String, Option<String>, i64, i32)> = sqlx::query_as(AGENT_THREADS)
+        .bind(user_id)
+        .bind(model)
+        .fetch_all(pg)
+        .await?;
+    rows.extend(threads.into_iter().map(|(id, title, last_ms, unread)| {
+        (
+            id,
+            "agent".to_string(),
+            agent_thread_name(title.as_deref()),
+            last_ms,
+            unread,
+        )
+    }));
+    Ok(arrange_conversations(rows))
+}
+
 /// Insert a message, drawing seq from the channel's counter.
 ///
 /// THE AGENT-POST GUARD LIVES HERE. `mcp post_to_channel` arrives as a tool
@@ -1541,6 +2050,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_conversations_merge_newest_first_and_wire_in_order() {
+        let rows: Vec<ConversationIndexRow> = vec![
+            ("c1".into(), "channel".into(), "general".into(), 1_000, 0),
+            ("d1".into(), "dm".into(), "Priya Nair".into(), 3_000, 2),
+        ];
+        let agent: Vec<ConversationIndexRow> = vec![
+            ("a1".into(), "agent".into(), "Ops review".into(), 2_000, 1),
+            ("a0".into(), "agent".into(), "Older".into(), 1_000, 0),
+        ];
+        let out = arrange_conversations(rows.into_iter().chain(agent).collect());
+        let ids: Vec<&str> = out.iter().map(|c| c.id.as_str()).collect();
+        // Newest first; a tie keeps a stable order by id.
+        assert_eq!(ids, vec!["d1", "a1", "a0", "c1"]);
+        assert_eq!(
+            serde_json::to_string(&out[0]).unwrap(),
+            r#"{"id":"d1","kind":"dm","name":"Priya Nair","lastAt":"1970-01-01T00:00:03.000Z","unreadCount":2}"#
+        );
+        assert!(arrange_conversations(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn untitled_agent_threads_read_new_thread() {
+        assert_eq!(agent_thread_name(None), "New thread");
+        assert_eq!(agent_thread_name(Some("  ")), "New thread");
+        assert_eq!(agent_thread_name(Some("Ops review")), "Ops review");
+    }
+
+    #[test]
     fn is_channel_id_matches_exactly_the_hyphenated_uuid_shape() {
         let good = "6f9619ff-8b86-d011-b42d-00c04fc964ff";
         assert!(is_channel_id(good));
@@ -1571,10 +2108,38 @@ mod tests {
             updated_at: "2026-08-29T10:00:00.000Z".into(),
             unread_count: 0,
             peer: None,
+            members: None,
+            agents: None,
         };
         assert_eq!(
             serde_json::to_string(&ch).unwrap(),
             r#"{"id":"c1","name":"general","topic":null,"kind":"channel","role":"owner","createdAt":"2026-08-29T10:00:00.000Z","updatedAt":"2026-08-29T10:00:00.000Z","unreadCount":0,"peer":null}"#
+        );
+    }
+
+    #[test]
+    fn a_dm_lists_its_members_and_agents_after_peer() {
+        // A group DM: no single peer, then everyone else, then its agents.
+        let ch = MemberChannel {
+            id: "d1".into(),
+            name: "".into(),
+            topic: None,
+            kind: "dm".into(),
+            role: "owner".into(),
+            created_at: "2026-08-29T10:00:00.000Z".into(),
+            updated_at: "2026-08-29T10:00:00.000Z".into(),
+            unread_count: 0,
+            peer: None,
+            members: Some(vec![ChannelPeer {
+                user_id: "u2".into(),
+                name: Some("Maya Chen".into()),
+                email: None,
+            }]),
+            agents: Some(vec!["atlas-operations".into()]),
+        };
+        assert_eq!(
+            serde_json::to_string(&ch).unwrap(),
+            r#"{"id":"d1","name":"","topic":null,"kind":"dm","role":"owner","createdAt":"2026-08-29T10:00:00.000Z","updatedAt":"2026-08-29T10:00:00.000Z","unreadCount":0,"peer":null,"members":[{"userId":"u2","name":"Maya Chen","email":null}],"agents":["atlas-operations"]}"#
         );
     }
 
@@ -1678,6 +2243,89 @@ mod tests {
                 "reactions",
                 "thread"
             ]
+        );
+    }
+
+    fn root(id: &str) -> ChannelMessageWire {
+        ChannelMessageWire {
+            id: id.into(),
+            seq: 1,
+            author_type: "user".into(),
+            author: "a@x".into(),
+            content: "root".into(),
+            status: "complete".into(),
+            created_at: "2026-10-05T09:00:00.000Z".into(),
+            attachments: serde_json::json!([]),
+            guard: None,
+            thread_root_id: None,
+            edited_at: None,
+            chips: serde_json::json!([]),
+            reactions: None,
+            thread: None,
+        }
+    }
+
+    #[test]
+    fn threads_keep_the_newest_reply_order_and_skip_missing_roots() {
+        let index: Vec<ThreadIndexRow> = vec![
+            (
+                "r2".into(),
+                "c1".into(),
+                "general".into(),
+                "channel".into(),
+                1_790_000_200_000,
+            ),
+            (
+                "gone".into(),
+                "c1".into(),
+                "general".into(),
+                "channel".into(),
+                1_790_000_100_000,
+            ),
+            (
+                "r1".into(),
+                "c2".into(),
+                "Priya".into(),
+                "dm".into(),
+                1_790_000_000_000,
+            ),
+        ];
+        // The by-id fetch comes back in any order.
+        let threads = arrange_threads(index, vec![root("r1"), root("r2")]);
+        let ids: Vec<&str> = threads.iter().map(|t| t.root.id.as_str()).collect();
+        assert_eq!(ids, vec!["r2", "r1"]);
+        assert_eq!(threads[1].channel_name, "Priya");
+        assert_eq!(threads[1].channel_kind, "dm");
+        assert_eq!(threads[0].last_at, epoch_ms_to_iso(1_790_000_200_000));
+    }
+
+    #[test]
+    fn thread_and_sent_wires_are_camel_case() {
+        let t = MyThread {
+            channel_id: "c1".into(),
+            channel_name: "general".into(),
+            channel_kind: "channel".into(),
+            root: root("r1"),
+            last_at: "2026-10-05T10:00:00.000Z".into(),
+        };
+        let v = serde_json::to_value(&t).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            vec!["channelId", "channelName", "channelKind", "root", "lastAt"]
+        );
+        assert_eq!(v["root"]["id"], "r1");
+        let m = SentMessage {
+            kind: "agent".into(),
+            id: "m1".into(),
+            conversation_id: "conv1".into(),
+            title: "Ops".into(),
+            content: "hi".into(),
+            created_at: "2026-10-05T10:00:00.000Z".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&m).unwrap(),
+            r#"{"kind":"agent","id":"m1","conversationId":"conv1","title":"Ops","content":"hi","createdAt":"2026-10-05T10:00:00.000Z"}"#
         );
     }
 }

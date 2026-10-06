@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-22 routes.
+23 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -20,6 +20,7 @@
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
+| [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
@@ -173,6 +174,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agents.rs`](../../api/crate
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | — |
+
+## `/api/agents/{id}/conversations`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agents_id_conversations.rs`](../../api/crates/talaria-routes-comms/src/comms/agents_id_conversations.rs)
+
+> GET /api/agents/{id}/conversations ({id} is the agent's model). The profile
+> drawer's "Conversations" list for an agent: the comms rooms the caller is
+> in that seat this agent, merged with the caller's own agent-DM threads with
+> it (kind 'agent', named by the thread title or "New thread"), newest
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{conversations}` | 200, 404 | — |
 
 ## `/api/agents/{id}/heartbeat`
 

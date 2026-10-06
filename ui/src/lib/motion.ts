@@ -298,6 +298,19 @@ export function markCrossfade(duration = 200) {
   })
 }
 
+/** markCrossfade's sibling for whole ROWS that move between two lists — a
+ *  rail row starred into Starred and back. A row that leaves or arrives with
+ *  no partner (a search filter, a collapse, a fresh load) does nothing: the
+ *  fallback is instant, so only a genuine move animates. Reduced motion jumps
+ *  (duration 0) — a position change is information, as with `flip`. */
+export function rowCrossfade(duration = 250) {
+  return svCrossfade({
+    duration: () => (prefersReducedMotion() ? 0 : duration),
+    easing: quintOut,
+    fallback: () => ({ duration: 0 }),
+  })
+}
+
 // House defaults, so surfaces feel like one system rather than 141 opinions:
 //   modals            in:pop            out:fade={QUICK}
 //   popovers/menus    in:pop={POPOVER}  out:fade={QUICK}   (origin-* toward trigger)

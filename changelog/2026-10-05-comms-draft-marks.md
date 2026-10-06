@@ -1,0 +1,5 @@
+- **Comms: the sidebar shows where your unsent drafts are.** Anything you type in a conversation and leave unsent was already saved as a draft (in this browser) and listed under Drafts & sent. Now:
+  - **Drafts & sent** shows a pencil and the number of drafts you have.
+  - Every conversation with an unsent draft shows a pencil beside its name: channels, relays, people's DMs, agent threads, and an agent itself when you've started a new thread with it (or, while its threads are folded, when one of them has a draft).
+  - The marks update as you type, and disappear when you send or clear the message; another tab's drafts show up too.
+  - **Verified:** ui typecheck and every ui test passed, including new tests that saving and clearing a draft announce the change. In a browser on a seeded local stack: typing in Priya's DM and in #general, then moving away, showed a pencil on both and "2" on Drafts & sent.

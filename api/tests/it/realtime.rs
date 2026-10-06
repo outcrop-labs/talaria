@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use talaria_api::realtime::{
     RealtimeDeps, RunWatchDeps, RunWatchRow, RunWatchVerdict, UserEvent, may_watch_run,
-    publish_user, run_event_stream, run_publish, user_event_stream,
+    publish_typing, publish_user, run_event_stream, run_publish, user_event_stream,
 };
 use talaria_api::runs::define::{DecisionOption, DecisionRequest, RunState};
 use talaria_api::runs::run::RunEvent;
@@ -777,5 +777,50 @@ async fn a_failing_edge_is_an_error_not_a_refusal() {
     assert_eq!(
         may_watch_run("u2", "r1", &deps).await.unwrap_err(),
         "relation \"runs\" does not exist"
+    );
+}
+
+#[tokio::test]
+async fn typing_is_presence_on_the_channel_and_id_shaped_on_the_firehose() {
+    // Typing goes two ways: the channel's own topic (the open conversation's
+    // "Maya is typing") and, for a DM, the other person's firehose (the dots
+    // beside a name in their rail). Both payloads are ids and a flag — no
+    // text of what is being typed, ever.
+    let hub = Hub::new();
+    let deps = hub.deps();
+    let channel = hub.subscribe("channel:ch-7");
+    let firehose = hub.subscribe("user:user-8");
+
+    publish_typing(&deps, "ch-7", "user-9", None, true);
+    publish_typing(&deps, "ch-7", "user-9", None, false);
+    publish_typing(&deps, "ch-7", "user-9", Some("root-1"), true);
+    publish_user(
+        &deps,
+        "user-8",
+        &UserEvent::Typing {
+            channel_id: "ch-7".into(),
+            user_id: "user-9".into(),
+            typing: true,
+        },
+    );
+
+    hub.close_topic("channel:ch-7");
+    hub.close_topic("user:user-8");
+    let on_channel = payloads(channel).await;
+    assert_eq!(
+        on_channel[0],
+        r#"{"type":"typing","userId":"user-9","typing":true}"#
+    );
+    assert_eq!(
+        on_channel[1],
+        r#"{"type":"typing","userId":"user-9","typing":false}"#
+    );
+    assert_eq!(
+        on_channel[2],
+        r#"{"type":"typing","userId":"user-9","threadRootId":"root-1","typing":true}"#
+    );
+    assert_eq!(
+        payloads(firehose).await[0],
+        r#"{"type":"typing","channelId":"ch-7","userId":"user-9","typing":true}"#
     );
 }

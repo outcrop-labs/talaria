@@ -3553,6 +3553,37 @@ alter table tasks drop column if exists conversation_id`,
   `create trigger agent_coding_blocks_rev
      after insert or update or delete on agent_coding_account_blocks
      for each row execute function talaria_bump_coding_rev()`,
+
+  // A person's own profile photo, separate from `picture` on purpose: Google
+  // sign-in rewrites `picture` on every login, so an uploaded photo stored
+  // there would vanish the next time its owner signed in. The upload is
+  // claimed through PUT /api/me (owner, image type, 5 MB) and served to the
+  // org by GET /api/users/{id}/avatar; a deleted upload clears the photo
+  // rather than leaving a dangling id.
+  `alter table users add column if not exists avatar_upload_id uuid references uploads(id) on delete set null`,
+  // A person's status (📅 "In a meeting"): emoji 1–16 chars, text ≤ 100,
+  // both optional, bounds enforced by PUT /api/me.
+  `alter table users add column if not exists status_emoji text`,
+  `alter table users add column if not exists status_text text`,
+
+  // Emoji reactions on agent-DM (conversation) messages — the twin of
+  // channel_message_reactions, which cannot hold them: its message_id
+  // references channel_messages. Same columns, same key, and the actor is
+  // the same identity (a person's email, else name). Deleting a message, or
+  // the conversation that cascades its messages, takes its reactions.
+  `create table if not exists message_reactions (
+     message_id uuid not null references messages(id) on delete cascade,
+     emoji text not null,
+     actor text not null,
+     actor_type text not null default 'user',
+     created_at timestamptz not null default now(),
+     primary key (message_id, emoji, actor)
+   )`,
+
+  // A person's job title ("Product designer"), shown under their name on the
+  // Comms profile drawer: optional, ≤ 80 chars, trimmed and blank-clears in
+  // PUT /api/me.
+  `alter table users add column if not exists title text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

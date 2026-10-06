@@ -177,3 +177,54 @@ test('every Comms path counts as Comms, prefix matching included', () => {
   assert.equal(isCommsPath('/comms/channel/chan-1'), true)
   assert.equal(isCommsPath('/comms/agent/hermes/conv-4'), true)
 })
+
+// ── the two sidebar views: Threads and Drafts & sent ────────────────────────
+
+test('/comms/threads and /comms/drafts parse to their view tags', () => {
+  assert.deepEqual(commsSelectionFromPath('/comms/threads'), { t: 'threads' })
+  assert.deepEqual(commsSelectionFromPath('/comms/drafts'), { t: 'drafts' })
+  assert.deepEqual(commsSelectionFromPath('/comms/new'), { t: 'new' })
+  // Only under Comms: another view's /threads is not ours.
+  assert.equal(commsSelectionFromPath('/boards/threads'), null)
+})
+
+test('a Threads or Drafts selection round-trips and is always restorable', () => {
+  installStorage()
+  for (const sel of [{ t: 'threads' }, { t: 'drafts' }, { t: 'new' }] as CommsSelection[]) {
+    writeCommsSelection(sel)
+    resetCommsSelection()
+    const back = readCommsSelection()
+    assert.deepEqual(back, sel)
+    // Neither depends on a roster, so the restore keeps them as they are —
+    // even before any roster has loaded anything.
+    assert.deepEqual(restorableSelection(back, rosters({ channelIds: [], agentModels: [], conversationIds: null })), sel)
+  }
+})
+
+// ── conversations with someone: /comms/with/<person|agent>/<id> ───────────
+
+test('/comms/with/<kind>/<id> parses to the with tag, id decoded', () => {
+  assert.deepEqual(commsSelectionFromPath('/comms/with/person/u-1'), { t: 'with', kind: 'person', id: 'u-1' })
+  assert.deepEqual(commsSelectionFromPath('/comms/with/agent/a%2Fb'), { t: 'with', kind: 'agent', id: 'a/b' })
+  // Half a path, an unknown kind, or another view's path is not a selection.
+  assert.equal(commsSelectionFromPath('/comms/with/person'), null)
+  assert.equal(commsSelectionFromPath('/comms/with/team/t-1'), null)
+  assert.equal(commsSelectionFromPath('/boards/with/person/u-1'), null)
+})
+
+test('a with selection round-trips and is always restorable', () => {
+  installStorage()
+  const sel: CommsSelection = { t: 'with', kind: 'agent', id: 'hermes' }
+  writeCommsSelection(sel)
+  resetCommsSelection()
+  const back = readCommsSelection()
+  assert.deepEqual(back, sel)
+  // It hangs off no roster: the view itself answers for an unknown subject.
+  assert.deepEqual(restorableSelection(back, rosters({ channelIds: [], agentModels: [], conversationIds: null })), sel)
+  // Garbage in storage restores nothing.
+  for (const raw of ['{"t":"with"}', '{"t":"with","kind":"team","id":"x"}', '{"t":"with","kind":"person","id":""}']) {
+    resetCommsSelection()
+    installStorage({ 'talaria:comms-selection': raw })
+    assert.equal(readCommsSelection(), null, `"${raw}" should not restore`)
+  }
+})

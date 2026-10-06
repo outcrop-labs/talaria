@@ -1,0 +1,20 @@
+- **Comms: message any mix of people and agents at once (group DMs).**
+  - **New message:** the `+` on Direct messages opens a New message pane instead of a people menu.
+    - The **To:** field lists everyone in the organization and every agent as soon as it opens, and filters as you type. Arrow keys and Enter pick, and Backspace removes the last pick. Picking a channel just opens it.
+    - With two or more recipients, an optional **Name** field appears.
+    - If those exact recipients already have a conversation, its history shows below and you write there.
+    - Otherwise your first message creates the conversation and opens it.
+    - One agent on its own opens that agent's own conversation instead.
+  - **In the sidebar:** a group DM lists under Direct messages, after the people. It shows a badge with how many others are in it and its name, or everyone's first names ("Maya, Jordan, Atlas"). It has the same unread, typing, draft and star behaviour as other rows, and search finds it by those names. Its header shows the same badge and name, and its message box reads "Message Launch prep".
+  - **Agents in a group DM:** with exactly one agent, it replies to every message like any participant. With several, @mention the one you want.
+  - **Elsewhere:** Threads, Drafts & sent, and the Home tab's Unread list label a group DM by its name or members. The inbox and the daily brief no longer list a group DM once per member.
+  - **API:** `POST /api/dms` also takes `{ userIds, agents?, name? }`, find-or-create on the exact set of participants. Agents need the same access as seating them in a channel. One person and no agents is the plain DM. `GET /api/channels` lists a group DM once, with `members` and `agents` and no single `peer`. A two-person DM is unchanged.
+  - **Verified:**
+    - `bun run gate`.
+    - New unit tests: group DM labels, counts and find-existing; the sidebar model's group DM rows, search, star and collapse; the `/comms/new` selection.
+    - New live API tests, run against a throwaway Postgres and Redis: find-or-create on the participant set and naming, one listing row with members and agents, the plain-DM equivalence, and the refusals (no one, one agent alone, an unknown user, a bad id, an over-long name, an agent you can't use).
+    - In a browser on a seeded local stack:
+      - Zach picked Maya and Atlas, named it "Launch prep" and sent. It opened with the badge and name, and Atlas began replying without a mention.
+      - Picking the same pair again showed that history.
+      - Maya alone showed her existing DM, and Atlas alone offered Atlas's own conversation.
+      - Maya saw "Launch prep" under her Direct messages with one unread.
