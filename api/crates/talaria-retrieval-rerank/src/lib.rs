@@ -129,6 +129,26 @@ pub const RERANK_PROVIDERS: &[RerankProviderMeta] = &[
         fallback_models: &["jina-reranker-v2-base-multilingual", "jina-reranker-m0"],
         live_catalog: false,
     },
+    // THE DECISION MODEL YOU ALREADY CONFIGURED. Asks for no url, key or model
+    // of its own: it delegates to `talaria-decide`'s one config row, so an
+    // operator who has already pointed the instance at a decision model gets
+    // reranking from it without a second credential to rotate.
+    //
+    // WHAT IT COSTS, honestly: one Score question PER CANDIDATE over shared
+    // state, so it needs a provider that answers several questions in one
+    // round trip. A provider that cannot fan out would make this N round trips
+    // per search, so this reader refuses rather than quietly spending them —
+    // and reranking is best-effort by contract, so a refusal is vector order,
+    // not an error.
+    RerankProviderMeta {
+        id: "decide",
+        label: "The configured decision model",
+        country: "wherever you pointed it",
+        needs_url: false,
+        needs_key: false,
+        fallback_models: &[],
+        live_catalog: false,
+    },
 ];
 
 /// The wire view of the provider catalog — the admin rag GET's `providers`
@@ -500,6 +520,23 @@ pub async fn rerank_models(
     Ok(meta.fallback_models.iter().map(|s| s.to_string()).collect())
 }
 
+/// Relevance as ordered situations, not a numeric scale. A model cannot judge
+/// "3 out of 5"; it can judge whether a passage answers the question, touches
+/// it, or merely shares its vocabulary.
+const DECIDE_LEVELS: [&str; 4] = [
+    "Unrelated to the query, or shares only incidental vocabulary with it",
+    "About the same subject, but answers a different question than the one asked",
+    "Partly answers the query, or answers it for a neighbouring case",
+    "Directly answers the query — a reader would stop here",
+];
+
+/// Per-candidate text cap, and the whole-state cap it is also held under.
+/// Jev's documented envelope is 32k tokens for state plus the longest
+/// question; these are characters and deliberately well inside it, because a
+/// request that 422s is a search that fell back to vector order.
+const DECIDE_TEXT_BUDGET: usize = 1_200;
+const DECIDE_STATE_BUDGET: usize = 24_000;
+
 /// One rescored candidate. A row missing its index or score is dropped here;
 /// `align` only ever sees well-formed rows.
 struct Scored {
@@ -576,6 +613,49 @@ async fn rerank_dispatch(
             .ok()?;
             let arr = j.as_array()?;
             Some(scored_from(arr, "score"))
+        }
+        // One request, one Score per candidate, over state that carries the
+        // query and every candidate. The levels describe concrete situations
+        // rather than a 1-5 scale, because "3" is not a thing a model can
+        // judge and "mentions the subject but answers a different question"
+        // is.
+        "decide" => {
+            let budget = DECIDE_TEXT_BUDGET.min(DECIDE_STATE_BUDGET / texts.len().max(1));
+            let candidates: Vec<Value> = texts
+                .iter()
+                .enumerate()
+                .map(|(i, t)| json!({ "id": i, "text": talaria_body::truncate_utf16(t, budget) }))
+                .collect();
+            let mut ask = talaria_decide::Ask::new(json!({
+                "query": query,
+                "candidates": candidates,
+            }));
+            for i in 0..texts.len() {
+                ask = ask.q(
+                    i.to_string(),
+                    talaria_decide::Question::score(
+                        format!(
+                            "How well does the candidate with `id` {i} in `candidates` answer `query`? Judge only that candidate."
+                        ),
+                        DECIDE_LEVELS.iter().map(|l| (*l).to_string()).collect(),
+                    ),
+                );
+            }
+            let answers = talaria_decide::decide(state, http, &ask).await?;
+            Some(
+                answers
+                    .iter()
+                    .filter_map(|(id, j)| {
+                        Some(Scored {
+                            index: id.parse::<i64>().ok()?,
+                            // The position over the levels, normalized to 0..=1
+                            // so it sits on the same axis as a cross-encoder's
+                            // score and `align` needs no special case.
+                            score: j.answer.position()? / (DECIDE_LEVELS.len() - 1) as f64,
+                        })
+                    })
+                    .collect(),
+            )
         }
         "openrouter" => {
             let key = match &cfg.key_sealed {
@@ -791,8 +871,45 @@ mod tests {
     }
 
     #[test]
+    fn the_decision_model_provider_asks_for_no_credential_of_its_own() {
+        let d = RERANK_PROVIDERS
+            .iter()
+            .find(|p| p.id == "decide")
+            .expect("the decision-model provider is in the table");
+        // The whole point: it delegates to talaria-decide's one config row, so
+        // there is no second key to rotate and no second url to get wrong.
+        assert!(!d.needs_url);
+        assert!(!d.needs_key);
+        assert!(d.fallback_models.is_empty());
+        assert!(!d.live_catalog);
+    }
+
+    #[test]
+    fn relevance_levels_describe_situations_and_normalize_onto_the_cross_encoder_axis() {
+        // Four ordered situations, lowest first, each standing on its own — a
+        // model cannot judge "3 out of 5" but can judge whether a passage
+        // answers the question or merely shares its vocabulary.
+        assert_eq!(DECIDE_LEVELS.len(), 4);
+        assert!(DECIDE_LEVELS[0].contains("Unrelated"));
+        assert!(DECIDE_LEVELS[3].contains("Directly answers"));
+        for l in DECIDE_LEVELS {
+            assert!(l.len() > 30, "a level has to describe a situation: {l}");
+        }
+        // A Score position is 0-indexed over the levels, so dividing by
+        // len-1 puts the bottom level at 0.0 and the top at 1.0 — the same
+        // axis a cross-encoder's score sits on, which is why `align` needs no
+        // special case for this provider.
+        let span = (DECIDE_LEVELS.len() - 1) as f64;
+        assert_eq!(0.0 / span, 0.0);
+        assert_eq!(span / span, 1.0);
+        // And a between-levels answer lands between, rather than rounding to a
+        // bucket — the reason a Score is the right primitive here.
+        assert!((1.5 / span - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
     fn the_provider_table_is_the_admin_face_of_the_registry() {
-        assert_eq!(RERANK_PROVIDERS.len(), 8);
+        assert_eq!(RERANK_PROVIDERS.len(), 9);
         let tei = RERANK_PROVIDERS.iter().find(|p| p.id == "tei").unwrap();
         assert!(tei.needs_url && !tei.needs_key && tei.country == "your hardware");
         // Countries are surfaced for the no-train decision, not decoration.

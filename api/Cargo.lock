@@ -6406,6 +6406,7 @@ dependencies = [
  "sqlx",
  "talaria-body",
  "talaria-config",
+ "talaria-decide",
  "talaria-gateway",
  "talaria-retrieval-http",
  "talaria-state",
