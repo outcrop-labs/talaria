@@ -199,6 +199,7 @@ const FLEET_SLOTS: [FleetSlotDef; 2] = [
             "hermes:knowledge",
             "hermes:documents",
             "hermes:governance",
+            "hermes:work",
             "hermes:google",
             "hermes:research",
             "hermes:comms",
