@@ -216,7 +216,7 @@ fn read_code_result(reply: &str) -> Option<CodeReply> {
 /// concern is the clock. The clock starts at the worker's READY signal —
 /// after context construction, before the first line of candidate code — so
 /// the window times the candidate, never our engine setup.
-fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
+fn eval_candidate(script: String, budget_ms: u64) -> Result<EvalOutcome, String> {
     let (tx, rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
     let worker = std::thread::Builder::new()
@@ -239,14 +239,12 @@ fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
         let _ = worker.join();
         return Err("the evaluator did not come back".to_string());
     }
-    match rx.recv_timeout(Duration::from_millis(CODE_TIMEOUT_MS)) {
+    match rx.recv_timeout(Duration::from_millis(budget_ms)) {
         Ok(outcome) => Ok(outcome),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             // node's sentence, so a timed-out candidate reads identically in
             // either language.
-            Err(format!(
-                "Script execution timed out after {CODE_TIMEOUT_MS}ms"
-            ))
+            Err(format!("Script execution timed out after {budget_ms}ms"))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             // The evaluator itself died — a boa panic we did not foresee. The
@@ -294,6 +292,24 @@ fn run_in_boa(context: &mut boa_engine::Context, script: &str) -> EvalOutcome {
 /// Run one task's assertions against the model's source. Returns None when
 /// every assertion passed, or the one line the admin reads.
 pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
+    run_code_task_within(task, raw, CODE_TIMEOUT_MS)
+}
+
+/// The same grading under an explicit wall-clock budget.
+///
+/// WHY THIS EXISTS. `CODE_TIMEOUT_MS` is a PRODUCT value: it bounds how long a
+/// candidate's code may run while the fitness suite grades a model, and 250ms
+/// is five orders of headroom for the kind of function these tasks ask for —
+/// on a machine that is not doing anything else. A shared CI runner is not
+/// that machine, and three of this module's own tests began failing with
+/// "Script execution timed out after 250ms" the moment CI started running
+/// them (#517): a wall-clock budget is the one thing a unit test must never
+/// inherit from production, because the test is about whether the GRADING is
+/// right and the budget decides whether it got the chance to be.
+///
+/// So the tests grade under a generous budget and the timeout keeps its own
+/// test. Production still calls `run_code_task` and still gets 250ms.
+pub fn run_code_task_within(task: &CodeTask, raw: &str, budget_ms: u64) -> Option<String> {
     let src = extract_code(raw);
     if src.trim().is_empty() {
         return Some(format!("{}: the model returned no code", task.name));
@@ -318,7 +334,7 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
 }})()",
         fn_ = task.fn_,
     );
-    let reply = match eval_candidate(script) {
+    let reply = match eval_candidate(script, budget_ms) {
         // `Failed` is the one branch whose sentence carries the thrown error;
         // every engine words its parse errors differently, so the shape is the
         // contract, not the message text.
@@ -380,6 +396,15 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Grade under a budget a shared CI runner can actually meet. These tests
+    /// are about whether the grading is RIGHT; the wall clock is tested once,
+    /// on its own, below. See `run_code_task_within`.
+    const TEST_BUDGET_MS: u64 = 10_000;
+
+    fn graded(task: &CodeTask, raw: &str) -> Option<String> {
+        run_code_task_within(task, raw, TEST_BUDGET_MS)
+    }
+
     use super::*;
 
     const GOOD_SLUGIFY: &str = "function slugify(input) {
@@ -407,27 +432,27 @@ mod tests {
 
     #[test]
     fn passes_a_correct_function_graded_by_running_the_assertions() {
-        assert_eq!(run_code_task(slugify(), GOOD_SLUGIFY), None);
-        assert_eq!(run_code_task(merge(), GOOD_MERGE), None);
+        assert_eq!(graded(slugify(), GOOD_SLUGIFY), None);
+        assert_eq!(graded(merge(), GOOD_MERGE), None);
     }
 
     #[test]
     fn accepts_the_two_wrappers_a_model_habitually_adds() {
         let wrapped = format!("```js\nexport {GOOD_SLUGIFY}\n```");
-        assert_eq!(run_code_task(slugify(), &wrapped), None);
+        assert_eq!(graded(slugify(), &wrapped), None);
     }
 
     #[test]
     fn accepts_a_stray_debug_log_rather_than_failing_for_our_bare_context() {
         let chatty = GOOD_SLUGIFY.replacen("return", "console.log('slugifying');\n  return", 1);
-        assert_eq!(run_code_task(slugify(), &chatty), None);
+        assert_eq!(graded(slugify(), &chatty), None);
     }
 
     #[test]
     fn names_the_exact_failing_assertion_for_a_near_miss() {
         // The classic small-model version: no trimming of the leading/trailing dash.
         let nearly = "function slugify(input) { return String(input).toLowerCase().replace(/[^a-z0-9]+/g, '-') }";
-        let problem = run_code_task(slugify(), nearly).expect("the near-miss fails");
+        let problem = graded(slugify(), nearly).expect("the near-miss fails");
         assert!(
             problem.contains("expected \"hello-world\""),
             "got: {problem}"
@@ -436,19 +461,19 @@ mod tests {
 
     #[test]
     fn fails_a_function_that_was_never_defined_and_prose_with_no_code() {
-        let missing = run_code_task(slugify(), "function slug(x) { return x }")
-            .expect("the wrong name fails");
+        let missing =
+            graded(slugify(), "function slug(x) { return x }").expect("the wrong name fails");
         assert!(
             missing.contains("no function named slugify"),
             "got: {missing}"
         );
-        let empty = run_code_task(slugify(), "   ").expect("empty fails");
+        let empty = graded(slugify(), "   ").expect("empty fails");
         assert!(empty.contains("returned no code"), "got: {empty}");
     }
 
     #[test]
     fn fails_code_that_does_not_parse_rather_than_throwing_out_of_the_probe() {
-        let broken = run_code_task(
+        let broken = graded(
             slugify(),
             "function slugify(input) { return input.toLowerCase(",
         )
@@ -459,7 +484,7 @@ mod tests {
     #[test]
     fn survives_an_infinite_loop_at_the_cost_of_a_timeout_not_a_wedged_request() {
         let started = std::time::Instant::now();
-        let spin = run_code_task(slugify(), "function slugify(input) { while (true) {} }")
+        let spin = graded(slugify(), "function slugify(input) { while (true) {} }")
             .expect("the spin fails");
         assert!(spin.contains("did not run"), "got: {spin}");
         assert!(
@@ -480,7 +505,7 @@ mod tests {
       }
       return out
     }";
-        assert_eq!(run_code_task(merge(), mutating), None);
+        assert_eq!(graded(merge(), mutating), None);
     }
 
     #[test]
@@ -497,6 +522,23 @@ mod tests {
         assert_eq!(
             extract_code("export function f() { return \"export function\" }"),
             "function f() { return \"export function\" }"
+        );
+    }
+    #[test]
+    fn a_candidate_that_never_returns_is_stopped_and_says_so() {
+        // The budget's own test, and the only place a tight one belongs. A
+        // spinning candidate must be reaped rather than hang the suite, and
+        // the sentence has to name the window so an admin reading a fitness
+        // row knows the model was cut off rather than wrong.
+        let spin = "function slugify(input) { while (true) {} }";
+        let problem = run_code_task_within(slugify(), spin, 50).expect("a spin is a failure");
+        assert!(problem.contains("timed out after 50ms"), "got: {problem}");
+        // And the budget is the one reported, not the production constant —
+        // the message used to interpolate CODE_TIMEOUT_MS regardless of the
+        // window actually waited on.
+        assert!(
+            !problem.contains(&format!("{CODE_TIMEOUT_MS}ms")),
+            "got: {problem}"
         );
     }
 }
