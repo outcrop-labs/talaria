@@ -17,17 +17,24 @@ export type ExecCall = { cmd: string; args: string[]; opts?: { cwd?: string } }
 export type FakeCtx = Ctx & {
   calls: ExecCall[]
   logLines: { kind: keyof Log; msg: string }[]
-  /** Plant an answer for an exact (cmd, args) pair; Error rejects/runs 1. */
-  plant: (cmdArgs: [string, string[]], out: string | Error) => void
+  /** Plant an answer for an exact (cmd, args) pair; Error rejects/runs 1.
+   *  `cwd` narrows it to calls made from that directory — needed wherever two
+   *  steps run the SAME command in different places (`bun run build` in mcp/
+   *  and in omp-auth/), because without it a test can only separate them by
+   *  arranging mtimes so one step does not run, and an mtime is not something
+   *  a CI checkout preserves. A plant with no `cwd` still matches any. */
+  plant: (cmdArgs: [string, string[]], out: string | Error, cwd?: string) => void
 }
 
 export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; reply?: string } = {}): FakeCtx {
   const calls: ExecCall[] = []
   const logLines: FakeCtx['logLines'] = []
   const answers = new Map<string, string | Error>()
-  const key = (cmd: string, args: string[]) => JSON.stringify([cmd, args])
-  const answer = (cmd: string, args: string[]): string | Error | undefined =>
-    answers.get(key(cmd, args))
+  const key = (cmd: string, args: string[], cwd?: string) => JSON.stringify([cmd, args, cwd ?? null])
+  // The cwd-scoped plant wins over the unscoped one, so a test can set a
+  // default for a command and then override it for one directory.
+  const answer = (cmd: string, args: string[], cwd?: string): string | Error | undefined =>
+    answers.get(key(cmd, args, cwd)) ?? answers.get(key(cmd, args))
 
   const log: Log = {
     say: (m) => logLines.push({ kind: 'say', msg: m }),
@@ -45,20 +52,20 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; r
     root: '/repo',
     exec: async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
-      const a = answer(cmd, args)
+      const a = answer(cmd, args, opts?.cwd)
       if (a instanceof Error) throw a
       return { stdout: a ?? '', stderr: '' }
     },
     run: async (cmd, args, opts) => {
       calls.push({ cmd, args, opts })
-      const a = answer(cmd, args)
+      const a = answer(cmd, args, opts?.cwd)
       return a instanceof Error ? 1 : 0
     },
     pipe: async (a, b, opts) => {
       calls.push({ cmd: a[0], args: a[1], opts })
       calls.push({ cmd: b[0], args: b[1], opts })
       for (const c of [a, b]) {
-        const ans = answer(c[0], c[1])
+        const ans = answer(c[0], c[1], opts?.cwd)
         if (ans instanceof Error) throw ans
       }
     },
@@ -72,6 +79,6 @@ export function fakeCtx(init: { env?: Record<string, string>; isTTY?: boolean; r
     log,
     calls,
     logLines,
-    plant: (cmdArgs, out) => answers.set(key(cmdArgs[0], cmdArgs[1]), out),
+    plant: (cmdArgs, out, cwd) => answers.set(key(cmdArgs[0], cmdArgs[1], cwd), out),
   }
 }
