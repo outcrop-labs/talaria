@@ -477,11 +477,12 @@ jobs:
         with:
           workspaces: api
 
-      # mold: api/.cargo/config.toml passes -fuse-ld=mold on gnu linux.
-      # ubuntu-latest's gcc understands the flag; the package is the missing
-      # binary. aws-lc-sys still uses the image's compiler + cmake.
-      - name: mold
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+      # mold: api/.cargo/config.toml passes -fuse-ld=mold on gnu linux, so
+      # `ld.mold` is a hard dependency of the link. The action bounds the apt
+      # call and falls back to the default linker rather than hanging the job
+      # on a slow mirror — which cost two blocked pull requests before it
+      # existed. See .github/actions/mold/action.yml.
+      - uses: ./.github/actions/mold
 
       # Same order as api:check: format (instant, and its failures are the
       # cheapest to read), then clippy as the port's lint gate (-D warnings —
