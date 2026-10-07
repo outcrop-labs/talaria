@@ -428,6 +428,8 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // harness error, a null verdict, or any value that is not
     // {"relevant": bool} all answer TRUE. The gate may cost an unneeded
     // reply; it may never cost an unanswered one.
+    // The census id this site records and reads its switch under.
+    const SITE_TICKET: &str = "ticket-relevance";
     let _ = talaria_ticket_chat::TICKET_RELEVANT.set(Arc::new(
         |state, ticket, work, message, recent| {
             Box::pin(async move {
@@ -449,6 +451,63 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                         recent,
                     }
                 );
+                // THE QUESTION, built once and used by whichever path runs.
+                // Both askers get the harness's OWN definitions
+                // (`RELEVANT_MEANS` / `NOT_RELEVANT_MEANS`), because a
+                // comparison between two differently-worded questions
+                // measures the wording.
+                let ask = talaria_decide::Ask::new(subject).q(
+                    "relevant",
+                    talaria_decide::Question::noul_meaning(
+                        talaria_harness_defs::defs::ticket_relevance::RELEVANCE_QUESTION,
+                        talaria_harness_defs::defs::ticket_relevance::RELEVANT_MEANS,
+                        talaria_harness_defs::defs::ticket_relevance::NOT_RELEVANT_MEANS,
+                    ),
+                );
+
+                // ── THE CASCADE ─────────────────────────────────────────────
+                //
+                // Switched OFF (the default): the harness decides and the port
+                // is asked the same question detached, with nobody listening.
+                // That is double cost, which is the price of the measurement
+                // and a reason not to leave a site there forever.
+                //
+                // Switched ON: the port is asked FIRST and a confident answer
+                // is taken — skipping the harness turn entirely, which is the
+                // gate's whole economics ("cheaper than the reply it
+                // prevents"). An UNCERTAIN answer falls through to the
+                // harness, so the expensive judge still runs on exactly the
+                // messages it is worth running on. The floor is read as
+                // CERTAINTY rather than as a lean, because a confident NO is
+                // the answer that saves the turn and a confident YES says what
+                // the fail-open default already said.
+                let gate = talaria_decide::gate_of(&state.pg, SITE_TICKET).await;
+                let def = talaria_decide::sites::def_of(SITE_TICKET);
+                let judged = if gate.on {
+                    let http = talaria_retrieval_http::real_http();
+                    talaria_decide::decide(&state, &http, &ask)
+                        .await
+                        .and_then(|mut m| m.remove("relevant"))
+                } else {
+                    None
+                };
+                if let Some(def) = def
+                    && let Some(j) = talaria_decide::sites::acts_on(def, &gate, judged.clone())
+                    && let Some(p) = j.answer.probability()
+                {
+                    // No baseline: the harness did not run, so there is no
+                    // second answer. `record_acted` is what keeps that honest
+                    // in the ledger.
+                    talaria_decide::shadow::record_acted(
+                        &state.pg,
+                        SITE_TICKET,
+                        Some(&ticket_line),
+                        &j,
+                    )
+                    .await;
+                    return p >= 0.5;
+                }
+
                 // THE FAIL-OPEN FOLD, the pre-extraction code's verbatim:
                 // every way this comes back empty — harness error, null
                 // verdict, a value shaped like anything but
@@ -469,32 +528,36 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
                 .unwrap_or(true);
                 // SHADOW MODE, and it is deliberately the last thing that
                 // happens: `relevant` is already decided and about to be
-                // returned, so nothing below can change the answer. The
-                // comparison runs detached, costs this turn nothing, and is a
+                // returned, so nothing below can change the answer. It is a
                 // no-op unless an operator has configured a decision model —
                 // `off` on every install by default.
-                //
-                // Both askers get the harness's OWN definitions
-                // (`RELEVANT_MEANS` / `NOT_RELEVANT_MEANS`), because a
-                // comparison between two differently-worded questions
-                // measures the wording.
-                talaria_decide::shadow::compare(
-                    &state,
-                    talaria_decide::shadow::Compare {
-                        site: "ticket-relevance",
-                        subject_ref: Some(ticket_line),
-                        baseline: relevant.to_string(),
-                        agrees: talaria_decide::shadow::noul_agrees,
-                    },
-                    talaria_decide::Ask::new(subject).q(
-                        "relevant",
-                        talaria_decide::Question::noul_meaning(
-                            talaria_harness_defs::defs::ticket_relevance::RELEVANCE_QUESTION,
-                            talaria_harness_defs::defs::ticket_relevance::RELEVANT_MEANS,
-                            talaria_harness_defs::defs::ticket_relevance::NOT_RELEVANT_MEANS,
-                        ),
-                    ),
-                );
+                let cmp = talaria_decide::shadow::Compare {
+                    site: SITE_TICKET,
+                    subject_ref: Some(ticket_line),
+                    baseline: relevant.to_string(),
+                    agrees: talaria_decide::shadow::noul_agrees,
+                };
+                match judged {
+                    // The site is switched on and the port answered, but below
+                    // its floor — so the harness ran and we have a real
+                    // baseline for an answer already paid for. Recording it is
+                    // what makes the uncertain middle visible: a floor lowered
+                    // from here is lowered against these rows.
+                    Some(_) => {
+                        talaria_decide::shadow::record(&state.pg, &cmp, judged.as_ref()).await;
+                    }
+                    // Nothing asked yet (the common case: the site is off), or
+                    // asked and silent. `compare` asks detached and costs this
+                    // turn nothing.
+                    None if !gate.on => {
+                        talaria_decide::shadow::compare(&state, cmp, ask);
+                    }
+                    // Asked and the port said nothing. The silence belongs in
+                    // the denominator, and asking again would not change it.
+                    None => {
+                        talaria_decide::shadow::record(&state.pg, &cmp, None).await;
+                    }
+                }
                 relevant
             })
         },

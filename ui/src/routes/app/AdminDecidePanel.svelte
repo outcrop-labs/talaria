@@ -52,11 +52,30 @@
     }
     configured: boolean
     shadow: SiteShadow[]
+    sites: Site[]
     toolShadow: boolean
+  }
+  // THE CENSUS — every place in Talaria that asks a decision model anything.
+  // Listed in full, including the sites this panel cannot switch: "where is a
+  // decision model being used" has to have one complete answer, or the answer
+  // is "nobody is sure".
+  type Site = {
+    id: string
+    label: string
+    primitive: string
+    acts: string
+    on: boolean
+    floor: number
+    defaultOn: boolean
+    defaultFloor: number
+    reads: string
+    floorWhy: string
+    switchLivesAt: string | null
   }
   type SiteShadow = {
     site: string
     compared: number
+    acted: number
     answered: number
     agreed: number
     calibrated: number
@@ -89,6 +108,20 @@
   const cfg = $derived(data?.config)
   const meta = $derived(data?.providers.find((p) => p.id === cfg?.provider))
   const shadow = $derived(data?.shadow ?? [])
+  const allSites = $derived(data?.sites ?? [])
+  const shadowFor = (id: string) => shadow.find((s) => s.site === id)
+  // Writing a site's switch or floor goes through the same PUT, under its own
+  // key, so it gets its own audit entry rather than riding a provider change.
+  const applySite = async (id: string, patch: { on?: boolean; floor?: number }) => {
+    try {
+      await putJson('/api/admin/decide', { site: { id, ...patch } })
+    } catch (e) {
+      toastError('Could not change that site', e)
+      return
+    }
+    await qc.invalidateQueries({ queryKey: ['decide-config'] })
+    savedFlash.flash()
+  }
   const toolShadow = $derived(data?.toolShadow ?? false)
   const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—')
   const savedFlash = useSavedFlash()
@@ -383,48 +416,119 @@
       </div>
     {/if}
 
-    {#if shadow.length > 0}
-      <!-- SHADOW MODE — what the port WOULD have decided, beside what the
-           existing code did decide. Nothing here affects behaviour: a wired
-           site runs its own path and the port is asked the same question with
-           nobody listening, so a threshold can be chosen from this install's
-           own traffic rather than from a vendor's published numbers. -->
-      <div transition:slide={{ duration: 150 }} class="mt-4 border-t border-line-subtle pt-3">
-        <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          Shadow comparisons
-        </div>
-        <div class="space-y-2">
-          {#each shadow as s (s.site)}
-            <div class="text-[11px]">
-              <div class="font-mono text-fg">{s.site}</div>
-              <p class="text-muted">
-                Agreed with the existing code on
-                <span class="text-fg">{pct(s.agreed, s.answered)}</span>
-                of {s.answered} answered
-                {#if s.compared > s.answered}
-                  — the port said nothing on {s.compared - s.answered} of {s.compared}
+    <!-- THE CENSUS, with each site's own numbers beside its own switch. That
+         adjacency is the whole point of this section: shadow mode's argument
+         is that a site switches over when its own traffic says so, and a
+         number an operator can read but not act on is a dashboard rather than
+         a feature. -->
+    <div class="mt-4 border-t border-line-subtle pt-3">
+      <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+        Where it is used
+      </div>
+      <div class="space-y-3">
+        {#each allSites as s (s.id)}
+          {@const m = shadowFor(s.id)}
+          <div class="text-[11px]">
+            <div class="flex flex-wrap items-center gap-2">
+              {#if s.switchLivesAt}
+                <span class="font-mono text-fg">{s.label}</span>
+                <span class="text-ink-dim">· {s.primitive}</span>
+              {:else}
+                <Checkbox
+                  class="gap-2 text-[11px] text-fg"
+                  checked={s.on}
+                  onChange={(on) => void applySite(s.id, { on })}
+                  label={s.label}
+                />
+                <span class="text-ink-dim">· {s.primitive}</span>
+                {#if s.on}
+                  <span class="text-muted">acts at</span>
+                  <Input
+                    size="sm"
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    max="1"
+                    value={String(s.floor)}
+                    onblur={(e) =>
+                      Number(e.currentTarget.value) !== s.floor &&
+                      void applySite(s.id, { floor: Number(e.currentTarget.value) })}
+                    class="w-20"
+                  />
+                  <span class="text-muted">
+                    {s.reads === 'lean' ? 'probability of yes' : 'certainty'}
+                  </span>
+                  {#if s.floor !== s.defaultFloor}
+                    <Button size="sm" variant="link" onclick={() => void applySite(s.id, { floor: s.defaultFloor })}>
+                      reset to {s.defaultFloor}
+                    </Button>
+                  {/if}
                 {/if}
-                {#if s.p50Ms !== null}· {s.p50Ms}ms median, {s.p99Ms}ms p99{/if}
-              </p>
-              {#if s.answered > s.calibrated}
-                <p class="text-warn">
-                  {s.answered - s.calibrated} of {s.answered} answers carried no real
-                  distribution, so their confidence is unavailable.
-                </p>
-              {/if}
-              {#if s.meanCertaintyWhenDisagreed !== null}
-                <p class="text-muted">
-                  When it disagreed, mean certainty was
-                  <span class="text-fg">{s.meanCertaintyWhenDisagreed.toFixed(2)}</span>
-                  — low means a threshold can filter the disagreements; high means read
-                  them case by case before switching this site over.
-                </p>
               {/if}
             </div>
-          {/each}
-        </div>
+            <p class="mt-0.5 pl-6 text-muted">{s.acts}</p>
+            {#if s.switchLivesAt}
+              <!-- Named rather than offered twice: two spellings of one switch
+                   is how the two come to disagree. -->
+              <p class="pl-6 text-ink-dim">Switched on from {s.switchLivesAt}.</p>
+            {:else}
+              <p class="pl-6 text-ink-dim">{s.floorWhy}</p>
+            {/if}
+
+            {#if m}
+              <!-- SHADOW MODE — what the port WOULD have decided, beside what
+                   the existing code did decide. A site that has not switched
+                   over runs its own path and the port is asked the same
+                   question with nobody listening, so a threshold can be chosen
+                   from this install's own traffic rather than from a vendor's
+                   published numbers. -->
+              <div transition:slide={{ duration: 150 }} class="mt-1 pl-6">
+                {#if m.compared > 0}
+                  <p class="text-muted">
+                    Agreed with the existing code on
+                    <span class="text-fg">{pct(m.agreed, m.answered)}</span>
+                    of {m.answered} answered
+                    {#if m.compared > m.answered}
+                      — the port said nothing on {m.compared - m.answered} of {m.compared}
+                    {/if}
+                    {#if m.p50Ms !== null}· {m.p50Ms}ms median, {m.p99Ms}ms p99{/if}
+                  </p>
+                {/if}
+                {#if m.acted > 0}
+                  <!-- Counted apart from the comparisons on purpose: once a
+                       site is switched over there is no second answer, and
+                       folding these in would make it read as 100% agreement
+                       forever. -->
+                  <p class="text-muted">
+                    Decided <span class="text-fg">{m.acted}</span>
+                    {m.acted === 1 ? 'turn' : 'turns'} on its own since it was switched over — those have
+                    no baseline to agree with.
+                  </p>
+                {/if}
+                {#if m.answered > m.calibrated}
+                  <p class="text-warn">
+                    {m.answered - m.calibrated} of {m.answered} answers carried no real
+                    distribution, so their confidence is unavailable.
+                  </p>
+                {/if}
+                {#if m.meanCertaintyWhenDisagreed !== null}
+                  <p class="text-muted">
+                    When it disagreed, mean certainty was
+                    <span class="text-fg">{m.meanCertaintyWhenDisagreed.toFixed(2)}</span>
+                    — low means a threshold can filter the disagreements; high means read
+                    them case by case before switching this site over.
+                  </p>
+                {/if}
+              </div>
+            {:else if !s.switchLivesAt}
+              <p class="pl-6 text-ink-dim">
+                No comparisons recorded yet{data?.configured ? '' : ' — nothing is configured'}.
+              </p>
+            {/if}
+          </div>
+        {/each}
       </div>
-    {/if}
+    </div>
 
     {#if result}
       <div transition:slide={{ duration: 150 }} class="mt-3 border-t border-line-subtle pt-3 text-xs">

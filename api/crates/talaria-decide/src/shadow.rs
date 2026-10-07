@@ -81,49 +81,122 @@ pub fn compare(state: &AppState, cmp: Compare, ask: Ask) {
     });
 }
 
-/// Write one comparison row. Never returns an error: a measurement that could
-/// break the thing it measures is worse than no measurement.
-pub async fn record(pg: &PgPool, cmp: &Compare, judgment: Option<&Judgment>) {
-    let (port_answer, probability, certainty, calibrated, provider, model, latency, agreed) =
-        match judgment {
-            Some(j) => (
-                Some(render(&j.answer)),
-                j.answer.probability(),
-                Some(j.certainty()),
-                j.calibrated,
-                j.provider.clone(),
-                j.model.clone(),
-                Some(j.latency_ms as i32),
-                Some((cmp.agrees)(&j.answer, &cmp.baseline)),
-            ),
-            // THE PORT ANSWERED NOTHING, AND THAT IS A MEASUREMENT. A site
-            // reading only the rows where a judgment arrived would compute an
-            // agreement rate over the calls that worked and call it the
-            // provider's accuracy. The silences belong in the denominator.
-            None => (None, None, None, false, String::new(), None, None, None),
-        };
+/// The one row this module writes. Private, and the only place the column
+/// list lives — three public builders fill it, and a second spelling of the
+/// insert is how they come to disagree about what a shadow row is.
+struct ShadowRow<'a> {
+    site: &'a str,
+    subject_ref: Option<&'a str>,
+    /// EMPTY MEANS "NOTHING TO COMPARE AGAINST". A site that has switched over
+    /// no longer runs the path this ledger was measuring, so there is no
+    /// second answer; `agreed` stays null and the report counts those rows
+    /// apart from the comparisons.
+    baseline: &'a str,
+    port_answer: Option<String>,
+    probability: Option<f64>,
+    certainty: Option<f64>,
+    calibrated: bool,
+    provider: &'a str,
+    model: Option<&'a str>,
+    latency_ms: Option<i32>,
+    agreed: Option<bool>,
+}
+
+/// Never returns an error: a measurement that could break the thing it
+/// measures is worse than no measurement.
+async fn insert(pg: &PgPool, r: ShadowRow<'_>) {
     let res = sqlx::query(
         "insert into decide_shadow \
            (site, subject_ref, baseline, port_answer, probability, certainty, \
             calibrated, provider, model, latency_ms, agreed) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
-    .bind(cmp.site)
-    .bind(cmp.subject_ref.as_deref())
-    .bind(&cmp.baseline)
-    .bind(port_answer)
-    .bind(probability.map(|p| p as f32))
-    .bind(certainty.map(|c| c as f32))
-    .bind(calibrated)
-    .bind(provider)
-    .bind(model)
-    .bind(latency)
-    .bind(agreed)
+    .bind(r.site)
+    .bind(r.subject_ref)
+    .bind(r.baseline)
+    .bind(r.port_answer)
+    .bind(r.probability.map(|p| p as f32))
+    .bind(r.certainty.map(|c| c as f32))
+    .bind(r.calibrated)
+    .bind(r.provider)
+    .bind(r.model)
+    .bind(r.latency_ms)
+    .bind(r.agreed)
     .execute(pg)
     .await;
     if let Err(e) = res {
-        tracing::warn!("[decide] shadow row not recorded for {}: {e}", cmp.site);
+        tracing::warn!("[decide] shadow row not recorded for {}: {e}", r.site);
     }
+}
+
+/// Write one comparison row.
+pub async fn record(pg: &PgPool, cmp: &Compare, judgment: Option<&Judgment>) {
+    let row = match judgment {
+        Some(j) => ShadowRow {
+            site: cmp.site,
+            subject_ref: cmp.subject_ref.as_deref(),
+            baseline: &cmp.baseline,
+            port_answer: Some(render(&j.answer)),
+            probability: j.answer.probability(),
+            certainty: Some(j.certainty()),
+            calibrated: j.calibrated,
+            provider: &j.provider,
+            model: j.model.as_deref(),
+            latency_ms: Some(j.latency_ms as i32),
+            agreed: Some((cmp.agrees)(&j.answer, &cmp.baseline)),
+        },
+        // THE PORT ANSWERED NOTHING, AND THAT IS A MEASUREMENT. A site
+        // reading only the rows where a judgment arrived would compute an
+        // agreement rate over the calls that worked and call it the
+        // provider's accuracy. The silences belong in the denominator.
+        None => ShadowRow {
+            site: cmp.site,
+            subject_ref: cmp.subject_ref.as_deref(),
+            baseline: &cmp.baseline,
+            port_answer: None,
+            probability: None,
+            certainty: None,
+            calibrated: false,
+            provider: "",
+            model: None,
+            latency_ms: None,
+            agreed: None,
+        },
+    };
+    insert(pg, row).await;
+}
+
+/// Record a judgment the site ACTED on, after it has been switched over.
+///
+/// There is no baseline: the site no longer runs the path the ledger was
+/// comparing against, so there is no second answer to agree or disagree with.
+/// Folding these in as agreements would make every switched-over site read as
+/// 100% agreement forever — the one number that must not be invented here —
+/// so `baseline` stays empty, `agreed` stays null, and `shadow_report` counts
+/// them as `acted` rather than as `compared`.
+///
+/// They are still recorded, and for a reason the comparison rows do not
+/// serve: this is the only trace that the port decided anything, with the
+/// number it decided at. A site switched over and then found to be wrong is
+/// audited from here.
+pub async fn record_acted(pg: &PgPool, site: &str, subject_ref: Option<&str>, j: &Judgment) {
+    insert(
+        pg,
+        ShadowRow {
+            site,
+            subject_ref,
+            baseline: "",
+            port_answer: Some(render(&j.answer)),
+            probability: j.answer.probability(),
+            certainty: Some(j.certainty()),
+            calibrated: j.calibrated,
+            provider: &j.provider,
+            model: j.model.as_deref(),
+            latency_ms: Some(j.latency_ms as i32),
+            agreed: None,
+        },
+    )
+    .await;
 }
 
 /// A comparison whose port answer is DERIVED rather than a single judgment.
@@ -146,29 +219,28 @@ pub struct Derived<'a> {
     pub latency_ms: Option<u64>,
 }
 
-/// Write one derived comparison. Never errors, for the same reason `record`
-/// does not.
+/// Write one derived comparison.
 pub async fn record_derived(pg: &PgPool, d: Derived<'_>) {
-    let res = sqlx::query(
-        "insert into decide_shadow \
-           (site, subject_ref, baseline, port_answer, calibrated, provider, latency_ms, agreed) \
-         values ($1, $2, $3, $4, false, $5, $6, $7)",
+    insert(
+        pg,
+        ShadowRow {
+            site: d.site,
+            subject_ref: d.subject_ref,
+            baseline: d.baseline,
+            port_answer: Some(d.port_answer.to_string()),
+            // No single probability stands behind a derived answer, so these
+            // stay null rather than carrying a summary statistic nobody could
+            // interpret.
+            probability: None,
+            certainty: None,
+            calibrated: false,
+            provider: d.provider,
+            model: None,
+            latency_ms: d.latency_ms.map(|l| l as i32),
+            agreed: Some(d.agreed),
+        },
     )
-    .bind(d.site)
-    .bind(d.subject_ref)
-    .bind(d.baseline)
-    .bind(d.port_answer)
-    .bind(d.provider)
-    .bind(d.latency_ms.map(|l| l as i32))
-    .bind(d.agreed)
-    .execute(pg)
     .await;
-    if let Err(e) = res {
-        tracing::warn!(
-            "[decide] derived shadow row not recorded for {}: {e}",
-            d.site
-        );
-    }
 }
 
 /// An answer as the ledger stores it. A noul renders as the boolean it would
@@ -191,8 +263,13 @@ fn render(answer: &Answer) -> String {
 pub struct SiteShadow {
     pub site: String,
     /// Every comparison attempted, including the ones where the port said
-    /// nothing.
+    /// nothing. Rows the site ACTED on are not comparisons and are not here.
     pub compared: i64,
+    /// Judgments this site acted on after being switched over. These have no
+    /// baseline — the path they replaced no longer runs — so they are counted
+    /// apart rather than folded in as agreements, which would make every
+    /// switched-over site read as 100% agreement forever.
+    pub acted: i64,
     /// Comparisons where the port actually answered.
     pub answered: i64,
     /// Of those that answered, how many matched the baseline.
@@ -216,9 +293,13 @@ pub struct SiteShadow {
 /// that has never run a comparison, which is every install by default.
 pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
     let rows = sqlx::query(
+        // `baseline <> ''` is what separates a COMPARISON from a decision:
+        // only `record_acted` writes an empty baseline, and it writes one
+        // precisely because the path being compared against stopped running.
         "select site, \
-                count(*)::bigint as compared, \
-                count(port_answer)::bigint as answered, \
+                count(*) filter (where baseline <> '')::bigint as compared, \
+                count(*) filter (where baseline = '')::bigint as acted, \
+                count(port_answer) filter (where baseline <> '')::bigint as answered, \
                 count(*) filter (where agreed)::bigint as agreed, \
                 count(*) filter (where calibrated)::bigint as calibrated, \
                 percentile_disc(0.5) within group (order by latency_ms) \
@@ -239,6 +320,7 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
         .map(|r| SiteShadow {
             site: r.try_get("site").unwrap_or_default(),
             compared: r.try_get("compared").unwrap_or(0),
+            acted: r.try_get("acted").unwrap_or(0),
             answered: r.try_get("answered").unwrap_or(0),
             agreed: r.try_get("agreed").unwrap_or(0),
             calibrated: r.try_get("calibrated").unwrap_or(0),
@@ -333,12 +415,16 @@ mod tests {
     }
 
     #[test]
-    fn the_report_shape_names_both_denominators_because_silences_count() {
+    fn the_report_shape_names_all_three_denominators_because_silences_and_decisions_differ() {
         // `compared` vs `answered` is the distinction that stops an agreement
-        // rate being computed over only the calls that worked.
+        // rate being computed over only the calls that worked. `acted` is the
+        // third: once a site is switched over there is no baseline, so those
+        // rows are neither agreements nor disagreements and must not be
+        // counted as either.
         let v = shadow_value(vec![SiteShadow {
             site: "ticket-relevance".into(),
             compared: 10,
+            acted: 4,
             answered: 7,
             agreed: 6,
             calibrated: 7,
@@ -349,7 +435,11 @@ mod tests {
             newest: None,
         }]);
         assert_eq!(v[0]["compared"], serde_json::json!(10));
+        assert_eq!(v[0]["acted"], serde_json::json!(4));
         assert_eq!(v[0]["answered"], serde_json::json!(7));
         assert_eq!(v[0]["meanCertaintyWhenDisagreed"], serde_json::json!(0.21));
+        // And the agreement rate's denominator is `answered`, never
+        // `answered + acted` — the panel divides by what it is given.
+        assert_ne!(v[0]["answered"], v[0]["compared"]);
     }
 }
