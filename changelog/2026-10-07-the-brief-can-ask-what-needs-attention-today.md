@@ -61,6 +61,16 @@
   a global map would let an uncensused `SITE` pass on the strength of a
   censused one, which is the rule certifying the thing it exists to catch.
 
+  **One display bug fixed on the way, which this change would have made
+  worse.** `record_derived` writes `calibrated: false`, because no single
+  probability stands behind a derived answer — and the panel's warning compared
+  `calibrated` against `answered`, so every derived row read as "this answer
+  carried no real distribution". Tool-offer pruning has had that since it
+  shipped; the brief's reorder would have been the second site reporting
+  itself entirely uncalibrated while warning about a distribution it never
+  claimed. The report now counts `judgments` — rows carrying one probability or
+  certainty — and the warning divides by that instead.
+
   Verified: 12 tests in `talaria-decide`'s focus module and 81 in the crate
   (5 new here — the levels are a well-formed Score and each one stands on its
   own, the top level normalizes to exactly 1.0 and nothing sorts off the end

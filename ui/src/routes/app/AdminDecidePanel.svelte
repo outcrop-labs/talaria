@@ -78,6 +78,7 @@
     acted: number
     answered: number
     agreed: number
+    judgments: number
     calibrated: number
     p50Ms: number | null
     p99Ms: number | null
@@ -505,9 +506,14 @@
                     no baseline to agree with.
                   </p>
                 {/if}
-                {#if m.answered > m.calibrated}
+                {#if m.judgments > m.calibrated}
+                  <!-- Counted over the rows that carried a SINGLE judgment. A
+                       derived row — the tool keep-set, the brief's reorder —
+                       has no one probability behind it, so warning about its
+                       missing distribution would be warning about something
+                       that was never supposed to be there. -->
                   <p class="text-warn">
-                    {m.answered - m.calibrated} of {m.answered} answers carried no real
+                    {m.judgments - m.calibrated} of {m.judgments} answers carried no real
                     distribution, so their confidence is unavailable.
                   </p>
                 {/if}
