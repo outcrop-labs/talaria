@@ -51,7 +51,7 @@ use talaria_daily_brief_comms::{CommsLine, comms_lines};
 use talaria_daily_brief_config::{BriefConfig, brief_config, brief_window, zone_for};
 use talaria_daily_brief_focus::{
     BriefEvidence, RawFocusItem, approval_items, as_iso, dedupe_items, evidence_value,
-    notification_items, sort_items, task_items,
+    notification_items, sort_items_judged, task_items,
 };
 use talaria_daily_brief_types::{BriefEntry, BriefLine, NewEntry, fold_entries};
 use talaria_google_calendar::list_upcoming_events;
@@ -677,7 +677,8 @@ async fn snapshot(
                     .any(|href| item.source_href.starts_with(href.as_str())))
         })
         .collect();
-    let mut candidates: Vec<NewEntry> = sort_items(deduped, now_ms)
+    let mut candidates: Vec<NewEntry> = sort_items_judged(state, deduped, now_ms)
+        .await
         .into_iter()
         .map(|item| candidate_from(&item, now_ms))
         .collect();

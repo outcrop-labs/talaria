@@ -4532,6 +4532,9 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-boards",
  "talaria-daily-brief-types",
+ "talaria-decide",
+ "talaria-retrieval-http",
+ "talaria-state",
  "talaria-statuses",
 ]
 
