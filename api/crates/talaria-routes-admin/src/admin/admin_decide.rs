@@ -2,7 +2,8 @@
 // GET → the provider catalog with its capability sheet, plus the current
 // config, redacted. PUT → patch the config. POST { action: "test" } → put one
 // real question through whatever is configured and report exactly what came
-// back.
+// back. POST { action: "models" } → ask the endpoint which model ids it will
+// accept.
 //
 // WHY THE TEST ARM EARNS ITS KEEP. Every other field on this panel can be
 // wrong in a way nothing notices: a URL that resolves but speaks a different
@@ -11,6 +12,15 @@
 // present as "the port is on" and then as call sites quietly falling back
 // forever. One round trip with a question whose answer a person can check
 // turns every one of those into a sentence on the panel.
+//
+// AND THE SENTENCE IS THE PROVIDER'S OWN. The first real configuration of this
+// panel failed on a `model` of `jev` instead of `jev-latest`: a free-text field
+// whose shortest plausible value is wrong, a Test button that answered with our
+// generic "did not answer, or answered in a shape we do not recognize", and a
+// `400 Unknown model: jev` sitting unread in the response body. Both halves of
+// that are fixed here — the refusal is rendered verbatim, and `action: "models"`
+// asks the endpoint for the ids it actually accepts so the field can be a list
+// rather than a guess.
 
 use axum::Json;
 use axum::extract::State;
@@ -20,8 +30,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
 use talaria_api_facades::decide::{
-    self, ALL_WIRES, DECIDE_PROVIDERS, DecidePatch, Question, configured, providers_public, shadow,
-    tools,
+    self, ALL_WIRES, DECIDE_PROVIDERS, DecidePatch, NoAnswer, Question, configured,
+    providers_public, shadow, tools,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -195,10 +205,10 @@ pub async fn post(
     let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    match optional_enum_member(obj, "action", &["test"]) {
-        Ok(_) => {}
+    let action = match optional_enum_member(obj, "action", &["test", "models"]) {
+        Ok(v) => v.unwrap_or_else(|| "test".to_string()),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-    }
+    };
 
     let cfg = decide::get_decide_config(&state.pg).await;
     if !configured(&cfg) {
@@ -207,14 +217,31 @@ pub async fn post(
         // error envelope.
         return Ok(Json(json!({
             "ok": false,
-            "reason": "No decision model is configured yet.",
+            "kind": NoAnswer::NotConfigured.kind(),
+            "reason": NoAnswer::NotConfigured.sentence(),
         }))
         .into_response());
     }
 
-    let (subject, question) = probe();
     let http = talaria_api_facades::retrieval::real_http();
-    let answered = decide::ask_one(&state, &http, subject, question).await;
+
+    // The catalog read is not audited: it names no model, changes nothing, and
+    // an admin pressing it twice is how they check whether a key works.
+    if action == "models" {
+        return Ok(Json(match decide::list_models(&state, &http).await {
+            Ok(models) => json!({ "ok": true, "models": models }),
+            Err(e) => json!({ "ok": false, "kind": e.kind(), "reason": e.sentence() }),
+        })
+        .into_response());
+    }
+
+    let (subject, question) = probe();
+    let ask = decide::Ask::new(subject).q("q", question);
+    // A 2xx that carried no answer for the one id we asked under is the
+    // `Unreadable` case — the same thing a wire not recognizing the body is.
+    let answered = decide::try_decide(&state, &http, &ask)
+        .await
+        .and_then(|mut m| m.remove("q").ok_or(NoAnswer::Unreadable));
 
     log_audit(
         &state.pg,
@@ -225,13 +252,13 @@ pub async fn post(
             target_id: Some("decide"),
             target_label: None,
             before: None,
-            after: Some(json!({ "answered": answered.is_some() })),
+            after: Some(json!({ "answered": answered.is_ok() })),
         },
     )
     .await;
 
     Ok(Json(match answered {
-        Some(j) => json!({
+        Ok(j) => json!({
             "ok": true,
             "provider": j.provider,
             "model": j.model,
@@ -245,9 +272,13 @@ pub async fn post(
             "calibrated": j.calibrated,
             "latencyMs": j.latency_ms,
         }),
-        None => json!({
+        // THE PROVIDER'S OWN WORDS, not ours. `kind` is the stable tag so the
+        // panel can style a refusal differently from an unreachable host
+        // without matching on prose.
+        Err(e) => json!({
             "ok": false,
-            "reason": "The provider did not answer, or answered in a shape this wire does not recognize. Check the URL, the key, and that the model serves yes/no judgments.",
+            "kind": e.kind(),
+            "reason": e.sentence(),
         }),
     })
     .into_response())
@@ -276,6 +307,50 @@ mod tests {
                 .expect("a report")
                 .contains("failing"),
             "the state has to actually describe the thing being judged"
+        );
+    }
+
+    #[test]
+    fn a_refusal_carries_the_providers_own_words_and_a_tag_the_panel_can_branch_on() {
+        // The sentence a person reads has to be the ENDPOINT'S. This is the
+        // literal case that produced the fix: `model` was `jev`, TypeSafe
+        // answered 400 with `Unknown model: jev`, and the panel said nothing
+        // about it.
+        let refused = NoAnswer::Refused {
+            status: 400,
+            message: "Unknown model: jev".into(),
+        };
+        assert_eq!(refused.kind(), "refused");
+        let sentence = refused.sentence();
+        assert!(sentence.contains("Unknown model: jev"), "{sentence}");
+        assert!(
+            sentence.contains("400"),
+            "the status is context: {sentence}"
+        );
+
+        // And every kind is a distinct tag — the panel styles an unreachable
+        // host differently from a refusal, and matching on prose would break
+        // the moment a sentence is reworded.
+        let kinds = [
+            NoAnswer::NotConfigured.kind(),
+            NoAnswer::Unusable("x".into()).kind(),
+            NoAnswer::Unreachable("x".into()).kind(),
+            refused.kind(),
+            NoAnswer::Unreadable.kind(),
+        ];
+        let mut sorted = kinds.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), kinds.len(), "two kinds share a tag");
+        for k in kinds {
+            assert!(!k.is_empty());
+        }
+        // The not-configured sentence is the one the route sends before it
+        // ever dispatches, so it must stand on its own.
+        assert!(
+            NoAnswer::NotConfigured
+                .sentence()
+                .contains("No decision model"),
         );
     }
 
