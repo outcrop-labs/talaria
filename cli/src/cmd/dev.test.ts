@@ -4,7 +4,7 @@
 // is what prints it), so refusals are asserted on the throw.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
@@ -93,6 +93,33 @@ describe('talaria dev — mcp staleness', () => {
     expect(ctx.calls.some((c) => c.cmd === 'bun' && c.args[1] === 'build' && c.opts?.cwd === join(root, 'mcp'))).toBe(true)
   })
 
+  // MISSING AND STALE ARE DIFFERENT FAILURES. A dist that exists still SERVES
+  // the previous build, so a failed rebuild is a warning and the stack comes
+  // up; a dist that is absent serves nothing, so a stack that came up anyway
+  // would hand every agent an empty tool list.
+  test('a stale dist that will not rebuild warns and dev carries on', async () => {
+    const root = makeTree({ distMtime: new Date(0) })
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    ctx.plant(['bun', ['run', 'build']], new Error('tsc blew up'), join(root, 'mcp'))
+    const died = await attempt(ctx)
+    expect(died).toBe('')
+    expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('mcp/dist is STALE'))).toBe(true)
+  })
+
+  test('a missing dist that will not rebuild stops the stack', async () => {
+    const root = makeTree({ distMtime: new Date(0) })
+    rmSync(join(root, 'mcp/dist/index.js'))
+    const ctx = fakeCtx()
+    ctx.root = root
+    plantInfra(ctx)
+    ctx.plant(['bun', ['run', 'build']], new Error('tsc blew up'), join(root, 'mcp'))
+    const died = await attempt(ctx)
+    expect(died).toContain('mcp/dist does not exist')
+    expect(died).toContain('serve NOTHING')
+  })
+
   test('TALARIA_SKIP_MCP_BUILD=1 → never builds', async () => {
     const root = makeTree({ distMtime: new Date(0) })
     const ctx = fakeCtx({ env: { TALARIA_SKIP_MCP_BUILD: '1' } })
@@ -142,9 +169,13 @@ describe('talaria dev — omp auth bridge', () => {
     const ctx = fakeCtx()
     ctx.root = root
     plantInfra(ctx)
-    // mcp's dist is fresh in this tree, so the only `bun run build` that
-    // runs is the bridge's — and this plants its failure.
-    ctx.plant(['bun', ['run', 'build']], new Error('bundler blew up'))
+    // SCOPED TO THE BRIDGE. This used to plant the failure for any
+    // `bun run build` and lean on "mcp's dist is fresh in this tree" to keep
+    // the toolkit's build out of the way — but freshness here is an mtime
+    // relationship, and a CI checkout gives mcp/src and mcp/dist the same
+    // checkout time, so the toolkit built too, hit this planted failure, and
+    // died before the bridge was ever reached. The cwd says which build.
+    ctx.plant(['bun', ['run', 'build']], new Error('bundler blew up'), join(root, 'omp-auth'))
     await runDev(ctx)
     expect(ctx.logLines.some((l) => l.kind === 'warn' && l.msg.includes('omp-auth/ failed to build'))).toBe(true)
   })

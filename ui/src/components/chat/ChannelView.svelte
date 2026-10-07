@@ -1,6 +1,9 @@
 <script lang="ts">
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
   import ThreadPanel from './ThreadPanel.svelte'
+  import TypingLine from './TypingLine.svelte'
+  import { typersIn } from '@/lib/comms-typing.svelte'
   import ChannelComposer from './ChannelComposer.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
@@ -20,9 +23,12 @@
   } from '@/lib/channels.svelte'
   import { useUsers } from '@/lib/users'
   import { useSession } from '@/lib/session'
+  import { useProfilePrefs } from '@/lib/muse.svelte'
+  import { dayDividerMap } from '@/lib/day-dividers'
   import { userMentionInsert, type Mentionable } from '@/components/chat/mentions.svelte'
   import { splitAttachments, type Attachment } from '@/lib/attachments'
   import type { AgentModel } from '@/lib/agents'
+  import type { ProfileSubject } from '@/lib/comms-profile'
   import { rowMenuEntries, type MessageCtx } from './channel-view'
 
   // One channel: live message feed + composer, Slack-shaped. Messages take
@@ -40,6 +46,7 @@
     zeroTitle,
     zeroHint,
     composerPlaceholder,
+    onOpenProfile,
   }: {
     channelId: string
     channelName: string
@@ -53,6 +60,9 @@
      *  and what an empty discussion should say depends on the ticket. */
     zeroTitle?: string
     zeroHint?: string
+    /** Comms' profile drawer: an author's name/avatar opens it. Optional — a
+     *  ticket's embedded room has no drawer, and its rows stay plain text. */
+    onOpenProfile?: (subject: ProfileSubject) => void
   } = $props()
 
   // The whole query, not `{ data: messages = [] }`. That default turned a
@@ -97,6 +107,18 @@
       (usersList.failed && !!usersList.notice),
   )
   const sessionQuery = useSession()
+
+  // Who else is typing in this channel (comms-typing): first names, in the
+  // order they started.
+  const typingNames = $derived(
+    typersIn(channelId, sessionQuery.data?.id).map((uid) => {
+      const u = usersList.rows.find((r) => r.id === uid)
+      return (u?.name ?? u?.email ?? 'Someone').split(' ')[0] ?? 'Someone'
+    }),
+  )
+  // The viewer's zone preference decides what "a day" is for the dividers; a
+  // failed or unset read falls back to the browser's zone, never to an error.
+  const prefsQuery = useProfilePrefs()
   useChannelEvents(() => channelId, () => onLiveMessage?.())
   let error = $state<string | null>(null)
   let threadRoot = $state<string | null>(null)
@@ -140,17 +162,40 @@
   })
 
   const labelFor = (model: string) => fleet.find((a) => a.id === model)?.label ?? model
-  // Human authors are stored by email (stable identity); show their display name.
-  const userLabel = (author: string) =>
-    usersList.rows.find((u) => u.email === author)?.name ?? (author.split('@')[0] || author)
-
-  const ctx: MessageCtx = $derived({
-    channelId,
-    me: sessionQuery.data?.email ?? sessionQuery.data?.name ?? '',
-    isChannelOwner: detail?.role === 'owner',
-    labelFor,
-    userLabel,
+  // The directory is read HERE, while the context is built, not inside the
+  // lookups at call time. Read lazily inside a lookup, the rows that rendered
+  // before the directory arrived never re-ran, so a transcript that loaded
+  // first kept showing "jordan" instead of "Jordan Ellis". Built here, a
+  // directory update yields a new context and every row re-renders.
+  // Human authors are stored by email (stable identity); agents have no photo
+  // yet and keep their initials.
+  const ctx: MessageCtx = $derived.by(() => {
+    const rows = usersList.rows
+    const userRow = (author: string) => rows.find((u) => u.email === author)
+    return {
+      channelId,
+      me: sessionQuery.data?.email ?? sessionQuery.data?.name ?? '',
+      isChannelOwner: detail?.role === 'owner',
+      labelFor,
+      userLabel: (author: string) => userRow(author)?.name ?? (author.split('@')[0] || author),
+      pictureFor: (author: string, authorType: string) =>
+        authorType === 'agent' ? null : (userRow(author)?.picture ?? null),
+      selfMentions: [sessionQuery.data?.name, sessionQuery.data?.email?.split('@')[0]].filter((n): n is string => !!n),
+      timeZone: prefsQuery.data?.timezone ?? null,
+      onOpenProfile: onOpenProfile
+        ? (author: string, authorType: 'user' | 'agent') => {
+            if (authorType === 'agent') return onOpenProfile({ kind: 'agent', model: author })
+            // Users are stored by email; one the directory does not know has no profile to show.
+            const u = userRow(author)
+            if (u) onOpenProfile({ kind: 'person', userId: u.id })
+          }
+        : undefined,
+    }
   })
+
+  // One divider before each calendar day's first message (R1). Recomputed with
+  // the list, so "Today" rolls over the next time a message lands.
+  const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
 
   const mentionables: Mentionable[] = $derived(
     [
@@ -282,7 +327,9 @@
             transcripts — the rows' local fades then mark only messages that
             genuinely arrive/leave while you watch. -->
         {#key channelId}
-          {#each messages as m (m.id)}
+          {#each messages as m, i (m.id)}
+            {@const day = dividers.get(i)}
+            {#if day}<DayDivider label={day.label} />{/if}
             <MessageRow
               message={m}
               {ctx}
@@ -309,8 +356,11 @@
     <!-- Opaque: a transparent gutter let the transcript show through beneath
          the composer panel. -->
     <div bind:clientHeight={composerH} class="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-surface">
-      <div class="mx-auto w-full max-w-[var(--converse-width)]">
-        <ChannelComposer {channelName} placeholder={composerPlaceholder} {mentionables} onSend={send} />
+      <div class="relative mx-auto w-full max-w-[var(--converse-width)]">
+        <!-- Who is typing here right now — above the composer, out of flow so
+             the composer (and the transcript padding it drives) never moves. -->
+        <TypingLine names={typingNames} class="absolute -top-5 left-0 px-7" />
+        <ChannelComposer {channelName} {channelId} placeholder={composerPlaceholder} {mentionables} onSend={send} />
       </div>
     </div>
     <ContextMenu {menu} />
@@ -319,6 +369,7 @@
   {#if threadRoot}
     <ThreadPanel
       {channelId}
+      {channelName}
       rootId={threadRoot}
       {ctx}
       {mentionables}

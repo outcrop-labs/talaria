@@ -61,6 +61,11 @@
   // Fixed-position style computed from the trigger at open time — see the
   // portal note above for why fixed + portal rather than absolute.
   let pos = $state<string | null>(null)
+  // Flipped upward because opening down would run off the bottom of the
+  // viewport (a trigger docked low, like the Comms status bar). Reset on
+  // every open, so a trigger that moves is measured afresh.
+  let flipped = $state(false)
+  const upward = $derived(up || flipped)
 
   const close = () => {
     open = false
@@ -69,19 +74,34 @@
   function place(): string | null {
     const r = ref?.getBoundingClientRect()
     if (!r) return null
-    const vert = up ? `bottom: ${window.innerHeight - r.top + offset}px` : `top: ${r.bottom + offset}px`
+    const vert = upward ? `bottom: ${window.innerHeight - r.top + offset}px` : `top: ${r.bottom + offset}px`
     const horiz = align === 'right' ? `right: ${Math.max(8, window.innerWidth - r.right)}px` : `left: ${Math.max(8, r.left)}px`
     return `position: fixed; z-index: 80; ${vert}; ${horiz}`
   }
 
   function toggle() {
     if (open) return close()
+    flipped = false
     pos = place()
     if (pos) open = true
   }
 
   // In follow mode a viewport resize recentres the panel on the (stable)
   // anchor; in close mode there is nothing to do — any scroll closes.
+  // Measure once the panel exists: if it overflows the bottom edge and there
+  // is more room above the trigger than below it, open upward instead.
+  $effect(() => {
+    if (!open || !panelEl || up || flipped) return
+    const panel = panelEl.getBoundingClientRect()
+    const trigger = ref?.getBoundingClientRect()
+    if (!trigger) return
+    const roomBelow = window.innerHeight - trigger.bottom
+    if (panel.bottom > window.innerHeight - 8 && trigger.top > roomBelow) {
+      flipped = true
+      pos = place()
+    }
+  })
+
   function onResize() {
     if (open && follow) pos = place()
   }
@@ -129,7 +149,7 @@
       onclick={(e) => e.stopPropagation()}
       class={cn(
         popPanel,
-        up ? (align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left') : align === 'right' ? 'origin-top-right' : 'origin-top-left',
+        upward ? (align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left') : align === 'right' ? 'origin-top-right' : 'origin-top-left',
         className,
       )}
       in:pop={POPOVER}

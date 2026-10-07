@@ -131,3 +131,84 @@ pub async fn app_state() -> talaria_state::AppState {
     .expect("test config assembles");
     talaria_state::AppState::new(talaria_api::db::pool(&cfg), std::sync::Arc::new(cfg))
 }
+
+/// The app's state against the developer's LIVE Postgres AND Redis — for the
+/// tests that drive the real router through a minted session cookie.
+pub async fn live_app_state() -> talaria_state::AppState {
+    let cfg = talaria_config::Config::from_parts(
+        std::env::var("DATABASE_URL").expect(DATABASE_URL_EXPECT),
+        std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)"),
+        std::env::var("TALARIA_SECRET_KEY").unwrap_or_default(),
+        std::env::var("TALARIA_SECRET_KEY_FILE").unwrap_or_default(),
+        String::new(),
+        String::new(),
+    )
+    .expect("test config assembles");
+    talaria_state::AppState::new(talaria_api::db::pool(&cfg), std::sync::Arc::new(cfg))
+}
+
+/// A member row (sub `<prefix>:<uuid>`, the given email) with a session
+/// minted the way the auth routes mint one. Returns (user id, cookie header).
+pub async fn minted_member_with_email(
+    state: &talaria_state::AppState,
+    prefix: &str,
+    email: &str,
+) -> (String, String) {
+    let sub = format!("{prefix}:{}", uuid::Uuid::new_v4());
+    let (id,): (String,) = sqlx::query_as(
+        "insert into users (sub, email, role) values ($1, $2, 'member') returning id::text",
+    )
+    .bind(&sub)
+    .bind(email)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    let user = talaria_api::session::SessionUser {
+        id: id.clone(),
+        sub,
+        email: Some(email.to_string()),
+        name: None,
+        picture: None,
+        role: "member".into(),
+        provider: "password".into(),
+    };
+    let sid = talaria_api::session::create_session(state, &user)
+        .await
+        .expect("session mints");
+    (id, format!("talaria_session={sid}"))
+}
+
+/// One request through the REAL router. Returns the status and the body as
+/// JSON (Null when the body is not JSON).
+pub async fn call_json(
+    state: &talaria_state::AppState,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+    let mut req = axum::http::Request::builder().method(method).uri(path);
+    if let Some(c) = cookie {
+        req = req.header("cookie", c);
+    }
+    let req = match body {
+        Some(b) => req
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(b.to_string())),
+        None => req.body(axum::body::Body::empty()),
+    }
+    .unwrap();
+    let res = talaria_api::routes::router(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
+    let status = res.status();
+    let raw = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null),
+    )
+}

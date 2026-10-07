@@ -91,3 +91,65 @@ pub async fn set_setting(
     hot_cache().lock().expect("hot settings cache").remove(key);
     Ok(())
 }
+
+// ── The redacted view of a row that holds a sealed secret ────────────────────
+
+/// A settings row as a CLIENT may see it: the row's own keys in their own
+/// order, `keySealed` removed, and a derived `hasKey` appended last.
+///
+/// WHY IT LIVES HERE rather than beside either of its callers. Several
+/// provider-config rows in this table follow one shape — an operator picks a
+/// service, supplies a key, and the key is sealed into the row — and each of
+/// them needs exactly this fold before the row reaches a panel. The reranker
+/// grew it first and the decision-model port needed the same thing; a second
+/// copy is how the two come to disagree about whether an explicit `null` key
+/// counts as "a key is set" (it does not, and that is the whole reason `hasKey`
+/// is derived from presence AND non-nullness rather than from presence alone).
+///
+/// A PASSTHROUGH, NOT A RESHAPE: the wire's key order is the jsonb row's order,
+/// because the panels carry the row through verbatim rather than parsing it
+/// onto a struct.
+pub fn public_of(stored: serde_json::Value) -> serde_json::Value {
+    let mut map = match stored {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let has_key = map.get("keySealed").is_some_and(|k| !k.is_null());
+    map.remove("keySealed");
+    map.insert("hasKey".into(), serde_json::json!(has_key));
+    serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_public_view_drops_the_seal_keeps_the_rows_order_and_appends_haskey_last() {
+        let pubv = public_of(json!({"provider": "x", "keySealed": "sealed", "model": "m"}));
+        assert!(pubv.get("keySealed").is_none());
+        let keys: Vec<&str> = pubv
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(keys, vec!["provider", "model", "hasKey"]);
+        assert_eq!(pubv["hasKey"], json!(true));
+    }
+
+    #[test]
+    fn an_explicit_null_seal_is_not_a_key_which_is_the_whole_reason_haskey_is_derived() {
+        assert_eq!(
+            public_of(json!({"keySealed": null}))["hasKey"],
+            json!(false)
+        );
+        assert_eq!(public_of(json!({}))["hasKey"], json!(false));
+    }
+
+    #[test]
+    fn a_non_object_row_folds_to_an_empty_one_rather_than_panicking() {
+        assert_eq!(public_of(json!("corrupt")), json!({"hasKey": false}));
+    }
+}

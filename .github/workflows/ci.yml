@@ -493,7 +493,18 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --quiet
+        # --workspace, NOT bare `cargo test`. api/Cargo.toml is a workspace
+        # root that ALSO carries a root package (talaria-api) and declares no
+        # default-members, so bare `cargo test` selects that one package and
+        # nothing else — three test binaries, none of the ~200 under crates/.
+        # Every per-crate unit test in this tree was therefore never run here.
+        # api-integration.yml does not cover it either: its
+        # `--workspace --lib -- --ignored` runs ONLY ignored tests.
+        # --no-fail-fast because cargo stops at the first failing test BINARY,
+        # and with ~200 of them one broken crate hides every crate after it
+        # alphabetically. The first discovery run showed exactly that:
+        # talaria-fitness failed, so talaria-harness-defs onward never ran.
+        run: cargo test --workspace --no-fail-fast --quiet
 
   # The desktop shell (docs/DESKTOP.md) — the same tripwire treatment for
   # desktop/ that the jobs above give ui/, mcp/, cli/ and api/: fmt + clippy +

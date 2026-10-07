@@ -75,11 +75,7 @@ pub async fn post(
         Ok(None) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
         Err(e) => return Ok(internal("[channels] role read on reactions failed", e)),
     }
-    let actor = user
-        .email
-        .clone()
-        .or_else(|| user.name.clone())
-        .unwrap_or_else(|| "user".into());
+    let actor = talaria_conversations::reaction_actor(user.email.as_deref(), user.name.as_deref());
     Ok(
         match toggle_reaction(&notify, &id, &msg_id, &emoji, &actor, "user").await {
             Ok(()) => Json(json!({ "ok": true })).into_response(),

@@ -33,10 +33,12 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use talaria_api_facades::decide::guard as decide_guard;
+use talaria_api_facades::decide::tools as decide_tools;
 use talaria_api_facades::gateway::budget::{BudgetLimits, budget_message, check_budget};
 use talaria_api_facades::gateway::guard::{
-    Finding, Grounding, GuardMode, grounding_text_of, guard_completion, guard_config,
-    needs_redaction, redact_secrets,
+    Finding, Grounding, GuardMode, extract_tool_record, grounding_text_of, guard_completion,
+    guard_config, needs_redaction, redact_secrets,
 };
 use talaria_api_facades::gateway::registry::resolve_route;
 use talaria_api_facades::gateway::settings::get_setting_hot;
@@ -310,6 +312,24 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
                     Some(&route.endpoint.name),
                 )
                 .await;
+                // THE SEMANTIC PASS, and it is deliberately after the
+                // structural one and detached. `guard_completion` has already
+                // decided the caveat and the redaction for this reply, so
+                // nothing below can change what the caller receives — which
+                // is what makes a judged rule safe to enable before anybody
+                // knows its false-positive rate. It is a no-op unless an
+                // operator has both configured a decision model and turned a
+                // semantic rule on; both are off by default.
+                let tool_names =
+                    extract_tool_record(client_body["messages"].as_array().unwrap_or(&Vec::new()))
+                        .backing_tools;
+                decide_guard::observe(&state, &content, &tool_names, &caller, &model);
+                // TOOL-OFFER PRUNING, measured and never applied. Judges the
+                // tools this turn was OFFERED against what the reply actually
+                // CALLED, so the ledger can answer "would pruning have broken
+                // this turn" before anything prunes. Its own setting, off by
+                // default, and detached — see talaria-decide::tools.
+                decide_tools::observe(&state, &client_body, &j, &caller);
                 if !findings.is_empty() && j["choices"][0]["message"].is_object() {
                     // GROUNDED, like the findings above: redaction gets the
                     // same grounding material the findings got, or the two

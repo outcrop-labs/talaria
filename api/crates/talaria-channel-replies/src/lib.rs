@@ -367,10 +367,18 @@ pub fn system_prompt(
         .map(|a| describe_agent(a).label)
         .collect::<Vec<_>>()
         .join(", ");
-    let mut s = format!(
-        "You are {} ({}), a member of the group channel #{}. ",
-        me.label, me.role, channel_name
-    );
+    // An unnamed group DM has no channel name to speak of.
+    let mut s = if channel_name.is_empty() {
+        format!(
+            "You are {} ({}), a participant in a group direct message. ",
+            me.label, me.role
+        )
+    } else {
+        format!(
+            "You are {} ({}), a member of the group channel #{}. ",
+            me.label, me.role, channel_name
+        )
+    };
     s.push_str(
         "Messages from others are prefixed with the sender's name; reply as yourself, without a prefix. ",
     );
@@ -513,6 +521,27 @@ pub async fn trigger_agent_replies(
     };
     let mut mentioned = mentioned_agents(content, &agents);
     let mut assigned_reply = false;
+    if mentioned.is_empty() && room.is_none() {
+        // A group DM with exactly ONE agent: the agent is a participant like
+        // anyone else, so it answers without being @mentioned. With several
+        // agents (or in a channel) a mention picks who speaks.
+        let is_dm =
+            sqlx::query_scalar::<_, String>("select kind from channels where id = $1::uuid")
+                .bind(channel_id)
+                .fetch_optional(&deps.pg)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|k| k == "dm");
+        if is_dm && agents.len() == 1 {
+            mentioned = vec![AgentMention {
+                model: agents[0].clone(),
+                tier: None,
+            }];
+            // Not addressed by name — the prompt mustn't claim a mention.
+            assigned_reply = true;
+        }
+    }
     if mentioned.is_empty() {
         let Some(meta) = room.as_ref() else {
             return; // an ordinary channel, and nobody mentioned: nothing to do

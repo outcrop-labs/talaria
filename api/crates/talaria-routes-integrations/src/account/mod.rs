@@ -11,4 +11,6 @@ pub mod me;
 pub mod me_assistant;
 pub mod me_events;
 pub mod me_mcp;
+pub mod me_presence;
 pub mod users;
+pub mod users_id_avatar;

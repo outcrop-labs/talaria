@@ -71,3 +71,30 @@ describe('renderMarkdown: attachment chips', () => {
     expect(html).not.toContain('javascript:')
   })
 })
+
+// R9: a mention of the viewer reads stronger than a mention of anyone else.
+// The match is case-insensitive against the viewer's display name and email
+// local part; without `selfMentions` the output is exactly what it was.
+describe('renderMarkdown: self-mentions', () => {
+  const ORDINARY = 'rounded bg-accent-soft px-1 font-medium text-accent'
+
+  it('renders @Zach in the self-mention class and @Gigi in the ordinary one', () => {
+    const html = renderMarkdown('hey @Zach and @Gigi', { selfMentions: ['Zach Siegel', 'zach'] })
+    expect(html).toContain('data-self-mention')
+    expect(html).toMatch(/<span[^>]*data-self-mention[^>]*>@Zach<\/span>/)
+    expect(html).toContain(`<span class="${ORDINARY}">@Gigi</span>`)
+  })
+
+  it('matches the dashed full-name token and a tier-suffixed token', () => {
+    const html = renderMarkdown('@zach-siegel and @ZACH:opus', { selfMentions: ['Zach Siegel', 'zach'] })
+    expect(html.match(/data-self-mention/g)).toHaveLength(2)
+  })
+
+  it('renders exactly as before without selfMentions', () => {
+    const src = 'hey @Zach and @Gigi'
+    const html = renderMarkdown(src)
+    expect(html).not.toContain('data-self-mention')
+    expect(html).toContain(`<span class="${ORDINARY}">@Zach</span>`)
+    expect(renderMarkdown(src, { selfMentions: [] })).toBe(html)
+  })
+})

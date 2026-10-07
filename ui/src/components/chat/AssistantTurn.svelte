@@ -1,5 +1,7 @@
 <script lang="ts">
   import MessageAvatar from './MessageAvatar.svelte'
+  import MessageActions from './MessageActions.svelte'
+  import ReactionChips, { type ReactionChip } from './ReactionChips.svelte'
   import ToolStatus from './ToolStatus.svelte'
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import StreamText from './StreamText.svelte'
@@ -18,6 +20,9 @@
     agentModel,
     agentLabel,
     live,
+    time,
+    reactions = [],
+    onReact,
     onContextMenu,
     onInvoke,
     onDecided,
@@ -28,6 +33,12 @@
     agentModel: string
     agentLabel: string
     live: boolean
+    /** Send time beside the name (R2); empty → none shown. */
+    time?: string
+    reactions?: ReactionChip[]
+    /** Toggle the viewer's reaction. Omitted → no action bar: the caller
+     *  withholds it while the turn streams or before it has a server id. */
+    onReact?: (emoji: string) => void
     onContextMenu?: (e: MouseEvent) => void
     onInvoke?: (text: string) => void
     onDecided?: () => void
@@ -49,7 +60,12 @@
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the message context menu has no keyboard path -->
-<div in:fade={{ duration: 150 }} class="flex gap-2.5" oncontextmenu={onContextMenu}>
+<div
+  in:fade={{ duration: 150 }}
+  class="group/message relative -mx-2 flex gap-2.5 rounded-md px-2 py-1 transition-colors hover:bg-card2 focus-within:bg-card2"
+  oncontextmenu={onContextMenu}
+>
+  <!-- Agents have no image field yet (R19): initials. -->
   <MessageAvatar name={agentLabel} class="mt-0.5" />
   <div class="min-w-0 flex-1 space-y-2">
     <div class="flex items-baseline gap-2">
@@ -57,6 +73,7 @@
       <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
         agent
       </span>
+      {#if time}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">{time}</span>{/if}
     </div>
 
     {#if hasReasoning}
@@ -133,5 +150,8 @@
         {/if}
       </div>
     {/if}
+    {#if onReact}<ReactionChips {reactions} onToggle={onReact} />{/if}
   </div>
+  <!-- Reactions only (R6): an agent DM has no threads, edits or deletes. -->
+  {#if onReact}<MessageActions {onReact} />{/if}
 </div>

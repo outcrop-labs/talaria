@@ -15,9 +15,9 @@
 //
 // THE TIMEOUT LIVES ON A THREAD, because boa has no wall-clock kill. The whole
 // task — definition plus every assertion — is evaluated inside one spawned
-// thread and the caller waits 250ms for its answer, counted from the moment
-// the engine is built (construction is our cost; the window times the
-// candidate's code). A wrong `while (true) {}` costs its 250ms and no more;
+// thread and the caller waits CODE_TIMEOUT_MS for its answer, counted from the
+// moment the engine is built (construction is our cost; the window times the
+// candidate's code). A wrong `while (true) {}` costs that window and no more;
 // the leaked thread is reaped shortly after by the runtime limits below, so a
 // run cannot shed unbounded threads the way a run without limits could.
 //
@@ -165,14 +165,30 @@ fn same_value(a: &Value, b: &Value) -> bool {
 /// build eats the window must fail the host, not a correct solution (CI's
 /// loaded runners proved the failure mode is real).
 ///
-/// A wrong regex loop is an ordinary small-model failure and it has to cost
-/// 250ms, not a wedged admin request. That is only true if the calls happen
+/// A wrong regex loop is an ordinary small-model failure and it has to cost a
+/// moment, not a wedged admin request. That is only true if the calls happen
 /// INSIDE the timed region: the timeout below covers the evaluation of the
 /// whole script and nothing else, so pulling the function out and calling it
 /// afterwards puts an unbounded `while (true) {}` on the host's stack with no
 /// timeout anywhere near it. Written down because the obvious shape of this
 /// function is the broken one.
-pub const CODE_TIMEOUT_MS: u64 = 250;
+///
+/// WHY TWO SECONDS AND NOT 250ms, which is what this was. The two failures are
+/// not symmetric. Too LOOSE costs a spinning candidate a little more wall
+/// clock before it is cut — and the clock is not even what bounds runaway
+/// work: `LOOP_ITERATION_LIMIT` and `RECURSION_LIMIT` below are, and they reap
+/// the thread regardless. Too TIGHT reports a CORRECT model as one whose code
+/// "did not run", on a fitness page an admin uses to choose which model to
+/// trust — a false negative that reads as a property of the model and is
+/// actually a property of how busy the box was.
+///
+/// 250ms was ample for these functions on an idle machine and provably not on
+/// a loaded one: a shared CI runner blew past it evaluating `slugify`, which
+/// is five lines. An instance grading a sweep while serving traffic is the
+/// same machine. Two seconds is three orders of magnitude more than a correct
+/// solution needs and still cuts a genuine infinite loop long before anybody
+/// notices, which is the whole range a budget here has to cover.
+pub const CODE_TIMEOUT_MS: u64 = 2_000;
 
 /// The loop and recursion ceilings for the evaluating thread. These are NOT the
 /// timeout — they are what reaps a thread whose timeout already fired, so a run
@@ -216,7 +232,7 @@ fn read_code_result(reply: &str) -> Option<CodeReply> {
 /// concern is the clock. The clock starts at the worker's READY signal —
 /// after context construction, before the first line of candidate code — so
 /// the window times the candidate, never our engine setup.
-fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
+fn eval_candidate(script: String, budget_ms: u64) -> Result<EvalOutcome, String> {
     let (tx, rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::channel();
     let worker = std::thread::Builder::new()
@@ -239,14 +255,12 @@ fn eval_candidate(script: String) -> Result<EvalOutcome, String> {
         let _ = worker.join();
         return Err("the evaluator did not come back".to_string());
     }
-    match rx.recv_timeout(Duration::from_millis(CODE_TIMEOUT_MS)) {
+    match rx.recv_timeout(Duration::from_millis(budget_ms)) {
         Ok(outcome) => Ok(outcome),
         Err(mpsc::RecvTimeoutError::Timeout) => {
             // node's sentence, so a timed-out candidate reads identically in
             // either language.
-            Err(format!(
-                "Script execution timed out after {CODE_TIMEOUT_MS}ms"
-            ))
+            Err(format!("Script execution timed out after {budget_ms}ms"))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             // The evaluator itself died — a boa panic we did not foresee. The
@@ -294,6 +308,23 @@ fn run_in_boa(context: &mut boa_engine::Context, script: &str) -> EvalOutcome {
 /// Run one task's assertions against the model's source. Returns None when
 /// every assertion passed, or the one line the admin reads.
 pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
+    run_code_task_within(task, raw, CODE_TIMEOUT_MS)
+}
+
+/// The same grading under an explicit wall-clock budget.
+///
+/// WHY THIS EXISTS. `CODE_TIMEOUT_MS` is a PRODUCT value — it bounds how long
+/// a candidate's code may run while the fitness suite grades a model — and a
+/// unit test must never inherit one. Three of this module's own tests began
+/// failing with "Script execution timed out after 250ms" the moment CI started
+/// running them (#517), because the test is about whether the GRADING is right
+/// and a wall clock decides whether it got the chance to be.
+///
+/// Raising the product budget (which that incident also prompted) does not
+/// remove the need for this: it moves the number at which a loaded host starts
+/// reporting correct models as broken, it does not abolish it. The grading
+/// tests stay on a budget chosen for THEM, and the timeout keeps its own test.
+pub fn run_code_task_within(task: &CodeTask, raw: &str, budget_ms: u64) -> Option<String> {
     let src = extract_code(raw);
     if src.trim().is_empty() {
         return Some(format!("{}: the model returned no code", task.name));
@@ -318,7 +349,7 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
 }})()",
         fn_ = task.fn_,
     );
-    let reply = match eval_candidate(script) {
+    let reply = match eval_candidate(script, budget_ms) {
         // `Failed` is the one branch whose sentence carries the thrown error;
         // every engine words its parse errors differently, so the shape is the
         // contract, not the message text.
@@ -380,6 +411,15 @@ pub fn run_code_task(task: &CodeTask, raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Grade under a budget a shared CI runner can actually meet. These tests
+    /// are about whether the grading is RIGHT; the wall clock is tested once,
+    /// on its own, below. See `run_code_task_within`.
+    const TEST_BUDGET_MS: u64 = 10_000;
+
+    fn graded(task: &CodeTask, raw: &str) -> Option<String> {
+        run_code_task_within(task, raw, TEST_BUDGET_MS)
+    }
+
     use super::*;
 
     const GOOD_SLUGIFY: &str = "function slugify(input) {
@@ -407,27 +447,27 @@ mod tests {
 
     #[test]
     fn passes_a_correct_function_graded_by_running_the_assertions() {
-        assert_eq!(run_code_task(slugify(), GOOD_SLUGIFY), None);
-        assert_eq!(run_code_task(merge(), GOOD_MERGE), None);
+        assert_eq!(graded(slugify(), GOOD_SLUGIFY), None);
+        assert_eq!(graded(merge(), GOOD_MERGE), None);
     }
 
     #[test]
     fn accepts_the_two_wrappers_a_model_habitually_adds() {
         let wrapped = format!("```js\nexport {GOOD_SLUGIFY}\n```");
-        assert_eq!(run_code_task(slugify(), &wrapped), None);
+        assert_eq!(graded(slugify(), &wrapped), None);
     }
 
     #[test]
     fn accepts_a_stray_debug_log_rather_than_failing_for_our_bare_context() {
         let chatty = GOOD_SLUGIFY.replacen("return", "console.log('slugifying');\n  return", 1);
-        assert_eq!(run_code_task(slugify(), &chatty), None);
+        assert_eq!(graded(slugify(), &chatty), None);
     }
 
     #[test]
     fn names_the_exact_failing_assertion_for_a_near_miss() {
         // The classic small-model version: no trimming of the leading/trailing dash.
         let nearly = "function slugify(input) { return String(input).toLowerCase().replace(/[^a-z0-9]+/g, '-') }";
-        let problem = run_code_task(slugify(), nearly).expect("the near-miss fails");
+        let problem = graded(slugify(), nearly).expect("the near-miss fails");
         assert!(
             problem.contains("expected \"hello-world\""),
             "got: {problem}"
@@ -436,19 +476,19 @@ mod tests {
 
     #[test]
     fn fails_a_function_that_was_never_defined_and_prose_with_no_code() {
-        let missing = run_code_task(slugify(), "function slug(x) { return x }")
-            .expect("the wrong name fails");
+        let missing =
+            graded(slugify(), "function slug(x) { return x }").expect("the wrong name fails");
         assert!(
             missing.contains("no function named slugify"),
             "got: {missing}"
         );
-        let empty = run_code_task(slugify(), "   ").expect("empty fails");
+        let empty = graded(slugify(), "   ").expect("empty fails");
         assert!(empty.contains("returned no code"), "got: {empty}");
     }
 
     #[test]
     fn fails_code_that_does_not_parse_rather_than_throwing_out_of_the_probe() {
-        let broken = run_code_task(
+        let broken = graded(
             slugify(),
             "function slugify(input) { return input.toLowerCase(",
         )
@@ -458,13 +498,18 @@ mod tests {
 
     #[test]
     fn survives_an_infinite_loop_at_the_cost_of_a_timeout_not_a_wedged_request() {
+        // THE PRODUCTION BUDGET on purpose — this test is about what a real
+        // sweep costs when a model hands it a spin, so it must not borrow the
+        // generous one the grading tests use. It is fast anyway: the loop
+        // ceiling reaps a bodiless `while (true)` well before any clock, which
+        // is the point of having both.
         let started = std::time::Instant::now();
         let spin = run_code_task(slugify(), "function slugify(input) { while (true) {} }")
             .expect("the spin fails");
         assert!(spin.contains("did not run"), "got: {spin}");
         assert!(
-            started.elapsed() < Duration::from_millis(2_000),
-            "a timeout costs its 250ms, not a hang"
+            started.elapsed() < Duration::from_millis(CODE_TIMEOUT_MS * 4),
+            "a spin costs its window, not a hang"
         );
     }
 
@@ -480,7 +525,7 @@ mod tests {
       }
       return out
     }";
-        assert_eq!(run_code_task(merge(), mutating), None);
+        assert_eq!(graded(merge(), mutating), None);
     }
 
     #[test]
@@ -497,6 +542,23 @@ mod tests {
         assert_eq!(
             extract_code("export function f() { return \"export function\" }"),
             "function f() { return \"export function\" }"
+        );
+    }
+    #[test]
+    fn a_candidate_that_never_returns_is_stopped_and_says_so() {
+        // The budget's own test, and the only place a tight one belongs. A
+        // spinning candidate must be reaped rather than hang the suite, and
+        // the sentence has to name the window so an admin reading a fitness
+        // row knows the model was cut off rather than wrong.
+        let spin = "function slugify(input) { while (true) {} }";
+        let problem = run_code_task_within(slugify(), spin, 50).expect("a spin is a failure");
+        assert!(problem.contains("timed out after 50ms"), "got: {problem}");
+        // And the budget is the one reported, not the production constant —
+        // the message used to interpolate CODE_TIMEOUT_MS regardless of the
+        // window actually waited on.
+        assert!(
+            !problem.contains(&format!("{CODE_TIMEOUT_MS}ms")),
+            "got: {problem}"
         );
     }
 }

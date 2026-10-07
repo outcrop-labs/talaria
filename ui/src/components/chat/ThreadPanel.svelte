@@ -1,8 +1,14 @@
 <script lang="ts">
   import { MessageSquareText, X } from '@lucide/svelte'
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
+  import { dayDividerMap } from '@/lib/day-dividers'
   import { bottomStick } from '@/lib/stick-to-bottom'
   import ChannelComposer from './ChannelComposer.svelte'
+  import TypingLine from './TypingLine.svelte'
+  import { typersIn, typingKey } from '@/lib/comms-typing.svelte'
+  import { useUsers } from '@/lib/users'
+  import { useSession } from '@/lib/session'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { slide, GROW_X } from '@/lib/motion'
@@ -15,12 +21,15 @@
   // channel messages that hang off the root; @mentioned agents answer HERE.
   let {
     channelId,
+    channelName,
     rootId,
     ctx,
     mentionables,
     onClose,
   }: {
     channelId: string
+    /** Shown beside "Thread" in the header. */
+    channelName?: string
     rootId: string
     ctx: MessageCtx
     mentionables: Mentionable[]
@@ -31,8 +40,20 @@
   // EMPTY thread panel — no root, no replies, no error — beside a rollup that
   // had just said "3 replies".
   const threadQuery = useThreadMessages(() => channelId, () => rootId)
+
+  // Who is typing a reply in THIS thread (comms-typing), by first name.
+  const usersQuery = useUsers()
+  const session = useSession()
+  const typingNames = $derived(
+    typersIn(typingKey(channelId, rootId), session.data?.id).map((uid) => {
+      const u = (usersQuery.data ?? []).find((r) => r.id === uid)
+      return (u?.name ?? u?.email ?? 'Someone').split(' ')[0] ?? 'Someone'
+    }),
+  )
   const messages = $derived(threadQuery.data ?? [])
   let scrollEl = $state<HTMLDivElement | null>(null)
+  // Same day dividers as the main feed (R1) — a thread can span days.
+  const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
 
   const stick = bottomStick()
   $effect(() => stick.attach(scrollEl))
@@ -65,6 +86,9 @@
   <div class="flex items-center gap-2 border-b border-line px-4 py-2.5">
     <MessageSquareText size={14} class="text-muted" />
     <span class="font-sans text-sm font-semibold text-fg">Thread</span>
+    {#if channelName}
+      <span class="min-w-0 truncate font-sans text-xs text-muted">{channelName}</span>
+    {/if}
     <button
       type="button"
       onclick={onClose}
@@ -108,11 +132,17 @@
           ChannelView's message list). -->
       {#key rootId}
         {#each messages as m, i (m.id)}
+          {@const day = dividers.get(i)}
           <div>
+            {#if day}<DayDivider label={day.label} class="mb-3" />{/if}
             <MessageRow message={m} {ctx} inThread onInvoke={(text) => void send(text, [])} />
+            <!-- The replies rule under the root (R7): label, then a hairline. -->
             {#if i === 0 && messages.length > 1}
-              <div class="mt-3 border-t border-line pt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">
-                {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}
+              <div class="mt-3 flex items-center gap-2">
+                <span class="shrink-0 font-sans text-xs text-muted">
+                  {messages.length - 1} {messages.length - 1 === 1 ? 'reply' : 'replies'}
+                </span>
+                <div class="h-px flex-1 bg-line"></div>
               </div>
             {/if}
           </div>
@@ -120,6 +150,16 @@
       {/key}
     {/if}
   </div>
-  <ChannelComposer channelName="thread" placeholder="Reply in thread. @mention an agent to bring it in" {mentionables} onSend={send} />
+  <div class="relative">
+    <TypingLine names={typingNames} class="absolute -top-5 left-0 px-7" />
+    <ChannelComposer
+      channelName="thread"
+      {channelId}
+      threadRootId={rootId}
+      placeholder="Reply in thread. @mention an agent to bring it in"
+      {mentionables}
+      onSend={send}
+    />
+  </div>
 </div>
 </div>

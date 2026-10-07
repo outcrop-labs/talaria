@@ -1,0 +1,16 @@
+- **Comms: see who's typing, and when an agent is working.**
+  - **Typing:** while someone types in a channel or DM you have open, "Maya is typing" shows with three animated dots just above the message box ("Maya and Jordan are typing" for two, "Several people are typing" for more). While someone types in one of your DMs, channels or relays, the dots also play beside that row in the Comms sidebar, wherever you are in Comms. Typing a thread reply shows "is typing" inside that thread's panel only, not in the channel or the sidebar. The dots stop at once when they send or clear the message. If their tab closes mid-sentence, the dots expire on their own after about six seconds. Under reduced motion the dots don't move; they only fade.
+  - **Agent working:** while an agent writes a reply, its thread row in the sidebar shows the animated dithered "working" mark where the time normally sits, and the agent's own row shows it too (so you can see it with the threads folded away). The time comes back when the reply finishes. The same mark sits beside the agent's name at the top of the open conversation while it writes.
+  - **DM message box:** in a DM with a person, the placeholder now reads "Message Zach" instead of the channel prompt.
+  - **API:** new `POST /api/channels/{id}/typing` (members only; body `{ typing?: boolean, threadRootId?: uuid }`, typing defaults to true). It publishes `{type:"typing", userId, threadRootId?, typing}` on the channel's stream. Channel-level typing in a DM, channel or relay also goes as a `typing` event to every other member's own stream. Nothing is stored.
+  - **Verified:**
+    - `bun run gate`.
+    - New unit tests: the typing store (expiry, never listing yourself, send throttling, stop on clear or channel switch) and the realtime payload shapes.
+    - The new live route test (members allowed, outsiders refused, a bad flag rejected), run against a throwaway Postgres and Redis.
+    - Exercised with two browsers on a seeded local stack, Zach typing to Priya:
+      - Priya saw the dots by "Zach Siegel" in her sidebar, then "Zach is typing" above her message box once she opened the DM.
+      - Both cleared when he deleted his text, and they expired about six seconds after he went quiet.
+      - Zach typing in #general put dots on Priya's #general row while she was in their DM.
+      - In a shared thread, Priya's thread panel showed "Zach is typing" while her channel view and sidebar stayed quiet.
+      - Her DM with Zach read "Message Zach".
+    - A simulated in-progress Atlas reply showed the working mark on Atlas's row (folded and open), on the thread, and beside "Atlas" in the open conversation's header.

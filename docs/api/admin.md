@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-25 routes.
+26 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -17,6 +17,9 @@
 | [`/api/admin/apps`](#apiadminapps) | DELETE | `admin` |
 | [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | GET | `admin` |
 | [`/api/admin/coding-accounts`](#apiadmincoding-accounts) | PUT | `admin` |
+| [`/api/admin/decide`](#apiadmindecide) | GET | `admin` |
+| [`/api/admin/decide`](#apiadmindecide) | POST | `admin` |
+| [`/api/admin/decide`](#apiadmindecide) | PUT | `admin` |
 | [`/api/admin/domains`](#apiadmindomains) | GET | `admin` |
 | [`/api/admin/domains`](#apiadmindomains) | POST | `admin` |
 | [`/api/admin/domains`](#apiadmindomains) | DELETE | `admin` |
@@ -134,6 +137,40 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_coding_accounts.rs`](.
 | :--- | :--- | :--- |
 | `enabled` | `bool` |  |
 | `services` | `string[](0, 100, 0, 100)` | An empty array clears the allowlist, which is a real choice: the feature on and nothing permitted yet is the state a fresh install should be in. |
+
+## `/api/admin/decide`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_decide.rs)
+
+> /api/admin/decide. The decision-model port's one config row (admin).
+> GET → the provider catalog with its capability sheet, plus the current
+> config, redacted. PUT → patch the config. POST { action: "test" } → put one
+> real question through whatever is configured and report exactly what came
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{providers, wires, config, configured, shadow, toolShadow}` | 200 | — |
+| POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, reason}` | 200, 400 | audit |
+| PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured, toolShadow}` | 200, 400 | audit |
+
+### POST `/api/admin/decide` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `enum(test)?` |  |
+
+### PUT `/api/admin/decide` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `provider` | `enum(…)` |  |
+| `url` | `string? nullable(500)` |  |
+| `model` | `string? nullable(200)` |  |
+| `wire` | `enum(…)` |  |
+| `apiKey` | `string? nullable(500)` |  |
+| `timeoutMs` | `number?(250, 60000)` |  |
+| `toolShadow` | `bool` |  |
 
 ## `/api/admin/domains`
 

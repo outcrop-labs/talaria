@@ -3788,6 +3788,7 @@ dependencies = [
  "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-db",
+ "talaria-decide",
  "talaria-digest",
  "talaria-effort-prefs",
  "talaria-email",
@@ -3974,6 +3975,7 @@ name = "talaria-api-facades"
 version = "0.1.0"
 dependencies = [
  "talaria-daily-brief",
+ "talaria-decide",
  "talaria-fitness",
  "talaria-fitness-code-runner",
  "talaria-fitness-toolbox",
@@ -4553,6 +4555,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-decide"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+ "talaria-gateway",
+ "talaria-retrieval-http",
+ "talaria-state",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "talaria-digest"
 version = "0.1.0"
 dependencies = [
@@ -4907,8 +4924,11 @@ dependencies = [
  "sqlx",
  "talaria-agent-auth",
  "talaria-agent-writes",
+ "talaria-decide",
  "talaria-notify",
+ "talaria-retrieval-http",
  "talaria-runs-define",
+ "talaria-state",
  "tracing",
 ]
 
@@ -5517,12 +5537,17 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-skills",
+ "talaria-alerts",
  "talaria-approvals",
+ "talaria-artifacts",
  "talaria-attribution",
+ "talaria-channel-replies",
  "talaria-comms-decay",
  "talaria-config",
  "talaria-conversations",
  "talaria-daily-brief",
+ "talaria-decide",
  "talaria-digest",
  "talaria-fleet-create",
  "talaria-fleet-docker",
@@ -5530,8 +5555,12 @@ dependencies = [
  "talaria-fleet-reconcile",
  "talaria-fleet-render",
  "talaria-fleet-resources",
+ "talaria-gaps",
  "talaria-gateway",
  "talaria-google-pending",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-home",
  "talaria-inbox-focus",
  "talaria-kb",
  "talaria-kb-perms",
@@ -5541,10 +5570,14 @@ dependencies = [
  "talaria-model-info",
  "talaria-notify",
  "talaria-outreach",
+ "talaria-personal-agent",
  "talaria-price-oracle",
  "talaria-push",
  "talaria-realtime",
+ "talaria-refs",
  "talaria-research-def",
+ "talaria-retrieval-embed",
+ "talaria-retrieval-qdrant",
  "talaria-runs-agent-hire",
  "talaria-runs-decide",
  "talaria-runs-define",
@@ -5560,6 +5593,8 @@ dependencies = [
  "talaria-tasks",
  "talaria-tasks-types",
  "talaria-teams",
+ "talaria-ticket-chat",
+ "talaria-titler",
  "talaria-update-job",
  "talaria-uploads",
  "talaria-web-search",
@@ -6385,6 +6420,7 @@ dependencies = [
  "sqlx",
  "talaria-body",
  "talaria-config",
+ "talaria-decide",
  "talaria-gateway",
  "talaria-retrieval-http",
  "talaria-state",
@@ -6557,6 +6593,7 @@ dependencies = [
  "talaria-ticket-chat",
  "talaria-titler",
  "talaria-uploads",
+ "talaria-users",
  "talaria-work-mode",
  "talaria-workspace-handles",
  "talaria-yaml",
@@ -6641,6 +6678,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "redis",
  "regex",
  "serde",
  "serde_json",
@@ -6653,6 +6691,7 @@ dependencies = [
  "talaria-body",
  "talaria-chips",
  "talaria-claim",
+ "talaria-config",
  "talaria-error",
  "talaria-github",
  "talaria-invites",
@@ -6668,6 +6707,7 @@ dependencies = [
  "talaria-session",
  "talaria-state",
  "talaria-teams",
+ "talaria-uploads",
  "talaria-users",
  "talaria-workspace-secrets",
  "tokio",
@@ -7644,7 +7684,10 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.11.0",
  "sqlx",
+ "talaria-decide",
  "talaria-gateway",
+ "talaria-retrieval-http",
+ "talaria-state",
  "thiserror",
  "tokio",
  "tracing",

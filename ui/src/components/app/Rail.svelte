@@ -21,6 +21,7 @@
   let {
     actions,
     children,
+    footer,
     collapseKey,
     collapsedLabel = 'list',
     class: className,
@@ -29,6 +30,9 @@
      *  they sat right when a title still filled the left. */
     actions?: Snippet
     children: Snippet
+    /** Pinned under the scrolling list, always visible (Comms puts your
+     *  status there). Absent: the list runs to the bottom as before. */
+    footer?: Snippet
     /** Opt in to collapsing, and name where the preference is remembered
      *  (`talaria.rail.<key>`). Omit it and the rail cannot collapse at all. */
     collapseKey?: string
@@ -106,5 +110,8 @@
       </div>
     {/if}
     <div class="min-h-0 flex-1 overflow-y-auto p-3">{@render children()}</div>
+    {#if footer}
+      <div class="shrink-0 border-t border-line p-2">{@render footer()}</div>
+    {/if}
   </aside>
 {/if}

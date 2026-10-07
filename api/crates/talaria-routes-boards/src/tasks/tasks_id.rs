@@ -69,7 +69,10 @@ pub async fn get(
             tags: &full.task.tags,
             board_id: &full.task.board_id,
         };
-        let workflows = match talaria_workflows::workflows_for_task(&state.pg, &target).await {
+        // The judged pass: every keyword match, plus any workflow a decision
+        // model says applies despite the keywords missing. Identical to
+        // `workflows_for_task` whenever the port is off, which is the default.
+        let workflows = match talaria_workflows::workflows_for_task_judged(&state, &target).await {
             Ok(w) => w,
             Err(e) => return Ok(internal("[tasks] workflow read on GET task failed", e)),
         };

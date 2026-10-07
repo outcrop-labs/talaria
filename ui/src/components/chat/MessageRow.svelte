@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { MessageSquareText, Pencil, SmilePlus, Trash2 } from '@lucide/svelte'
   import MessageAvatar from './MessageAvatar.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
-  import Popover from '@/components/ui/Popover.svelte'
+  import MessageActions from './MessageActions.svelte'
+  import ReactionChips, { type ReactionChip } from './ReactionChips.svelte'
   import Markdown from '@/components/ui/Markdown.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import ChatWaiting from './ChatWaiting.svelte'
@@ -10,12 +9,12 @@
   import GuardCaveat from '@/components/chat/GuardCaveat.svelte'
   import ChatChips from './ChatChips.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { cn } from '@/lib/cn'
   import { fade, QUICK } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import { deleteChannelMessage, editChannelMessage, toggleMessageReaction, type ChannelMessage } from '@/lib/channels.svelte'
-  import { actorLabel, REACTION_SET, type MessageCtx } from './channel-view'
+  import { actorLabel, threadAvatars, type MessageCtx } from './channel-view'
+  import { turnTime } from './chat-view'
 
   let {
     message: m,
@@ -37,15 +36,25 @@
   } = $props()
 
   const name = $derived(m.authorType === 'agent' ? ctx.labelFor(m.author) : ctx.userLabel(m.author))
-  const time = $derived(new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+  // The viewer's zone, the same one the day dividers use.
+  const time = $derived(turnTime(m.createdAt, ctx.timeZone))
   const live = $derived(m.status === 'streaming')
   const own = $derived(m.authorType === 'user' && m.author === ctx.me)
-  let picking = $state(false)
+  const picture = $derived(ctx.pictureFor(m.author, m.authorType))
+  const chips: ReactionChip[] = $derived(
+    (m.reactions ?? []).map((r) => ({
+      emoji: r.emoji,
+      count: r.actors.length,
+      mine: r.actors.some((a, i) => r.actorTypes[i] === 'user' && a === ctx.me),
+      title: r.actors.map((a, i) => actorLabel(ctx, a, r.actorTypes[i] ?? 'user')).join(', '),
+    })),
+  )
+  const rollup = $derived(m.thread ? threadAvatars(ctx, m.thread.authors) : [])
   let editing = $state(false)
   let draft = $state('')
+  const openProfile = () => ctx.onOpenProfile?.(m.author, m.authorType === 'agent' ? 'agent' : 'user')
 
   const react = (emoji: string) => {
-    picking = false
     void toggleMessageReaction(ctx.channelId, m.id, emoji).catch(() => {})
   }
   const saveEdit = () => {
@@ -53,21 +62,51 @@
     editing = false
     if (text && text !== m.content) void editChannelMessage(ctx.channelId, m.id, text).catch(() => {})
   }
+  const startEdit = () => {
+    draft = m.content
+    editing = true
+  }
+  const askDelete = () => {
+    void confirm({
+      title: 'Delete message',
+      message: m.thread?.count
+        ? `Delete this message and its ${m.thread.count} thread ${m.thread.count === 1 ? 'reply' : 'replies'}?`
+        : 'Delete this message?',
+      confirmLabel: 'Delete',
+    }).then((ok) => {
+      if (ok) void deleteChannelMessage(ctx.channelId, m.id)
+    })
+  }
 </script>
 
 <!-- Flattened message row (spec §10): avatar square + name + 10px mono
-    timestamp, 14px sans body — no bubble. -->
+    timestamp, 14px sans body — no bubble. The row highlights on hover (the
+    rail row's hover token) and on keyboard focus within, which is also what
+    reveals the action bar (MessageActions' group/message contract). -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   in:fade={{ duration: 150 }}
   out:fade={QUICK}
-  class="group relative flex gap-2.5"
+  class="group/message relative -mx-2 flex gap-2.5 rounded-md px-2 py-1 transition-colors hover:bg-card2 focus-within:bg-card2"
   oncontextmenu={onContextMenu}
 >
-  <MessageAvatar {name} class="mt-0.5" />
+  {#if ctx.onOpenProfile}
+    <!-- The avatar and the name open the author's profile (Comms' drawer). -->
+    <button type="button" class="mt-0.5 shrink-0 self-start rounded" title={`View ${name}'s profile`} onclick={openProfile}>
+      <MessageAvatar {name} src={picture} />
+    </button>
+  {:else}
+    <MessageAvatar {name} src={picture} class="mt-0.5" />
+  {/if}
   <div class="min-w-0 flex-1">
     <div class="flex items-baseline gap-2">
-      <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
+      {#if ctx.onOpenProfile}
+        <button type="button" class="font-sans text-[13px] font-medium text-fg hover:underline" onclick={openProfile}>
+          {name}
+        </button>
+      {:else}
+        <span class="font-sans text-[13px] font-medium text-fg">{name}</span>
+      {/if}
       {#if m.authorType === 'agent'}
         <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
           agent
@@ -97,7 +136,10 @@
           <div class="mt-1 font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">enter to save · esc to cancel</div>
         </div>
       {:else if m.content}
-        <Markdown children={m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content} />
+        <Markdown
+          children={m.authorType === 'agent' ? resolveAgentMedia(m.content, m.author) : m.content}
+          selfMentions={ctx.selfMentions}
+        />
       {:else if live}
         <!-- Awaiting the agent's first token — the submitting rung (spec §9). -->
         <ChatWaiting id={m.id} role="submitting" class="my-1" />
@@ -117,116 +159,37 @@
     </div>
 
     <!-- Reaction chips: click toggles yours; hover names the reactors. -->
-    {#if (m.reactions?.length ?? 0) > 0}
-      <div in:fade={{ duration: 150 }} out:fade={QUICK} class="mt-1.5 flex flex-wrap items-center gap-1">
-        {#each m.reactions ?? [] as r (r.emoji)}
-          {@const mine = r.actors.some((a, i) => r.actorTypes[i] === 'user' && a === ctx.me)}
-          <button
-            in:fade={{ duration: 150 }}
-            out:fade={QUICK}
-            type="button"
-            title={r.actors.map((a, i) => actorLabel(ctx, a, r.actorTypes[i] ?? 'user')).join(', ')}
-            onclick={() => react(r.emoji)}
-            class={cn(
-              'flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition-colors',
-              mine
-                ? 'border-accent bg-accent-soft text-fg'
-                : 'border-line bg-raised text-muted dither-fill hover:text-fg',
-            )}
-          >
-            <span>{r.emoji}</span>
-            <span class="font-mono text-[10px] tracking-[0.05em]">{r.actors.length}</span>
-          </button>
-        {/each}
-      </div>
-    {/if}
+    <ReactionChips reactions={chips} onToggle={react} />
 
-    <!-- Thread rollup on roots (main flow only). -->
+    <!-- Thread rollup on roots (main flow only, R8): up to three stacked
+        participant avatars, "N replies" in the accent, last reply muted. -->
     {#if !inThread && m.thread}
       <button
         type="button"
         onclick={onOpenThread}
-        class="mt-1.5 flex items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1 text-xs text-accent transition-colors hover:border-accent"
+        class="-ml-1 mt-1 flex items-center gap-2 rounded-md border border-transparent px-1 py-0.5 text-xs transition-colors hover:border-line hover:bg-raised"
       >
-        <MessageSquareText size={12} />
-        {m.thread.count} {m.thread.count === 1 ? 'reply' : 'replies'}
-        <span class="font-mono text-[10px] tracking-[0.05em] text-muted">· {relativeTime(m.thread.lastAt)}</span>
+        {#if rollup.length > 0}
+          <span class="flex -space-x-1">
+            {#each rollup as a (a.key)}
+              <MessageAvatar name={a.name} src={a.src} class="h-5 w-5 text-[8px] ring-1 ring-[var(--theme-bg)]" />
+            {/each}
+          </span>
+        {/if}
+        <span class="font-medium text-accent">{m.thread.count} {m.thread.count === 1 ? 'reply' : 'replies'}</span>
+        <span class="font-mono text-[10px] tracking-[0.05em] text-muted">Last reply {relativeTime(m.thread.lastAt)}</span>
       </button>
     {/if}
   </div>
 
-  <!-- Hover toolbar: react · thread · edit (own) — delete lives in the
-      context menu behind a confirm. -->
+  <!-- Hover toolbar (R4): ✅ 👀 🙌 · picker · thread · edit (own) · delete
+      (own or channel owner, behind a confirm). -->
   {#if !live && !editing}
-    <div
-      class={cn(
-        'absolute -top-2 right-0 items-center gap-0.5 rounded-md border border-line bg-raised p-0.5 shadow-[var(--theme-shadow-1)]',
-        picking ? 'flex' : 'hidden group-hover:flex',
-      )}
-    >
-      <!-- Reaction palette: the §7 popover shell owns dismissal (outside
-          click, Esc, scroll) — `bind:open` keeps the toolbar pinned while it
-          is up. -->
-      <Popover bind:open={picking} up>
-        {#snippet trigger()}
-          <IconButton title="Add reaction" size="sm">
-            <SmilePlus size={14} />
-          </IconButton>
-        {/snippet}
-        {#snippet content(close)}
-          <div class="flex items-center gap-0.5">
-            {#each REACTION_SET as e (e)}
-              <button
-                type="button"
-                onclick={() => {
-                  close()
-                  react(e)
-                }}
-                class="grid h-7 w-7 place-items-center rounded-md text-base transition-colors dither-fill"
-              >
-                {e}
-              </button>
-            {/each}
-          </div>
-        {/snippet}
-      </Popover>
-      {#if !inThread && !m.threadRootId}
-        <IconButton title="Reply in thread" size="sm" onclick={() => onOpenThread?.()}>
-          <MessageSquareText size={14} />
-        </IconButton>
-      {/if}
-      {#if own}
-        <IconButton
-          title="Edit message"
-          size="sm"
-          onclick={() => {
-            draft = m.content
-            editing = true
-          }}
-        >
-          <Pencil size={14} />
-        </IconButton>
-      {/if}
-      {#if own || ctx.isChannelOwner}
-        <IconButton
-          title="Delete message"
-          size="sm"
-          danger
-          onclick={() => {
-            void confirm({
-              title: 'Delete message',
-              message: m.thread?.count
-                ? `Delete this message and its ${m.thread.count} thread ${m.thread.count === 1 ? 'reply' : 'replies'}?`
-                : 'Delete this message?',
-              confirmLabel: 'Delete',
-            }).then((ok) => {
-              if (ok) void deleteChannelMessage(ctx.channelId, m.id)
-            })
-          }}
-        >
-          <Trash2 size={14} />
-        </IconButton>
-      {/if}
-    </div>
+    <MessageActions
+      onReact={react}
+      onReply={!inThread && !m.threadRootId ? () => onOpenThread?.() : undefined}
+      onEdit={own ? startEdit : undefined}
+      onDelete={own || ctx.isChannelOwner ? askDelete : undefined}
+    />
   {/if}
 </div>

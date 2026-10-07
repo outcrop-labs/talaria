@@ -1,0 +1,15 @@
+- **Comms: five small motion changes, each with a job.**
+  - **Hover cards:** after the first card opens, moving down the rail shows each next card at once, with no delay and no entrance. The first card still waits about half a second, then grows out of its row's edge rather than its own centre. Cards close instantly, so two are never on screen together.
+  - **Hover buttons** on rail rows (star, archive, `…`, new thread) press slightly when clicked, to 97% over 150ms.
+  - **Reaction chips** press the same way. A reaction added next to existing ones grows in from its left edge (90% to full size, 150ms).
+  - **Starring** a channel, person, agent or thread carries its row up into Starred over a quarter-second; unstarring carries it back. Searching, collapsing sections and opening agents stay instant. The first star, which creates the Starred section, doesn't animate the move, and unstarring ends with a one-row snap once the row lands.
+  - **Archiving** a thread collapses its row over 150ms and the rows below glide up. Archiving a starred thread no longer flashes it back under its agent for a moment.
+  - Under reduced motion nothing scales or travels: the entrances fade, and starring jumps.
+  - **Verified:**
+    - `bun run gate` passed after each change.
+    - In a browser on a seeded local stack, with reduced motion on and off, sampled frame by frame:
+      - Hover cards waited about 450ms, then rose from the row edge. While skimming, the next card opened instantly and two cards were never open at once.
+      - The presses settled at 97% and eased back on release.
+      - A new 👀 chip grew from 0.9 to full size by about 80ms.
+      - Starring #research moved one row from y=337 to y=265. Search, collapse and agent toggles produced no transitions.
+      - An archived row collapsed while the next row glided 32px with no end jump. A failed archive left the row in place and showed "Archive failed".

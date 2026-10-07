@@ -81,6 +81,16 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_integrations::account::users::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
+            "/api/users/{id}/conversations",
+            get(talaria_routes_comms::comms::users_id_conversations::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/users/{id}/avatar",
+            get(talaria_routes_integrations::account::users_id_avatar::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/agents",
             get(talaria_routes_fleet::agents::agents::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -89,6 +99,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents/register",
             post(talaria_routes_fleet::agents::agents_register::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/{id}/conversations",
+            get(talaria_routes_comms::comms::agents_id_conversations::get)
+                .fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/agents/{id}/heartbeat",
@@ -429,6 +444,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::channels_id_read::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/channels/{id}/typing",
+            post(talaria_routes_comms::comms::channels_id_typing::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/channels/{id}/plan",
             get(talaria_routes_comms::comms::channels_id_plan::get)
                 .post(talaria_routes_comms::comms::channels_id_plan::post)
@@ -458,6 +477,11 @@ pub fn router(state: AppState) -> Router {
                 .patch(talaria_routes_comms::comms::conversations_id::patch)
                 .delete(talaria_routes_comms::comms::conversations_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PATCH, DELETE") }),
+        )
+        .route(
+            "/api/conversations/{id}/messages/{msgId}/reactions",
+            post(talaria_routes_comms::comms::conversations_id_messages_msgid_reactions::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/conversations/{id}/read",
@@ -845,6 +869,19 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
+            "/api/me/threads",
+            get(talaria_routes_comms::comms::me_threads::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/me/sent",
+            get(talaria_routes_comms::comms::me_sent::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/me/presence",
+            put(talaria_routes_integrations::account::me_presence::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
             "/api/workflows/{id}",
             put(talaria_routes_boards::tasks::workflows_id::put)
                 .delete(talaria_routes_boards::tasks::workflows_id::delete)
@@ -1006,6 +1043,17 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_admin::admin::admin_model_roles::get)
                 .put(talaria_routes_admin::admin::admin_model_roles::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        // The decision-model port's one config row: the provider catalog with
+        // its capability sheet, the sealed key, and the Test button that puts
+        // one real question through whatever is configured. `off` by default,
+        // so an instance that never visits this panel is unaffected.
+        .route(
+            "/api/admin/decide",
+            get(talaria_routes_admin::admin::admin_decide::get)
+                .put(talaria_routes_admin::admin::admin_decide::put)
+                .post(talaria_routes_admin::admin::admin_decide::post)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT") }),
         )
         // The retrieval console — the route that kicks the rag-backfill and
         // rag-reindex runs and reads their projections.

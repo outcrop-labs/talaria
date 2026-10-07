@@ -34,6 +34,22 @@ pub struct SessionUser {
     pub provider: String,
 }
 
+/// The session user as the SPA reads it (`GET /api/auth/session`, the `user`
+/// in `PUT /api/me`'s answer): the stored record, then the person's status
+/// (KTD7). Status is NOT stored in the session — it is read fresh from the
+/// users row each time, so a status set in one tab shows in every other one
+/// without a session write — and it rides AFTER provider, so the stored
+/// order above stays the wire's prefix.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionUserWire {
+    #[serde(flatten)]
+    pub user: SessionUser,
+    #[serde(rename = "statusEmoji")]
+    pub status_emoji: Option<String>,
+    #[serde(rename = "statusText")]
+    pub status_text: Option<String>,
+}
+
 /// The user object the auth routes put in their JSON bodies
 /// (`{ok: true, user}` on login/claim) — the session user minus `provider`.
 /// `provider` lives in the SESSION record only; the response user is the
@@ -673,6 +689,28 @@ mod tests {
         // role BEFORE provider — the stored order, and the order the SPA's
         // parsed object carries.
         assert!(j.starts_with(r#"{"id":"1","sub":"google:2","email":"a@b.c","name":null,"picture":null,"role":"member","provider":"google"}"#));
+    }
+
+    #[test]
+    fn session_wire_appends_status_after_the_stored_record() {
+        let u = SessionUser {
+            id: "1".into(),
+            sub: "google:2".into(),
+            email: None,
+            name: None,
+            picture: Some("/api/users/1/avatar?v=abcd1234".into()),
+            role: "member".into(),
+            provider: "google".into(),
+        };
+        let wire = SessionUserWire {
+            user: u,
+            status_emoji: Some("📅".into()),
+            status_text: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&wire).unwrap(),
+            r#"{"id":"1","sub":"google:2","email":null,"name":null,"picture":"/api/users/1/avatar?v=abcd1234","role":"member","provider":"google","statusEmoji":"📅","statusText":null}"#
+        );
     }
 
     #[test]

@@ -1667,6 +1667,132 @@ const DUPLICATE_BODY_ALLOW = [
   }
 }
 
+// A `OnceLock` EDGE THAT NOTHING SETS — the quietest bug shape in this tree.
+//
+// The api breaks dependency cycles with injected edges: a leaf crate declares
+// `pub static FOO: OnceLock<Arc<dyn Fn…>>`, reads it with `FOO.get()`, and the
+// wiring crate (api/crates/talaria-jobs) sets it at boot. The pattern is right.
+// What it cannot survive is forgetting the set, because every layer of the
+// compiler is happy: the declaration compiles, the read compiles, and the
+// `None` arm is a VALID ANSWER — usually the permissive one. So the feature
+// does not error, it simply never runs, and the fallback looks like a result.
+//
+// register_all's own comments record three of these found the hard way
+// (ANNOUNCE_APPROVAL: every queued Google write waited five minutes for the
+// sweep; BUILD_DISPATCH: every plan-draft POST answered 500; CONVERSATION_OWNER:
+// the attribution ladder silently credited the wrong person). This rule exists
+// because of the fourth: 82eb786e extracted the ticket-thread gate into its own
+// crate behind a new `OnceLock` and never set it, so `ticket_message_relevant`
+// answered `true` for every non-structural message for sixteen days — no gate
+// at all, on every install. Its verification line was "cargo check -p
+// talaria-api", which is exactly the tool that cannot see this.
+//
+// THE CENSUS BELOW IS A BACKLOG, NOT AN EXEMPTION LIST. Each entry is a read
+// path that currently does nothing; what that costs differs per seam and none
+// of them has been audited. The rule's job is to stop the set GROWING and to
+// keep the known ones written down somewhere a person looks. Wire one and
+// delete its line — the staleness check below forces that, so the census can
+// only shrink.
+const UNSET_SEAM_CENSUS = [
+  // EMPTY, AND THAT IS THE POINT. It held twelve entries — every injected
+  // edge a burst of crate extractions on 2026-09-18/19 declared and none of
+  // them set. All twelve are now wired in `register_all` with a boot
+  // assertion each, so the backlog is gone and the rule's only job from here
+  // is to refuse the thirteenth.
+]
+
+{
+  // `rustSources` is comment-stripped, so a seam merely NAMED in a comment
+  // (this file's own history is full of them) cannot read as a setter.
+  //
+  // IT COVERS `api/crates` ONLY, and both halves of that matter here. A
+  // setter in the BINARY crate would be invisible to it, so `api/src` is read
+  // in as well — otherwise wiring an edge in main.rs would fail this rule on
+  // correct code, and a rule that fires on correct code teaches people to
+  // route around it. Test code is deliberately NOT read: a seam set only in
+  // `api/tests/it/support` is wired for the suite and dead in production,
+  // which is the exact bug this rule is for, so counting it would let the
+  // rule certify the thing it exists to catch.
+  const binarySrc = []
+  for (const f of walk(join(ROOT, 'api/src'), [], ['.rs'])) {
+    binarySrc.push(stripComments(readFileSync(f, 'utf8')))
+  }
+  const allRust = [...rustSources.values(), ...binarySrc].join('\n')
+  const isSet = (name) => new RegExp(`\\b${name}\\s*\\.\\s*set\\s*\\(`, 's').test(allRust)
+  const isRead = (name) => new RegExp(`\\b${name}\\s*\\.\\s*get\\s*\\(`, 's').test(allRust)
+
+  const seams = []
+  for (const [path, src] of rustSources) {
+    const re = /pub static ([A-Z_0-9]+)\s*:\s*OnceLock</g
+    let m
+    while ((m = re.exec(src))) seams.push({ name: m[1], path, line: lineOf(src, m.index) })
+  }
+  notes.push(`oncelock seams: ${seams.length} declared, ${seams.filter((s) => !isSet(s.name)).length} unset`)
+
+  const censused = new Set(UNSET_SEAM_CENSUS.map((c) => `${c.name}\u0000${c.path}`))
+  const found = []
+  for (const seam of seams) {
+    if (isSet(seam.name)) continue
+    // A seam nothing reads either is dead code, not a dead FEATURE — a
+    // different (and milder) problem than a read path that silently no-ops.
+    if (!isRead(seam.name)) continue
+    if (censused.has(`${seam.name}\u0000${seam.path}`)) continue
+    found.push({ path: seam.path, line: seam.line, text: `pub static ${seam.name}: OnceLock<…>` })
+  }
+  if (found.length) {
+    failures.push({
+      id: 'oncelock-seam-never-set',
+      what: 'an injected edge is read but nothing anywhere sets it — the feature behind it cannot run',
+      fix: [
+        'Set it where every other edge is set: `register_all` in api/crates/talaria-jobs/src/lib.rs,',
+        'which boot reaches through `jobs::arm`. One line per edge:',
+        '',
+        '    let _ = talaria_thing::MY_EDGE.set(Arc::new(|pg, id| {',
+        '        Box::pin(async move { talaria_other::real_impl(&pg, &id).await })',
+        '    }));',
+        '',
+        'WHY THIS IS A GATE AND NOT A LINT: `cargo check`, `cargo clippy` and every unit test',
+        'over the declaring crate all pass with the edge unset, because the `None` arm is a',
+        'valid answer — and it is usually the permissive one, so the feature reads as working.',
+        'Four of these have shipped: a five-minute delay on every queued Google write, a 500 on',
+        'every plan-draft POST, an attribution ladder crediting the wrong person, and a ticket',
+        'gate that was simply absent for sixteen days.',
+        '',
+        'If the edge is genuinely optional — a hook only some deployments wire — add it to',
+        'UNSET_SEAM_CENSUS in scripts/check-invariants.mjs and say so in the pull request. The',
+        'census is a backlog that can only shrink, not a place to park a new one.',
+      ],
+      found,
+    })
+  }
+
+  for (const c of UNSET_SEAM_CENSUS) {
+    const seam = seams.find((s) => s.name === c.name && s.path === c.path)
+    if (!seam) {
+      failures.push({
+        id: 'unset-seam-census-stale',
+        what: `UNSET_SEAM_CENSUS names a seam that no longer exists: ${c.name} in ${c.path}`,
+        fix: [
+          'The declaration is gone — deleted, renamed, or moved. Delete the census line too: a',
+          'backlog entry for something that is not there hides the next real one.',
+        ],
+        found: [],
+      })
+    } else if (isSet(c.name)) {
+      failures.push({
+        id: 'unset-seam-census-stale',
+        what: `UNSET_SEAM_CENSUS still names ${c.name}, which is now wired`,
+        fix: [
+          'Somebody set this edge — the backlog got shorter. Delete its line from',
+          'UNSET_SEAM_CENSUS in scripts/check-invariants.mjs so the census keeps meaning',
+          '"these are still dark".',
+        ],
+        found: [],
+      })
+    }
+  }
+}
+
 // INSTANCE IDENTITY, PINNED ACROSS THE LANGUAGE LINE.
 //
 // The app-database's container name is composed twice: the resident tier names

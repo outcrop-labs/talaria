@@ -84,7 +84,12 @@
         </Button>
       {/if}
     {/if}
-    {#if meta && meta.id !== 'tei'}
+    <!-- A model control only where there IS a model to pick. Derived from the
+         provider's own catalogue rather than an id blocklist: the self-hosted
+         sidecar serves whatever it was started with, and the decision-model
+         provider delegates to talaria-decide's own config, so neither has a
+         model of its own to choose here. -->
+    {#if meta && (meta.liveCatalog || meta.fallbackModels.length > 0)}
       {#if models}
         <ModelIdPicker models={models} value={cfg.model ?? null} onChange={(model) => void apply({ model })} emptyLabel="default model" class="w-64" />
       {:else}

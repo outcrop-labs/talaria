@@ -93,6 +93,18 @@
       ? { error: archivedQuery.error, retry: () => void archivedQuery.refetch() }
       : null,
   )
+  // THE URL IS THE SESSION SELECTION (/work/<id>) — linkable, back/forward-able.
+  //
+  // DECLARED ABOVE ITS FIRST READER, and the position is load-bearing.
+  // createQuery resolves its options function EAGERLY to seed the observer
+  // (createBaseQuery.svelte.js: `new Observer(client, resolvedOptions)`), so
+  // the `() => selectedSessionId` getter below is called during this
+  // component's init rather than on first read. Declared after that call, the
+  // `const` was read inside its own temporal dead zone and the view threw on
+  // every mount — "can't access lexical declaration ... before
+  // initialization", which minification renders as a one-letter name and makes
+  // unreadable in a built bundle. A getter defers the READ, not the binding.
+  const selectedSessionId = $derived(pathId(route.pathname, '/work'))
   // @mention the session's MEMBERS — the people a mention will actually reach.
   // Same rule as Plan: offering the whole org invites mentions that notify
   // nobody. A brand-new session has only you, so it is inert until shared.
@@ -109,8 +121,6 @@
   const sticky = useStickyAgent('work', () => agents)
   const selectedAgent = $derived(sticky.selected)
   const pickAgent = sticky.select
-  // THE URL IS THE SESSION SELECTION (/work/<id>) — linkable, back/forward-able.
-  const selectedSessionId = $derived(pathId(route.pathname, '/work'))
   const setSelectedSessionId = (id: string | null, opts: { replace?: boolean } = {}) => {
     if (id) void navigate('/work/:sessionId', { params: { sessionId: id }, replace: opts.replace })
     else void navigate('/work', { replace: opts.replace })

@@ -201,6 +201,135 @@ pub async fn agent_text_authority(
     }
 }
 
+// ── WORK-SHAPE ALIGNMENT ─────────────────────────────────────────────────────
+//
+// WHAT THE SLUG CANNOT DO. `signature_of` is `board_id | slug(kind)`, and
+// `kind` is the agent's own free-text name for the sort of work it was doing.
+// So "cannot access staging DB" and "no staging database credentials" are two
+// rows with `seen_count: 1` each — and `seen_count` is the ranking signal the
+// Studio's Suggested queue orders by. A gap reported five ways by five agents
+// never ranks, which is the exact opposite of what the honesty loop promises:
+// "repeats bump seen_count (frequency is ranking signal)".
+//
+// THE ASYMMETRY RUNS THE OTHER WAY FROM EVERY OTHER SITE ON THIS PORT, and it
+// is why the floor here is the highest of them. A false SPLIT costs ranking: a
+// real gap looks rarer than it is. A false MERGE costs a gap entirely — two
+// genuinely different problems collapse into one row and the second is never
+// seen again, and nothing downstream can tell. So a merge must be nearly
+// certain, `no_match` is always offered, and the fallback is the slug identity
+// this has always used.
+const ALIGN_FLOOR: f64 = 0.85;
+
+/// A gap already on the board, as the alignment judgment sees it.
+struct GapCandidate {
+    signature: String,
+    kind: String,
+    missing: String,
+}
+
+/// Open gaps on this board, newest first and bounded. Capped because the
+/// judgment is a Choice over them and a hundred options is not a decision —
+/// and because the recent ones are where a duplicate of a fresh report lives.
+async fn open_candidates(pg: &PgPool, board_id: Option<&str>) -> Vec<GapCandidate> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "select signature, kind, missing from capability_gaps \
+          where status = 'open' \
+            and (($1::text is null and board_id is null) or board_id::text = $1) \
+          order by last_seen desc limit 20",
+    )
+    .bind(board_id)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    rows.into_iter()
+        .map(|(signature, kind, missing)| GapCandidate {
+            signature,
+            kind,
+            missing,
+        })
+        .collect()
+}
+
+/// The signature this report should file under: an existing open gap's when a
+/// decision model is nearly certain it is the same work-shape, else `None` and
+/// the caller files under the report's own slug.
+///
+/// Answers `None` for every reason the port can have nothing — off (the
+/// default), unconfigured, unable to serve a Choice, below the floor — so an
+/// install that never configures a decision model behaves exactly as it always
+/// has.
+pub async fn aligned_signature(
+    state: &talaria_state::AppState,
+    board_id: Option<&str>,
+    kind: &str,
+    missing: &str,
+) -> Option<String> {
+    let candidates = open_candidates(&state.pg, board_id).await;
+    if candidates.is_empty() {
+        return None;
+    }
+    // An exact slug hit needs no judgment: the insert already collapses it.
+    let own = signature_of(board_id, kind);
+    if candidates.iter().any(|c| c.signature == own) {
+        return None;
+    }
+
+    let mut options = vec![talaria_decide::Opt::new(
+        NO_MATCH,
+        "none of them — this is a different problem from every gap listed, and belongs in its own row",
+    )];
+    for (i, c) in candidates.iter().enumerate() {
+        options.push(talaria_decide::Opt::new(
+            i.to_string(),
+            format!("{} — {}", c.kind.trim(), c.missing.trim()),
+        ));
+    }
+
+    let ask = talaria_decide::Ask::new(serde_json::json!({
+        "new_report": { "kind": kind, "missing": missing },
+    })).q(
+        "same",
+        talaria_decide::Question::choice(
+            "Which of the listed gaps is THE SAME underlying problem as `new_report`? Two reports are the same problem when fixing one would fix the other — not merely when they are about the same system or the same board.",
+            options,
+        ),
+    );
+
+    let http = talaria_retrieval_http::real_http();
+    let answers = talaria_decide::decide(state, &http, &ask).await?;
+    let j = answers.get("same")?;
+    // Every judgment is recorded, including the no-matches and the ones below
+    // the floor: an agreement rate over only the merges is not one.
+    talaria_decide::shadow::record(
+        &state.pg,
+        &talaria_decide::shadow::Compare {
+            site: "gap-align",
+            subject_ref: Some(own.clone()),
+            // The slug pass said "no existing row" about all of these; that is
+            // what made them candidates.
+            baseline: NO_MATCH.to_string(),
+            agrees: |a, baseline| a.chosen() == Some(baseline),
+        },
+        Some(j),
+    )
+    .await;
+
+    if !j.calibrated || j.certainty() < ALIGN_FLOOR {
+        return None;
+    }
+    let chosen = j.answer.chosen()?;
+    if chosen == NO_MATCH {
+        return None;
+    }
+    let i: usize = chosen.parse().ok()?;
+    candidates.get(i).map(|c| c.signature.clone())
+}
+
+/// The option id meaning "a new row". A named constant because it is compared
+/// in two places and a typo would silently turn every no-match into a parse
+/// failure — which answers None too, so nothing would ever look wrong.
+const NO_MATCH: &str = "none";
+
 /// What `report_gap` hands back to the route: the row's id, its frequency,
 /// and whether THIS call was the shape's first sighting.
 pub struct ReportedGap {
@@ -241,7 +370,13 @@ pub async fn report_gap(
         Authority::Admin { on_board } => on_board.clone(),
         _ => None,
     };
-    let sig = signature_of(board_id.as_deref(), input.kind);
+    // The override is a SIGNATURE, not a row id, so the insert path does not
+    // change: a resolved match collides on `signature` and bumps `seen_count`
+    // exactly as a repeat of the same slug always has.
+    let sig = match input.signature {
+        Some(s) => s.to_string(),
+        None => signature_of(board_id.as_deref(), input.kind),
+    };
     let (id, seen_count, first): (String, i32, bool) = sqlx::query_as(
         "insert into capability_gaps (signature, kind, board_id, agent_model, missing, needs, example_task_id) \
          values ($1, $2, $3::uuid, $4, $5, $6, $7::uuid) \
@@ -302,6 +437,14 @@ pub mod report_gap {
         pub needs: Option<&'a str>,
         pub board_id: Option<&'a str>,
         pub task_id: Option<&'a str>,
+        /// File under an EXISTING row's signature instead of this report's
+        /// own — `aligned_signature` resolves it, and the caller passes what
+        /// it got. `None` keeps the slug-identity behaviour exactly.
+        ///
+        /// Resolved by the CALLER because this module reaches a `PgPool` and
+        /// nothing more: `NotifyDeps` carries no `AppState`, and asking a
+        /// decision model needs one.
+        pub signature: Option<&'a str>,
     }
 }
 
@@ -486,5 +629,55 @@ mod tests {
     fn signature_separates_any_board() {
         assert_eq!(signature_of(None, "Email"), "any|email");
         assert_eq!(signature_of(Some("b1"), "Email"), "b1|email");
+    }
+    // ── work-shape alignment ────────────────────────────────────────────────
+
+    #[test]
+    fn the_merge_floor_is_the_highest_on_the_port_because_a_false_merge_hides_a_gap() {
+        // The asymmetry runs the other way from every other site: a false
+        // SPLIT costs ranking (a real gap looks rarer than it is), a false
+        // MERGE costs the gap entirely — two different problems collapse into
+        // one row and the second is never seen again. Behaviour, not a literal
+        // compared with itself.
+        let acts = |certainty: f64, calibrated: bool| calibrated && certainty >= ALIGN_FLOOR;
+        assert!(acts(0.85, true), "at the floor");
+        assert!(acts(0.99, true));
+        assert!(!acts(0.84, true), "just under");
+        assert!(
+            !acts(0.75, true),
+            "the workflow floor is not high enough here"
+        );
+        assert!(!acts(0.99, false), "uncalibrated never merges");
+        // That `0.75` case is also the claim that this is the strictest floor
+        // on the port: it is the workflow pass's bar, and it does not act
+        // here. Asserting the constant against a literal as well would be a
+        // compile-time tautology — clippy rejects it, rightly.
+    }
+
+    #[test]
+    fn no_match_is_a_named_option_so_a_typo_cannot_read_as_a_merge() {
+        // Compared in two places. A literal in one of them would turn every
+        // no-match into a parse failure, which answers None too — so nothing
+        // would ever look wrong while alignment quietly stopped happening.
+        assert_eq!(NO_MATCH, "none");
+        // And it can never collide with a candidate id, which are indices.
+        assert!(NO_MATCH.parse::<usize>().is_err());
+    }
+
+    #[test]
+    fn a_candidate_renders_as_its_kind_and_what_was_missing() {
+        // The model judges "is this the same problem", so the option text has
+        // to carry the problem — a bare slug would ask it to compare labels.
+        let c = GapCandidate {
+            signature: "b1|staging-db".into(),
+            kind: "Staging DB".into(),
+            missing: "credentials for the staging database".into(),
+        };
+        let rendered = format!("{} — {}", c.kind.trim(), c.missing.trim());
+        assert_eq!(
+            rendered,
+            "Staging DB — credentials for the staging database"
+        );
+        assert_eq!(c.signature, "b1|staging-db");
     }
 }

@@ -1,4 +1,5 @@
 // Group-chat client: queries + mutations + live SSE refresh.
+import { setTyping, typingKey } from './comms-typing.svelte'
 import type { ChatChip } from '@/lib/chips'
 import { openStream } from '@/lib/sse'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
@@ -7,7 +8,8 @@ import { delJson, getJson, patchJson, postJson, putJson } from '@/lib/fetch-json
 
 export type ChannelRole = 'owner' | 'member'
 
-/** 'channel' = persistent + ambient; 'group' = a Relay; 'dm' = human↔human. */
+/** 'channel' = persistent + ambient; 'group' = a Relay; 'dm' = a direct
+ *  message — two people, or a group DM of several people and/or agents. */
 export type ChannelKind = 'channel' | 'group' | 'dm'
 
 export interface Channel {
@@ -18,8 +20,12 @@ export interface Channel {
   role: ChannelRole
   createdAt: string
   updatedAt: string
-  /** For DMs: the other person. */
+  /** For a two-person DM: the other person. Null for a group DM. */
   peer?: { userId: string; name: string | null; email: string | null } | null
+  /** For DMs: everyone else in it (a group DM's label and avatars). */
+  members?: { userId: string; name: string | null; email: string | null }[]
+  /** For DMs: the agents seated in it. */
+  agents?: string[]
   /** Others' messages past your read cursor. */
   unreadCount?: number
 }
@@ -118,7 +124,11 @@ export function useChannelEvents(id: MaybeGetter<string | null>, onMessage?: () 
     const cid = resolve(id)
     if (!cid) return
     return openStream(`/api/channels/${cid}/events`, (data) => {
-      const ev = JSON.parse(data) as { type: 'message' | 'channel' }
+      const ev = JSON.parse(data) as
+        | { type: 'message' | 'channel' }
+        | { type: 'typing'; userId: string; threadRootId?: string; typing: boolean }
+      // Presence, not content: record it and refetch nothing.
+      if (ev.type === 'typing') return setTyping(typingKey(cid, ev.threadRootId), ev.userId, ev.typing)
       if (ev.type === 'message') onMessage?.()
       void qc.invalidateQueries({ queryKey: ev.type === 'message' ? ['channel-messages', cid] : ['channel', cid] })
       if (ev.type === 'channel') void qc.invalidateQueries({ queryKey: ['channels'] })
@@ -132,6 +142,17 @@ export const createChannel = async (name: string, kind: 'channel' | 'group' = 'c
 /** Find-or-create the DM with a teammate. */
 export const openDm = async (userId: string): Promise<Channel> =>
   (await postJson<{ channel: Channel }>('/api/dms', { userId })).channel
+
+/** Find-or-create a DM with any mix of people and agents (the "New
+ *  message" pane); one person and no agents is the plain DM. */
+export const openGroupDm = async (input: { userIds: string[]; agents: string[]; name?: string | null }): Promise<Channel> =>
+  (
+    await postJson<{ channel: Channel }>('/api/dms', {
+      userIds: input.userIds,
+      agents: input.agents,
+      ...(input.name?.trim() ? { name: input.name.trim() } : {}),
+    })
+  ).channel
 
 export const markChannelRead = async (id: string, seq: number): Promise<void> => {
   await postJson<{ ok: true }>(`/api/channels/${id}/read`, { seq })

@@ -15,6 +15,9 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-writes = { workspace = true }
+talaria-decide = { workspace = true }
+talaria-state = { workspace = true }
+talaria-retrieval-http = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-runs-define = { workspace = true }
 tracing = { workspace = true }

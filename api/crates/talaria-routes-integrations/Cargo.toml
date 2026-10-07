@@ -31,9 +31,11 @@ talaria-realtime-watch = { workspace = true }
 talaria-session = { workspace = true }
 talaria-state = { workspace = true }
 talaria-teams = { workspace = true }
+talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
 talaria-workspace-secrets = { workspace = true }
 axum = { workspace = true }
+redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
@@ -44,3 +46,6 @@ regex = { workspace = true }
 url = { workspace = true }
 base64 = { workspace = true }
 talaria-api-facades = { workspace = true }
+
+[dev-dependencies]
+talaria-config = { workspace = true }

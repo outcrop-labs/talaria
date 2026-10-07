@@ -494,6 +494,21 @@ CREATE TABLE public.daily_briefs (
     last_swept_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.decide_shadow (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    site text NOT NULL,
+    subject_ref text,
+    baseline text DEFAULT ''::text NOT NULL,
+    port_answer text,
+    probability real,
+    certainty real,
+    calibrated boolean DEFAULT false NOT NULL,
+    provider text DEFAULT ''::text NOT NULL,
+    model text,
+    latency_ms integer,
+    agreed boolean,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.fitness_transcripts (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     model text NOT NULL,
@@ -809,6 +824,13 @@ CREATE TABLE public.mcp_user_credentials (
     user_id uuid NOT NULL,
     headers_enc text NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.message_reactions (
+    message_id uuid NOT NULL,
+    emoji text NOT NULL,
+    actor text NOT NULL,
+    actor_type text DEFAULT 'user'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.messages (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1246,7 +1268,11 @@ CREATE TABLE public.users (
     preferred_model text,
     notify_prefs jsonb DEFAULT '{}'::jsonb NOT NULL,
     preferred_effort text,
-    timezone text
+    timezone text,
+    avatar_upload_id uuid,
+    status_emoji text,
+    status_text text,
+    title text
 );
 CREATE TABLE public.work_wait (
     task_id uuid NOT NULL,
@@ -1470,6 +1496,8 @@ ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_user_id_brief_date_key UNIQUE (user_id, brief_date);
+ALTER TABLE ONLY public.decide_shadow
+    ADD CONSTRAINT decide_shadow_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.fitness_transcripts
     ADD CONSTRAINT fitness_transcripts_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.fleet_agents
@@ -1534,6 +1562,8 @@ ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
     ADD CONSTRAINT mcp_user_credentials_pkey PRIMARY KEY (server_id, user_id);
+ALTER TABLE ONLY public.message_reactions
+    ADD CONSTRAINT message_reactions_pkey PRIMARY KEY (message_id, emoji, actor);
 ALTER TABLE ONLY public.messages
     ADD CONSTRAINT messages_conversation_id_seq_key UNIQUE (conversation_id, seq);
 ALTER TABLE ONLY public.messages
@@ -1701,6 +1731,7 @@ CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING b
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
 CREATE UNIQUE INDEX daily_brief_entries_seq_idx ON public.daily_brief_entries USING btree (brief_id, seq);
 CREATE INDEX daily_briefs_user_idx ON public.daily_briefs USING btree (user_id, brief_date DESC);
+CREATE INDEX decide_shadow_site_idx ON public.decide_shadow USING btree (site, created_at DESC);
 CREATE INDEX fitness_transcripts_model_run_idx ON public.fitness_transcripts USING btree (model, run_started_at DESC, harness, case_name);
 CREATE INDEX google_pending_org_idx ON public.google_pending_actions USING btree (is_org, status);
 CREATE INDEX google_pending_owner_idx ON public.google_pending_actions USING btree (owner_user_id, status);
@@ -1955,6 +1986,8 @@ ALTER TABLE ONLY public.mcp_user_credentials
     ADD CONSTRAINT mcp_user_credentials_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_user_credentials
     ADD CONSTRAINT mcp_user_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.message_reactions
+    ADD CONSTRAINT message_reactions_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.messages(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.messages
     ADD CONSTRAINT messages_author_user_id_fkey FOREIGN KEY (author_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.messages
@@ -2057,6 +2090,8 @@ ALTER TABLE ONLY public.user_password_credentials
     ADD CONSTRAINT user_password_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.user_permissions
     ADD CONSTRAINT user_permissions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_avatar_upload_id_fkey FOREIGN KEY (avatar_upload_id) REFERENCES public.uploads(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.work_wait
     ADD CONSTRAINT work_wait_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.workbench_jobs
