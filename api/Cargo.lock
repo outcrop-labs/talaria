@@ -5577,6 +5577,7 @@ dependencies = [
  "talaria-refs",
  "talaria-research-def",
  "talaria-retrieval-embed",
+ "talaria-retrieval-http",
  "talaria-retrieval-qdrant",
  "talaria-runs-agent-hire",
  "talaria-runs-decide",

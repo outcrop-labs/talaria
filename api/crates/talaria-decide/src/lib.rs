@@ -53,9 +53,11 @@ use talaria_state::AppState;
 pub mod config;
 pub mod guard;
 pub mod shadow;
+pub mod sites;
 pub mod tools;
 mod wire;
 
+pub use sites::{DECIDE_SITES, SiteDef, SiteGate, acted, gate_of, sites_public};
 pub use wire::ModelInfo;
 
 pub use config::{

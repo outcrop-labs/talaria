@@ -1,9 +1,15 @@
 // /api/admin/decide. The decision-model port's one config row (admin).
-// GET → the provider catalog with its capability sheet, plus the current
-// config, redacted. PUT → patch the config. POST { action: "test" } → put one
-// real question through whatever is configured and report exactly what came
-// back. POST { action: "models" } → ask the endpoint which model ids it will
-// accept.
+// GET → the provider catalog with its capability sheet, the current config
+// redacted, and the SITE CENSUS: every place in Talaria that asks a decision
+// model anything. PUT → patch the config, or, with `{ site: { id, on?, floor? } }`,
+// switch one site over and set the certainty it acts at — handled on its own
+// and answering `{sites}`, because "which model" and "which of our judgments
+// run on it" are different writes and should not share an audit entry. A site
+// whose switch lives on another surface (the guardrail rule toggles, the
+// rerank provider picker) is refused there with the sentence naming where it
+// is. POST { action: "test" } → put one real question through whatever is
+// configured and report exactly what came back. POST { action: "models" } →
+// ask the endpoint which model ids it will accept.
 //
 // WHY THE TEST ARM EARNS ITS KEEP. Every other field on this panel can be
 // wrong in a way nothing notices: a URL that resolves but speaks a different
@@ -31,7 +37,7 @@ use serde_json::json;
 
 use talaria_api_facades::decide::{
     self, ALL_WIRES, DECIDE_PROVIDERS, DecidePatch, NoAnswer, Question, configured,
-    providers_public, shadow, tools,
+    providers_public, shadow, sites, tools,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -58,6 +64,11 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         // configured is not the same as a site being switched over, and this
         // block is the evidence a person reads before switching one.
         "shadow": shadow::shadow_value(shadow::shadow_report(&state.pg).await),
+        // THE CENSUS. Every place in Talaria that asks a decision model
+        // anything, what it does with the answer, where it is switched on, and
+        // the floor it acts at - so "where is this being used" has one
+        // complete answer rather than a grep.
+        "sites": sites::sites_public(&state.pg).await,
         // Tool-offer pruning's measurement, which has its OWN switch:
         // configuring a decision model is not consent to put every agent turn
         // through a question per offered tool. See talaria-decide::tools.
@@ -108,6 +119,57 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // -- THE SITE SWITCH ----------------------------------------------------
+    //
+    // Handled before the config patch and RETURNED from, because the two are
+    // different writes: `decide_config` says which model, `decide_sites` says
+    // which of Talaria's own judgments run on it and at what certainty. A
+    // single body setting both would make "switch this site on" and "change
+    // provider" the same audit entry.
+    if let Some(site) = obj.get("site") {
+        let Some(site) = site.as_object() else {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "site must be an object",
+            ));
+        };
+        let id = match talaria_body::string_member(site, "id", 1, 80) {
+            Ok(v) => v,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        let on = match site.get("on") {
+            Some(_) => match talaria_body::boolean_member(site, "on") {
+                Ok(v) => Some(v),
+                Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+            },
+            None => None,
+        };
+        let floor = match optional_number_member(site, "floor", NumKind::Float, 0.0, 1.0) {
+            Ok(v) => v,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        // A site whose switch lives on another surface refuses HERE with the
+        // sentence naming where it is - a second spelling of one switch is how
+        // the two come to disagree.
+        if let Err(msg) = sites::set_site(&state.pg, &id, on, floor).await {
+            return Ok(house_error(StatusCode::BAD_REQUEST, &msg));
+        }
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "settings.decide.site",
+                target_type: "settings",
+                target_id: Some("decide"),
+                target_label: Some(&id),
+                before: None,
+                after: Some(json!({ "on": on, "floor": floor })),
+            },
+        )
+        .await;
+        return Ok(Json(json!({ "sites": sites::sites_public(&state.pg).await })).into_response());
+    }
+
     // Its own key rather than a field on the config row: the measurement is
     // not part of "which decision model", and an operator switching providers
     // should not silently re-enable it.
@@ -352,6 +414,40 @@ mod tests {
                 .sentence()
                 .contains("No decision model"),
         );
+    }
+
+    #[test]
+    fn the_census_covers_every_site_the_panel_can_switch_and_names_where_the_others_live() {
+        // The panel renders a checkbox for a site it can switch and a sentence
+        // for one it cannot. A site that is neither would render a dead
+        // control, so every entry must answer the question one way.
+        let mut switchable = 0;
+        for s in sites::DECIDE_SITES {
+            match s.switch_lives_at {
+                None => switchable += 1,
+                Some(w) => assert!(
+                    !w.trim().is_empty(),
+                    "{} says its switch is elsewhere without saying where",
+                    s.id
+                ),
+            }
+        }
+        assert!(
+            switchable >= 3,
+            "the panel owns at least the three wired sites"
+        );
+        // And `set_site` refuses the ones it does not own rather than writing a
+        // second switch beside the real one.
+        for s in sites::DECIDE_SITES
+            .iter()
+            .filter(|s| s.switch_lives_at.is_some())
+        {
+            assert!(
+                sites::def_of(s.id).is_some_and(|d| d.switch_lives_at.is_some()),
+                "{} must stay refused by set_site",
+                s.id
+            );
+        }
     }
 
     #[test]

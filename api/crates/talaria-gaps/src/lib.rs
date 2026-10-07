@@ -218,7 +218,12 @@ pub async fn agent_text_authority(
 // seen again, and nothing downstream can tell. So a merge must be nearly
 // certain, `no_match` is always offered, and the fallback is the slug identity
 // this has always used.
-const ALIGN_FLOOR: f64 = 0.85;
+//
+// The 0.85 and that reasoning now live in `talaria_decide::sites`, beside the
+// ledger an operator reads before moving it — and the site is registered to
+// read its floor as CERTAINTY, which for a Choice is the concentration of the
+// distribution. There is no "probability of yes" to lean on when the answer is
+// one option out of many.
 
 /// A gap already on the board, as the alignment judgment sees it.
 struct GapCandidate {
@@ -314,9 +319,10 @@ pub async fn aligned_signature(
     )
     .await;
 
-    if !j.calibrated || j.certainty() < ALIGN_FLOOR {
-        return None;
-    }
+    // The switch and the floor are the operator's, read per call through the
+    // site census — `None` means "run your own path", which here is opening a
+    // new row, exactly what the slug pass already decided to do.
+    let j = talaria_decide::acted(&state.pg, "gap-align", Some(j.clone())).await?;
     let chosen = j.answer.chosen()?;
     if chosen == NO_MATCH {
         return None;
@@ -639,7 +645,42 @@ mod tests {
         // MERGE costs the gap entirely — two different problems collapse into
         // one row and the second is never seen again. Behaviour, not a literal
         // compared with itself.
-        let acts = |certainty: f64, calibrated: bool| calibrated && certainty >= ALIGN_FLOOR;
+        let def = talaria_decide::sites::def_of("gap-align").expect("a census entry");
+        assert_eq!(
+            def.reads,
+            talaria_decide::sites::FLOOR_CERTAINTY,
+            "a Choice has no probability of yes to lean on"
+        );
+        let gate = talaria_decide::SiteGate {
+            on: true,
+            floor: def.default_floor,
+        };
+        // A Choice's certainty IS its concentration, so this drives the real
+        // predicate through a real Choice answer rather than a stand-in.
+        let acts = |certainty: f64, calibrated: bool| {
+            // Two options whose shares differ by `certainty` — the port's own
+            // concentration measure over a two-way split.
+            let hi = 0.5 + certainty / 2.0;
+            talaria_decide::sites::acts_on(
+                def,
+                &gate,
+                Some(talaria_decide::Judgment {
+                    answer: talaria_decide::Answer::Choice {
+                        id: "0".into(),
+                        probabilities: std::collections::BTreeMap::from([
+                            ("0".to_string(), hi),
+                            (NO_MATCH.to_string(), 1.0 - hi),
+                        ]),
+                        confidence: certainty,
+                    },
+                    calibrated,
+                    provider: "test".into(),
+                    model: None,
+                    latency_ms: 1,
+                }),
+            )
+            .is_some()
+        };
         assert!(acts(0.85, true), "at the floor");
         assert!(acts(0.99, true));
         assert!(!acts(0.84, true), "just under");
@@ -649,9 +690,12 @@ mod tests {
         );
         assert!(!acts(0.99, false), "uncalibrated never merges");
         // That `0.75` case is also the claim that this is the strictest floor
-        // on the port: it is the workflow pass's bar, and it does not act
-        // here. Asserting the constant against a literal as well would be a
-        // compile-time tautology — clippy rejects it, rightly.
+        // on the port: it is the workflow pass's bar, and it does not act here.
+        let workflow = talaria_decide::sites::def_of("workflow-match").expect("a census entry");
+        assert!(
+            def.default_floor > workflow.default_floor,
+            "gap merges must stay the strictest site on the port"
+        );
     }
 
     #[test]

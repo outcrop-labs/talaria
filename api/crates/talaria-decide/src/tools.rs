@@ -64,7 +64,14 @@ const MAX_TOOLS: usize = 120;
 /// keeping a tool nobody needed costs a few hundred input tokens, while
 /// dropping one that was needed breaks the turn. A measurement run at a
 /// permissive floor tells us whether even the generous version is safe.
-const KEEP_FLOOR: f64 = 0.15;
+///
+/// The number and that reasoning live in the site census, so the ledger and
+/// the threshold it is measured at cannot drift apart: an operator who moves
+/// this is moving what the next rows MEAN, and reading them beside the number
+/// is the only way to notice.
+///
+/// The census id this pass records and reads its floor under.
+pub const SITE: &str = "tool-prune";
 
 /// What the gateway hands over: a tool's name and the description the model
 /// was shown, which is what a judgment has to weigh.
@@ -181,7 +188,7 @@ pub fn observe(state: &AppState, body: &Value, reply: &Value, caller: &str) {
         shadow::record_derived(
             &state.pg,
             shadow::Derived {
-                site: "tool-prune",
+                site: SITE,
                 // The caller, not the turn: a Workbench session and a personal
                 // assistant have different tool spreads and should not be
                 // judged by one number.
@@ -219,6 +226,10 @@ async fn keep_set(
         );
     }
     let answers = decide(state, http, &ask).await?;
+    // Read once rather than per tool: a hundred-tool turn asking the census a
+    // hundred times would be a hundred identical reads.
+    let gate = crate::sites::gate_of(&state.pg, SITE).await;
+    let floor = gate.floor;
     Some(
         offered
             .iter()
@@ -228,7 +239,7 @@ async fn keep_set(
                     .get(&i.to_string())
                     .filter(|j| j.calibrated)
                     .and_then(|j| j.answer.probability())
-                    .is_some_and(|p| p >= KEEP_FLOOR)
+                    .is_some_and(|p| p >= floor)
             })
             .map(|(_, t)| t.name.clone())
             .collect(),
@@ -313,7 +324,12 @@ mod tests {
         // breaks the turn and reads as the model being stupid. A measurement
         // at a generous floor answers whether even the generous version is
         // safe — a strict one would only prove that strictness is unsafe.
-        let keeps = |p: f64, calibrated: bool| calibrated && p >= KEEP_FLOOR;
+        // The same floor production reads, from the same place — a literal
+        // here would pass while the pass itself kept a different bar.
+        let floor = crate::sites::def_of(SITE)
+            .expect("tool-prune is in the census")
+            .default_floor;
+        let keeps = |p: f64, calibrated: bool| calibrated && p >= floor;
         assert!(keeps(0.15, true), "at the floor");
         assert!(keeps(0.2, true), "a weak maybe still keeps");
         assert!(!keeps(0.14, true));

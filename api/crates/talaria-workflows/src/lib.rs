@@ -284,21 +284,14 @@ pub async fn workflows_for_task(
 // is a question over it. A provider that cannot fan out would make this N
 // round trips per dispatch, so the port refuses and the keyword answer stands.
 //
-// THE THRESHOLD IS HIGH ON PURPOSE. A workflow carries skills and toolkits
-// into an agent's session, so a weak yes is not worth acting on — and unlike
-// the ticket gate, there is no costed asymmetry pushing it to fail open. The
-// judgments are recorded to the shadow ledger either way, so the number can be
-// chosen from observed traffic rather than kept at a guess.
-const SEMANTIC_FLOOR: f64 = 0.75;
-
-/// Does this judgment act? Pulled out as a predicate so the floor is pinned by
-/// BEHAVIOUR at its boundaries rather than by asserting a literal against
-/// itself — and so the two conditions that gate every decision-port call site
-/// (a real distribution behind the number, and the number clearing the bar)
-/// are read in one place.
-fn acts_on(probability: Option<f64>, calibrated: bool) -> bool {
-    calibrated && probability.is_some_and(|p| p >= SEMANTIC_FLOOR)
-}
+// THE THRESHOLD IS HIGH ON PURPOSE, and it is no longer a constant here. A
+// workflow carries skills and toolkits into an agent's session, so a weak yes
+// is not worth acting on — and unlike the ticket gate there is no costed
+// asymmetry pushing it to fail open. That reasoning, and the 0.75 it chose,
+// now live in `talaria_decide::sites` beside the ledger that can revise them:
+// an operator reading this site's agreement rate can move its floor without a
+// pull request. The judgments are recorded either way, so the number is chosen
+// from observed traffic rather than kept at a guess.
 
 /// The description a workflow is judged by. Its own `description` when it has
 /// one, else its name — a hook with neither cannot be judged and is skipped,
@@ -387,7 +380,13 @@ pub async fn workflows_for_task_judged(
             Some(j),
         )
         .await;
-        if acts_on(j.answer.probability(), j.calibrated) {
+        // The switch and the floor are the operator's, read per call through
+        // the census. `None` means "run your own path", which here is the
+        // keyword answer this pass is adding to.
+        if talaria_decide::acted(&state.pg, "workflow-match", Some(j.clone()))
+            .await
+            .is_some()
+        {
             delivered.push(WorkflowDelivery {
                 name: w.name.clone(),
                 skills: w.skills.clone(),
@@ -661,16 +660,67 @@ mod tests {
     fn only_a_confident_calibrated_yes_pulls_a_workflow_in() {
         // Unlike the ticket gate there is no costed asymmetry pushing this to
         // fail open: a workflow carries skills and toolkits into an agent's
-        // session, so a weak yes must not act.
-        assert!(acts_on(Some(0.75), true), "at the floor");
-        assert!(acts_on(Some(0.99), true));
-        assert!(!acts_on(Some(0.74), true), "just under");
-        assert!(!acts_on(Some(0.60), true), "a lean is not enough here");
+        // session, so a weak yes must not act. The floor now lives in the
+        // decision port's site census, and this is the assertion that it is
+        // still read the way THIS site needs: as the probability of yes, not
+        // as distance from the middle.
+        //
+        // The difference is not academic. Read as certainty, the same 0.75
+        // would move the bar from p ≥ 0.75 to p ≥ 0.875 AND start delivering a
+        // workflow on a confident NO, because the loop below only checks
+        // whether a judgment came back.
+        let def = talaria_decide::sites::def_of("workflow-match").expect("a census entry");
+        assert_eq!(def.reads, talaria_decide::sites::FLOOR_LEAN);
+        assert!(
+            (def.default_floor - 0.75).abs() < 1e-9,
+            "{}",
+            def.default_floor
+        );
+
+        let gate = talaria_decide::SiteGate {
+            on: true,
+            floor: def.default_floor,
+        };
+        let judged = |p: f64, calibrated: bool| {
+            talaria_decide::sites::acts_on(
+                def,
+                &gate,
+                Some(talaria_decide::Judgment {
+                    answer: talaria_decide::Answer::Noul(p),
+                    calibrated,
+                    provider: "test".into(),
+                    model: None,
+                    latency_ms: 1,
+                }),
+            )
+            .is_some()
+        };
+        assert!(judged(0.75, true), "at the floor");
+        assert!(judged(0.99, true));
+        assert!(!judged(0.74, true), "just under");
+        assert!(!judged(0.60, true), "a lean is not enough here");
+        assert!(!judged(0.01, true), "a confident no delivers nothing");
         // A fabricated confidence must never act, however high it reads —
         // the same rule every other call site on this port holds.
-        assert!(!acts_on(Some(0.99), false), "uncalibrated never acts");
-        // And a non-noul answer has no probability to weigh.
-        assert!(!acts_on(None, true));
+        assert!(!judged(0.99, false), "uncalibrated never acts");
+        // And the switch beats all of it.
+        assert!(
+            talaria_decide::sites::acts_on(
+                def,
+                &talaria_decide::SiteGate {
+                    on: false,
+                    floor: 0.0
+                },
+                Some(talaria_decide::Judgment {
+                    answer: talaria_decide::Answer::Noul(1.0),
+                    calibrated: true,
+                    provider: "test".into(),
+                    model: None,
+                    latency_ms: 1,
+                }),
+            )
+            .is_none()
+        );
     }
 
     #[test]
