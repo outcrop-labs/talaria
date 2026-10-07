@@ -782,7 +782,38 @@ async fn scope_stage(state: &AppState, args: ScopeArgs) -> Option<ScopeVerdict> 
     // The Null policy means the harness itself never throws; the arms here
     // are the transport's failures, and they get the same answer.
     .ok()?;
-    run.value.and_then(|v| serde_json::from_value(v).ok())
+    let verdict: Option<ScopeVerdict> = run.value.and_then(|v| serde_json::from_value(v).ok());
+
+    // MEASURED, NOT ACTED ON. `crisp` is a boolean a text model wrote with no
+    // number on it, and a Noul is exactly that question — but the verdict is
+    // coupled to its prose (`questions` is non-empty exactly when `crisp` is
+    // false, and both halves are posted into the run's discussion), so a typed
+    // answer cannot replace it without replacing the prose too. See
+    // `talaria_decide::scope`. Detached, after the verdict is decided.
+    if let Some(v) = verdict.as_ref() {
+        let (state, question) = (state.clone(), args.question.clone());
+        let mode = format!("{:?}", args.mode).to_lowercase();
+        let baseline = talaria_decide::scope::baseline_of(v.crisp);
+        tokio::spawn(async move {
+            let http = talaria_retrieval_http::real_http();
+            let judged = talaria_decide::scope::judge_crisp(&state, &http, &question, &mode).await;
+            talaria_decide::shadow::record(
+                &state.pg,
+                &talaria_decide::shadow::Compare {
+                    site: talaria_decide::scope::SITE,
+                    // The ask itself is a person's sentence; the ledger points
+                    // at the run instead, which a reader can open under the
+                    // permissions it already has.
+                    subject_ref: Some(baseline.clone()),
+                    baseline,
+                    agrees: talaria_decide::shadow::noul_agrees,
+                },
+                judged.as_ref(),
+            )
+            .await;
+        });
+    }
+    verdict
 }
 
 async fn plan_stage(state: &AppState, args: PlanQueriesArgs) -> Vec<String> {

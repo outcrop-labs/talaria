@@ -158,6 +158,35 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_LEAN,
         floor_why: "The sharpest asymmetry on the list, and it runs against acting: a missed answer is an agent staying quiet, which is exactly what happens today and what everyone is used to. A wrong yes is a bot interrupting people in a shared room, which is the failure that makes a workspace turn the whole feature off. Lower this only on numbers from your own channels.",
     },
+    // Measured only, and the census says so outright — see
+    // `talaria_decide::action` for why acting needs the ledger first: the
+    // command turn's payload belongs to its action id, so swapping one without
+    // the other produces a proposal that does not match its own arguments.
+    SiteDef {
+        id: "action-select",
+        label: "Inbox action selection",
+        primitive: "choice",
+        acts: "Nothing yet. Judges which authorized action an owner's inbox instruction asks for, as a Choice over exactly the allowlist plus \"none\", and records it beside the harness's own answer. The authority gate is untouched and still decides what may be proposed.",
+        default_on: false,
+        switch_lives_at: None,
+        default_floor: 0.80,
+        reads: FLOOR_CERTAINTY,
+        floor_why: "A proposal is a button an owner may click, so a wrong one is a wrong action they were invited to take — high. Not yet acted on at all, so this number is what the ledger will be read against rather than something currently in force.",
+    },
+    // Measured only, for the same reason as `action-select`: see
+    // `talaria_decide::scope`. The verdict is coupled to prose that belongs to
+    // it, so a typed answer cannot replace one without replacing the other.
+    SiteDef {
+        id: "research-scope",
+        label: "Research scoping",
+        primitive: "noul",
+        acts: "Nothing yet. Judges whether a research ask can be worked as typed at the depth requested, and records it beside the scoper's own verdict. The scoper still decides.",
+        default_on: false,
+        switch_lives_at: None,
+        default_floor: 0.70,
+        reads: FLOOR_LEAN,
+        floor_why: "Low stakes in both directions: a wrong \"crisp\" costs a research run that answers the wrong question, a wrong \"vague\" costs a person two clarifying questions they did not need. Not yet acted on, so this is what the ledger will be read against.",
+    },
     // Declared so the census is complete. Its switch is the guard's own
     // per-rule toggle, and its record is `guard_findings` grouped by
     // `check_type` rather than the shadow ledger — a finding IS the output, so
@@ -590,6 +619,8 @@ mod tests {
             ("guard-semantic", FLOOR_LEAN, 0.50),
             ("focus-rank", FLOOR_CERTAINTY, 0.60),
             ("channel-speech", FLOOR_LEAN, 0.90),
+            ("action-select", FLOOR_CERTAINTY, 0.80),
+            ("research-scope", FLOOR_LEAN, 0.70),
         ];
         for (id, reads, floor) in expect {
             let d = def_of(id).unwrap_or_else(|| panic!("{id} left the census"));
@@ -603,7 +634,7 @@ mod tests {
         // And the census covers every site the ledger can group by.
         assert_eq!(
             DECIDE_SITES.len(),
-            8,
+            10,
             "a site was added without a census entry"
         );
     }
