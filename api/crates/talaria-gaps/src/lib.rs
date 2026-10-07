@@ -677,6 +677,9 @@ mod tests {
                     provider: "test".into(),
                     model: None,
                     latency_ms: 1,
+                    tokens_in: None,
+                    tokens_out: None,
+                    fanned: 1,
                 }),
             )
             .is_some()

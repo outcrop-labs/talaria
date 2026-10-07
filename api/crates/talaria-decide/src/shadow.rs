@@ -26,7 +26,7 @@
 // permissions that row already has.
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::Row;
 use talaria_state::AppState;
@@ -100,6 +100,12 @@ struct ShadowRow<'a> {
     model: Option<&'a str>,
     latency_ms: Option<i32>,
     agreed: Option<bool>,
+    /// NULL is "not reported", never zero — a classifier reports no usage and
+    /// a zero would make the site look free.
+    tokens_in: Option<i32>,
+    tokens_out: Option<i32>,
+    /// How many judgments the one billed request answered.
+    fanned: Option<i32>,
 }
 
 /// Never returns an error: a measurement that could break the thing it
@@ -108,8 +114,9 @@ async fn insert(pg: &PgPool, r: ShadowRow<'_>) {
     let res = sqlx::query(
         "insert into decide_shadow \
            (site, subject_ref, baseline, port_answer, probability, certainty, \
-            calibrated, provider, model, latency_ms, agreed) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            calibrated, provider, model, latency_ms, agreed, \
+            tokens_in, tokens_out, fanned) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(r.site)
     .bind(r.subject_ref)
@@ -122,6 +129,9 @@ async fn insert(pg: &PgPool, r: ShadowRow<'_>) {
     .bind(r.model)
     .bind(r.latency_ms)
     .bind(r.agreed)
+    .bind(r.tokens_in)
+    .bind(r.tokens_out)
+    .bind(r.fanned)
     .execute(pg)
     .await;
     if let Err(e) = res {
@@ -144,6 +154,9 @@ pub async fn record(pg: &PgPool, cmp: &Compare, judgment: Option<&Judgment>) {
             model: j.model.as_deref(),
             latency_ms: Some(j.latency_ms as i32),
             agreed: Some((cmp.agrees)(&j.answer, &cmp.baseline)),
+            tokens_in: j.tokens_in.and_then(|t| i32::try_from(t).ok()),
+            tokens_out: j.tokens_out.and_then(|t| i32::try_from(t).ok()),
+            fanned: i32::try_from(j.fanned).ok(),
         },
         // THE PORT ANSWERED NOTHING, AND THAT IS A MEASUREMENT. A site
         // reading only the rows where a judgment arrived would compute an
@@ -161,6 +174,13 @@ pub async fn record(pg: &PgPool, cmp: &Compare, judgment: Option<&Judgment>) {
             model: None,
             latency_ms: None,
             agreed: None,
+            // THE PORT SAID NOTHING, SO NOTHING WAS BILLED — as far as we can
+            // tell. A refusal still costs the provider's own accounting, but
+            // no reply means no report, and inventing a zero would understate
+            // a misconfigured site's cost to exactly nothing.
+            tokens_in: None,
+            tokens_out: None,
+            fanned: None,
         },
     };
     insert(pg, row).await;
@@ -194,6 +214,9 @@ pub async fn record_acted(pg: &PgPool, site: &str, subject_ref: Option<&str>, j:
             model: j.model.as_deref(),
             latency_ms: Some(j.latency_ms as i32),
             agreed: None,
+            tokens_in: j.tokens_in.and_then(|t| i32::try_from(t).ok()),
+            tokens_out: j.tokens_out.and_then(|t| i32::try_from(t).ok()),
+            fanned: i32::try_from(j.fanned).ok(),
         },
     )
     .await;
@@ -238,6 +261,12 @@ pub async fn record_derived(pg: &PgPool, d: Derived<'_>) {
             model: None,
             latency_ms: d.latency_ms.map(|l| l as i32),
             agreed: Some(d.agreed),
+            // A derived row is a summary of several judgments; the usage that
+            // paid for them rode those judgments' own rows where they were
+            // recorded, and attributing it here again would double-count.
+            tokens_in: None,
+            tokens_out: None,
+            fanned: None,
         },
     )
     .await;
@@ -294,7 +323,30 @@ pub struct SiteShadow {
     /// case by case before trusting.
     pub mean_certainty_when_disagreed: Option<f64>,
     pub provider: Option<String>,
+    /// EVERY MODEL THAT ANSWERED at this site, newest activity first, with the
+    /// number of judgments each one produced. More than one entry means the
+    /// agreement rate above spans two models and is not about either of them
+    /// — which is the silent confound an alias like `jev-latest` creates the
+    /// day it starts pointing somewhere new.
+    pub models: Vec<ModelTally>,
+    /// WHAT THIS SITE HAS COST, in billable input tokens, over the rows where
+    /// the provider reported them. These calls never reach the token ledger
+    /// (a decision is not a conversation), so this is the only place a site's
+    /// cost is visible at all.
+    pub tokens_in: i64,
+    /// Rows that carried a usage report, so the figure above has a
+    /// denominator: a provider that reports nothing shows 0 of N here rather
+    /// than appearing free.
+    pub metered: i64,
     pub newest: Option<String>,
+}
+
+/// One model's share of a site's judgments.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelTally {
+    pub model: String,
+    pub judgments: i64,
 }
 
 /// Every site with shadow rows, newest activity first. Empty on an install
@@ -317,6 +369,8 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
                   filter (where latency_ms is not null) as p99, \
                 avg(certainty) filter (where agreed = false) as disagree_certainty, \
                 max(provider) filter (where provider <> '') as provider, \
+                coalesce(sum(tokens_in), 0)::bigint as tokens_in, \
+                count(tokens_in)::bigint as metered, \
                 max(created_at)::text as newest \
            from decide_shadow \
           group by site \
@@ -325,7 +379,8 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
     .fetch_all(pg)
     .await
     .unwrap_or_default();
-    rows.iter()
+    let mut out: Vec<SiteShadow> = rows
+        .iter()
         .map(|r| SiteShadow {
             site: r.try_get("site").unwrap_or_default(),
             compared: r.try_get("compared").unwrap_or(0),
@@ -349,10 +404,97 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
                 .ok()
                 .flatten(),
             provider: r.try_get::<Option<String>, _>("provider").ok().flatten(),
+            tokens_in: r.try_get("tokens_in").unwrap_or(0),
+            metered: r.try_get("metered").unwrap_or(0),
+            // Filled by a second pass below — a per-model tally inside a
+            // grouped-by-site aggregate would need a lateral join for one
+            // short list, and two plain queries are easier to read than one
+            // clever one.
+            models: Vec::new(),
             // Cast to text IN SQL rather than decoded here: this workspace's
             // sqlx has no date feature enabled, and a leaf crate is the wrong
             // place to add one for a display field.
             newest: r.try_get::<Option<String>, _>("newest").ok().flatten(),
+        })
+        .collect();
+    attach_models(pg, &mut out).await;
+    out
+}
+
+/// Fill each site's model tally. A separate query because the alternative is a
+/// lateral join inside the aggregate above for one short list per site, and
+/// two plain statements read better than one clever one. A failure leaves the
+/// tallies empty: a missing breakdown is a worse panel, not a wrong one.
+async fn attach_models(pg: &PgPool, out: &mut [SiteShadow]) {
+    let rows = sqlx::query(
+        "select site, model, count(*)::bigint as judgments \
+           from decide_shadow \
+          where model is not null and model <> '' \
+          group by site, model \
+          order by max(created_at) desc",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    for r in &rows {
+        let site: String = r.try_get("site").unwrap_or_default();
+        let Some(entry) = out.iter_mut().find(|s| s.site == site) else {
+            continue;
+        };
+        entry.models.push(ModelTally {
+            model: r.try_get("model").unwrap_or_default(),
+            judgments: r.try_get("judgments").unwrap_or(0),
+        });
+    }
+}
+
+/// ONE SITE'S RECENT DISAGREEMENTS — the rows behind the percentage.
+///
+/// WHY THIS EXISTS. The report answers "it agreed on 94% of 300". Nothing
+/// answered "which 300, and what were the other 6%" without opening a psql
+/// prompt — so the one question that decides whether a site is safe to switch
+/// over, *is this disagreement the model being right or the model being
+/// wrong*, had no surface at all. A rate is evidence about a population; a
+/// person deciding to trust a judgment needs cases.
+///
+/// Disagreements first, then agreements, both newest first: the
+/// disagreements are what is being audited and an operator should not have to
+/// page past the easy rows to reach them.
+pub async fn site_rows(pg: &PgPool, site: &str, limit: i64) -> Vec<Value> {
+    let rows = sqlx::query(
+        "select subject_ref, baseline, port_answer, probability, certainty, \
+                calibrated, model, latency_ms, agreed, tokens_in, fanned, \
+                created_at::text as at \
+           from decide_shadow \
+          where site = $1 \
+          order by (agreed is false) desc, created_at desc \
+          limit $2",
+    )
+    .bind(site)
+    .bind(limit.clamp(1, 200))
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    rows.iter()
+        .map(|r| {
+            json!({
+                // WHAT WAS JUDGED, by reference — never the text. A ticket
+                // message is somebody's words and this ledger is the wrong
+                // place to accumulate them; the ref points at the row an
+                // operator opens under the permissions it already has.
+                "subjectRef": r.try_get::<Option<String>, _>("subject_ref").ok().flatten(),
+                "baseline": r.try_get::<Option<String>, _>("baseline").ok().flatten(),
+                "portAnswer": r.try_get::<Option<String>, _>("port_answer").ok().flatten(),
+                "probability": r.try_get::<Option<f32>, _>("probability").ok().flatten(),
+                "certainty": r.try_get::<Option<f32>, _>("certainty").ok().flatten(),
+                "calibrated": r.try_get::<Option<bool>, _>("calibrated").ok().flatten().unwrap_or(false),
+                "model": r.try_get::<Option<String>, _>("model").ok().flatten(),
+                "latencyMs": r.try_get::<Option<i32>, _>("latency_ms").ok().flatten(),
+                "agreed": r.try_get::<Option<bool>, _>("agreed").ok().flatten(),
+                "tokensIn": r.try_get::<Option<i32>, _>("tokens_in").ok().flatten(),
+                "fanned": r.try_get::<Option<i32>, _>("fanned").ok().flatten(),
+                "at": r.try_get::<Option<String>, _>("at").ok().flatten(),
+            })
         })
         .collect()
 }
@@ -443,6 +585,20 @@ mod tests {
             p99_ms: Some(480),
             mean_certainty_when_disagreed: Some(0.21),
             provider: Some("jev".into()),
+            // TWO MODELS at one site, which is the confound the tally exists
+            // to make visible: the 86% above is about neither of them.
+            models: vec![
+                ModelTally {
+                    model: "jev-1.14.0".into(),
+                    judgments: 4,
+                },
+                ModelTally {
+                    model: "jev-1.13.0".into(),
+                    judgments: 3,
+                },
+            ],
+            tokens_in: 1_480,
+            metered: 7,
             newest: None,
         }]);
         assert_eq!(v[0]["compared"], serde_json::json!(10));
@@ -457,5 +613,20 @@ mod tests {
         // And the agreement rate's denominator is `answered`, never
         // `answered + acted` — the panel divides by what it is given.
         assert_ne!(v[0]["answered"], v[0]["compared"]);
+        // COST, which nothing else in Talaria can answer for these calls: they
+        // never reach the token ledger, so this is the only place a site's
+        // spend is visible. `metered` is the denominator — a provider that
+        // reports no usage shows 0 of N rather than appearing free.
+        assert_eq!(v[0]["tokensIn"], serde_json::json!(1_480));
+        assert_eq!(v[0]["metered"], serde_json::json!(7));
+        // And the model breakdown, which is what stops an alias rollover from
+        // silently averaging two models into one agreement rate.
+        assert_eq!(v[0]["models"][0]["model"], serde_json::json!("jev-1.14.0"));
+        assert_eq!(v[0]["models"][0]["judgments"], serde_json::json!(4));
+        assert_eq!(
+            v[0]["models"].as_array().map(Vec::len),
+            Some(2),
+            "two models at one site is a confound a reader has to see"
+        );
     }
 }

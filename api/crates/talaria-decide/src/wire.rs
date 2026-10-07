@@ -78,11 +78,16 @@ pub(crate) async fn dispatch(
     let (base, key, model) = target(state, cfg, meta).await?;
     let timeout = cfg.timeout();
 
+    // The provider's own account of the request — tokens billed and which
+    // model actually answered. Filled by whichever arm ran; a wire that
+    // reports nothing leaves it empty rather than zero.
+    let mut report = Reported::default();
     let reads: BTreeMap<String, Read> = match wire {
         WIRE_SYSTEMONE => {
             let url = format!("{}/v1/systemone", base.trim_end_matches('/'));
             let body = systemone_request(model.as_deref(), ask);
             let reply = send(http, "POST", &url, Some(&body), key.as_deref(), timeout).await?;
+            report = reported(&reply);
             systemone_answers(&reply, ask)
         }
         WIRE_PREDICT => {
@@ -96,6 +101,8 @@ pub(crate) async fn dispatch(
             let url = format!("{}/predict", base.trim_end_matches('/'));
             let body = predict_request(&ask.state, question).ok_or(NoAnswer::Unreadable)?;
             let reply = send(http, "POST", &url, Some(&body), key.as_deref(), timeout).await?;
+            // A classifier reports neither usage nor a model id; the report
+            // stays empty, which is the honest answer.
             predict_answer(&reply, question)
                 .map(|r| BTreeMap::from([(id.clone(), r)]))
                 .unwrap_or_default()
@@ -124,6 +131,13 @@ pub(crate) async fn dispatch(
                             continue;
                         }
                     };
+                // ONE CALL PER QUESTION on this wire, so usage ACCUMULATES
+                // rather than being overwritten — the alternative reports a
+                // five-question fan-out as the cost of its last call.
+                let this = reported(&reply);
+                report.tokens_in = add(report.tokens_in, this.tokens_in);
+                report.tokens_out = add(report.tokens_out, this.tokens_out);
+                report.model = report.model.or(this.model);
                 if let Some(r) = chat_answer(&reply, question) {
                     out.insert(id.clone(), r);
                 }
@@ -139,6 +153,13 @@ pub(crate) async fn dispatch(
     };
 
     let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    // THE REQUEST'S USAGE RIDES EVERY ANSWER IT PRODUCED. The request is what
+    // was billed; splitting it per question would invent a number, so `fanned`
+    // says how many shared it and a reader divides.
+    let fanned = u32::try_from(reads.len()).unwrap_or(u32::MAX);
+    // The model the reply named, falling back to the one we asked for on a
+    // wire that reports none — never the other way round.
+    let answered_by = report.model.clone().or_else(|| model.clone());
     Ok(reads
         .into_iter()
         .map(|(id, (answer, calibrated))| {
@@ -148,12 +169,25 @@ pub(crate) async fn dispatch(
                     answer,
                     calibrated,
                     provider: meta.id.to_string(),
-                    model: model.clone(),
+                    model: answered_by.clone(),
                     latency_ms,
+                    tokens_in: report.tokens_in,
+                    tokens_out: report.tokens_out,
+                    fanned,
                 },
             )
         })
         .collect())
+}
+
+/// Sum two optional counts, keeping "not reported" distinct from zero: a
+/// present count plus an absent one is the present count, and two absent ones
+/// stay absent.
+fn add(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (None, None) => None,
+        (x, y) => Some(x.unwrap_or(0).saturating_add(y.unwrap_or(0))),
+    }
 }
 
 /// Where to send the request, what to authenticate with, and which model to
@@ -469,6 +503,50 @@ fn read_models(v: &Value) -> Vec<ModelInfo> {
         });
     }
     out
+}
+
+// ── What the reply says about itself ─────────────────────────────────────────
+
+/// Usage and the answering model, read off a reply. Both are the PROVIDER'S
+/// account of the request, not ours.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct Reported {
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
+    /// The model the reply names. `jev-latest` is an alias and TypeSafe's own
+    /// response documents this as "may differ from the alias supplied", so the
+    /// requested id is a question and this is the answer.
+    pub model: Option<String>,
+}
+
+/// Read a reply's self-report, in whichever of the two spellings came back.
+///
+/// Both observed rather than assumed: TypeSafe's `SystemOneResponse` carries
+/// `{model, usage: {input_tokens, output_tokens}}` from its own OpenAPI
+/// document, and every OpenAI-compatible endpoint the chat wire talks to
+/// carries `{model, usage: {prompt_tokens, completion_tokens}}`. A wire that
+/// reports neither — the classifier's `/predict` — answers an empty report
+/// rather than a zero, because "not reported" and "cost nothing" are
+/// different facts and a zero would make a site look free.
+pub(crate) fn reported(reply: &Value) -> Reported {
+    let count = |owner: Option<&Value>, a: &str, b: &str| -> Option<u32> {
+        let o = owner?;
+        o.get(a)
+            .or_else(|| o.get(b))
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    let usage = reply.get("usage");
+    Reported {
+        tokens_in: count(usage, "input_tokens", "prompt_tokens"),
+        tokens_out: count(usage, "output_tokens", "completion_tokens"),
+        model: reply
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
+    }
 }
 
 // ── Shared numeric helpers ───────────────────────────────────────────────────
@@ -1348,6 +1426,9 @@ mod tests {
                     provider: "gateway".into(),
                     model: None,
                     latency_ms: 1,
+                    tokens_in: None,
+                    tokens_out: None,
+                    fanned: 1,
                 }),
                 0.1,
             )

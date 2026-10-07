@@ -1,7 +1,8 @@
 // /api/admin/decide. The decision-model port's one config row (admin).
 // GET → the provider catalog with its capability sheet, the current config
-// redacted, and the SITE CENSUS: every place in Talaria that asks a decision
-// model anything. PUT → patch the config, or, with `{ site: { id, on?, floor? } }`,
+// redacted, the SITE CENSUS (every place in Talaria that asks a decision model
+// anything, with each site's cost, the models that answered it, and the rooms
+// behind the per-channel gate). PUT → patch the config, or, with `{ site: { id, on?, floor? } }`,
 // switch one site over and set the certainty it acts at — handled on its own
 // and answering `{sites}`, because "which model" and "which of our judgments
 // run on it" are different writes and should not share an audit entry. A site
@@ -9,7 +10,11 @@
 // rerank provider picker) is refused there with the sentence naming where it
 // is. POST { action: "test" } → put one real question through whatever is
 // configured and report exactly what came back. POST { action: "models" } →
-// ask the endpoint which model ids it will accept.
+// ask the endpoint which model ids it will accept. POST
+// { action: "rows", site, limit? } → the ledger rows behind one site's
+// percentage, disagreements first; readable whatever the config says, because
+// an operator who just switched the provider off is exactly the person who
+// needs to read why.
 //
 // WHY THE TEST ARM EARNS ITS KEEP. Every other field on this panel can be
 // wrong in a way nothing notices: a URL that resolves but speaks a different
@@ -69,12 +74,51 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         // the floor it acts at - so "where is this being used" has one
         // complete answer rather than a grep.
         "sites": sites::sites_public(&state.pg).await,
+        // THE ROOMS BEHIND `channel-speech`. Its second gate is per-channel by
+        // necessity — a room where unprompted agent speech is wrong has to be
+        // able to opt out without the capability coming off everywhere — but
+        // that made it the one control an admin could not SEE from here, and
+        // "which rooms would start talking if I flip this" is the question
+        // somebody asks immediately before flipping it. Read-only: the switch
+        // itself stays in the room's own settings, because two spellings of one
+        // switch is how they come to disagree.
+        "speechRooms": speech_rooms(&state.pg).await,
         // Tool-offer pruning's measurement, which has its OWN switch:
         // configuring a decision model is not consent to put every agent turn
         // through a question per offered tool. See talaria-decide::tools.
         "toolShadow": tools::shadow_enabled(&state.pg).await,
     }))
     .into_response())
+}
+
+/// The channels whose own switch would let an agent speak unprompted, with
+/// whether they have an agent to do it. Read-only, and capped: this answers
+/// "how many and which" at a glance, not "browse every room".
+async fn speech_rooms(pg: &sqlx::PgPool) -> serde_json::Value {
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "select c.id::text, c.name, count(a.agent_model)::bigint \
+           from channels c \
+           left join channel_agents a on a.channel_id = c.id \
+          where c.agent_initiative and c.archived_at is null and c.kind <> 'dm' \
+          group by c.id, c.name \
+          order by count(a.agent_model) desc, c.name \
+          limit 50",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    json!(
+        rows.iter()
+            .map(|(id, name, agents)| json!({
+                "id": id,
+                "name": name,
+                // A room with no agents cannot speak however its switch reads,
+                // so the count is what makes the list honest rather than
+                // alarming.
+                "agents": agents,
+            }))
+            .collect::<Vec<_>>()
+    )
 }
 
 pub async fn put(
@@ -267,10 +311,37 @@ pub async fn post(
     let user = require_admin(&state, &headers).await?;
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
-    let action = match optional_enum_member(obj, "action", &["test", "models"]) {
+    let action = match optional_enum_member(obj, "action", &["test", "models", "rows"]) {
         Ok(v) => v.unwrap_or_else(|| "test".to_string()),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+
+    // READ THE LEDGER WHATEVER THE CONFIG SAYS. An operator who turned the
+    // provider off after a bad week is exactly the person who needs to read
+    // why — gating this on `configured` would hide the evidence behind the
+    // switch the evidence is about.
+    if action == "rows" {
+        let site = match talaria_body::string_member(obj, "site", 1, 80) {
+            Ok(v) => v,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        if sites::def_of(&site).is_none() {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                &format!("\"{site}\" is not a decision site"),
+            ));
+        }
+        let limit = match optional_number_member(obj, "limit", NumKind::Int, 1.0, 200.0) {
+            Ok(v) => v.unwrap_or(25.0),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        return Ok(Json(json!({
+            "ok": true,
+            "site": site,
+            "rows": shadow::site_rows(&state.pg, &site, limit as i64).await,
+        }))
+        .into_response());
+    }
 
     let cfg = decide::get_decide_config(&state.pg).await;
     if !configured(&cfg) {

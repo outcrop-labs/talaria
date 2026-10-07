@@ -304,8 +304,33 @@ pub struct Judgment {
     pub calibrated: bool,
     /// Which provider answered, for the ledger and the drill-down.
     pub provider: String,
+    /// WHICH MODEL ANSWERED, taken from the reply where the provider says so
+    /// — not the one we asked for.
+    ///
+    /// These differ, routinely and silently. `jev-latest` is an alias and the
+    /// service's own response documents its `model` as "may differ from the
+    /// alias supplied in the request". A ledger that records the alias says
+    /// `jev-latest` forever, so an agreement rate spanning a rollover from one
+    /// version to the next averages two different models into one number —
+    /// and deciding whether to trust a model is the only thing that ledger is
+    /// for. Falls back to the requested id on a wire that reports nothing.
     pub model: Option<String>,
     pub latency_ms: u64,
+    /// BILLABLE INPUT TOKENS for the request this judgment came from, where
+    /// the provider reports them. Recorded per judgment because a decision
+    /// port's cost is invisible otherwise: these calls do not go through the
+    /// metered relay (a decision is not a conversation) and so never reach the
+    /// token ledger. Without this an operator who switches five sites on has
+    /// no way to find out what that cost.
+    ///
+    /// On a fan-out the whole request's usage is attributed to EVERY judgment
+    /// it answered, because the request is what was billed and splitting it
+    /// per question would invent a number. `fanned` says how many answers
+    /// shared it, so a reader can divide.
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
+    /// How many judgments this one request answered.
+    pub fanned: u32,
 }
 
 impl Judgment {
@@ -534,6 +559,9 @@ mod tests {
             provider: "jev".into(),
             model: None,
             latency_ms: 1,
+            tokens_in: None,
+            tokens_out: None,
+            fanned: 1,
         }
     }
 

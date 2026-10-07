@@ -53,7 +53,19 @@
     configured: boolean
     shadow: SiteShadow[]
     sites: Site[]
+    speechRooms: Array<{ id: string; name: string; agents: number }>
     toolShadow: boolean
+  }
+  type LedgerRow = {
+    subjectRef: string | null
+    baseline: string | null
+    portAnswer: string | null
+    certainty: number | null
+    calibrated: boolean
+    model: string | null
+    latencyMs: number | null
+    agreed: boolean | null
+    at: string | null
   }
   // THE CENSUS — every place in Talaria that asks a decision model anything.
   // Listed in full, including the sites this panel cannot switch: "where is a
@@ -71,6 +83,11 @@
     reads: string
     floorWhy: string
     switchLivesAt: string | null
+    /** Where this site's numbers live when they are not in the shadow ledger.
+     *  A guard finding IS the output, so there is no second answer to compare
+     *  it against — a row that said "no comparisons yet" for ever would read
+     *  as a bug rather than as the truth. */
+    measuredAt: string | null
   }
   type SiteShadow = {
     site: string
@@ -80,6 +97,9 @@
     agreed: number
     judgments: number
     calibrated: number
+    models: Array<{ model: string; judgments: number }>
+    tokensIn: number
+    metered: number
     p50Ms: number | null
     p99Ms: number | null
     meanCertaintyWhenDisagreed: number | null
@@ -110,6 +130,37 @@
   const meta = $derived(data?.providers.find((p) => p.id === cfg?.provider))
   const shadow = $derived(data?.shadow ?? [])
   const allSites = $derived(data?.sites ?? [])
+  const speechRooms = $derived(data?.speechRooms ?? [])
+  // THE ROWS BEHIND THE PERCENTAGE. "Agreed on 94% of 300" is evidence about a
+  // population; a person deciding whether to trust a judgment needs the cases
+  // — and specifically the disagreements, because whether those were the model
+  // being right or the model being wrong is the whole question.
+  let openRows = $state<string | null>(null)
+  let rows = $state<LedgerRow[]>([])
+  let loadingRows = $state(false)
+  const showRows = async (site: string) => {
+    if (openRows === site) {
+      openRows = null
+      return
+    }
+    openRows = site
+    rows = []
+    loadingRows = true
+    try {
+      const r = await postJson<{ rows: LedgerRow[] }>('/api/admin/decide', {
+        action: 'rows',
+        site,
+        limit: 25,
+      })
+      rows = r.rows ?? []
+    } catch (e) {
+      toastError('Could not read that site\u2019s ledger', e)
+      openRows = null
+    } finally {
+      loadingRows = false
+    }
+  }
+  const num = (n: number) => n.toLocaleString()
   const shadowFor = (id: string) => shadow.find((s) => s.site === id)
   // Writing a site's switch or floor goes through the same PUT, under its own
   // key, so it gets its own audit entry rather than riding a provider change.
@@ -475,6 +526,28 @@
             {:else}
               <p class="pl-6 text-ink-dim">{s.floorWhy}</p>
             {/if}
+            {#if s.id === 'channel-speech'}
+              <!-- THE SECOND GATE, which is per-room by necessity and was
+                   therefore the one control invisible from here. "Which rooms
+                   would start talking if I flip this" is the question somebody
+                   asks immediately before flipping it. Read-only: the switch
+                   stays in each room's own settings. -->
+              <p class="pl-6 text-muted">
+                {#if speechRooms.length === 0}
+                  No channel has its own Agent initiative switch on, so nothing would speak yet.
+                {:else}
+                  {speechRooms.filter((r) => r.agents > 0).length} of {speechRooms.length}
+                  {speechRooms.length === 1 ? 'room allows' : 'rooms allow'} this and
+                  {speechRooms.filter((r) => r.agents > 0).length === 1 ? 'has' : 'have'} an agent in
+                  {speechRooms.filter((r) => r.agents > 0).length === 1 ? 'it' : 'them'}:
+                  {#each speechRooms.filter((r) => r.agents > 0).slice(0, 8) as r, i (r.id)}<span
+                      class="font-mono text-fg">#{r.name}</span
+                    >{#if i < Math.min(speechRooms.filter((x) => x.agents > 0).length, 8) - 1}, {/if}{/each}{#if speechRooms.filter(
+                    (r) => r.agents > 0,
+                  ).length > 8}, and more{/if}. Each room's own switch is in its settings.
+                {/if}
+              </p>
+            {/if}
 
             {#if m}
               <!-- SHADOW MODE — what the port WOULD have decided, beside what
@@ -525,7 +598,97 @@
                     them case by case before switching this site over.
                   </p>
                 {/if}
+                {#if m.models.length > 1}
+                  <!-- TWO MODELS AT ONE SITE, which makes the rate above about
+                       neither of them. An alias like jev-latest creates this
+                       silently the day it starts pointing somewhere new, which
+                       is why the ledger records the model that ANSWERED rather
+                       than the one we asked for. -->
+                  <p class="text-warn">
+                    {m.models.length} models answered here —
+                    {#each m.models as mm, i (mm.model)}<span class="font-mono text-fg">{mm.model}</span>
+                      ({num(mm.judgments)}){#if i < m.models.length - 1}, {/if}{/each}
+                    — so this agreement rate is not about either of them.
+                  </p>
+                {:else if m.models.length === 1}
+                  {@const only = m.models[0]}
+                  <p class="text-muted">
+                    Answered by <span class="font-mono text-fg">{only?.model ?? '—'}</span>.
+                  </p>
+                {/if}
+                {#if m.metered > 0}
+                  <!-- WHAT IT COST. These calls do not go through the metered
+                       relay — a decision is not a conversation — so they never
+                       reach the token ledger and this is the only place a
+                       site's spend is visible at all. -->
+                  <p class="text-muted">
+                    <span class="text-fg">{num(m.tokensIn)}</span> billable input tokens over
+                    {num(m.metered)} reported {m.metered === 1 ? 'call' : 'calls'}
+                    {#if m.metered < m.compared + m.acted}
+                      — the other {num(m.compared + m.acted - m.metered)} reported no usage
+                    {/if}
+                  </p>
+                {:else if m.compared + m.acted > 0}
+                  <p class="text-ink-dim">This provider reports no token usage.</p>
+                {/if}
+                {#if m.compared + m.acted > 0}
+                  <Button size="sm" variant="link" onclick={() => void showRows(s.id)}>
+                    {openRows === s.id ? 'Hide the rows' : 'Read the rows'}
+                  </Button>
+                {/if}
+                {#if openRows === s.id}
+                  <div transition:slide={{ duration: 150 }} class="mt-1">
+                    {#if loadingRows}
+                      <p class="text-ink-dim">Reading…</p>
+                    {:else if rows.length === 0}
+                      <p class="text-ink-dim">Nothing recorded.</p>
+                    {:else}
+                      <!-- Disagreements first: they are what is being audited,
+                           and an operator should not page past the easy rows to
+                           reach them. The SUBJECT is a reference, never the
+                           text — a ticket message is somebody's words and this
+                           ledger is the wrong place to accumulate them. -->
+                      <table class="w-full text-[10px]">
+                        <thead class="text-ink-dim">
+                          <tr class="text-left">
+                            <th class="pr-2 font-normal">subject</th>
+                            <th class="pr-2 font-normal">was</th>
+                            <th class="pr-2 font-normal">judged</th>
+                            <th class="pr-2 font-normal">certainty</th>
+                            <th class="pr-2 font-normal">model</th>
+                            <th class="font-normal">when</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {#each rows as r, i (`${r.at}-${i}`)}
+                            <tr class={r.agreed === false ? 'text-warn' : 'text-muted'}>
+                              <td class="max-w-[14rem] truncate pr-2 font-mono">{r.subjectRef ?? '—'}</td>
+                              <td class="pr-2 font-mono">{r.baseline ?? '—'}</td>
+                              <td class="pr-2 font-mono">{r.portAnswer ?? '— (silent)'}</td>
+                              <td class="pr-2 font-mono">
+                                {r.certainty === null ? '—' : r.certainty.toFixed(2)}{r.calibrated
+                                  ? ''
+                                  : '*'}
+                              </td>
+                              <td class="max-w-[10rem] truncate pr-2 font-mono">{r.model ?? '—'}</td>
+                              <td class="font-mono">{r.at?.slice(0, 16) ?? '—'}</td>
+                            </tr>
+                          {/each}
+                        </tbody>
+                      </table>
+                      <p class="mt-1 text-ink-dim">
+                        Highlighted rows are the disagreements. A certainty marked * carried no real
+                        distribution. "— (silent)" is a call the port did not answer, which counts in
+                        the denominator above.
+                      </p>
+                    {/if}
+                  </div>
+                {/if}
               </div>
+            {:else if s.measuredAt}
+              <!-- Not an empty ledger: this site has nothing to compare
+                   against, and says where its numbers are instead. -->
+              <p class="pl-6 text-ink-dim">Measured as {s.measuredAt}.</p>
             {:else if !s.switchLivesAt}
               <p class="pl-6 text-ink-dim">
                 No comparisons recorded yet{data?.configured ? '' : ' — nothing is configured'}.
