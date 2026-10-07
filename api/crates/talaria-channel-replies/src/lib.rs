@@ -496,6 +496,93 @@ async fn recent_room_turns(pg: &PgPool, channel_id: &str, before_seq: i32) -> Ve
 /// conversation door ran, riding the same cheap chore seat. An unassigned,
 /// unmentioned room is humans only: parked, with a line in the log, so the
 /// silence reads as a decision and never as a delivery failure.
+/// Which agent, if any, should answer a channel message that mentioned nobody.
+///
+/// Three gates before a question is asked, cheapest first, because this runs
+/// on every unaddressed message in every channel:
+///
+///   1. The ROOM's own switch (`channels.agent_initiative`). A room where
+///      unprompted agent speech is wrong — #announcements, a customer channel
+///      — opts out without the capability being turned off everywhere.
+///   2. A sender that is not a person. Nothing reaches here from an agent
+///      today (an agent's reply is written through `insert_channel_message`,
+///      not through the POST route), and this is the belt-and-braces that
+///      keeps it that way if a future caller changes.
+///   3. Something to judge. A room with no agents, or an empty message, has
+///      no question.
+///
+/// The site switch and the floor are read inside `speech::should_speak`, which
+/// also records every judgment — so with the site off this costs one settings
+/// read and nothing else.
+#[allow(clippy::too_many_arguments)]
+async fn channel_initiative(
+    state: &AppState,
+    deps: &NotifyDeps,
+    channel_id: &str,
+    channel_name: &str,
+    content: &str,
+    message_seq: i32,
+    agents: &[String],
+    sender: Option<&SenderIdentity>,
+) -> Option<String> {
+    if agents.is_empty() || content.trim().is_empty() {
+        return None;
+    }
+    // A message with no human sender is not a conversation an agent should
+    // join on its own initiative.
+    let sender = sender?;
+    let open: bool = sqlx::query_scalar(
+        "select agent_initiative from channels where id = $1::uuid and archived_at is null",
+    )
+    .bind(channel_id)
+    .fetch_optional(&deps.pg)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false);
+    if !open {
+        return None;
+    }
+    // WHAT EACH AGENT IS FOR, which is the only thing that distinguishes one
+    // candidate's question from another's. An agent with no `role` is not
+    // offered: a yes/no over a bare model id is a coin flip dressed as a
+    // decision.
+    let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+        "select model, display_name, role, department from agent_defs \
+          where model = any($1) and enabled order by display_name",
+    )
+    .bind(agents)
+    .fetch_all(&deps.pg)
+    .await
+    .unwrap_or_default();
+    let candidates: Vec<talaria_decide::speech::Candidate> = rows
+        .into_iter()
+        .filter_map(|(model, display_name, role, department)| {
+            let role = role.unwrap_or_default();
+            let role = role.trim();
+            if role.is_empty() {
+                return None;
+            }
+            Some(talaria_decide::speech::Candidate {
+                model,
+                about: format!("{display_name} ({department}) — {role}"),
+            })
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    let recent = recent_room_turns(&deps.pg, channel_id, message_seq).await;
+    let http = talaria_retrieval_http::real_http();
+    talaria_decide::speech::should_speak(
+        state,
+        &http,
+        talaria_decide::speech::subject(channel_name, &sender.display(), content, &recent),
+        &candidates,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)] // the trigger's inputs are the message's — each names one
 pub async fn trigger_agent_replies(
     state: &AppState,
@@ -543,35 +630,70 @@ pub async fn trigger_agent_replies(
         }
     }
     if mentioned.is_empty() {
-        let Some(meta) = room.as_ref() else {
-            return; // an ordinary channel, and nobody mentioned: nothing to do
-        };
-        let Some(agent) = meta.agent.clone() else {
-            tracing::info!(
-                "[channels] task room {channel_id}: message parked — no agent mentioned or assigned"
-            );
-            return;
-        };
-        let recent = recent_room_turns(&deps.pg, channel_id, message_seq).await;
-        let relevant = talaria_ticket_chat::ticket_message_relevant(
-            state,
-            &meta.head,
-            content,
-            attachments,
-            &recent,
-        )
-        .await;
-        if !relevant {
-            tracing::info!(
-                "[channels] task room {channel_id}: assigned agent held — the message is not for it"
-            );
-            return;
+        match room.as_ref() {
+            // AN ORDINARY CHANNEL, NOBODY MENTIONED. Historically: nothing to
+            // do. An agent in a channel spoke only when @mentioned, which kept
+            // rooms quiet and also meant an agent that could have answered the
+            // question in #eng sat there silently unless somebody remembered
+            // it existed — the gate was never affordable to run on every
+            // message in every channel.
+            //
+            // With the decision port's `channel-speech` site switched on (off
+            // on every install), one agent may answer anyway when a judgment
+            // says the message is for that agent in particular. `None` here is
+            // exactly the `return` this used to be, so nothing changes until
+            // somebody turns it on.
+            None => match channel_initiative(
+                state,
+                deps,
+                channel_id,
+                channel_name,
+                content,
+                message_seq,
+                &agents,
+                sender.as_ref(),
+            )
+            .await
+            {
+                Some(model) => {
+                    tracing::info!(
+                        "[channels] {channel_id}: \"{model}\" is answering a message that did not mention it"
+                    );
+                    mentioned = vec![AgentMention { model, tier: None }];
+                    // Not addressed by name — the prompt mustn't claim a mention.
+                    assigned_reply = true;
+                }
+                None => return,
+            },
+            Some(meta) => {
+                let Some(agent) = meta.agent.clone() else {
+                    tracing::info!(
+                        "[channels] task room {channel_id}: message parked — no agent mentioned or assigned"
+                    );
+                    return;
+                };
+                let recent = recent_room_turns(&deps.pg, channel_id, message_seq).await;
+                let relevant = talaria_ticket_chat::ticket_message_relevant(
+                    state,
+                    &meta.head,
+                    content,
+                    attachments,
+                    &recent,
+                )
+                .await;
+                if !relevant {
+                    tracing::info!(
+                        "[channels] task room {channel_id}: assigned agent held — the message is not for it"
+                    );
+                    return;
+                }
+                mentioned = vec![AgentMention {
+                    model: agent,
+                    tier: None,
+                }];
+                assigned_reply = true;
+            }
         }
-        mentioned = vec![AgentMention {
-            model: agent,
-            tier: None,
-        }];
-        assigned_reply = true;
     }
     // The room's context rides every reply it causes — a mentioned agent and
     // the assigned one speak in the same room, about the same ticket.

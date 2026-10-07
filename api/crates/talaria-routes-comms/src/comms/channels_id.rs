@@ -1,6 +1,6 @@
 // /api/channels/{id}.
-// GET → channel detail (role + members + agents + teams). PUT → rename / set topic
-// (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
+// GET → channel detail (role + members + agents + teams + agentInitiative).
+// PUT → rename / set topic / set agentInitiative (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
 // purges the channel's activity points so nothing orphans in the index).
 
 use super::{ChannelNeed, channel_gate};
@@ -68,10 +68,26 @@ pub async fn get(
         Ok(v) => v,
         Err(e) => return Ok(internal("[channels] team read failed", e)),
     };
-    Ok(
-        Json(json!({ "role": role, "members": members, "agents": agents, "teams": teams }))
-            .into_response(),
-    )
+    // WHETHER AN AGENT HERE MAY SPEAK UNPROMPTED. Served whatever the
+    // workspace-wide switch says, because this is the room's own answer and a
+    // person setting it should not have to know whether the capability is on
+    // yet — the two gates are independent and both have to be open.
+    let agent_initiative: bool =
+        sqlx::query_scalar("select agent_initiative from channels where id = $1::uuid")
+            .bind(&id)
+            .fetch_optional(&state.pg)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false);
+    Ok(Json(json!({
+        "role": role,
+        "members": members,
+        "agents": agents,
+        "teams": teams,
+        "agentInitiative": agent_initiative,
+    }))
+    .into_response())
 }
 
 pub async fn put(
@@ -99,6 +115,23 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Its own write rather than a field on `update_channel`: renaming a room
+    // and changing whether agents may speak in it are different decisions, and
+    // a rename should not be able to carry the second one by accident.
+    if obj.contains_key("agentInitiative") {
+        let on = match talaria_body::boolean_member(obj, "agentInitiative") {
+            Ok(v) => v,
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        if let Err(e) = sqlx::query("update channels set agent_initiative = $2 where id = $1::uuid")
+            .bind(&id)
+            .bind(on)
+            .execute(&state.pg)
+            .await
+        {
+            return Ok(internal("[channels] agent-initiative write failed", e));
+        }
+    }
     let notify = NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
     if let Err(e) = update_channel(
         &notify,

@@ -144,6 +144,20 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_LEAN,
         floor_why: "A keep floor, not an act floor, and deliberately low: dropping a tool the turn needed breaks it, while keeping one it did not costs a few tokens of prompt. Read the ledger before trusting any number here.",
     },
+    // THE HIGHEST-RISK SITE ON THE PORT, and the only one that makes Talaria
+    // do something it could not do before rather than doing an existing thing
+    // better. Its floor is the highest for that reason.
+    SiteDef {
+        id: "channel-speech",
+        label: "Unprompted agent replies",
+        primitive: "noul",
+        acts: "Lets an agent in a group channel answer a message that did not @mention it, when a judgment says the message is for that agent in particular. At most one agent ever speaks per message, and any room can opt out with its own Agent initiative switch.",
+        default_on: false,
+        switch_lives_at: None,
+        default_floor: 0.90,
+        reads: FLOOR_LEAN,
+        floor_why: "The sharpest asymmetry on the list, and it runs against acting: a missed answer is an agent staying quiet, which is exactly what happens today and what everyone is used to. A wrong yes is a bot interrupting people in a shared room, which is the failure that makes a workspace turn the whole feature off. Lower this only on numbers from your own channels.",
+    },
     // Declared so the census is complete. Its switch is the guard's own
     // per-rule toggle, and its record is `guard_findings` grouped by
     // `check_type` rather than the shadow ledger — a finding IS the output, so
@@ -575,6 +589,7 @@ mod tests {
             ("tool-prune", FLOOR_LEAN, 0.15),
             ("guard-semantic", FLOOR_LEAN, 0.50),
             ("focus-rank", FLOOR_CERTAINTY, 0.60),
+            ("channel-speech", FLOOR_LEAN, 0.90),
         ];
         for (id, reads, floor) in expect {
             let d = def_of(id).unwrap_or_else(|| panic!("{id} left the census"));
@@ -588,7 +603,7 @@ mod tests {
         // And the census covers every site the ledger can group by.
         assert_eq!(
             DECIDE_SITES.len(),
-            7,
+            8,
             "a site was added without a census entry"
         );
     }
