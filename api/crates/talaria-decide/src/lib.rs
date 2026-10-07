@@ -50,9 +50,11 @@ use serde_json::Value;
 use talaria_retrieval_http::HttpFetch;
 use talaria_state::AppState;
 
+pub mod action;
 pub mod config;
 pub mod focus;
 pub mod guard;
+pub mod scope;
 pub mod shadow;
 pub mod sites;
 pub mod speech;

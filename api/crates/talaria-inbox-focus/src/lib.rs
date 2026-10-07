@@ -204,10 +204,68 @@ pub async fn request_focus_command(
     let Some(value) = result.value else {
         return Ok(None);
     };
-    let allowed: HashSet<String> = allowed_focus_action_ids(input, result.widened)
-        .into_iter()
+    let allowed_ids = allowed_focus_action_ids(input, result.widened);
+    let allowed: HashSet<String> = allowed_ids.iter().cloned().collect();
+    let turn = validate_command_object(&value, &allowed);
+
+    // MEASURED, NOT ACTED ON. A Choice whose options ARE the allowlist cannot
+    // name something outside it, which is what the authority gate above spends
+    // a repair turn proving about a JSON string — so this is the shape that
+    // check wants to be. It does not take over yet: a `CommandTurn`'s payload
+    // belongs to its `action_id` (a `reply` carries the text to post), so
+    // swapping one without the other would produce a proposal that does not
+    // match its own arguments. The ledger says whether the two ever disagree,
+    // and on which ids, before anything is rewired.
+    //
+    // Detached, after the answer is already decided, so nothing below can
+    // change what this function returns.
+    judge_action_selection(state, input, &allowed_ids, turn.as_ref());
+    Ok(turn)
+}
+
+/// Record what a decision model would have picked, beside what the harness
+/// picked. Returns immediately; a no-op unless an operator has configured a
+/// decision model and switched `action-select` on.
+fn judge_action_selection(
+    state: &AppState,
+    input: &FocusCommandInput,
+    allowed_ids: &[String],
+    turn: Option<&CommandTurn>,
+) {
+    let offered: Vec<talaria_decide::action::Offered> = allowed_ids
+        .iter()
+        .filter_map(|id| {
+            let a = input.item.actions.iter().find(|a| &a.id == id)?;
+            Some(talaria_decide::action::Offered {
+                id: a.id.clone(),
+                label: a.label.clone(),
+                risk: a.risk.clone(),
+            })
+        })
         .collect();
-    Ok(validate_command_object(&value, &allowed))
+    if !talaria_decide::action::worth_asking(&input.instruction, &offered) {
+        return;
+    }
+    let baseline = talaria_decide::action::baseline_of(turn.and_then(|t| t.action_id.as_deref()));
+    let (state, instruction) = (state.clone(), input.instruction.clone());
+    let question = input.item.question.clone();
+    tokio::spawn(async move {
+        let http = talaria_retrieval_http::real_http();
+        let judged =
+            talaria_decide::action::judge_action(&state, &http, &instruction, &question, &offered)
+                .await;
+        talaria_decide::shadow::record(
+            &state.pg,
+            &talaria_decide::shadow::Compare {
+                site: talaria_decide::action::SITE,
+                subject_ref: Some(baseline.clone()),
+                baseline,
+                agrees: talaria_decide::action::agrees,
+            },
+            judged.as_ref(),
+        )
+        .await;
+    });
 }
 
 async fn reply_turn(
