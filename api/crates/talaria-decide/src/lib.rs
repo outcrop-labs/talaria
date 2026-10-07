@@ -51,6 +51,7 @@ use talaria_retrieval_http::HttpFetch;
 use talaria_state::AppState;
 
 pub mod config;
+pub mod focus;
 pub mod guard;
 pub mod shadow;
 pub mod sites;

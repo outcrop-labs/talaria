@@ -117,6 +117,20 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_CERTAINTY,
         floor_why: "A wrong merge HIDES a real gap behind someone else's row, and seen_count is what ranks the Suggested queue — so this is the least forgiving site on the list. A wrong split is merely a duplicate an admin can see.",
     },
+    // The brief's tiebreak. Judged WITHIN a bucket only — reordering across
+    // buckets would let a confident model drop a failed deploy below an unread
+    // mention, and the buckets are a policy decision a person already made.
+    SiteDef {
+        id: "focus-rank",
+        label: "Brief attention order",
+        primitive: "score",
+        acts: "Orders the rows inside each bucket of the daily brief by judged urgency, replacing the (due-ness, priority, age) tiebreak. Buckets themselves never move, and items scored the same keep the order the existing policy gave them.",
+        default_on: false,
+        switch_lives_at: None,
+        default_floor: 0.60,
+        reads: FLOOR_CERTAINTY,
+        floor_why: "The most forgiving site on the list, and the floor is low to match: a wrong order on a page a person reads top to bottom costs a few seconds of scanning, and every row is still there. A bucket where any item scores below this keeps its whole deterministic order rather than being half-judged.",
+    },
     // Measured only, and the measurement has its own consent switch because
     // it costs a question per offered tool on every turn.
     SiteDef {
@@ -560,6 +574,7 @@ mod tests {
             ("gap-align", FLOOR_CERTAINTY, 0.85),
             ("tool-prune", FLOOR_LEAN, 0.15),
             ("guard-semantic", FLOOR_LEAN, 0.50),
+            ("focus-rank", FLOOR_CERTAINTY, 0.60),
         ];
         for (id, reads, floor) in expect {
             let d = def_of(id).unwrap_or_else(|| panic!("{id} left the census"));
@@ -573,7 +588,7 @@ mod tests {
         // And the census covers every site the ledger can group by.
         assert_eq!(
             DECIDE_SITES.len(),
-            6,
+            7,
             "a site was added without a census entry"
         );
     }

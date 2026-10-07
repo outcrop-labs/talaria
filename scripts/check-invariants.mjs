@@ -1792,19 +1792,45 @@ const UNSET_SEAM_CENSUS = [
   } else {
     const census = new Set()
     for (const m of sitesSrc.matchAll(/^\s*id:\s*"([a-z0-9-]+)"\s*,/gm)) census.add(m[1])
-    // Both spellings a call site uses: the literal, and a `SITE`-style const
-    // whose value is declared in the same file.
+
+    // Where every `const NAME: &str = "…"` lives, so a site named through one
+    // resolves. Keyed by file, because `SITE` is declared in more than one
+    // module with DIFFERENT values — a global name→value map would let an
+    // uncensused `SITE` pass because some other module's `SITE` is censused,
+    // which is the rule certifying the thing it exists to catch.
+    const constsByFile = new Map()
+    for (const [path, src] of rustSources) {
+      const m2 = new Map()
+      for (const m of src.matchAll(/const\s+([A-Z_0-9]+)\s*:\s*&(?:'static\s+)?str\s*=\s*"([a-z0-9-]+)"/g)) {
+        m2.set(m[1], m[2])
+      }
+      constsByFile.set(path, m2)
+    }
+    // `a::b::NAME` resolves in the module the path names (a file called
+    // `b.rs`), then in the referring file, then — only if the name is
+    // unambiguous workspace-wide — anywhere.
+    const resolve = (path, qualified) => {
+      const parts = qualified.split('::')
+      const name = parts[parts.length - 1]
+      const modName = parts.length > 1 ? parts[parts.length - 2] : null
+      if (modName) {
+        for (const [p2, m2] of constsByFile) {
+          if (p2.endsWith(`/${modName}.rs`) && m2.has(name)) return m2.get(name)
+        }
+      }
+      const own = constsByFile.get(path)?.get(name)
+      if (own) return own
+      const seen = new Set()
+      for (const m2 of constsByFile.values()) if (m2.has(name)) seen.add(m2.get(name))
+      return seen.size === 1 ? [...seen][0] : null
+    }
+
     const recorded = []
     for (const [path, src] of rustSources) {
-      const consts = new Map()
-      for (const m of src.matchAll(/const\s+([A-Z_0-9]+)\s*:\s*&(?:'static\s+)?str\s*=\s*"([a-z0-9-]+)"/g)) {
-        consts.set(m[1], m[2])
-      }
-      for (const m of src.matchAll(/\bsite:\s*(?:"([a-z0-9-]+)"|([A-Z_0-9]+))\s*,/g)) {
-        const id = m[1] ?? consts.get(m[2])
-        // An identifier we cannot resolve in this file is not evidence of a
-        // missing entry — a rule that fires on correct code teaches people to
-        // route around it.
+      for (const m of src.matchAll(/\bsite:\s*(?:"([a-z0-9-]+)"|((?:[a-z_0-9]+::)*[A-Z_0-9]+))\s*,/g)) {
+        const id = m[1] ?? resolve(path, m[2])
+        // An identifier we cannot resolve is not evidence of a missing entry —
+        // a rule that fires on correct code teaches people to route around it.
         if (!id) continue
         recorded.push({ id, path, line: lineOf(src, m.index) })
       }

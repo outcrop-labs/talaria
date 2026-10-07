@@ -274,7 +274,15 @@ pub struct SiteShadow {
     pub answered: i64,
     /// Of those that answered, how many matched the baseline.
     pub agreed: i64,
-    /// Of those that answered, how many carried a real distribution.
+    /// Of those that answered, how many carried a SINGLE judgment — a
+    /// probability or a certainty. A derived row (tool pruning's keep-set, the
+    /// brief's reorder) has neither, because no one number stands behind it,
+    /// so counting those against `calibrated` would report every such site as
+    /// entirely uncalibrated and warn about a distribution that was never
+    /// supposed to be there.
+    pub judgments: i64,
+    /// Of the rows that carried a single judgment, how many carried a real
+    /// distribution.
     pub calibrated: i64,
     /// Median and 99th-percentile latency over the answered calls, ms.
     pub p50_ms: Option<i64>,
@@ -301,6 +309,7 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
                 count(*) filter (where baseline = '')::bigint as acted, \
                 count(port_answer) filter (where baseline <> '')::bigint as answered, \
                 count(*) filter (where agreed)::bigint as agreed, \
+                count(*) filter (where certainty is not null)::bigint as judgments, \
                 count(*) filter (where calibrated)::bigint as calibrated, \
                 percentile_disc(0.5) within group (order by latency_ms) \
                   filter (where latency_ms is not null) as p50, \
@@ -323,6 +332,7 @@ pub async fn shadow_report(pg: &PgPool) -> Vec<SiteShadow> {
             acted: r.try_get("acted").unwrap_or(0),
             answered: r.try_get("answered").unwrap_or(0),
             agreed: r.try_get("agreed").unwrap_or(0),
+            judgments: r.try_get("judgments").unwrap_or(0),
             calibrated: r.try_get("calibrated").unwrap_or(0),
             p50_ms: r
                 .try_get::<Option<i32>, _>("p50")
@@ -427,6 +437,7 @@ mod tests {
             acted: 4,
             answered: 7,
             agreed: 6,
+            judgments: 7,
             calibrated: 7,
             p50_ms: Some(120),
             p99_ms: Some(480),
@@ -436,6 +447,11 @@ mod tests {
         }]);
         assert_eq!(v[0]["compared"], serde_json::json!(10));
         assert_eq!(v[0]["acted"], serde_json::json!(4));
+        // `judgments` is the denominator for the uncalibrated warning, and it
+        // is not `answered`: a derived row carries no single probability, so a
+        // site measured only through those would otherwise report every answer
+        // as uncalibrated and warn about a distribution it never claimed.
+        assert_eq!(v[0]["judgments"], serde_json::json!(7));
         assert_eq!(v[0]["answered"], serde_json::json!(7));
         assert_eq!(v[0]["meanCertaintyWhenDisagreed"], serde_json::json!(0.21));
         // And the agreement rate's denominator is `answered`, never
