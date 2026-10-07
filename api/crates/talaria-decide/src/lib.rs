@@ -55,6 +55,7 @@ pub mod focus;
 pub mod guard;
 pub mod shadow;
 pub mod sites;
+pub mod speech;
 pub mod tools;
 mod wire;
 

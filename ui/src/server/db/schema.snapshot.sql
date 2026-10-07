@@ -413,7 +413,8 @@ CREATE TABLE public.channels (
     archived_at timestamp with time zone,
     kind text DEFAULT 'channel'::text NOT NULL,
     dm_key text,
-    task_id uuid
+    task_id uuid,
+    agent_initiative boolean DEFAULT true NOT NULL
 );
 CREATE TABLE public.chat_approvals (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

@@ -82,13 +82,13 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels.rs`](../../api/crat
 Source: [`api/crates/talaria-routes-comms/src/comms/channels_id.rs`](../../api/crates/talaria-routes-comms/src/comms/channels_id.rs)
 
 > /api/channels/{id}.
-> GET → channel detail (role + members + agents + teams). PUT → rename / set topic
-> (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
+> GET → channel detail (role + members + agents + teams + agentInitiative).
+> PUT → rename / set topic / set agentInitiative (owner). DELETE → archive (?hard=1 deletes; owner only; a hard delete also
 > purges the channel's activity points so nothing orphans in the index).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{role, members, agents, teams}` | 200, 403 | — |
+| GET | `session` | — | `{role, members, agents, teams, agentInitiative}` | 200, 403 | — |
 | PUT | `session` | [body](#put-apichannelsid-body) | `{ok}` | 200, 400, 403 | — |
 | DELETE | `session` | — | `{ok}` | 200, 403 | — |
 
@@ -98,6 +98,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id.rs`](../../api/c
 | :--- | :--- | :--- |
 | `name` | `string?(80)` | name: min 1, max 80, optional — the empty name is a min failure, not a value (unlike the topic below). |
 | `topic` | `string? nullable(300)` | Three states, not two (max 300): absent leaves the topic alone, present-null clears it, a string sets it. |
+| `agentInitiative` | `bool` |  |
 
 ## `/api/channels/{id}/agents`
 

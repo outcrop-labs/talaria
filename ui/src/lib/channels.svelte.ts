@@ -1,70 +1,91 @@
 // Group-chat client: queries + mutations + live SSE refresh.
-import { setTyping, typingKey } from './comms-typing.svelte'
-import type { ChatChip } from '@/lib/chips'
-import { openStream } from '@/lib/sse'
-import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
-import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-import { delJson, getJson, patchJson, postJson, putJson } from '@/lib/fetch-json'
+import { setTyping, typingKey } from "./comms-typing.svelte";
+import type { ChatChip } from "@/lib/chips";
+import { openStream } from "@/lib/sse";
+import { resolve, type MaybeGetter } from "@/lib/reactive-arg";
+import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+import {
+  delJson,
+  getJson,
+  patchJson,
+  postJson,
+  putJson,
+} from "@/lib/fetch-json";
 
-export type ChannelRole = 'owner' | 'member'
+export type ChannelRole = "owner" | "member";
 
 /** 'channel' = persistent + ambient; 'group' = a Relay; 'dm' = a direct
  *  message — two people, or a group DM of several people and/or agents. */
-export type ChannelKind = 'channel' | 'group' | 'dm'
+export type ChannelKind = "channel" | "group" | "dm";
 
 export interface Channel {
-  id: string
-  name: string
-  topic: string | null
-  kind: ChannelKind
-  role: ChannelRole
-  createdAt: string
-  updatedAt: string
+  id: string;
+  name: string;
+  topic: string | null;
+  kind: ChannelKind;
+  role: ChannelRole;
+  createdAt: string;
+  updatedAt: string;
   /** For a two-person DM: the other person. Null for a group DM. */
-  peer?: { userId: string; name: string | null; email: string | null } | null
+  peer?: { userId: string; name: string | null; email: string | null } | null;
   /** For DMs: everyone else in it (a group DM's label and avatars). */
-  members?: { userId: string; name: string | null; email: string | null }[]
+  members?: { userId: string; name: string | null; email: string | null }[];
   /** For DMs: the agents seated in it. */
-  agents?: string[]
+  agents?: string[];
   /** Others' messages past your read cursor. */
-  unreadCount?: number
+  unreadCount?: number;
 }
 
 export interface ChannelMember {
-  userId: string
-  email: string | null
-  name: string | null
-  role: ChannelRole
+  userId: string;
+  email: string | null;
+  name: string | null;
+  role: ChannelRole;
 }
 
 export interface ChannelTeam {
-  id: string
-  name: string
+  id: string;
+  name: string;
 }
 
 export interface ChannelDetail {
-  role: ChannelRole
-  members: ChannelMember[]
-  agents: string[]
-  teams?: ChannelTeam[]
+  role: ChannelRole;
+  members: ChannelMember[];
+  agents: string[];
+  teams?: ChannelTeam[];
+  /** May an agent here answer a message that did not @mention it? The room's
+   *  own half of the gate — the workspace-wide decision-model site is the
+   *  other half, and both have to be open. */
+  agentInitiative?: boolean;
 }
 
 export interface ChannelMessage {
-  id: string
-  seq: number
-  authorType: 'user' | 'agent'
-  author: string
-  content: string
-  status: 'streaming' | 'complete' | 'error'
-  createdAt: string
-  threadRootId?: string | null
-  editedAt?: string | null
-  reactions?: Array<{ emoji: string; actors: string[]; actorTypes: string[] }>
-  thread?: { count: number; authors: string[]; lastAt: string } | null
-  attachments?: Array<{ id: string; filename: string; mime: string; size: number }>
+  id: string;
+  seq: number;
+  authorType: "user" | "agent";
+  author: string;
+  content: string;
+  status: "streaming" | "complete" | "error";
+  createdAt: string;
+  threadRootId?: string | null;
+  editedAt?: string | null;
+  reactions?: Array<{ emoji: string; actors: string[]; actorTypes: string[] }>;
+  thread?: { count: number; authors: string[]; lastAt: string } | null;
+  attachments?: Array<{
+    id: string;
+    filename: string;
+    mime: string;
+    size: number;
+  }>;
   /** Confab-guard findings pinned to an agent reply (annotate/strict modes). */
-  guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
-  chips?: ChatChip[]
+  guard?: Array<{
+    check: string;
+    severity: "low" | "medium" | "high";
+    confidence: number;
+    message: string;
+    snippet: string;
+  }> | null;
+  chips?: ChatChip[];
 }
 
 /** A reactive argument: pass a plain value, or a getter for values that change
@@ -72,137 +93,225 @@ export interface ChannelMessage {
 
 export function useChannels() {
   return createQuery(() => ({
-    queryKey: ['channels'],
-    queryFn: async (): Promise<Channel[]> => (await getJson<{ channels: Channel[] }>('/api/channels')).channels,
-  }))
+    queryKey: ["channels"],
+    queryFn: async (): Promise<Channel[]> =>
+      (await getJson<{ channels: Channel[] }>("/api/channels")).channels,
+  }));
 }
 
 export function useChannelDetail(id: MaybeGetter<string | null>) {
   return createQuery(() => {
-    const cid = resolve(id)
+    const cid = resolve(id);
     return {
-      queryKey: ['channel', cid],
+      queryKey: ["channel", cid],
       enabled: !!cid,
-      queryFn: async (): Promise<ChannelDetail> => getJson<ChannelDetail>(`/api/channels/${cid}`),
-    }
-  })
+      queryFn: async (): Promise<ChannelDetail> =>
+        getJson<ChannelDetail>(`/api/channels/${cid}`),
+    };
+  });
 }
 
 export function useChannelMessages(id: MaybeGetter<string | null>) {
   return createQuery(() => {
-    const cid = resolve(id)
+    const cid = resolve(id);
     return {
-      queryKey: ['channel-messages', cid],
+      queryKey: ["channel-messages", cid],
       enabled: !!cid,
       queryFn: async (): Promise<ChannelMessage[]> =>
-        (await getJson<{ messages: ChannelMessage[] }>(`/api/channels/${cid}/messages`)).messages,
-    }
-  })
+        (
+          await getJson<{ messages: ChannelMessage[] }>(
+            `/api/channels/${cid}/messages`,
+          )
+        ).messages,
+    };
+  });
 }
 
 /** One thread (root + replies). Refreshes on the channel's SSE ticks because
  *  the key shares the 'channel-messages' prefix the events handler invalidates. */
-export function useThreadMessages(channelId: MaybeGetter<string | null>, rootId: MaybeGetter<string | null>) {
+export function useThreadMessages(
+  channelId: MaybeGetter<string | null>,
+  rootId: MaybeGetter<string | null>,
+) {
   return createQuery(() => {
-    const cid = resolve(channelId)
-    const rid = resolve(rootId)
+    const cid = resolve(channelId);
+    const rid = resolve(rootId);
     return {
-      queryKey: ['channel-messages', cid, 'thread', rid],
+      queryKey: ["channel-messages", cid, "thread", rid],
       enabled: !!cid && !!rid,
       queryFn: async (): Promise<ChannelMessage[]> =>
-        (await getJson<{ messages: ChannelMessage[] }>(`/api/channels/${cid}/messages?thread=${rid}`)).messages,
-    }
-  })
+        (
+          await getJson<{ messages: ChannelMessage[] }>(
+            `/api/channels/${cid}/messages?thread=${rid}`,
+          )
+        ).messages,
+    };
+  });
 }
 
 /** Live refresh — one SSE subscription per open channel. `onMessage` rides
  *  the same tick for embedders that own state beyond the transcript (a task
  *  room's comment count, say) without a second subscription. */
-export function useChannelEvents(id: MaybeGetter<string | null>, onMessage?: () => void) {
-  const qc = useQueryClient()
+export function useChannelEvents(
+  id: MaybeGetter<string | null>,
+  onMessage?: () => void,
+) {
+  const qc = useQueryClient();
   $effect(() => {
-    const cid = resolve(id)
-    if (!cid) return
+    const cid = resolve(id);
+    if (!cid) return;
     return openStream(`/api/channels/${cid}/events`, (data) => {
       const ev = JSON.parse(data) as
-        | { type: 'message' | 'channel' }
-        | { type: 'typing'; userId: string; threadRootId?: string; typing: boolean }
+        | { type: "message" | "channel" }
+        | {
+            type: "typing";
+            userId: string;
+            threadRootId?: string;
+            typing: boolean;
+          };
       // Presence, not content: record it and refetch nothing.
-      if (ev.type === 'typing') return setTyping(typingKey(cid, ev.threadRootId), ev.userId, ev.typing)
-      if (ev.type === 'message') onMessage?.()
-      void qc.invalidateQueries({ queryKey: ev.type === 'message' ? ['channel-messages', cid] : ['channel', cid] })
-      if (ev.type === 'channel') void qc.invalidateQueries({ queryKey: ['channels'] })
-    })
-  })
+      if (ev.type === "typing")
+        return setTyping(typingKey(cid, ev.threadRootId), ev.userId, ev.typing);
+      if (ev.type === "message") onMessage?.();
+      void qc.invalidateQueries({
+        queryKey:
+          ev.type === "message" ? ["channel-messages", cid] : ["channel", cid],
+      });
+      if (ev.type === "channel")
+        void qc.invalidateQueries({ queryKey: ["channels"] });
+    });
+  });
 }
 
-export const createChannel = async (name: string, kind: 'channel' | 'group' = 'channel', topic?: string | null): Promise<Channel> =>
-  (await postJson<{ channel: Channel }>('/api/channels', { name, kind, topic: topic ?? null })).channel
+export const createChannel = async (
+  name: string,
+  kind: "channel" | "group" = "channel",
+  topic?: string | null,
+): Promise<Channel> =>
+  (
+    await postJson<{ channel: Channel }>("/api/channels", {
+      name,
+      kind,
+      topic: topic ?? null,
+    })
+  ).channel;
 
 /** Find-or-create the DM with a teammate. */
 export const openDm = async (userId: string): Promise<Channel> =>
-  (await postJson<{ channel: Channel }>('/api/dms', { userId })).channel
+  (await postJson<{ channel: Channel }>("/api/dms", { userId })).channel;
 
 /** Find-or-create a DM with any mix of people and agents (the "New
  *  message" pane); one person and no agents is the plain DM. */
-export const openGroupDm = async (input: { userIds: string[]; agents: string[]; name?: string | null }): Promise<Channel> =>
+export const openGroupDm = async (input: {
+  userIds: string[];
+  agents: string[];
+  name?: string | null;
+}): Promise<Channel> =>
   (
-    await postJson<{ channel: Channel }>('/api/dms', {
+    await postJson<{ channel: Channel }>("/api/dms", {
       userIds: input.userIds,
       agents: input.agents,
       ...(input.name?.trim() ? { name: input.name.trim() } : {}),
     })
-  ).channel
+  ).channel;
 
-export const markChannelRead = async (id: string, seq: number): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/channels/${id}/read`, { seq })
-}
+export const markChannelRead = async (
+  id: string,
+  seq: number,
+): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/read`, { seq });
+};
 
 export const sendChannelMessage = async (
   id: string,
   content: string,
   attachmentIds: string[] = [],
-  refs: Array<{ type: 'kb-doc' | 'artifact'; id: string }> = [],
+  refs: Array<{ type: "kb-doc" | "artifact"; id: string }> = [],
   threadRootId: string | null = null,
 ): Promise<void> => {
-  await postJson<{ message: ChannelMessage }>(`/api/channels/${id}/messages`, { content, attachmentIds, refs, threadRootId })
-}
+  await postJson<{ message: ChannelMessage }>(`/api/channels/${id}/messages`, {
+    content,
+    attachmentIds,
+    refs,
+    threadRootId,
+  });
+};
 
-export const toggleMessageReaction = async (channelId: string, messageId: string, emoji: string): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/channels/${channelId}/messages/${messageId}/reactions`, { emoji })
-}
+export const toggleMessageReaction = async (
+  channelId: string,
+  messageId: string,
+  emoji: string,
+): Promise<void> => {
+  await postJson<{ ok: true }>(
+    `/api/channels/${channelId}/messages/${messageId}/reactions`,
+    { emoji },
+  );
+};
 
-export const editChannelMessage = async (channelId: string, messageId: string, content: string): Promise<void> => {
-  await patchJson<{ ok: true }>(`/api/channels/${channelId}/messages/${messageId}`, { content })
-}
+export const editChannelMessage = async (
+  channelId: string,
+  messageId: string,
+  content: string,
+): Promise<void> => {
+  await patchJson<{ ok: true }>(
+    `/api/channels/${channelId}/messages/${messageId}`,
+    { content },
+  );
+};
 
-export const deleteChannelMessage = async (channelId: string, messageId: string): Promise<void> => {
-  await delJson<{ ok: true }>(`/api/channels/${channelId}/messages/${messageId}`)
-}
+export const deleteChannelMessage = async (
+  channelId: string,
+  messageId: string,
+): Promise<void> => {
+  await delJson<{ ok: true }>(
+    `/api/channels/${channelId}/messages/${messageId}`,
+  );
+};
 
-export const updateChannel = async (id: string, patch: { name?: string; topic?: string | null }): Promise<void> => {
-  await putJson<{ ok: true }>(`/api/channels/${id}`, patch)
-}
+export const updateChannel = async (
+  id: string,
+  patch: { name?: string; topic?: string | null; agentInitiative?: boolean },
+): Promise<void> => {
+  await putJson<{ ok: true }>(`/api/channels/${id}`, patch);
+};
 
 export const deleteChannel = async (id: string): Promise<void> => {
-  await delJson<{ ok: true }>(`/api/channels/${id}?hard=1`)
-}
+  await delJson<{ ok: true }>(`/api/channels/${id}?hard=1`);
+};
 
-export const addChannelMember = async (id: string, email: string): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/channels/${id}/members`, { email })
-}
-export const removeChannelMember = async (id: string, userId: string): Promise<void> => {
-  await delJson<{ ok: true }>(`/api/channels/${id}/members`, { userId })
-}
-export const addChannelAgent = async (id: string, model: string): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/channels/${id}/agents`, { model })
-}
-export const removeChannelAgent = async (id: string, model: string): Promise<void> => {
-  await delJson<{ ok: true }>(`/api/channels/${id}/agents`, { model })
-}
-export const addChannelTeam = async (id: string, teamId: string): Promise<void> => {
-  await postJson<{ ok: true }>(`/api/channels/${id}/teams`, { teamId })
-}
-export const removeChannelTeam = async (id: string, teamId: string): Promise<void> => {
-  await delJson<{ ok: true }>(`/api/channels/${id}/teams`, { teamId })
-}
+export const addChannelMember = async (
+  id: string,
+  email: string,
+): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/members`, { email });
+};
+export const removeChannelMember = async (
+  id: string,
+  userId: string,
+): Promise<void> => {
+  await delJson<{ ok: true }>(`/api/channels/${id}/members`, { userId });
+};
+export const addChannelAgent = async (
+  id: string,
+  model: string,
+): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/agents`, { model });
+};
+export const removeChannelAgent = async (
+  id: string,
+  model: string,
+): Promise<void> => {
+  await delJson<{ ok: true }>(`/api/channels/${id}/agents`, { model });
+};
+export const addChannelTeam = async (
+  id: string,
+  teamId: string,
+): Promise<void> => {
+  await postJson<{ ok: true }>(`/api/channels/${id}/teams`, { teamId });
+};
+export const removeChannelTeam = async (
+  id: string,
+  teamId: string,
+): Promise<void> => {
+  await delJson<{ ok: true }>(`/api/channels/${id}/teams`, { teamId });
+};

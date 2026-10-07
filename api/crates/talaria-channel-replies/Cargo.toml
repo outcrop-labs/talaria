@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 talaria-agent-auth = { workspace = true }
+talaria-decide = { workspace = true }
+talaria-retrieval-http = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

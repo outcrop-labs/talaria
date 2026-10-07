@@ -3618,6 +3618,18 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now()
    )`,
   `create index if not exists decide_shadow_site_idx on decide_shadow(site, created_at desc)`,
+  // AGENT INITIATIVE, per room. An agent in a channel speaks when @mentioned;
+  // with the decision port's `channel-speech` site switched on it may also
+  // speak when a judgment says the message is for it. That global switch is
+  // the deliberate act, and this column is the per-room escape hatch — a
+  // room where unprompted agent speech is wrong (#announcements, a customer
+  // channel) opts out without turning the capability off everywhere.
+  //
+  // DEFAULT TRUE, and the asymmetry is why: the site switch is off on every
+  // install, so nothing changes until somebody turns it on with the warning
+  // in front of them. Defaulting this to false as well would mean a second,
+  // invisible step before the feature a person just enabled does anything.
+  `alter table channels add column if not exists agent_initiative boolean not null default true`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
