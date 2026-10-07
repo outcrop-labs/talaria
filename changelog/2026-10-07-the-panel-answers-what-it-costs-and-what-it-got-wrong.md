@@ -80,6 +80,20 @@
   That class of mistake is invisible from the UI, so it is now pinned by a test
   that projects a def through the public shape and compares the fields.
 
+  **And one the work itself got wrong, which is worth recording because the
+  class recurs.** Adding three fields to the public `Judgment` meant finding
+  every literal that constructs it. The search covered `api/crates` and missed
+  `api/tests/it/decide_shadow_live.rs` — the root package's integration tests,
+  which reach into the crates directly — so CI failed on a sixth literal after
+  a green local gate. The gate is not at fault: it compiles only the packages
+  the diff touches, and `talaria-api --all-targets` pulls in the whole graph,
+  which is the expensive thing it exists to avoid. **When a crate's public type
+  changes, the search is `api/`, not `api/crates`.** The repair also earned its
+  keep: those live tests now assert the new columns against a real Postgres —
+  `judgments` 8, `metered` 8, `tokens_in` 960, `acted` 0, and one model in the
+  tally — which is where an `integer` column and a `u32` field get to disagree
+  and the unit tests' in-memory shapes cannot tell.
+
   Verified: 93 tests in `talaria-decide` (1 new, plus the report-shape test
   extended to cover cost, the metered denominator and a two-model site — the
   fixture is deliberately a site where two models answered, because that is the

@@ -39,6 +39,12 @@ fn judgment(p: f64, calibrated: bool, latency_ms: u64) -> Judgment {
         provider: "test-provider".into(),
         model: Some("test-model".into()),
         latency_ms,
+        // Usage as a provider reports it. Carried here so the ledger's
+        // cost columns are exercised against a real Postgres rather than
+        // only against the unit tests' in-memory shapes.
+        tokens_in: Some(120),
+        tokens_out: Some(12),
+        fanned: 1,
     }
 }
 
@@ -122,6 +128,36 @@ async fn the_shadow_ledger_counts_silences_in_compared_but_never_in_answered() {
     assert_eq!(site.p99_ms, Some(480));
     assert_eq!(site.provider.as_deref(), Some("test-provider"));
     assert!(site.newest.is_some(), "the timestamp decodes as text");
+
+    // ── COST AND MODELS, against a real Postgres ────────────────────────────
+    //
+    // These columns exist because the port's calls never reach the token
+    // ledger, so the panel is the only place a site's spend is visible. The
+    // unit tests pin the SHAPE; this pins that the numbers survive a round
+    // trip through the database, which is where an `integer` column and a
+    // `u32` field get to disagree.
+    assert_eq!(
+        site.judgments, 8,
+        "rows carrying one probability — the denominator for the uncalibrated warning,          and NOT `answered + acted`"
+    );
+    assert_eq!(
+        site.metered, 8,
+        "the eight answered calls each reported usage; the two silences reported none"
+    );
+    assert_eq!(
+        site.tokens_in,
+        8 * 120,
+        "every answered judgment carried 120 billable input tokens"
+    );
+    assert_eq!(
+        site.acted, 0,
+        "nothing was acted on here — these are all comparisons"
+    );
+    // One model answered, so there is no confound to warn about. The tally is
+    // what makes a silent alias rollover visible at all.
+    assert_eq!(site.models.len(), 1, "{:?}", site.models);
+    assert_eq!(site.models[0].model, "test-model");
+    assert_eq!(site.models[0].judgments, 8);
 
     // THE ASSERTION THIS FILE EXISTS FOR. (0.82 + 0.92 + 0.04) / 3 = 0.5933…
     // If the two silences were being averaged in as disagreements, this would
