@@ -151,14 +151,14 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{providers, wires, config, configured, shadow, toolShadow}` | 200 | — |
-| POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, reason}` | 200, 400 | audit |
+| POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, kind, reason}` | 200, 400 | audit |
 | PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured, toolShadow}` | 200, 400 | audit |
 
 ### POST `/api/admin/decide` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `enum(test)?` |  |
+| `action` | `enum(test|models)?` |  |
 
 ### PUT `/api/admin/decide` body
 

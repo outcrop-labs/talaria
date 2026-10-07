@@ -66,8 +66,11 @@
     provider: string | null
     newest: string | null
   }
+  type ModelInfo = { name: string; description?: string; released?: string }
+  type ModelsResult = { ok: boolean; kind?: string; reason?: string; models?: ModelInfo[] }
   type TestResult = {
     ok: boolean
+    kind?: string
     reason?: string
     provider?: string
     model?: string | null
@@ -94,6 +97,66 @@
   let savingKey = $state(false)
   let testing = $state(false)
   let result = $state<TestResult | null>(null)
+
+  // WHICH MODEL IDS THE ENDPOINT ACTUALLY TAKES, asked of the endpoint.
+  //
+  // The model field used to be free text with a datalist of ids we had
+  // written down, and the first real configuration of this panel failed on it:
+  // the shortest plausible thing to type for TypeSafe's Jev is `jev`, which is
+  // not a model id, and the only place that was said was a `400 Unknown model:
+  // jev` nobody could see. A datalist suggests; it does not constrain, and it
+  // cannot know about a model the provider shipped after we did. The endpoint
+  // knows. So we ask it, and the field stays free text — an operator running
+  // something we have never heard of must still be able to name it.
+  let detecting = $state(false)
+  let detected = $state<ModelInfo[] | null>(null)
+  let detectError = $state<string | null>(null)
+  // What `detected` is about, so switching provider or pasting a new key
+  // re-asks rather than showing the previous endpoint's catalog.
+  let detectedFor = $state<string | null>(null)
+  const configKey = $derived(
+    cfg ? `${cfg.provider}|${cfg.url ?? ''}|${cfg.wire ?? ''}|${cfg.hasKey}` : null,
+  )
+  const detect = async () => {
+    const forKey = configKey
+    detecting = true
+    detectError = null
+    try {
+      const r = await postJson<ModelsResult>('/api/admin/decide', { action: 'models' })
+      detected = r.ok ? (r.models ?? []) : null
+      detectError = r.ok ? null : (r.reason ?? 'The endpoint did not list its models.')
+    } catch (e) {
+      detected = null
+      detectError = e instanceof Error ? e.message : String(e)
+    } finally {
+      detectedFor = forKey
+      detecting = false
+    }
+  }
+  // Ask on load for a provider that publishes a catalog, so the list is there
+  // before anyone types into the field. Keyed on the config it describes: a
+  // provider or key change re-asks, a re-render does not.
+  $effect(() => {
+    const k = configKey
+    if (!k || !data?.configured || !meta?.liveCatalog || !meta.needsModel) return
+    if (detectedFor === k || detecting) return
+    void detect()
+  })
+  // Only a SUCCESSFUL detection may contradict what is typed. Warning from our
+  // own fallback list would scold an operator for naming a model that provider
+  // shipped last week, which is the opposite of the point.
+  const unknownModel = $derived(
+    detected !== null &&
+      detected.length > 0 &&
+      !!cfg?.model &&
+      detectedFor === configKey &&
+      !detected.some((m) => m.name === cfg.model),
+  )
+  const modelOptions = $derived(
+    detected !== null && detected.length > 0
+      ? detected.map((m) => m.name)
+      : (meta?.fallbackModels ?? []),
+  )
 
   // Autosave: provider / url / wire / model / timeout apply on change. Only
   // the API key — a secret being committed — keeps an explicit save.
@@ -209,22 +272,32 @@
       {/if}
 
       {#if meta?.needsModel}
-        <!-- A free-text model id rather than a picker: the catalog here is a
-             documented fallback list at best, and an operator running a model
-             we have never heard of must be able to name it. -->
+        <!-- STILL FREE TEXT, now with the endpoint's own list behind it. A
+             picker would be a cage: the whole position of this registry is
+             that an operator runs whichever model they want, including one we
+             have never heard of. So the detected ids are offered and a
+             mismatch is called out below, and nothing is refused. -->
         <Input
           size="sm"
           value={cfg?.model ?? ''}
           onblur={(e) => e.currentTarget.value !== (cfg?.model ?? '') && void apply({ model: e.currentTarget.value || null })}
-          placeholder={meta.fallbackModels[0] ?? 'endpoint:model'}
+          placeholder={modelOptions[0] ?? 'endpoint:model'}
           list={`decide-models-${meta.id}`}
           class="w-56"
         />
-        {#if meta.fallbackModels.length > 0}
+        {#if modelOptions.length > 0}
           <datalist id={`decide-models-${meta.id}`}>
-            {#each meta.fallbackModels as m (m)}<option value={m}></option>{/each}
+            {#each modelOptions as m (m)}<option value={m}></option>{/each}
           </datalist>
         {/if}
+        <Button
+          size="sm"
+          variant="ghost"
+          onclick={() => void detect()}
+          disabled={detecting || !data?.configured}
+        >
+          {detecting ? 'Detecting…' : 'Detect models'}
+        </Button>
       {/if}
 
       {#if meta}
@@ -234,6 +307,33 @@
       {/if}
       {#if savedFlash.saved}<span class="text-xs text-success">Saved</span>{/if}
     </div>
+
+    {#if meta?.needsModel && (unknownModel || detectError || (detected && detected.length > 0))}
+      <div transition:slide={{ duration: 150 }} class="mt-2 text-[11px]">
+        {#if unknownModel}
+          <!-- THE WARNING THAT WOULD HAVE SAVED AN AFTERNOON. The endpoint
+               listed its ids and the one configured is not among them, which
+               means every call will be refused — said here rather than
+               discovered from a call site silently falling back forever. -->
+          <p class="text-warn">
+            This endpoint does not list <span class="font-mono text-fg">{cfg?.model}</span> among the
+            models it accepts. It offers {detected?.map((m) => m.name).join(', ')} — calls will be
+            refused until this matches one of them, unless the endpoint takes ids it does not publish.
+          </p>
+        {:else if detected && detected.length > 0}
+          <p class="text-muted">
+            This endpoint accepts {detected.length === 1 ? '1 model' : `${detected.length} models`}:
+            {#each detected as m, i (m.name)}<span class="font-mono text-fg">{m.name}</span>{#if m.released}<span class="text-muted"> ({m.released})</span>{/if}{#if i < detected.length - 1}<span class="text-muted">, </span>{/if}{/each}
+          </p>
+        {/if}
+        {#if detectError}
+          <!-- Not a failure of the config: plenty of endpoints serve
+               judgments and publish no catalog, so this is a note and the
+               field keeps working. -->
+          <p class="text-muted">Could not list this endpoint's models — {detectError}</p>
+        {/if}
+      </div>
+    {/if}
 
     {#if meta}
       <!-- THE CAPABILITY SHEET. Stated rather than assumed: a call site asking
@@ -345,7 +445,15 @@
             </p>
           {/if}
         {:else}
+          <!-- The PROVIDER'S own sentence where there is one. `refused` means
+               it answered and said why; the rest are ours because there was no
+               reply to quote. -->
           <p class="text-danger">{result.reason}</p>
+          {#if result.kind === 'refused' && unknownModel}
+            <p class="mt-1 text-muted">
+              The model id is the usual cause — see the detected list above.
+            </p>
+          {/if}
         {/if}
       </div>
     {/if}
