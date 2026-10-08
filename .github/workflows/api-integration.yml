@@ -92,10 +92,12 @@ jobs:
         with:
           workspaces: api
 
-      # api/.cargo/config.toml passes -fuse-ld=mold on gnu linux; the package
-      # is the missing binary on the runner.
-      - name: mold
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mold
+      # mold: api/.cargo/config.toml passes -fuse-ld=mold on gnu linux, so
+      # `ld.mold` is a hard dependency of the link. The action bounds the apt
+      # call and falls back to the default linker rather than hanging the job
+      # on a slow mirror — which killed this very job at its 45-minute timeout
+      # with every later step skipped. See .github/actions/mold/action.yml.
+      - uses: ./.github/actions/mold
 
       # The container MUST be named talaria-mig-pg: check-migrations.ts's
       # PG_DUMP default is `docker exec talaria-mig-pg pg_dump -U talaria`, so
