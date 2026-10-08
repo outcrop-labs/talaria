@@ -144,13 +144,13 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 
 > /api/admin/decide. The decision-model port's one config row (admin).
 > GET → the provider catalog with its capability sheet, the current config
-> redacted, and the SITE CENSUS: every place in Talaria that asks a decision
-> model anything. PUT → patch the config, or, with `{ site: { id, on?, floor? } }`,
+> redacted, the SITE CENSUS (every place in Talaria that asks a decision model
+> anything, with each site's cost, the models that answered it, and the rooms
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, toolShadow}` | 200 | — |
+| GET | `admin` | — | `{providers, wires, config, configured, shadow, sites, speechRooms, toolShadow}` | 200 | — |
 | POST | `admin` | [body](#post-apiadmindecide-body) | `{ok, kind, reason}` | 200, 400 | audit |
 | PUT | `admin` | [body](#put-apiadmindecide-body) | `{config, configured, toolShadow}` | 200, 400 | audit |
 
@@ -158,7 +158,9 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_decide.rs`](../../api/
 
 | field | schema | notes |
 | :--- | :--- | :--- |
-| `action` | `enum(test|models)?` |  |
+| `action` | `enum(test|models|rows)?` |  |
+| `site` | `string(1, 80)` |  |
+| `limit` | `number?(1, 200)` |  |
 
 ### PUT `/api/admin/decide` body
 

@@ -50,6 +50,16 @@ pub struct SiteDef {
     /// surface that owns the switch instead — a second spelling of the same
     /// switch is how the two come to disagree.
     pub switch_lives_at: Option<&'static str>,
+    /// Where this site's numbers live, when they are not in the shadow ledger.
+    /// `None` means they are — which is every site but one.
+    ///
+    /// WHY THIS IS NOT AN OVERSIGHT TO FIX. A guard finding IS the output;
+    /// there is no second answer to compare it against, because the regex
+    /// rules structurally cannot answer the semantic question. A site with
+    /// nothing to compare does not belong in a comparison ledger, and leaving
+    /// its row to say "no comparisons recorded yet" forever would read as a
+    /// bug rather than as the truth.
+    pub measured_at: Option<&'static str>,
     pub default_floor: f64,
     /// WHAT THE FLOOR IS MEASURED AGAINST, and the two are different
     /// questions — conflating them is a silent behaviour change in both
@@ -88,6 +98,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Decides whether the assigned agent answers a message in a ticket room. When it answers confidently the LLM gate turn is skipped entirely; when it does not, the harness still runs.",
         default_on: false,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.70,
         reads: FLOOR_CERTAINTY,
         // 0.70 certainty is p ≥ 0.85 or p ≤ 0.15 — the gate acts only at the
@@ -102,6 +113,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Adds workflows the keyword match missed to a ticket's delivery. Add-only — a keyword match is never dropped, so the worst case is an agent handed a skill it did not need.",
         default_on: true,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.75,
         reads: FLOOR_LEAN,
         floor_why: "No asymmetry to lean on: a workflow carries skills and toolkits into an agent's session, so a weak yes is not worth acting on. Lower this and agents collect workflows they did not need; raise it and near-miss tickets keep missing.",
@@ -113,6 +125,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Merges a differently-worded report of a gap already filed into that row, bumping its seen_count instead of opening a duplicate. An exact slug hit never asks anything.",
         default_on: true,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.85,
         reads: FLOOR_CERTAINTY,
         floor_why: "A wrong merge HIDES a real gap behind someone else's row, and seen_count is what ranks the Suggested queue — so this is the least forgiving site on the list. A wrong split is merely a duplicate an admin can see.",
@@ -127,6 +140,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Orders the rows inside each bucket of the daily brief by judged urgency, replacing the (due-ness, priority, age) tiebreak. Buckets themselves never move, and items scored the same keep the order the existing policy gave them.",
         default_on: false,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.60,
         reads: FLOOR_CERTAINTY,
         floor_why: "The most forgiving site on the list, and the floor is low to match: a wrong order on a page a person reads top to bottom costs a few seconds of scanning, and every row is still there. A bucket where any item scores below this keeps its whole deterministic order rather than being half-judged.",
@@ -140,6 +154,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Nothing yet. Judges the tools each agent turn was offered against the ones it called, so the ledger can answer whether pruning would have broken the turn. No request has ever been pruned.",
         default_on: false,
         switch_lives_at: Some("the \"Measure tool-offer pruning\" switch above"),
+        measured_at: None,
         default_floor: 0.15,
         reads: FLOOR_LEAN,
         floor_why: "A keep floor, not an act floor, and deliberately low: dropping a tool the turn needed breaks it, while keeping one it did not costs a few tokens of prompt. Read the ledger before trusting any number here.",
@@ -154,6 +169,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Lets an agent in a group channel answer a message that did not @mention it, when a judgment says the message is for that agent in particular. At most one agent ever speaks per message, and any room can opt out with its own Agent initiative switch.",
         default_on: false,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.90,
         reads: FLOOR_LEAN,
         floor_why: "The sharpest asymmetry on the list, and it runs against acting: a missed answer is an agent staying quiet, which is exactly what happens today and what everyone is used to. A wrong yes is a bot interrupting people in a shared room, which is the failure that makes a workspace turn the whole feature off. Lower this only on numbers from your own channels.",
@@ -169,6 +185,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Nothing yet. Judges which authorized action an owner's inbox instruction asks for, as a Choice over exactly the allowlist plus \"none\", and records it beside the harness's own answer. The authority gate is untouched and still decides what may be proposed.",
         default_on: false,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.80,
         reads: FLOOR_CERTAINTY,
         floor_why: "A proposal is a button an owner may click, so a wrong one is a wrong action they were invited to take — high. Not yet acted on at all, so this number is what the ledger will be read against rather than something currently in force.",
@@ -183,6 +200,7 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Nothing yet. Judges whether a research ask can be worked as typed at the depth requested, and records it beside the scoper's own verdict. The scoper still decides.",
         default_on: false,
         switch_lives_at: None,
+        measured_at: None,
         default_floor: 0.70,
         reads: FLOOR_LEAN,
         floor_why: "Low stakes in both directions: a wrong \"crisp\" costs a research run that answers the wrong question, a wrong \"vague\" costs a person two clarifying questions they did not need. Not yet acted on, so this is what the ledger will be read against.",
@@ -198,6 +216,9 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         acts: "Files a guard finding with the model's own calibrated probability as its confidence — the field min_confidence has been comparing against developer-typed constants since it shipped. It cannot annotate or redact: the pass runs after the completion has gone back to the caller.",
         default_on: false,
         switch_lives_at: Some("the per-rule toggles on Guardrails, plus that panel's mode ladder"),
+        measured_at: Some(
+            "guard_findings, grouped by check type on Guardrails - a finding IS the output here, so there is no second answer to compare it against",
+        ),
         default_floor: 0.50,
         reads: FLOOR_LEAN,
         floor_why: "The guard's own min_confidence, floored at 0.5. Findings land in guard_findings whatever the mode; Observe does not disclose them to the reader, which is what makes the rule safe to run before anyone knows its false-positive rate.",
@@ -206,9 +227,10 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         id: "rerank",
         label: "Retrieval reranking",
         primitive: "score",
-        acts: "Reorders retrieval candidates by judged relevance to the query, as the ninth provider in the rerank registry. A failure falls back to vector order and never breaks search.",
+        acts: "Reorders retrieval candidates by judged relevance to the query, as the ninth provider in the rerank registry. A failure falls back to vector order and never breaks search. Records one comparison per search: did the reorder change what comes first?",
         default_on: false,
         switch_lives_at: Some("the reranker provider picker on Retrieval — choose \"decide\""),
+        measured_at: None,
         default_floor: 0.0,
         reads: FLOOR_LEAN,
         floor_why: "No threshold: a Score is consumed as a position, not gated as a verdict, so there is nothing to be confident enough about. The ordering is the answer.",
@@ -324,6 +346,7 @@ pub struct SitePublic {
     pub floor_why: &'static str,
     /// `None` when this panel owns the switch.
     pub switch_lives_at: Option<&'static str>,
+    pub measured_at: Option<&'static str>,
 }
 
 pub async fn sites_public(pg: &PgPool) -> Vec<SitePublic> {
@@ -344,6 +367,7 @@ pub async fn sites_public(pg: &PgPool) -> Vec<SitePublic> {
                 reads: def.reads,
                 floor_why: def.floor_why,
                 switch_lives_at: def.switch_lives_at,
+                measured_at: def.measured_at,
             }
         })
         .collect()
@@ -416,6 +440,9 @@ mod tests {
             provider: "test".into(),
             model: None,
             latency_ms: 1,
+            tokens_in: None,
+            tokens_out: None,
+            fanned: 1,
         }
     }
 
@@ -442,6 +469,11 @@ mod tests {
                 s.id
             );
             assert!(s.acts.len() > 40, "{} does not say what it does", s.id);
+            // A site measured somewhere else has to say where, or its panel
+            // row shows an empty ledger for ever and reads as a bug.
+            if let Some(w) = s.measured_at {
+                assert!(w.len() > 20, "{} does not say where its numbers are", s.id);
+            }
             assert!(
                 [FLOOR_LEAN, FLOOR_CERTAINTY].contains(&s.reads),
                 "{} does not say how its floor is read",
@@ -462,6 +494,42 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len(), "two sites share an id");
+    }
+
+    #[test]
+    fn the_public_view_carries_every_field_the_panel_renders_from() {
+        // A field flattened to a constant instead of read from the def is
+        // invisible: the panel renders, the sentence is just never there. This
+        // caught exactly that — `measured_at` was hardcoded `None` on the way
+        // out, so the one site whose numbers live elsewhere would have shown
+        // an empty ledger for ever.
+        let guard = def_of("guard-semantic").expect("in the census");
+        assert!(guard.measured_at.is_some(), "the fixture for this test");
+        // Built the same way `sites_public` builds it, minus the stored row.
+        let projected = SitePublic {
+            id: guard.id,
+            label: guard.label,
+            primitive: guard.primitive,
+            acts: guard.acts,
+            on: guard.default_on,
+            floor: guard.default_floor,
+            default_on: guard.default_on,
+            default_floor: guard.default_floor,
+            reads: guard.reads,
+            floor_why: guard.floor_why,
+            switch_lives_at: guard.switch_lives_at,
+            measured_at: guard.measured_at,
+        };
+        assert_eq!(projected.measured_at, guard.measured_at);
+        assert_eq!(projected.switch_lives_at, guard.switch_lives_at);
+        // And it is the ONLY site with no shadow rows to show, so it is the
+        // only one that needs the sentence.
+        let elsewhere: Vec<&str> = DECIDE_SITES
+            .iter()
+            .filter(|s| s.measured_at.is_some())
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(elsewhere, vec!["guard-semantic"], "{elsewhere:?}");
     }
 
     #[test]

@@ -508,7 +508,10 @@ CREATE TABLE public.decide_shadow (
     model text,
     latency_ms integer,
     agreed boolean,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    tokens_in integer,
+    tokens_out integer,
+    fanned integer
 );
 CREATE TABLE public.fitness_transcripts (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
