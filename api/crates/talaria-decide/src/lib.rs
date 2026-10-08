@@ -50,11 +50,19 @@ use serde_json::Value;
 use talaria_retrieval_http::HttpFetch;
 use talaria_state::AppState;
 
+pub mod action;
 pub mod config;
+pub mod focus;
 pub mod guard;
+pub mod scope;
 pub mod shadow;
+pub mod sites;
+pub mod speech;
 pub mod tools;
 mod wire;
+
+pub use sites::{DECIDE_SITES, SiteDef, SiteGate, acted, gate_of, sites_public};
+pub use wire::ModelInfo;
 
 pub use config::{
     ALL_WIRES, DECIDE_PROVIDERS, DecideConfig, DecidePatch, DecideProviderMeta,
@@ -296,8 +304,33 @@ pub struct Judgment {
     pub calibrated: bool,
     /// Which provider answered, for the ledger and the drill-down.
     pub provider: String,
+    /// WHICH MODEL ANSWERED, taken from the reply where the provider says so
+    /// — not the one we asked for.
+    ///
+    /// These differ, routinely and silently. `jev-latest` is an alias and the
+    /// service's own response documents its `model` as "may differ from the
+    /// alias supplied in the request". A ledger that records the alias says
+    /// `jev-latest` forever, so an agreement rate spanning a rollover from one
+    /// version to the next averages two different models into one number —
+    /// and deciding whether to trust a model is the only thing that ledger is
+    /// for. Falls back to the requested id on a wire that reports nothing.
     pub model: Option<String>,
     pub latency_ms: u64,
+    /// BILLABLE INPUT TOKENS for the request this judgment came from, where
+    /// the provider reports them. Recorded per judgment because a decision
+    /// port's cost is invisible otherwise: these calls do not go through the
+    /// metered relay (a decision is not a conversation) and so never reach the
+    /// token ledger. Without this an operator who switches five sites on has
+    /// no way to find out what that cost.
+    ///
+    /// On a fan-out the whole request's usage is attributed to EVERY judgment
+    /// it answered, because the request is what was billed and splitting it
+    /// per question would invent a number. `fanned` says how many answers
+    /// shared it, so a reader can divide.
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
+    /// How many judgments this one request answered.
+    pub fanned: u32,
 }
 
 impl Judgment {
@@ -320,6 +353,70 @@ pub fn gated(j: Option<Judgment>, min_certainty: f64) -> Option<Judgment> {
         return None;
     }
     Some(j)
+}
+
+// ── Why there is no answer ───────────────────────────────────────────────────
+
+/// WHY THE PORT HAS NOTHING — and why this is not in `decide`'s return type.
+///
+/// `decide` answers `Option` on purpose (see its doc): a call site does the
+/// same thing in every one of these cases, and one that branched on the reason
+/// would be making a policy decision the port does not own. That stays true.
+/// This type exists for ONE caller, the admin panel's Test button, whose whole
+/// job is to tell a person which of these it is.
+///
+/// It exists because of a real afternoon. A key was pasted in correctly and
+/// `model` was typed as `jev` rather than `jev-latest`; the panel answered
+/// "the provider did not answer, or answered in a shape this wire does not
+/// recognize", and the body sitting unread in the response said
+/// `Unknown model: jev`. The provider's own sentence is worth more than any
+/// sentence we can write, because it is about the configuration that is
+/// actually there rather than about the ones we imagined.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NoAnswer {
+    /// No provider chosen, or one missing a field its registry entry says it
+    /// needs.
+    NotConfigured,
+    /// Complete, and still not dispatchable as written — or a question this
+    /// provider's capability sheet says it cannot answer. Carries the sentence.
+    Unusable(String),
+    /// The request never reached the endpoint: DNS, TLS, refused, timed out.
+    Unreachable(String),
+    /// It answered, and refused — `message` is the ENDPOINT'S own words.
+    Refused { status: u16, message: String },
+    /// A 2xx whose body this wire does not recognize as answers.
+    Unreadable,
+}
+
+impl NoAnswer {
+    /// A stable tag for the panel to branch on, so the sentence can be
+    /// rewritten without breaking the UI.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            NoAnswer::NotConfigured => "not-configured",
+            NoAnswer::Unusable(_) => "unusable",
+            NoAnswer::Unreachable(_) => "unreachable",
+            NoAnswer::Refused { .. } => "refused",
+            NoAnswer::Unreadable => "unreadable",
+        }
+    }
+
+    /// One sentence for a person. The refused case leads with the endpoint's
+    /// own message and names the status after it: the status is context, the
+    /// message is the answer.
+    pub fn sentence(&self) -> String {
+        match self {
+            NoAnswer::NotConfigured => "No decision model is configured yet.".into(),
+            NoAnswer::Unusable(why) => why.clone(),
+            NoAnswer::Unreachable(why) => {
+                format!("The endpoint could not be reached: {why}")
+            }
+            NoAnswer::Refused { status, message } => {
+                format!("The provider refused ({status}): {message}")
+            }
+            NoAnswer::Unreadable => "The provider answered, but in a shape this wire does not recognize. Check that the URL points at the right protocol and that the model serves typed judgments.".into(),
+        }
+    }
 }
 
 // ── Asking ───────────────────────────────────────────────────────────────────
@@ -356,29 +453,70 @@ pub async fn decide(
     http: &HttpFetch,
     ask: &Ask,
 ) -> Option<BTreeMap<String, Judgment>> {
-    if ask.questions.is_empty() || ask.questions.values().any(|q| !q.wellformed()) {
-        return None;
+    try_decide(state, http, ask).await.ok()
+}
+
+/// `decide`, keeping the reason. The admin panel's door and nothing else's —
+/// a call site that branches on `NoAnswer` is choosing a policy the port does
+/// not own, and `decide` above is the one-line collapse that enforces that.
+pub async fn try_decide(
+    state: &AppState,
+    http: &HttpFetch,
+    ask: &Ask,
+) -> Result<BTreeMap<String, Judgment>, NoAnswer> {
+    if ask.questions.is_empty() {
+        return Err(NoAnswer::Unusable("Nothing was asked.".into()));
+    }
+    if let Some((id, _)) = ask.questions.iter().find(|(_, q)| !q.wellformed()) {
+        return Err(NoAnswer::Unusable(format!(
+            "The question \"{id}\" is malformed — a judgment needs instructions and, for a choice or a score, at least two things to choose between."
+        )));
     }
     let cfg = get_decide_config(&state.pg).await;
-    let meta = config::meta_of(&cfg.provider)?;
+    let Some(meta) = config::meta_of(&cfg.provider) else {
+        return Err(NoAnswer::NotConfigured);
+    };
     // A primitive the provider does not serve refuses HERE, before a request
     // is built — the alternative is a 422 from a vendor, or worse, a
     // classifier quietly answering a Score question as a two-way split.
-    if ask
+    if let Some((_, q)) = ask
         .questions
-        .values()
-        .any(|q| !meta.primitives.contains(&q.primitive()))
+        .iter()
+        .find(|(_, q)| !meta.primitives.contains(&q.primitive()))
     {
-        return None;
+        return Err(NoAnswer::Unusable(format!(
+            "{} does not answer {} questions — it serves {}.",
+            meta.label,
+            q.primitive(),
+            meta.primitives.join(", ")
+        )));
     }
     // A provider that cannot fan out answers one question per round trip.
     // Asking it five is five calls, which is a cost the CALLER should have
     // chosen, so the port refuses rather than quietly spending it.
     if !meta.fans_out && ask.questions.len() > 1 {
-        return None;
+        return Err(NoAnswer::Unusable(format!(
+            "{} answers one question per request, and {} were asked in one.",
+            meta.label,
+            ask.questions.len()
+        )));
     }
     let out = wire::dispatch(state, http, &cfg, meta, ask).await?;
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        return Err(NoAnswer::Unreadable);
+    }
+    Ok(out)
+}
+
+/// The models this endpoint says it will accept in `model`, asked of the
+/// endpoint itself. See `wire::list_models` for what each wire is asked and
+/// why the registered-model provider is answered without a request at all.
+pub async fn list_models(state: &AppState, http: &HttpFetch) -> Result<Vec<ModelInfo>, NoAnswer> {
+    let cfg = get_decide_config(&state.pg).await;
+    let Some(meta) = config::meta_of(&cfg.provider) else {
+        return Err(NoAnswer::NotConfigured);
+    };
+    wire::list_models(state, http, &cfg, meta).await
 }
 
 #[cfg(test)]
@@ -421,6 +559,9 @@ mod tests {
             provider: "jev".into(),
             model: None,
             latency_ms: 1,
+            tokens_in: None,
+            tokens_out: None,
+            fanned: 1,
         }
     }
 

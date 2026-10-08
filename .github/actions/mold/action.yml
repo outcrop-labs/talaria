@@ -1,0 +1,75 @@
+name: mold
+description: >
+  Make ld.mold available for api/.cargo/config.toml's -fuse-ld=mold, and fall
+  back to the default linker rather than hanging the job if it cannot be.
+
+# WHY THIS IS AN ACTION AND NOT TWO COPIES OF ONE apt LINE.
+#
+# `api/.cargo/config.toml` passes `-C link-arg=-fuse-ld=mold` for
+# x86_64-unknown-linux-gnu unconditionally, so a missing `ld.mold` fails the
+# link outright with collect2's "cannot find 'ld'". That made a single
+# unbounded `apt-get` a hard dependency of every api build in CI — and apt is
+# the least reliable thing in the job.
+#
+# IT COST TWO BLOCKED PULL REQUESTS IN ONE EVENING. The promotion PR's
+# live-tests ran 45m17s and the api job on the next PR ran 30m19s, both killed
+# by their job timeout with every later step skipped, both stuck in exactly
+# this step. Neither failure named apt: `gh pr checks` renders a job killed by
+# its own timeout as `fail`, so both read as a test failure on a tree that was
+# green. Across the preceding 30 api-integration runs, 8 of 29 concluded
+# `cancelled`.
+#
+# THREE THINGS, in order of how much they are worth:
+#
+#   1. Don't call apt when the binary is already there. Free, and some runner
+#      images ship it.
+#   2. BOUND EACH CALL. A composite action's steps cannot carry
+#      `timeout-minutes` — that key is only valid on a workflow job's own
+#      steps — so the bound is `timeout(1)` around each apt invocation. This is
+#      the change that matters: it turns a 45-minute silent death into a
+#      two-minute named one.
+#   3. FALL BACK RATHER THAN DIE. `CARGO_ENCODED_RUSTFLAGS` set to the empty
+#      list overrides the config file's target `rustflags` wholesale, so cargo
+#      uses the default linker. Checked rather than assumed: with the var set,
+#      `cargo check -v -p talaria-params --target x86_64-unknown-linux-gnu`
+#      passes no `fuse-ld=mold` at all, and without it, it does. (Plain
+#      `RUSTFLAGS=""` also works; the encoded one is the documented
+#      unambiguous spelling for "an empty list" rather than "unset".)
+#
+#      A slower link is the right failure here. The config file already makes
+#      the same argument about its own job cap — "slow, not a pinned laptop.
+#      That is the right failure" — and a green build that took four more
+#      minutes beats a red one that took forty-five and tested nothing.
+
+runs:
+  using: composite
+  steps:
+    - name: mold, or the default linker
+      shell: bash
+      run: |
+        set -u
+        if command -v ld.mold >/dev/null 2>&1; then
+          echo "ld.mold is already on PATH ($(command -v ld.mold)) — nothing to install."
+          exit 0
+        fi
+        # Two attempts, each bounded. `apt-get update` killed part-way can
+        # leave a lock behind, which makes the install below fail — and that
+        # failure lands in the fallback, which is the point.
+        for attempt in 1 2; do
+          echo "::group::mold install, attempt $attempt"
+          timeout -k 10 120 sudo apt-get update \
+            || echo "apt-get update did not finish inside 120s"
+          timeout -k 10 180 sudo apt-get install -y --no-install-recommends mold \
+            || echo "apt-get install did not finish inside 180s"
+          echo "::endgroup::"
+          command -v ld.mold >/dev/null 2>&1 && break
+        done
+        if command -v ld.mold >/dev/null 2>&1; then
+          echo "mold installed: $(command -v ld.mold)"
+          exit 0
+        fi
+        # THE FALLBACK. Loud, because a build that is quietly four minutes
+        # slower on every job is a thing somebody should be told about once
+        # rather than discover from a graph.
+        echo "::warning title=mold unavailable::apt could not install mold inside its window. Building on the default linker instead — slower, and correct. If this warning is on every run, the install is broken rather than slow."
+        echo "CARGO_ENCODED_RUSTFLAGS=" >> "$GITHUB_ENV"

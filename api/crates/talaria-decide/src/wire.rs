@@ -42,7 +42,7 @@ use talaria_state::AppState;
 use crate::config::{
     DecideConfig, DecideProviderMeta, WIRE_CHAT, WIRE_PREDICT, WIRE_SYSTEMONE, configured,
 };
-use crate::{Answer, Ask, Judgment, Opt, Question};
+use crate::{Answer, Ask, Judgment, NoAnswer, Opt, Question};
 
 /// TypeSafe's documented base. Only the `jev` provider uses it; `custom`
 /// speaking the same wire brings its own URL.
@@ -67,29 +67,42 @@ pub(crate) async fn dispatch(
     cfg: &DecideConfig,
     meta: &'static DecideProviderMeta,
     ask: &Ask,
-) -> Option<BTreeMap<String, Judgment>> {
+) -> Result<BTreeMap<String, Judgment>, NoAnswer> {
     if !configured(cfg) {
-        return None;
+        return Err(NoAnswer::NotConfigured);
     }
-    let wire = cfg.wire_of(meta)?;
+    // `configured` already demanded a known wire, so this is belt and braces
+    // rather than a reachable branch.
+    let wire = cfg.wire_of(meta).ok_or(NoAnswer::NotConfigured)?;
     let started = std::time::Instant::now();
     let (base, key, model) = target(state, cfg, meta).await?;
     let timeout = cfg.timeout();
 
+    // The provider's own account of the request — tokens billed and which
+    // model actually answered. Filled by whichever arm ran; a wire that
+    // reports nothing leaves it empty rather than zero.
+    let mut report = Reported::default();
     let reads: BTreeMap<String, Read> = match wire {
         WIRE_SYSTEMONE => {
             let url = format!("{}/v1/systemone", base.trim_end_matches('/'));
             let body = systemone_request(model.as_deref(), ask);
-            let reply = json_fetch(http, &url, &bearer(key.as_deref()), &body, timeout).await?;
+            let reply = send(http, "POST", &url, Some(&body), key.as_deref(), timeout).await?;
+            report = reported(&reply);
             systemone_answers(&reply, ask)
         }
         WIRE_PREDICT => {
-            // `fans_out: false` holds this to one question; `decide` already
-            // refused anything more.
-            let (id, question) = ask.questions.iter().next()?;
+            // `fans_out: false` holds this to one question; `try_decide`
+            // already refused anything more.
+            let (id, question) = ask
+                .questions
+                .iter()
+                .next()
+                .ok_or_else(|| NoAnswer::Unusable("Nothing was asked.".into()))?;
             let url = format!("{}/predict", base.trim_end_matches('/'));
-            let body = predict_request(&ask.state, question)?;
-            let reply = json_fetch(http, &url, &bearer(key.as_deref()), &body, timeout).await?;
+            let body = predict_request(&ask.state, question).ok_or(NoAnswer::Unreadable)?;
+            let reply = send(http, "POST", &url, Some(&body), key.as_deref(), timeout).await?;
+            // A classifier reports neither usage nor a model id; the report
+            // stays empty, which is the honest answer.
             predict_answer(&reply, question)
                 .map(|r| BTreeMap::from([(id.clone(), r)]))
                 .unwrap_or_default()
@@ -97,6 +110,12 @@ pub(crate) async fn dispatch(
         WIRE_CHAT => {
             let url = format!("{}/chat/completions", base.trim_end_matches('/'));
             let mut out = BTreeMap::new();
+            // THE FIRST REFUSAL IS KEPT. This wire makes one call per
+            // question, and a config that is wrong is wrong for all of them —
+            // so when nothing comes back, the reason reported is the
+            // endpoint's own words from the first attempt rather than a
+            // generic "no answers". `decide` discards it; the panel does not.
+            let mut refused: Option<NoAnswer> = None;
             // A chat model answers ONE question per call even where the
             // provider `fans_out`: the trick that makes the number real is
             // that the first content token is the whole answer, and two
@@ -104,38 +123,71 @@ pub(crate) async fn dispatch(
             // several calls, which is honest about what it costs.
             for (id, question) in &ask.questions {
                 let body = chat_request(model.as_deref(), &ask.state, question);
-                let Some(reply) =
-                    json_fetch(http, &url, &bearer(key.as_deref()), &body, timeout).await
-                else {
-                    continue;
-                };
+                let reply =
+                    match send(http, "POST", &url, Some(&body), key.as_deref(), timeout).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            refused = refused.or(Some(e));
+                            continue;
+                        }
+                    };
+                // ONE CALL PER QUESTION on this wire, so usage ACCUMULATES
+                // rather than being overwritten — the alternative reports a
+                // five-question fan-out as the cost of its last call.
+                let this = reported(&reply);
+                report.tokens_in = add(report.tokens_in, this.tokens_in);
+                report.tokens_out = add(report.tokens_out, this.tokens_out);
+                report.model = report.model.or(this.model);
                 if let Some(r) = chat_answer(&reply, question) {
                     out.insert(id.clone(), r);
                 }
             }
+            if out.is_empty()
+                && let Some(e) = refused
+            {
+                return Err(e);
+            }
             out
         }
-        _ => return None,
+        _ => return Err(NoAnswer::NotConfigured),
     };
 
     let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    Some(
-        reads
-            .into_iter()
-            .map(|(id, (answer, calibrated))| {
-                (
-                    id,
-                    Judgment {
-                        answer,
-                        calibrated,
-                        provider: meta.id.to_string(),
-                        model: model.clone(),
-                        latency_ms,
-                    },
-                )
-            })
-            .collect(),
-    )
+    // THE REQUEST'S USAGE RIDES EVERY ANSWER IT PRODUCED. The request is what
+    // was billed; splitting it per question would invent a number, so `fanned`
+    // says how many shared it and a reader divides.
+    let fanned = u32::try_from(reads.len()).unwrap_or(u32::MAX);
+    // The model the reply named, falling back to the one we asked for on a
+    // wire that reports none — never the other way round.
+    let answered_by = report.model.clone().or_else(|| model.clone());
+    Ok(reads
+        .into_iter()
+        .map(|(id, (answer, calibrated))| {
+            (
+                id,
+                Judgment {
+                    answer,
+                    calibrated,
+                    provider: meta.id.to_string(),
+                    model: answered_by.clone(),
+                    latency_ms,
+                    tokens_in: report.tokens_in,
+                    tokens_out: report.tokens_out,
+                    fanned,
+                },
+            )
+        })
+        .collect())
+}
+
+/// Sum two optional counts, keeping "not reported" distinct from zero: a
+/// present count plus an absent one is the present count, and two absent ones
+/// stay absent.
+fn add(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (None, None) => None,
+        (x, y) => Some(x.unwrap_or(0).saturating_add(y.unwrap_or(0))),
+    }
 }
 
 /// Where to send the request, what to authenticate with, and which model to
@@ -146,15 +198,15 @@ async fn target(
     state: &AppState,
     cfg: &DecideConfig,
     meta: &'static DecideProviderMeta,
-) -> Option<(String, Option<String>, Option<String>)> {
+) -> Result<(String, Option<String>, Option<String>), NoAnswer> {
     match meta.id {
-        "jev" => Some((
+        "jev" => Ok((
             JEV_BASE.to_string(),
             open_key(state, cfg).await,
             cfg.model.clone(),
         )),
-        "tei" | "custom" => Some((
-            cfg.url.clone()?,
+        "tei" | "custom" => Ok((
+            cfg.url.clone().ok_or(NoAnswer::NotConfigured)?,
             open_key(state, cfg).await,
             cfg.model.clone(),
         )),
@@ -163,26 +215,62 @@ async fn target(
         // second time here would be a second copy of the same secret to
         // rotate.
         "gateway" => {
-            let spec = cfg.model.as_deref()?;
-            let (ep_hint, model) = match spec.split_once(':') {
-                Some((ep, m)) => (Some(ep), m),
-                None => (None, spec),
-            };
-            let eps = talaria_gateway::registry::list_endpoints(&state.pg)
-                .await
-                .ok()?;
-            let ep = eps.iter().find(|e| match ep_hint {
-                Some(h) => e.id == h || e.name == h || e.provider == h,
-                None => e.models.iter().any(|m| m == model),
-            })?;
-            let base = ep.base_url.clone().or_else(|| {
-                talaria_gateway::provider::native_base(&ep.provider).map(String::from)
-            })?;
-            let key = talaria_gateway::provider::resolve_endpoint_key(state, ep).await;
-            Some((base, key, Some(model.to_string())))
+            let ep = gateway_endpoint(state, cfg).await?;
+            let model = gateway_spec(cfg)?.1.to_string();
+            let base = ep
+                .base_url
+                .clone()
+                .or_else(|| {
+                    talaria_gateway::provider::native_base(&ep.provider).map(String::from)
+                })
+                .ok_or_else(|| {
+                    NoAnswer::Unusable(format!(
+                        "The endpoint \"{}\" has no base URL and none is known for the {} provider.",
+                        ep.name, ep.provider
+                    ))
+                })?;
+            let key = talaria_gateway::provider::resolve_endpoint_key(state, &ep).await;
+            Ok((base, key, Some(model)))
         }
-        _ => None,
+        _ => Err(NoAnswer::NotConfigured),
     }
+}
+
+/// `model` on the `gateway` provider is `endpoint:model` or a bare model id —
+/// split once, so a model id containing a colon still resolves by its
+/// endpoint hint.
+fn gateway_spec(cfg: &DecideConfig) -> Result<(Option<&str>, &str), NoAnswer> {
+    let spec = cfg.model.as_deref().ok_or(NoAnswer::NotConfigured)?;
+    Ok(match spec.split_once(':') {
+        Some((ep, m)) => (Some(ep), m),
+        None => (None, spec),
+    })
+}
+
+/// The registered endpoint this config names. Its failure is the one an
+/// operator most needs spelled out: a model id that no registered endpoint
+/// serves looks exactly like a working config until the first call.
+async fn gateway_endpoint(
+    state: &AppState,
+    cfg: &DecideConfig,
+) -> Result<talaria_gateway::registry::LlmEndpoint, NoAnswer> {
+    let (ep_hint, model) = gateway_spec(cfg)?;
+    let eps = talaria_gateway::registry::list_endpoints(&state.pg)
+        .await
+        .map_err(|e| NoAnswer::Unusable(format!("The endpoint list could not be read: {e}")))?;
+    eps.into_iter()
+        .find(|e| match ep_hint {
+            Some(h) => e.id == h || e.name == h || e.provider == h,
+            None => e.models.iter().any(|m| m == model),
+        })
+        .ok_or_else(|| match ep_hint {
+            Some(h) => NoAnswer::Unusable(format!(
+                "No registered endpoint matches \"{h}\". Use the endpoint's name, id or provider."
+            )),
+            None => NoAnswer::Unusable(format!(
+                "No registered endpoint serves \"{model}\". Name one as endpoint:model, or refresh that endpoint's catalog on /models."
+            )),
+        })
 }
 
 async fn open_key(state: &AppState, cfg: &DecideConfig) -> Option<String> {
@@ -197,30 +285,268 @@ fn bearer(key: Option<&str>) -> Vec<(String, String)> {
     }
 }
 
-async fn json_fetch(
+/// One round trip, with the endpoint's own refusal kept rather than logged
+/// away. `decide` throws the reason out one frame later; the admin panel is
+/// why it is carried that far at all.
+async fn send(
     http: &HttpFetch,
+    method: &str,
     url: &str,
-    headers: &[(String, String)],
-    body: &Value,
+    body: Option<&Value>,
+    key: Option<&str>,
     timeout_ms: u64,
-) -> Option<Value> {
+) -> Result<Value, NoAnswer> {
+    let headers = bearer(key);
     let hdrs: Vec<(&str, &str)> = headers
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    let (status, text) = (http)("POST", url, Some(body), &hdrs, timeout_ms)
+    let (status, text) = (http)(method, url, body, &hdrs, timeout_ms)
         .await
-        .ok()?;
+        .map_err(NoAnswer::Unreachable)?;
     if !(200..300).contains(&status) {
-        // The port answers None and the caller runs its own path, so a
-        // refusal is a log line rather than an error anybody has to handle.
-        tracing::warn!(
-            "decide: {url} answered {status}: {}",
-            talaria_body::truncate_utf16(&text, 200)
-        );
-        return None;
+        let message = upstream_message(&text);
+        // Still logged — a call site that fell back silently leaves this as
+        // the only trace that it did.
+        tracing::warn!("decide: {url} answered {status}: {message}");
+        return Err(NoAnswer::Refused { status, message });
     }
-    serde_json::from_str(&text).ok()
+    serde_json::from_str(&text).map_err(|_| NoAnswer::Unreadable)
+}
+
+/// Pull the endpoint's OWN sentence out of an error body. Four envelopes, each
+/// one observed rather than guessed at:
+///
+///   `{"detail":{"error_type":…,"message":"…"}}`  TypeSafe's auth and model
+///                                                refusals
+///   `{"detail":[{"loc":…,"msg":"…"}]}`           FastAPI request validation
+///   `{"detail":"Not Found"}`                     a bare route miss
+///   `{"error":{"message":"…"}}`                  every OpenAI-compatible
+///                                                endpoint the chat wire talks to
+///
+/// Anything else falls back to the body itself, clipped: bytes we cannot parse
+/// are still the most informative thing we have, and a message of our own
+/// invention is the failure this whole function exists to undo.
+fn upstream_message(text: &str) -> String {
+    let clipped = || talaria_body::truncate_utf16(text.trim(), 300).to_string();
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return clipped();
+    };
+    let one = |x: &Value| -> Option<String> {
+        x.get("message")
+            .or_else(|| x.get("msg"))
+            .and_then(Value::as_str)
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+    };
+    let from = |field: &str| -> Option<String> {
+        match v.get(field)? {
+            Value::String(m) if !m.trim().is_empty() => Some(m.trim().to_string()),
+            Value::Object(_) => one(v.get(field)?),
+            // Several validation complaints join, because the one that matters
+            // is as likely to be the second as the first.
+            Value::Array(a) => {
+                let msgs: Vec<String> = a.iter().filter_map(one).collect();
+                if msgs.is_empty() {
+                    None
+                } else {
+                    Some(msgs.join("; "))
+                }
+            }
+            _ => None,
+        }
+    };
+    from("detail")
+        .or_else(|| from("error"))
+        .or_else(|| one(&v))
+        .unwrap_or_else(clipped)
+}
+
+// ── Asking the endpoint which models it accepts ──────────────────────────────
+
+/// One model an endpoint says it will take in `model`.
+///
+/// WHY THIS IS DETECTED RATHER THAN TYPED. The registry carries each
+/// provider's documented ids as a fallback, and a `<datalist>` offers them —
+/// but a datalist suggests, it does not constrain, and the shortest thing to
+/// type for TypeSafe's Jev is `jev`, which is not a model id. The endpoint
+/// knows the answer; asking it is strictly better than any list we maintain,
+/// and it keeps working when a provider ships a model after we shipped.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// YYYY-MM-DD where the provider publishes it. Useful on a list of
+    /// aliases: it is how you tell which one `-latest` currently points at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub released: Option<String>,
+}
+
+/// What this configuration's endpoint says it accepts.
+///
+/// Per wire, and the differences are not cosmetic:
+///
+///   systemone  `GET {base}/v1/models` → `{"models":[{name,description,
+///              release_date}]}`. Those field names are TypeSafe's own, from
+///              its OpenAPI document — NOT the OpenAI convention, so a reader
+///              that looked for `data[].id` would have found an empty list and
+///              reported "no models" against a working endpoint.
+///   chat       `GET {base}/models` → the OpenAI catalog shape, with the same
+///              three containers `talaria_gateway` already tolerates in the
+///              field (`data`, `models`, or a bare array — Together returns
+///              the last one).
+///   predict    nothing is asked. A classifier sidecar serves the single model
+///              it was started with and `needs_model` is false for it, so
+///              there is no field to fill and nothing to detect; inventing a
+///              `/info` read we have never seen a reply from would be exactly
+///              the guess this function exists to replace.
+///
+/// And the `gateway` provider is answered WITHOUT A REQUEST: the operator
+/// already registered that endpoint and refreshed its catalog on /models, so
+/// that row IS the detection. Asking the endpoint again would be a second
+/// source of truth for one answer, and the two would disagree the first time a
+/// refresh failed.
+pub(crate) async fn list_models(
+    state: &AppState,
+    http: &HttpFetch,
+    cfg: &DecideConfig,
+    meta: &'static DecideProviderMeta,
+) -> Result<Vec<ModelInfo>, NoAnswer> {
+    if !configured(cfg) {
+        return Err(NoAnswer::NotConfigured);
+    }
+    if meta.id == "gateway" {
+        let ep = gateway_endpoint(state, cfg).await?;
+        return Ok(ep
+            .models
+            .iter()
+            .map(|m| ModelInfo {
+                // Spelled the way the config field wants it, so the panel can
+                // offer the value verbatim instead of the operator having to
+                // know the convention.
+                name: format!("{}:{}", ep.name, m),
+                description: None,
+                released: None,
+            })
+            .collect());
+    }
+    let wire = cfg.wire_of(meta).ok_or(NoAnswer::NotConfigured)?;
+    if wire == WIRE_PREDICT {
+        return Err(NoAnswer::Unusable(
+            "This endpoint serves one model, chosen when it was started — there is no model id to detect or to set.".into(),
+        ));
+    }
+    let (base, key, _) = target(state, cfg, meta).await?;
+    let base = base.trim_end_matches('/');
+    let url = match wire {
+        WIRE_SYSTEMONE => format!("{base}/v1/models"),
+        WIRE_CHAT => format!("{base}/models"),
+        _ => return Err(NoAnswer::NotConfigured),
+    };
+    let reply = send(http, "GET", &url, None, key.as_deref(), cfg.timeout()).await?;
+    let models = read_models(&reply);
+    if models.is_empty() {
+        return Err(NoAnswer::Unreadable);
+    }
+    Ok(models)
+}
+
+/// Read a model catalog out of whatever of the known shapes came back. One
+/// reader for both wires on purpose: the container (`models`, `data`, or the
+/// bare array) and the name key (`name` or `id`) vary independently across the
+/// services this port is pointed at, and a reader per vendor is how the two
+/// come to disagree.
+fn read_models(v: &Value) -> Vec<ModelInfo> {
+    let rows: &[Value] = match v {
+        Value::Array(a) => a,
+        Value::Object(o) => match o
+            .get("models")
+            .or_else(|| o.get("data"))
+            .and_then(Value::as_array)
+        {
+            Some(a) => a,
+            None => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    let mut out: Vec<ModelInfo> = Vec::new();
+    for row in rows {
+        // A bare list of strings is a legitimate answer and the simplest thing
+        // a custom endpoint is likely to return.
+        let name = match row {
+            Value::String(s) => s.trim().to_string(),
+            Value::Object(_) => row
+                .get("name")
+                .or_else(|| row.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            _ => String::new(),
+        };
+        if name.is_empty() || out.iter().any(|m| m.name == name) {
+            continue;
+        }
+        let text = |k: &str| {
+            row.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        out.push(ModelInfo {
+            name,
+            description: text("description"),
+            released: text("release_date").or_else(|| text("created_at")),
+        });
+    }
+    out
+}
+
+// ── What the reply says about itself ─────────────────────────────────────────
+
+/// Usage and the answering model, read off a reply. Both are the PROVIDER'S
+/// account of the request, not ours.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct Reported {
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
+    /// The model the reply names. `jev-latest` is an alias and TypeSafe's own
+    /// response documents this as "may differ from the alias supplied", so the
+    /// requested id is a question and this is the answer.
+    pub model: Option<String>,
+}
+
+/// Read a reply's self-report, in whichever of the two spellings came back.
+///
+/// Both observed rather than assumed: TypeSafe's `SystemOneResponse` carries
+/// `{model, usage: {input_tokens, output_tokens}}` from its own OpenAPI
+/// document, and every OpenAI-compatible endpoint the chat wire talks to
+/// carries `{model, usage: {prompt_tokens, completion_tokens}}`. A wire that
+/// reports neither — the classifier's `/predict` — answers an empty report
+/// rather than a zero, because "not reported" and "cost nothing" are
+/// different facts and a zero would make a site look free.
+pub(crate) fn reported(reply: &Value) -> Reported {
+    let count = |owner: Option<&Value>, a: &str, b: &str| -> Option<u32> {
+        let o = owner?;
+        o.get(a)
+            .or_else(|| o.get(b))
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    let usage = reply.get("usage");
+    Reported {
+        tokens_in: count(usage, "input_tokens", "prompt_tokens"),
+        tokens_out: count(usage, "output_tokens", "completion_tokens"),
+        model: reply
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
+    }
 }
 
 // ── Shared numeric helpers ───────────────────────────────────────────────────
@@ -1100,6 +1426,9 @@ mod tests {
                     provider: "gateway".into(),
                     model: None,
                     latency_ms: 1,
+                    tokens_in: None,
+                    tokens_out: None,
+                    fanned: 1,
                 }),
                 0.1,
             )
@@ -1188,5 +1517,137 @@ mod tests {
         assert_eq!(state_text(&json!("plain")), "plain");
         assert_eq!(state_text(&json!(["a", "b"])), "a\nb");
         assert!(state_text(&json!({"k": "v"})).contains("\"k\""));
+    }
+
+    // ── What the provider said when it refused ───────────────────────────────
+
+    #[test]
+    fn the_refusal_body_is_read_in_every_envelope_these_endpoints_actually_send() {
+        // CAPTURED, not imagined — these three are verbatim what
+        // api.typesafe.ai answered to a real unauthenticated GET, a real bad
+        // bearer, and a real unknown path.
+        assert_eq!(
+            upstream_message(
+                r#"{"detail":{"error_type":"authentication_error","message":"Must supply an API key! Check your request and try again."}}"#
+            ),
+            "Must supply an API key! Check your request and try again."
+        );
+        assert_eq!(
+            upstream_message(
+                r#"{"detail":{"error_type":"authentication_error","message":"Cannot authenticate with the server. Please check your API key and try again."}}"#
+            ),
+            "Cannot authenticate with the server. Please check your API key and try again."
+        );
+        assert_eq!(upstream_message(r#"{"detail":"Not Found"}"#), "Not Found");
+
+        // FastAPI's validation shape, which the same service answers 422 with.
+        // Both complaints join: the one that matters is as likely to be the
+        // second.
+        assert_eq!(
+            upstream_message(
+                r#"{"detail":[{"loc":["body","model"],"msg":"field required"},{"loc":["body","state"],"msg":"not a valid dict"}]}"#
+            ),
+            "field required; not a valid dict"
+        );
+
+        // The OpenAI envelope — every endpoint the chat wire talks to.
+        assert_eq!(
+            upstream_message(
+                r#"{"error":{"message":"model not found","type":"invalid_request_error"}}"#
+            ),
+            "model not found"
+        );
+        // A top-level message is the simplest thing a custom endpoint sends.
+        assert_eq!(upstream_message(r#"{"message":"nope"}"#), "nope");
+    }
+
+    #[test]
+    fn an_unparseable_or_empty_refusal_falls_back_to_the_bytes_rather_than_to_a_sentence_of_ours() {
+        // The whole point: never substitute our guess for the endpoint's
+        // answer. Bytes we cannot parse are still the most informative thing
+        // available.
+        assert_eq!(upstream_message("  502 Bad Gateway\n"), "502 Bad Gateway");
+        assert_eq!(upstream_message("<html>nginx</html>"), "<html>nginx</html>");
+        // An envelope present but empty is not a message.
+        assert_eq!(
+            upstream_message(r#"{"detail":"   "}"#),
+            r#"{"detail":"   "}"#
+        );
+        assert_eq!(upstream_message(r#"{"detail":[]}"#), r#"{"detail":[]}"#);
+        // And it is clipped, so a megabyte of HTML cannot become a panel.
+        let long = format!("x{}", "y".repeat(1_000));
+        assert!(upstream_message(&long).chars().count() <= 310, "clipped");
+    }
+
+    // ── The catalog ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_systemone_catalog_is_read_by_typesafes_own_field_names_not_openais() {
+        // This object is the `examples` block of `ModelMetadataList` in
+        // https://api.typesafe.ai/openapi.json — the service's own document.
+        // `models[].name`, NOT `data[].id`: a reader written to the OpenAI
+        // convention finds nothing here and reports "no models" against an
+        // endpoint that works, which is precisely the failure mode this
+        // detection exists to remove.
+        let v = json!({"models": [
+            {"description": "General-purpose system one model.", "name": "jev-latest", "release_date": "2026-09-15"},
+            {"description": "Preview.", "name": "jev-preview", "release_date": "2026-09-20"}
+        ]});
+        let got = read_models(&v);
+        assert_eq!(
+            got,
+            vec![
+                ModelInfo {
+                    name: "jev-latest".into(),
+                    description: Some("General-purpose system one model.".into()),
+                    released: Some("2026-09-15".into()),
+                },
+                ModelInfo {
+                    name: "jev-preview".into(),
+                    description: Some("Preview.".into()),
+                    released: Some("2026-09-20".into()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn the_chat_catalog_is_read_in_all_three_containers_the_gateway_already_meets() {
+        // `data` — OpenAI, and every compatible endpoint.
+        let openai = read_models(&json!({"data": [{"id": "gpt-4o-mini", "object": "model"}]}));
+        assert_eq!(openai.len(), 1);
+        assert_eq!(openai[0].name, "gpt-4o-mini");
+        assert_eq!(openai[0].description, None, "it publishes none");
+
+        // A bare array of objects — Together's shape, which
+        // talaria_gateway::provider already tolerates for the same reason.
+        let together = read_models(&json!([{"id": "a/b-7b"}, {"id": "a/c-13b"}]));
+        assert_eq!(
+            together.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["a/b-7b", "a/c-13b"]
+        );
+
+        // A bare array of strings — the simplest thing a custom endpoint is
+        // likely to return, and no reason to refuse it.
+        let plain = read_models(&json!(["one", "two"]));
+        assert_eq!(plain.len(), 2);
+        assert_eq!(plain[1].name, "two");
+    }
+
+    #[test]
+    fn a_catalog_with_nothing_usable_in_it_reads_as_empty_rather_than_as_blank_rows() {
+        // Empty reads become `Unreadable` one frame up, which is the honest
+        // answer: the call succeeded and told us nothing we can put in a
+        // field. A blank row in a model picker is worse than no picker.
+        assert!(read_models(&json!({"data": []})).is_empty());
+        assert!(read_models(&json!({"object": "list"})).is_empty());
+        assert!(read_models(&json!("models")).is_empty());
+        assert!(read_models(&json!({"models": [{"id": "   "}, {}, 7]})).is_empty());
+        // Duplicates collapse, first spelling wins — a catalog that lists an
+        // alias twice must not offer it twice.
+        let dup =
+            read_models(&json!({"models": [{"name": "x", "description": "first"}, {"name": "x"}]}));
+        assert_eq!(dup.len(), 1);
+        assert_eq!(dup[0].description, Some("first".into()));
     }
 }

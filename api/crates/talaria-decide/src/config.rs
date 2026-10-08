@@ -116,7 +116,9 @@ pub const DECIDE_PROVIDERS: &[DecideProviderMeta] = &[
         needs_wire: false,
         wire: WIRE_SYSTEMONE,
         fallback_models: &["jev-latest", "jev-preview", "jev-1.13.0"],
-        live_catalog: false,
+        // `GET /v1/models` — the list above is the documented fallback for
+        // when that call cannot be made (no key yet, or it refuses).
+        live_catalog: true,
         primitives: &["noul", "choice", "score"],
         fans_out: true,
         calibration: "native",

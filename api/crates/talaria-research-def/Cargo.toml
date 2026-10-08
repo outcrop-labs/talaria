@@ -9,6 +9,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+talaria-retrieval-http = { workspace = true }
+talaria-decide = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

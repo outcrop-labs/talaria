@@ -17,4 +17,7 @@ sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-daily-brief-types = { workspace = true }
+talaria-decide = { workspace = true }
+talaria-retrieval-http = { workspace = true }
+talaria-state = { workspace = true }
 talaria-statuses = { workspace = true }

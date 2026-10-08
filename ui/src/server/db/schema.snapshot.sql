@@ -413,7 +413,8 @@ CREATE TABLE public.channels (
     archived_at timestamp with time zone,
     kind text DEFAULT 'channel'::text NOT NULL,
     dm_key text,
-    task_id uuid
+    task_id uuid,
+    agent_initiative boolean DEFAULT true NOT NULL
 );
 CREATE TABLE public.chat_approvals (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -507,7 +508,10 @@ CREATE TABLE public.decide_shadow (
     model text,
     latency_ms integer,
     agreed boolean,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    tokens_in integer,
+    tokens_out integer,
+    fanned integer
 );
 CREATE TABLE public.fitness_transcripts (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

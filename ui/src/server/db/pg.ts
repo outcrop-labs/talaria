@@ -3618,6 +3618,33 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now()
    )`,
   `create index if not exists decide_shadow_site_idx on decide_shadow(site, created_at desc)`,
+  // AGENT INITIATIVE, per room. An agent in a channel speaks when @mentioned;
+  // with the decision port's `channel-speech` site switched on it may also
+  // speak when a judgment says the message is for it. That global switch is
+  // the deliberate act, and this column is the per-room escape hatch — a
+  // room where unprompted agent speech is wrong (#announcements, a customer
+  // channel) opts out without turning the capability off everywhere.
+  //
+  // DEFAULT TRUE, and the asymmetry is why: the site switch is off on every
+  // install, so nothing changes until somebody turns it on with the warning
+  // in front of them. Defaulting this to false as well would mean a second,
+  // invisible step before the feature a person just enabled does anything.
+  `alter table channels add column if not exists agent_initiative boolean not null default true`,
+  // WHAT A DECISION COSTS, per judgment. These calls do not go through the
+  // metered relay — a decision is not a conversation, and routing one through
+  // would put guard passes and persona accounting on a yes/no — so they never
+  // reach `usage_events` and the port's cost was invisible. The provider
+  // reports billable tokens on the reply; this is where they land.
+  //
+  // NULL means NOT REPORTED, never zero: a classifier sidecar reports no usage
+  // at all, and a zero there would make the site look free.
+  //
+  // `fanned` is how many judgments the one billed request answered, because a
+  // fan-out's usage rides every answer it produced — splitting it per question
+  // would invent a number, so the row carries the divisor instead.
+  `alter table decide_shadow add column if not exists tokens_in integer`,
+  `alter table decide_shadow add column if not exists tokens_out integer`,
+  `alter table decide_shadow add column if not exists fanned integer`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

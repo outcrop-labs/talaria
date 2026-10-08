@@ -642,20 +642,49 @@ async fn rerank_dispatch(
                 );
             }
             let answers = talaria_decide::decide(state, http, &ask).await?;
-            Some(
-                answers
-                    .iter()
-                    .filter_map(|(id, j)| {
-                        Some(Scored {
-                            index: id.parse::<i64>().ok()?,
-                            // The position over the levels, normalized to 0..=1
-                            // so it sits on the same axis as a cross-encoder's
-                            // score and `align` needs no special case.
-                            score: j.answer.position()? / (DECIDE_LEVELS.len() - 1) as f64,
-                        })
+            let scored: Vec<Scored> = answers
+                .iter()
+                .filter_map(|(id, j)| {
+                    Some(Scored {
+                        index: id.parse::<i64>().ok()?,
+                        // The position over the levels, normalized to 0..=1
+                        // so it sits on the same axis as a cross-encoder's
+                        // score and `align` needs no special case.
+                        score: j.answer.position()? / (DECIDE_LEVELS.len() - 1) as f64,
                     })
-                    .collect(),
-            )
+                })
+                .collect();
+            // THE MEASUREMENT THIS SITE WAS MISSING. It is listed in the
+            // decision port's census, so the panel offers it a row — and it
+            // recorded nothing, which meant that row said "no comparisons
+            // recorded yet" for ever and read as a bug rather than as a
+            // choice. The question worth asking of a reranker is the same one
+            // asked of the brief's order: did it change what comes FIRST?
+            // Vector order is the baseline because that is what search
+            // returns with reranking off, and it is also the fallback.
+            if let (Some(before), Some(after)) = (
+                (0..texts.len()).next(),
+                scored
+                    .iter()
+                    .max_by(|a, b| a.score.total_cmp(&b.score))
+                    .map(|s| s.index),
+            ) {
+                let before = before as i64;
+                talaria_decide::shadow::record_derived(
+                    &state.pg,
+                    talaria_decide::shadow::Derived {
+                        site: "rerank",
+                        subject_ref: None,
+                        baseline: &before.to_string(),
+                        port_answer: &after.to_string(),
+                        agreed: before == after,
+                        provider: "decide",
+                        latency_ms: answers.values().next().map(|j| j.latency_ms),
+                    },
+                )
+                .await;
+            }
+            Some(scored)
         }
         "openrouter" => {
             let key = match &cfg.key_sealed {

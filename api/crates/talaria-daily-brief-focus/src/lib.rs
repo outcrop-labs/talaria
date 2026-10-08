@@ -746,6 +746,129 @@ pub fn sort_items(items: Vec<RawFocusItem>, now_ms: i64) -> Vec<RawFocusItem> {
     sorted
 }
 
+/// `sort_items`, with the within-bucket tiebreak ASKED instead of assumed.
+///
+/// The deterministic sort runs first and is both the baseline and the
+/// fallback, so with the port off — or the site switched off, which is the
+/// default — this returns byte-for-byte what `sort_items` returns.
+///
+/// WHAT MOVES AND WHAT DOES NOT. Buckets never move: failed work outranks a
+/// waiting message because those are different CATEGORIES, not different
+/// intensities, and no confidence makes it right to drop a failed deploy below
+/// an unread mention. Inside a bucket, the `(due-ness, priority, age)`
+/// tiebreak is replaced by judged urgency — which is where that comparator was
+/// weakest, since "due in six days, high priority, filed Tuesday" versus "due
+/// in eight days, urgent, filed this morning" was decided by field order
+/// rather than by anything about the work.
+///
+/// A bucket where ANY item lacks a usable judgment keeps its whole
+/// deterministic order. Half-judged is ordered by neither policy and would
+/// read as a bug in whichever one the reader expected.
+pub async fn sort_items_judged(
+    state: &talaria_state::AppState,
+    items: Vec<RawFocusItem>,
+    now_ms: i64,
+) -> Vec<RawFocusItem> {
+    let sorted = sort_items(items, now_ms);
+    let candidates: Vec<talaria_decide::focus::Candidate> = sorted
+        .iter()
+        .map(|i| talaria_decide::focus::Candidate {
+            key: i.key.clone(),
+            state: json!({
+                "key": i.key,
+                "asks": i.question,
+                "suggested": i.recommendation,
+                "state": i.status_label,
+                // Empty-as-empty rather than omitted: "no due date" is a fact
+                // the judgment turns on, and an absent key reads as unknown.
+                "due": i.due_at.clone().unwrap_or_default(),
+                "stated_priority": i.metadata_priority.clone().unwrap_or_default(),
+                "evidence": i.evidence.iter().map(Value::from).collect::<Vec<_>>(),
+            }),
+        })
+        .collect();
+    let http = talaria_retrieval_http::real_http();
+    let ranking = talaria_decide::focus::rank(state, &http, &as_iso(now_ms), &candidates).await;
+    if ranking.urgency.is_empty() {
+        return sorted;
+    }
+    let order = apply_within_buckets(&sorted, &ranking.urgency);
+
+    // THE MEASUREMENT, and the question it answers is the one worth asking of
+    // an ordering: did the judgment change what the person sees FIRST? A
+    // reorder that only shuffles rows 6 through 9 is not worth a provider
+    // call, and a panel that reported "the order differed" without saying
+    // where would not distinguish the two.
+    //
+    // Recorded whether or not the site acted — with it off this is the whole
+    // point, and with it on it is the audit trail for an order somebody
+    // queries.
+    let before = sorted.first().map(|i| i.key.clone()).unwrap_or_default();
+    let after = order.first().cloned().unwrap_or_default();
+    talaria_decide::shadow::record_derived(
+        &state.pg,
+        talaria_decide::shadow::Derived {
+            site: talaria_decide::focus::SITE,
+            subject_ref: Some(&before),
+            baseline: &before,
+            port_answer: &after,
+            agreed: before == after,
+            provider: "",
+            latency_ms: None,
+        },
+    )
+    .await;
+
+    if !ranking.acts {
+        // Shadow: the comparison is recorded and the deterministic order is
+        // what the brief gets. Nothing above this line can change that.
+        return sorted;
+    }
+    let mut by_key: std::collections::HashMap<String, RawFocusItem> =
+        sorted.into_iter().map(|i| (i.key.clone(), i)).collect();
+    order
+        .into_iter()
+        .filter_map(|k| by_key.remove(&k))
+        .collect()
+}
+
+/// Apply a within-bucket reorder, bucket by bucket, and answer the key order.
+///
+/// Pure and separate from the request for one reason: the property that must
+/// hold is that NO ITEM EVER CROSSES A BUCKET BOUNDARY, and that is worth
+/// pinning with a test rather than trusting a loop to be read correctly. The
+/// output is built by concatenating runs, so the bucket sequence cannot change
+/// even if `reordered` misbehaves.
+fn apply_within_buckets(
+    sorted: &[RawFocusItem],
+    urgency: &std::collections::BTreeMap<String, f64>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(sorted.len());
+    let mut run: Vec<String> = Vec::new();
+    let mut run_bucket: Option<i64> = None;
+    let flush = |run: &mut Vec<String>, out: &mut Vec<String>| {
+        if run.is_empty() {
+            return;
+        }
+        match talaria_decide::focus::reordered(run, urgency) {
+            Some(order) => out.extend(order),
+            // No usable judgment for every item in this run — it keeps its
+            // whole deterministic order.
+            None => out.append(&mut run.clone()),
+        }
+        run.clear();
+    };
+    for item in sorted {
+        if run_bucket != Some(item.bucket) {
+            flush(&mut run, &mut out);
+            run_bucket = Some(item.bucket);
+        }
+        run.push(item.key.clone());
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 /// The evidence list as the jsonb the entries table stores.
 pub fn evidence_value(evidence: &[BriefEvidence]) -> Value {
     Value::Array(evidence.iter().map(Into::into).collect())
@@ -921,5 +1044,97 @@ mod tests {
         let empty = approval_evidence_email(&json!({}));
         assert_eq!(empty[0].text, "(empty)");
         assert_eq!(empty[0].label, "Subject");
+    }
+
+    // ── The judged tiebreak ─────────────────────────────────────────────────
+
+    fn ranked(bucket: i64, key: &str) -> RawFocusItem {
+        RawFocusItem {
+            key: key.into(),
+            source_type: "task".into(),
+            source_id: "s".into(),
+            priority: "ok".into(),
+            status_label: "X".into(),
+            due_at: None,
+            question: "q".into(),
+            recommendation: "r".into(),
+            evidence: vec![],
+            metadata_kind: String::new(),
+            metadata_priority: None,
+            source_href: "/".into(),
+            action_ids: vec![],
+            bucket,
+            created_at_ms: 0,
+            source_fingerprint: "f".into(),
+        }
+    }
+
+    #[test]
+    fn no_item_ever_crosses_a_bucket_boundary_however_urgent_it_is_judged() {
+        // THE ONE PROPERTY THAT MATTERS. Buckets are categories, not
+        // intensities: a failed deploy outranks an unread mention because
+        // somebody decided that, and no confidence makes it right to swap
+        // them. So the most urgent judgment possible on a bucket-5 item must
+        // leave it behind every bucket-0 item.
+        let items = vec![
+            ranked(0, "failed-a"),
+            ranked(0, "failed-b"),
+            ranked(5, "mention"),
+        ];
+        let mut u = std::collections::BTreeMap::new();
+        u.insert("failed-a".to_string(), 0.0);
+        u.insert("failed-b".to_string(), 0.0);
+        u.insert("mention".to_string(), 1.0);
+        let order = apply_within_buckets(&items, &u);
+        assert_eq!(
+            order,
+            vec!["failed-a", "failed-b", "mention"],
+            "a bucket-5 item scored 1.0 must stay below every bucket-0 item"
+        );
+        // Every item is present exactly once — a reorder is a permutation, and
+        // losing or duplicating a row on a page somebody works from is worse
+        // than any ordering mistake.
+        assert_eq!(order.len(), items.len());
+        let mut sorted = order.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), items.len(), "a row was lost or duplicated");
+    }
+
+    #[test]
+    fn within_a_bucket_the_judgment_breaks_the_tie_and_a_gap_in_it_changes_nothing() {
+        let items = vec![ranked(3, "a"), ranked(3, "b"), ranked(3, "c")];
+        let mut u = std::collections::BTreeMap::new();
+        u.insert("a".to_string(), 0.2);
+        u.insert("b".to_string(), 0.9);
+        u.insert("c".to_string(), 0.5);
+        assert_eq!(apply_within_buckets(&items, &u), vec!["b", "c", "a"]);
+
+        // One item without a usable judgment, and the WHOLE bucket keeps its
+        // deterministic order — half-judged is ordered by neither policy.
+        u.remove("c");
+        assert_eq!(apply_within_buckets(&items, &u), vec!["a", "b", "c"]);
+
+        // And no judgments at all is the default every install runs on.
+        let none = std::collections::BTreeMap::new();
+        assert_eq!(apply_within_buckets(&items, &none), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn each_bucket_is_judged_on_its_own_so_one_missing_score_does_not_freeze_the_others() {
+        // Runs are flushed per bucket, so the bucket that has every score is
+        // reordered even while a neighbouring one is not.
+        let items = vec![
+            ranked(1, "p"),
+            ranked(1, "q"),
+            ranked(4, "r"),
+            ranked(4, "s"),
+        ];
+        let mut u = std::collections::BTreeMap::new();
+        u.insert("p".to_string(), 0.1);
+        u.insert("q".to_string(), 0.9);
+        // bucket 4 is missing `s`, so it stays as it is.
+        u.insert("r".to_string(), 0.9);
+        assert_eq!(apply_within_buckets(&items, &u), vec!["q", "p", "r", "s"]);
     }
 }

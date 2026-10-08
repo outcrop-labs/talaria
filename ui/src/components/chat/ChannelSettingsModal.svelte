@@ -4,6 +4,7 @@
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
+  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -18,6 +19,7 @@
     removeChannelAgent,
     removeChannelMember,
     removeChannelTeam,
+    updateChannel,
     type ChannelDetail,
   } from '@/lib/channels.svelte'
   import type { AgentModel } from '@/lib/agents'
@@ -48,6 +50,26 @@
 
   const qc = useQueryClient()
   let error = $state<string | null>(null)
+  // WHETHER AGENTS HERE MAY SPEAK UNADDRESSED. Two gates, both of which have
+  // to be open: this room's switch, and the workspace-wide decision-model site
+  // (Settings → Decision model → Unprompted agent replies), which is off on
+  // every install. This one is on by default so that turning the capability on
+  // is a single deliberate act rather than one switch followed by an invisible
+  // second step — and so a room where it is wrong can opt out without taking
+  // it away from every other room.
+  let savingInitiative = $state(false)
+  const setInitiative = async (on: boolean) => {
+    savingInitiative = true
+    error = null
+    try {
+      await updateChannel(channelId, { agentInitiative: on })
+      await refresh()
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e)
+    } finally {
+      savingInitiative = false
+    }
+  }
   const refresh = () => qc.invalidateQueries({ queryKey: ['channel', channelId] })
   const dirQuery = useTeamsDirectory(() => open)
   const mineQuery = createQuery(() => ({
@@ -164,6 +186,23 @@
         multiple
         placeholder="Select agents"
       />
+      {#if detail.agents.length > 0}
+        <div transition:slide={{ duration: 150 }} class="mt-3">
+          <Checkbox
+            class="gap-2 text-xs text-fg"
+            checked={detail.agentInitiative ?? false}
+            disabled={savingInitiative}
+            onChange={(on) => void setInitiative(on)}
+            label="Let agents answer without being @mentioned"
+          />
+          <p class="mt-1 pl-6 text-[11px] text-muted">
+            When a message here is clearly for one of these agents, it may answer even if nobody
+            named it — at most one agent per message. Needs a decision model configured and the
+            Unprompted agent replies switch on in Settings; until then an agent still only speaks
+            when @mentioned.
+          </p>
+        </div>
+      {/if}
     </section>
 
     {#if error}

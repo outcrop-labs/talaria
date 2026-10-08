@@ -1766,6 +1766,104 @@ const UNSET_SEAM_CENSUS = [
     })
   }
 
+// ── Every wired decision site is in the census ───────────────────────────────
+//
+// `talaria_decide::sites::DECIDE_SITES` is what the admin panel lists, what
+// `gate_of` resolves a switch through, and what `acts_on` reads a floor from.
+// A site that records to the shadow ledger under an id with no census entry is
+// the worst of both: it costs a judgment per call and can never be switched on
+// or tuned, because `gate_of` answers `{ on: false, floor: 1.0 }` for an id it
+// does not know. It also reads as working — the call site falls back exactly as
+// it did before, forever.
+//
+// This is the same class of failure as the nine cross-checks that were all
+// failing unrun: somebody added a thing and did not register it. Cheap to
+// catch, invisible otherwise.
+{
+  const sitesPath = 'api/crates/talaria-decide/src/sites.rs'
+  const sitesSrc = rustSources.get(sitesPath)
+  if (!sitesSrc) {
+    failures.push({
+      id: 'decide-site-census-missing',
+      what: `${sitesPath} is gone — the decision-site census is what makes a wired site switchable`,
+      fix: ['Restore it, or update this rule if the census moved.'],
+      found: [],
+    })
+  } else {
+    const census = new Set()
+    for (const m of sitesSrc.matchAll(/^\s*id:\s*"([a-z0-9-]+)"\s*,/gm)) census.add(m[1])
+
+    // Where every `const NAME: &str = "…"` lives, so a site named through one
+    // resolves. Keyed by file, because `SITE` is declared in more than one
+    // module with DIFFERENT values — a global name→value map would let an
+    // uncensused `SITE` pass because some other module's `SITE` is censused,
+    // which is the rule certifying the thing it exists to catch.
+    const constsByFile = new Map()
+    for (const [path, src] of rustSources) {
+      const m2 = new Map()
+      for (const m of src.matchAll(/const\s+([A-Z_0-9]+)\s*:\s*&(?:'static\s+)?str\s*=\s*"([a-z0-9-]+)"/g)) {
+        m2.set(m[1], m[2])
+      }
+      constsByFile.set(path, m2)
+    }
+    // `a::b::NAME` resolves in the module the path names (a file called
+    // `b.rs`), then in the referring file, then — only if the name is
+    // unambiguous workspace-wide — anywhere.
+    const resolve = (path, qualified) => {
+      const parts = qualified.split('::')
+      const name = parts[parts.length - 1]
+      const modName = parts.length > 1 ? parts[parts.length - 2] : null
+      if (modName) {
+        for (const [p2, m2] of constsByFile) {
+          if (p2.endsWith(`/${modName}.rs`) && m2.has(name)) return m2.get(name)
+        }
+      }
+      const own = constsByFile.get(path)?.get(name)
+      if (own) return own
+      const seen = new Set()
+      for (const m2 of constsByFile.values()) if (m2.has(name)) seen.add(m2.get(name))
+      return seen.size === 1 ? [...seen][0] : null
+    }
+
+    const recorded = []
+    for (const [path, src] of rustSources) {
+      for (const m of src.matchAll(/\bsite:\s*(?:"([a-z0-9-]+)"|((?:[a-z_0-9]+::)*[A-Z_0-9]+))\s*,/g)) {
+        const id = m[1] ?? resolve(path, m[2])
+        // An identifier we cannot resolve is not evidence of a missing entry —
+        // a rule that fires on correct code teaches people to route around it.
+        if (!id) continue
+        recorded.push({ id, path, line: lineOf(src, m.index) })
+      }
+    }
+    notes.push(`decide sites: ${census.size} in the census, ${new Set(recorded.map((r) => r.id)).size} recording`)
+    const found = recorded
+      .filter((r) => !census.has(r.id) && r.path !== sitesPath)
+      .map((r) => ({ path: r.path, line: r.line, text: `site: "${r.id}" — not in DECIDE_SITES` }))
+    if (found.length) {
+      failures.push({
+        id: 'decide-site-not-in-census',
+        what: 'a decision-port call site records under an id the site census does not declare — it can never be switched on or tuned',
+        fix: [
+          'Add an entry to DECIDE_SITES in api/crates/talaria-decide/src/sites.rs, with:',
+          '',
+          '  id            the same string the call site records under',
+          '  acts          what changes when it acts, in one sentence an operator reads',
+          '  default_on    false unless the site already acted before the census existed',
+          '  reads         FLOOR_LEAN for a one-directional question (act on YES only),',
+          '                FLOOR_CERTAINTY for a two-sided one, and for every choice/score',
+          '  default_floor and floor_why — the number AND the cost asymmetry that chose it',
+          '',
+          'WHY THIS IS A GATE: `gate_of` answers { on: false, floor: 1.0 } for an id it does',
+          'not know, so an uncensused site costs a judgment per call, records rows nothing',
+          'reads, and can never be switched on. Nothing fails; the call site falls back',
+          'exactly as it did before, forever.',
+        ],
+        found,
+      })
+    }
+  }
+}
+
   for (const c of UNSET_SEAM_CENSUS) {
     const seam = seams.find((s) => s.name === c.name && s.path === c.path)
     if (!seam) {
