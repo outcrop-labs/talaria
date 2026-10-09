@@ -102,6 +102,30 @@ Three layers, and the split exists because an earlier version collapsed them and
 | **Wire shape** | does the api's JSON decode into what the screens read — camelCase fields, admin-only nulls, absent-vs-null, unknown fields tolerated | plain decode tests against payloads transcribed from the api's structs |
 | **Real socket** | does the client speak HTTP — url building, header writing, multi-attribute `Set-Cookie` parsing, a chunked stream read as it arrives | a JDK `HttpServer` on an ephemeral port, driven with Ktor's CIO engine |
 
+**A fourth layer, opt-in: a real instance.** `LiveInstanceTest` runs the real client against a real
+Talaria, because the three layers above can all agree with each other and still be wrong together —
+the `/api/home` models were transcribed from the api's Rust structs by hand, since the generated
+reference prints `…` for that route, and only a live api can confirm the transcription. It is gated
+on the environment and **skips** (reported as skipped, not passed) when unset, because a test that
+needs a particular instance to exist cannot be a test everyone runs:
+
+```sh
+TALARIA_LIVE_ORIGIN=http://your-instance:6302 ./gradlew :shared:jvmTest
+# plus, for the routes behind a session:
+TALARIA_LIVE_USERNAME=… TALARIA_LIVE_PASSWORD=… ./gradlew :shared:jvmTest --rerun-tasks
+```
+
+`TALARIA_LIVE_ORIGIN` is a tracked Gradle input so exporting it re-runs the task; the credentials
+are passed through **untracked**, because an input becomes part of the build cache key and a
+password does not belong in build metadata. Changing only the credentials therefore needs
+`--rerun-tasks`, which is the right way round.
+
+It is **read-only by design**. The instance it points at is somebody's real workspace with a live
+agent fleet in it: nothing posts a message, moves a ticket or clears a gate, because an integration
+test must not appear in a colleague's unread count. Assertions are about shape and never content,
+for the same reason — a test that printed a real channel's name would leak a workspace into a CI
+log.
+
 **The UI tests fake the ports, and that is the point.** Driving a real client from a UI test means
 `waitUntil` is racing a coroutine on another dispatcher, and a virtual test clock can burn its whole
 timeout before that coroutine is ever scheduled — which shows up exactly as it always does, as tests

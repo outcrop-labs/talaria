@@ -92,3 +92,23 @@ kotlin {
         }
     }
 }
+
+// The live-instance tests (LiveInstanceTest) read where to look, and who to be,
+// from the environment — and skip when it is absent, so a fresh clone and a CI
+// runner stay green.
+//
+// ORIGIN is a tracked input so that setting or changing it re-runs the task;
+// otherwise Gradle would call it up to date and a developer who just exported it
+// would see nothing happen. The CREDENTIALS are deliberately passed through
+// WITHOUT being tracked: an input becomes part of the build cache key, and a
+// password does not belong in build metadata. The cost is that changing only the
+// credentials needs `--rerun-tasks`, which is the right way round.
+tasks.withType<Test>().configureEach {
+    System.getenv("TALARIA_LIVE_ORIGIN")?.let {
+        environment("TALARIA_LIVE_ORIGIN", it)
+        inputs.property("talariaLiveOrigin", it)
+    }
+    listOf("TALARIA_LIVE_USERNAME", "TALARIA_LIVE_PASSWORD").forEach { name ->
+        System.getenv(name)?.let { environment(name, it) }
+    }
+}
