@@ -40,7 +40,11 @@ kotlin {
     // Kotlin/Native needs Xcode's linker. `kotlin.native.ignoreDisabledTargets`
     // in gradle.properties is what lets a Linux box configure this build
     // instead of failing it. CI's macos-latest runner compiles these.
-    listOf(iosArm64(), iosSimulatorArm64(), iosX64()).forEach { target ->
+    // iosArm64 (device) + iosSimulatorArm64 (Apple-silicon simulator). NOT
+    // iosX64: Compose Multiplatform 1.12 no longer publishes an Intel-simulator
+    // variant, so declaring it fails resolution for every source set that
+    // depends on Compose — "Unresolved platforms: [iosX64]".
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
         target.binaries.framework {
             baseName = "Shared"
             isStatic = true
@@ -65,6 +69,19 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.ktor.client.mock)
             implementation(libs.kotlinx.coroutines.test)
+            // Drives real composables headlessly — see UiHarness.kt.
+            implementation(libs.compose.ui.test)
+        }
+        jvmTest.dependencies {
+            // The JVM runner behind runComposeUiTest...
+            implementation(libs.compose.ui.test.junit4)
+            // ...and the Skia NATIVE library it renders with. A plain `jvm()`
+            // target does not pull skiko's platform binary the way a Compose
+            // Desktop application does, so without this every UI test dies in
+            // `LibraryLoadException: Cannot find libskiko-linux-x64.so`.
+            // `currentOs` resolves the host's variant, which is what keeps this
+            // working on CI's macOS runner as well as a Linux devbox.
+            implementation(compose.desktop.currentOs)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)

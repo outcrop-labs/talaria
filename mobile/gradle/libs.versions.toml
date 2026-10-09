@@ -28,6 +28,11 @@ compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.re
 compose-foundation = { module = "org.jetbrains.compose.foundation:foundation", version.ref = "compose-multiplatform" }
 compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "compose-material3" }
 compose-ui = { module = "org.jetbrains.compose.ui:ui", version.ref = "compose-multiplatform" }
+# The headless UI driver. `runComposeUiTest` composes the REAL tree with Skia's
+# software renderer — no display, no emulator, no screenshots — so UI assertions
+# run in the same `:shared:jvmTest` gate as the logic ones.
+compose-ui-test = { module = "org.jetbrains.compose.ui:ui-test", version.ref = "compose-multiplatform" }
+compose-ui-test-junit4 = { module = "org.jetbrains.compose.ui:ui-test-junit4", version.ref = "compose-multiplatform" }
 
 # The wire. Ktor is why this app is Kotlin: three SSE streams are its backbone
 # (docs/MOBILE.md), and Ktor streams natively on OkHttp and NSURLSession both.

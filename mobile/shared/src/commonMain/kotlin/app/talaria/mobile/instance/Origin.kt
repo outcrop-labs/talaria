@@ -64,7 +64,14 @@ fun normalizeOrigin(input: String): OriginResult {
     if (!url.user.isNullOrEmpty() || !url.password.isNullOrEmpty()) {
         return OriginResult.Invalid("URLs with embedded credentials are not accepted")
     }
-    if (url.host.isBlank() || !HOST.matches(url.host)) {
+    // Host case is folded, and this is the third place Ktor and Rust's `url`
+    // crate disagree. A hostname is case-INSENSITIVE and `Url::parse`
+    // lowercases it; Ktor preserves whatever was typed. Left alone,
+    // TALARIA.example.com and talaria.example.com are two registry keys for one
+    // instance — which is the exact failure this contract exists to prevent,
+    // and a UI test caught it.
+    val host = url.host.lowercase()
+    if (host.isBlank() || !HOST.matches(host)) {
         return OriginResult.Invalid("the URL has no host")
     }
 
@@ -72,7 +79,7 @@ fun normalizeOrigin(input: String): OriginResult {
     // dropping it is what makes https://x and https://x:443 the same instance.
     val port = url.specifiedPort.takeIf { it > 0 && it != url.protocol.defaultPort }
     return OriginResult.Ok(buildString {
-        append(scheme).append("://").append(url.host)
+        append(scheme).append("://").append(host)
         if (port != null) append(':').append(port)
     })
 }

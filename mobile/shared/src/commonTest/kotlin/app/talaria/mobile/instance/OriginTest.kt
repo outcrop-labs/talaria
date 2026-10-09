@@ -76,6 +76,15 @@ class OriginTest {
         assertEquals("example.com", hostLabel("https://example.com"))
     }
 
+    /** A hostname is case-insensitive, and Rust's `url` crate folds it. If this
+     *  ever regresses, one instance gets two identities. */
+    @Test
+    fun host_case_is_folded() {
+        assertEquals("https://talaria.example.com", ok("TALARIA.example.com"))
+        assertEquals("https://talaria.example.com", ok("Talaria.Example.Com"))
+        assertEquals("http://talaria.example.com:5302", ok("HTTP://TALARIA.example.com:5302"))
+    }
+
     @Test
     fun normalizing_is_idempotent() {
         val once = ok("TALARIA.example.com/path")

@@ -26,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import app.talaria.mobile.instance.OriginResult
@@ -49,6 +50,17 @@ import kotlinx.coroutines.launch
  * the doc calls gap 1, and building a login against the 7-day cookie first
  * would mean building it twice.
  */
+/** Stable handles for the headless UI driver. Behaviour tests address these
+ *  rather than visible copy, so rewording a label is not a test failure. */
+object Tags {
+    const val INSTANCE_URL = "instance-url"
+    const val ADD_INSTANCE = "add-instance"
+    const val ADD_ERROR = "add-error"
+    const val INSTANCE_LIST = "instance-list"
+    const val EMPTY = "instances-empty"
+    const val INSTANCE_ROW = "instance-row"
+}
+
 private sealed interface AddState {
     data object Idle : AddState
 
@@ -114,7 +126,10 @@ fun App(client: HttpClient = remember { talariaHttpClient() }) {
                     label = { Text("instance url") },
                     placeholder = { Text("talaria.example.com") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    // Test tags, not text, are what the headless driver finds:
+                    // a label someone rewords should not break a test about
+                    // behaviour (mobile/shared/src/commonTest/.../UiHarness.kt).
+                    modifier = Modifier.fillMaxWidth().testTag(Tags.INSTANCE_URL),
                 )
 
                 Row(
@@ -124,6 +139,7 @@ fun App(client: HttpClient = remember { talariaHttpClient() }) {
                     Button(
                         onClick = ::add,
                         enabled = input.isNotBlank() && state !is AddState.Probing,
+                        modifier = Modifier.testTag(Tags.ADD_INSTANCE),
                     ) { Text("Add instance") }
                     if (state is AddState.Probing) {
                         CircularProgressIndicator(modifier = Modifier.height(20.dp))
@@ -133,7 +149,12 @@ fun App(client: HttpClient = remember { talariaHttpClient() }) {
                 (state as? AddState.Rejected)?.let {
                     // Failure is a sentence someone can act on — orange as an
                     // outline-and-label signal, never a decorative fill.
-                    Text(it.reason, color = Mercury.Dark.danger, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        it.reason,
+                        color = Mercury.Dark.danger,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag(Tags.ADD_ERROR),
+                    )
                 }
 
                 Spacer(Modifier.height(4.dp))
@@ -143,9 +164,13 @@ fun App(client: HttpClient = remember { talariaHttpClient() }) {
                         "No instances yet.",
                         color = Mercury.Dark.inkDim,
                         style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.testTag(Tags.EMPTY),
                     )
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.testTag(Tags.INSTANCE_LIST),
+                    ) {
                         items(instances) { found -> InstanceRow(found) }
                     }
                 }
@@ -156,7 +181,7 @@ fun App(client: HttpClient = remember { talariaHttpClient() }) {
 
 @Composable
 private fun InstanceRow(found: ProbeResult.Found) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(modifier = Modifier.fillMaxWidth().testTag(Tags.INSTANCE_ROW)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(found.label, color = Mercury.Dark.readout, style = MaterialTheme.typography.titleSmall)
             Text(
