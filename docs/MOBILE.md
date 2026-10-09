@@ -115,6 +115,15 @@ TALARIA_LIVE_ORIGIN=http://your-instance:6302 ./gradlew :shared:jvmTest
 TALARIA_LIVE_USERNAME=… TALARIA_LIVE_PASSWORD=… ./gradlew :shared:jvmTest --rerun-tasks
 ```
 
+Provision the credentials with
+[`mobile/tools/live-test-account.sh`](../mobile/tools/live-test-account.sh) rather than by hand. It
+creates a dedicated least-privilege account (`--admin` promotes it, which is the only way
+`/api/home`'s admin-only `alerts` and `costToday` get exercised — they are null for a member by
+design) and writes the credentials to a 0600 env file. Neither secret is ever printed: your admin
+password is read from a prompt and never stored, and the test account's password is *generated*
+rather than asked for, so it reaches no shell history, no terminal transcript and no agent's
+context. The file is the only copy; `set -a; . "$file"; set +a` before the run.
+
 `TALARIA_LIVE_ORIGIN` is a tracked Gradle input so exporting it re-runs the task; the credentials
 are passed through **untracked**, because an input becomes part of the build cache key and a
 password does not belong in build metadata. Changing only the credentials therefore needs
