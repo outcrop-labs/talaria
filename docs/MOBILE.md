@@ -225,6 +225,27 @@ gigabytes, and most boxes never touch mobile. Installing into the shared layer m
 serves every box created afterwards. It is rootless (the box runs as an unprivileged `dev`, and
 nothing here needs apt) and idempotent.
 
+### The box builds, the host installs
+
+A devbox has no USB, so `adb` inside it cannot see a phone — the same split
+[`docs/DESKTOP.md`](./DESKTOP.md) describes for the GUI, for the same reason. The APK the box
+builds is host-visible, so the host only needs `adb`:
+
+```sh
+# host, once (Fedora)
+sudo dnf install android-tools
+
+# in the box: build
+bun talaria box enter mobile bash -lc 'cd /work/talaria/mobile && ./gradlew :androidApp:assembleDebug'
+
+# on the host: install the artifact the box just built
+adb install -r ~/Development/devboxes/<box>/talaria/mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
+```
+
+`bun run mobile` (`:androidApp:installDebug`) is the one-step version of that pair, and it only
+works where `adb` can see the device — on a host that has the toolchain, or in a box pointed at an
+`adb connect` target over TCP. From a devbox with a USB-attached phone, use the two steps above.
+
 It pins no version numbers — the JDK comes from Adoptium's "latest 21" redirect, Gradle from its own
 current-version endpoint, and the platform from whatever the SDK reports as newest and stable. That
 follows the house rule about catalogs: no maintained lists, fetch live. Three things it knows that
