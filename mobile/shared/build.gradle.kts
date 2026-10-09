@@ -82,6 +82,7 @@ kotlin {
             // `currentOs` resolves the host's variant, which is what keeps this
             // working on CI's macOS runner as well as a Linux devbox.
             implementation(compose.desktop.currentOs)
+            implementation(libs.ktor.client.cio)
         }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
