@@ -14,8 +14,14 @@ import app.talaria.mobile.net.HomeResult
 import app.talaria.mobile.net.HomeSummary
 import app.talaria.mobile.net.OrgGlance
 import app.talaria.mobile.net.Ports
+import app.talaria.mobile.net.Channel
+import app.talaria.mobile.net.ChannelPeer
+import app.talaria.mobile.net.CommsResult
+import app.talaria.mobile.net.Message
 import app.talaria.mobile.net.QueueBucket
+import app.talaria.mobile.net.UserEvent
 import app.talaria.mobile.net.WorkItem
+import kotlinx.coroutines.flow.MutableSharedFlow
 
 /**
  * The headless UI driver.
@@ -77,6 +83,31 @@ class FakePorts {
      *  "did the right account's session ride the request?" */
     val homeCredentials = mutableListOf<Credential>()
 
+    var onChannels: suspend (Instance, Credential) -> CommsResult<List<Channel>> = { _, _ ->
+        CommsResult.Ok(sampleChannels())
+    }
+
+    var onMessages: suspend (Instance, Credential, String) -> CommsResult<List<Message>> = { _, _, _ ->
+        CommsResult.Ok(sampleMessages())
+    }
+
+    var onPost: suspend (Instance, Credential, String, String) -> CommsResult<Message> = { _, _, _, content ->
+        CommsResult.Ok(
+            Message(id = "posted-${'$'}{posted.size}", seq = 99, authorType = "user", author = "Jon", content = content),
+        )
+    }
+
+    var onMarkRead: suspend (Instance, Credential, String) -> CommsResult<Unit> = { _, _, _ -> CommsResult.Ok(Unit) }
+
+    /** Channels opened, messages sent, and rooms marked read, in order. */
+    val messagesRead = mutableListOf<String>()
+    val posted = mutableListOf<Pair<String, String>>()
+    val markedRead = mutableListOf<String>()
+
+    /** The firehose a test drives by hand. `emit` on this is how a test says
+     *  "the server just announced something changed". */
+    val eventBus = MutableSharedFlow<UserEvent>(extraBufferCapacity = 16)
+
     fun ports(): Ports =
         Ports(
             probe = { origin ->
@@ -89,6 +120,20 @@ class FakePorts {
                 homeCredentials += credential
                 onHome(instance, credential)
             },
+            channels = { instance, credential -> onChannels(instance, credential) },
+            messages = { instance, credential, channelId ->
+                messagesRead += channelId
+                onMessages(instance, credential, channelId)
+            },
+            post = { instance, credential, channelId, content ->
+                posted += channelId to content
+                onPost(instance, credential, channelId, content)
+            },
+            markRead = { instance, credential, channelId ->
+                markedRead += channelId
+                onMarkRead(instance, credential, channelId)
+            },
+            events = { _, _ -> eventBus },
         )
 
     companion object {
@@ -169,4 +214,41 @@ fun sampleHome(
             ),
         unread = unread,
         boards = boards,
+    )
+
+/** A room list shaped like a real one: a channel with something new in it, a
+ *  quiet channel, and a DM with an agent. */
+fun sampleChannels(): List<Channel> =
+    listOf(
+        Channel(id = "c-quiet", name = "general", kind = "channel", unreadCount = 0, topic = "everything else"),
+        Channel(id = "c-busy", name = "platform", kind = "channel", unreadCount = 3, topic = "the api and the app"),
+        Channel(
+            id = "c-dm",
+            name = "dm-7f3a",
+            kind = "dm",
+            unreadCount = 1,
+            peer = ChannelPeer(userId = "u-muse", name = "Muse"),
+            agents = listOf("Muse"),
+        ),
+    )
+
+fun sampleMessages(): List<Message> =
+    listOf(
+        Message(id = "m1", seq = 1, authorType = "user", author = "Jon", content = "Did the gate clear?"),
+        Message(
+            id = "m2",
+            seq = 2,
+            authorType = "agent",
+            author = "Muse",
+            content = "Not yet — the judge flagged one claim.",
+        ),
+        // A thread reply, which belongs under its root and not in the flow.
+        Message(
+            id = "m3",
+            seq = 3,
+            authorType = "user",
+            author = "Sam",
+            content = "which claim?",
+            threadRootId = "m2",
+        ),
     )

@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import app.talaria.mobile.AppState
 import app.talaria.mobile.Route
+import app.talaria.mobile.SignedTab
 import app.talaria.mobile.Tags
 import app.talaria.mobile.account.Account
 import app.talaria.mobile.mercury.Mercury
@@ -117,6 +118,33 @@ fun SignedScreen(
                         onClick = { state.signOut(account) },
                         modifier = Modifier.testTag(Tags.SIGN_OUT),
                     ) { Text("Sign out", color = Mercury.Dark.danger) }
+                }
+            }
+
+            // The tab strip. Two surfaces for now — decide, and talk — which
+            // are the two things docs/MOBILE.md says a controller is for.
+            if (instance != null && state.credential(account) != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    SignedTab.entries.forEach { tab ->
+                        TextButton(
+                            onClick = { state.show(tab) },
+                            modifier = Modifier.testTag(tabTag(tab)),
+                        ) {
+                            Text(
+                                tab.name,
+                                color = if (state.tab == tab) Mercury.accent else Mercury.Dark.muted,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (state.tab == SignedTab.Comms && instance != null) {
+                val credential = state.credential(account)
+                if (credential != null) {
+                    CommsScreen(state, account, instance, credential)
+                    return@Column
                 }
             }
 
@@ -214,6 +242,10 @@ private fun ItemRow(item: WorkItem) {
         }
     }
 }
+
+/** One tag per tab, so a test names the surface it is switching to rather than
+ *  its position in a row. */
+fun tabTag(tab: SignedTab) = "tab-${tab.name.lowercase()}"
 
 const val TAG_NEEDS_YOU = "needs-you"
 const val TAG_REVIEW = "queue-review"

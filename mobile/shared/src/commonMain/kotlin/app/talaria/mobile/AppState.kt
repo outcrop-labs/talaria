@@ -27,6 +27,9 @@ import app.talaria.mobile.net.Ports
  * library would add a dependency, a backstack abstraction and a testing shim to
  * express `when (route)`.
  */
+/** The signed-in surfaces. Two for now; the doc's phases add the rest. */
+enum class SignedTab { Home, Comms }
+
 sealed interface Route {
     /** The launcher: add an instance, or pick an account to open. */
     data object Launcher : Route
@@ -57,8 +60,28 @@ class AppState(
         if (only != null && store.credential(only) != null) route = Route.Signed(only)
     }
 
+    /** Which signed-in surface is showing. */
+    var tab: SignedTab by mutableStateOf(SignedTab.Home)
+        private set
+
+    /** The channel being read, if any. Null is the channel list. */
+    var openChannelId: String? by mutableStateOf(null)
+        private set
+
     fun go(to: Route) {
         route = to
+        // Leaving an account closes whatever was open inside it: arriving back
+        // later on a channel you did not choose is disorienting.
+        openChannelId = null
+    }
+
+    fun show(tab: SignedTab) {
+        this.tab = tab
+        if (tab != SignedTab.Comms) openChannelId = null
+    }
+
+    fun openChannel(id: String?) {
+        openChannelId = id
     }
 
     fun instanceOf(account: Account): Instance? = instances.firstOrNull { it.id == account.instanceId }

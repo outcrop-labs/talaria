@@ -9,6 +9,7 @@ import app.talaria.mobile.account.signIn
 import app.talaria.mobile.instance.ProbeResult
 import app.talaria.mobile.instance.probeInstance
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.flow.Flow
 
 /**
  * Everything the screens can ask the outside world for, as suspend functions.
@@ -41,6 +42,19 @@ data class Ports(
     val signIn: suspend (instance: Instance, username: String, password: String) -> SignInResult,
     val me: suspend (instance: Instance, credential: Credential) -> MeResult,
     val home: suspend (instance: Instance, credential: Credential) -> HomeResult,
+    val channels: suspend (instance: Instance, credential: Credential) -> CommsResult<List<Channel>>,
+    val messages: suspend (instance: Instance, credential: Credential, channelId: String) -> CommsResult<List<Message>>,
+    val post: suspend (
+        instance: Instance,
+        credential: Credential,
+        channelId: String,
+        content: String,
+    ) -> CommsResult<Message>,
+    val markRead: suspend (instance: Instance, credential: Credential, channelId: String) -> CommsResult<Unit>,
+    /** The live firehose. A FUNCTION returning a cold Flow, not a Flow: each
+     *  collector opens its own stream, and an account that is not being looked
+     *  at holds no connection open. */
+    val events: (instance: Instance, credential: Credential) -> Flow<UserEvent>,
 )
 
 /** The real ports, over HTTP. */
@@ -50,4 +64,11 @@ fun httpPorts(client: HttpClient): Ports =
         signIn = { instance, username, password -> signIn(client, instance, username, password) },
         me = { instance, credential -> readMe(client, instance, credential) },
         home = { instance, credential -> readHome(client, instance, credential) },
+        channels = { instance, credential -> readChannels(client, instance, credential) },
+        messages = { instance, credential, channelId -> readMessages(client, instance, credential, channelId) },
+        post = { instance, credential, channelId, content ->
+            postMessage(client, instance, credential, channelId, content)
+        },
+        markRead = { instance, credential, channelId -> markRead(client, instance, credential, channelId) },
+        events = { instance, credential -> userEvents(client, instance, credential) },
     )

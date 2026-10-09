@@ -1,9 +1,12 @@
 # Talaria Mobile
 
-**Status: phase 1 begun.** `mobile/` holds a building Android app and a passing shared test suite —
-the instance beacon probe and Mercury's tokens. No account store, no session, no iOS Xcode project
-yet. This page is the scope of record: what the app is, what it deliberately is not, the two api
-gaps it opens, and the stack it rides.
+**Status: phases 1–2 building, 3 read-only.** `mobile/` holds a working Android app: add an
+instance by URL, sign in, see what is waiting on you, and read and post in channels and DMs with
+the room updating itself off the realtime firehose. 101 tests, of which 34 drive the real
+composables headlessly and 9 run over a real socket. Not yet: assistant chat, the review action
+(the queue is read-only), fleet control, and the `iosApp/` Xcode project. This page is the scope of
+record: what the app is, what it deliberately is not, the two api gaps it opens, and the stack it
+rides.
 
 The mobile app is a **controller**, not the product on a smaller screen. Talaria's own gap
 analysis named the shape years before the app
@@ -88,6 +91,29 @@ build, which is why the scope is this wide.
 | **Run watching** | Read-only stream of what an agent is doing right now. | `GET /api/tasks/{id}/work-session`, `/api/activity` |
 | **Cost glance** | What the workforce spent today, per agent. Needs the `view:/observability` grant. | `GET /api/cost` |
 | **Plan + knowledge reading** | Read a living plan or a knowledge doc when a decision needs context the queue doesn't carry. **Reading only.** | `GET /api/conversations/{id}/doc`, the knowledge group |
+
+### How it is tested
+
+Three layers, and the split exists because an earlier version collapsed them and was flaky:
+
+| Layer | What it answers | How |
+| :--- | :--- | :--- |
+| **Headless UI** | behaviour — does a bad URL show a reason, does an expired session drop the account, does each account's own credential ride its own request | `runComposeUiTest` composes the real tree against Skia's software renderer. No display, no emulator, no screenshots. |
+| **Wire shape** | does the api's JSON decode into what the screens read — camelCase fields, admin-only nulls, absent-vs-null, unknown fields tolerated | plain decode tests against payloads transcribed from the api's structs |
+| **Real socket** | does the client speak HTTP — url building, header writing, multi-attribute `Set-Cookie` parsing, a chunked stream read as it arrives | a JDK `HttpServer` on an ephemeral port, driven with Ktor's CIO engine |
+
+**The UI tests fake the ports, and that is the point.** Driving a real client from a UI test means
+`waitUntil` is racing a coroutine on another dispatcher, and a virtual test clock can burn its whole
+timeout before that coroutine is ever scheduled — which shows up exactly as it always does, as tests
+that pass and fail on alternate runs for no visible reason. So screens depend on a `Ports` of
+suspend functions ([`net/Ports.kt`](../mobile/shared/src/commonMain/kotlin/app/talaria/mobile/net/Ports.kt));
+UI tests hand in functions that answer immediately, and the wire is answered where it lives. No test
+waits on another's scheduler. The second payoff is that the UI layer imports no Ktor at all, so
+swapping the session cookie for a device credential touches one file and no composable.
+
+Tests address **test tags, not visible copy**, so rewording a label is a copy change rather than a
+test failure. The one exception worth knowing: a clickable `Card` merges its descendants' semantics,
+so a tag inside one needs `useUnmergedTree = true` to be addressable.
 
 ### Sequence
 
