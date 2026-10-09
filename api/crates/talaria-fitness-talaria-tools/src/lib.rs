@@ -510,7 +510,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "create_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -564,7 +564,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "update_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Edit a document you created (or were granted Editor access to). markdown replaces a markdown doc's body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.",
+            description: "REPLACE a document's whole body. For changing part of one, use edit_document instead — this tool rewrites everything, so any section you do not re-send is gone and any edit a person made meanwhile is overwritten. Use it to replace a document wholesale, or to write a spreadsheet grid. markdown replaces a markdown doc's body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -575,6 +575,45 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "html": str_schema("New full HTML body — web pages only"),
                 },
                 "required": ["documentId"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "edit_document",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Change PART of a markdown document or web page, without resending the rest of it. Prefer this over update_document for every change to an existing document: it is cheaper, it cannot silently drop the sections you did not mention, and it does not overwrite edits a person made while you were working. Read the document first with get_document so your anchors are exact. Two forms, one per edit: oldString/newString replaces exact text (oldString must appear EXACTLY ONCE — include surrounding lines to make it unique; omit newString to delete), or section/markdown rewrites the body under a heading, keeping the heading line. Edits apply in order and a failure anywhere applies none of them, so the document is never left half-edited. Spreadsheets are not editable this way — their body is a grid; use update_document with rows.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "documentId": str_schema("Document id (from create_document, create_page, or list_documents)"),
+                    "edits": json!({
+                        "type": "array",
+                        "description": "The edits, applied in order. Each one is EITHER oldString+newString or section+markdown.",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "oldString": { "type": "string", "description": "Exact existing text to replace. Must occur EXACTLY ONCE in the document — include surrounding lines to make it unique." },
+                                        "newString": { "type": "string", "description": "What replaces it. Pass \"\" to delete the matched text." },
+                                    },
+                                    "required": ["oldString", "newString"],
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "section": { "type": "string", "description": "The heading to rewrite under, with or without its #s." },
+                                        "markdown": { "type": "string", "description": "The section's new body. The heading line stays, so do not repeat it." },
+                                    },
+                                    "required": ["section", "markdown"],
+                                },
+                            ],
+                        },
+                    }),
+                },
+                "required": ["documentId", "edits"],
             }),
             assistant_only: false,
             needs_google: false,
@@ -1621,9 +1660,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 81);
+        assert_eq!(TALARIA_TOOLS.len(), 82);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 81);
+        assert_eq!(names.len(), 82);
     }
 
     #[test]

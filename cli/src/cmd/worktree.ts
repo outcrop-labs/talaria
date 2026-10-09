@@ -157,7 +157,15 @@ export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD'): Promis
     // TALARIA_API_PORT joins the stripped set because envValue returns the
     // FIRST match: leaving main's line in place would shadow the one appended
     // below, and the worktree would silently go back to sharing :5274.
-    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT|TALARIA_API_PORT)=/.test(l))
+    //
+    // TALARIA_RUST_API_URL joins it for the same reason ONE STEP LATER, and
+    // the miss cost a worktree's whole api. `talaria dev` derives the url from
+    // TALARIA_API_PORT only when nothing else names it — and main's ui/.env
+    // names it, hardcoded to :5274 by `talaria setup`. So the derivation never
+    // fired, the app proxied /api/* to the primary stack's api, and the
+    // worktree's own api sat on its port with nobody talking to it. The port
+    // line below is not enough on its own; the url has to be written too.
+    .filter((l) => !/^(DATABASE_URL|REDIS_URL|PORT|TALARIA_API_PORT|TALARIA_RUST_API_URL)=/.test(l))
     .join('\n')
   const note = secretKey
     ? ''
@@ -183,6 +191,10 @@ PORT=${slot.app}
 # database. The api binds it (talaria-config reads TALARIA_API_PORT) and the
 # app's proxy dials it (TALARIA_RUST_API_URL derives from it in dev.ts).
 TALARIA_API_PORT=${slot.api}
+# And the url the app's proxy dials, written rather than derived: dev.ts only
+# derives it when no env names it, so an inherited line would win over the
+# port above.
+TALARIA_RUST_API_URL=http://127.0.0.1:${slot.api}
 `,
   )
   ctx.log.ok('ui/.env written')

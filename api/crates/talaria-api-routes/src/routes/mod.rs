@@ -1188,6 +1188,16 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_knowledge::files::artifacts_id_duplicate::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // Change PART of a document. The PUT above takes the new body, which
+        // is right for an editor holding the whole thing and wrong for an
+        // agent fixing one paragraph; this takes the edit instead. Same
+        // authority and same reindex as the PUT — both shared from
+        // `artifacts_id`.
+        .route(
+            "/api/artifacts/{id}/edit",
+            post(talaria_routes_knowledge::files::artifacts_id_edit::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         // Comment threads on a Talaria document — the twin of the kb-doc route,
         // same engine and same table, gated on the artifact's own read
         // permission.

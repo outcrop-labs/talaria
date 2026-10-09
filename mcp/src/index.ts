@@ -618,7 +618,7 @@ server.registerTool(
   'create_document',
   {
     description:
-      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use update_document to keep editing it).",
+      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
     inputSchema: {
       title: z.string().min(1).max(200).describe('Document title'),
       markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
@@ -665,7 +665,7 @@ server.registerTool(
   'update_document',
   {
     description:
-      'Edit a document you created (or were granted Editor access to). markdown replaces a markdown doc\'s body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.',
+      'REPLACE a document\'s whole body. For changing part of one, use edit_document instead — this tool rewrites everything, so any section you do not re-send is gone and any edit a person made meanwhile is overwritten. Use it to replace a document wholesale, or to write a spreadsheet grid. markdown replaces a markdown doc\'s body; rows (string[][], row 0 the header) replaces a spreadsheet; html replaces a web page. Passing markdown on a sheet or page refuses — it would smash the grid/HTML into a single string. Each save is versioned.',
     inputSchema: {
       documentId: z.string().describe('Document id (from create_document, create_sheet, create_page, or list_documents)'),
       title: z.string().max(200).optional(),
@@ -693,6 +693,35 @@ server.registerTool(
     const body = kind === 'sheet' && rows ? JSON.stringify(rows) : kind === 'microsite' && html ? html : markdown
     return ok(await api('PUT', `/api/artifacts/${encodeURIComponent(documentId)}`, { title, body }))
   },
+)
+
+server.registerTool(
+  'edit_document',
+  {
+    description:
+      "Change PART of a markdown document or web page, without resending the rest of it. Prefer this over update_document for every change to an existing document: it is cheaper, it cannot silently drop the sections you did not mention, and it does not overwrite edits a person made while you were working. Read the document first with get_document so your anchors are exact. Two forms, one per edit: oldString/newString replaces exact text (oldString must appear EXACTLY ONCE — include surrounding lines to make it unique; omit newString to delete), or section/markdown rewrites the body under a heading, keeping the heading line. Edits apply in order and a failure anywhere applies none of them, so the document is never left half-edited. Spreadsheets are not editable this way — their body is a grid; use update_document with rows.",
+    inputSchema: {
+      documentId: z.string().describe('Document id (from create_document, create_page, or list_documents)'),
+      edits: z
+        .array(
+          z.union([
+            z.object({
+              oldString: z.string().min(1).max(200_000).describe('Exact existing text to replace. Must occur EXACTLY ONCE in the document — include surrounding lines to make it unique.'),
+              newString: z.string().max(200_000).describe('What replaces it. Pass "" to delete the matched text.'),
+            }),
+            z.object({
+              section: z.string().min(1).max(200).describe('The heading to rewrite under, with or without its #s — "## Rollback" pins the level, "Rollback" matches any level as long as only one heading says it.'),
+              markdown: z.string().max(200_000).describe("The section's new body. The heading line stays, so do not repeat it. Pass \"\" to empty the section."),
+            }),
+          ]),
+        )
+        .min(1)
+        .max(50)
+        .describe('The edits, applied in order. Each one is EITHER oldString+newString or section+markdown.'),
+    },
+  },
+  async ({ documentId, edits }) =>
+    ok(await api('POST', `/api/artifacts/${encodeURIComponent(documentId)}/edit`, { edits })),
 )
 
 server.registerTool(
