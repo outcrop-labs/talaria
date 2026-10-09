@@ -1,8 +1,9 @@
 # Talaria Mobile
 
-**Status: scoped, not built.** This page is the scope of record for the mobile app — what it is,
-what it deliberately is not, the two api gaps it opens, and the stack it rides. It becomes the
-surface doc as the code lands; until then, nothing in `mobile/` exists.
+**Status: phase 1 begun.** `mobile/` holds a building Android app and a passing shared test suite —
+the instance beacon probe and Mercury's tokens. No account store, no session, no iOS Xcode project
+yet. This page is the scope of record: what the app is, what it deliberately is not, the two api
+gaps it opens, and the stack it rides.
 
 The mobile app is a **controller**, not the product on a smaller screen. Talaria's own gap
 analysis named the shape years before the app
@@ -167,21 +168,98 @@ review lead time. Start those early; they gate the first TestFlight build, not t
 
 ## Layout
 
-`mobile/` sits at the root beside [`desktop/`](../desktop), and registers the same way a new surface
-always does here:
+`mobile/` sits at the root beside [`desktop/`](../desktop), as its own Gradle build with its own
+gates — the same per-surface shape `api/` and `desktop/` already have.
 
-- Root scripts: `bun run mobile` (Android dev) and `bun run mobile:check` (ktlint + compile +
-  unit tests) — surface-gated like `desktop:check`, **not** part of the local default.
+```
+mobile/
+├── settings.gradle.kts        two modules, and why
+├── build.gradle.kts           every plugin version, resolved once
+├── gradle/libs.versions.toml  the version catalog
+├── gradlew                    committed: the build pins its own Gradle
+├── shared/                    EVERY line of real code
+│   └── src/{commonMain,commonTest,iosMain}
+├── androidApp/                an Activity, a manifest, a theme. Nothing else.
+└── tools/devbox-install.sh    the toolchain provisioner
+```
+
+**Two modules, because AGP 9 requires it.** Since 9.0 the `com.android.application` plugin refuses
+to sit on a Kotlin Multiplatform module — it fails the build outright. The supported shape is a KMP
+library (`:shared`, using `com.android.kotlin.multiplatform.library`) plus a thin Android
+application that consumes it. AGP offers `android.builtInKotlin=false` to bypass the check and its
+own message calls that temporary, so this build took the structure instead of the flag. The split
+earns its keep anyway: anything that appears in `:androidApp` is something iOS cannot reach, which
+makes it a bug by construction.
+
+`:shared` also carries a **`jvm` target that never ships**. It exists so `commonTest` runs on the
+host — `./gradlew :shared:jvmTest`. Without it, asserting that a URL normalizes would need an
+emulator, and the iOS test targets cannot run on Linux at all.
+
+How it registers:
+
+- Root scripts: `bun run mobile` (build and install the debug APK on a connected device) and
+  `bun run mobile:check` (`:shared:jvmTest` + `:androidApp:assembleDebug`) — surface-gated like
+  `desktop:check`, **not** part of the local default.
 - [`scripts/gate.mjs`](../scripts/gate.mjs): a `mobile` surface branch, so a `mobile/`-only diff
-  compiles and tests only that. Mirrors how `desktopCargo` / `desktopTypecheck` select.
-- The devbox image grows a JDK and the Android SDK ([`docs/DEVBOX.md`](./DEVBOX.md)).
-- CI: a `mobile` job in `ci.yml`, and a `mobile-package.yml` that builds the Android artifact on
-  `ubuntu-latest` and the iOS one on `macos-latest`, attached to releases as the desktop installers
-  are.
+  runs only that. Mirrors how `desktopCargo` / `desktopTypecheck` select, and its `--self-test`
+  covers the selection.
+- The toolchain is **not** in the devbox image — see below.
+- CI, still to wire: a `mobile` job in `ci.yml`, and a `mobile-package.yml` building the Android
+  artifact on `ubuntu-latest` and the iOS one on `macos-latest`, attached to releases as the
+  desktop installers are.
+
+## The toolchain
+
+[`mobile/tools/devbox-install.sh`](../mobile/tools/devbox-install.sh) provisions a JDK, Gradle and
+the Android SDK into a devbox's **shared** `/work/tools` layer — the one every box mounts at the same
+path with `/work/tools/bin` already first on `PATH`:
+
+```sh
+bun talaria box new mobile --branch <your-branch>
+bun talaria box install mobile 'bash /work/talaria/mobile/tools/devbox-install.sh'
+bun talaria box enter mobile bash -lc 'cd /work/talaria/mobile && ./gradlew :shared:jvmTest'
+```
+
+It is **not baked into `talaria-devbox:latest` on purpose**: a JDK plus the Android SDK is multiple
+gigabytes, and most boxes never touch mobile. Installing into the shared layer means one download
+serves every box created afterwards. It is rootless (the box runs as an unprivileged `dev`, and
+nothing here needs apt) and idempotent.
+
+It pins no version numbers — the JDK comes from Adoptium's "latest 21" redirect, Gradle from its own
+current-version endpoint, and the platform from whatever the SDK reports as newest and stable. That
+follows the house rule about catalogs: no maintained lists, fetch live. Three things it knows that
+are not obvious, each of which cost a failed build to learn:
+
+- **`sdkmanager` is deprecated as of cmdline-tools 23**, and the replacement `android` CLI prints
+  package paths with *slashes* (`platforms/android-36`) while `--install` still takes the classic
+  *semicolon* coordinates (`platforms;android-36`). Parse one spelling, install the other.
+- **API levels now ship minor versions.** API 37 exists only as `android-37.0/.1/.2` — there is no
+  plain `android-37` — so an integer-only filter silently selects 36, and AndroidX Compose 1.12
+  refuses to compile against anything below 37. The failure surfaces in `checkDebugAarMetadata`, a
+  long way from the cause.
+- **`yes | sdkmanager` exits 141 under `set -o pipefail`**: the consumer finishes first, `yes` takes
+  SIGPIPE, and pipefail faithfully reports it. The prompts still need answering, so judge those
+  calls by the consumer's status.
+
+Verified on this toolchain: Temurin 21, Gradle 9.8.1, AGP 9.4.1, Kotlin 2.4.21, Compose
+Multiplatform 1.12.1, Ktor 3.6.0, `compileSdk` 37.2, `minSdk` 26.
+
+**One catalog trap worth keeping:** Compose Multiplatform's `material3` artifact is *not* on the
+toolkit's version line — it tracks androidx's own material3 numbering and lags by several minors
+(1.9.0 against a 1.12.1 toolkit). Asking for `material3:1.12.1` resolves nothing at all. AGP is
+likewise **not on Maven Central** — the Central copy stops at 2.3.0, a 2017 artifact, so it comes
+from Google's maven or not at all.
 
 ## Gates
 
-`bun run mobile:check` is the surface gate, and the CI `mobile` job runs the same list — the
+`bun run mobile:check` is the surface gate, and the CI `mobile` job will run the same list — the
 per-surface pattern `api:check` and `desktop:check` already establish. `bun run gate` stays the local
-pre-push: `check` always, then only the surfaces the diff touched. Do not run a workspace Gradle
-build for the same reason you do not run a workspace cargo — it pins the machine.
+pre-push: `check` always, then only the surfaces the diff touched.
+
+What a Linux box can prove: `:shared:jvmTest` (the shared logic) and `:androidApp:assembleDebug`
+(that the whole Android chain assembles). What it cannot: anything Apple. `iosArm64`,
+`iosSimulatorArm64` and `iosX64` are declared in `:shared` and compile only on macOS —
+`kotlin.native.ignoreDisabledTargets` in `gradle.properties` is what lets a Linux box *configure*
+this build rather than fail it. That is why `iosApp/` is not in the repo yet: an Xcode project that
+cannot be built or verified here would be a file nobody can check, so it lands with the macOS CI job
+that will compile it.
