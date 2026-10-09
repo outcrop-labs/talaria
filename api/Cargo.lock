@@ -4600,6 +4600,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-doc-edit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "talaria-body",
+]
+
+[[package]]
 name = "talaria-effort-prefs"
 version = "0.1.0"
 dependencies = [
@@ -4715,6 +4723,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "talaria-doc-edit",
  "talaria-fitness-talaria-tools",
  "talaria-fitness-world",
  "talaria-harness",
@@ -6745,6 +6754,7 @@ dependencies = [
  "talaria-attribution",
  "talaria-audit",
  "talaria-body",
+ "talaria-doc-edit",
  "talaria-error",
  "talaria-notify",
  "talaria-params",
