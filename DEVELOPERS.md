@@ -183,6 +183,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`docs/WORKTREES.md`](./docs/WORKTREES.md) | Parallel-branch dev stacks |
 | [`docs/DEVBOX.md`](./docs/DEVBOX.md) | Devboxes: a containerized dev environment per task, with the agent CLIs inside |
 | [`docs/DESKTOP.md`](./docs/DESKTOP.md) | Talaria Desktop: the Tauri shell — multitenant webviews, isolation model, security posture, the box-builds/host-runs dev split |
+| [`docs/MOBILE.md`](./docs/MOBILE.md) | Talaria Mobile (**scoped, not built**): the controller app — the scope line, Kotlin/Compose Multiplatform, what ships and what never will, and the two api gaps it opens |
 | [`scripts/skills/`](./scripts/skills) | The repo's agent skills: subagent-driven development (2-stage review), the talaria toolkit playbook, workbench driving |
 | [`AGENTS.md`](./AGENTS.md) | Agent instructions — the canonical file for anyone (or anything) coding here: rules, commands, environment facts, traps; `CLAUDE.md` forwards to it |
 | [`.claude/skills/`](./.claude/skills) | The repo's tooling skills: dev-loop, repo-traps, ship-a-change, judge-pr, cut-release, cleanup — plain markdown, natively discovered by Claude Code and opencode. `judge-pr` carries the reviewing half of the pull-request standards (`scripts/judge-pr.mjs` is the mechanical half); `cleanup` is what a finished dev task removes |
