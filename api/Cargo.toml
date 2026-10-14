@@ -438,6 +438,7 @@ talaria-persona = { path = "crates/talaria-persona" }
 
 talaria-personal-agent = { path = "crates/talaria-personal-agent" }
 
+talaria-doc-edit = { path = "crates/talaria-doc-edit" }
 talaria-plan-doc = { path = "crates/talaria-plan-doc" }
 
 talaria-plan-drafts = { path = "crates/talaria-plan-drafts" }

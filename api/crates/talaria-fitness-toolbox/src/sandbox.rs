@@ -895,6 +895,56 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             )
         }
 
+        // THE SURGICAL EDIT, graded against the REAL matching engine. The
+        // whole point of this backend is that a model which can edit a
+        // document here can edit one in production, so the match-once rule,
+        // the section addressing and the refusal sentences all come from
+        // `talaria_doc_edit` rather than being approximated. An approximation
+        // that was kinder than production would certify models that cannot
+        // actually use the tool.
+        "edit_document" => {
+            let id = a["documentId"].as_str().unwrap_or("");
+            let idx = w.documents.iter().position(|d| d.id == id).ok_or_else(|| {
+                refuse(format!(
+                    "no document \"{id}\" — list_documents shows the ones you can read"
+                ))
+            })?;
+            let kind = w.documents[idx].kind.clone();
+            match kind.as_str() {
+                "doc" | "microsite" => {}
+                "sheet" => {
+                    return Err(refuse(
+                        "this is a spreadsheet — its body is a JSON grid, so a text edit would corrupt it. Use update_document with rows",
+                    ));
+                }
+                other => {
+                    return Err(refuse(format!(
+                        "a {other} artifact has no editable text body"
+                    )));
+                }
+            }
+            let edits = talaria_doc_edit::wire::edits_from_value(&a["edits"]).map_err(refuse)?;
+            let applied = talaria_doc_edit::apply(&w.documents[idx].markdown, &edits)
+                .map_err(|e| refuse(e.to_string()))?;
+            // A no-op edit does not spend a version — same rule the route
+            // holds, for the same reason: the version history is what a person
+            // reads to see what the agent did.
+            if applied.body == w.documents[idx].markdown {
+                return Ok(
+                    json!({ "ok": true, "unchanged": true, "version": w.documents[idx].versions }),
+                );
+            }
+            w.documents[idx].markdown = applied.body;
+            w.documents[idx].versions += 1;
+            Ok(json!({
+                "ok": true,
+                "version": w.documents[idx].versions,
+                "changes": applied.changes.iter()
+                    .map(|c| json!({ "label": c.label, "added": c.added, "removed": c.removed }))
+                    .collect::<Vec<_>>(),
+            }))
+        }
+
         "list_documents" => Ok(json!({ "documents": w.documents.iter()
             .map(|d| json!({ "id": d.id, "title": d.title, "folder": d.folder, "visibility": d.visibility, "kind": d.kind }))
             .collect::<Vec<_>>() })),
@@ -1799,6 +1849,7 @@ pub const BACKED_TOOLS: &[&str] = &[
     "create_sheet",
     "create_page",
     "update_document",
+    "edit_document",
     "list_documents",
     "get_document",
     "save_image_artifact",
@@ -2436,6 +2487,97 @@ mod tests {
         // tool.
         let invented = s.dispatch("get_document", r#"{"documentId":"doc-99"}"#);
         assert!(invented.text.contains("list_documents"));
+    }
+
+    #[test]
+    fn edits_part_of_a_document_and_holds_the_match_once_rule() {
+        let mut s = sb();
+        let plan = json!({
+            "title": "Plan",
+            "markdown": "# Plan\n\n## Rollback\n\nold steps\n\n## Owners\n\nDana\n",
+        })
+        .to_string();
+        s.dispatch("create_document", &plan);
+
+        // The surgical edit: one anchor replaced, the rest of the document
+        // untouched — which is the whole difference from update_document.
+        let args =
+            json!({ "documentId": "doc-2", "edits": [{ "oldString": "Dana", "newString": "Ravi" }] })
+                .to_string();
+        let edited = s.dispatch("edit_document", &args);
+        assert!(!edited.is_error, "{}", edited.text);
+        assert!(s.world.documents[1].markdown.contains("Ravi"));
+        assert!(s.world.documents[1].markdown.contains("## Rollback"));
+        assert_eq!(s.world.documents[1].versions, 2);
+
+        // A section rewrite keeps the heading and stops at the next sibling.
+        let args = json!({
+            "documentId": "doc-2",
+            "edits": [{ "section": "## Rollback", "markdown": "1. stop\n2. revert" }],
+        })
+        .to_string();
+        let sectioned = s.dispatch("edit_document", &args);
+        assert!(!sectioned.is_error, "{}", sectioned.text);
+        let body = s.world.documents[1].markdown.clone();
+        assert!(body.contains("## Rollback\n\n1. stop\n2. revert"), "{body}");
+        assert!(body.contains("## Owners"), "{body}");
+
+        // THE RULE A MODEL HAS TO LEARN, and so the sandbox has to teach: an
+        // anchor that is not unique refuses, and says how many it found.
+        let twice = json!({ "title": "Twice", "markdown": "go\ngo\n" }).to_string();
+        s.dispatch("create_document", &twice);
+        let args =
+            json!({ "documentId": "doc-3", "edits": [{ "oldString": "go", "newString": "stop" }] })
+                .to_string();
+        let ambiguous = s.dispatch("edit_document", &args);
+        assert!(ambiguous.is_error);
+        assert!(ambiguous.text.contains("2 times"), "{}", ambiguous.text);
+        // Refused means NOTHING changed, the version included.
+        assert_eq!(s.world.documents[2].versions, 1);
+        assert_eq!(s.world.documents[2].markdown, "go\ngo\n");
+
+        // A missing anchor points at the read that fixes it.
+        let args = json!({
+            "documentId": "doc-2",
+            "edits": [{ "oldString": "nowhere", "newString": "x" }],
+        })
+        .to_string();
+        let missing = s.dispatch("edit_document", &args);
+        assert!(missing.is_error);
+        assert!(missing.text.contains("get_document"), "{}", missing.text);
+    }
+
+    #[test]
+    fn refuses_a_text_edit_on_a_spreadsheet_and_names_the_tool_that_can() {
+        // A find-and-replace inside `JSON.stringify(rows)` would corrupt the
+        // grid rather than edit a cell, so it is refused before it is tried.
+        let mut s = sb();
+        let sheet = json!({
+            "title": "Vendors",
+            "rows": [["Vendor", "Status"], ["Acme", "live"]],
+        })
+        .to_string();
+        s.dispatch("create_sheet", &sheet);
+        let args =
+            json!({ "documentId": "doc-2", "edits": [{ "oldString": "live", "newString": "gone" }] })
+                .to_string();
+        let refused = s.dispatch("edit_document", &args);
+        assert!(refused.is_error);
+        assert!(
+            refused.text.contains("update_document with rows"),
+            "{}",
+            refused.text
+        );
+
+        // A page IS editable this way — its body is text.
+        let page = json!({ "title": "Status", "html": "<h1>ok</h1>" }).to_string();
+        s.dispatch("create_page", &page);
+        let args =
+            json!({ "documentId": "doc-3", "edits": [{ "oldString": "ok", "newString": "live" }] })
+                .to_string();
+        let edited = s.dispatch("edit_document", &args);
+        assert!(!edited.is_error, "{}", edited.text);
+        assert_eq!(s.world.documents[2].markdown, "<h1>live</h1>");
     }
 
     #[test]
@@ -3086,7 +3228,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            81,
+            82,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

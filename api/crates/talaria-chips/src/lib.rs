@@ -329,7 +329,11 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
         | "create_sheet"
         | "create_page"
         | "save_image_artifact"
-        | "update_document" => {
+        | "update_document"
+        // A surgical edit lands the same chip as a full rewrite: what the
+        // reader wants is a way into the document that just changed, and how
+        // much of it the agent resent is not their problem.
+        | "edit_document" => {
             if let Some(id) = id.filter(|s| is_id(s)) {
                 out.push(link_chip(
                     &PlatformLink {

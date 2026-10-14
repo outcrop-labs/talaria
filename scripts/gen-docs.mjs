@@ -339,6 +339,12 @@ function authClassRust(combined, locals, fileRaw) {
   // the SESSION inside session.rs, so any handler that leads with it is dual
   // by construction, whatever guard spelling follows.
   if (has('acting_user(')) return { auth: 'dual' }
+  // body_editor is artifacts_id.rs's shared "may this caller rewrite this
+  // artifact's body" resolver: an agent-key arm and a require_user arm, both
+  // inside it. A handler that leads with it is dual by construction, the same
+  // reason acting_user above gets an explicit entry rather than falling
+  // through to the unrecognized-guard scan.
+  if (has('body_editor(')) return { auth: 'dual' }
   const manager = has('require_agent_manager(') || has('require_agent_manager_by_model(')
   const agentReader = has('require_agent_reader(')
   const session =
