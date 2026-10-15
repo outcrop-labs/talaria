@@ -229,6 +229,24 @@ pub struct SandboxAttachment {
     pub bytes: i64,
 }
 
+/// A question the agent put to the person, and the answers it offered. The
+/// sandbox has nobody to answer it — what a fixture grades is whether the
+/// agent asked the right thing rather than guessing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxAsked {
+    pub question: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxTodoItem {
+    pub text: String,
+    /// `pending` | `active` | `done`.
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxResearchRun {
@@ -367,6 +385,14 @@ pub struct SandboxWorld {
     pub attachments: Vec<SandboxAttachment>,
     #[serde(default)]
     pub research: Vec<SandboxResearchRun>,
+    /// THE AGENT'S OWN PLAN, as `todo` last left it. A fixture can assert on
+    /// it the way it asserts on a created document: the plan is an observable
+    /// effect of a turn, and a model that narrates its work correctly is doing
+    /// something a grader should be able to see.
+    #[serde(default)]
+    pub todo: Vec<SandboxTodoItem>,
+    #[serde(default)]
+    pub asked: Vec<SandboxAsked>,
     /// Files the agent has produced in its own workspace. `save_image_artifact`
     /// refuses a path that is not one of these — a model that saves a chart it
     /// never rendered is confabulating a file.
@@ -445,6 +471,10 @@ pub fn base_world() -> SandboxWorld {
         // `dry_run.world`.
         assistant_for: None,
         google_connected: true,
+        // No plan until a turn writes one — the same empty the product starts
+        // every conversation with.
+        todo: vec![],
+        asked: vec![],
         boards: vec![
             SandboxBoard {
                 id: "b-platform".into(),

@@ -7,17 +7,19 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | GET | `session` + `perm:agents.manage` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | PUT | `admin` |
 | [`/api/agent-role-templates`](#apiagent-role-templates) | DELETE | `admin` |
+| [`/api/agent/ask`](#apiagentask) | POST | `agent` |
 | [`/api/agent/chips`](#apiagentchips) | POST | `agent` |
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
+| [`/api/agent/todo`](#apiagenttodo) | PUT | `agent` |
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
@@ -65,6 +67,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_role_templates.rs`](.
 | `department` | `kebab()` |  |
 | `description` | `string(0, 300)` |  |
 | `soul` | `string(1, 20000)` |  |
+
+## `/api/agent/ask`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_ask.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_ask.rs)
+
+> POST /api/agent/ask — the agent asks the person a question with real
+> options, on the turn it is writing.
+>
+> NO CONVERSATION PARAMETER, the same call `/api/agent/todo` and the research
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentask-body) | `{ok, asked}` | 200, 400, 409 | — |
+
+**POST** — Ask the person a question with options, on the conversation this agent is in.
+
+### POST `/api/agent/ask` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/agent/chips`
 
@@ -149,6 +173,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../ap
 | `details` | `string?(20000)` |  |
 | `context` | `string?(500)` | what the agent was trying to do |
 | `taskId` | `string?(200)` | the ticket the agent was working when it broke |
+
+## `/api/agent/todo`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_todo.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_todo.rs)
+
+> PUT /api/agent/todo — the agent writes down what it is going to do.
+>
+> NO CONVERSATION PARAMETER, deliberately, and this is the same call the
+> research tool already makes for the same reason: the agent is speaking in a
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `agent` | [body](#put-apiagenttodo-body) | `{ok, summary, items}` | 200, 400, 409 | — |
+
+**PUT** — Write down the steps this agent is working through, on the conversation it is in.
+
+### PUT `/api/agent/todo` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/agent/whoami`
 

@@ -725,6 +725,52 @@ server.registerTool(
 )
 
 server.registerTool(
+  'ask',
+  {
+    description:
+      "Ask the person a question with concrete options, when you genuinely cannot tell which of several things they meant and guessing would send you down the wrong path. Give the ONE thing that is blocking you and 2 to 6 short answers; they pick one and their choice arrives as your next message. END YOUR TURN after asking — do not carry on and act on the guess you just said you could not make. Use it for a real fork (which board, which of two documents, replace or append), not for permission to do what they already asked for, and not for anything you could settle by reading. If the question is open-ended, just ask it in your own words instead: this tool is for competing concrete answers.",
+    inputSchema: {
+      question: z.string().min(1).max(400).describe('The question, in one sentence — "Which board should these tickets land on?"'),
+      detail: z.string().max(400).optional().describe('One more sentence of context, if the question needs it to be answerable'),
+      options: z
+        .array(
+          z.union([
+            z.string().min(1).max(80).describe('The answer, as the short words that go on the button'),
+            z.object({
+              label: z.string().min(1).max(80).describe('The answer, as the short words that go on the button'),
+              detail: z.string().max(200).describe('What picking this one means or costs'),
+            }),
+          ]),
+        )
+        .min(2)
+        .max(6)
+        .describe('The answers to offer, 2 to 6. Each must read differently from the others — the answer is sent as the option\'s own words.'),
+    },
+  },
+  async ({ question, detail, options }) => ok(await api('POST', '/api/agent/ask', { question, detail, options })),
+)
+
+server.registerTool(
+  'todo',
+  {
+    description:
+      "Write down the steps you are working through, so the person watching can see your plan and where you are in it. Use it for any request that takes more than one step: list the steps first, mark one active as you start it, and call this again to move the marker and add or drop steps as you learn. Each call REPLACES the whole list, so always send every step, not just the one that changed. Exactly one step may be active at a time, or none. Keep steps short and concrete — one line each, the thing you are about to do, not a description of the task. Do not use it as a ticket list: tickets are durable work a person signs off, and this is your own scratch plan for this conversation. An empty list clears it.",
+    inputSchema: {
+      items: z
+        .array(
+          z.object({
+            text: z.string().min(1).max(200).describe('The step, as one short line — "read the retry spec", "draft the three tickets"'),
+            status: z.enum(['pending', 'active', 'done']).optional().describe("Where this step is. Omitted means pending. At most one step may be 'active'."),
+          }),
+        )
+        .max(30)
+        .describe('Every step, in the order you will do them. This replaces the whole list.'),
+    },
+  },
+  async ({ items }) => ok(await api('PUT', '/api/agent/todo', { items })),
+)
+
+server.registerTool(
   'list_documents',
   {
     description: 'List the documents (artifacts) you can access — the workspace-visible ones plus any shared with you.',

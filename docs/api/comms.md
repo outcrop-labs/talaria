@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -52,6 +52,7 @@
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
+| [`/api/conversations/{id}/todo`](#apiconversationsidtodo) | GET | `session` |
 | [`/api/dms`](#apidms) | POST | `session` |
 
 ## `/api/channels`
@@ -554,6 +555,22 @@ Source: [`api/crates/talaria-routes-boards/src/plans/plans_id_teams.rs`](../../a
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `teamId` | `uuid` |  |
+
+## `/api/conversations/{id}/todo`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_todo.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_todo.rs)
+
+> GET /api/conversations/{id}/todo — the agent's plan for this thread.
+>
+> THE READ DOOR, gated on the conversation's own access rule (the owner, or a
+> member of the plan / work session) — the same predicate every other
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{items, summary}` | 200, 403 | — |
+
+**GET** — The steps the agent is working through on this conversation.
 
 ## `/api/dms`
 

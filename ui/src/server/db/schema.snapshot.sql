@@ -448,6 +448,12 @@ CREATE TABLE public.conversation_teams (
     team_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.conversation_todos (
+    conversation_id uuid NOT NULL,
+    items jsonb DEFAULT '[]'::jsonb NOT NULL,
+    updated_by text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.conversations (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     user_id uuid NOT NULL,
@@ -1492,6 +1498,8 @@ ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_pkey PRIMARY KEY (conversation_id, team_id);
+ALTER TABLE ONLY public.conversation_todos
+    ADD CONSTRAINT conversation_todos_pkey PRIMARY KEY (conversation_id);
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.daily_brief_entries
@@ -1916,6 +1924,8 @@ ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_todos
+    ADD CONSTRAINT conversation_todos_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversations
     ADD CONSTRAINT conversations_plan_template_id_fkey FOREIGN KEY (plan_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversations

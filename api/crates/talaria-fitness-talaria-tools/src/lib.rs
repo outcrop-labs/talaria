@@ -239,11 +239,58 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             needs_google: false,
         },
         SandboxTool {
+            name: "ask",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Ask the person a question with concrete options, when you genuinely cannot tell which of several things they meant and guessing would send you down the wrong path. Give the ONE thing that is blocking you and 2 to 6 short answers; they pick one and their choice arrives as your next message. END YOUR TURN after asking — do not carry on and act on the guess you just said you could not make. Use it for a real fork (which board, which of two documents, replace or append), not for permission to do what they already asked for, and not for anything you could settle by reading. If the question is open-ended, just ask it in your own words instead: this tool is for competing concrete answers.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "question": str_schema("The question, in one sentence"),
+                    "detail": str_schema("One more sentence of context, if the question needs it to be answerable"),
+                    "options": json!({
+                        "type": "array",
+                        "description": "The answers to offer, 2 to 6. Each must read differently from the others.",
+                        "items": { "type": "string" },
+                    }),
+                },
+                "required": ["question", "options"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
+            name: "todo",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Write down the steps you are working through, so the person watching can see your plan and where you are in it. Use it for any request that takes more than one step: list the steps first, mark one active as you start it, and call this again to move the marker and add or drop steps as you learn. Each call REPLACES the whole list, so always send every step, not just the one that changed. Exactly one step may be active at a time, or none. Keep steps short and concrete — one line each, the thing you are about to do, not a description of the task. Do not use it as a ticket list: tickets are durable work a person signs off, and this is your own scratch plan for this conversation. An empty list clears it.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "items": json!({
+                        "type": "array",
+                        "description": "Every step, in the order you will do them. This replaces the whole list.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": { "type": "string", "description": "The step, as one short line" },
+                                "status": { "type": "string", "enum": ["pending", "active", "done"], "description": "Where this step is. Omitted means pending. At most one step may be 'active'." },
+                            },
+                            "required": ["text"],
+                        },
+                    }),
+                },
+                "required": ["items"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
             name: "expose_tools",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Comms,
             description: "Show platform tools in the current chat as chips the person can open and run. Use this when they should see a tool and its inputs without you calling it yourself. Pass the tool names you want on screen, and any inputs you already know.",
-            parameters: json!({ "type": "object", "properties": { "tools": str_schema("Platform tool name, e.g. create_ticket") }, "required": [] }),
+            parameters: json!({ "type": "object", "properties": { "tools": str_schema("Platform tool name, e.g. create_ticket") }, "required": ["tools"] }),
             assistant_only: false,
             needs_google: false,
         },
@@ -1304,6 +1351,30 @@ mod tests {
             .expect("mcp/src/index.ts must be readable — the sync test does not silently skip")
     }
 
+    /// Does this key's expression call `.optional()` at ITS OWN nesting level?
+    /// Depth counts the brackets the expression opens, so a call inside
+    /// `z.object({ … })` or `z.array( … )` is somebody else's optionality.
+    fn optional_at_top(expr: &[char]) -> bool {
+        const NEEDLE: &[char] = &['.', 'o', 'p', 't', 'i', 'o', 'n', 'a', 'l', '(', ')'];
+        let mut depth: i64 = 0;
+        for i in 0..expr.len() {
+            // Tested BEFORE the bracket count, so `.optional()`'s own paren
+            // cannot push the call it belongs to out of depth 0. Anything
+            // inside `.describe('…')` is at depth 1 or more, which is also
+            // why a describe string that happened to contain the word cannot
+            // false-positive.
+            if depth == 0 && expr[i..].starts_with(NEEDLE) {
+                return true;
+            }
+            match expr[i] {
+                '{' | '[' | '(' => depth += 1,
+                '}' | ']' | ')' => depth -= 1,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// The scans below run over a `Vec<char>` rather than slicing the `&str`:
     /// the source carries multi-byte punctuation (—, ’) and byte-offset
     /// arithmetic must never land mid-character, where a slice would panic
@@ -1472,8 +1543,16 @@ mod tests {
                             }
                             j += 1;
                         }
-                        let value: String = chars[i..j].iter().collect();
-                        if !value.contains(".optional()") {
+                        // OPTIONAL AT THIS KEY'S OWN LEVEL, not anywhere
+                        // inside it. A `.optional()` on a NESTED field —
+                        // `items: z.array(z.object({ status: ….optional() }))`
+                        // — says the status may be omitted, not that `items`
+                        // may be. Reading it as the latter let the catalog
+                        // declare a required argument optional, which is
+                        // exactly the flattery these tests exist to stop: a
+                        // fixture could omit it, pass here, and 400 in
+                        // production.
+                        if !optional_at_top(&chars[i..j]) {
                             required.push(name);
                         }
                         i = j - 1;
@@ -1598,6 +1677,51 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_optional_does_not_make_the_key_itself_optional() {
+        // THE READING THAT FLATTERED A MODEL. `.optional()` inside a key's
+        // value — `items: z.array(z.object({ status: ….optional() }))` — says
+        // the nested field may be omitted, not the key. Read as the key's, the
+        // catalog declared a REQUIRED argument optional: a fixture could leave
+        // it out, pass the benchmark, and 400 in production.
+        let shape = |src: &str| {
+            let full = format!(
+                "server.registerTool(\n  'probe',\n  {{\n    description: 'x',\n    inputSchema: {{\n{src}\n    }},\n  }},\n)"
+            );
+            real_parameters(&full)
+                .remove("probe")
+                .expect("probe parsed")
+        };
+
+        let nested = shape(
+            "      items: z.array(z.object({ text: z.string(), status: z.string().optional() })).max(30),",
+        );
+        assert_eq!(nested.keys, ["items"]);
+        assert_eq!(
+            nested.required,
+            ["items"],
+            "a nested optional is not the key's"
+        );
+
+        // And the plain case still reads as optional, or this would have
+        // traded one wrong answer for the opposite one.
+        let plain = shape("      matchCase: z.boolean().optional().describe('x'),");
+        assert_eq!(plain.keys, ["matchCase"]);
+        assert!(
+            plain.required.is_empty(),
+            "a top-level optional still counts"
+        );
+
+        // A `.optional()` after the nesting closes is the key's own.
+        let trailing = shape("      rows: z.array(z.string()).optional(),");
+        assert!(trailing.required.is_empty(), "{:?}", trailing.required);
+
+        // The two real registrations this rule exists for.
+        let real = real_parameters(&source());
+        assert_eq!(real["todo"].required, ["items"]);
+        assert_eq!(real["expose_tools"].required, ["tools"]);
+    }
+
+    #[test]
     fn requires_exactly_what_the_toolkit_requires() {
         // A sandbox that demands MORE fails a model for a call production accepts;
         // one that demands FEWER lets a model omit an argument the API rejects.
@@ -1660,9 +1784,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 82);
+        assert_eq!(TALARIA_TOOLS.len(), 84);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 82);
+        assert_eq!(names.len(), 84);
     }
 
     #[test]

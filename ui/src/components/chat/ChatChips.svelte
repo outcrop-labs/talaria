@@ -1,6 +1,8 @@
 <script lang="ts">
   import { Check, Wrench, X } from '@lucide/svelte'
   import PlatformLinkChip from './PlatformLinkChip.svelte'
+  import TodoPlan from './TodoPlan.svelte'
+  import AskCard from './AskCard.svelte'
   import Button from '@/components/ui/Button.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
@@ -103,6 +105,21 @@
           <Wrench size={13} class="shrink-0 text-muted" />
           <span class="max-w-52 truncate">{chip.label || toolLabel(name)}</span>
         </button>
+      {:else if chip.kind === 'todo'}
+        <!-- The agent's own plan, as a timeline. Full width like an approval
+             rather than an inline pill: it is several lines and it is the
+             thing a person waiting actually wants to read. -->
+        <TodoPlan items={chip.items ?? []} label={chip.label} />
+      {:else if chip.kind === 'question'}
+        <!-- The agent asked something and is waiting. Answering sends the
+             option's own words through the same send path the tool chips use,
+             so the reply lands as an ordinary message. -->
+        <AskCard
+          question={chip.label ?? ''}
+          detail={chip.description}
+          options={chip.options ?? []}
+          onAnswer={onInvoke}
+        />
       {:else if chip.kind === 'approval'}
         <div
           class="w-full rounded-lg border border-line bg-surface px-3 py-2"

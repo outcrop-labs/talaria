@@ -81,6 +81,11 @@ export const WAITING_SITES = {
     slot: 'inline',
     note: 'The plan modal while an agent reads the conversation and drafts tickets.',
   },
+  'todo/active': {
+    role: 'reasoning',
+    slot: 'inline',
+    note: "The step an agent marked active in its own plan — the one thing it is working on now.",
+  },
 
   /* ── Comms ────────────────────────────────────────────────────────────── */
   'comms/conclude': {

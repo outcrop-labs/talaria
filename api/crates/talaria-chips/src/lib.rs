@@ -453,6 +453,25 @@ fn dedupe(chips: Vec<Value>) -> Vec<Value> {
 
 /// Append chips that are not already on the row. Identity is the chip id, so
 /// a retried tool call does not stack a second copy of the same link.
+/// Chip kinds whose content is a SNAPSHOT of current state rather than a
+/// record of something that happened.
+///
+/// FIRST-WINS IS THE RIGHT RULE FOR AN EVENT and the wrong one for a
+/// snapshot. An approval chip must not duplicate when the same action lands
+/// twice, so the merge below keeps the one already there. The agent's plan is
+/// the other case: it is rewritten several times inside one turn — "here is
+/// the plan", then "step one done, step two active" — and a reader wants the
+/// latest, not the first. Keeping the first would pin the stream to a plan the
+/// agent had already moved past, which is worse than showing no plan at all,
+/// because it reads as current.
+fn snapshot_kind(kind: &str) -> bool {
+    // `todo`: the plan, rewritten several times inside one turn.
+    // `question`: keyed on the question's own words, so a collision means the
+    // SAME question asked again — and fresher options are more use to the
+    // person than the ones that did not get answered.
+    matches!(kind, "todo" | "question")
+}
+
 pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
     let mut out = match existing {
         Value::Array(items) => items.clone(),
@@ -460,14 +479,24 @@ pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
     };
     for chip in incoming {
         let id = chip.get("id").and_then(Value::as_str).unwrap_or("");
-        if id.is_empty()
-            || out
-                .iter()
-                .any(|c| c.get("id").and_then(Value::as_str) == Some(id))
-        {
+        if id.is_empty() {
             continue;
         }
-        out.push(chip.clone());
+        let at = out
+            .iter()
+            .position(|c| c.get("id").and_then(Value::as_str) == Some(id));
+        match at {
+            // Already there: a snapshot is overwritten in PLACE (so it keeps
+            // its position in the row rather than jumping to the end), an
+            // event is left alone.
+            Some(i) => {
+                let kind = chip.get("kind").and_then(Value::as_str).unwrap_or("");
+                if snapshot_kind(kind) {
+                    out[i] = chip.clone();
+                }
+            }
+            None => out.push(chip.clone()),
+        }
     }
     Value::Array(out)
 }
@@ -984,6 +1013,59 @@ async fn lookup_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plan_chip_is_replaced_in_place_and_an_approval_is_not() {
+        // The agent rewrites its plan several times inside one turn, so the
+        // chip has to carry the latest. An approval must NOT be overwritten
+        // by a re-landing of the same action, which is why the rule is per
+        // kind rather than global.
+        let existing = json!([
+            { "id": "todo", "kind": "todo", "label": "0/2 done", "items": [] },
+            { "id": "a1", "kind": "approval", "summary": "first", "status": "pending" },
+        ]);
+        let merged = merge_chips(
+            &existing,
+            &[
+                json!({ "id": "todo", "kind": "todo", "label": "1/2 done", "items": [] }),
+                json!({ "id": "a1", "kind": "approval", "summary": "second", "status": "pending" }),
+            ],
+        );
+        let arr = merged.as_array().expect("array");
+        assert_eq!(arr.len(), 2, "neither chip duplicated");
+        // In place: the plan keeps its position rather than jumping to the end.
+        assert_eq!(arr[0]["id"], "todo");
+        assert_eq!(arr[0]["label"], "1/2 done");
+        assert_eq!(arr[1]["summary"], "first", "an approval is not overwritten");
+    }
+
+    #[test]
+    fn a_repeated_question_refreshes_and_a_different_one_joins_it() {
+        // The chip id is keyed on the question's words: the same question gets
+        // the newer options, a different question is its own chip because both
+        // are still open.
+        let existing = json!([{ "id": "ask:a1", "kind": "question", "label": "Which board?",
+                                "options": [{ "label": "old" }] }]);
+        let merged = merge_chips(
+            &existing,
+            &[
+                json!({ "id": "ask:a1", "kind": "question", "label": "Which board?",
+                        "options": [{ "label": "new" }] }),
+                json!({ "id": "ask:b2", "kind": "question", "label": "Which agent?",
+                        "options": [{ "label": "x" }] }),
+            ],
+        );
+        let arr = merged.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["options"][0]["label"], "new");
+        assert_eq!(arr[1]["label"], "Which agent?");
+    }
+
+    #[test]
+    fn a_chip_with_no_id_is_dropped_rather_than_appended_blind() {
+        let merged = merge_chips(&json!([]), &[json!({ "kind": "todo" })]);
+        assert_eq!(merged.as_array().expect("array").len(), 0);
+    }
 
     #[test]
     fn classifies_the_entities_agents_share_and_rejects_the_rest() {

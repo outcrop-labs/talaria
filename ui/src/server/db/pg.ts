@@ -3645,6 +3645,25 @@ alter table tasks drop column if exists conversation_id`,
   `alter table decide_shadow add column if not exists tokens_in integer`,
   `alter table decide_shadow add column if not exists tokens_out integer`,
   `alter table decide_shadow add column if not exists fanned integer`,
+  // THE AGENT'S OWN PLAN for a conversation — what it decided to do, in order,
+  // and which step it is on. Agents carry 86 tools and had no way to say what
+  // they meant to do with them, so a multi-step request looked from the
+  // outside like silence followed by an answer.
+  //
+  // ONE ROW PER CONVERSATION, replaced wholesale on every `todo` call. This is
+  // scratch reasoning with the lifetime of one request, not a ticket list —
+  // tickets are durable work a human signs off, and `plan_drafts` already
+  // turns a conversation into them. Cascade-deleted with the conversation for
+  // the same reason: the plan has no meaning without the thread it was for.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `create table if not exists conversation_todos (
+     conversation_id uuid primary key references conversations(id) on delete cascade,
+     items jsonb not null default '[]'::jsonb,
+     updated_by text,
+     updated_at timestamptz not null default now()
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
