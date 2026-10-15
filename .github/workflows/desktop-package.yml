@@ -712,3 +712,23 @@ jobs:
             gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" latest.json --clobber
           fi
           echo "attached $(ls assets | wc -l) files to $TAG"
+  # A published desktop release has to move omapak's pin, or the store keeps
+  # shipping the previous tag. Called from here rather than left to
+  # omapak-submit.yml's `release: published` trigger: the mint above uses
+  # GITHUB_TOKEN, and GitHub deliberately does not start workflow runs from
+  # events a GITHUB_TOKEN created, so that trigger never fired once —
+  # desktop-v0.7.0 through v0.10.0 all shipped without a submission. Same gate
+  # as `attach`, and it runs after it, so the store is only pointed at a tag
+  # whose installers are already on the release. omapak-submit re-checks the
+  # tag shape and refuses prereleases itself, so an RC coming through
+  # release.yml cannot move the pin.
+  omapak:
+    name: submit to omapak
+    needs: [resolve, attach]
+    if: needs.resolve.outputs.release_tag != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/omapak-submit.yml
+    with:
+      tag: ${{ needs.resolve.outputs.release_tag }}
+    secrets: inherit
