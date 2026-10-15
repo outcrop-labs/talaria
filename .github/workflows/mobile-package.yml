@@ -1,61 +1,149 @@
-# Talaria Mobile — a testable Android build, attached to the run that made it.
+# Talaria Mobile — the installable Android build, and the tag that names it.
 #
-# WHAT THIS IS FOR: putting the app on a real phone, pointed at a real
-# instance, so the feedback is about the product rather than about a fake.
-# `ci.yml`'s mobile job proves the code; this produces the thing you install.
+# This file is deliberately a close sibling of desktop-package.yml, because the
+# question is the same one and that answer is already load-bearing: a surface
+# push to main builds the artifact and MINTS its own auto-minor tag, a major is
+# a manual door, and a pull request builds without minting anything.
 #
-# DEBUG-SIGNED, NOT UNSIGNED, and the distinction matters: Android will not
-# install an unsigned APK at all. `assembleDebug` signs with the SDK's
+# THE VERSION IS INJECTED, NEVER COMMITTED. Git tags are the version authority
+# (RELEASING.md), so the resolved version arrives as
+# `-PmobileVersion=X.Y.Z` and the APK is stamped for this build only. No
+# version-bump commit, nothing to merge afterwards.
+#
+# `versionCode` IS THE PART ANDROID ENFORCES. A device refuses an APK whose
+# code is not greater than the installed one, so androidApp/build.gradle.kts
+# derives it from the version (maj*10000 + min*100 + patch) rather than letting
+# anyone maintain an integer by hand. Auto-minor therefore walks 0.1.0 → 100,
+# 0.2.0 → 200, and an upgrade always installs over its predecessor.
+#
+# DEBUG-SIGNED, NOT UNSIGNED, and the distinction is not pedantry: Android will
+# not install an unsigned APK at all. `assembleDebug` signs with the SDK's
 # auto-generated debug keystore, which is what makes a sideloadable build
-# possible without owning a release key. It is NOT distributable — the debug
-# keystore is public and shared by every Android SDK on earth — so this is for
-# `adb install` and nothing else. A release build needs the store credentials
-# that do not exist yet; when they do, that is a second job here, not an edit
-# to this one.
+# possible without owning a release key — and also what makes it
+# undistributable, since that keystore ships with every Android SDK on earth.
+# These releases are marked **prerelease** for exactly that reason. A
+# Play-signed release build is a second job here once the store credentials
+# exist, not an edit to this one.
 #
-# The debug build also permits cleartext HTTP (androidApp/src/debug/
-# AndroidManifest.xml), because a self-hosted instance on a LAN speaks plain
-# http and API 28+ blocks that by default. Release builds keep the secure
-# default.
+# WHY THESE TAGS CANNOT COLLIDE WITH ANYTHING: `mobile-v*` matches neither
+# release.yml's `v[0-9]*` trigger nor desktop's namespace, and this workflow has
+# no `tags:` trigger — so a mint cannot re-trigger anything, including itself.
 name: Mobile package
 
 on:
-  # The one that matters day to day: every pull request touching mobile/ leaves
-  # an installable build attached to it, so a reviewer can hold the change in
-  # their hand instead of reading about it.
+  # A mobile push to main: build it and mint its tag. Paths are safe here for
+  # the reason desktop-package.yml gives — nothing in this file is a required
+  # check — and they keep the trunk build meaningful.
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-package.yml'
+  # Every pull request touching mobile/ leaves an installable build attached to
+  # the run. Nothing is minted: a version that exists only on a branch is a
+  # version nobody can reconstruct.
   pull_request:
     paths:
       - 'mobile/**'
       - '.github/workflows/mobile-package.yml'
-  push:
-    branches: [main, rc]
-    paths:
-      - 'mobile/**'
-      - '.github/workflows/mobile-package.yml'
-  # Build any branch on demand. NOTE: GitHub only offers `workflow_dispatch`
-  # for workflows that exist on the DEFAULT branch, so this becomes usable once
-  # this file has reached main — until then, a pull request is the way to get a
-  # build out of CI.
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'branch or ref to build'
+      version:
+        description: 'version to stamp (empty: 0.0.0-sha<sha12>; with publish=true an explicit X.Y.Z is required)'
         type: string
         required: false
+      publish:
+        description: 'mint mobile-v<version> and publish it (the manual-major door; also finishes a cancelled mint)'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
-  contents: read
+  contents: read # escalated in `attach` only
 
 jobs:
+  # One job decides the version every build stamps and whether anything is
+  # minted, so the build job never has to reason about why it was started.
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.r.outputs.version }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+      mint: ${{ steps.r.outputs.mint }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          version="$IN_VERSION"
+          tag=""
+          mint=false
+
+          if [ "$IN_PUBLISH" = "true" ]; then
+            # The manual door. An explicit X.Y.Z is demanded rather than
+            # inferred, so a typo can never mint a forever-tag.
+            if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::publish=true needs an explicit X.Y.Z version, got '$version'."
+              exit 1
+            fi
+            tag="mobile-v$version"
+            mint=true
+          elif [ "$EVENT" = push ]; then
+            # AUTO-MINOR, within the mobile namespace only. Desktop reads both
+            # its own and the app's `v*` tags because it tracks the platform's
+            # version line; mobile deliberately does not — it is its own
+            # artifact with its own cadence, and the first mint is 0.1.0.
+            # Piped straight through rather than via an unquoted variable:
+            # `printf '%s\n' $tags` depends on word-splitting, which zsh does
+            # not do and bash does — a difference that makes the logic test
+            # green in one shell and wrong in the other. gh already emits one
+            # tag per line.
+            #
+            # The sort is NUMERIC per field (-t. with three -kN,Nn), because
+            # lexically 0.10.0 sorts below 0.2.0 and the tenth release would
+            # quietly mint a version that already existed.
+            best=$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags" \
+                     --jq '.[].name | select(startswith("mobile-v"))' \
+                     | sed -E 's/^mobile-v//' \
+                     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                     | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)
+            if [ -z "$best" ]; then
+              version="0.1.0"
+            else
+              maj=${best%%.*}; rest=${best#*.}; min=${rest%%.*}
+              version="$maj.$((min+1)).0"
+            fi
+            tag="mobile-v$version"
+            mint=true
+          else
+            # A pull request, or a plain dispatch rerun: artifacts only. The
+            # sha is in the version so a downloaded APK can always be traced
+            # back to the commit that built it.
+            version="0.0.0-sha$(echo "$SHA" | cut -c1-12)"
+          fi
+
+          {
+            echo "version=$version"
+            echo "release_tag=$tag"
+            echo "mint=$mint"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version  tag=${tag:-none}  mint=$mint"
+
   android:
     name: debug apk (android)
+    needs: [resolve]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-java@v4
         with:
@@ -77,54 +165,135 @@ jobs:
 
       - name: Assemble
         working-directory: mobile
-        run: ./gradlew :androidApp:assembleDebug --no-daemon
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: ./gradlew :androidApp:assembleDebug --no-daemon "-PmobileVersion=$VERSION"
 
-      # Named with the short sha so two downloads in a day are never the same
-      # file with the same name — the commonest way to test a build you already
-      # tested.
-      - name: Name it after the commit
-        id: name
-        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Report what was built
+      - name: Prove what was built
         working-directory: mobile
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -eu
           apk=androidApp/build/outputs/apk/debug/androidApp-debug.apk
           ls -l "$apk"
-          # The merged manifest is the only place that proves the debug
-          # cleartext allowance actually survived the merge — a self-hosted
-          # http instance is unreachable without it, and the symptom is
-          # indistinguishable from the server being down.
+
+          # The version and code actually stamped, read back from AGP's own
+          # metadata rather than assumed from the input. A one-liner because a
+          # heredoc terminator cannot be indented inside a YAML block scalar —
+          # bash only strips tabs, never spaces.
+          python3 -c 'import json,sys; el=json.load(open("androidApp/build/outputs/apk/debug/output-metadata.json"))["elements"][0]; print("stamped: versionName=%s versionCode=%s" % (el["versionName"], el["versionCode"])); assert el["versionName"]==sys.argv[1], "wanted %s, got %s" % (sys.argv[1], el["versionName"]); assert int(el["versionCode"])>=1, "versionCode must be >= 1 or Android refuses the APK"' "$VERSION"
+
           # FOUND, not hardcoded: AGP writes more than one merged manifest and
-          # has moved the paths between versions (`merged_manifest/
-          # processDebugMainManifest` and `merged_manifests/
-          # processDebugManifest` both exist here). A check pinned to one
-          # spelling turns into a check that silently stops checking.
+          # has moved the spelling between versions, so a check pinned to one
+          # path becomes a check that silently stops checking.
           merged=$(find androidApp/build -name AndroidManifest.xml -path '*merged*' | head -1)
           [ -n "$merged" ] || { echo "no merged manifest found — cannot verify cleartext" >&2; exit 1; }
-          echo "merged manifest: $merged"
           if grep -q 'usesCleartextTraffic="true"' "$merged"; then
-            echo "cleartext: permitted (debug) — a plain-http instance is reachable"
+            echo "cleartext: permitted (debug) — a self-hosted http instance is reachable"
           else
             echo "cleartext: NOT permitted — a plain-http instance will be unreachable" >&2
             exit 1
           fi
 
-          # And prove it is signed. An unsigned APK does not install, so a
-          # build that produced one would look fine here and fail on the phone.
+          # And prove it is signed: an unsigned APK does not install, so a build
+          # that produced one would look fine here and fail on the phone.
           signer=$(command -v apksigner || find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
-          if [ -n "$signer" ]; then
-            "$signer" verify --print-certs "$apk" | head -4
-          else
-            echo "note: no apksigner on this runner; signature unverified" >&2
-          fi
+          [ -n "$signer" ] || { echo "no apksigner on this runner" >&2; exit 1; }
+          "$signer" verify --print-certs "$apk" | head -2
+
+      # Renamed so a download is self-describing: two APKs in a downloads folder
+      # called androidApp-debug.apk is the commonest way to install the build you
+      # already tested.
+      - name: Name it after the version
+        working-directory: mobile
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -eu
+          mkdir -p dist
+          cp androidApp/build/outputs/apk/debug/androidApp-debug.apk \
+             "dist/talaria-mobile-$VERSION.apk"
+          ls -l dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: talaria-mobile-debug-${{ steps.name.outputs.sha }}
-          path: mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
+          name: talaria-mobile-${{ needs.resolve.outputs.version }}
+          path: mobile/dist/*.apk
           if-no-files-found: error
           # Long enough to test over a weekend, short enough that the artifact
-          # store does not become a release channel by accident.
+          # store does not quietly become a release channel.
           retention-days: 14
+
+  attach:
+    name: mint the release
+    needs: [resolve, android]
+    if: needs.resolve.outputs.mint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # the tag and the release asset upload
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: talaria-mobile-${{ needs.resolve.outputs.version }}
+          path: dist
+
+      # `--target` mints the lightweight tag in the same call: no git push, and
+      # nothing re-triggers (this workflow has no tags trigger, and `mobile-v*`
+      # cannot match release.yml's `v[0-9]*`). That also matters because a tag
+      # pushed with GITHUB_TOKEN starts no workflows anyway — so the build and
+      # the mint have to live in one run, which they do.
+      #
+      # PRERELEASE, deliberately: these are debug-signed with a keystore that
+      # ships inside every Android SDK, so /releases/latest must never resolve
+      # to one.
+      #
+      # Create-not-clobber: an existing release is attached into (a re-run, or a
+      # mint finished by hand), never replaced.
+      - name: Open the mobile release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "$TAG already exists — attaching into it (a re-run or a finished mint)"
+            exit 0
+          fi
+
+          # Written to a file rather than inlined: release notes want blank
+          # lines and bold, and shell-quoting that into one argument is how a
+          # workflow becomes unreadable.
+          {
+            echo "Talaria Mobile $VERSION, built at ${SHA:0:12}. What changed: CHANGELOG.md."
+            echo
+            echo "**Debug-signed, for sideloading only.** Android refuses unsigned APKs, so this is"
+            echo "signed with the SDK's shared debug keystore: installable with \`adb install -r\`,"
+            echo "and not distributable. A Play-signed build arrives when the store credentials do."
+            echo
+            echo "Permits cleartext HTTP so a self-hosted instance on a LAN is reachable; release"
+            echo "builds will not."
+            echo
+            echo "Known: credentials are held in memory, so **a restart signs you out**"
+            echo "(docs/MOBILE.md, gap 1)."
+          } > notes.md
+
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" --title "$TAG" --prerelease --notes-file notes.md
+
+      - name: Attach the apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -eu
+          ls -l dist
+          gh release upload "$TAG" dist/*.apk --repo "$GITHUB_REPOSITORY" --clobber
+          echo "attached to $TAG:"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "  \(.name)  \(.size) bytes"'

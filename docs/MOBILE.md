@@ -296,12 +296,53 @@ How it registers:
   required.**   **`compile + link (mobile ios)` is `continue-on-error` and not a required check** — Android is
   being tested on real devices first, and a macOS job that has never been green must not hold that
   up. It still runs and still reports; it becomes blocking the day it passes.
-- [`mobile-package.yml`](../.github/workflows/mobile-package.yml) builds the **debug-signed** APK
-  and attaches it to the run. *Debug-signed, not unsigned* — Android will not install an unsigned
-  APK at all, and `assembleDebug` signs with the SDK's auto-generated debug keystore, which is what
-  makes a sideloadable build possible without owning a release key. It is emphatically not
-  distributable: that keystore ships with every Android SDK. A release job arrives with the store
-  credentials, as a second job rather than an edit to that one.
+- [`mobile-package.yml`](../.github/workflows/mobile-package.yml) builds the APK and, on a main
+  push, mints its release. See **Releases** below.
+
+## Releases
+
+Mobile versions itself in its own tag namespace, `mobile-v*`, exactly as desktop does with
+`desktop-v*` — and the machinery is a deliberate sibling of
+[`desktop-package.yml`](../.github/workflows/desktop-package.yml), because it is the same question
+and that answer is already load-bearing here.
+
+| Trigger | Version stamped | Minted |
+| :--- | :--- | :--- |
+| push to `main` touching `mobile/` | **auto-minor**: highest `mobile-v*`, minor+1, patch 0 — and `0.1.0` when there are none | `mobile-vX.Y.0` + a GitHub prerelease with the APK attached |
+| pull request touching `mobile/` | `0.0.0-sha<sha12>` | nothing — a workflow artifact only |
+| dispatch, `publish=false` | `0.0.0-sha<sha12>` | nothing |
+| dispatch, `publish=true` + explicit `X.Y.Z` | what you typed | `mobile-vX.Y.Z` — **the manual-major door** |
+
+**The version is injected, never committed.** Git tags are the version authority
+([`RELEASING.md`](../RELEASING.md)), so the resolved version arrives as `-PmobileVersion=X.Y.Z` and
+is stamped for that build only. No version-bump commit, nothing to merge afterwards.
+
+**`versionCode` is the part Android enforces**, and it is derived rather than maintained. A device
+*refuses* an APK whose code is not greater than the installed one, so
+`androidApp/build.gradle.kts` computes `maj*10000 + min*100 + patch` — auto-minor therefore walks
+0.1.0 → 100, 0.2.0 → 200, and an upgrade always installs over its predecessor. Two humans editing
+one integer is how that invariant gets broken.
+
+Three things this scheme is careful about, each of which has a cost if it is wrong:
+
+- **Auto never crosses a major.** 0.9.0 → 0.10.0, and 1.x stays 1.x. A major is the manual door.
+- **The sort is numeric per field.** Lexically `0.10.0` sorts below `0.2.0`, so a lexical sort
+  would mint an already-existing version on the tenth release.
+- **A mint cannot re-trigger anything.** `mobile-v*` matches neither `release.yml`'s `v[0-9]*`
+  trigger nor desktop's namespace, and this workflow has no `tags:` trigger. It also could not
+  rely on one: a tag pushed with `GITHUB_TOKEN` starts no workflows, so the build and the mint have
+  to live in a single run — which is why `attach` escalates to `contents: write` rather than
+  handing off.
+
+**Every mobile release is a GitHub *prerelease*, deliberately.** These APKs are debug-signed with
+a keystore that ships inside every Android SDK on earth: installable with `adb install -r`, and not
+distributable. `/releases/latest` must never resolve to one. A Play-signed release build is a
+second job in that workflow once the store credentials exist — not an edit to the one that is
+there.
+
+Mobile does **not** currently ride the platform's own `v*` releases the way the desktop installers
+do. That is a one-line `workflow_call` away when it should, and is deliberately not wired while the
+app is pre-alpha and cutting its own versions far faster than the platform cuts its.
 
 ## The toolchain
 
