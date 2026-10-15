@@ -295,16 +295,45 @@ pub struct ConversationListRow {
     pub unread_count: i32,
 }
 
-/// The user's conversations of a given kind, newest activity first. Plans
-/// and work sessions are multiplayer: your own AND ones shared with you;
-/// chats stay strictly your own. `archived` selects
-/// the retired set (`true`) or the live one (`false`) — the same flag the
-/// list has always filtered, now a parameter so a plan the owner archived
-/// can be found again. Decay only ever sets it on kind = 'chat'.
+/// The user's conversations of a given kind, newest activity first.
 pub async fn list_conversations(
     pg: &PgPool,
     user_id: &str,
     kind: &str,
+    archived: bool,
+) -> Result<Vec<ConversationListRow>, sqlx::Error> {
+    list_conversations_in(pg, user_id, &[kind], archived).await
+}
+
+/// The user's conversations across a SET of kinds, newest activity first.
+///
+/// WHY A SET. One surface lists work sessions, plans and research threads
+/// together, and three queries merged client-side would sort three pages
+/// independently and then have to re-sort them — with the unread counts and
+/// the "shared with you" rows already computed per query. One query answers
+/// the question the surface is actually asking.
+///
+/// WHO CAN SEE WHAT, per kind. Plans and work sessions are multiplayer: your
+/// own AND ones shared with you, by member or by team. Research threads follow
+/// the RUN's audience — owner, member, or a team the run was shared with —
+/// because a thread about a report must not be readable by anyone who cannot
+/// read the report. Chats stay strictly your own.
+///
+/// THE MEMBERSHIP TEST READS THE ROW'S KIND, not the requested filter, and
+/// that is the fix a set made necessary: `$2 in ('plan','work')` was asking
+/// "did the caller ask for plans", which is the same question only while the
+/// filter holds exactly one kind. Ask for plans AND chats together under the
+/// old form and every chat in the org became visible to anyone with a
+/// membership row. The two are indistinguishable at one kind, which is why it
+/// read as correct for as long as it did.
+///
+/// `archived` selects the retired set (`true`) or the live one (`false`) — the
+/// same flag the list has always filtered, now a parameter so a plan the owner
+/// archived can be found again. Decay only ever sets it on kind = 'chat'.
+pub async fn list_conversations_in(
+    pg: &PgPool,
+    user_id: &str,
+    kinds: &[&str],
     archived: bool,
 ) -> Result<Vec<ConversationListRow>, sqlx::Error> {
     #[allow(clippy::type_complexity)] // the select's own columns, one each
@@ -344,17 +373,31 @@ pub async fn list_conversations(
          from conversations c \
          join users o on o.id = c.user_id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
-         where c.archived = $3 and c.kind = $2 \
-           and (c.user_id = $1::uuid or ($2 in ('plan', 'work') and ( \
+         where c.archived = $3 and c.kind = any($2) \
+           and (c.user_id = $1::uuid \
+             or (c.kind in ('plan', 'work') and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
              or exists(select 1 from conversation_teams ct \
                        join team_members tm on tm.team_id = ct.team_id \
-                       where ct.conversation_id = c.id and tm.user_id = $1::uuid)))) \
+                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
+             or (c.kind = 'research' and exists( \
+               select 1 from research_runs r \
+                 left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
+                where r.conversation_id = c.id \
+                  and (r.owner_user_id = $1::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $1::uuid))))) \
          order by c.updated_at desc",
     )
     .bind(user_id)
-    .bind(kind)
+    .bind(
+        kinds
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect::<Vec<String>>(),
+    )
     .bind(archived)
     .fetch_all(pg)
     .await?;
@@ -911,9 +954,17 @@ pub async fn remove_plan_team(
 }
 
 /// The caller's total unread messages across conversations of one kind — a
-/// rail badge's number. The SAME predicate `list_conversations` counts per
-/// thread (keep the two in lockstep), including the plan/work membership
-/// scoping and the -1 no-cursor floor.
+/// rail badge's number. The SAME audience predicate `list_conversations_in`
+/// filters by, including the plan/work membership scoping, the research run's
+/// own audience, and the -1 no-cursor floor.
+///
+/// KEEP THE TWO IN LOCKSTEP, and the research arm is why that instruction had
+/// teeth: without it a badge counted only the research threads you OWN while
+/// the list showed every one shared with you, so the number under the icon
+/// disagreed with the rows behind it. A comment asking a human to remember is
+/// the weakest form of this guarantee; it is here because the two queries
+/// answer different shapes (a count, and the rows) and have no third place to
+/// share.
 pub async fn conversation_unread_total(
     pg: &PgPool,
     user_id: &str,
@@ -927,12 +978,21 @@ pub async fn conversation_unread_total(
            and m.seq > coalesce(cr.last_read_seq, -1) \
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
-           and (c.user_id = $1::uuid or ($2 in ('plan', 'work') and ( \
+           and (c.user_id = $1::uuid \
+             or (c.kind in ('plan', 'work') and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
              or exists(select 1 from conversation_teams ct \
                        join team_members tm on tm.team_id = ct.team_id \
-                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))))",
+                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
+             or (c.kind = 'research' and exists( \
+               select 1 from research_runs r \
+                 left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
+                where r.conversation_id = c.id \
+                  and (r.owner_user_id = $1::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $1::uuid)))))",
     )
     .bind(user_id)
     .bind(kind)
