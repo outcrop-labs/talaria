@@ -28,7 +28,7 @@ import app.talaria.mobile.net.Ports
  * express `when (route)`.
  */
 /** The signed-in surfaces. Two for now; the doc's phases add the rest. */
-enum class SignedTab { Home, Comms }
+enum class SignedTab { Home, Comms, Assistant }
 
 sealed interface Route {
     /** The launcher: add an instance, or pick an account to open. */
@@ -141,11 +141,14 @@ class AppState(
         notice = message
     }
 
-    fun rename(
+    /** Fold what `/api/me` said into the stored account: the display name and
+     *  the model the assistant will spend on. */
+    fun applyProfile(
         account: Account,
-        displayName: String?,
+        displayName: String? = account.displayName,
+        preferredModel: String? = account.preferredModel,
     ) {
-        val next = account.copy(displayName = displayName)
+        val next = account.copy(displayName = displayName, preferredModel = preferredModel)
         store.update(next)
         val at = accounts.indexOfFirst { it.key == account.key }
         if (at >= 0) accounts[at] = next

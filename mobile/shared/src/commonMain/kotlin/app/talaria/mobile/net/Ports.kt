@@ -65,6 +65,15 @@ data class Ports(
         taskId: String,
         content: String,
     ) -> CommsResult<TaskComment>,
+    /** A chat turn, as a cold Flow of events. A FUNCTION so each turn opens
+     *  its own stream and nothing is held open between questions. */
+    val chat: (
+        instance: Instance,
+        credential: Credential,
+        model: String,
+        content: String,
+        conversationId: String?,
+    ) -> Flow<ChatEvent>,
     /** The live firehose. A FUNCTION returning a cold Flow, not a Flow: each
      *  collector opens its own stream, and an account that is not being looked
      *  at holds no connection open. */
@@ -91,5 +100,8 @@ fun httpPorts(client: HttpClient): Ports =
         },
         comment = { instance, credential, taskId, content ->
             commentOnTask(client, instance, credential, taskId, content)
+        },
+        chat = { instance, credential, model, content, conversationId ->
+            chatStream(client, instance, credential, model, content, conversationId)
         },
     )

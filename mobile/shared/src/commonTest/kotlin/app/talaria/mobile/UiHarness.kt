@@ -16,6 +16,7 @@ import app.talaria.mobile.net.OrgGlance
 import app.talaria.mobile.net.Ports
 import app.talaria.mobile.net.Channel
 import app.talaria.mobile.net.ChannelPeer
+import app.talaria.mobile.net.ChatEvent
 import app.talaria.mobile.net.CommsResult
 import app.talaria.mobile.net.Message
 import app.talaria.mobile.net.QueueBucket
@@ -26,6 +27,7 @@ import app.talaria.mobile.net.TaskDetail
 import app.talaria.mobile.net.UserEvent
 import app.talaria.mobile.net.WorkItem
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * The headless UI driver.
@@ -144,6 +146,20 @@ class FakePorts {
     val ticketsRead = mutableListOf<String>()
     val commented = mutableListOf<Pair<String, String>>()
 
+    /**
+     * The assistant's reply, as a scripted stream. A test hands in the events
+     * it wants delivered, in order, which is how a token-by-token reply is
+     * asserted without a model or a socket.
+     */
+    var chatScript: List<ChatEvent> = listOf(
+        ChatEvent.Started(conversationId = "conv-1", messageId = "msg-1"),
+        ChatEvent.Content("The deploy stalled on "),
+        ChatEvent.Content("a failing migration."),
+    )
+
+    /** Every turn sent: the model, the text, and the conversation it continued. */
+    val chatTurns = mutableListOf<Triple<String, String, String?>>()
+
     /** The firehose a test drives by hand. `emit` on this is how a test says
      *  "the server just announced something changed". */
     val eventBus = MutableSharedFlow<UserEvent>(extraBufferCapacity = 16)
@@ -174,6 +190,10 @@ class FakePorts {
                 onMarkRead(instance, credential, channelId)
             },
             events = { _, _ -> eventBus },
+            chat = { _, _, model, content, conversationId ->
+                chatTurns += Triple(model, content, conversationId)
+                flowOf(*chatScript.toTypedArray())
+            },
             task = { instance, credential, taskId ->
                 ticketsRead += taskId
                 onTask(instance, credential, taskId)
@@ -198,11 +218,15 @@ fun testStore(
     signedIn: Boolean,
     username: String = "jon@outcroplabs.com",
     displayName: String? = "Jon Iler",
+    preferredModel: String? = "claude-opus-5",
 ): InMemoryAccountStore =
     if (signedIn) {
         InMemoryAccountStore(
             instances = listOf(testInstance()),
-            signedIn = mapOf(Account(TEST_UUID, username, displayName) to Credential.Session("sid-abc")),
+            signedIn =
+                mapOf(
+                    Account(TEST_UUID, username, displayName, preferredModel) to Credential.Session("sid-abc"),
+                ),
         )
     } else {
         InMemoryAccountStore(instances = listOf(testInstance()))

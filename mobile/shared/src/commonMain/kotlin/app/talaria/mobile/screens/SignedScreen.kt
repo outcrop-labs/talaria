@@ -150,11 +150,20 @@ fun SignedScreen(
                 }
             }
 
-            if (state.tab == SignedTab.Comms && instance != null) {
+            if (instance != null) {
                 val credential = state.credential(account)
                 if (credential != null) {
-                    CommsScreen(state, account, instance, credential)
-                    return@Column
+                    when (state.tab) {
+                        SignedTab.Comms -> {
+                            CommsScreen(state, account, instance, credential)
+                            return@Column
+                        }
+                        SignedTab.Assistant -> {
+                            AssistantScreen(state, account, instance, credential)
+                            return@Column
+                        }
+                        SignedTab.Home -> Unit
+                    }
                 }
             }
 

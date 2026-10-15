@@ -69,7 +69,11 @@ fun SignInScreen(
                     // the credential works for something other than login.
                     val me = state.ports.me(instance, result.credential)
                     if (me is MeResult.Ok) {
-                        me.me.name?.let { state.rename(result.account, it) }
+                        state.applyProfile(
+                            result.account,
+                            displayName = me.me.name,
+                            preferredModel = me.me.preferredModel,
+                        )
                     }
                     busy = false
                     state.go(Route.Signed(state.accounts.firstOrNull { it.key == result.account.key } ?: result.account))

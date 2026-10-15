@@ -8,9 +8,10 @@ import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
-import io.ktor.utils.io.readUTF8Line
+import io.ktor.utils.io.readLine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -33,6 +34,10 @@ import kotlinx.serialization.json.JsonClassDiscriminator
  * the resolved session, so the only firehose this route can construct is the
  * caller's own.
  */
+// `JsonClassDiscriminator` is still opt-in. The discriminator is not optional
+// here: the api serializes its enum with `tag = "type"`, so this annotation is
+// what makes the wire shape and the Kotlin shape the same thing.
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 @JsonClassDiscriminator("type")
 sealed interface UserEvent {
@@ -133,7 +138,7 @@ fun userEvents(
                 val channel = response.bodyAsChannel()
                 val parser = SseParser()
                 while (true) {
-                    val line = channel.readUTF8Line() ?: break
+                    val line = channel.readLine() ?: break
                     // readUTF8Line strips the terminator, so the blank line
                     // that dispatches a frame has to be put back.
                     for (frame in parser.feed(line + "\n")) {

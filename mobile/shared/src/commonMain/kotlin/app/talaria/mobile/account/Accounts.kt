@@ -38,6 +38,16 @@ data class Account(
     val username: String,
     /** Display name once `/api/me` has been read; the username until then. */
     val displayName: String? = null,
+    /**
+     * The model this person chose, from `/api/me`'s `preferredModel`.
+     *
+     * Carried on the account because `POST /api/chat` REQUIRES a model and the
+     * phone has no business picking one: choosing a model is a configuration
+     * decision, and configuration is a desk surface by the scope line. When
+     * this is null the assistant says so instead of guessing — a wrong model
+     * silently spends somebody's money on the wrong tier.
+     */
+    val preferredModel: String? = null,
 ) {
     val key: String get() = "$instanceId/$username"
     val shown: String get() = displayName?.takeIf { it.isNotBlank() } ?: username
