@@ -4,6 +4,7 @@ package app.talaria.mobile
 // assertions from this one package, and listing them adds noise without adding
 // information.
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.v2.runComposeUiTest
 import app.talaria.mobile.account.InMemoryAccountStore
 import app.talaria.mobile.instance.Beacon
 import app.talaria.mobile.instance.ProbeResult

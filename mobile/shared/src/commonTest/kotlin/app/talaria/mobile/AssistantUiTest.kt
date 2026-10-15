@@ -1,6 +1,7 @@
 package app.talaria.mobile
 
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.v2.runComposeUiTest
 import app.talaria.mobile.net.ChatEvent
 import app.talaria.mobile.net.ToolStatus
 import app.talaria.mobile.screens.TAG_ASSISTANT

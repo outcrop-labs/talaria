@@ -1,6 +1,7 @@
 package app.talaria.mobile
 
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.v2.runComposeUiTest
 import app.talaria.mobile.net.CommsResult
 import app.talaria.mobile.net.CostResult
 import app.talaria.mobile.net.WorkSessionRead

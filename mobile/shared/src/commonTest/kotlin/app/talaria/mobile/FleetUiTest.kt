@@ -1,6 +1,7 @@
 package app.talaria.mobile
 
 import androidx.compose.ui.test.*
+import androidx.compose.ui.test.v2.runComposeUiTest
 import app.talaria.mobile.net.AgentAction
 import app.talaria.mobile.net.AgentDef
 import app.talaria.mobile.net.CommsResult

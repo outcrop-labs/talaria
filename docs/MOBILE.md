@@ -8,9 +8,7 @@ surfaces — the decision queue (with the review gate), comms, the assistant, th
 **Not yet**, and named rather than implied: the `iosApp/` Xcode project (the shared framework
 compiles and links in CI, but nothing consumes it yet), persistent credential storage (**a restart
 signs you out** — it waits on gap 1 for the reason given there), push notifications (gap 2),
-agent DMs as a distinct surface from channels, and a `mobile-package.yml`. The UI tests also want
-migrating to `runComposeUiTest` v2, whose `StandardTestDispatcher` default is closer to production
-than the v1 immediate-execution one.
+agent DMs as a distinct surface from channels, and a `mobile-package.yml`.
 
 This page is the scope of record: what the app is, what it deliberately is not, the two api gaps it
 opens, and the stack it rides.
@@ -105,7 +103,7 @@ Three layers, and the split exists because an earlier version collapsed them and
 
 | Layer | What it answers | How |
 | :--- | :--- | :--- |
-| **Headless UI** | behaviour — does a bad URL show a reason, does an expired session drop the account, does each account's own credential ride its own request | `runComposeUiTest` composes the real tree against Skia's software renderer. No display, no emulator, no screenshots. |
+| **Headless UI** | behaviour — does a bad URL show a reason, does an expired session drop the account, does each account's own credential ride its own request | `runComposeUiTest` (the **v2** API, whose `StandardTestDispatcher` default queues coroutines the way production does) composes the real tree against Skia's software renderer. No display, no emulator, no screenshots. |
 | **Wire shape** | does the api's JSON decode into what the screens read — camelCase fields, admin-only nulls, absent-vs-null, unknown fields tolerated | plain decode tests against payloads transcribed from the api's structs |
 | **Real socket** | does the client speak HTTP — url building, header writing, multi-attribute `Set-Cookie` parsing, a chunked stream read as it arrives | a JDK `HttpServer` on an ephemeral port, driven with Ktor's CIO engine |
 
