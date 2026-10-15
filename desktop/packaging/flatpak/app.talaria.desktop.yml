@@ -24,6 +24,12 @@ finish-args:
   # that ships an older binary.
   - --env=WEBKIT_DISABLE_DMABUF_RENDERER=1
   - --talk-name=org.freedesktop.portal.* # browser-based OAuth, when it lands
+  # notify.rs posts through notify-rust, which speaks the legacy
+  # org.freedesktop.Notifications interface straight over the session bus —
+  # it has no portal path, so the portal grant above does not cover it and
+  # `show()` fails inside the sandbox. Without this line the flatpak build is
+  # the one package where notifications silently never appear.
+  - --talk-name=org.freedesktop.Notifications
 
 modules:
   - name: talaria-desktop
