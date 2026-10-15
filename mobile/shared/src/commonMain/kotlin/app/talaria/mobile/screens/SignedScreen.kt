@@ -162,6 +162,10 @@ fun SignedScreen(
                             AssistantScreen(state, account, instance, credential)
                             return@Column
                         }
+                        SignedTab.Fleet -> {
+                            FleetScreen(state, account, instance, credential)
+                            return@Column
+                        }
                         SignedTab.Home -> Unit
                     }
                 }

@@ -65,6 +65,13 @@ data class Ports(
         taskId: String,
         content: String,
     ) -> CommsResult<TaskComment>,
+    val fleet: suspend (instance: Instance, credential: Credential) -> CommsResult<List<FleetAgent>>,
+    val control: suspend (
+        instance: Instance,
+        credential: Credential,
+        agentId: String,
+        action: AgentAction,
+    ) -> CommsResult<Unit>,
     /** A chat turn, as a cold Flow of events. A FUNCTION so each turn opens
      *  its own stream and nothing is held open between questions. */
     val chat: (
@@ -103,5 +110,9 @@ fun httpPorts(client: HttpClient): Ports =
         },
         chat = { instance, credential, model, content, conversationId ->
             chatStream(client, instance, credential, model, content, conversationId)
+        },
+        fleet = { instance, credential -> readFleet(client, instance, credential) },
+        control = { instance, credential, agentId, action ->
+            controlAgent(client, instance, credential, agentId, action)
         },
     )

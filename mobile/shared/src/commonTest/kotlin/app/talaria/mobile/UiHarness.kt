@@ -16,7 +16,11 @@ import app.talaria.mobile.net.OrgGlance
 import app.talaria.mobile.net.Ports
 import app.talaria.mobile.net.Channel
 import app.talaria.mobile.net.ChannelPeer
+import app.talaria.mobile.net.AgentAction
+import app.talaria.mobile.net.AgentDef
 import app.talaria.mobile.net.ChatEvent
+import app.talaria.mobile.net.ContainerState
+import app.talaria.mobile.net.FleetAgent
 import app.talaria.mobile.net.CommsResult
 import app.talaria.mobile.net.Message
 import app.talaria.mobile.net.QueueBucket
@@ -146,6 +150,17 @@ class FakePorts {
     val ticketsRead = mutableListOf<String>()
     val commented = mutableListOf<Pair<String, String>>()
 
+    var onFleet: suspend (Instance, Credential) -> CommsResult<List<FleetAgent>> = { _, _ ->
+        CommsResult.Ok(sampleFleet())
+    }
+
+    var onControl: suspend (Instance, Credential, String, AgentAction) -> CommsResult<Unit> = { _, _, _, _ ->
+        CommsResult.Ok(Unit)
+    }
+
+    /** Every control action asked for: the agent and what was done to it. */
+    val controlled = mutableListOf<Pair<String, AgentAction>>()
+
     /**
      * The assistant's reply, as a scripted stream. A test hands in the events
      * it wants delivered, in order, which is how a token-by-token reply is
@@ -190,6 +205,11 @@ class FakePorts {
                 onMarkRead(instance, credential, channelId)
             },
             events = { _, _ -> eventBus },
+            fleet = { instance, credential -> onFleet(instance, credential) },
+            control = { instance, credential, agentId, action ->
+                controlled += agentId to action
+                onControl(instance, credential, agentId, action)
+            },
             chat = { _, _, model, content, conversationId ->
                 chatTurns += Triple(model, content, conversationId)
                 flowOf(*chatScript.toTypedArray())
@@ -348,4 +368,34 @@ fun sampleTicket(
         outcome = "Session refresh added; suite green.",
         updatedAt = "2026-10-14T09:00:00Z",
         approvedAt = approvedAt,
+    )
+
+/**
+ * A fleet shaped like a real one: a healthy agent, one failing its
+ * healthcheck, a stopped one, and an agent Talaria does not run as a service.
+ */
+fun sampleFleet(): List<FleetAgent> =
+    listOf(
+        FleetAgent(
+            def = AgentDef(id = "a-sales", slug = "sales", displayName = "Sales", department = "sales", managed = true),
+            container = ContainerState(name = "fleet-sales", state = "running", status = "Up 2 hours (healthy)", health = "healthy"),
+        ),
+        FleetAgent(
+            def = AgentDef(id = "a-eng", slug = "eng", displayName = "Engineering", department = "engineering", managed = true),
+            container =
+                ContainerState(
+                    name = "fleet-eng",
+                    state = "running",
+                    status = "Up 5 minutes (unhealthy)",
+                    health = "unhealthy",
+                ),
+        ),
+        FleetAgent(
+            def = AgentDef(id = "a-content", slug = "content", displayName = "Content", department = "content", managed = true),
+            container = null,
+        ),
+        FleetAgent(
+            def = AgentDef(id = "a-ext", slug = "ext", displayName = "External", department = "ext", managed = false),
+            container = null,
+        ),
     )

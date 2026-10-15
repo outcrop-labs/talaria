@@ -28,7 +28,7 @@ import app.talaria.mobile.net.Ports
  * express `when (route)`.
  */
 /** The signed-in surfaces. Two for now; the doc's phases add the rest. */
-enum class SignedTab { Home, Comms, Assistant }
+enum class SignedTab { Home, Comms, Assistant, Fleet }
 
 sealed interface Route {
     /** The launcher: add an instance, or pick an account to open. */
