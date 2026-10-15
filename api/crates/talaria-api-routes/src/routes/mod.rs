@@ -1685,6 +1685,14 @@ pub fn router(state: AppState) -> Router {
         // The agent writes down what it is going to do. No id in the path: the
         // conversation is whichever one this agent is mid-turn in, resolved
         // server-side so a model cannot name the wrong thread.
+        // The agent asks the person something it genuinely cannot infer. The
+        // chip's buttons answer through the composer's own send path, so
+        // there is no answer endpoint beside this one.
+        .route(
+            "/api/agent/ask",
+            post(talaria_routes_comms::comms::agent_ask::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/agent/todo",
             put(talaria_routes_comms::comms::agent_todo::put)

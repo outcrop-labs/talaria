@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+talaria-agent-ask = { workspace = true }
 talaria-agent-todo = { workspace = true }
 talaria-activity = { workspace = true }
 talaria-agent-auth = { workspace = true }

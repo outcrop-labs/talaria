@@ -465,7 +465,11 @@ fn dedupe(chips: Vec<Value>) -> Vec<Value> {
 /// agent had already moved past, which is worse than showing no plan at all,
 /// because it reads as current.
 fn snapshot_kind(kind: &str) -> bool {
-    kind == "todo"
+    // `todo`: the plan, rewritten several times inside one turn.
+    // `question`: keyed on the question's own words, so a collision means the
+    // SAME question asked again — and fresher options are more use to the
+    // person than the ones that did not get answered.
+    matches!(kind, "todo" | "question")
 }
 
 pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
@@ -1033,6 +1037,28 @@ mod tests {
         assert_eq!(arr[0]["id"], "todo");
         assert_eq!(arr[0]["label"], "1/2 done");
         assert_eq!(arr[1]["summary"], "first", "an approval is not overwritten");
+    }
+
+    #[test]
+    fn a_repeated_question_refreshes_and_a_different_one_joins_it() {
+        // The chip id is keyed on the question's words: the same question gets
+        // the newer options, a different question is its own chip because both
+        // are still open.
+        let existing = json!([{ "id": "ask:a1", "kind": "question", "label": "Which board?",
+                                "options": [{ "label": "old" }] }]);
+        let merged = merge_chips(
+            &existing,
+            &[
+                json!({ "id": "ask:a1", "kind": "question", "label": "Which board?",
+                        "options": [{ "label": "new" }] }),
+                json!({ "id": "ask:b2", "kind": "question", "label": "Which agent?",
+                        "options": [{ "label": "x" }] }),
+            ],
+        );
+        let arr = merged.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["options"][0]["label"], "new");
+        assert_eq!(arr[1]["label"], "Which agent?");
     }
 
     #[test]

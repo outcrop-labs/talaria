@@ -121,3 +121,28 @@ describe('the agent plan chip', () => {
     expect(plan.items?.filter((i) => i.status === 'active')).toHaveLength(1)
   })
 })
+
+describe('the ask chip', () => {
+  const ask: ChatChip = {
+    id: 'ask:9f2',
+    kind: 'question',
+    label: 'Which board should these tickets land on?',
+    description: 'Both have an inbox column.',
+    options: [
+      { label: 'Platform', detail: 'the infra board' },
+      { label: 'Growth', detail: null },
+    ],
+  }
+
+  it('survives the prose filter so a question cannot scroll past unanswered', () => {
+    expect(chipsBesideProse([ask], 'I need to know which board before I file these.')).toEqual([ask])
+  })
+
+  it('carries the answers as their own words, which is what gets sent', () => {
+    // Clicking sends the label through the composer's send path, so the reply
+    // is an ordinary message and there is no second record of the answer.
+    expect(ask.options?.map((o) => o.label)).toEqual(['Platform', 'Growth'])
+    // A missing detail is null rather than absent — the server emits it.
+    expect(ask.options?.[1]?.detail).toBeNull()
+  })
+})

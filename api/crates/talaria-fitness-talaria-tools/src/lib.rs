@@ -239,6 +239,27 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             needs_google: false,
         },
         SandboxTool {
+            name: "ask",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Ask the person a question with concrete options, when you genuinely cannot tell which of several things they meant and guessing would send you down the wrong path. Give the ONE thing that is blocking you and 2 to 6 short answers; they pick one and their choice arrives as your next message. END YOUR TURN after asking — do not carry on and act on the guess you just said you could not make. Use it for a real fork (which board, which of two documents, replace or append), not for permission to do what they already asked for, and not for anything you could settle by reading. If the question is open-ended, just ask it in your own words instead: this tool is for competing concrete answers.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "question": str_schema("The question, in one sentence"),
+                    "detail": str_schema("One more sentence of context, if the question needs it to be answerable"),
+                    "options": json!({
+                        "type": "array",
+                        "description": "The answers to offer, 2 to 6. Each must read differently from the others.",
+                        "items": { "type": "string" },
+                    }),
+                },
+                "required": ["question", "options"],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        SandboxTool {
             name: "todo",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Comms,
@@ -1763,9 +1784,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 83);
+        assert_eq!(TALARIA_TOOLS.len(), 84);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 83);
+        assert_eq!(names.len(), 84);
     }
 
     #[test]

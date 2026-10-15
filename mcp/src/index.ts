@@ -725,6 +725,32 @@ server.registerTool(
 )
 
 server.registerTool(
+  'ask',
+  {
+    description:
+      "Ask the person a question with concrete options, when you genuinely cannot tell which of several things they meant and guessing would send you down the wrong path. Give the ONE thing that is blocking you and 2 to 6 short answers; they pick one and their choice arrives as your next message. END YOUR TURN after asking — do not carry on and act on the guess you just said you could not make. Use it for a real fork (which board, which of two documents, replace or append), not for permission to do what they already asked for, and not for anything you could settle by reading. If the question is open-ended, just ask it in your own words instead: this tool is for competing concrete answers.",
+    inputSchema: {
+      question: z.string().min(1).max(400).describe('The question, in one sentence — "Which board should these tickets land on?"'),
+      detail: z.string().max(400).optional().describe('One more sentence of context, if the question needs it to be answerable'),
+      options: z
+        .array(
+          z.union([
+            z.string().min(1).max(80).describe('The answer, as the short words that go on the button'),
+            z.object({
+              label: z.string().min(1).max(80).describe('The answer, as the short words that go on the button'),
+              detail: z.string().max(200).describe('What picking this one means or costs'),
+            }),
+          ]),
+        )
+        .min(2)
+        .max(6)
+        .describe('The answers to offer, 2 to 6. Each must read differently from the others — the answer is sent as the option\'s own words.'),
+    },
+  },
+  async ({ question, detail, options }) => ok(await api('POST', '/api/agent/ask', { question, detail, options })),
+)
+
+server.registerTool(
   'todo',
   {
     description:

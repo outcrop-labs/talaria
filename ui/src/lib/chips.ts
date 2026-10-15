@@ -11,7 +11,7 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo'
+export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -50,6 +50,16 @@ export interface ChatChip {
    *  somebody scrolling back should see the plan of that moment rather than a
    *  diff they have to replay forwards. */
   items?: TodoItem[]
+  /** `question` chips only: the answers the agent offered. Clicking one sends
+   *  its own words through the composer, so the answer is an ordinary message
+   *  rather than a second record of what was decided. */
+  options?: AskOption[]
+}
+
+/** One answer the agent offered (the `ask` tool). */
+export interface AskOption {
+  label: string
+  detail?: string | null
 }
 
 /** One step of the agent's own plan (the `todo` tool). */
