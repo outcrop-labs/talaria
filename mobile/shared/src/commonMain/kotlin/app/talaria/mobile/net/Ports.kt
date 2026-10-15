@@ -66,6 +66,13 @@ data class Ports(
         content: String,
     ) -> CommsResult<TaskComment>,
     val fleet: suspend (instance: Instance, credential: Credential) -> CommsResult<List<FleetAgent>>,
+    val cost: suspend (instance: Instance, credential: Credential) -> CostResult,
+    val workSession: suspend (
+        instance: Instance,
+        credential: Credential,
+        taskId: String,
+    ) -> CommsResult<WorkSessionRead>,
+    val stopSession: suspend (instance: Instance, credential: Credential, taskId: String) -> CommsResult<Unit>,
     val control: suspend (
         instance: Instance,
         credential: Credential,
@@ -112,6 +119,9 @@ fun httpPorts(client: HttpClient): Ports =
             chatStream(client, instance, credential, model, content, conversationId)
         },
         fleet = { instance, credential -> readFleet(client, instance, credential) },
+        cost = { instance, credential -> readCost(client, instance, credential) },
+        workSession = { instance, credential, taskId -> readWorkSession(client, instance, credential, taskId) },
+        stopSession = { instance, credential, taskId -> stopWorkSession(client, instance, credential, taskId) },
         control = { instance, credential, agentId, action ->
             controlAgent(client, instance, credential, agentId, action)
         },

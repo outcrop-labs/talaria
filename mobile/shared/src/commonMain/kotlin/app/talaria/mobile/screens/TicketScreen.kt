@@ -40,6 +40,7 @@ import app.talaria.mobile.net.ReviewVerdict
 import app.talaria.mobile.net.Task
 import app.talaria.mobile.net.TaskComment
 import app.talaria.mobile.net.TaskDetail
+import app.talaria.mobile.net.WorkSession
 import kotlinx.coroutines.launch
 
 /**
@@ -67,6 +68,9 @@ const val TAG_COMMENT = "ticket-comment"
 const val TAG_TICKET_BACK = "ticket-back"
 const val TAG_TICKET_ERROR = "ticket-error"
 const val TAG_GATE = "review-gate"
+const val TAG_SESSION = "work-session"
+const val TAG_SESSION_TAIL = "work-session-tail"
+const val TAG_SESSION_STOP = "work-session-stop"
 
 private sealed interface TicketLoad {
     data object Busy : TicketLoad
@@ -89,6 +93,7 @@ fun TicketScreen(
     var draft by remember { mutableStateOf("") }
     var acting by remember { mutableStateOf(false) }
     var actionError by remember { mutableStateOf<String?>(null) }
+    var session by remember { mutableStateOf<WorkSession?>(null) }
     val scope = rememberCoroutineScope()
 
     /** Every write re-reads through the same path the api does, so the screen
@@ -107,6 +112,17 @@ fun TicketScreen(
     }
 
     LaunchedEffect(taskId) { load() }
+
+    // The live run, if there is one. Read once on open rather than polled: the
+    // api hands back its own `wait` hint for a ticker, and a phone that polls a
+    // ticket in the background is a phone with a flat battery. Re-read happens
+    // when the person acts, which is when it can have changed.
+    suspend fun loadSession() {
+        val read = state.ports.workSession(instance, credential, taskId)
+        if (read is CommsResult.Ok) session = read.value.session
+    }
+
+    LaunchedEffect(taskId, "session") { loadSession() }
 
     fun <T> handle(result: CommsResult<T>, onOk: (T) -> Unit) {
         when (result) {
@@ -176,6 +192,19 @@ fun TicketScreen(
                     )
                 }
 
+                session?.let { live ->
+                    LiveSession(live, acting) {
+                        acting = true
+                        actionError = null
+                        scope.launch {
+                            handle(state.ports.stopSession(instance, credential, taskId)) {}
+                            loadSession()
+                            load()
+                            acting = false
+                        }
+                    }
+                }
+
                 ReviewGate(task, notes, { notes = it }, acting, ::decide)
                 Comments(current.detail.comments, draft, { draft = it }, acting, ::comment)
             }
@@ -220,6 +249,64 @@ private fun TicketHeader(task: Task) {
     }
     task.errorMessage?.takeIf { it.isNotBlank() }?.let {
         Text(it, style = MaterialTheme.typography.bodySmall, color = Mercury.Dark.danger)
+    }
+}
+
+/**
+ * What the agent is doing on this ticket, right now.
+ *
+ * The reply tail is the one place in this app where an agent's own words
+ * arrive without a second fetch, and that is sound here: it is this ticket's
+ * run, read through a route ACL'd on this ticket.
+ */
+@Composable
+private fun LiveSession(
+    session: WorkSession,
+    busy: Boolean,
+    stop: () -> Unit,
+) {
+    Card(Modifier.fillMaxWidth().testTag(TAG_SESSION)) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        "working now",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Mercury.accent,
+                    )
+                    Text(
+                        listOfNotNull(
+                            session.agentModel,
+                            session.phase ?: session.state,
+                            session.turn?.let { "turn $it" },
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Mercury.Dark.muted,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                // Ending a run in flight is destructive in the way that
+                // matters, so: orange outline, never an orange fill.
+                OutlinedButton(
+                    onClick = stop,
+                    enabled = !busy,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, SolidColor(Mercury.Dark.danger)),
+                    modifier = Modifier.testTag(TAG_SESSION_STOP),
+                ) { Text("Stop", color = Mercury.Dark.danger) }
+            }
+            session.lastTail?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Mercury.Dark.readout,
+                    modifier = Modifier.testTag(TAG_SESSION_TAIL),
+                )
+            }
+        }
     }
 }
 

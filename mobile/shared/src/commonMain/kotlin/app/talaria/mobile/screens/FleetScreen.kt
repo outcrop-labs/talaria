@@ -38,6 +38,7 @@ import app.talaria.mobile.account.Instance
 import app.talaria.mobile.mercury.Mercury
 import app.talaria.mobile.net.AgentAction
 import app.talaria.mobile.net.CommsResult
+import app.talaria.mobile.net.CostResult
 import app.talaria.mobile.net.FleetAgent
 import kotlinx.coroutines.launch
 
@@ -63,6 +64,8 @@ const val TAG_FLEET_STOP = "fleet-stop"
 const val TAG_FLEET_START = "fleet-start"
 const val TAG_FLEET_RESTART = "fleet-restart"
 const val TAG_FLEET_UNMANAGED = "fleet-unmanaged"
+const val TAG_COST = "fleet-cost"
+const val TAG_COST_FORBIDDEN = "fleet-cost-forbidden"
 
 private sealed interface FleetLoad {
     data object Busy : FleetLoad
@@ -82,6 +85,7 @@ fun FleetScreen(
     var load by remember { mutableStateOf<FleetLoad>(FleetLoad.Busy) }
     var acting by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var cost by remember { mutableStateOf<CostResult?>(null) }
     val scope = rememberCoroutineScope()
 
     suspend fun load() {
@@ -108,6 +112,18 @@ fun FleetScreen(
     }
 
     LaunchedEffect(instance.id) { load() }
+
+    // The ledger lives here because this is the "what is my workforce doing"
+    // surface, and spend is the same question asked about money. It does NOT
+    // get its own tab: it is one line, and it is information rather than
+    // action.
+    LaunchedEffect(instance.id, "cost") {
+        val read = state.ports.cost(instance, credential)
+        // An expired session is the roster read's business — it already signs
+        // the account out. The ledger just stops asking.
+        if (read is CostResult.Expired) return@LaunchedEffect
+        cost = read
+    }
 
     fun control(
         agent: FleetAgent,
@@ -136,6 +152,29 @@ fun FleetScreen(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.testTag(TAG_FLEET_ERROR),
             )
+        }
+
+        when (val ledger = cost) {
+            is CostResult.Ok -> {
+                val today = ledger.overview.totals.today
+                Text(
+                    "today: ${'$'}${format2(today.cost)} · ${today.tokens} tokens · ${today.generations} generations",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Mercury.Dark.readout,
+                    modifier = Modifier.testTag(TAG_COST),
+                )
+            }
+            // Not an error. Most members do not hold the Observability view,
+            // and the permission model working as designed should not read as
+            // something broken.
+            CostResult.Forbidden ->
+                Text(
+                    "Spend is not shown for this account.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Mercury.Dark.inkDim,
+                    modifier = Modifier.testTag(TAG_COST_FORBIDDEN),
+                )
+            is CostResult.Failed, CostResult.Expired, null -> Unit
         }
 
         when (val current = load) {
@@ -252,6 +291,14 @@ private fun AgentRow(
             }
         }
     }
+}
+
+/** Two decimal places without a platform formatter — `kotlin.text` has no
+ *  `%.2f` in common code, and money that renders as 4.199999 is money nobody
+ *  trusts. */
+private fun format2(value: Double): String {
+    val cents = kotlin.math.round(value * 100).toLong()
+    return "${cents / 100}.${(cents % 100).toString().padStart(2, '0')}"
 }
 
 private fun dotColor(agent: FleetAgent): Color =

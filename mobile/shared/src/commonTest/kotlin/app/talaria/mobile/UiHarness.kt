@@ -20,6 +20,12 @@ import app.talaria.mobile.net.AgentAction
 import app.talaria.mobile.net.AgentDef
 import app.talaria.mobile.net.ChatEvent
 import app.talaria.mobile.net.ContainerState
+import app.talaria.mobile.net.CostOverview
+import app.talaria.mobile.net.CostResult
+import app.talaria.mobile.net.CostTotals
+import app.talaria.mobile.net.CostWindow
+import app.talaria.mobile.net.WorkSession
+import app.talaria.mobile.net.WorkSessionRead
 import app.talaria.mobile.net.FleetAgent
 import app.talaria.mobile.net.CommsResult
 import app.talaria.mobile.net.Message
@@ -161,6 +167,22 @@ class FakePorts {
     /** Every control action asked for: the agent and what was done to it. */
     val controlled = mutableListOf<Pair<String, AgentAction>>()
 
+    /** Most members do not hold view:/observability, so Forbidden is the
+     *  realistic default rather than an error case. Tests that care about the
+     *  ledger opt in. */
+    var onCost: suspend (Instance, Credential) -> CostResult = { _, _ -> CostResult.Forbidden }
+
+    var onWorkSession: suspend (Instance, Credential, String) -> CommsResult<WorkSessionRead> = { _, _, _ ->
+        CommsResult.Ok(WorkSessionRead(session = null))
+    }
+
+    var onStopSession: suspend (Instance, Credential, String) -> CommsResult<Unit> = { _, _, _ ->
+        CommsResult.Ok(Unit)
+    }
+
+    /** Tickets whose run was stopped. */
+    val stoppedSessions = mutableListOf<String>()
+
     /**
      * The assistant's reply, as a scripted stream. A test hands in the events
      * it wants delivered, in order, which is how a token-by-token reply is
@@ -206,6 +228,12 @@ class FakePorts {
             },
             events = { _, _ -> eventBus },
             fleet = { instance, credential -> onFleet(instance, credential) },
+            cost = { instance, credential -> onCost(instance, credential) },
+            workSession = { instance, credential, taskId -> onWorkSession(instance, credential, taskId) },
+            stopSession = { instance, credential, taskId ->
+                stoppedSessions += taskId
+                onStopSession(instance, credential, taskId)
+            },
             control = { instance, credential, agentId, action ->
                 controlled += agentId to action
                 onControl(instance, credential, agentId, action)
@@ -398,4 +426,45 @@ fun sampleFleet(): List<FleetAgent> =
             def = AgentDef(id = "a-ext", slug = "ext", displayName = "External", department = "ext", managed = false),
             container = null,
         ),
+    )
+
+/** A ledger with a day's spend on it. */
+fun sampleCost(
+    todayCost: Double = 4.19,
+    todayPrompt: Int = 90_000,
+    todayCompletion: Int = 30_000,
+    generations: Int = 214,
+): CostResult.Ok =
+    CostResult.Ok(
+        CostOverview(
+            totals =
+                CostTotals(
+                    today =
+                        CostWindow(
+                            prompt = todayPrompt,
+                            completion = todayCompletion,
+                            generations = generations,
+                            cost = todayCost,
+                        ),
+                ),
+        ),
+    )
+
+/** A run in flight on a ticket, with the tail of what the agent last said. */
+fun sampleSession(
+    phase: String? = "acting",
+    turn: Int? = 7,
+    tail: String? = "Re-ran the migration; it passes now.",
+): WorkSessionRead =
+    WorkSessionRead(
+        session =
+            WorkSession(
+                runId = "run-1",
+                state = "running",
+                phase = phase,
+                agentModel = "Muse",
+                turn = turn,
+                lastTail = tail,
+            ),
+        wait = 3,
     )
