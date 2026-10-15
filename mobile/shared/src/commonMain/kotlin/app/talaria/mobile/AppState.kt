@@ -68,11 +68,18 @@ class AppState(
     var openChannelId: String? by mutableStateOf(null)
         private set
 
+    /** The ticket being looked at, if any. Null is whatever surface was
+     *  underneath — a ticket is opened FROM a queue or a notification, so it
+     *  overlays rather than replacing a tab. */
+    var openTicketId: String? by mutableStateOf(null)
+        private set
+
     fun go(to: Route) {
         route = to
         // Leaving an account closes whatever was open inside it: arriving back
-        // later on a channel you did not choose is disorienting.
+        // later on a channel or ticket you did not choose is disorienting.
         openChannelId = null
+        openTicketId = null
     }
 
     fun show(tab: SignedTab) {
@@ -82,6 +89,10 @@ class AppState(
 
     fun openChannel(id: String?) {
         openChannelId = id
+    }
+
+    fun openTicket(id: String?) {
+        openTicketId = id
     }
 
     fun instanceOf(account: Account): Instance? = instances.firstOrNull { it.id == account.instanceId }

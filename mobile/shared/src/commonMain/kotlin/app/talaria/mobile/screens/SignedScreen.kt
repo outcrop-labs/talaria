@@ -1,5 +1,6 @@
 package app.talaria.mobile.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -140,6 +141,15 @@ fun SignedScreen(
                 }
             }
 
+            val openTicket = state.openTicketId
+            if (openTicket != null && instance != null) {
+                val credential = state.credential(account)
+                if (credential != null) {
+                    TicketScreen(state, account, instance, credential, openTicket)
+                    return@Column
+                }
+            }
+
             if (state.tab == SignedTab.Comms && instance != null) {
                 val credential = state.credential(account)
                 if (credential != null) {
@@ -164,14 +174,17 @@ fun SignedScreen(
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.testTag(Tags.ADD_ERROR),
                     )
-                is Load.Ready -> HomeBody(current.summary)
+                is Load.Ready -> HomeBody(current.summary) { state.openTicket(it) }
             }
         }
     }
 }
 
 @Composable
-private fun HomeBody(summary: HomeSummary) {
+private fun HomeBody(
+    summary: HomeSummary,
+    onOpenTicket: (String) -> Unit,
+) {
     Text(
         if (summary.needsYou == 0) {
             "Nothing is waiting on you."
@@ -187,9 +200,9 @@ private fun HomeBody(summary: HomeSummary) {
         // Review first, deliberately: clearing the gate is the five-second
         // decision the whole app is for. Blocked is next because an agent is
         // stopped until a person moves. Triage last — nothing is waiting on it.
-        item { Queue("Review", summary.queues.review, Mercury.Dark.warning, TAG_REVIEW) }
-        item { Queue("Blocked", summary.queues.blocked, Mercury.Dark.danger, TAG_BLOCKED) }
-        item { Queue("Triage", summary.queues.triage, Mercury.Dark.muted, TAG_TRIAGE) }
+        item { Queue("Review", summary.queues.review, Mercury.Dark.warning, TAG_REVIEW, onOpenTicket) }
+        item { Queue("Blocked", summary.queues.blocked, Mercury.Dark.danger, TAG_BLOCKED, onOpenTicket) }
+        item { Queue("Triage", summary.queues.triage, Mercury.Dark.muted, TAG_TRIAGE, onOpenTicket) }
         item {
             Text(
                 "${summary.unread} unread · ${summary.boards} boards",
@@ -207,6 +220,7 @@ private fun Queue(
     bucket: QueueBucket,
     accent: Color,
     tag: String,
+    onOpenTicket: (String) -> Unit,
 ) {
     if (bucket.count == 0) return
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.testTag(tag)) {
@@ -215,7 +229,7 @@ private fun Queue(
             style = MaterialTheme.typography.labelLarge,
             color = accent,
         )
-        bucket.items.forEach { item -> ItemRow(item) }
+        bucket.items.forEach { item -> ItemRow(item) { onOpenTicket(item.id) } }
         // The count is the queue; the items are a window onto it. Saying so
         // beats a list that silently stops short.
         if (bucket.count > bucket.items.size) {
@@ -229,8 +243,11 @@ private fun Queue(
 }
 
 @Composable
-private fun ItemRow(item: WorkItem) {
-    Card(modifier = Modifier.fillMaxWidth().testTag(TAG_WORK_ITEM)) {
+private fun ItemRow(
+    item: WorkItem,
+    onOpen: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth().testTag(TAG_WORK_ITEM).clickable(onClick = onOpen)) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(item.label, color = Mercury.Dark.readout, style = MaterialTheme.typography.bodyMedium)
             Text(

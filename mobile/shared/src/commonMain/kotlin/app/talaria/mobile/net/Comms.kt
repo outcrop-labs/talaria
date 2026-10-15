@@ -7,9 +7,7 @@ import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
-import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -111,48 +109,12 @@ fun channelMessagesPath(channelId: String) = "/api/channels/$channelId/messages"
 
 fun channelReadPath(channelId: String) = "/api/channels/$channelId/read"
 
-sealed interface CommsResult<out T> {
-    data class Ok<T>(val value: T) : CommsResult<T>
-
-    data object Expired : CommsResult<Nothing>
-
-    data class Failed(val reason: String) : CommsResult<Nothing>
-}
-
-/** One place that turns a response into a result, so every comms call reports
- *  an expired session the same way and none of them swallow it. */
-private suspend fun <T> guarded(
-    instance: Instance,
-    call: suspend () -> HttpResponse,
-    decode: suspend (HttpResponse) -> T,
-): CommsResult<T> {
-    val response =
-        try {
-            call()
-        } catch (e: Throwable) {
-            return CommsResult.Failed("could not reach ${instance.label}: ${e.message ?: "no answer"}")
-        }
-    if (response.status == HttpStatusCode.Unauthorized || response.status == HttpStatusCode.Forbidden) {
-        return CommsResult.Expired
-    }
-    if (!response.status.isSuccess()) {
-        return CommsResult.Failed("${instance.label} answered ${response.status.value}")
-    }
-    return try {
-        CommsResult.Ok(decode(response))
-    } catch (_: Throwable) {
-        CommsResult.Failed("${instance.label} answered something unreadable")
-    }
-}
-
-private fun HttpStatusCode.isSuccess() = value in 200..299
-
 suspend fun readChannels(
     client: HttpClient,
     instance: Instance,
     credential: Credential,
 ): CommsResult<List<Channel>> =
-    guarded(
+    guardedCall(
         instance,
         call = { client.get("${instance.origin}$CHANNELS_PATH") { credential.applyTo(this) } },
         decode = { it.body<ChannelsEnvelope>().channels },
@@ -164,7 +126,7 @@ suspend fun readMessages(
     credential: Credential,
     channelId: String,
 ): CommsResult<List<Message>> =
-    guarded(
+    guardedCall(
         instance,
         call = {
             client.get("${instance.origin}${channelMessagesPath(channelId)}") { credential.applyTo(this) }
@@ -179,7 +141,7 @@ suspend fun postMessage(
     channelId: String,
     content: String,
 ): CommsResult<Message> =
-    guarded(
+    guardedCall(
         instance,
         call = {
             client.post("${instance.origin}${channelMessagesPath(channelId)}") {
@@ -199,7 +161,7 @@ suspend fun markRead(
     credential: Credential,
     channelId: String,
 ): CommsResult<Unit> =
-    guarded(
+    guardedCall(
         instance,
         call = { client.post("${instance.origin}${channelReadPath(channelId)}") { credential.applyTo(this) } },
         decode = { },

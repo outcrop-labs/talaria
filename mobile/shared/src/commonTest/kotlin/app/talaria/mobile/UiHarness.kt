@@ -19,6 +19,10 @@ import app.talaria.mobile.net.ChannelPeer
 import app.talaria.mobile.net.CommsResult
 import app.talaria.mobile.net.Message
 import app.talaria.mobile.net.QueueBucket
+import app.talaria.mobile.net.ReviewVerdict
+import app.talaria.mobile.net.Task
+import app.talaria.mobile.net.TaskComment
+import app.talaria.mobile.net.TaskDetail
 import app.talaria.mobile.net.UserEvent
 import app.talaria.mobile.net.WorkItem
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -104,6 +108,42 @@ class FakePorts {
     val posted = mutableListOf<Pair<String, String>>()
     val markedRead = mutableListOf<String>()
 
+    /** The ticket surface. The default ticket sits AT the review gate with no
+     *  approvedAt, because that is the state the whole app exists to resolve. */
+    var ticket: Task = sampleTicket()
+    var ticketComments: List<TaskComment> = listOf(
+        TaskComment(id = "tc1", author = "Muse", content = "Ran the suite; one claim needed a citation."),
+    )
+
+    var onTask: suspend (Instance, Credential, String) -> CommsResult<TaskDetail> = { _, _, _ ->
+        CommsResult.Ok(TaskDetail(ticket, ticketComments, watchers = emptyList()))
+    }
+
+    var onReview: suspend (Instance, Credential, String, ReviewVerdict, String?) -> CommsResult<Task> =
+        { _, _, _, verdict, _ ->
+            // The api's semantics, faithfully: approving MARKS and does not
+            // move; rejecting moves and does not mark. A fake that moved on
+            // approve would let a wrong screen pass.
+            ticket =
+                when (verdict) {
+                    ReviewVerdict.Approve -> ticket.copy(approvedAt = "2026-10-14T10:00:00Z")
+                    ReviewVerdict.Reject -> ticket.copy(status = "in_progress")
+                }
+            CommsResult.Ok(ticket)
+        }
+
+    var onComment: suspend (Instance, Credential, String, String) -> CommsResult<TaskComment> =
+        { _, _, _, content ->
+            val added = TaskComment(id = "tc-${'$'}{ticketComments.size + 1}", author = "Jon", content = content)
+            ticketComments = ticketComments + added
+            CommsResult.Ok(added)
+        }
+
+    /** What the gate was asked, in order: verdict and the notes that rode with it. */
+    val reviewed = mutableListOf<Pair<ReviewVerdict, String?>>()
+    val ticketsRead = mutableListOf<String>()
+    val commented = mutableListOf<Pair<String, String>>()
+
     /** The firehose a test drives by hand. `emit` on this is how a test says
      *  "the server just announced something changed". */
     val eventBus = MutableSharedFlow<UserEvent>(extraBufferCapacity = 16)
@@ -134,6 +174,18 @@ class FakePorts {
                 onMarkRead(instance, credential, channelId)
             },
             events = { _, _ -> eventBus },
+            task = { instance, credential, taskId ->
+                ticketsRead += taskId
+                onTask(instance, credential, taskId)
+            },
+            review = { instance, credential, taskId, verdict, notes ->
+                reviewed += verdict to notes
+                onReview(instance, credential, taskId, verdict, notes)
+            },
+            comment = { instance, credential, taskId, content ->
+                commented += taskId to content
+                onComment(instance, credential, taskId, content)
+            },
         )
 
     companion object {
@@ -251,4 +303,25 @@ fun sampleMessages(): List<Message> =
             content = "which claim?",
             threadRootId = "m2",
         ),
+    )
+
+/** A ticket parked at the review gate — the state the app exists to resolve. */
+fun sampleTicket(
+    id: String = "t1",
+    approvedAt: String? = null,
+    status: String = "quality_review",
+): Task =
+    Task(
+        id = id,
+        boardId = "b1",
+        ticketRef = "TASK-12",
+        title = "Fix the login loop",
+        description = "Members on a stale session bounce between /login and /home.",
+        status = status,
+        priority = "high",
+        assignees = listOf("Muse"),
+        commentCount = 1,
+        outcome = "Session refresh added; suite green.",
+        updatedAt = "2026-10-14T09:00:00Z",
+        approvedAt = approvedAt,
     )

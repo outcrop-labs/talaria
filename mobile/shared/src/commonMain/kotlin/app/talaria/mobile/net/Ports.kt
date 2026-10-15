@@ -51,6 +51,20 @@ data class Ports(
         content: String,
     ) -> CommsResult<Message>,
     val markRead: suspend (instance: Instance, credential: Credential, channelId: String) -> CommsResult<Unit>,
+    val task: suspend (instance: Instance, credential: Credential, taskId: String) -> CommsResult<TaskDetail>,
+    val review: suspend (
+        instance: Instance,
+        credential: Credential,
+        taskId: String,
+        verdict: ReviewVerdict,
+        notes: String?,
+    ) -> CommsResult<Task>,
+    val comment: suspend (
+        instance: Instance,
+        credential: Credential,
+        taskId: String,
+        content: String,
+    ) -> CommsResult<TaskComment>,
     /** The live firehose. A FUNCTION returning a cold Flow, not a Flow: each
      *  collector opens its own stream, and an account that is not being looked
      *  at holds no connection open. */
@@ -71,4 +85,11 @@ fun httpPorts(client: HttpClient): Ports =
         },
         markRead = { instance, credential, channelId -> markRead(client, instance, credential, channelId) },
         events = { instance, credential -> userEvents(client, instance, credential) },
+        task = { instance, credential, taskId -> readTask(client, instance, credential, taskId) },
+        review = { instance, credential, taskId, verdict, notes ->
+            reviewTask(client, instance, credential, taskId, verdict, notes)
+        },
+        comment = { instance, credential, taskId, content ->
+            commentOnTask(client, instance, credential, taskId, content)
+        },
     )
