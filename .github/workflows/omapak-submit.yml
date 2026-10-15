@@ -6,6 +6,15 @@
 # that tag and regenerates the vendored cargo/bun sources the offline build
 # consumes. The judge still scores it — nothing here merges.
 #
+# HOW IT IS STARTED. desktop-package.yml calls this at the end of a packaging
+# run, passing the tag it just finished. It is NOT driven by the
+# `release: published` event alone: both release paths mint their release with
+# GITHUB_TOKEN, and GitHub deliberately refuses to start workflow runs from
+# events a GITHUB_TOKEN created, so that trigger sat silent through
+# desktop-v0.7.0 .. v0.10.0 and the store pin went four versions stale. The
+# release trigger stays for a release published by hand (a human token does
+# fire it), and workflow_dispatch is the manual door for a tag that missed.
+#
 # Needs a repository secret OMAPAK_SUBMIT_TOKEN: a fine-grained PAT or GitHub
 # App token with contents:write and pull-requests:write on outcrop-labs/omapak.
 # GITHUB_TOKEN cannot open a pull request on another repository. A missing
@@ -16,6 +25,18 @@ name: omapak-submit
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'the tag to submit (desktop-package.yml passes the release it just attached)'
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'the tag to submit, e.g. desktop-v0.10.0'
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -23,16 +44,45 @@ permissions:
 jobs:
   submit:
     name: open the omapak submission
-    # Stable only. desktop-v* is never a prerelease; v* RCs are, and must not
-    # move the store pin.
-    if: >-
-      github.event.release.prerelease == false &&
-      (startsWith(github.event.release.tag_name, 'desktop-v') ||
-       startsWith(github.event.release.tag_name, 'v'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # One gate for all three triggers, reading the release itself rather
+      # than an event payload that only exists on one of them.
+      - name: Resolve the tag, and skip what must not move the store pin
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -eu
+          tag="${INPUT_TAG:-$EVENT_TAG}"
+          if [ -z "$tag" ]; then
+            echo "::error::no tag to submit — neither inputs.tag nor a release event"
+            exit 1
+          fi
+          case "$tag" in
+            desktop-v*|v[0-9]*) ;;
+            *)
+              echo "$tag is neither a desktop-v nor a stable v tag — nothing to submit"
+              echo "go=false" >>"$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          # Stable only. desktop-v* is never a prerelease; v* RCs are, and an
+          # RC must not move the store pin.
+          if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+                    --json isPrerelease --jq .isPrerelease)" = true ]; then
+            echo "$tag is a prerelease — leaving the store pin where it is"
+            echo "go=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "go=true" >>"$GITHUB_OUTPUT"
+
       - name: Require the omapak token
+        if: steps.gate.outputs.go == 'true'
         env:
           TOKEN: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
         run: |
@@ -42,10 +92,12 @@ jobs:
           fi
 
       - uses: actions/checkout@v5
+        if: steps.gate.outputs.go == 'true'
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ steps.gate.outputs.tag }}
 
       - uses: actions/checkout@v5
+        if: steps.gate.outputs.go == 'true'
         with:
           repository: outcrop-labs/omapak
           token: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
@@ -53,12 +105,14 @@ jobs:
           ref: main
 
       - name: Open or update the pull request
+        if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ steps.gate.outputs.tag }}
         run: |
           set -eu
-          # release events set github.sha to the default branch, not the tag.
+          # The checkout above is at the tag, so HEAD is the commit omapak
+          # should pin — github.sha is the default branch on a release event.
           COMMIT=$(git rev-parse HEAD)
           branch="submit/app.talaria.desktop-${TAG}"
           git -C omapak config user.name "talaria-release"
