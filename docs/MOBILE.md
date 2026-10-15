@@ -263,9 +263,15 @@ How it registers:
   runs only that. Mirrors how `desktopCargo` / `desktopTypecheck` select, and its `--self-test`
   covers the selection.
 - The toolchain is **not** in the devbox image — see below.
-- CI, still to wire: a `mobile` job in `ci.yml`, and a `mobile-package.yml` building the Android
-  artifact on `ubuntu-latest` and the iOS one on `macos-latest`, attached to releases as the
-  desktop installers are.
+- CI: **`test + assemble (mobile)`** on `ubuntu-latest` runs the surface gate, and
+  **`compile + link (mobile ios)`** on `macos-latest` is the only place the Apple targets are ever
+  built — Kotlin/Native needs Xcode's linker, so until that job runs they have never been compiled
+  at all. It compiles both targets and then *links* the framework, because a klib can compile and
+  still fail to link, and linking is what an `iosApp/` Xcode project will depend on. Both are
+  selected by the `changes` job and listed in
+  [`docs/BRANCHES.md`](./BRANCHES.md)'s protection recipe — **re-run that recipe for them to become
+  required.** A `mobile-package.yml` is deliberately not here yet: a packaging workflow with no
+  signing credentials to use would be scaffolding pretending to be a pipeline.
 
 ## The toolchain
 
