@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG ONLY. This manifest is merged into debug builds and never into a
+  release one.
+
+  WHY IT HAS TO EXIST. Android has blocked cleartext HTTP by default since API
+  28, and this app targets 37 — so a debug build pointed at a self-hosted
+  instance on `http://host:port` (which is what a LAN or a devbox instance
+  looks like) cannot reach it at all. The failure is silent in the useful
+  sense: the request fails, the launcher says "could not reach", and nothing
+  anywhere mentions that the platform refused to dial rather than the server
+  refusing to answer.
+
+  WHY NOT IN THE MAIN MANIFEST. Because the default is right. A shipped Talaria
+  Mobile should refuse plaintext: instances are reached over TLS, the session
+  cookie rides those requests, and `Secure` is exactly the flag the api sets on
+  it in production. Allowing cleartext for everyone to spare a debug build one
+  attribute would be trading the product's transport security for a
+  convenience during development.
+
+  So: debug can dial plaintext, release cannot, and nobody has to remember to
+  undo anything before shipping.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>

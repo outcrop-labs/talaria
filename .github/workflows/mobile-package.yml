@@ -1,0 +1,130 @@
+# Talaria Mobile — a testable Android build, attached to the run that made it.
+#
+# WHAT THIS IS FOR: putting the app on a real phone, pointed at a real
+# instance, so the feedback is about the product rather than about a fake.
+# `ci.yml`'s mobile job proves the code; this produces the thing you install.
+#
+# DEBUG-SIGNED, NOT UNSIGNED, and the distinction matters: Android will not
+# install an unsigned APK at all. `assembleDebug` signs with the SDK's
+# auto-generated debug keystore, which is what makes a sideloadable build
+# possible without owning a release key. It is NOT distributable — the debug
+# keystore is public and shared by every Android SDK on earth — so this is for
+# `adb install` and nothing else. A release build needs the store credentials
+# that do not exist yet; when they do, that is a second job here, not an edit
+# to this one.
+#
+# The debug build also permits cleartext HTTP (androidApp/src/debug/
+# AndroidManifest.xml), because a self-hosted instance on a LAN speaks plain
+# http and API 28+ blocks that by default. Release builds keep the secure
+# default.
+name: Mobile package
+
+on:
+  # The one that matters day to day: every pull request touching mobile/ leaves
+  # an installable build attached to it, so a reviewer can hold the change in
+  # their hand instead of reading about it.
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-package.yml'
+  push:
+    branches: [main, rc]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/mobile-package.yml'
+  # Build any branch on demand. NOTE: GitHub only offers `workflow_dispatch`
+  # for workflows that exist on the DEFAULT branch, so this becomes usable once
+  # this file has reached main — until then, a pull request is the way to get a
+  # build out of CI.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'branch or ref to build'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    name: debug apk (android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The platform this project pins, not whatever the image shipped: API 37
+      # exists only as a dotted minor, and AndroidX Compose 1.12 refuses
+      # anything below 37.
+      - name: Android platform the project pins
+        run: |
+          set -eu
+          sdkmanager=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
+          [ -x "$sdkmanager" ] || { echo "no sdkmanager on this runner" >&2; exit 1; }
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" --install 'platforms;android-37.2' 'build-tools;37.0.0' >/dev/null
+
+      - name: Assemble
+        working-directory: mobile
+        run: ./gradlew :androidApp:assembleDebug --no-daemon
+
+      # Named with the short sha so two downloads in a day are never the same
+      # file with the same name — the commonest way to test a build you already
+      # tested.
+      - name: Name it after the commit
+        id: name
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Report what was built
+        working-directory: mobile
+        run: |
+          set -eu
+          apk=androidApp/build/outputs/apk/debug/androidApp-debug.apk
+          ls -l "$apk"
+          # The merged manifest is the only place that proves the debug
+          # cleartext allowance actually survived the merge — a self-hosted
+          # http instance is unreachable without it, and the symptom is
+          # indistinguishable from the server being down.
+          # FOUND, not hardcoded: AGP writes more than one merged manifest and
+          # has moved the paths between versions (`merged_manifest/
+          # processDebugMainManifest` and `merged_manifests/
+          # processDebugManifest` both exist here). A check pinned to one
+          # spelling turns into a check that silently stops checking.
+          merged=$(find androidApp/build -name AndroidManifest.xml -path '*merged*' | head -1)
+          [ -n "$merged" ] || { echo "no merged manifest found — cannot verify cleartext" >&2; exit 1; }
+          echo "merged manifest: $merged"
+          if grep -q 'usesCleartextTraffic="true"' "$merged"; then
+            echo "cleartext: permitted (debug) — a plain-http instance is reachable"
+          else
+            echo "cleartext: NOT permitted — a plain-http instance will be unreachable" >&2
+            exit 1
+          fi
+
+          # And prove it is signed. An unsigned APK does not install, so a
+          # build that produced one would look fine here and fail on the phone.
+          signer=$(command -v apksigner || find "$ANDROID_HOME/build-tools" -name apksigner | sort | tail -1)
+          if [ -n "$signer" ]; then
+            "$signer" verify --print-certs "$apk" | head -4
+          else
+            echo "note: no apksigner on this runner; signature unverified" >&2
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: talaria-mobile-debug-${{ steps.name.outputs.sha }}
+          path: mobile/androidApp/build/outputs/apk/debug/androidApp-debug.apk
+          if-no-files-found: error
+          # Long enough to test over a weekend, short enough that the artifact
+          # store does not become a release channel by accident.
+          retention-days: 14

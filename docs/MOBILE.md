@@ -293,8 +293,15 @@ How it registers:
   still fail to link, and linking is what an `iosApp/` Xcode project will depend on. Both are
   selected by the `changes` job and listed in
   [`docs/BRANCHES.md`](./BRANCHES.md)'s protection recipe — **re-run that recipe for them to become
-  required.** A `mobile-package.yml` is deliberately not here yet: a packaging workflow with no
-  signing credentials to use would be scaffolding pretending to be a pipeline.
+  required.**   **`compile + link (mobile ios)` is `continue-on-error` and not a required check** — Android is
+  being tested on real devices first, and a macOS job that has never been green must not hold that
+  up. It still runs and still reports; it becomes blocking the day it passes.
+- [`mobile-package.yml`](../.github/workflows/mobile-package.yml) builds the **debug-signed** APK
+  and attaches it to the run. *Debug-signed, not unsigned* — Android will not install an unsigned
+  APK at all, and `assembleDebug` signs with the SDK's auto-generated debug keystore, which is what
+  makes a sideloadable build possible without owning a release key. It is emphatically not
+  distributable: that keystore ships with every Android SDK. A release job arrives with the store
+  credentials, as a second job rather than an edit to that one.
 
 ## The toolchain
 
@@ -312,6 +319,24 @@ It is **not baked into `talaria-devbox:latest` on purpose**: a JDK plus the Andr
 gigabytes, and most boxes never touch mobile. Installing into the shared layer means one download
 serves every box created afterwards. It is rootless (the box runs as an unprivileged `dev`, and
 nothing here needs apt) and idempotent.
+
+### Testing on a real phone
+
+Two things have to be true, and the second one is not obvious:
+
+1. **The phone has to reach the instance.** A self-hosted instance on a LAN (`http://host:6302`)
+   means the phone must be on that network or the same tailnet.
+2. **The build has to be allowed to dial plaintext.** Android has blocked cleartext HTTP by default
+   since API 28 and this app targets 37, so a debug build carries
+   [`androidApp/src/debug/AndroidManifest.xml`](../mobile/androidApp/src/debug/AndroidManifest.xml)
+   to permit it. Release builds keep the secure default, deliberately — a shipped app should refuse
+   plaintext, because the session cookie rides those requests and `Secure` is the flag the api sets
+   on it in production. Without that debug manifest the symptom is indistinguishable from the server
+   being down: the launcher says "could not reach" and nothing mentions that the platform refused to
+   dial.
+
+**Known friction while testing:** credentials are in memory until gap 1 lands, so **every app
+restart signs you out**. On a device that is one re-login per launch.
 
 ### The box builds, the host installs
 

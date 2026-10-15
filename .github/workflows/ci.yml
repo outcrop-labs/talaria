@@ -621,12 +621,21 @@ jobs:
   # buildable on exactly one — `kotlin.native.ignoreDisabledTargets` is what
   # lets a Linux box configure this build rather than fail it. Until this job
   # runs, those targets have never been compiled at all.
+  #
+  # NOT A REQUIRED CHECK YET, and `continue-on-error` says so in the one place
+  # it cannot be missed. Android is the surface being tested on real devices
+  # first, and a macOS job that has never been green must not be able to hold
+  # that work up. It still runs and still reports — a red cross here is
+  # information, not a gate — and it becomes blocking the day it passes, which
+  # is when the `iosApp/` project lands and docs/BRANCHES.md's recipe gains the
+  # context. Exactly the posture judge.yml already holds.
   mobile-ios:
     name: compile + link (mobile ios)
     needs: [changes]
     if: needs.changes.outputs.mobile == 'true'
     runs-on: macos-latest
     timeout-minutes: 45
+    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v5

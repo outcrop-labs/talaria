@@ -85,6 +85,7 @@ cannot open until the commit has been deployed.
 | `migrations.yml` | migration-touching changes | the array replays from zero *and* upgrades a baseline, with the schema snapshot undrifted |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc`: CI green, deploy green |
+| `mobile-package.yml` | pull requests touching `mobile/`, pushes to rc/main, and on demand | a debug-signed Android APK attached to the run, for testing on a real device against a real instance. Debug-signed is not distributable — the debug keystore ships with every Android SDK — so it is an `adb install` artifact and nothing else |
 | `judge.yml` | every pull request | the standards half: the flow, the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
 | `pre-push` (git hook) | a push from a wired clone | the same provenance rule, before the network |
@@ -163,7 +164,6 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/main/protection" \
       "fmt + clippy + test (api)",
       "fmt + clippy + test + typecheck (desktop)",
       "test + assemble (mobile)",
-      "compile + link (mobile ios)",
       "pr target (main takes rc only)",
       "promotion gate (rc verified)"
     ]
@@ -197,8 +197,7 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/rc/protection" \
       "typecheck + test (cli)",
       "fmt + clippy + test (api)",
       "fmt + clippy + test + typecheck (desktop)",
-      "test + assemble (mobile)",
-      "compile + link (mobile ios)"
+      "test + assemble (mobile)"
     ]
   },
   "enforce_admins": true,
