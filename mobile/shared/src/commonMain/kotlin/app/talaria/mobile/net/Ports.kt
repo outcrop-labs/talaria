@@ -73,6 +73,14 @@ data class Ports(
         taskId: String,
     ) -> CommsResult<WorkSessionRead>,
     val stopSession: suspend (instance: Instance, credential: Credential, taskId: String) -> CommsResult<Unit>,
+    val searchKnowledge: suspend (
+        instance: Instance,
+        credential: Credential,
+        query: String,
+    ) -> CommsResult<List<KbSearchHit>>,
+    val kbDoc: suspend (instance: Instance, credential: Credential, docId: String) -> CommsResult<KbDoc>,
+    val plans: suspend (instance: Instance, credential: Credential) -> CommsResult<List<PlanSummary>>,
+    val planDoc: suspend (instance: Instance, credential: Credential, planId: String) -> CommsResult<Artifact>,
     val control: suspend (
         instance: Instance,
         credential: Credential,
@@ -122,6 +130,12 @@ fun httpPorts(client: HttpClient): Ports =
         cost = { instance, credential -> readCost(client, instance, credential) },
         workSession = { instance, credential, taskId -> readWorkSession(client, instance, credential, taskId) },
         stopSession = { instance, credential, taskId -> stopWorkSession(client, instance, credential, taskId) },
+        searchKnowledge = { instance, credential, query ->
+            searchKnowledge(client, instance, credential, query)
+        },
+        kbDoc = { instance, credential, docId -> readKbDoc(client, instance, credential, docId) },
+        plans = { instance, credential -> listPlans(client, instance, credential) },
+        planDoc = { instance, credential, planId -> readPlanDoc(client, instance, credential, planId) },
         control = { instance, credential, agentId, action ->
             controlAgent(client, instance, credential, agentId, action)
         },

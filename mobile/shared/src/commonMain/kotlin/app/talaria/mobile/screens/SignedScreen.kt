@@ -166,6 +166,10 @@ fun SignedScreen(
                             FleetScreen(state, account, instance, credential)
                             return@Column
                         }
+                        SignedTab.Read -> {
+                            ReadScreen(state, account, instance, credential)
+                            return@Column
+                        }
                         SignedTab.Home -> Unit
                     }
                 }

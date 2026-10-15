@@ -1,12 +1,19 @@
 # Talaria Mobile
 
-**Status: phases 1–2 building, 3 read-only.** `mobile/` holds a working Android app: add an
-instance by URL, sign in, see what is waiting on you, and read and post in channels and DMs with
-the room updating itself off the realtime firehose. 101 tests, of which 34 drive the real
-composables headlessly and 9 run over a real socket. Not yet: assistant chat, the review action
-(the queue is read-only), fleet control, and the `iosApp/` Xcode project. This page is the scope of
-record: what the app is, what it deliberately is not, the two api gaps it opens, and the stack it
-rides.
+**Status: every surface in the scope below is built.** `mobile/` is a working Android app with five
+surfaces — the decision queue (with the review gate), comms, the assistant, the fleet, and reading
+— over 243 tests, of which 80 drive the real composables headlessly, 9 run over a real socket and
+7 run against a live instance when pointed at one.
+
+**Not yet**, and named rather than implied: the `iosApp/` Xcode project (the shared framework
+compiles and links in CI, but nothing consumes it yet), persistent credential storage (**a restart
+signs you out** — it waits on gap 1 for the reason given there), push notifications (gap 2),
+agent DMs as a distinct surface from channels, and a `mobile-package.yml`. The UI tests also want
+migrating to `runComposeUiTest` v2, whose `StandardTestDispatcher` default is closer to production
+than the v1 immediate-execution one.
+
+This page is the scope of record: what the app is, what it deliberately is not, the two api gaps it
+opens, and the stack it rides.
 
 The mobile app is a **controller**, not the product on a smaller screen. Talaria's own gap
 analysis named the shape years before the app
@@ -82,15 +89,15 @@ build, which is why the scope is this wide.
 
 | Surface | What the phone does | Routes |
 | :--- | :--- | :--- |
-| **Decision queue** | The reason the app exists: pending approvals, the review gate, confirm-sends, blocked agents, mentions. Enough context to decide and two buttons. | `/api/inbox/focus` + `/focus/actions` + `/focus/command`, `/api/brief` (+ `/reply` `/read` `/delegate`), `POST /api/tasks/{id}/review`, `POST /api/chat/chips/approvals/{id}`, `/api/alerts`, `/api/notifications` |
+| **Decision queue** | The reason the app exists. `/api/home`'s three queues lead; a queue item opens its ticket, which carries the description, the agent's own outcome and the comments, and the gate offers Approve / Send back. **Approving is a mark, not a move** — see below. | `/api/inbox/focus` + `/focus/actions` + `/focus/command`, `/api/brief` (+ `/reply` `/read` `/delegate`), `POST /api/tasks/{id}/review`, `POST /api/chat/chips/approvals/{id}`, `/api/alerts`, `/api/notifications` |
 | **Messaging** | Channels, teammate DMs, agent DMs: unread state, read, post, react, read markers, image attachments from camera or roll. | `/api/channels{,/{id}/messages,/.../reactions,/read}`, `/api/conversations`, `/api/dms` |
 | **Assistant chat** | The controller's command line — tell an agent to do something, with dictation. The one thing a phone does *better* than a desk. | `POST /api/chat` (SSE) |
 | **Ticket triage** | Open a ticket from a notification: read, comment, move status, assign, watch. **Not** the board. | `GET/PUT /api/tasks/{id}`, `/comments`, `/watchers`, `/review` |
 | **Home brief** | The landing surface: what is waiting on you. | `GET /api/home`, `GET /api/unreads` |
 | **Fleet control** | Which agents are up or blocked; stop, start, restart one; kill a runaway work session. "Controller" taken literally. | `GET /api/fleet/containers`, `POST /api/fleet/agents/{id}/control`, `POST /api/tasks/{id}/work-session/stop` |
-| **Run watching** | Read-only stream of what an agent is doing right now. | `GET /api/tasks/{id}/work-session`, `/api/activity` |
-| **Cost glance** | What the workforce spent today, per agent. Needs the `view:/observability` grant. | `GET /api/cost` |
-| **Plan + knowledge reading** | Read a living plan or a knowledge doc when a decision needs context the queue doesn't carry. **Reading only.** | `GET /api/conversations/{id}/doc`, the knowledge group |
+| **Run watching** | The live session on a ticket: model, phase, turn, and the tail of the agent's last reply — plus the switch that ends it. | `GET /api/tasks/{id}/work-session`, `/api/activity` |
+| **Cost glance** | Today's spend, one line on the fleet tab. Needs the `view:/observability` grant, and a 403 reads as "not shown for this account" rather than as an error — most members do not hold that view. | `GET /api/cost` |
+| **Plan + knowledge reading** | Search the knowledgebase, or open a plan's living document. **Reading only.** A markdown *subset* renders it — headings, lists, quotes, inline marks — and anything it does not know degrades to its own source line rather than vanishing. | `GET /api/conversations/{id}/doc`, the knowledge group |
 
 ### How it is tested
 
@@ -147,6 +154,24 @@ swapping the session cookie for a device credential touches one file and no comp
 Tests address **test tags, not visible copy**, so rewording a label is a copy change rather than a
 test failure. The one exception worth knowing: a clickable `Card` merges its descendants' semantics,
 so a tag inside one needs `useUnmergedTree = true` to be addressable.
+
+### Three rules this app learned from the api, and keeps
+
+1. **Approving a ticket is a MARK, not a move.** The api sets `approvedAt` and leaves the column
+   alone, because a reviewed ticket usually still has a merge or a release ahead of it; forcing it
+   to `done` would claim the work had shipped when it had not. Rejection is the move. So the buttons
+   read "Approve" and "Send back", nothing on the phone can reach `done`, and the screen says the
+   rule out loud underneath them. That is the repo's own law — agents create and triage, a human
+   signs off, a human moves it — arriving on a phone.
+2. **An event says what changed, never what it says.** Every `UserEvent` carries ids only, so a
+   `channel` event makes the open room re-read through the ordinary ACL'd route. A test asserts the
+   inverse and fails if any variant ever grows a content field, which is how realtime would start
+   widening reads.
+3. **A KB search snippet is pre-escaped HTML, not text.** `ts_headline` does not escape what it
+   excerpts, so the api escapes the whole snippet and swaps its own sentinels for `<b>` — the XSS
+   boundary is server-side on purpose. A Compose client that drew that string raw would show a
+   reader literal tags; `text/Rich.kt` undoes exactly what the api did, and nothing else in the
+   string is treated as markup.
 
 ### Sequence
 

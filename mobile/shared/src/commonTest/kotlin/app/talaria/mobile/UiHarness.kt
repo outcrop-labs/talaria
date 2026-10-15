@@ -24,6 +24,10 @@ import app.talaria.mobile.net.CostOverview
 import app.talaria.mobile.net.CostResult
 import app.talaria.mobile.net.CostTotals
 import app.talaria.mobile.net.CostWindow
+import app.talaria.mobile.net.Artifact
+import app.talaria.mobile.net.KbDoc
+import app.talaria.mobile.net.KbSearchHit
+import app.talaria.mobile.net.PlanSummary
 import app.talaria.mobile.net.WorkSession
 import app.talaria.mobile.net.WorkSessionRead
 import app.talaria.mobile.net.FleetAgent
@@ -183,6 +187,42 @@ class FakePorts {
     /** Tickets whose run was stopped. */
     val stoppedSessions = mutableListOf<String>()
 
+    var onSearchKnowledge: suspend (Instance, Credential, String) -> CommsResult<List<KbSearchHit>> = { _, _, _ ->
+        CommsResult.Ok(sampleHits())
+    }
+
+    var onKbDoc: suspend (Instance, Credential, String) -> CommsResult<KbDoc> = { _, _, id ->
+        CommsResult.Ok(
+            KbDoc(
+                id = id,
+                spaceId = "s1",
+                title = "Deploy runbook",
+                body = "# Deploy runbook\n\nRun the migration **first**.\n\n- check the lock\n- then deploy",
+                visibility = "org",
+            ),
+        )
+    }
+
+    var onPlans: suspend (Instance, Credential) -> CommsResult<List<PlanSummary>> = { _, _ ->
+        CommsResult.Ok(samplePlans())
+    }
+
+    var onPlanDoc: suspend (Instance, Credential, String) -> CommsResult<Artifact> = { _, _, id ->
+        CommsResult.Ok(
+            Artifact(
+                id = id,
+                kind = "doc",
+                title = "Q4 pricing plan",
+                body = "## Goals\n\n1. decide the tiers\n2. write the page",
+            ),
+        )
+    }
+
+    /** What search was asked, and which documents were opened. */
+    val searched = mutableListOf<String>()
+    val docsOpened = mutableListOf<String>()
+    val planDocsOpened = mutableListOf<String>()
+
     /**
      * The assistant's reply, as a scripted stream. A test hands in the events
      * it wants delivered, in order, which is how a token-by-token reply is
@@ -233,6 +273,19 @@ class FakePorts {
             stopSession = { instance, credential, taskId ->
                 stoppedSessions += taskId
                 onStopSession(instance, credential, taskId)
+            },
+            searchKnowledge = { instance, credential, query ->
+                searched += query
+                onSearchKnowledge(instance, credential, query)
+            },
+            kbDoc = { instance, credential, docId ->
+                docsOpened += docId
+                onKbDoc(instance, credential, docId)
+            },
+            plans = { instance, credential -> onPlans(instance, credential) },
+            planDoc = { instance, credential, planId ->
+                planDocsOpened += planId
+                onPlanDoc(instance, credential, planId)
             },
             control = { instance, credential, agentId, action ->
                 controlled += agentId to action
@@ -467,4 +520,47 @@ fun sampleSession(
                 lastTail = tail,
             ),
         wait = 3,
+    )
+
+/** Hits as the api sends them — note the snippet is pre-escaped HTML with
+ *  `<b>` highlights, which is the thing a careless client renders literally. */
+fun sampleHits(): List<KbSearchHit> =
+    listOf(
+        KbSearchHit(
+            id = "d1",
+            spaceId = "s1",
+            spaceName = "Engineering",
+            title = "Deploy runbook",
+            kind = "doc",
+            visibility = "org",
+            snippet = "run the <b>migration</b> before the deploy &amp; watch the lock",
+        ),
+        KbSearchHit(
+            id = "s-overview",
+            spaceId = "s1",
+            spaceName = "Engineering",
+            title = "Engineering",
+            kind = "space",
+            visibility = "org",
+            snippet = "the <b>engineering</b> space",
+        ),
+    )
+
+fun samplePlans(): List<PlanSummary> =
+    listOf(
+        PlanSummary(
+            id = "p1",
+            agentModel = "Muse",
+            title = "Q4 pricing",
+            updatedAt = "2026-10-14T09:00:00Z",
+            working = true,
+        ),
+        PlanSummary(
+            id = "p2",
+            agentModel = "Muse",
+            title = null,
+            updatedAt = "2026-10-13T09:00:00Z",
+            failed = true,
+            ownerLabel = "Sam",
+        ),
     )
