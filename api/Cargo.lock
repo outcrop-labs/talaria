@@ -3656,6 +3656,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-todo"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+]
+
+[[package]]
 name = "talaria-agent-writes"
 version = "0.1.0"
 dependencies = [
@@ -4723,6 +4733,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "talaria-agent-todo",
  "talaria-doc-edit",
  "talaria-fitness-talaria-tools",
  "talaria-fitness-world",
@@ -6574,6 +6585,7 @@ dependencies = [
  "talaria-activity",
  "talaria-agent-auth",
  "talaria-agent-defs",
+ "talaria-agent-todo",
  "talaria-alerts",
  "talaria-api-facades",
  "talaria-artifacts",

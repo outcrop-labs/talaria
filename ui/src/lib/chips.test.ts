@@ -95,3 +95,29 @@ describe('unlock and invoke', () => {
     expect(invokeText('draft_email', { to: 'a@b.c', subject: '', body: 'hi' })).not.toContain('subject')
   })
 })
+
+describe('the agent plan chip', () => {
+  const plan: ChatChip = {
+    id: 'todo',
+    kind: 'todo',
+    label: '1/3 done · now: draft the tickets',
+    items: [
+      { text: 'read the retry spec', status: 'done' },
+      { text: 'draft the tickets', status: 'active' },
+      { text: 'update the doc', status: 'pending' },
+    ],
+  }
+
+  it('survives the prose filter, because a plan is never painted by the text', () => {
+    // Only a link whose href the prose already carries is dropped; a plan has
+    // no href and the agent's words never contain the timeline.
+    expect(chipsBesideProse([plan], 'I will start on the tickets now.')).toEqual([plan])
+  })
+
+  it('carries the whole list so an old chip still reads as the plan of its moment', () => {
+    // The stream is read top-to-bottom. A delta would need replaying forwards
+    // to mean anything, and a reader scrolling back is not doing that.
+    expect(plan.items).toHaveLength(3)
+    expect(plan.items?.filter((i) => i.status === 'active')).toHaveLength(1)
+  })
+})

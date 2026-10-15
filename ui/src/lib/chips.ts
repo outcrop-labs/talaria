@@ -11,7 +11,7 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock'
+export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -45,6 +45,17 @@ export interface ChatChip {
   status?: 'pending' | 'approved' | 'denied'
   tools?: string[]
   approvalId?: string
+  /** `todo` chips only: the agent's plan as it stood when this chip landed.
+   *  The WHOLE list, not a delta — the stream is read top-to-bottom and
+   *  somebody scrolling back should see the plan of that moment rather than a
+   *  diff they have to replay forwards. */
+  items?: TodoItem[]
+}
+
+/** One step of the agent's own plan (the `todo` tool). */
+export interface TodoItem {
+  text: string
+  status: 'pending' | 'active' | 'done'
 }
 
 const ID = '[A-Za-z0-9_-]{1,80}'

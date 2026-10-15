@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -18,6 +18,7 @@
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
+| [`/api/agent/todo`](#apiagenttodo) | PUT | `agent` |
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
@@ -149,6 +150,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_problem.rs`](../../ap
 | `details` | `string?(20000)` |  |
 | `context` | `string?(500)` | what the agent was trying to do |
 | `taskId` | `string?(200)` | the ticket the agent was working when it broke |
+
+## `/api/agent/todo`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_todo.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_todo.rs)
+
+> PUT /api/agent/todo — the agent writes down what it is going to do.
+>
+> NO CONVERSATION PARAMETER, deliberately, and this is the same call the
+> research tool already makes for the same reason: the agent is speaking in a
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `agent` | [body](#put-apiagenttodo-body) | `{ok, summary, items}` | 200, 400, 409 | — |
+
+**PUT** — Write down the steps this agent is working through, on the conversation it is in.
+
+### PUT `/api/agent/todo` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
 
 ## `/api/agent/whoami`
 

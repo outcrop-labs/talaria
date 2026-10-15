@@ -1682,6 +1682,14 @@ pub fn router(state: AppState) -> Router {
             "/api/agent/whoami",
             get(talaria_routes_fleet::agents::agent_whoami::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        // The agent writes down what it is going to do. No id in the path: the
+        // conversation is whichever one this agent is mid-turn in, resolved
+        // server-side so a model cannot name the wrong thread.
+        .route(
+            "/api/agent/todo",
+            put(talaria_routes_comms::comms::agent_todo::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
         .route(
             "/api/agent/chips",
             post(talaria_routes_comms::comms::chips_expose::post).fallback(|| async { method_not_allowed("POST") }),
@@ -1762,6 +1770,13 @@ pub fn router(state: AppState) -> Router {
         // rather than a second copy that would drift. The `/api/plans/…` pair
         // above stays because Plan's client already speaks it and a URL is a
         // promise; new surfaces use these.
+        // The plan, for the surface that renders it. Gated on the
+        // conversation's own membership; the write door is agent-key only.
+        .route(
+            "/api/conversations/{id}/todo",
+            get(talaria_routes_comms::comms::conversations_id_todo::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/conversations/{id}/members",
             get(talaria_routes_boards::plans::plans_id_members::get)

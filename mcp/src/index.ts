@@ -725,6 +725,26 @@ server.registerTool(
 )
 
 server.registerTool(
+  'todo',
+  {
+    description:
+      "Write down the steps you are working through, so the person watching can see your plan and where you are in it. Use it for any request that takes more than one step: list the steps first, mark one active as you start it, and call this again to move the marker and add or drop steps as you learn. Each call REPLACES the whole list, so always send every step, not just the one that changed. Exactly one step may be active at a time, or none. Keep steps short and concrete — one line each, the thing you are about to do, not a description of the task. Do not use it as a ticket list: tickets are durable work a person signs off, and this is your own scratch plan for this conversation. An empty list clears it.",
+    inputSchema: {
+      items: z
+        .array(
+          z.object({
+            text: z.string().min(1).max(200).describe('The step, as one short line — "read the retry spec", "draft the three tickets"'),
+            status: z.enum(['pending', 'active', 'done']).optional().describe("Where this step is. Omitted means pending. At most one step may be 'active'."),
+          }),
+        )
+        .max(30)
+        .describe('Every step, in the order you will do them. This replaces the whole list.'),
+    },
+  },
+  async ({ items }) => ok(await api('PUT', '/api/agent/todo', { items })),
+)
+
+server.registerTool(
   'list_documents',
   {
     description: 'List the documents (artifacts) you can access — the workspace-visible ones plus any shared with you.',

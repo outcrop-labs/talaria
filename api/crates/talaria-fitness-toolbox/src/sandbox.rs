@@ -57,7 +57,7 @@ use talaria_fitness_world::{
     AGENT_STATUSES, BLOCKED, IN_PROGRESS, INBOX, QUALITY_REVIEW, SandboxBoard, SandboxComment,
     SandboxDm, SandboxDocument, SandboxDriveFile, SandboxEmailDraft, SandboxEventDraft,
     SandboxKbDoc, SandboxKbSpace, SandboxLabel, SandboxMember, SandboxOutcome, SandboxTicket,
-    SandboxWorld, base_world,
+    SandboxTodoItem, SandboxWorld, base_world,
 };
 
 // ── The refusal, and the arg narrowing that produces it ─────────────────────
@@ -943,6 +943,23 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     .map(|c| json!({ "label": c.label, "added": c.added, "removed": c.removed }))
                     .collect::<Vec<_>>(),
             }))
+        }
+
+        // THE AGENT'S PLAN, graded against the real validator. The caps, the
+        // blank-step refusal and the one-active rule all come from
+        // `talaria_agent_todo` rather than being approximated here, for the
+        // same reason the document editor's do: a sandbox kinder than
+        // production certifies a model that cannot actually use the tool.
+        "todo" => {
+            let items = talaria_agent_todo::items_from_value(&a["items"]).map_err(refuse)?;
+            w.todo = items
+                .iter()
+                .map(|i| SandboxTodoItem {
+                    text: i.text.clone(),
+                    status: i.status.as_str().to_string(),
+                })
+                .collect();
+            Ok(json!({ "ok": true, "summary": talaria_agent_todo::summary(&items) }))
         }
 
         "list_documents" => Ok(json!({ "documents": w.documents.iter()
@@ -1850,6 +1867,7 @@ pub const BACKED_TOOLS: &[&str] = &[
     "create_page",
     "update_document",
     "edit_document",
+    "todo",
     "list_documents",
     "get_document",
     "save_image_artifact",
@@ -2487,6 +2505,66 @@ mod tests {
         // tool.
         let invented = s.dispatch("get_document", r#"{"documentId":"doc-99"}"#);
         assert!(invented.text.contains("list_documents"));
+    }
+
+    #[test]
+    fn writes_a_plan_replaces_it_wholesale_and_holds_the_one_active_rule() {
+        let mut s = sb();
+        let first = json!({ "items": [
+            { "text": "read the retry spec", "status": "done" },
+            { "text": "draft the tickets", "status": "active" },
+            { "text": "update the doc" },
+        ]})
+        .to_string();
+        let wrote = s.dispatch("todo", &first);
+        assert!(!wrote.is_error, "{}", wrote.text);
+        // The summary is what a person reads without opening the plan.
+        assert!(wrote.text.contains("1/3 done"), "{}", wrote.text);
+        assert!(
+            wrote.text.contains("now: draft the tickets"),
+            "{}",
+            wrote.text
+        );
+        assert_eq!(s.world.todo.len(), 3);
+        // An unstamped step is pending rather than a refusal.
+        assert_eq!(s.world.todo[2].status, "pending");
+
+        // REPLACE, NOT MERGE. The second call is the whole plan, and the step
+        // it leaves out is gone — a merge would make a dropped step
+        // un-droppable.
+        let second = json!({ "items": [
+            { "text": "draft the tickets", "status": "done" },
+            { "text": "update the doc", "status": "active" },
+        ]})
+        .to_string();
+        assert!(!s.dispatch("todo", &second).is_error);
+        assert_eq!(s.world.todo.len(), 2);
+        assert!(!s.world.todo.iter().any(|i| i.text == "read the retry spec"));
+
+        // Two active steps leave the strip unable to say what is happening
+        // now, so the rule is stated and the plan does not change.
+        let two = json!({ "items": [
+            { "text": "a", "status": "active" },
+            { "text": "b", "status": "active" },
+        ]})
+        .to_string();
+        let refused = s.dispatch("todo", &two);
+        assert!(refused.is_error);
+        assert!(refused.text.contains("at most one"), "{}", refused.text);
+        assert_eq!(s.world.todo.len(), 2, "a refused plan changes nothing");
+
+        // A blank step is refused by position rather than stored unreadable.
+        let blank = json!({ "items": [{ "text": "ok" }, { "text": "  " }] }).to_string();
+        let blanked = s.dispatch("todo", &blank);
+        assert!(blanked.is_error);
+        assert!(blanked.text.contains("item 2"), "{}", blanked.text);
+
+        // An empty list is how an agent clears the plan when it is done.
+        assert!(
+            !s.dispatch("todo", &json!({ "items": [] }).to_string())
+                .is_error
+        );
+        assert!(s.world.todo.is_empty());
     }
 
     #[test]
@@ -3228,7 +3306,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            82,
+            83,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }
