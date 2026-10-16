@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-25 routes.
+26 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -18,6 +18,7 @@
 | [`/api/agent/chips`](#apiagentchips) | POST | `agent` |
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
+| [`/api/agent/organize`](#apiagentorganize) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
 | [`/api/agent/todo`](#apiagenttodo) | PUT | `agent` |
 | [`/api/agent/whoami`](#apiagentwhoami) | GET | `agent` |
@@ -150,6 +151,27 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_message_user.rs`](../
 | :--- | :--- | :--- |
 | `to` | `string(1, 200)` | Teammate's email (preferred) or exact display name. |
 | `message` | `string(1, 4000)` |  |
+
+## `/api/agent/organize`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_organize.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_organize.rs)
+
+> POST /api/agent/organize — the agent tidies the conversation it is in:
+> renames it, pins it, files it under a group, or puts it away.
+>
+> NO CONVERSATION PARAMETER, the same call `/api/agent/todo` and
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentorganize-body) | `{ok, changed, said}` | 200, 400, 404, 409 | — |
+
+### POST `/api/agent/organize` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `title` | `string trimmed(1, 120)` |  |
+| `archived` | `bool?` |  |
 
 ## `/api/agent/problem`
 

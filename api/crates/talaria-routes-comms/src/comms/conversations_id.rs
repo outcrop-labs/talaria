@@ -9,6 +9,14 @@
 // so archived on a plan means a person put it away.
 //
 // Research runs are not archived here. A run is ephemeral: delete is its stop.
+//
+// PATCH { pinned, group, position } is a different kind of write from the
+// rest: it says nothing about the conversation, only about where the CALLER
+// keeps it — their own pin, their own heading, their own slot in the list. So
+// any role the GET would show may write it, collaborator included, and it
+// lands in that person's `conversation_layout` row instead of on the thread
+// everybody shares. The validation lives in talaria-conversation-layout
+// because the agent's organise door has to refuse exactly what this one does.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -184,10 +192,29 @@ pub async fn patch(
     } else {
         None
     };
-    if title.is_none() && archived.is_none() && pinned.is_none() {
+    // WHERE THE CALLER KEEPS THIS THREAD. The three travel as one patch
+    // because they share a row and because null means "clear this" rather than
+    // "leave it alone" — a distinction the member vocabulary cannot carry. The
+    // same reader serves the agent door, so a group this route refuses is a
+    // group no agent can file a session under either.
+    //
+    // NAMED OR ABSENT, nothing in between: a body carrying only a title is not
+    // an organise call, and handing it to the reader would turn every rename
+    // into the reader's "nothing to change".
+    let organising =
+        obj.contains_key("pinned") || obj.contains_key("group") || obj.contains_key("position");
+    let layout = if organising {
+        match talaria_conversation_layout::patch_from(obj) {
+            Ok(patch) => Some(patch),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        }
+    } else {
+        None
+    };
+    if title.is_none() && archived.is_none() && pinned.is_none() && layout.is_none() {
         return Ok(house_error(
             StatusCode::BAD_REQUEST,
-            "expected title, archived or pinnedFiles",
+            "expected title, archived, pinnedFiles, pinned, group or position",
         ));
     }
     // Archive is DELETE. PATCH only restores, so there is one door that
@@ -204,6 +231,14 @@ pub async fn patch(
         && let Err(e) = set_pinned_files(&state.pg, &id, files).await
     {
         return Ok(internal("[conversations] pinned files write failed", e));
+    }
+    // Owner or collaborator, with no further gate: this is the caller's own
+    // row, and arranging your own list cannot reach anybody else's.
+    if let Some(patch) = &layout
+        && let Err(e) =
+            talaria_conversation_layout::write_layout(&state.pg, &user.id, &id, patch).await
+    {
+        return Ok(internal("[conversations] layout write failed", e));
     }
     if let Some(title) = &title {
         let updated = sqlx::query("update conversations set title = $1 where id = $2::uuid")

@@ -24,6 +24,7 @@ mod boards_store;
 mod brief_item_live;
 mod brief_verdict_carry_live;
 mod chips_landing_live;
+mod conversation_layout_live;
 mod conversation_reactions_live;
 mod conversation_reads;
 mod decide_shadow_live;

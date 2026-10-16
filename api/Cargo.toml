@@ -240,6 +240,8 @@ talaria-comms-decay = { path = "crates/talaria-comms-decay" }
 
 talaria-config = { path = "crates/talaria-config" }
 
+talaria-conversation-layout = { path = "crates/talaria-conversation-layout" }
+
 talaria-conversations = { path = "crates/talaria-conversations" }
 
 talaria-daily-brief = { path = "crates/talaria-daily-brief" }

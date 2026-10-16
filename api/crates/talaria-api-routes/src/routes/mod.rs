@@ -1698,6 +1698,14 @@ pub fn router(state: AppState) -> Router {
             put(talaria_routes_comms::comms::agent_todo::put)
                 .fallback(|| async { method_not_allowed("PUT") }),
         )
+        // The agent tidies the conversation it is in — rename, pin, group, or
+        // put away. No id here either, and the layout row it writes is the
+        // owner's: a pin only means something in somebody's own list.
+        .route(
+            "/api/agent/organize",
+            post(talaria_routes_comms::comms::agent_organize::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/agent/chips",
             post(talaria_routes_comms::comms::chips_expose::post).fallback(|| async { method_not_allowed("POST") }),
