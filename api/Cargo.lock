@@ -4485,6 +4485,15 @@ name = "talaria-config"
 version = "0.1.0"
 
 [[package]]
+name = "talaria-conversation-layout"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sqlx",
+ "talaria-body",
+]
+
+[[package]]
 name = "talaria-conversations"
 version = "0.1.0"
 dependencies = [
@@ -4770,6 +4779,7 @@ dependencies = [
  "serde_json",
  "talaria-agent-ask",
  "talaria-agent-todo",
+ "talaria-conversation-layout",
  "talaria-doc-edit",
  "talaria-fitness-talaria-tools",
  "talaria-fitness-world",
@@ -6643,6 +6653,7 @@ dependencies = [
  "talaria-chat-persist",
  "talaria-chips",
  "talaria-comms-decay",
+ "talaria-conversation-layout",
  "talaria-conversations",
  "talaria-daily-brief",
  "talaria-error",

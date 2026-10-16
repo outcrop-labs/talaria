@@ -434,6 +434,14 @@ CREATE TABLE public.chat_approvals (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     decided_at timestamp with time zone
 );
+CREATE TABLE public.conversation_layout (
+    user_id uuid NOT NULL,
+    conversation_id uuid NOT NULL,
+    pinned boolean DEFAULT false NOT NULL,
+    group_name text,
+    "position" integer,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.conversation_members (
     conversation_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -1495,6 +1503,8 @@ ALTER TABLE ONLY public.channels
     ADD CONSTRAINT channels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.conversation_layout
+    ADD CONSTRAINT conversation_layout_pkey PRIMARY KEY (user_id, conversation_id);
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversation_reads
@@ -1915,6 +1925,10 @@ ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.chat_approvals
     ADD CONSTRAINT chat_approvals_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.conversation_layout
+    ADD CONSTRAINT conversation_layout_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_layout
+    ADD CONSTRAINT conversation_layout_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_members

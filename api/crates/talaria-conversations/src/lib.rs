@@ -293,6 +293,16 @@ pub struct ConversationListRow {
     /// number from seq 0 — unlike channels, whose counter starts at 1), so a
     /// reader who has never opened the thread sees its very first message.
     pub unread_count: i32,
+    /// WHERE THIS VIEWER PUT THE THREAD — their own pin, group and
+    /// hand-placed slot, never the owner's. A shared plan sits in several
+    /// people's lists and each of them arranges it for themselves
+    /// (`conversation_layout`, keyed by the pair), so these three are read
+    /// from the row belonging to whoever is asking. A thread nobody arranged
+    /// carries the defaults rather than nothing: a client that had to tell
+    /// `false` from absent would grow two code paths for one state.
+    pub pinned: bool,
+    pub group: Option<String>,
+    pub position: Option<i32>,
 }
 
 /// The user's conversations of a given kind, newest activity first.
@@ -330,6 +340,10 @@ pub async fn list_conversations(
 /// `archived` selects the retired set (`true`) or the live one (`false`) — the
 /// same flag the list has always filtered, now a parameter so a plan the owner
 /// archived can be found again. Decay only ever sets it on kind = 'chat'.
+///
+/// THE ORDER IS THE VIEWER'S: their pinned threads first, then the slots they
+/// placed by hand, then newest activity — which is the order this list has
+/// always had and the one every unorganised row still falls back to.
 pub async fn list_conversations_in(
     pg: &PgPool,
     user_id: &str,
@@ -347,6 +361,9 @@ pub async fn list_conversations_in(
         String,
         Option<String>,
         i32,
+        bool,
+        Option<String>,
+        Option<i32>,
     );
     let rows: Vec<Row> = sqlx::query_as(
         "select c.id::text, c.agent_model, c.title, \
@@ -369,10 +386,15 @@ pub async fn list_conversations_in(
                     and m.seq > coalesce(cr.last_read_seq, -1) \
                     and m.status = 'complete' \
                     and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
-                ), 0) \
+                ), 0), \
+                coalesce(l.pinned, false), \
+                l.group_name, \
+                l.position \
          from conversations c \
          join users o on o.id = c.user_id \
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
+         left join conversation_layout l \
+                on l.conversation_id = c.id and l.user_id = $1::uuid \
          where c.archived = $3 and c.kind = any($2) \
            and (c.user_id = $1::uuid \
              or (c.kind in ('plan', 'work') and ( \
@@ -389,7 +411,8 @@ pub async fn list_conversations_in(
                     or exists(select 1 from research_teams rt \
                               join team_members tm on tm.team_id = rt.team_id \
                               where rt.run_id = r.id and tm.user_id = $1::uuid))))) \
-         order by c.updated_at desc",
+         order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
+                  c.updated_at desc",
     )
     .bind(user_id)
     .bind(
@@ -414,6 +437,9 @@ pub async fn list_conversations_in(
                 role,
                 owner_label,
                 unread_count,
+                pinned,
+                group,
+                position,
             )| {
                 ConversationListRow {
                     id,
@@ -425,6 +451,9 @@ pub async fn list_conversations_in(
                     role,
                     owner_label,
                     unread_count,
+                    pinned,
+                    group,
+                    position,
                 }
             },
         )

@@ -3698,6 +3698,36 @@ alter table tasks drop column if exists conversation_id`,
   // the renderer merges it as one, so the column stores the shape both ends
   // already speak. Empty default — no agent loses a toolset by migrating.
   `alter table agent_defs add column if not exists disabled_toolsets jsonb not null default '[]'::jsonb`,
+  // WHERE ONE PERSON KEEPS A CONVERSATION — pinned to the top of their rail,
+  // filed under a group, held at a position they chose. Sessions accumulate
+  // faster than anything else in the product and "newest activity first" was
+  // the only shape they had, so the thread somebody returns to every morning
+  // sinks under a dozen one-question chats by lunchtime.
+  //
+  // PER VIEWER, WHICH IS WHY IT IS A TABLE AND NOT THREE COLUMNS ON
+  // `conversations`. Plans and work sessions are multiplayer: the owner and
+  // every collaborator read the same thread from their own list, and what one
+  // of them wants at the top is nobody else's business — a shared plan one
+  // person lives in all week is another's background noise. Columns on the
+  // conversation row would mean the first collaborator to tidy up rearranged
+  // the owner's morning. The key is the pair, so a write only ever touches the
+  // writer's own row and the list left-joins the one belonging to whoever is
+  // asking.
+  //
+  // CASCADE ON BOTH SIDES: an arrangement has no meaning without the person
+  // whose list it arranges or the thread it points at.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `create table if not exists conversation_layout (
+     user_id uuid not null references users(id) on delete cascade,
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     pinned boolean not null default false,
+     group_name text,
+     position integer,
+     updated_at timestamptz not null default now(),
+     primary key (user_id, conversation_id)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
