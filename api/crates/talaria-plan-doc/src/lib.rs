@@ -281,14 +281,19 @@ pub async fn sync_plan_doc(
     surface: &str,
 ) -> Result<Artifact, String> {
     let pg = state.pg.clone();
-    // A WORK SESSION GETS NO PLAN TEMPLATE. Template resolution below looks up
-    // templates of kind "plan" — the agent's bound one when an agent is named —
-    // so handing the agent through here would seed somebody's memo with a
-    // project-plan skeleton and then keep reconciling it against that shape.
-    // The work document starts empty and takes the shape the work asks for.
+    // A WORK SESSION GETS NO IMPLICIT PLAN TEMPLATE. Template resolution below
+    // looks up templates of kind "plan" — the agent's bound one when an agent
+    // is named — so handing the agent through here would seed somebody's memo
+    // with a project-plan skeleton and then keep reconciling it against that
+    // shape. The work document starts empty and takes the shape the work asks
+    // for. An EXPLICIT pick is different: the merged work surface offers the
+    // same template picker a plan had, and `create_conversation` now stores
+    // the choice on a work row too — a template a person chose by name is
+    // honoured on either surface, and only the agent's silent binding stays
+    // plan-only.
     let is_work = surface == "work";
     let seed_agent = if is_work { None } else { Some(agent_model) };
-    let seed_template = if is_work { None } else { template_id };
+    let seed_template = template_id;
     let doc = ensure_plan_doc(
         &pg,
         conversation_id,
@@ -327,21 +332,19 @@ pub async fn sync_plan_doc(
         return Ok(doc);
     }
 
-    let template = if is_work {
-        None
-    } else {
-        resolve_template(
-            &pg,
-            "plan",
-            &ResolveContext {
-                explicit_id: template_id,
-                agent_model: Some(agent_model),
-                board_id: None,
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?
-    };
+    // Same rule on the reconcile side: an explicit pick resolves for both
+    // surfaces; the agent's bound template is only ever consulted for a plan.
+    let template = resolve_template(
+        &pg,
+        "plan",
+        &ResolveContext {
+            explicit_id: template_id,
+            agent_model: if is_work { None } else { Some(agent_model) },
+            board_id: None,
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let current = doc.body.trim().to_string();
     let routing_map = if surface == "work" {
         None

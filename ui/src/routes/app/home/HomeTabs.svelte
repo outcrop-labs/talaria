@@ -41,8 +41,9 @@
     { id: 'inbox', label: 'Inbox', badge: home.data?.unread || undefined },
     { id: 'boards', label: 'Boards', badge: home.data?.queues.triage.count || undefined },
     { id: 'comms', label: 'Comms', badge: unreadComms || undefined },
-    { id: 'plans', label: 'Plans' },
-    { id: 'research', label: 'Research' },
+    // One tab for every session — the work harness holds plans and research
+    // runs too, so Home stopped having a tab per old view.
+    { id: 'work', label: 'Work' },
     { id: 'docs', label: 'Docs' },
   ])
 

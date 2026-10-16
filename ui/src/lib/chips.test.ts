@@ -146,3 +146,27 @@ describe('the ask chip', () => {
     expect(ask.options?.[1]?.detail).toBeNull()
   })
 })
+
+describe('the notice chip', () => {
+  const notice: ChatChip = {
+    id: 'steer:m-7',
+    kind: 'notice',
+    label: 'sent mid-turn',
+    detail: 'The agent took this into the reply it was already writing.',
+  }
+
+  it('survives the prose filter, because a notice is never painted by the words', () => {
+    // Same reason the plan and the question survive: only a link whose href
+    // the prose already carries is dropped.
+    expect(chipsBesideProse([notice], 'actually, target rc')).toEqual([notice])
+  })
+
+  it('says what happened and offers nothing to do about it', () => {
+    // The row renders label + title and no controls: a notice with an action
+    // would be an approval, which is a different chip with a different story.
+    expect(notice.label).toBe('sent mid-turn')
+    expect(notice.detail).toContain('already writing')
+    expect(notice.actionId).toBeUndefined()
+    expect(notice.options).toBeUndefined()
+  })
+})

@@ -26,6 +26,18 @@ export interface DisplayMessage {
   /** The server auto-resumed this turn after its stream died mid-flight —
    *  shown as a marker on the row, never as a second turn. */
   resumed?: boolean
+  /** The reader stopped this turn (the stop tile, or Esc). It lands `complete`
+   *  with whatever had arrived, so the row needs its own word: stopping is a
+   *  decision, not a fault, and it reads in the muted voice where an
+   *  interrupted turn used to shout in danger red. */
+  stopped?: boolean
+  /** A user row said INTO a reply that was already streaming (POST …/steer)
+   *  rather than at the top of a turn — the server's own stamp on the row, so
+   *  it survives the post-turn sync. The row wears a notice, because a message
+   *  sitting inside somebody else's turn otherwise reads as a transcript out
+   *  of order. It changes nothing about the live-resume poller: the steered
+   *  row is still owed its own answer, and the server chains one. */
+  steer?: boolean
   chips?: ChatChip[]
   /** The persisted row's id — absent on synthetic rows until a sync stamps
    *  it. No id → no action bar (there is nothing to react to yet). */
@@ -43,6 +55,14 @@ export interface Viewer {
   email?: string | null
 }
 
+/** The row stamps the server writes into `metadata`, read through one
+ *  accessor so an absent bag is an absent stamp rather than three
+ *  `?.`-chains: `resumed` from the auto-resume, `stopped` from the stop
+ *  route's drain, `steer` from the user row the steer route pushes. The names
+ *  are declared on `StoredMessage.metadata` — the wire type — because that is
+ *  what the server sends, and a cast here would have let the two drift. */
+const stamps = (m: StoredMessage): NonNullable<StoredMessage['metadata']> => m.metadata ?? {}
+
 export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   role: m.role,
   content: m.content,
@@ -53,13 +73,46 @@ export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   attachments: m.attachments,
   authorLabel: m.authorLabel,
   guard: m.guard,
-  resumed: m.metadata?.resumed === true,
+  resumed: stamps(m).resumed === true,
+  stopped: stamps(m).stopped === true,
+  steer: stamps(m).steer === true,
   chips: m.chips,
   authorUserId: m.authorUserId,
   id: m.id,
   createdAt: m.createdAt,
   reactions: m.reactions,
 })
+
+/** What the composer meant by this submit: Enter (or the send tile), or the
+ *  explicit mid-turn send — ⌘/Ctrl+⏎ and the "Send now" control. */
+export type SendIntent = 'enter' | 'send-now'
+
+/** Where one submitted message goes. `fresh` starts a turn; `queue` hands it
+ *  to the server's queue behind the reply that is streaming; `steer` hands it
+ *  to that reply itself; `hold` keeps it on the client until a conversation id
+ *  exists. */
+export type SendRoute = 'fresh' | 'queue' | 'steer' | 'hold'
+
+/** The whole routing decision for one submit, so the view dispatches instead
+ *  of re-deriving it in the middle of a send.
+ *
+ *  Enter NEVER interrupts — it queues, as it always has; only an explicit
+ *  send-now steers. Two things disqualify a steer even then: no conversation
+ *  id yet, because the first turn's response headers are the only place one
+ *  comes from and a steer has no address until it lands (the message is held
+ *  and flushed the moment it does), and pending attachments, because the steer
+ *  wire carries `{ content }` and nothing else — a draft with files goes the
+ *  queue, which takes them. */
+export function sendRoute(ctx: {
+  streaming: boolean
+  intent: SendIntent
+  hasConversation: boolean
+  hasAttachments?: boolean
+}): SendRoute {
+  if (!ctx.streaming) return 'fresh'
+  if (!ctx.hasConversation) return 'hold'
+  return ctx.intent === 'send-now' && !ctx.hasAttachments ? 'steer' : 'queue'
+}
 
 const isMe = (viewer: Viewer, actor: string, type: string | undefined): boolean =>
   (type ?? 'user') === 'user' && (actor === viewer.id || actor === viewer.email)

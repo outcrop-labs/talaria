@@ -4293,14 +4293,18 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-artifacts",
+ "talaria-boards",
  "talaria-channels",
  "talaria-conversations",
  "talaria-fleet-layout",
  "talaria-harness",
  "talaria-harness-defs",
+ "talaria-labels",
  "talaria-state",
+ "talaria-statuses",
  "talaria-templates",
  "talaria-workflows",
+ "tracing",
 ]
 
 [[package]]
@@ -4364,6 +4368,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-body",
  "talaria-conversations",
  "talaria-fleet-agents",
@@ -4913,6 +4918,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-agent-secrets",
  "talaria-coding-accounts",
  "talaria-fleet-brain",
@@ -6922,10 +6928,13 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-channel-plan",
+ "talaria-decide",
  "talaria-harness-defs",
+ "talaria-retrieval-http",
  "talaria-runs-define",
  "talaria-state",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

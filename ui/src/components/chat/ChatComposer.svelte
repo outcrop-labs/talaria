@@ -10,7 +10,7 @@
   import { Extension } from '@tiptap/core'
   import { MentionSuggest } from '@/components/ui/mention-suggest'
   import { EmojiSuggest } from '@/components/chat/emoji-suggest'
-  import { shouldSendOnEnter } from '@/components/chat/composer-keys'
+  import { shouldSendNowOnModEnter, shouldSendOnEnter } from '@/components/chat/composer-keys'
   import SendButton from '@/components/chat/SendButton.svelte'
   import StopButton from '@/components/chat/StopButton.svelte'
   import ComposerToolbar from './ComposerToolbar.svelte'
@@ -23,9 +23,10 @@
   // the toolbar; @ mentions and : emoji autocomplete inline. Enter sends —
   // except inside a code block, where it makes a newline (Slack semantics);
   // Shift+Enter is always a soft newline. An armed-but-empty autocomplete
-  // menu claims nothing: Enter falls through and sends (TALA-5). Messages
-  // travel as markdown, which is exactly what the message list renders and
-  // agents read.
+  // menu claims nothing: Enter falls through and sends (TALA-5). While a reply
+  // streams the host hands over `onSendNow` and ⌘/Ctrl+Enter becomes the
+  // mid-turn send — Enter still queues. Messages travel as markdown, which is
+  // exactly what the message list renders and agents read.
   //
   // Mercury anatomy (spec §7, updated): the editor sits in an INSET prompt well
   // — ground background, hairline border, radius 6, 14px padding all round —
@@ -45,6 +46,7 @@
     disabled,
     canSend,
     onStop,
+    onSendNow,
     leftControls,
     rightControls,
     controlRail,
@@ -75,6 +77,13 @@
      *  queues the message into the streaming turn) and Escape still reaches
      *  `onEscape`. */
     onStop?: () => void
+    /** THE MID-TURN SEND, set for exactly as long as a reply is streaming.
+     *  Enter keeps its promise — a message sent while the agent replies queues
+     *  and never interrupts — and this is the other offer: hand the draft to
+     *  the turn that is already going. It buys ⌘/Ctrl+⏎ (the host renders the
+     *  visible control itself, and reaches this through `sendNow()`). Unset,
+     *  ⌘⏎ is not ours and falls through to the editor's own hard break. */
+    onSendNow?: (markdown: string) => void
     /** Host controls rendered at the START of the bottom row (attach, emoji). */
     leftControls?: Snippet
     /** Host controls rendered at the END of the bottom row (send hint, tiers, stop). */
@@ -93,14 +102,18 @@
   let empty = $state(true)
   let editor = $state() as Readable<Editor>
 
+  // What travels: markdown, emojified. One serialization for both sends, so
+  // the mid-turn one can never drift from the ordinary one.
+  const outgoing = (e: Editor): string =>
+    emojify((e.storage.markdown as { getMarkdown: () => string }).getMarkdown().trim())
+
   const submit = () => {
     const e = $editor
     if (!e || e.isEmpty) {
       onSubmit('')
       return
     }
-    const md = emojify((e.storage.markdown as { getMarkdown: () => string }).getMarkdown().trim())
-    onSubmit(md)
+    onSubmit(outgoing(e))
   }
 
   // The keymap is bound once at editor creation; props in runes mode are live
@@ -119,6 +132,24 @@
             return false
           }
           submit()
+          return true
+        },
+        'Mod-Enter': () => {
+          // The mid-turn send, and only while the host offers one. Tiptap
+          // reverses the extension list before building keymaps, so a keymap
+          // declared after StarterKit is consulted first — returning false
+          // here hands the press back to HardBreak, which is what ⌘⏎ has
+          // always done in this well.
+          if (
+            !shouldSendNowOnModEnter({
+              offered: !!onSendNow,
+              hasText: !this.editor.isEmpty,
+              compositionActive: this.editor.view.composing,
+            })
+          ) {
+            return false
+          }
+          sendNow()
           return true
         },
         'Shift-Enter': () =>
@@ -299,6 +330,15 @@
   }
   export function isEmpty(): boolean {
     return $editor?.isEmpty ?? true
+  }
+  /** Send the draft into the reply that is streaming (see `onSendNow`). The
+   *  visible control belongs to the host's rail — beside the stop tile, where
+   *  the pair reads as the two things you can do to a turn in flight — so the
+   *  host needs a way in; ⌘⏎ takes the same door. */
+  export function sendNow(): void {
+    const e = $editor
+    if (!e || e.isEmpty || !onSendNow) return
+    onSendNow(outgoing(e))
   }
   export function clear(): void {
     $editor?.commands.clearContent(true)

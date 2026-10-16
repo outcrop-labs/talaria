@@ -3664,6 +3664,40 @@ alter table tasks drop column if exists conversation_id`,
      updated_by text,
      updated_at timestamptz not null default now()
    )`,
+  // ── One Hermes session per conversation (2026-10-15). A chat turn reaches
+  // the agent as a full-history /v1/chat/completions call, and Hermes derives
+  // the session it files that call under from THIS turn's system prompt plus
+  // the first user message. Talaria's system prompt moves between turns (the
+  // handle note is conditional; the sender block changes per speaker in a
+  // shared plan), so one Talaria conversation shatters into several Hermes
+  // sessions — and Hermes' compaction, session_search and /compress each see a
+  // fragment. A pinned agent is driven through Hermes' session API instead:
+  // one session whose id IS the conversation id, one new message per turn,
+  // Hermes holding the history.
+  //
+  // Per agent, off by default: for a pinned agent Talaria no longer sends the
+  // transcript, so a message deleted or relayed on the Talaria side is not
+  // mirrored into Hermes' copy until that is built. The switch is a roll.
+  `alter table agent_defs add column if not exists pinned_sessions boolean not null default false`,
+  // The Hermes run that produced an assistant row, kept so a running turn can
+  // be steered or stopped by the id Hermes knows it by — a stop today only
+  // aborts the client read, and the run keeps going until it idles. Null for
+  // every row from an unpinned agent and for every user row.
+  `alter table messages add column if not exists hermes_run_id text`,
+  // ── Which Hermes toolsets an agent does NOT get (2026-10-16). Hermes turns
+  // every built-in toolset on by default and `agent.disabled_toolsets` is its
+  // last word on availability, so naming a toolset here — and rendering it
+  // into config.yaml — is the only way to take one off an agent's table.
+  // Talaria already pins `todo` and `clarify` shut for every agent (its own
+  // versions are the ones a person can see and answer); this column is the
+  // operator's list ON TOP of that pair, and the first thing it governs is
+  // `browser`: a browsing agent costs a multi-minute Chromium install on
+  // every roll, so an agent that should not browse says so here and skips it.
+  //
+  // jsonb and not text[]: the def wire carries the list as a JSON array and
+  // the renderer merges it as one, so the column stores the shape both ends
+  // already speak. Empty default — no agent loses a toolset by migrating.
+  `alter table agent_defs add column if not exists disabled_toolsets jsonb not null default '[]'::jsonb`,
   // WHAT A THREAD IS WAITING ON. A cron created from the fleet page is the
   // agent's own job and reports nowhere; one created from a conversation is
   // that thread's standing request, so its turns have to come back into the

@@ -61,9 +61,14 @@ export interface StoredMessage {
   authorLabel?: string | null
   /** Confab-guard findings pinned to a reply (annotate/strict modes). */
   guard?: Array<{ check: string; severity: 'low' | 'medium' | 'high'; confidence: number; message: string; snippet: string }> | null
-  /** Row-level stamps; `resumed` marks a turn the server auto-resumed after
-   *  its stream died mid-flight. */
-  metadata?: { resumed?: boolean } | null
+  /** Row-level stamps, the whole `metadata` bag as the row carries it:
+   *  `resumed` marks a turn the server auto-resumed after its stream died
+   *  mid-flight, `stopped` a turn somebody ended (the stop route, or the
+   *  doom-loop guard), `steer` a user row said INTO a reply that was already
+   *  streaming. All three are written the same way — a merge into the row's
+   *  jsonb — and travel the same way, so they are declared together here
+   *  rather than widened at the one surface that reads them. */
+  metadata?: { resumed?: boolean; stopped?: boolean; steer?: boolean } | null
   chips?: ChatChip[]
   /** The row's id — what a reaction toggles against. Absent on older
    *  payloads; a row without one shows no action bar. */
@@ -182,8 +187,16 @@ export const markConversationRead = async (
     seq === undefined ? {} : { seq },
   )
 
+/** The user's conversations of one kind, or of the merged session set.
+ *
+ *  'sessions' is the work harness's own question — work sessions, plans and
+ *  research threads as ONE list, ordered once by the server (see
+ *  `list_conversations_in`). It is a named kind rather than a composed filter
+ *  because the server owns what is in the set: the audience predicate is per
+ *  row kind, and a client that could ask for arbitrary combinations could ask
+ *  for one nobody wrote that predicate for. */
 export function useConversations(
-  kind: MaybeGetter<'chat' | 'plan' | 'work'> = 'chat',
+  kind: MaybeGetter<'chat' | 'plan' | 'work' | 'research' | 'sessions'> = 'chat',
   archived: MaybeGetter<boolean> = false,
 ) {
   return createQuery(() => {

@@ -1,4 +1,4 @@
-"""Talaria tool-event reporting.
+"""Talaria tool-event, cron-output and screenshot reporting.
 
 Every tool call's lifecycle (name, arguments, RESULT) is visible here and
 nowhere else on the platform's wire — the chat-completions SSE the work
@@ -16,6 +16,12 @@ halves of what the platform needs: `assistant_response`, the turn's final
 text, and the cron task id (`cron:<job>:<execution>`) that names which
 schedule — and so which conversation — this output belongs to.
 
+A screenshot is the same gap with bytes in it. `browser_vision` writes a PNG
+inside this container and reports its PATH — a path that means nothing to the
+platform and is gone with the next roll. When that tool answers with one, the
+bytes themselves ride to the uploads door, which stamps them on the turn the
+agent is answering so the person watching sees the page instead of a filename.
+
 Deliberately defensive: a hook must never block or break the agent's tool
 loop. Everything is best-effort — bounded queue (oldest events drop first
 under pressure), one in-flight POST at a time, short timeouts, and any
@@ -25,6 +31,7 @@ stores; the plugin only clamps to keep the POST small.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -39,9 +46,16 @@ _MAX_CHARS = 4000
 _MAX_TEXT = 20000
 _QUEUE_CAP = 512
 _POST_TIMEOUT = 4.0
-
+# The platform's three doors. Tool events are the default; the other two are
+# named per event (see `_poster`).
 _TOOL_EVENTS_PATH = "/api/agents/tool-events"
 _CRON_OUTPUT_PATH = "/api/agents/cron-output"
+_UPLOADS_PATH = "/api/agents/uploads"
+# The tool that hands back a screenshot, and the ceiling its door enforces.
+# Reading the file is bounded by the same number so an oversized image is
+# dropped here rather than posted to be refused.
+_VISION_TOOL = "browser_vision"
+_MAX_SHOT_BYTES = 5 * 1024 * 1024
 
 _queue: "queue.Queue[dict]" = queue.Queue(maxsize=_QUEUE_CAP)
 _started = False
@@ -54,11 +68,18 @@ def _config() -> tuple[str, dict[str, str]] | None:
     name = os.environ.get("API_SERVER_MODEL_NAME", "")
     if not base or not key or not name:
         return None
-    return base, {
+    return base + _TOOL_EVENTS_PATH, {
         "Content-Type": "application/json",
         "X-Agent-Name": name,
         "X-Api-Key": key,
     }
+
+
+def _door(path: str) -> str:
+    """A full URL for one of the platform's doors, for an event that does not
+    go to the default one. Read from the environment here rather than passed
+    in: the base is the container's own and fixed for its life."""
+    return os.environ.get("TALARIA_API_URL", "").rstrip("/") + path
 
 
 def _clamp(value: Any) -> str:
@@ -93,10 +114,13 @@ def _poster() -> None:
         cfg = _config()
         if cfg is None:
             continue
-        base, headers = cfg
-        # Two doors, one queue: the event names its own path and the key is
-        # popped before the body is built, so nothing extra reaches the api.
-        url = base + event.pop("url", _TOOL_EVENTS_PATH)
+        url, headers = cfg
+        # Three doors, one queue: a per-event destination, defaulting to the
+        # tool-events door. The key is POPPED rather than posted: a tool event
+        # carries none at all, so its body stays byte-identical to the wire
+        # the platform parses today, and a cron turn's or a screenshot's body
+        # reaches its own door with nothing extra in it.
+        url = event.pop("url", None) or url
         try:
             req = urllib.request.Request(
                 url, data=json.dumps(event).encode("utf-8"), headers=headers, method="POST"
@@ -150,6 +174,60 @@ def _is_error_result(result: Any) -> bool:
     return isinstance(err, str) and bool(err.strip())
 
 
+def _shot_path(result: Any) -> str | None:
+    """The PNG a screenshot tool wrote, from the two shapes the persona uses:
+    a JSON result whose `data.path` names the file, or a `MEDIA:<path>` token
+    in text. Anything else is not an offer of an image — a tool that merely
+    mentions a .png in prose is reporting, not handing one over."""
+    parsed: Any = result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (ValueError, TypeError):
+            parsed = None
+    if isinstance(parsed, dict):
+        data = parsed.get("data")
+        if isinstance(data, dict):
+            path = data.get("path")
+            if isinstance(path, str) and path.lower().endswith(".png"):
+                return path
+    text = result if isinstance(result, str) else ""
+    marker = "MEDIA:"
+    at = text.find(marker)
+    if at != -1:
+        rest = text[at + len(marker) :].split(maxsplit=1)
+        token = rest[0].strip("\"'") if rest else ""
+        if token.lower().endswith(".png"):
+            return token
+    return None
+
+
+def _screenshot_event(result: Any) -> dict | None:
+    """The uploads POST for a screenshot tool's PNG, or None. The bytes have
+    to travel because the file does not: it lives in this container, and the
+    container is thrown away on the next roll. Bounded by the door's own
+    ceiling, and every failure to read is a dropped image rather than a raised
+    exception inside the agent's tool loop."""
+    path = _shot_path(result)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            # One byte past the ceiling, so an oversized file is recognised as
+            # oversized without reading all of it.
+            raw = handle.read(_MAX_SHOT_BYTES + 1)
+    except OSError:
+        return None
+    if not raw or len(raw) > _MAX_SHOT_BYTES:
+        return None
+    return {
+        "url": _door(_UPLOADS_PATH),
+        "filename": os.path.basename(path) or "screenshot.png",
+        "mime": "image/png",
+        "dataBase64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
 def on_post_tool_call(
     *,
     tool_name: str = "",
@@ -183,6 +261,13 @@ def on_post_tool_call(
     if result is not None:
         event["result"] = _clamp(result)
     _enqueue(event)
+    # The image rides AFTER its tool event, deliberately: the event is what
+    # the run watch and the failure streak read, and several MB of base64
+    # must never be the thing standing in front of it in the queue.
+    if status == "completed" and tool_name == _VISION_TOOL:
+        shot = _screenshot_event(result)
+        if shot is not None:
+            _enqueue(shot)
 
 
 def on_post_llm_call(
@@ -204,7 +289,7 @@ def on_post_llm_call(
         return
     _enqueue(
         {
-            "url": _CRON_OUTPUT_PATH,
+            "url": _door(_CRON_OUTPUT_PATH),
             "sessionId": session_id,
             "taskId": task_id,
             "turnId": turn_id,
