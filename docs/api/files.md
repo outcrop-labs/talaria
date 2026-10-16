@@ -239,7 +239,7 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_edit.rs`](.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `dual` | [body](#post-apiartifactsidedit-body) | `{artifact, changes}` | 200, 400, 404, 409 | — |
+| POST | `dual` | [body](#post-apiartifactsidedit-body) | `{changes, artifact}` | 200, 400, 404, 409 | — |
 
 ### POST `/api/artifacts/{id}/edit` body
 

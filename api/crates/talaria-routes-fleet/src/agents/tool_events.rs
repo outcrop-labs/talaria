@@ -30,6 +30,25 @@ fn clamp_field(v: Option<&serde_json::Value>) -> Option<String> {
         .map(|s| truncate_utf16(s, MAX_FIELD).to_string())
 }
 
+/// The credential scrub this door promises, in the one place both readers
+/// of the plugin's payload go through.
+fn scrub(text: &str) -> String {
+    talaria_api_facades::runs::defs::work_session::scrub_secrets(text)
+}
+
+/// The chips one completed tool call implies — read from SCRUBBED text.
+///
+/// THE BOUNDARY'S PROMISE COVERS THE CHIP TOO. This file re-clamps and
+/// scrubs everything before it joins the run-watch tail, but the chip reader
+/// was handed the raw strings: a key echoed into a tool result (an agent
+/// printing an env var, a 401 body quoting the token it rejected) rode
+/// straight onto a chip's label or detail — and a chip is the one thing here
+/// that PERSISTS, on the message row, and renders in the chat for everyone
+/// who can read the turn. Scrub first, then recognize.
+fn chips_for(tool: &str, args: &str, result: &str) -> Vec<serde_json::Value> {
+    talaria_chips::chips_from_tool(tool, &scrub(args), &scrub(result))
+}
+
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -67,7 +86,7 @@ pub async fn post(
     if status == "completed" {
         let args = parsed.get("args").and_then(|v| v.as_str()).unwrap_or("");
         let result = parsed.get("result").and_then(|v| v.as_str()).unwrap_or("");
-        let chips = talaria_chips::chips_from_tool(&tool, args, result);
+        let chips = chips_for(&tool, args, result);
         if !chips.is_empty() {
             let redis = state.redis().await.ok();
             // The chip's decide gate is owner-or-admin. Passing no owner made
@@ -157,7 +176,7 @@ pub async fn post(
         "turn": parsed.get("turnId").and_then(|v| v.as_str()).unwrap_or(""),
     });
     // Scrub at the boundary — the same shapes the transcript capture kills.
-    let frame = talaria_api_facades::runs::defs::work_session::scrub_secrets(&frame.to_string());
+    let frame = scrub(&frame.to_string());
     let key = format!("run-watch:{run_id}:tail");
     let chan = format!("run-watch:{run_id}");
     match state.redis().await {
@@ -183,4 +202,35 @@ pub async fn post(
         }
     }
     Ok(Json(json!({ "ok": true, "landed": true })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A KEY THE AGENT ECHOED NEVER REACHES A CHIP. The chip is the
+    /// persisting half of this door — it is written onto the message row and
+    /// rendered to everyone who can read the turn — so it goes through the
+    /// same scrub as the watch frame rather than reading the plugin's raw
+    /// strings.
+    #[test]
+    fn a_secret_in_a_tool_result_is_scrubbed_before_the_chip_reader_sees_it() {
+        // One of each shape the boundary kills, in the three fields a chip
+        // actually copies text out of: title, snippet, and the prose walk.
+        let key = "sk-proj-A1b2C3d4E5f6G7h8J9k0";
+        let pat = "ghp_A1b2C3d4E5f6G7h8J9k0L1m2N3o4P5q6";
+        let result = format!(
+            r#"[{{"title":"token {key} works","url":"https://example.com/a","snippet":"export GITHUB_TOKEN={pat}"}}]"#
+        );
+        let chips = chips_for("web_search", &format!(r#"{{"query":"{key}"}}"#), &result);
+        assert_eq!(chips.len(), 1, "{chips:?}");
+        let text = serde_json::to_string(&chips).expect("plain data");
+        assert!(!text.contains(key), "{text}");
+        assert!(!text.contains(pat), "{text}");
+        assert!(text.contains("[redacted:key]"), "{text}");
+        // And the chip is still the chip: the scrub replaces the shape, it
+        // does not drop the page.
+        assert_eq!(chips[0]["href"], "https://example.com/a");
+        assert_eq!(chips[0]["label"], "token [redacted:key] works");
+    }
 }

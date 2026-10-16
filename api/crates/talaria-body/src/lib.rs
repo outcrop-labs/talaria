@@ -221,6 +221,24 @@ pub fn truncate_utf16(s: &str, max: usize) -> &str {
     s
 }
 
+/// Clip for DISPLAY: at most `max` CHARS, with the clip mark inside that
+/// ceiling (`max - 1` chars plus it), or the string untouched when it
+/// already fits.
+///
+/// WHY CHARS HERE AND UTF-16 UNITS ABOVE. The siblings around this one
+/// enforce a WIRE bound, and the wire counts what JS counts. This one
+/// enforces a READING bound — a chip label, a search snippet, the
+/// before/after of a document edit — where the number is a promise to a
+/// person about how much text arrives, and splitting a multi-byte char to
+/// keep it would panic rather than clip.
+pub fn clip_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}\u{2026}")
+}
+
 /// The windowed sibling of `truncate_utf16` (the retrieval chunker
 /// hard-splits an oversized paragraph into fixed windows). A window that
 /// would split a surrogate pair rounds at char boundaries: a char belongs to
@@ -1316,6 +1334,22 @@ mod tests {
         for s in bad {
             assert!(!zod_email_ok(s), "should reject {s:?}");
         }
+    }
+
+    #[test]
+    fn a_display_clip_keeps_its_ceiling_and_marks_the_cut() {
+        assert_eq!(clip_chars("short", 10), "short", "a fit is untouched");
+        let clipped = clip_chars(&"x".repeat(50), 10);
+        assert_eq!(
+            clipped.chars().count(),
+            10,
+            "the mark is INSIDE the ceiling"
+        );
+        assert_eq!(clipped, "xxxxxxxxx\u{2026}");
+        // A multi-byte char at the cut: byte slicing would panic here.
+        let multi = clip_chars(&"é".repeat(50), 10);
+        assert_eq!(multi.chars().count(), 10);
+        assert!(multi.starts_with("ééé"));
     }
 
     #[test]

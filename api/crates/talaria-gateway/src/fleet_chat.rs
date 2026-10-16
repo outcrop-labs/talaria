@@ -563,12 +563,26 @@ pub struct ToolCall {
     pub id: Option<String>,
     pub name: String,
     pub label: String,
-    pub status: String, // 'running' | 'completed'
+    pub status: String, // 'running' | 'completed' | 'error'
 }
 
 /// Fold a tool event into a running list (dedupe by id when the frame names
 /// one, else by name among the still-running). A later frame never overwrites
 /// a good label with an empty one.
+///
+/// A FINISHED ROW STAYS FINISHED — `completed` and `error` alike, and this is
+/// ONE RULE rather than two words with two fates. Hermes addresses tool
+/// chatter to the open call and the open call's ordinal does not advance when
+/// it ends, so a `tool.progress` frame arriving after the end would walk the
+/// row back to "running" and leave it spinning in the chat and in history
+/// forever. The label may still land — the reason can arrive after the
+/// verdict — but the status does not move.
+///
+/// IT IS THE CLIENT'S RULE, VERBATIM: `mergeTool` in `ui/src/lib/sse-parse.ts`
+/// folds the same frames for the row a reader is watching, so a difference
+/// here is a row that says one thing live and another on reload. (The no-id
+/// branch needs no help: it only ever matches a row still `running`, so a
+/// later same-named call is its own row.)
 pub fn merge_tool(
     tools: &[ToolCall],
     id: Option<&str>,
@@ -594,7 +608,12 @@ pub fn merge_tool(
                 } else {
                     label.to_string()
                 },
-                status: status.unwrap_or(&existing.status).to_string(),
+                status: match (status, existing.status.as_str()) {
+                    // Terminal: the row has ended, whichever way it ended.
+                    (_, prior @ ("error" | "completed")) => prior.to_string(),
+                    (Some(s), _) => s.to_string(),
+                    (None, prior) => prior.to_string(),
+                },
             };
         }
         None => copy.push(ToolCall {
@@ -798,11 +817,14 @@ fn parse_tool_progress(payload: &str) -> Option<AgentStreamEvent> {
     };
     let id = (!id.is_empty()).then_some(id);
     // The status word, lowercased: anything unrecognized stays None (merge
-    // keeps the prior value; a push says 'running').
+    // keeps the prior value; a push says 'running'). A FAILURE READS AS
+    // "error" HERE TOO — the completions arm's telemetry names it either way,
+    // and mapping it to None left a failed call rendering as still running.
     let s = str_of("status").to_lowercase();
     let status = match s.as_str() {
         "running" => Some("running".to_string()),
         "completed" | "complete" => Some("completed".to_string()),
+        "error" | "failed" => Some("error".to_string()),
         _ => None,
     };
     if label.is_empty() && id.is_none() {
@@ -881,12 +903,13 @@ fn parse_session_frame(
             Some(vec![ev])
         }
         "tool.started" => Some(vec![session_tool(json, "running", calls, true)]),
-        // A failure is still a FINISHED call — the persisted vocabulary is two
-        // words, running and completed — so the preview is where a failure has
-        // to read, and Hermes writes the reason into it.
-        "tool.completed" | "tool.failed" => {
-            Some(vec![session_tool(json, "completed", calls, false)])
-        }
+        "tool.completed" => Some(vec![session_tool(json, "completed", calls, false)]),
+        // A failure is its OWN terminal word. It used to land as "completed"
+        // with the reason hidden in the preview, which read as a call that
+        // worked; the row now says `error` everywhere it flows (the persisted
+        // `messages.tools`, the client's face) and the preview still carries
+        // Hermes' reason, because that sentence is the only account of WHY.
+        "tool.failed" => Some(vec![session_tool(json, "error", calls, false)]),
         "assistant.commentary" => {
             let text = str_of("text");
             let already = json
@@ -1147,6 +1170,153 @@ mod tests {
         );
     }
 
+    /// The completions arm's own telemetry names a failure, and it has to read
+    /// as the error word — not as None, which left the row running forever.
+    #[test]
+    fn tool_progress_reads_a_failure_as_the_error_status() {
+        for word in ["error", "failed", "ERROR"] {
+            let mut p = AgentStreamParser::new();
+            let events = p.feed(
+                format!(
+                    "event: hermes.tool.progress\ndata: {{\"tool\":\"search\",\"toolCallId\":\"c1\",\"label\":\"quota exhausted\",\"status\":\"{word}\"}}\n\n"
+                )
+                .as_bytes(),
+            );
+            assert_eq!(
+                events,
+                vec![AgentStreamEvent::Tool {
+                    id: Some("c1".into()),
+                    name: "search".into(),
+                    label: "quota exhausted".into(),
+                    status: Some("error".into()),
+                }],
+                "{word}"
+            );
+        }
+    }
+
+    /// A `tool.failed` session frame is an ERRORED row whose label is Hermes'
+    /// reason — the only account of why the call did not work.
+    #[test]
+    fn a_failed_session_tool_frame_lands_as_an_error_with_its_reason() {
+        let mut p = AgentStreamParser::new();
+        let events = p.feed(
+            concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"🧠 remember"}"#,
+                "\n\n",
+                "event: tool.failed\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"memory: write refused"}"#,
+                "\n\n",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::Tool {
+                    id: Some("m1:memory#1".into()),
+                    name: "memory".into(),
+                    label: "🧠 remember".into(),
+                    status: Some("running".into()),
+                },
+                AgentStreamEvent::Tool {
+                    id: Some("m1:memory#1".into()),
+                    name: "memory".into(),
+                    label: "memory: write refused".into(),
+                    status: Some("error".into()),
+                },
+            ]
+        );
+        // And the pair folds into ONE errored row carrying the reason.
+        let mut tools: Vec<ToolCall> = Vec::new();
+        for ev in events {
+            if let AgentStreamEvent::Tool {
+                id,
+                name,
+                label,
+                status,
+            } = ev
+            {
+                tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+            }
+        }
+        assert_eq!(
+            tools,
+            vec![ToolCall {
+                id: Some("m1:memory#1".into()),
+                name: "memory".into(),
+                label: "memory: write refused".into(),
+                status: "error".into(),
+            }]
+        );
+    }
+
+    /// Both endings are terminal: an ending overwrites a running row, and no
+    /// later frame — a straggler progress for the same id, or a same-named
+    /// call with no id — walks it back. The client's fold holds the same rule
+    /// (`sse-parse.ts`), so the live row and the persisted one agree.
+    #[test]
+    fn merge_tool_keeps_error_terminal() {
+        let tools = merge_tool(&[], Some("c1"), "memory", "🧠", Some("running"));
+        let tools = merge_tool(&tools, Some("c1"), "memory", "write refused", Some("error"));
+        assert_eq!(tools[0].status, "error");
+        // A straggler addressed to the same call cannot reopen it.
+        let tools = merge_tool(&tools, Some("c1"), "memory", "", Some("running"));
+        assert_eq!(tools[0].status, "error");
+        let tools = merge_tool(&tools, Some("c1"), "memory", "", Some("completed"));
+        assert_eq!(tools[0].status, "error");
+        // A good label still lands on an errored row (the reason may arrive
+        // after the verdict); the row stays one row.
+        let tools = merge_tool(&tools, Some("c1"), "memory", "quota exhausted", None);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].label, "quota exhausted");
+        assert_eq!(tools[0].status, "error");
+        // No id: an errored row is finished, so a later same-named call is its
+        // OWN row — exactly how a completed row behaves.
+        let anon = merge_tool(&[], None, "search", "🔎", Some("error"));
+        let anon = merge_tool(&anon, None, "search", "🔎", Some("running"));
+        assert_eq!(anon.len(), 2, "{anon:?}");
+        assert_eq!(anon[0].status, "error");
+        assert_eq!(anon[1].status, "running");
+        // And it serialises as the one word the client reads.
+        assert_eq!(
+            serde_json::to_value(&tools).unwrap(),
+            serde_json::json!([{
+                "id": "c1",
+                "name": "memory",
+                "label": "quota exhausted",
+                "status": "error"
+            }])
+        );
+
+        // THE OTHER ENDING, same rule. A `tool.progress` frame addressed to
+        // a call that has already completed — Hermes keeps the ordinal open
+        // after the end — must not reopen the row: a reader watching the
+        // turn would see a finished tool start spinning again, and the
+        // persisted row would say "running" for ever.
+        let done = merge_tool(&[], Some("c2"), "terminal", "🖥 ls", Some("running"));
+        let done = merge_tool(&done, Some("c2"), "terminal", "", Some("completed"));
+        assert_eq!(done[0].status, "completed");
+        let done = merge_tool(
+            &done,
+            Some("c2"),
+            "terminal",
+            "still talking",
+            Some("running"),
+        );
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert_eq!(done[0].status, "completed", "a finished row stays finished");
+        assert_eq!(
+            done[0].label, "still talking",
+            "the label may still land — only the verdict is fixed"
+        );
+        // And a failure reported after a completion does not overwrite it
+        // either: ONE rule, not a precedence table.
+        let done = merge_tool(&done, Some("c2"), "terminal", "", Some("error"));
+        assert_eq!(done[0].status, "completed");
+    }
+
     #[test]
     fn merge_tool_dedupes_by_id_and_never_blanks_a_label() {
         let tools = merge_tool(&[], Some("c1"), "search", "🔎", Some("running"));
@@ -1308,7 +1478,7 @@ mod tests {
                     id: Some("msg_1:memory#1".into()),
                     name: "memory".into(),
                     label: "memory: write refused".into(),
-                    status: Some("completed".into()),
+                    status: Some("error".into()),
                 },
                 AgentStreamEvent::Content {
                     text: "Checking the box first.".into()

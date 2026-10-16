@@ -505,42 +505,43 @@ pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
     .is_ok()
 }
 
-/// Where a container keeps its Playwright browsers. The hermes-agent image
-/// ships `PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright`, which is INSIDE
-/// the image layer: a Chromium installed there is gone the moment the slot
-/// rolls, and the next browsing turn fails on a missing executable. This path
-/// is on the department's state volume, which outlives every roll — the
-/// renderer puts it in the uniform container env so Hermes, Playwright and
-/// the install below all agree on one directory.
-pub const AGENT_BROWSERS_PATH: &str = "/opt/data/.playwright";
+/// The one-shot marker for the browser toolset's setup, on the department's
+/// state volume so it outlives every roll. WHAT THE SETUP IS, AND IS NOT: the
+/// hermes-agent image ships Chromium under its own `PLAYWRIGHT_BROWSERS_PATH`
+/// (`/opt/hermes/.playwright`, in the image layer — a roll keeps it because a
+/// roll is the image). `hermes tools post-setup agent_browser` inside Docker
+/// does NOT download a browser; it installs the browser-use CLI the toolset
+/// drives into `/opt/data/bin` (the volume) and, if it cannot see Chromium,
+/// prints a pull hint. So the renderer must never point
+/// `PLAYWRIGHT_BROWSERS_PATH` elsewhere: an empty directory there hides the
+/// bundled browser and every browsing turn fails on "Chromium is missing" —
+/// which is exactly what the first live run of this feature did.
+pub const BROWSER_SETUP_MARKER: &str = "/opt/data/.talaria-browser-setup";
 
-/// The one-shot the install runs inside the container. The marker is the whole
-/// trick: `hermes tools post-setup agent_browser` is a multi-minute network
-/// download, and this fires after EVERY up and roll, so the second call has to
-/// cost nothing. `mkdir -p` because a def whose own env points
-/// PLAYWRIGHT_BROWSERS_PATH elsewhere (the Developer Agent's persisted harness
-/// dir) installs there and never creates this directory — the marker still
-/// belongs where every slot of this department will look for it.
+/// The script the setup runs inside the container. The marker is the whole
+/// trick: this fires after EVERY up and roll, so the second call has to cost
+/// nothing. `&&`, never `;`: the marker is written only when the post-setup
+/// hook succeeded, or a failed install would look finished forever.
 fn install_browser_script() -> String {
     format!(
-        "test -e {AGENT_BROWSERS_PATH}/.talaria-installed || \
-         (hermes tools post-setup agent_browser && mkdir -p {AGENT_BROWSERS_PATH} \
-          && touch {AGENT_BROWSERS_PATH}/.talaria-installed)"
+        "test -e {BROWSER_SETUP_MARKER} || \
+         (hermes tools post-setup agent_browser && touch {BROWSER_SETUP_MARKER})"
     )
 }
 
-/// Install Chromium into a slot's browsers directory, once. Best-effort by
-/// contract, like `prune_bundled_skills`: a roll NEVER fails on this — an
-/// agent whose browser never landed is an agent that cannot browse, not a
-/// fleet that cannot serve. The 600s budget is the honest size of a Chromium
-/// download on a slow line; the call sites run it detached for that reason.
+/// Finish the browser toolset's setup in a slot, once (the browser-use CLI
+/// onto the volume; Chromium is the image's). Best-effort by contract, like
+/// `prune_bundled_skills`: a roll NEVER fails on this — an agent whose setup
+/// never landed is an agent that cannot browse, not a fleet that cannot
+/// serve. The 600s budget covers the hook's own network install on a slow
+/// line; the call sites run it detached for that reason.
 pub async fn install_browser(department: &str, slot: Slot) -> bool {
     let name = slot_container(department, slot);
-    // The operator's brake. A Chromium download per department is real
-    // network and disk, and a dev stack rolling agents to test something
-    // else should not pay it: TALARIA_BROWSER_INSTALL=off skips the install
-    // (the toolset stays on; the tools simply report no browser) and says so
-    // once per roll so the quiet is traceable.
+    // The operator's brake. The hook's install is real network per
+    // department, and a dev stack rolling agents to test something else
+    // should not pay it: TALARIA_BROWSER_INSTALL=off skips the setup (the
+    // toolset stays on; the tools simply report no browser) and says so once
+    // per roll so the quiet is traceable.
     if std::env::var("TALARIA_BROWSER_INSTALL").is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"))
     {
         tracing::info!("[fleet] browser install skipped for {name}: TALARIA_BROWSER_INSTALL=off");
@@ -590,22 +591,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_browser_install_is_marker_guarded_on_the_state_volume() {
+    fn the_browser_setup_is_marker_guarded_on_the_state_volume() {
         let script = install_browser_script();
-        // The marker sits on the volume, not in the image layer — that is the
-        // whole point of the path, and the only thing that keeps a roll from
-        // re-downloading Chromium.
-        assert!(script.starts_with("test -e /opt/data/.playwright/.talaria-installed ||"));
+        // The marker sits on the volume, not in the image layer — the only
+        // thing that keeps every roll from re-running the hook's install.
+        assert!(script.starts_with("test -e /opt/data/.talaria-browser-setup ||"));
         assert!(
             script.contains("hermes tools post-setup agent_browser"),
             "{script}"
         );
-        // The marker is written only after the install succeeded: `&&`, never
-        // `;`, or a failed download would look installed forever.
+        // The marker is written only after the hook succeeded: `&&`, never
+        // `;`, or a failed install would look finished forever.
         assert!(
-            script.contains("agent_browser && mkdir -p /opt/data/.playwright && touch /opt/data/.playwright/.talaria-installed"),
+            script.contains("agent_browser && touch /opt/data/.talaria-browser-setup"),
             "{script}"
         );
+        // And nothing here points Playwright away from the image's Chromium.
+        assert!(!script.contains("PLAYWRIGHT_BROWSERS_PATH"));
     }
 
     #[test]
