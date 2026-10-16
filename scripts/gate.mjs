@@ -86,6 +86,18 @@ function isDesktopUi(file) {
  * @param {string[]} files
  * @param {(rel: string) => string | null} readPkg
  */
+function isMobileSource(file) {
+  if (!file.startsWith('mobile/')) return false
+  // The provisioner is a shell script run by hand inside a devbox; it compiles
+  // nothing and Gradle never reads it.
+  if (file.startsWith('mobile/tools/')) return false
+  return /\.(kt|kts|xml|pro|toml|properties)$/.test(file) || file === 'mobile/gradlew'
+}
+
+/**
+ * @param {string[]} files
+ * @param {(rel: string) => string | null} readPkg
+ */
 function classify(files, readPkg) {
   const plan = {
     ui: false,
@@ -96,6 +108,7 @@ function classify(files, readPkg) {
     apiUnmapped: [],
     desktopCargo: false,
     desktopTypecheck: false,
+    mobile: false,
   }
   const pkgs = new Set()
   for (const file of files) {
@@ -108,6 +121,8 @@ function classify(files, readPkg) {
     } else if (file.startsWith('desktop/')) {
       if (isDesktopRust(file)) plan.desktopCargo = true
       else if (isDesktopUi(file)) plan.desktopTypecheck = true
+    } else if (file.startsWith('mobile/')) {
+      if (isMobileSource(file)) plan.mobile = true
     } else if (file.startsWith('api/')) {
       if (API_GRAPH.has(file) || file.startsWith('api/.cargo/')) {
         plan.apiGraph.push(file)
@@ -140,7 +155,10 @@ function selfTest() {
     return null
   }
   const docs = classify(['docs/FOO.md', 'changelog/x.md', '.github/workflows/ci.yml'], stub)
-  assert(!docs.ui && !docs.mcp && !docs.cli && docs.apiPackages.length === 0 && !docs.desktopCargo, 'docs-only compiles nothing')
+  assert(
+    !docs.ui && !docs.mcp && !docs.cli && docs.apiPackages.length === 0 && !docs.desktopCargo && !docs.mobile,
+    'docs-only compiles nothing',
+  )
   assert(docs.apiGraph.length === 0, 'a workflow edit is not a local api compile')
 
   const one = classify(['api/crates/talaria-error/src/lib.rs'], stub)
@@ -169,9 +187,17 @@ function selfTest() {
     'cli/src/ports.ts',
     'desktop/src/App.svelte',
     'desktop/src-tauri/src/main.rs',
+    'mobile/shared/src/commonMain/kotlin/app/talaria/mobile/App.kt',
   ], stub)
   assert(surfaces.ui && surfaces.mcp && surfaces.cli, 'ui, apps, mcp, cli each select their surface')
   assert(surfaces.desktopTypecheck && surfaces.desktopCargo, 'desktop svelte and rust select separately')
+  assert(surfaces.mobile, 'a kotlin source file selects the mobile surface')
+
+  const mobileDocs = classify(['mobile/README.md', 'mobile/tools/devbox-install.sh'], stub)
+  assert(!mobileDocs.mobile, 'a mobile readme or provisioner script is not a gradle build')
+
+  const mobileBuild = classify(['mobile/gradle/libs.versions.toml'], stub)
+  assert(mobileBuild.mobile, 'the version catalog selects the mobile surface')
 
   const real = classify(['api/crates/talaria-error/src/lib.rs'], readPackageName)
   assert(real.apiPackages[0] === 'talaria-error', 'the real talaria-error manifest names talaria-error')
@@ -247,6 +273,7 @@ if (plan.apiUnmapped.length) {
 }
 say(plan.desktopCargo, 'desktop cargo (talaria-desktop only)')
 say(plan.desktopTypecheck, 'desktop typecheck')
+say(plan.mobile, 'mobile (shared tests + android assemble)')
 
 if (dry) process.exit(0)
 
@@ -288,3 +315,11 @@ if (plan.desktopCargo) {
   run('cargo', ['test', '--quiet'], desktop)
 }
 if (plan.desktopTypecheck) run('bun', ['run', 'typecheck'], join(ROOT, 'desktop'))
+
+if (plan.mobile) {
+  // The wrapper, not a host gradle: the build pins its own Gradle. Needs the
+  // JDK + Android SDK a devbox gets from mobile/tools/devbox-install.sh.
+  // iOS is absent on purpose — Kotlin/Native cannot build Apple targets off
+  // macOS, so CI's macos job is that gate (docs/MOBILE.md).
+  run('./gradlew', [':shared:jvmTest', ':androidApp:assembleDebug'], join(ROOT, 'mobile'))
+}

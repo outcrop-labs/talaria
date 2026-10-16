@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 talaria-agent-ask = { workspace = true }
 talaria-agent-todo = { workspace = true }
+talaria-conversation-layout = { workspace = true }
 talaria-doc-edit = { workspace = true }
 talaria-fitness-talaria-tools = { workspace = true }
 talaria-fitness-world = { workspace = true }

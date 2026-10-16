@@ -18,6 +18,7 @@ use std::sync::LazyLock;
 use uuid::Uuid;
 
 use talaria_boards::{agent_board_policy_sql, board_visibility_sql};
+use talaria_office::{extract_text, office_kind};
 use talaria_secretbox::SecretBox;
 use talaria_storage::{self as storage, read_blob};
 
@@ -139,16 +140,36 @@ static TEXT_MIME: LazyLock<regex::Regex> = LazyLock::new(|| {
 /// an archive.
 const FILE_CLIP: usize = 6_000;
 
+/// An attachment chip's declared mime and filename. Both are the UPLOADER's
+/// word, which is exactly why office_kind wants the pair: a .docx posted from a
+/// browser routinely arrives as application/octet-stream, and then the
+/// extension is the only evidence of what the file is.
+fn declared(a: &serde_json::Value) -> (&str, &str) {
+    (
+        a.get("mime").and_then(|m| m.as_str()).unwrap_or(""),
+        a.get("filename").and_then(|f| f.as_str()).unwrap_or(""),
+    )
+}
+
+/// Which members of an attachments array contribute text to a prompt: a file
+/// upload (never a ref chip) whose mime says text — or whose mime/filename
+/// pair says Office. A .docx, .xlsx or .pptx carries its text inside a zip, so
+/// no mime pattern can admit it; without this arm a user's attached report
+/// reaches the model as nothing at all.
 fn file_candidates(attachments: &serde_json::Value) -> Vec<&serde_json::Value> {
     let Some(arr) = attachments.as_array() else {
         return Vec::new();
     };
     arr.iter()
         .filter(|a| {
-            a.as_object().is_some_and(|o| !o.contains_key("refType"))
-                && a.get("mime")
-                    .and_then(|m| m.as_str())
-                    .is_some_and(|m| TEXT_MIME.is_match(m))
+            let Some(o) = a.as_object() else {
+                return false;
+            };
+            if o.contains_key("refType") {
+                return false;
+            }
+            let (mime, filename) = declared(a);
+            TEXT_MIME.is_match(mime) || office_kind(mime, filename).is_some()
         })
         .collect()
 }
@@ -163,10 +184,11 @@ pub async fn attachment_as_data_url(pg: &PgPool, sb: &SecretBox, id: &str) -> Op
     Some(url)
 }
 
-/// The prompt block a message's textual file uploads contribute: up to
-/// `max_files` text-mime attachments, each re-read from storage and clipped.
-/// Ref chips are NOT file uploads (they carry their content inline —
-/// ref_blocks); a non-array or a row whose blob is gone contributes nothing.
+/// The prompt block a message's readable file uploads contribute: up to
+/// `max_files` attachments — text mimes and Office documents alike — each
+/// re-read from storage and clipped. Ref chips are NOT file uploads (they
+/// carry their content inline — ref_blocks); a non-array or a row whose blob
+/// is gone contributes nothing.
 pub async fn attachment_text_blocks(
     pg: &PgPool,
     sb: &SecretBox,
@@ -177,12 +199,39 @@ pub async fn attachment_text_blocks(
     let mut blocks: Vec<String> = Vec::new();
     for f in files.iter().take(max_files) {
         let id = f.get("id").and_then(|i| i.as_str()).unwrap_or("");
-        let Ok(Some((bytes, _mime, filename))) = get_upload(pg, sb, id).await else {
+        let Ok(Some((bytes, mime, filename))) = get_upload(pg, sb, id).await else {
             continue;
         };
-        // Bytes become text lossily — invalid sequences turn into U+FFFD
-        // rather than failing the block.
-        let text = String::from_utf8_lossy(&bytes).into_owned();
+        // The ROW's mime and filename decide, not the chip's: the row is what
+        // the upload was recorded as, and the chip is a copy that a later
+        // edit can have left behind.
+        let text = match office_kind(&mime, &filename) {
+            // Off the executor: inflating and walking up to 20 MiB of XML is
+            // CPU work, and a prompt being assembled must not stall every
+            // other turn on this thread while it happens.
+            Some(kind) => match tokio::task::spawn_blocking(move || extract_text(&bytes, kind))
+                .await
+                .unwrap_or_else(|e| Err(talaria_office::OfficeError::Malformed(e.to_string())))
+            {
+                Ok(text) => text,
+                Err(e) => {
+                    // A document we could not open still contributes a line.
+                    // Silence would tell the model the attachment was never
+                    // there, and it would answer about a message that is
+                    // missing its subject; this way it can say what went
+                    // wrong and ask for another copy.
+                    let ext = kind.extension();
+                    tracing::warn!("[uploads] {ext} extract failed for {id}: {e}");
+                    blocks.push(format!(
+                        "\n\n--- Attached file: \"{filename}\" ---\n[this file could not be read as {ext}]"
+                    ));
+                    continue;
+                }
+            },
+            // Bytes become text lossily — invalid sequences turn into U+FFFD
+            // rather than failing the block.
+            None => String::from_utf8_lossy(&bytes).into_owned(),
+        };
         let clipped = if talaria_body::utf16_len(&text) > FILE_CLIP {
             format!(
                 "{}\n[clipped]",
@@ -920,6 +969,32 @@ mod tests {
         // A non-array answers no candidates at all (refBlocks' shape rule).
         assert!(file_candidates(&json!(null)).is_empty());
         assert!(file_candidates(&json!({})).is_empty());
+    }
+
+    /// Office files join the text mimes as candidates, and the EXTENSION has
+    /// to be enough: an upload posted from a browser carries whatever mime the
+    /// client felt like declaring, which for a .docx is routinely
+    /// application/octet-stream.
+    #[test]
+    fn file_candidates_admit_office_files_by_mime_or_extension() {
+        let a = json!([
+            { "id": "1", "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "filename": "report.docx" },
+            { "id": "2", "mime": "application/octet-stream", "filename": "book.xlsx" },
+            { "id": "3", "mime": "application/zip", "filename": "deck.pptx" },
+            { "id": "4", "mime": "", "filename": "memo.docx" },
+            // A generic mime with no office extension is still just bytes.
+            { "id": "5", "mime": "application/octet-stream", "filename": "firmware.bin" },
+            // An office extension cannot override a mime that already says
+            // what the file is.
+            { "id": "6", "mime": "image/png", "filename": "screenshot.docx" },
+            // A ref chip is never a file upload, office extension or not.
+            { "refType": "artifact", "mime": "application/octet-stream", "filename": "a.docx" }
+        ]);
+        let ids: Vec<&str> = file_candidates(&a)
+            .iter()
+            .map(|c| c.get("id").and_then(|i| i.as_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(ids, vec!["1", "2", "3", "4"]);
     }
 
     /// The inline/download allowlist, and the header hygiene on both sides.

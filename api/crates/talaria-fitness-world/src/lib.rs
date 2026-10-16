@@ -247,6 +247,23 @@ pub struct SandboxTodoItem {
     pub status: String,
 }
 
+/// HOW THE AGENT LEFT THE SESSION IT WAS IN — what `organize_session` last
+/// asked for. One struct rather than four loose fields because a fixture
+/// grades the WHOLE gesture: renaming a thread and putting it away are the
+/// same request ("we are done, call it the billing migration and file it"),
+/// and the one that matters most is `archived`, which no agent may set
+/// unasked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxLayout {
+    pub title: Option<String>,
+    pub pinned: Option<bool>,
+    /// The group it was filed under; `None` after a call that cleared it.
+    pub group: Option<String>,
+    pub position: Option<i32>,
+    pub archived: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxResearchRun {
@@ -393,6 +410,9 @@ pub struct SandboxWorld {
     pub todo: Vec<SandboxTodoItem>,
     #[serde(default)]
     pub asked: Vec<SandboxAsked>,
+    /// What the agent did to the session itself, if anything.
+    #[serde(default)]
+    pub layout: SandboxLayout,
     /// Files the agent has produced in its own workspace. `save_image_artifact`
     /// refuses a path that is not one of these — a model that saves a chart it
     /// never rendered is confabulating a file.
@@ -475,6 +495,9 @@ pub fn base_world() -> SandboxWorld {
         // every conversation with.
         todo: vec![],
         asked: vec![],
+        // Nor any organising: a conversation starts where the person left
+        // it, and what the agent did to it is the thing a fixture reads back.
+        layout: SandboxLayout::default(),
         boards: vec![
             SandboxBoard {
                 id: "b-platform".into(),

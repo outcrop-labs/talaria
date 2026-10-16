@@ -1,0 +1,142 @@
+package app.talaria.mobile.net
+
+import app.talaria.mobile.account.Credential
+import app.talaria.mobile.account.Instance
+import app.talaria.mobile.account.MeResult
+import app.talaria.mobile.account.SignInResult
+import app.talaria.mobile.account.readMe
+import app.talaria.mobile.account.signIn
+import app.talaria.mobile.instance.ProbeResult
+import app.talaria.mobile.instance.probeInstance
+import io.ktor.client.HttpClient
+import kotlinx.coroutines.flow.Flow
+
+/**
+ * Everything the screens can ask the outside world for, as suspend functions.
+ *
+ * WHY A PORT BOUNDARY AND NOT AN HttpClient. Two reasons, and the second is the
+ * one that forced it.
+ *
+ * 1. The UI layer imports no Ktor at all. A screen states what it needs
+ *    ("sign this person in") rather than how it is fetched, so swapping the
+ *    session cookie for a device credential, or adding a cache, happens here
+ *    and not in a composable.
+ *
+ * 2. It makes the headless UI tests DETERMINISTIC. Driving a real client from a
+ *    UI test means `waitUntil` is racing a coroutine on another dispatcher, and
+ *    a virtual test clock can exhaust its timeout before that coroutine is
+ *    scheduled — which showed up exactly as it always does, as tests that pass
+ *    and fail on alternate runs for no visible reason. With a port, a UI test
+ *    hands in a function that answers immediately and asserts UI behaviour
+ *    only.
+ *
+ * What this does NOT do is let the wire go untested. [httpPorts] is the real
+ * implementation, and `LoopbackApiTest` drives it against a JDK HTTP server
+ * over a real socket — url building, header writing, `Set-Cookie` parsing and
+ * JSON decoding included. The split is deliberate: UI behaviour is asserted in
+ * the UI, wire behaviour is asserted on the wire, and neither test is flaky
+ * because neither is waiting on the other's scheduler.
+ */
+data class Ports(
+    val probe: suspend (origin: String) -> ProbeResult,
+    val signIn: suspend (instance: Instance, username: String, password: String) -> SignInResult,
+    val me: suspend (instance: Instance, credential: Credential) -> MeResult,
+    val home: suspend (instance: Instance, credential: Credential) -> HomeResult,
+    val channels: suspend (instance: Instance, credential: Credential) -> CommsResult<List<Channel>>,
+    val messages: suspend (instance: Instance, credential: Credential, channelId: String) -> CommsResult<List<Message>>,
+    val post: suspend (
+        instance: Instance,
+        credential: Credential,
+        channelId: String,
+        content: String,
+    ) -> CommsResult<Message>,
+    val markRead: suspend (instance: Instance, credential: Credential, channelId: String) -> CommsResult<Unit>,
+    val task: suspend (instance: Instance, credential: Credential, taskId: String) -> CommsResult<TaskDetail>,
+    val review: suspend (
+        instance: Instance,
+        credential: Credential,
+        taskId: String,
+        verdict: ReviewVerdict,
+        notes: String?,
+    ) -> CommsResult<Task>,
+    val comment: suspend (
+        instance: Instance,
+        credential: Credential,
+        taskId: String,
+        content: String,
+    ) -> CommsResult<TaskComment>,
+    val fleet: suspend (instance: Instance, credential: Credential) -> CommsResult<List<FleetAgent>>,
+    val cost: suspend (instance: Instance, credential: Credential) -> CostResult,
+    val workSession: suspend (
+        instance: Instance,
+        credential: Credential,
+        taskId: String,
+    ) -> CommsResult<WorkSessionRead>,
+    val stopSession: suspend (instance: Instance, credential: Credential, taskId: String) -> CommsResult<Unit>,
+    val searchKnowledge: suspend (
+        instance: Instance,
+        credential: Credential,
+        query: String,
+    ) -> CommsResult<List<KbSearchHit>>,
+    val kbDoc: suspend (instance: Instance, credential: Credential, docId: String) -> CommsResult<KbDoc>,
+    val plans: suspend (instance: Instance, credential: Credential) -> CommsResult<List<PlanSummary>>,
+    val planDoc: suspend (instance: Instance, credential: Credential, planId: String) -> CommsResult<Artifact>,
+    val control: suspend (
+        instance: Instance,
+        credential: Credential,
+        agentId: String,
+        action: AgentAction,
+    ) -> CommsResult<Unit>,
+    /** A chat turn, as a cold Flow of events. A FUNCTION so each turn opens
+     *  its own stream and nothing is held open between questions. */
+    val chat: (
+        instance: Instance,
+        credential: Credential,
+        model: String,
+        content: String,
+        conversationId: String?,
+    ) -> Flow<ChatEvent>,
+    /** The live firehose. A FUNCTION returning a cold Flow, not a Flow: each
+     *  collector opens its own stream, and an account that is not being looked
+     *  at holds no connection open. */
+    val events: (instance: Instance, credential: Credential) -> Flow<UserEvent>,
+)
+
+/** The real ports, over HTTP. */
+fun httpPorts(client: HttpClient): Ports =
+    Ports(
+        probe = { origin -> probeInstance(client, origin) },
+        signIn = { instance, username, password -> signIn(client, instance, username, password) },
+        me = { instance, credential -> readMe(client, instance, credential) },
+        home = { instance, credential -> readHome(client, instance, credential) },
+        channels = { instance, credential -> readChannels(client, instance, credential) },
+        messages = { instance, credential, channelId -> readMessages(client, instance, credential, channelId) },
+        post = { instance, credential, channelId, content ->
+            postMessage(client, instance, credential, channelId, content)
+        },
+        markRead = { instance, credential, channelId -> markRead(client, instance, credential, channelId) },
+        events = { instance, credential -> userEvents(client, instance, credential) },
+        task = { instance, credential, taskId -> readTask(client, instance, credential, taskId) },
+        review = { instance, credential, taskId, verdict, notes ->
+            reviewTask(client, instance, credential, taskId, verdict, notes)
+        },
+        comment = { instance, credential, taskId, content ->
+            commentOnTask(client, instance, credential, taskId, content)
+        },
+        chat = { instance, credential, model, content, conversationId ->
+            chatStream(client, instance, credential, model, content, conversationId)
+        },
+        fleet = { instance, credential -> readFleet(client, instance, credential) },
+        cost = { instance, credential -> readCost(client, instance, credential) },
+        workSession = { instance, credential, taskId -> readWorkSession(client, instance, credential, taskId) },
+        stopSession = { instance, credential, taskId -> stopWorkSession(client, instance, credential, taskId) },
+        searchKnowledge = { instance, credential, query ->
+            searchKnowledge(client, instance, credential, query)
+        },
+        kbDoc = { instance, credential, docId -> readKbDoc(client, instance, credential, docId) },
+        plans = { instance, credential -> listPlans(client, instance, credential) },
+        planDoc = { instance, credential, planId -> readPlanDoc(client, instance, credential, planId) },
+        control = { instance, credential, agentId, action ->
+            controlAgent(client, instance, credential, agentId, action)
+        },
+    )
