@@ -17,7 +17,7 @@
 | [`talaria box install`](#talaria-box-install) | install a tool/harness into the layer every devbox shares |
 | [`talaria box seed`](#talaria-box-seed) | seed a box with starter data from the primary dev environment |
 | [`talaria box stop`](#talaria-box-stop) | stop a devbox's containers (state kept) |
-| [`talaria box start`](#talaria-box-start) | restart a stopped devbox (and the shared TEI/SearXNG) |
+| [`talaria box start`](#talaria-box-start) | restart a stopped devbox (and the shared TEI) |
 | [`talaria box rm`](#talaria-box-rm) | tear down a devbox — refuses unpushed work unless --force |
 | [`talaria box build`](#talaria-box-build) | rebuild the talaria-devbox:latest toolchain image |
 | [`talaria app new`](#talaria-app-new) | scaffold a TypeScript app into apps/<slug> |
@@ -112,7 +112,7 @@ Positional `<name>` (required)
 
 ### `talaria box start`
 
-restart a stopped devbox (and the shared TEI/SearXNG)
+restart a stopped devbox (and the shared TEI)
 
 ```
 talaria box start <name>

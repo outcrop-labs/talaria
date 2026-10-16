@@ -823,6 +823,40 @@ fn dial_is_container() -> bool {
     matches!(std::env::var("TALARIA_AGENT_DIAL"), Ok(v) if v == "container")
 }
 
+/// The operator's search endpoint AS AN AGENT CONTAINER CAN REACH IT, or None.
+/// The app's spelling is the app's view: on a host-run dev app a loopback
+/// address means the laptop, which an agent reaches as host.docker.internal
+/// (the chassis declares it); in a containerized stack a loopback address is
+/// the app container itself and reaches nothing from an agent, so it is
+/// withheld rather than rendered wrong. Any other host passes through as-is.
+fn agent_search_url(app_url: &str, container_dial: bool) -> Option<String> {
+    let url = app_url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Some(url.to_string());
+    };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h, Some(p)),
+        _ => (authority, None),
+    };
+    if !matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0") {
+        return Some(url.to_string());
+    }
+    if container_dial {
+        return None;
+    }
+    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    let path = if path.is_empty() {
+        String::new()
+    } else {
+        format!("/{path}")
+    };
+    Some(format!("{scheme}://host.docker.internal{port}{path}"))
+}
+
 // ── The render loop ───────────────────────────────────────────────────────────
 
 pub struct RenderResult {
@@ -848,6 +882,8 @@ pub async fn render_fleet(
     roll: Option<RollOverlay<'_>>,
 ) -> Result<RenderResult, String> {
     let targets = managed_agents(pg).await.map_err(|e| e.to_string())?;
+    let agent_search_url =
+        agent_search_url(&talaria_search::search_url(pg).await, dial_is_container());
     let mut result = RenderResult {
         agents: Vec::new(),
         files: Vec::new(),
@@ -1214,6 +1250,17 @@ pub async fn render_fleet(
         // stack and a host-app dev stack both render the truth without an
         // operator wiring anything new.
         env.insert("TALARIA_API_URL".into(), json!(gateway_origin()));
+        // THE OPERATOR'S OWN SEARCH ENDPOINT, HANDED TO HERMES — not a search
+        // tool of ours. Hermes carries its own web-search provider registry
+        // (searxng, brave, exa, tavily, …, and keyless public tiers as the
+        // floor), and it reads SEARXNG_URL for the self-hosted shape. Talaria
+        // used to bolt a second `web_search` onto every agent over MCP and run
+        // its own SearXNG to answer it; now the agent searches with what it
+        // has, and an endpoint the operator configured here reaches it too.
+        // Nothing set → nothing rendered → Hermes resolves its own floor.
+        if let Some(url) = &agent_search_url {
+            env.insert("SEARXNG_URL".into(), json!(url));
+        }
         env.insert(
             "TALARIA_HEARTBEAT_SECONDS".into(),
             json!("${TALARIA_HEARTBEAT_SECONDS:-45}"),
@@ -1936,6 +1983,31 @@ async fn write_fleet_manifest(pg: &PgPool, result: &mut RenderResult) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_operators_search_url_reaches_an_agent_only_where_it_can() {
+        // Nothing configured: nothing rendered — Hermes resolves its own floor.
+        assert_eq!(agent_search_url("", false), None);
+        assert_eq!(agent_search_url("   ", true), None);
+        // A real host passes through untouched, container or not.
+        assert_eq!(
+            agent_search_url("https://search.corp.example/", true).as_deref(),
+            Some("https://search.corp.example/")
+        );
+        // Loopback on a host-run app is the laptop, which an agent spells
+        // host.docker.internal; the port and any path survive.
+        assert_eq!(
+            agent_search_url("http://127.0.0.1:8888", false).as_deref(),
+            Some("http://host.docker.internal:8888")
+        );
+        assert_eq!(
+            agent_search_url("http://localhost:8080/searx", false).as_deref(),
+            Some("http://host.docker.internal:8080/searx")
+        );
+        // Loopback in a containerized stack is the app container itself —
+        // withheld, never rendered wrong.
+        assert_eq!(agent_search_url("http://127.0.0.1:8888", true), None);
+    }
     use serde_json::json;
 
     const CHASSIS: &str = "\

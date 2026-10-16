@@ -7,11 +7,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { join } from 'node:path'
 import type { Ctx } from '../../ctx'
 import type { Leaf, ParsedArgs } from '../../cli'
-import { EMBED_CONTAINER, SEARCH_CONTAINER } from '../../containers'
+import { EMBED_CONTAINER } from '../../containers'
 import { compose, stackComposeFiles, waitFor } from '../../compose'
 import { envValue, writeSecret } from '../../envfile'
 import { portSlot } from '../../paths'
-import { renderSearxng } from '../../searxng'
 import { runSeed } from './seed'
 import { boxDir, boxFleetNetwork, boxHost, boxProject, boxState, boxSvc, checkName, COMPOSE_FILE, IMAGE, sharedTools, toolsExec } from './shared'
 
@@ -43,7 +42,7 @@ BOX_S3_SECRET_KEY=${o.s3.secret}
  *  a primary-side service gets re-pointed at the box's own below. Everything
  *  else rides verbatim: TALARIA_SECRET_KEY/AUTH_* MUST, or sealed secrets
  *  seeded from the primary couldn't decrypt (the worktree rule). */
-const STRIP_RE = /^(DATABASE_URL|REDIS_URL|PORT|SEARXNG_URL|TALARIA_QDRANT_URL|TALARIA_EMBED_URL|TALARIA_S3_.*)=/
+const STRIP_RE = /^(DATABASE_URL|REDIS_URL|PORT|TALARIA_QDRANT_URL|TALARIA_EMBED_URL|TALARIA_S3_.*)=/
 
 /** The box's ui/.env: the primary's, minus the strip-list, plus the box block.
  *  Pure so the strip-list is testable. */
@@ -66,7 +65,6 @@ TALARIA_S3_BUCKET=${o.s3.bucket}
 TALARIA_S3_ACCESS_KEY=${o.s3.key}
 TALARIA_S3_SECRET_KEY=${o.s3.secret}
 TALARIA_EMBED_URL=http://${EMBED_CONTAINER}:80
-SEARXNG_URL=http://${SEARCH_CONTAINER}:8080
 TALARIA_API_BIND=0.0.0.0
 TALARIA_MCP_GW_URL=http://devbox:5273/api/mcp/gw
 TALARIA_GATEWAY_SELF_URL=http://devbox:5274/api/llm/v1
@@ -163,18 +161,13 @@ export async function runNew(ctx: Ctx, name: string, o: { branch?: string; from?
   if (existsSync(box)) ctx.log.die(`${box} already exists`)
 
   // The primary stack is the seed source, and hosts the shared stateless
-  // services (embeddings, search) the box dials by container name.
-  ctx.log.say('Primary dev stack (seed source + shared TEI/SearXNG)')
+  // service (embeddings) the box dials by container name.
+  ctx.log.say('Primary dev stack (seed source + shared TEI)')
   const devSpec = { files: stackComposeFiles(root, 'docker/dev-compose.yml') }
   if ((await compose(ctx, devSpec, ['up', '-d', 'postgres'])) !== 0) {
     ctx.log.die("primary postgres won't start — it is the seed source")
   }
-  try {
-    renderSearxng(ctx)
-  } catch {
-    /* non-fatal, same posture as the old `render-searxng.sh || true` */
-  }
-  for (const svc of ['embeddings', 'searxng']) {
+  for (const svc of ['embeddings']) {
     if ((await compose(ctx, devSpec, ['up', '-d', svc])) !== 0) {
       ctx.log.warn(`${svc} didn't start — the box will run degraded without it (same posture as \`talaria dev\`)`)
     }

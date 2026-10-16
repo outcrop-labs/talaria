@@ -12,7 +12,11 @@
 // to mean one of those two surfaces, and they have different sizes, different
 // callers and different failure modes.
 //
-//     hermes      63 tools, over MCP, inside the agent container   THIS FILE
+//     hermes      62 tools, over MCP, inside the agent container   THIS FILE
+//     native      `web_search` — Hermes's OWN tool inside the agent (its
+//                 web-search provider registry, keyless tiers included), and
+//                 the research harness's platform tool; never over MCP, so
+//                 the sync test does not look for it in mcp/src/index.ts
 
 //     platform     handed to a model by a harness via `toolDefs`   research.rs (search)
 //
@@ -57,13 +61,23 @@ use talaria_task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
 
 // ── The axes a report reads along ────────────────────────────────────────────
 
-/// WHERE A TOOL IS CALLED FROM. One value today and that is the finding, not an
-/// oversight: every tool below is MCP, and Talaria's own harnesses hold almost
-/// nothing. The platform's own native surface is the research harness's single
-/// `web_search` tool (`harness/defs/research.ts`).
+/// WHERE A TOOL IS CALLED FROM. Nearly every tool below is MCP, registered by
+/// `mcp/src/index.ts`; Talaria's own harnesses hold almost nothing. The one
+/// exception is `web_search`: a fleet agent has it as Hermes's OWN tool (Hermes
+/// ships a web-search provider registry, keyless public tiers as the floor),
+/// and the research harness holds the platform's twin (`harness/defs/research.rs`
+/// owns that schema). Talaria used to register a third copy over MCP, backed by
+/// a bundled SearXNG; that duplicate is gone (2026-10), and the sandbox keeps
+/// the tool so a fixture can still measure "searched first" against a fixed
+/// tiny web.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCaller {
+    /// Over MCP from the Talaria toolkit — the sync test holds it to
+    /// `mcp/src/index.ts`.
     Hermes,
+    /// Held by the agent runtime itself, or by a Talaria harness — not an MCP
+    /// registration, so the sync test does not look for it.
+    Native,
 }
 
 /// What the tool is FOR — the axis an admin reads a fitness report along, and
@@ -436,7 +450,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
         // ── Knowledge ──────────────────────────────────────────────────────────
         SandboxTool {
             name: "web_search",
-            caller: ToolCaller::Hermes,
+            caller: ToolCaller::Native,
             group: ToolGroup::Knowledge,
             description: "Search the live web and get back ranked results with their URLs. Use it for anything that happened or changed recently, anything you would otherwise be guessing at, and any claim a reader would expect a source for — then cite the URLs you used. This searches the PUBLIC web: for this organization's own documents and past conversations use search_knowledge instead.",
             parameters: json!({
@@ -1644,6 +1658,9 @@ mod tests {
         let real = real_descriptions(&source());
         let missing: Vec<&str> = TALARIA_TOOLS
             .iter()
+            // Native tools are the agent runtime's own (or a harness's) and
+            // were never registered by the toolkit — see ToolCaller.
+            .filter(|t| t.caller == ToolCaller::Hermes)
             .map(|t| t.name)
             .filter(|n| !real.contains_key(*n))
             .collect();

@@ -21,7 +21,7 @@ import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
 import { envValue } from '../envfile'
 import { composeArgs, ensureNetwork, stackComposeFiles } from '../compose'
-import { PG_PORT, REDIS_PORT, SEARCH_PORT } from '../ports'
+import { PG_PORT, REDIS_PORT } from '../ports'
 import { mcpToolkit, ompAuthBridge } from './dev'
 
 const rand = (bytes: number): string => randomBytes(bytes).toString('hex')
@@ -133,7 +133,6 @@ export async function runSetup(ctx: Ctx): Promise<number> {
 
   const pgPort = ctx.env.TALARIA_PG_PORT ?? PG_PORT
   const redisPort = ctx.env.TALARIA_REDIS_PORT ?? REDIS_PORT
-  const searchPort = ctx.env.TALARIA_SEARCH_PORT ?? SEARCH_PORT
 
   ctx.log.say('App secrets + config (ui/.env)')
   const uiEnvPath = join(root, 'ui/.env')
@@ -150,15 +149,12 @@ export async function runSetup(ctx: Ctx): Promise<number> {
 DATABASE_URL=postgres://talaria:talaria@127.0.0.1:${pgPort}/talaria
 REDIS_URL=redis://127.0.0.1:${redisPort}
 
-# Live web search. Talaria runs its own SearXNG (docker/dev-compose.yml) so an
-# agent on a model with no native browsing can still answer a question about the
-# world — no API key, no per-query bill, no query leaving this machine. Point it
-# at an instance you already run to use that one instead.
-SEARXNG_URL=http://127.0.0.1:${searchPort}
-# Signs SearXNG's own preference cookies. Rendered into
-# docker/searxng/settings.local.yml by \`talaria dev\` — SearXNG reads its secret
-# from that file rather than the environment.
-SEARXNG_SECRET=${rand(32)}
+# Live web search for Talaria's OWN pipelines (research, the fitness sweep).
+# Nothing is bundled: register a search provider in the app, or point this at
+# a SearXNG-compatible JSON endpoint you already run (Admin → Search sets the
+# same thing without an env edit). Fleet agents search through their own
+# Hermes toolset and get this URL passed through when it is set.
+#SEARXNG_URL=
 
 # Session signing (safe to rotate — only invalidates live logins).
 AUTH_SECRET=${rand(32)}
@@ -266,7 +262,7 @@ LLM_MODEL=
       // daemon answered oddly): the pre-check is an optimisation, not a
       // gate, so fall back to pulling everything — the old behaviour.
       const pull = await ctx.run('docker', ['compose', ...composeArgs({ files }), 'pull', '-q'])
-      if (pull === 0) ctx.log.ok('infra images ready (postgres, redis, qdrant, embeddings, storage, searxng)')
+      if (pull === 0) ctx.log.ok('infra images ready (postgres, redis, qdrant, embeddings, storage)')
       else ctx.log.warn('image pull incomplete — `talaria dev` will retry; see errors above')
     } else if (missing.length === 0) {
       ctx.log.skip('infra images (all present, kept)')

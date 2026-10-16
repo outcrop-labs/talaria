@@ -113,7 +113,6 @@ const STACK = {
     qdrant: { image: 'docker.io/qdrant/qdrant:latest' },
     embeddings: { image: 'ghcr.io/huggingface/text-embeddings-inference:cpu-latest' },
     storage: { image: 'ghcr.io/versity/versitygw:v1.8.0' },
-    searxng: { image: 'docker.io/searxng/searxng:latest' },
   },
 }
 
@@ -124,9 +123,9 @@ describe('missingImageServices', () => {
   test('names only the services whose image the daemon lacks', async () => {
     const ctx = homeCtx()
     ctx.plant(['docker', configArgs(ctx.root)], JSON.stringify(STACK))
-    ctx.plant(['docker', ['image', 'inspect', 'docker.io/searxng/searxng:latest']], new Error('No such image'))
+    ctx.plant(['docker', ['image', 'inspect', 'docker.io/qdrant/qdrant:latest']], new Error('No such image'))
     ctx.plant(['docker', ['image', 'inspect', 'ghcr.io/versity/versitygw:v1.8.0']], new Error('No such image'))
-    expect(await missingImageServices(ctx, devFiles(ctx.root))).toEqual(['storage', 'searxng'])
+    expect(await missingImageServices(ctx, devFiles(ctx.root))).toEqual(['qdrant', 'storage'])
   })
 
   test('everything present → an empty list; an unreadable config → null (pull everything)', async () => {
@@ -250,7 +249,7 @@ describe('runSetup on a fresh clone', () => {
     expect(existsSync(join(ctx.root, 'fleet/.env'))).toBe(true)
     const pulls = ctx.calls.filter((c) => c.cmd === 'docker' && c.args.includes('pull'))
     expect(pulls).toHaveLength(1)
-    expect(pulls[0]!.args.slice(-6)).toEqual(['postgres', 'redis', 'qdrant', 'embeddings', 'storage', 'searxng'])
+    expect(pulls[0]!.args.slice(-5)).toEqual(['postgres', 'redis', 'qdrant', 'embeddings', 'storage'])
     expect(cwdsOf(ctx, 'install').sort()).toEqual([join(ctx.root, 'mcp'), join(ctx.root, 'omp-auth'), join(ctx.root, 'ui')].sort())
     expect(cwdsOf(ctx, 'run', 'build').sort()).toEqual([join(ctx.root, 'mcp'), join(ctx.root, 'omp-auth')].sort())
     expect(ctx.logLines.some((l) => l.msg.includes('Existing install'))).toBe(false)

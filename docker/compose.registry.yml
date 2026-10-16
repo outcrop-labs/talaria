@@ -1,6 +1,6 @@
 # Talaria — prebuilt-image override. Layer ON TOP of the base file:
 #
-#   docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml pull talaria searxng-config
+#   docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml pull talaria
 #   docker compose -f docker/sidecars.compose.yml -f docker/compose.yml -f docker/compose.registry.yml up -d --no-build
 #
 # (The sidecar plane comes FIRST, as in every other stack invocation — see
@@ -22,19 +22,11 @@
 # image. `always` makes the registry the only source; `--no-build` on the
 # documented command is the second, independent lock.
 #
-# WHY BOTH SERVICES. searxng-config is the same image in a different role
-# (one-shot render-searxng); leaving it on the base's local `talaria:latest`
-# would make `up --no-build` fail on a host with no local build.
-#
 # Channel via TALARIA_CHANNEL in docker/.env (compose reads it from the
 # project dir — the first -f file's directory — same as DOCKER_GID). What
 # the channels are and how they move: RELEASING.md.
 
 services:
   talaria:
-    image: ghcr.io/outcrop-labs/talaria:${TALARIA_CHANNEL:-nightly}
-    pull_policy: always
-
-  searxng-config:
     image: ghcr.io/outcrop-labs/talaria:${TALARIA_CHANNEL:-nightly}
     pull_policy: always

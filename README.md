@@ -243,7 +243,6 @@ Talaria stands on a small mountain of open source.
 - Redis
 - Qdrant
 - versitygw (S3-compatible object storage)
-- SearXNG
 - text-embeddings-inference
 - Hermes
 - Oh My Pi

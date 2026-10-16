@@ -562,24 +562,6 @@ server.registerTool(
   async ({ taskId, seconds }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, { addTimeSpentSeconds: seconds })),
 )
 
-// ── Live web search (supplied by the deployment, not by the model) ─────────
-// Talaria runs its own search engine (SearXNG, its own container) so an agent
-// on a model with no native browsing can still answer a question about the
-// world. See ui/src/server/search.ts for why the client is ours rather than a
-// third-party MCP bridge, and why the engine is a separate process.
-server.registerTool(
-  'web_search',
-  {
-    description:
-      'Search the live web and get back ranked results with their URLs. Use it for anything that happened or changed recently, anything you would otherwise be guessing at, and any claim a reader would expect a source for — then cite the URLs you used. This searches the PUBLIC web: for this organization\'s own documents and past conversations use search_knowledge instead.',
-    inputSchema: {
-      query: z.string().min(2).max(400).describe('What to look up, as you would type it into a search engine'),
-      limit: z.number().int().min(1).max(25).optional().describe('How many results to return (default 10)'),
-    },
-  },
-  async ({ query, limit }) => ok(await api('POST', '/api/search', { query, limit })),
-)
-
 // ── Image understanding (supplied by the deployment, not by the model) ─────
 // A model that cannot see can still call a tool. This reads an image with
 // whatever model the org assigned to the `vision` role and hands back text —

@@ -12,7 +12,6 @@ import { PG_CONTAINER, REDIS_CONTAINER } from '../containers'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
 import { API_PORT } from '../ports'
-import { renderSearxng } from '../searxng'
 
 const DEV_COMPOSE = 'docker/dev-compose.yml'
 
@@ -150,9 +149,10 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // switch, and it has to reach the api process to mean anything. (During
   // the port the same variable declared which RUNTIME armed the schedule;
   // the cutover deleted the TS scheduler, so the api arms unless this says
-  // `off`.) SEARXNG_URL rides so the cargo child sees the same value the
-  // vite process does (vite loads ui/.env itself) — the Rust read of it
-  // decides whether search is env-pinned, and the two views must agree.
+  // `off`.) SEARXNG_URL — an operator's own search endpoint, nothing is
+  // bundled — rides so the cargo child sees the same value the vite process
+  // does (vite loads ui/.env itself) — the Rust read of it decides whether
+  // search is env-pinned, and the two views must agree.
   // TALARIA_API_BIND and TALARIA_GATEWAY_SELF_URL are the container/devbox
   // dial: without the lift, ui/.env's 0.0.0.0 bind and :5274 gateway never
   // reach the renderer, and agents keep queueing on the UI hop.
@@ -319,9 +319,8 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.die('dev infra failed to start')
   }
 
-  // Object storage started separately, and non-fatally — the rule searxng and
-  // embeddings below already ride, which storage was the one sidecar still
-  // outside of. A single `up` resolves EVERY image before it creates ANY
+  // Object storage started separately, and non-fatally — the rule embeddings
+  // below already rides, which storage was the one sidecar still outside of. A single `up` resolves EVERY image before it creates ANY
   // container, so one unpullable image took postgres and redis down with it,
   // and `talaria dev` died at "dev infra failed to start" on a fresh clone
   // with the registry's error the only clue. That is exactly how the MinIO
@@ -335,18 +334,6 @@ export async function runDev(ctx: Ctx): Promise<number> {
       'If the image could not be pulled: it is ghcr.io/versity/versitygw, a public image — ' +
         'check network and daemon reachability rather than registry auth.',
     )
-  }
-
-  renderSearxng(ctx)
-
-  // Search started separately, and non-fatally: one unpullable image must not
-  // abort the services the app cannot boot without. Talaria runs fine with
-  // search down — `web_search` reports that live search is unavailable and
-  // models are told to say so rather than answer from memory.
-  ctx.log.say('web search (SearXNG)')
-  if ((await compose(ctx, devSpec, ['up', '-d', 'searxng'])) !== 0) {
-    ctx.log.warn('search service failed to start — web_search will report itself unavailable.')
-    ctx.log.warn('Continuing without it; see docker/searxng/settings.yml.')
   }
 
   // Embeddings started separately for the same reason: a single `up` resolves

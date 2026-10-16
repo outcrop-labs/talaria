@@ -19,8 +19,8 @@
 #   container_name  dev and a box name theirs after their project
 #                   (talaria-postgres-dev / devbox-<name>-postgres); prod
 #                   leaves docker's default.
-#   depends_on      only prod's searxng waits on the settings render step
-#                   (there is no render step outside prod).
+#   depends_on      prod's app waits on its state-dir init and on the
+#                   healthchecks; dev and a box have no init step.
 #   Divergent env   the dev/box storage root pair and the dev postgres password
 #                   are overridden in those files with the WHY at the override.
 #
@@ -156,39 +156,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-
-  # LIVE WEB SEARCH — SearXNG, a metasearch aggregator that fans one query
-  # across dozens of engines. No API key, no per-query bill, and no query
-  # leaves the machine; Talaria's own `web_search` tool talks to its JSON API.
-  #
-  # ITS OWN CONTAINER, AND THAT IS A LICENCE DECISION. Talaria is MIT; SearXNG
-  # is AGPL-3.0. Vendoring AGPL source into an MIT codebase propagates the
-  # terms, so it runs as a separate process reached over HTTP — the same
-  # arrangement as the fleet MCP service. DO NOT PATCH IT: unmodified upstream
-  # means AGPL §13's source-offer obligation is satisfied by pointing at the
-  # upstream repository.
-  #
-  # SETTINGS COME FROM A MOUNTED FILE, never the env, and that was learned the
-  # hard way: SearXNG honours env only for a short allow-list (base URL,
-  # secret), so `SEARXNG_SEARCH_FORMATS` was silently ignored and the JSON API
-  # kept answering 403. Each stack mounts its own file/volume, and each sets
-  # SEARXNG_BASE_URL to the address its own app reaches it on.
-  searxng:
-    image: docker.io/searxng/searxng:latest
-    restart: unless-stopped
-    # Explicit DNS, same reason as the agent chassis: a metasearch engine is
-    # nothing but external name lookups, and docker's default upstream is
-    # whatever the host's /etc/resolv.conf named when the network was created —
-    # a loopback stub or a LAN resolver that refuses docker subnets leaves this
-    # container "healthy" and unable to resolve a single engine host.
-    dns:
-      - ${TALARIA_DNS_1:-1.1.1.1}
-      - ${TALARIA_DNS_2:-1.0.0.1}
-    healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1']
-      interval: 10s
-      timeout: 5s
-      retries: 20
 
 # The sidecars' data volumes. Declared here because the services above
 # reference them: `docker compose -f docker/sidecars.compose.yml config` has to

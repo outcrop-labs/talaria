@@ -41,7 +41,7 @@
 //      happened to answer a probe between restarts is not a deploy.
 //
 // WHAT IT DELIBERATELY DOES NOT DO. No sidecars (qdrant, embeddings, minio,
-// searxng), no fleet, no LLM: a first boot has none of them and must still come
+// embeddings), no fleet, no LLM: a first boot has none of them and must still come
 // up. It does not push anything, so it is safe to run against any image, and it
 // never reuses a stack — the project name is fixed, torn down before it starts
 // and after it finishes, so a local run cannot leave anything behind.

@@ -43,31 +43,36 @@ x-talaria-build: &talaria-build
   # run a prebuilt image from the registry instead, layer the override file
   # on top rather than editing this one:
   #   docker/compose.registry.yml  (see docs/CONTAINER.md → Prebuilt images)
-  # The init service below is the same image in a different role.
   context: ..
   dockerfile: Dockerfile
 
 services:
-  # One-shot init: generates first-boot secrets into the state dir (single
-  # writer — the app depends_on this completing) and renders SearXNG's
-  # settings, which that image reads only from a file, never the env. Runs as
-  # root so it can write the compose-created settings volume, then hands
-  # everything it made to the app's uid (10001).
-  searxng-config:
-    build: *talaria-build
-    # Same image in a different role — a `docker build -t talaria:latest .`
-    # satisfies both services (`up --no-build` skips rebuilding).
-    image: talaria:latest
+  # One-shot init: hands the state bind to the app's uid before the app
+  # starts. Docker creates a missing bind source as ROOT, and the app runs
+  # unprivileged (uid 10001) — without this step a zero-config first boot
+  # dies at its first mkdir. A STOCK alpine, deliberately not the app image:
+  # the previous init was the app image in a second role, and because it
+  # carried `build:` too, every `up --build` built the whole app image TWICE
+  # (compose builds per service, even when two name the same tag). The
+  # entrypoint still generates first-boot secrets itself, as the app user.
+  state-init:
+    image: docker.io/library/alpine:3.21
     user: '0:0'
     restart: 'no'
-    command: [render-searxng]
+    # Non-recursive on purpose — uploads can be large; only the tree the
+    # entrypoint needs writable is ours to fix.
+    command:
+      - sh
+      - -ec
+      - |
+        d="$$TALARIA_STATE_DIR"
+        mkdir -p "$$d/uploads" "$$d/fleet/agents" "$$d/fleet/skills" "$$d/fleet/hooks" "$$d/apps" "$$d/app-builds" "$$d/app-data" "$$d/env"
+        chown 10001:10001 "$$d" "$$d/uploads" "$$d/fleet" "$$d/fleet/agents" "$$d/fleet/skills" "$$d/fleet/hooks" "$$d/apps" "$$d/app-builds" "$$d/app-data" "$$d/env"
     environment:
       TALARIA_STATE_DIR: ${TALARIA_STATE_DIR:-/var/lib/talaria}
-      SEARXNG_SETTINGS_TARGET: /searxng/settings.yml
     volumes:
       - ${TALARIA_STATE_DIR:-/var/lib/talaria}:${TALARIA_STATE_DIR:-/var/lib/talaria}
-      - searxng-config:/searxng
-    networks: [internal]
+    network_mode: none
 
   talaria:
     build: *talaria-build
@@ -101,7 +106,7 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
-      searxng-config:
+      state-init:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -117,10 +122,10 @@ services:
       retries: 30
       start_period: 90s
     # Explicit upstream resolvers, same reason as the agent chassis and
-    # searxng: the app fetches external URLs (OAuth discovery, favicons,
+    # the agent chassis: the app fetches external URLs (OAuth discovery, favicons,
     # catalogs), and on hosts whose resolv.conf names a loopback stub
     # (systemd-resolved, Tailscale MagicDNS) docker's embedded forwarder
-    # cannot resolve anything external. Service names (postgres, searxng…)
+    # cannot resolve anything external. Service names (postgres, redis…)
     # still resolve — the embedded resolver answers those itself.
     dns:
       - ${TALARIA_DNS_1:-1.1.1.1}
@@ -138,7 +143,6 @@ services:
       # knob — user/db names are fixed into the DATABASE_URL default.
       DATABASE_URL: ${DATABASE_URL:-postgres://talaria:${POSTGRES_PASSWORD:-talaria}@postgres:5432/talaria}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
       TALARIA_QDRANT_URL: ${TALARIA_QDRANT_URL:-http://qdrant:6333}
       TALARIA_EMBED_URL: ${TALARIA_EMBED_URL:-http://embeddings:80}
       # Built-in object storage: the same interpolated key pair configures the
@@ -208,8 +212,7 @@ services:
   # ── Sidecars: the shared definitions — image, restart, data volume, env
   # defaults, healthcheck — live in docker/sidecars.compose.yml, layered IN
   # FRONT of this file. Only what prod decides stays here: the `internal`
-  # network (agents must never reach postgres) and, for searxng, the render
-  # handoff and the settings volume. No published ports anywhere: in-container
+  # network (agents must never reach postgres). No published ports anywhere: in-container
   # DNS replaces the dev stack's loopback publishing, and nothing on the host
   # network can reach any of these — several carry no authentication at all.
   postgres:
@@ -243,23 +246,6 @@ services:
         # default above moved, but their explicit value did not.
         aliases: [minio]
 
-  # AGPL separation, same as dev: SearXNG runs as its own unmodified upstream
-  # container reached over HTTP (the licence reasoning is spelled out in
-  # docker/sidecars.compose.yml). Settings come from the rendered file the init
-  # service wrote — mounted as a directory (the upstream-supported shape),
-  # read-only.
-  searxng:
-    depends_on:
-      searxng-config:
-        condition: service_completed_successfully
-    environment:
-      # Must match how the app reaches it (service DNS) or result payloads
-      # carry links nothing can follow.
-      SEARXNG_BASE_URL: http://searxng:8080/
-    volumes:
-      - searxng-config:/etc/searxng:ro
-    networks: [internal]
-
 networks:
   internal: {}
   # The fleet's shared network — agent containers attach to it (rendered
@@ -271,7 +257,5 @@ networks:
     name: ${TALARIA_FLEET_NETWORK:-talaria}
     driver: bridge
 
-volumes:
-  # The sidecars' five data volumes are declared in docker/sidecars.compose.yml
-  # (the services there reference them); only the render handoff is prod's.
-  searxng-config: {}
+# The sidecars' five data volumes are declared in docker/sidecars.compose.yml
+# (the services there reference them); prod adds none of its own.
