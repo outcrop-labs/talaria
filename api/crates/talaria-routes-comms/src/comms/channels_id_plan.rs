@@ -20,9 +20,9 @@ use serde_json::{Value, json};
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
 use talaria_api_facades::runs::defs::plan_draft::StoredProposal;
 use talaria_body::{
-    array_msg, array_too_big_msg, boolean_member, enum_member, enum_msg, object_msg,
-    optional_max_string_member, optional_uuid_member, string_member, too_big_msg, utf16_len,
-    zod_type_name,
+    NumKind, array_msg, array_too_big_msg, boolean_member, enum_member, enum_msg,
+    nullable_number_member, object_msg, optional_max_string_member, optional_string_array_member,
+    optional_uuid_member, string_member, too_big_msg, utf16_len, zod_type_name,
 };
 use talaria_channels::{channel_role, list_channel_agents};
 use talaria_error::{house_error, internal, object_or_400};
@@ -67,6 +67,10 @@ pub fn validate_start(
     })
 }
 
+/// The safe-integer ceiling `dependsOn`'s own loop enforces below. `parent`
+/// is an index into the same array, so it stops where those stop.
+const SAFE_INT: f64 = 9_007_199_254_740_991.0;
+
 /// Nullish string member: absent and null both pass as None; a present
 /// value is a string within bounds (max n), the empty string included.
 fn nullish_max_string_member(
@@ -110,6 +114,28 @@ pub fn validate_save_body(
         };
         let depends_on = depends_on_member(e)?;
         let tags = tags_member(e)?;
+        // The board-aware three, all three OPTIONAL where the fields above
+        // are required — and that asymmetry is the point: the row's own
+        // struct defaults them, so a draft stored before this feature, and a
+        // client that has not learned them, both still save. A refusal here
+        // would turn an old open draft into a review nobody can edit.
+        //
+        // They are nonetheless validated and KEPT rather than ignored: the
+        // review walk round-trips the whole batch through this body on every
+        // edit, so a field dropped here is a field the reviewer's first
+        // keystroke erases from the row — the epic links and the duplicate
+        // flag would vanish one autosave after the draft they came with.
+        let parent =
+            nullable_number_member(e, "parent", NumKind::Int, 0.0, SAFE_INT)?.map(|n| n as usize);
+        // The same bounds the task-create route puts on an assignee list, so
+        // what passes review is what the create path will accept.
+        let assignees =
+            optional_string_array_member(e, "assignees", 0, 200, 20)?.unwrap_or_default();
+        // Blank is no duplicate, not a duplicate of nothing: the card reads a
+        // present value as "this work is already on the board" and would say
+        // so about an empty id.
+        let duplicate_of =
+            nullish_max_string_member(e, "duplicateOf", 200)?.filter(|d| !d.trim().is_empty());
         let include = boolean_member(e, "include")?;
         out.push(StoredProposal {
             title,
@@ -118,6 +144,9 @@ pub fn validate_save_body(
             effort,
             depends_on,
             tags,
+            parent,
+            assignees,
+            duplicate_of,
             include,
         });
     }
@@ -359,6 +388,61 @@ mod tests {
                 "include": true,
             })).collect::<Vec<_>>(),
         })
+    }
+
+    #[test]
+    fn the_board_aware_three_survive_the_walk_and_are_optional() {
+        // What the review walk sends back for a batch the drafter grouped,
+        // assigned and deduped: the fields have to come out the far side, or
+        // the first autosave of an edited draft erases them.
+        let mut body = save_body(2);
+        body["proposals"][1]["parent"] = json!(0);
+        body["proposals"][1]["assignees"] = json!(["user:3f1c", "engineer"]);
+        body["proposals"][1]["duplicateOf"] = json!("tkt_7f2");
+        let out = validate_save_body(body.as_object().unwrap()).unwrap();
+        assert_eq!(out[1].parent, Some(0));
+        assert_eq!(
+            out[1].assignees,
+            vec!["user:3f1c".to_string(), "engineer".to_string()]
+        );
+        assert_eq!(out[1].duplicate_of.as_deref(), Some("tkt_7f2"));
+        // Null is the shape a top-level, unassigned, non-duplicate proposal
+        // actually sends, and absence is the shape a draft stored before the
+        // fields existed has. Neither is an error, and both read as nothing.
+        let mut body = save_body(1);
+        body["proposals"][0]["parent"] = json!(null);
+        body["proposals"][0]["assignees"] = json!([]);
+        body["proposals"][0]["duplicateOf"] = json!(null);
+        let out = validate_save_body(body.as_object().unwrap()).unwrap();
+        assert_eq!(out[0].parent, None);
+        assert!(out[0].assignees.is_empty());
+        assert_eq!(out[0].duplicate_of, None);
+        let out = validate_save_body(save_body(1).as_object().unwrap()).unwrap();
+        assert_eq!(out[0].parent, None);
+        assert!(out[0].assignees.is_empty());
+        assert_eq!(out[0].duplicate_of, None);
+        // And a blank duplicateOf is no duplicate: a present empty id would
+        // otherwise put "already on the board" on a card pointing nowhere.
+        let mut body = save_body(1);
+        body["proposals"][0]["duplicateOf"] = json!("   ");
+        assert_eq!(
+            validate_save_body(body.as_object().unwrap()).unwrap()[0].duplicate_of,
+            None
+        );
+        // A parent that is not an index is the array's own refusal, as
+        // dependsOn's is.
+        let mut body = save_body(1);
+        body["proposals"][0]["parent"] = json!(0.5);
+        assert_eq!(
+            validate_save_body(body.as_object().unwrap()).unwrap_err(),
+            "Invalid input: expected int, received number"
+        );
+        let mut body = save_body(1);
+        body["proposals"][0]["parent"] = json!(-1);
+        assert_eq!(
+            validate_save_body(body.as_object().unwrap()).unwrap_err(),
+            "Too small: expected number to be >=0"
+        );
     }
 
     #[test]

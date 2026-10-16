@@ -2,7 +2,7 @@
 // the generated ui/.env (marker + own URLs + shared encryption root).
 
 import { describe, expect, test } from 'bun:test'
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runWorktree, worktreeSlot } from './worktree'
@@ -146,6 +146,15 @@ describe('runWorktree — happy path', () => {
     // listening to nobody. Exactly one line, and it is this stack's.
     expect(lines.filter((l) => l.startsWith('TALARIA_RUST_API_URL='))).toHaveLength(1)
     expect(lines).toContain(`TALARIA_RUST_API_URL=http://127.0.0.1:${port + 100}`)
+    // The worktree's agents call back to THIS app and run in their own
+    // compose project: without these the renderer aims agents at :5273 and
+    // files their containers under the shared `talaria-fleet`.
+    expect(lines).toContain(`TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${port}/api/llm/v1`)
+    expect(lines).toContain('TALARIA_FLEET_PROJECT=talaria-wt-demo-fleet')
+    // ...and the fleet plane exists for the renderer to write into — a hire
+    // against a missing fleet/.env fails rather than inventing one.
+    expect(existsSync(join(wt, 'fleet/agents'))).toBe(true)
+    expect(readFileSync(join(wt, 'fleet/.env'), 'utf8')).toContain('LLM_BASE_URL=')
 
       // node_modules shared by symlink
       expect(lstatSync(join(wt, 'ui/node_modules')).isSymbolicLink()).toBe(true)

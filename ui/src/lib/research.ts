@@ -216,14 +216,23 @@ export interface ResearchTeam {
  *  control in the header, and the @mention list in the discussion — and a
  *  second spelling would eventually offer a mention to somebody who cannot open
  *  the report being discussed. */
-export const useResearchMembers = (runId: () => string) =>
-  createQuery(() => ({
-    queryKey: ['research-members', runId()],
-    queryFn: (): Promise<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }> =>
-      getJson<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }>(
-        `/api/research/${runId()}/members`,
-      ),
-  }))
+export const useResearchMembers = (runId: () => string | null) =>
+  createQuery(() => {
+    const id = runId()
+    return {
+      queryKey: ['research-members', id],
+      // NULL IS A REAL STATE for a caller that reads whatever session is open
+      // and finds a plan or a work session, which have no run and share
+      // through a different plane entirely. Ungated, that caller would spend a
+      // request on `/api/research//members` — a 404 by construction — the same
+      // way `useResearchPresence` below guards its own missing id.
+      enabled: !!id,
+      queryFn: (): Promise<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }> =>
+        getJson<{ members: ResearchMember[]; active?: string[]; teams?: ResearchTeam[] }>(
+          `/api/research/${id}/members`,
+        ),
+    }
+  })
 
 /** Presence for a run, the same shape the shared conversations use: ping while
  *  the view is mounted and re-read so everyone's rings stay current. A dropped

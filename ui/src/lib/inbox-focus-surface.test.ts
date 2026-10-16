@@ -15,6 +15,10 @@ test('nested routes resolve to their section, not to the fallback', () => {
   assert.equal(assistantSurface('/boards', undefined).id, 'boards')
   assert.equal(assistantSurface('/boards/board-1', undefined).id, 'boards')
   assert.equal(assistantSurface('/boards/board-1/task-9', undefined).id, 'boards')
+  // A work session's URL IS its selection (/work/<id>), so the surface has to
+  // survive the id the same way a board's does.
+  assert.equal(assistantSurface('/work', undefined).id, 'work')
+  assert.equal(assistantSurface('/work/session-1', undefined).id, 'work')
   assert.equal(assistantSurface('/x/contacts/manage', undefined).id, 'apps')
   assert.equal(assistantSurface('/kb/space/anything', undefined).id, 'home')
 })
@@ -33,9 +37,9 @@ test('an unknown route falls back instead of throwing', () => {
 
 test('every route in the app map resolves to a labelled surface', () => {
   const paths = [
-    '/', '/chat', '/comms', '/channels', '/inbox', '/boards', '/plan', '/research',
-    '/knowledge', '/artifacts', '/agents', '/teams', '/studio', '/templates',
-    '/models', '/mcp', '/observability', '/apps', '/settings', '/admin',
+    '/', '/chat', '/comms', '/channels', '/inbox', '/boards', '/work', '/plan',
+    '/research', '/knowledge', '/artifacts', '/agents', '/teams', '/studio',
+    '/templates', '/models', '/mcp', '/observability', '/apps', '/settings', '/admin',
   ]
   for (const path of paths) {
     const surface = assistantSurface(path, undefined)
@@ -50,12 +54,13 @@ test('every surface the client can send, the server recognises', () => {
   // an id with no brief falls through to "no context" on the Rust side, which
   // looks exactly like the bug the surface was added to fix. This pins the
   // client's id list to the keys of `SURFACE_BRIEFS` in
-  // `api/src/harness/defs/inbox_focus.rs` — same 19, so a rename or an
-  // addition on either side shows up here as a visible disagreement.
+  // `api/crates/talaria-harness-defs/src/defs/inbox_focus.rs` — same 20, so a
+  // rename or an addition on either side shows up here as a visible
+  // disagreement.
   const server = [
-    'inbox', 'home', 'chat', 'comms', 'boards', 'plan', 'research', 'knowledge',
-    'artifacts', 'agents', 'teams', 'studio', 'templates', 'models', 'mcp',
-    'observability', 'apps', 'settings', 'admin',
+    'inbox', 'home', 'chat', 'comms', 'boards', 'work', 'plan', 'research',
+    'knowledge', 'artifacts', 'agents', 'teams', 'studio', 'templates',
+    'models', 'mcp', 'observability', 'apps', 'settings', 'admin',
   ]
   assert.deepEqual([...ASSISTANT_SURFACE_IDS].sort(), [...server].sort())
 })

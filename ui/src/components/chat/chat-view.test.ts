@@ -4,7 +4,15 @@
 // onto rows the client drew itself.
 import { describe, expect, it } from 'vitest'
 import type { StoredMessage } from '@/lib/conversations.svelte'
-import { reactionChips, stampFromServer, toDisplay, toggleReactionLocal, turnTime, type DisplayMessage } from './chat-view'
+import {
+  reactionChips,
+  sendRoute,
+  stampFromServer,
+  toDisplay,
+  toggleReactionLocal,
+  turnTime,
+  type DisplayMessage,
+} from './chat-view'
 
 const stored = (over: Partial<StoredMessage> = {}): StoredMessage => ({
   role: 'assistant',
@@ -112,5 +120,58 @@ describe('turnTime', () => {
   it('no or unparseable time → empty', () => {
     expect(turnTime(undefined)).toBe('')
     expect(turnTime('nope')).toBe('')
+  })
+})
+
+describe('toDisplay — the row stamps', () => {
+  // `stopped` and `steer` ride in the same `metadata` bag as `resumed`,
+  // which is the only one the conversations query types today; the cast is
+  // this test standing in for the wire until that DTO names them.
+  const stamped = (metadata: Record<string, boolean>): StoredMessage =>
+    ({ ...stored(), metadata }) as unknown as StoredMessage
+
+  it('reads stopped and steer beside resumed', () => {
+    const d = toDisplay(stamped({ resumed: true, stopped: true, steer: true }))
+    expect(d.resumed).toBe(true)
+    expect(d.stopped).toBe(true)
+    expect(d.steer).toBe(true)
+  })
+
+  it('a row with no stamps is neither stopped nor steered', () => {
+    const d = toDisplay(stored())
+    expect(d.stopped).toBe(false)
+    expect(d.steer).toBe(false)
+  })
+})
+
+describe('sendRoute', () => {
+  const ctx = (over: Partial<Parameters<typeof sendRoute>[0]> = {}) =>
+    sendRoute({ streaming: true, intent: 'enter', hasConversation: true, ...over })
+
+  it('nothing streaming → a fresh turn, whichever way it was sent', () => {
+    expect(ctx({ streaming: false })).toBe('fresh')
+    expect(ctx({ streaming: false, intent: 'send-now' })).toBe('fresh')
+    // Even with no conversation yet: that turn is what creates one.
+    expect(ctx({ streaming: false, hasConversation: false })).toBe('fresh')
+  })
+
+  it('Enter during a reply queues — a send never interrupts', () => {
+    expect(ctx()).toBe('queue')
+  })
+
+  it('send-now during a reply steers it into the running turn', () => {
+    expect(ctx({ intent: 'send-now' })).toBe('steer')
+  })
+
+  it('no conversation id yet → held on the client, never a steer', () => {
+    // The first turn's response headers are the only place an id comes from,
+    // and a steer has no address until it lands.
+    expect(ctx({ hasConversation: false })).toBe('hold')
+    expect(ctx({ hasConversation: false, intent: 'send-now' })).toBe('hold')
+  })
+
+  it('attachments go the queue: the steer wire carries text only', () => {
+    expect(ctx({ intent: 'send-now', hasAttachments: true })).toBe('queue')
+    expect(ctx({ hasAttachments: true })).toBe('queue')
   })
 })

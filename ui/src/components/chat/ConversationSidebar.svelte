@@ -1,13 +1,17 @@
 <script lang="ts">
   // The plan / work-session rail — LEFT, on the shared Rail primitives (agent
-  // picker up top, this agent's conversations below, ones shared with you at
-  // the end). Rows follow the Mercury session-list pattern (spec §10): status
+  // picker up top, the chosen agent's conversations below, ones shared with you
+  // at the end). Rows follow the Mercury session-list pattern (spec §10): status
   // dot, 13px sans title, right-aligned mono meta/time; the active row carries
   // the gold dot.
   //
-  // TWO SURFACES, ONE RAIL. Plan and Work differ only in what they call a row
-  // and which permission opens the `+`, so those are props rather than a
-  // second copy of this file that would drift from it.
+  // TWO SURFACES, ONE RAIL. Plan and Work differ only in what they call a row,
+  // which permission opens the `+`, and — Work — whether the agent pick also
+  // FILTERS and what a row is allowed to say about itself. All of that is props
+  // rather than a second copy of this file that would drift from it: Research's
+  // rail was that second copy, and the affordances it had alone (all agents, a
+  // run's status and mode on the row, a run's own menu) are `onSelectAll`,
+  // `rowMeta` and `rowMenu` below.
   import { Plus } from '@lucide/svelte'
   import { useHasPerm } from '@/lib/session'
   import Button from '@/components/ui/Button.svelte'
@@ -22,6 +26,7 @@
   import RailSection from '@/components/app/RailSection.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import type { DotStatus } from '@/components/ui/chip'
   import type { AgentModel } from '@/lib/agents'
   import type { Conversation } from '@/lib/conversations.svelte'
   import type { SidebarFailure } from './conversation-sidebar'
@@ -41,6 +46,9 @@
     onSelectConversation,
     onNewChat,
     onRowMenu,
+    onSelectAll,
+    rowMeta,
+    rowMenu,
     noun = 'plan',
     newPerm = 'plans.create',
     newTitle = 'New plan: think it through, then draft tickets',
@@ -63,8 +71,24 @@
     onSelectConversation: (conv: Conversation) => void
     onNewChat: () => void
     onRowMenu?: (e: MouseEvent, conv: Conversation, archived: boolean) => void
-    /** What a row IS, for the rail's own sentences ("No plans yet with this
-     *  agent."). Plural is this + 's' — both nouns take it. */
+    /** Offer "all agents" in the picker. Given, the pick is a FILTER as well
+     *  as a choice, and `selectedAgent === null` means every agent rather than
+     *  "none chosen yet" — so the rail stops filtering and lists the lot.
+     *  Withheld (Plan's rail), a null agent still means nothing to list, which
+     *  is what the zero state says. Creating needs a concrete agent either
+     *  way, so the `+` stays disabled on "all". */
+    onSelectAll?: () => void
+    /** Per-row decoration: state of the row's own and/or a kind, both drawn by
+     *  SessionRowBody. A surface whose rows are not all plain sessions —
+     *  research-origin work sessions carry their run's status and mode — says
+     *  so here, instead of teaching this rail what a run is. Null for a row
+     *  with nothing extra to say, which is today's plain row. */
+    rowMeta?: (conv: Conversation) => { status?: DotStatus; pulse?: boolean; chip?: string } | null
+    /** Takes precedence over `onRowMenu`, for a caller that hands some rows a
+     *  different menu than its own (a research-origin row gets the run's). */
+    rowMenu?: (e: MouseEvent, conv: Conversation, archived: boolean) => void
+    /** What a row IS, for the rail's own sentences ("No plans yet", "Could not
+     *  load your plans"). Plural is this + 's' — both nouns take it. */
     noun?: string
     /** The permission id that opens the `+`. */
     newPerm?: string
@@ -85,13 +109,44 @@
   // once at init is both the `state_referenced_locally` warning and a real
   // staleness if a caller ever swaps it.
   const canCreate = useHasPerm(() => newPerm)
-  const agentConvs = $derived(conversations.filter((c) => c.agentModel === selectedAgent))
+  // `onSelectAll` is what turns a null agent into "all" (see the prop): only a
+  // rail that OFFERS the entry can be sitting on it, and without it null is a
+  // pick that hasn't landed yet — the agents read still in flight — where
+  // listing everything would flash the whole workspace for a beat.
+  const allAgents = $derived(onSelectAll != null && selectedAgent === null)
+  const visibleConvs = $derived(
+    allAgents ? conversations : conversations.filter((c) => c.agentModel === selectedAgent),
+  )
+  // Nothing is "elsewhere" when the rail is showing every agent — the rows
+  // this section would lift out are already above it.
   const sharedElsewhere = $derived(
-    conversations.filter((c) => c.role === 'collaborator' && c.agentModel !== selectedAgent),
+    allAgents
+      ? []
+      : conversations.filter((c) => c.role === 'collaborator' && c.agentModel !== selectedAgent),
   )
   // Collapsed until asked. An archived plan is not the work; it is the way back.
   let archivedOpen = $state(false)
 </script>
+
+<!-- ONE ROW, THREE LISTS (the listed ones, shared with you, archived). The
+     decoration and the menu override have to be identical in all three, so the
+     row is written once; `isArchived` is the only thing that differs. -->
+{#snippet row(c: Conversation, isArchived: boolean)}
+  {@const meta = rowMeta?.(c) ?? null}
+  <RailRow
+    active={c.id === selectedConversationId}
+    onClick={() => onSelectConversation(c)}
+    oncontextmenu={(e) => (rowMenu ?? onRowMenu)?.(e, c, isArchived)}
+  >
+    <SessionRowBody
+      conv={c}
+      active={c.id === selectedConversationId}
+      status={meta?.status}
+      pulse={meta?.pulse}
+      chip={meta?.chip}
+    />
+  </RailRow>
+{/snippet}
 
 {#snippet startAction()}
   <Button size="sm" onclick={onNewChat}>
@@ -108,7 +163,7 @@
   {/snippet}
 
   <div class="mb-3">
-    <AgentPicker {agents} value={selectedAgent} onChange={onSelectAgent} loading={agentsLoading} fullWidth />
+    <AgentPicker {agents} value={selectedAgent} {onSelectAll} onChange={onSelectAgent} loading={agentsLoading} fullWidth />
     <!-- An empty picker is indistinguishable from a fleet you don't have. -->
     {#if agentsFailure}
       <QueryError
@@ -130,20 +185,21 @@
       title={`Could not load your ${noun}s`}
       onRetry={conversationsFailure.retry}
     />
-  {:else if agentConvs.length === 0}
+  {:else if visibleConvs.length === 0}
     <!-- THE FIRST THING A NEW PERSON SEES on this surface, so it says what
          will live here and offers the one action that makes it happen — a
          bare "No plans yet with this agent." was a dead end that named the
-         absence and nothing else. `compact`: this sits inside a rail that
-         already has texture, not in a pane of its own. -->
+         absence and nothing else. The sentence stays agent-free for exactly
+         that reason, and on "all agents" it is also the literal truth: no
+         sessions, by anyone. The action waits for a concrete agent, because
+         that is what creating one needs. `compact`: this sits inside a rail
+         that already has texture, not in a pane of its own. -->
     <EmptyState variant="compact" icon="◇" title={`No ${noun}s yet`} hint={emptyHint} action={canCreate.current && selectedAgent ? startAction : undefined} />
   {:else}
     <!-- div, not ul: RailRow renders div rows. -->
     <div class="space-y-0.5" use:listStagger>
-      {#each agentConvs as c (c.id)}
-        <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)} oncontextmenu={(e) => onRowMenu?.(e, c, false)}>
-          <SessionRowBody conv={c} active={c.id === selectedConversationId} />
-        </RailRow>
+      {#each visibleConvs as c (c.id)}
+        {@render row(c, false)}
       {/each}
     </div>
   {/if}
@@ -153,9 +209,7 @@
     <div class="mt-4">
       <RailSection label="Shared with you">
         {#each sharedElsewhere as c (c.id)}
-          <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)} oncontextmenu={(e) => onRowMenu?.(e, c, false)}>
-            <SessionRowBody conv={c} active={c.id === selectedConversationId} />
-          </RailRow>
+          {@render row(c, false)}
         {/each}
       </RailSection>
     </div>
@@ -175,9 +229,7 @@
       {#if archivedOpen}
         <div class="space-y-0.5">
           {#each archived as c (c.id)}
-            <RailRow active={c.id === selectedConversationId} onClick={() => onSelectConversation(c)} oncontextmenu={(e) => onRowMenu?.(e, c, true)}>
-              <SessionRowBody conv={c} active={c.id === selectedConversationId} />
-            </RailRow>
+            {@render row(c, true)}
           {/each}
         </div>
       {/if}

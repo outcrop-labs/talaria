@@ -30,6 +30,28 @@ export function shouldSendOnEnter({ inCodeBlock, compositionActive = false }: En
   return !compositionActive && !inCodeBlock
 }
 
+export interface ModEnterContext {
+  /** The host offered a mid-turn send — i.e. a reply is streaming right now
+   *  and the composer is showing its "Send now" control. */
+  offered: boolean
+  /** The well has text. A steer carries the composer's WORDS and nothing else
+   *  (the route takes `{ content }`), so an empty well with attachments
+   *  pending is not one — that send belongs to Enter and the queue. */
+  hasText: boolean
+  /** An IME composition is active (or its confirm-Enter may still arrive). */
+  compositionActive?: boolean
+}
+
+/** ⌘/Ctrl+⏎ — the composer's second send, the one that reaches the reply
+ *  already streaming instead of queueing behind it. False means the binding is
+ *  not ours for this press and falls through to the editor, which is how
+ *  StarterKit keeps its hard break everywhere a steer is impossible. The IME
+ *  rule is `shouldSendOnEnter`'s, for the same reason: an Enter that belongs
+ *  to a composition belongs to the composition. */
+export function shouldSendNowOnModEnter({ offered, hasText, compositionActive = false }: ModEnterContext): boolean {
+  return offered && hasText && !compositionActive
+}
+
 /** Which keys a suggestion menu claims, given its candidate list. A menu with
  *  nothing to select claims NOTHING — every key falls through to the editor's
  *  own handling, Enter included. A populated menu claims its selection keys

@@ -616,6 +616,15 @@ pub async fn briefable_research(
 /// delete proceeds — `missing` (a record with no run behind it) and
 /// `terminal` (a finished run) are both perfectly normal, and neither is a
 /// reason to leave the record behind.
+///
+/// A RESEARCH SESSION IS ONE THING WITH TWO ROWS, and both go together in one
+/// transaction. The run holds the question, the sources and the report; the
+/// conversation holds the discussion of them, created WITH the run (see
+/// `ensure_research_conversation`) and shown as a single session on the
+/// workspace. `research_runs.conversation_id` is ON DELETE SET NULL, so
+/// dropping the run alone left the thread behind as a session with nothing to
+/// discuss — a row the merged list still shows, and nobody can delete from
+/// the research side any more because the run that named it is gone.
 pub async fn delete_research_run(
     state: &talaria_state::AppState,
     run_id: &str,
@@ -631,10 +640,27 @@ pub async fn delete_research_run(
             }
         }
     }
+    // Read the thread's id BEFORE the run goes: the FK nulls the column on the
+    // way out, so after the delete there is nothing left pointing at it.
+    let mut tx = state.pg.begin().await?;
+    let conversation: Option<(Option<String>,)> =
+        sqlx::query_as("select conversation_id::text from research_runs where id = $1::uuid")
+            .bind(run_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     sqlx::query("delete from research_runs where id = $1::uuid")
         .bind(run_id)
-        .execute(&state.pg)
+        .execute(&mut *tx)
         .await?;
+    // An older run discussed nowhere, or one an agent with no human owner
+    // started, has no thread to take with it.
+    if let Some(conversation_id) = conversation.and_then(|(id,)| id) {
+        sqlx::query("delete from conversations where id = $1::uuid")
+            .bind(&conversation_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

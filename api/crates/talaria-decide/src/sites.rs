@@ -130,6 +130,22 @@ pub const DECIDE_SITES: &[SiteDef] = &[
         reads: FLOOR_CERTAINTY,
         floor_why: "A wrong merge HIDES a real gap behind someone else's row, and seen_count is what ranks the Suggested queue — so this is the least forgiving site on the list. A wrong split is merely a duplicate an admin can see.",
     },
+    // The same question gap-align asks, one surface over: is this thing I am
+    // about to file the thing already filed? Modelled on it down to the floor,
+    // because the asymmetry is the same shape — the cost of being wrong lands
+    // on work that is already there and that nobody is looking at any more.
+    SiteDef {
+        id: "ticket-dupe",
+        label: "Ticket draft dedup",
+        primitive: "choice",
+        acts: "Flags a drafted ticket as re-proposing an open ticket on the board: the proposal starts unticked in the review and names the ticket it matched. The reviewer still decides.",
+        default_on: true,
+        switch_lives_at: None,
+        measured_at: None,
+        default_floor: 0.85,
+        reads: FLOOR_CERTAINTY,
+        floor_why: "A wrong flag hides real work behind an untick the reviewer may not notice — they are reading a list of things to create, and an unticked row reads as a row someone already dealt with. A missed flag is a duplicate the board shows, next to the ticket it duplicates. So the bar sits with gap-align's, high enough that only a near-certain match moves a tick.",
+    },
     // The brief's tiebreak. Judged WITHIN a bucket only — reordering across
     // buckets would let a confident model drop a failed deploy below an unread
     // mention, and the buckets are a policy decision a person already made.
@@ -708,6 +724,7 @@ mod tests {
             ("ticket-relevance", FLOOR_CERTAINTY, 0.70),
             ("workflow-match", FLOOR_LEAN, 0.75),
             ("gap-align", FLOOR_CERTAINTY, 0.85),
+            ("ticket-dupe", FLOOR_CERTAINTY, 0.85),
             ("tool-prune", FLOOR_LEAN, 0.15),
             ("guard-semantic", FLOOR_LEAN, 0.50),
             ("focus-rank", FLOOR_CERTAINTY, 0.60),

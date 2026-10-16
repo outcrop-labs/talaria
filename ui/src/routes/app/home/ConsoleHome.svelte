@@ -5,8 +5,7 @@
   import HomeTabs from './HomeTabs.svelte'
   import BoardsTab from './BoardsTab.svelte'
   import CommsTab from './CommsTab.svelte'
-  import PlansTab from './PlansTab.svelte'
-  import ResearchTab from './ResearchTab.svelte'
+  import WorkTab from './WorkTab.svelte'
   import DocsTab from './DocsTab.svelte'
 
   let { tab }: { tab: Exclude<HomeTab, 'inbox'> } = $props()
@@ -39,8 +38,7 @@
       <div in:fly={{ y: 6, duration: 200 }}>
         {#if tab === 'boards'}<BoardsTab {home} />{/if}
         {#if tab === 'comms'}<CommsTab />{/if}
-        {#if tab === 'plans'}<PlansTab />{/if}
-        {#if tab === 'research'}<ResearchTab />{/if}
+        {#if tab === 'work'}<WorkTab />{/if}
         {#if tab === 'docs'}<DocsTab />{/if}
       </div>
     {/key}
