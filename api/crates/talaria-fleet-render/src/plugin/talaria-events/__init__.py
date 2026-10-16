@@ -1,4 +1,4 @@
-"""Talaria tool-event, cron-output and screenshot reporting.
+"""Talaria tool-event, delegation, cron-output and screenshot reporting.
 
 Every tool call's lifecycle (name, arguments, RESULT) is visible here and
 nowhere else on the platform's wire — the chat-completions SSE the work
@@ -6,6 +6,13 @@ session consumes reports tool NAMES and previews only. This plugin bridges
 that: pre/post_tool_call enqueue one small JSON record each, and a daemon
 thread POSTs them to the Talaria api, which appends them to the live run's
 watch stream and transcript.
+
+Delegation is the same gap, wider. subagent_start/subagent_stop are the only
+place a parent handing work to a child is observable at all: the child runs
+under its own session id, so its tool events carry a correlation the parent's
+reader cannot join, and the parent's stream shows a minutes-long silence that
+reads as a hang. Those two hooks go to their own door, which lands one chip
+per child on the turn that delegated.
 
 It carries a second report on the same wire: a CRON turn's final text.
 A cron fires the agent's own loop from inside the container, so its answer
@@ -41,6 +48,7 @@ import urllib.request
 from typing import Any
 
 _MAX_CHARS = 4000
+_MAX_TOOLS = 40
 # A cron turn is prose, not a tool argument: the api stores it as a message
 # and clamps it to the same figure at the boundary.
 _MAX_TEXT = 20000
@@ -49,6 +57,7 @@ _POST_TIMEOUT = 4.0
 # The platform's three doors. Tool events are the default; the other two are
 # named per event (see `_poster`).
 _TOOL_EVENTS_PATH = "/api/agents/tool-events"
+_SUBAGENT_EVENTS_PATH = "/api/agents/subagent-events"
 _CRON_OUTPUT_PATH = "/api/agents/cron-output"
 _UPLOADS_PATH = "/api/agents/uploads"
 # The tool that hands back a screenshot, and the ceiling its door enforces.
@@ -88,6 +97,14 @@ def _clamp(value: Any) -> str:
     except Exception:
         text = str(value)
     return text[:_MAX_CHARS]
+
+
+def _clip(value: Any, limit: int) -> str:
+    """A field bounded to what its door stores. The plugin clamps only to
+    keep the POST small — the platform re-clamps at the boundary and is the
+    authority on what is kept."""
+    text = value if isinstance(value, str) else _clamp(value)
+    return text[:limit]
 
 
 def _enqueue(event: dict) -> None:
@@ -270,6 +287,93 @@ def on_post_tool_call(
             _enqueue(shot)
 
 
+def _tool_names(history: Any) -> list[str]:
+    """The names of the tools a child used, in order. The stop hook is handed
+    the whole call history — entries shaped differently across harness
+    versions, and carrying arguments and results that have no business on this
+    wire (the child's own pre/post hooks already reported them). Names only,
+    bounded, and never a reason to raise."""
+    names: list[str] = []
+    if not isinstance(history, (list, tuple)):
+        return names
+    for entry in history:
+        name = ""
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, dict):
+            for key in ("tool_name", "toolName", "name", "tool"):
+                value = entry.get(key)
+                if isinstance(value, str) and value:
+                    name = value
+                    break
+        if name:
+            names.append(name[:120])
+        if len(names) >= _MAX_TOOLS:
+            break
+    return names
+
+
+def on_subagent_start(
+    *,
+    parent_session_id: str = "",
+    parent_turn_id: str = "",
+    parent_subagent_id: str = "",
+    child_session_id: str = "",
+    child_subagent_id: str = "",
+    child_role: str = "",
+    child_goal: str = "",
+    **_: Any,
+) -> None:
+    # THE CHILD'S SESSION ID IS THE CHIP'S IDENTITY. The subagent ids are the
+    # delegation tool's own handles and the stop hook does not carry one, so
+    # the session id is the only key both halves of a child's life share —
+    # and the chip's whole point is that the stop replaces the start.
+    if not child_session_id:
+        return
+    _enqueue(
+        {
+            "kind": "start",
+            "parentSessionId": parent_session_id,
+            "parentTurnId": parent_turn_id,
+            "childSessionId": child_session_id,
+            "childRole": _clip(child_role, 400),
+            "childGoal": _clip(child_goal, 2000),
+            "url": _door(_SUBAGENT_EVENTS_PATH),
+            "at": int(time.time() * 1000),
+        }
+    )
+
+
+def on_subagent_stop(
+    *,
+    parent_session_id: str = "",
+    child_session_id: str = "",
+    child_role: str = "",
+    child_summary: str = "",
+    child_status: str = "",
+    tool_call_history: Any = None,
+    **_: Any,
+) -> None:
+    if not child_session_id:
+        return
+    # The status is reported as the harness words it; the platform maps it to
+    # the chip's done|error. Mapping it here would bake one harness version's
+    # vocabulary into every agent container that already has this file.
+    _enqueue(
+        {
+            "kind": "stop",
+            "parentSessionId": parent_session_id,
+            "childSessionId": child_session_id,
+            "childRole": _clip(child_role, 400),
+            "childSummary": _clip(child_summary, 4000),
+            "childStatus": _clip(child_status, 80),
+            "tools": _tool_names(tool_call_history),
+            "url": _door(_SUBAGENT_EVENTS_PATH),
+            "at": int(time.time() * 1000),
+        }
+    )
+
+
 def on_post_llm_call(
     *,
     session_id: str = "",
@@ -304,7 +408,12 @@ def register(ctx) -> None:
     spent a deploy silently tool-event-dark). The hook names are the
     loader's own spelling, on_pre_tool_call / on_post_tool_call /
     on_post_llm_call — the functions above; the yaml's hooks section is
-    documentation, not the registration."""
+    documentation, not the registration. The delegation pair is registered
+    the same way: subagent_start / subagent_stop are the names in
+    hermes_cli's VALID_HOOKS, fired by the delegate_task tool around every
+    child it spawns."""
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
+    ctx.register_hook("subagent_start", on_subagent_start)
+    ctx.register_hook("subagent_stop", on_subagent_stop)

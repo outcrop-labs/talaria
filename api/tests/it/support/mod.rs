@@ -135,6 +135,17 @@ pub async fn app_state() -> talaria_state::AppState {
 /// The app's state against the developer's LIVE Postgres AND Redis — for the
 /// tests that drive the real router through a minted session cookie.
 pub async fn live_app_state() -> talaria_state::AppState {
+    // Route errors answer a bare 500 and say why only through `tracing`; with
+    // no subscriber that reason is lost, and a failing assertion on the status
+    // is all CI shows. The test writer lands it in the captured stdout the
+    // harness prints for a FAILED test. `error` unless RUST_LOG says otherwise.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
+        )
+        .with_test_writer()
+        .try_init();
     let cfg = talaria_config::Config::from_parts(
         std::env::var("DATABASE_URL").expect(DATABASE_URL_EXPECT),
         std::env::var("REDIS_URL").expect("set REDIS_URL (source ui/.env)"),

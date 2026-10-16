@@ -469,7 +469,11 @@ fn snapshot_kind(kind: &str) -> bool {
     // `question`: keyed on the question's own words, so a collision means the
     // SAME question asked again — and fresher options are more use to the
     // person than the ones that did not get answered.
-    matches!(kind, "todo" | "question")
+    // `subagent`: one chip per delegated child, keyed on the child's session
+    // id. The start can only say what the child was asked to do; the stop
+    // carries what came back. Keeping the start would leave a finished child
+    // reading as still running, which is the one thing the chip exists to say.
+    matches!(kind, "todo" | "question" | "subagent")
 }
 
 pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
@@ -596,48 +600,73 @@ async fn speaking_target(pg: &PgPool, agent: &str) -> Result<Option<Landed>, sql
     }))
 }
 
+/// The chips of `chips` whose kind is a snapshot — the ones the write below
+/// is allowed to replace rather than skip.
+fn snapshot_chips(chips: &[Value]) -> Vec<Value> {
+    chips
+        .iter()
+        .filter(|c| snapshot_kind(c.get("kind").and_then(Value::as_str).unwrap_or("")))
+        .cloned()
+        .collect()
+}
+
+/// `merge_chips` stated as one statement, which is why it is SQL rather than
+/// a read, a merge in Rust and a write back: two chip writes land on one row
+/// concurrently (a tool result and the plan it just rewrote), and the loser
+/// of that race would drop the winner's chip. `$2` is every incoming chip,
+/// appended when its id is new; `$3` is the snapshot subset, which REPLACES
+/// the chip already sitting at that id, in its place in the row. The
+/// ordinality keeps that position: a plan that jumped to the end of the row
+/// on every rewrite would drag the reader's eye with it.
+///
+/// A macro over the table name because the statement has to stay a LITERAL —
+/// sqlx refuses a built SQL string by type, and the two tables carrying chips
+/// otherwise mean two copies of this to keep in step.
+macro_rules! merge_chips_sql {
+    ($table:literal) => {
+        concat!(
+            "update ",
+            $table,
+            " set chips = ( \
+               select coalesce(jsonb_agg(c order by ord), '[]'::jsonb) from ( \
+                 select coalesce(( \
+                          select n.c from jsonb_array_elements($3::jsonb) n(c) \
+                           where n.c->>'id' = e.c->>'id' limit 1 \
+                        ), e.c) as c, e.ord \
+                   from jsonb_array_elements(chips) with ordinality e(c, ord) \
+                 union all \
+                 select n.c, 1000000 + n.ord \
+                   from jsonb_array_elements($2::jsonb) with ordinality n(c, ord) \
+                  where not exists ( \
+                    select 1 from jsonb_array_elements(chips) x(c) \
+                     where x.c->>'id' = n.c->>'id' \
+                  ) \
+               ) s \
+             ) where id = $1::uuid"
+        )
+    };
+}
+
+const MERGE_ONTO_CHANNEL: &str = merge_chips_sql!("channel_messages");
+const MERGE_ONTO_CONVERSATION: &str = merge_chips_sql!("messages");
+
 async fn write_chips(pg: &PgPool, landed: &Landed, chips: &[Value]) -> Result<(), sqlx::Error> {
     if chips.is_empty() {
         return Ok(());
     }
     let incoming = Value::Array(chips.to_vec());
-    if landed.channel_id.is_some() {
-        sqlx::query(
-            "update channel_messages set chips = ( \
-               select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
-                 select c from jsonb_array_elements(chips) c \
-                 union all \
-                 select c from jsonb_array_elements($2::jsonb) c \
-                 where not exists ( \
-                   select 1 from jsonb_array_elements(chips) e \
-                   where e->>'id' = c->>'id' \
-                 ) \
-               ) s \
-             ) where id = $1::uuid",
-        )
-        .bind(&landed.message_id)
-        .bind(&incoming)
-        .execute(pg)
-        .await?;
+    let snapshots = Value::Array(snapshot_chips(chips));
+    let sql = if landed.channel_id.is_some() {
+        MERGE_ONTO_CHANNEL
     } else {
-        sqlx::query(
-            "update messages set chips = ( \
-               select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
-                 select c from jsonb_array_elements(chips) c \
-                 union all \
-                 select c from jsonb_array_elements($2::jsonb) c \
-                 where not exists ( \
-                   select 1 from jsonb_array_elements(chips) e \
-                   where e->>'id' = c->>'id' \
-                 ) \
-               ) s \
-             ) where id = $1::uuid",
-        )
+        MERGE_ONTO_CONVERSATION
+    };
+    sqlx::query(sql)
         .bind(&landed.message_id)
         .bind(&incoming)
+        .bind(&snapshots)
         .execute(pg)
         .await?;
-    }
     Ok(())
 }
 
@@ -1059,6 +1088,50 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["options"][0]["label"], "new");
         assert_eq!(arr[1]["label"], "Which agent?");
+    }
+
+    #[test]
+    fn a_subagent_stop_replaces_its_own_start_in_place() {
+        // The chip is keyed on the child's session id because that is the only
+        // handle both hooks carry. Stacking a second chip would read as two
+        // children; keeping the start would leave a finished child reading as
+        // still running.
+        let existing = json!([
+            { "id": "subagent:c1", "kind": "subagent", "label": "researcher · find the owner",
+              "status": "running", "summary": "" },
+            { "id": "link:/boards/b-1", "kind": "link" },
+        ]);
+        let merged = merge_chips(
+            &existing,
+            &[json!({ "id": "subagent:c1", "kind": "subagent",
+                      "label": "researcher · find the owner", "status": "done",
+                      "summary": "the owner is Dana" })],
+        );
+        let arr = merged.as_array().expect("array");
+        assert_eq!(arr.len(), 2, "one chip per child: {merged}");
+        assert_eq!(arr[0]["status"], "done");
+        assert_eq!(arr[0]["summary"], "the owner is Dana");
+        assert_eq!(
+            arr[1]["id"], "link:/boards/b-1",
+            "and the stop stayed in place"
+        );
+    }
+
+    #[test]
+    fn only_snapshot_chips_reach_the_replacing_leg_of_the_write() {
+        // The subset bound as `$3`. Too wide and a re-landed approval gets
+        // overwritten; too narrow and a plan or a finished child freezes at
+        // the version that landed first.
+        let chips = vec![
+            json!({ "id": "subagent:c1", "kind": "subagent" }),
+            json!({ "id": "approval:p1", "kind": "approval" }),
+            json!({ "id": "todo", "kind": "todo" }),
+            json!({ "id": "link:/boards/b-1", "kind": "link" }),
+        ];
+        let subset = snapshot_chips(&chips);
+        assert_eq!(subset.len(), 2, "{subset:?}");
+        assert_eq!(subset[0]["id"], "subagent:c1");
+        assert_eq!(subset[1]["id"], "todo");
     }
 
     #[test]

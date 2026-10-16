@@ -1589,6 +1589,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/agents/subagent-events",
+            post(talaria_routes_fleet::agents::subagent_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/agents/cron-output",
             post(talaria_routes_fleet::agents::cron_output::post).fallback(|| async { method_not_allowed("POST") }),
         )

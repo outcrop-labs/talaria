@@ -257,6 +257,7 @@ struct DefListRow {
     managed: bool,
     source: String,
     developer: bool,
+    max_children: i32,
     pinned_sessions: bool,
     /// The jsonb list rides out as the Value it is stored as — a passthrough,
     /// like `config` above it: the column is written only through
@@ -272,8 +273,8 @@ struct DefListRow {
 pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error> {
     let defs: Vec<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
-           owner_user_id::text, enabled, managed, source, developer, pinned_sessions, \
-           disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
+           owner_user_id::text, enabled, managed, source, developer, max_children, \
+           pinned_sessions, disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs order by slug asc",
@@ -332,6 +333,7 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
                 "managed": d.managed,
                 "source": d.source,
                 "developer": d.developer,
+                "maxChildren": d.max_children,
                 "pinnedSessions": d.pinned_sessions,
                 "disabledToolsets": d.disabled_toolsets,
                 "ticketTemplateId": d.ticket_template_id,
@@ -405,8 +407,8 @@ pub async fn pinned_sessions_for_model(pg: &PgPool, model: &str) -> Result<bool,
 pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, sqlx::Error> {
     let d: Option<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
-           owner_user_id::text, enabled, managed, source, developer, pinned_sessions, \
-           disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
+           owner_user_id::text, enabled, managed, source, developer, max_children, \
+           pinned_sessions, disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs where id = $1::uuid",
@@ -428,6 +430,7 @@ pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, 
             "managed": d.managed,
             "source": d.source,
             "developer": d.developer,
+            "maxChildren": d.max_children,
             "pinnedSessions": d.pinned_sessions,
             "disabledToolsets": d.disabled_toolsets,
             "ticketTemplateId": d.ticket_template_id,
@@ -755,6 +758,24 @@ pub async fn update_agent_meta(
         .await?;
     }
     Ok(())
+}
+
+/// Set the delegation cap (fleet.defs.$id PATCH) — how many subagents this
+/// agent may run at once. Returns whether the stored value changed, so the
+/// caller rolls the agent only when there is something to apply: the number
+/// reaches Hermes through the rendered config, and a render it already has is
+/// not worth a restart.
+pub async fn set_max_children(pg: &PgPool, id: &str, n: i32) -> Result<bool, sqlx::Error> {
+    let changed = sqlx::query(
+        "update agent_defs set max_children = $1, updated_at = now() \
+         where id = $2::uuid and max_children is distinct from $1",
+    )
+    .bind(n)
+    .bind(id)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    Ok(changed > 0)
 }
 
 /// Re-hire a retired agent: re-enable so it renders + can start again.

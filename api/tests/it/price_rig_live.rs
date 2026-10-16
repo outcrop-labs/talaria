@@ -66,7 +66,10 @@ async fn fixture(pg: &PgPool, tag: &str, model: &str, in_mtok: f64, out_mtok: f6
          values ($1, 'openai', 'cloud', $2::jsonb, null, null) returning id::text",
     )
     .bind(&name)
-    .bind(format!(r#"{:?}"#, model))
+    // `models` is the endpoint's LIST of model names — the registry decodes
+    // it as Vec<String>. A bare JSON string here (what `{:?}` produced) made
+    // every later roster read in the CI loop 500 on this leftover row.
+    .bind(serde_json::json!([model]).to_string())
     .fetch_one(pg)
     .await
     .unwrap();

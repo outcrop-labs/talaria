@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -27,6 +27,7 @@
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/cron-output`](#apiagentscron-output) | POST | `agent` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
+| [`/api/agents/subagent-events`](#apiagentssubagent-events) | POST | `agent` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
 | [`/api/agents/uploads`](#apiagentsuploads) | POST | `agent` |
 | [`/api/gaps`](#apigaps) | GET | `session` |
@@ -302,6 +303,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agents_register.rs`](../../
 | `name` | `string(1, 200)` |  |
 | `role` | `string?(80)` |  |
 | `framework` | `string?(80)` |  |
+
+## `/api/agents/subagent-events`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/subagent_events.rs`](../../api/crates/talaria-routes-fleet/src/agents/subagent_events.rs)
+
+> POST /api/agents/subagent-events. The delegation half of the talaria-events
+> Hermes plugin: the harness fires subagent_start / subagent_stop around
+> every child the delegate_task tool spawns, and this route lands ONE chip
+> per child on the turn the parent is speaking in.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `{ok, landed}` | 200, 400 | — |
 
 ## `/api/agents/tool-events`
 

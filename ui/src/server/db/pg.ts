@@ -3766,6 +3766,19 @@ alter table tasks drop column if exists conversation_id`,
   // longer described by its mode alone: NULL means "the mode's preset", which
   // is every run that predates the column.
   `alter table research_runs add column if not exists dials jsonb`,
+  // HOW MANY SUBAGENTS one agent may run at once. Delegation is the one agent
+  // capability that multiplies itself — a child may delegate too — so without a
+  // number somewhere, a single request can fan a managed box out into as many
+  // concurrent sessions as the model feels like asking for. Hermes reads the
+  // number from its config (`delegation.max_concurrent_children`), which the
+  // fleet render writes from this column.
+  //
+  // DEFAULT 3: enough that delegation is useful out of the box, small enough
+  // that nobody discovers the cap by running out of memory. 0 is a real
+  // setting and means this agent delegates to nobody. NOT NULL so the renderer
+  // never has to invent a number — the column always says what the fleet runs
+  // on.
+  `alter table agent_defs add column if not exists max_children integer not null default 3`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

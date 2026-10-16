@@ -111,7 +111,8 @@ CREATE TABLE public.agent_defs (
     email_alias text,
     developer boolean DEFAULT false NOT NULL,
     pinned_sessions boolean DEFAULT false NOT NULL,
-    disabled_toolsets jsonb DEFAULT '[]'::jsonb NOT NULL
+    disabled_toolsets jsonb DEFAULT '[]'::jsonb NOT NULL,
+    max_children integer DEFAULT 3 NOT NULL
 );
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,

@@ -17,6 +17,7 @@ pub mod runs_watch;
 pub mod skills;
 pub mod skills_marketplace;
 pub mod skills_owner_name;
+pub mod subagent_events;
 pub mod tool_events;
 pub mod uploads;
 pub mod vision_describe;
