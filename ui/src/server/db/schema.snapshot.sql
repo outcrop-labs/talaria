@@ -110,7 +110,8 @@ CREATE TABLE public.agent_defs (
     proactive boolean DEFAULT false NOT NULL,
     email_alias text,
     developer boolean DEFAULT false NOT NULL,
-    pinned_sessions boolean DEFAULT false NOT NULL
+    pinned_sessions boolean DEFAULT false NOT NULL,
+    disabled_toolsets jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,

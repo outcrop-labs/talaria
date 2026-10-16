@@ -23,6 +23,7 @@ mod board_agent_access;
 mod boards_store;
 mod brief_item_live;
 mod brief_verdict_carry_live;
+mod browser_toolsets_live;
 mod chips_landing_live;
 mod conversation_audience_live;
 mod conversation_reactions_live;

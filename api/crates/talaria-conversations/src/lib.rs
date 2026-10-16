@@ -1407,6 +1407,40 @@ pub async fn merge_message_chips(
     Ok(())
 }
 
+/// Append ONE upload to a message's `attachments`, keeping whatever is
+/// already stamped there.
+///
+/// The stamp is what makes an upload readable at all: `can_access_upload`
+/// answers "may this reader see these bytes" by probing the attachments JSON
+/// of the rows the reader can reach, so an upload nobody's message points at
+/// is stored and invisible — the owner sees it, the conversation does not.
+/// The agent uploads door writes through here once the bytes are saved, with
+/// the same `{id, filename, mime, size}` object /api/chat stamps for a
+/// person's attachment; one shape, because the probe and the renderer both
+/// read it.
+///
+/// The concatenation is type-guarded because `jsonb || jsonb` on two objects
+/// is a MERGE: a row whose column somehow held an object rather than an array
+/// would have the attachment folded into it instead of added to it, quietly
+/// rewriting the stamp rather than extending it.
+pub async fn append_message_attachment(
+    pg: &PgPool,
+    message_id: &str,
+    attachment: &Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages set attachments = \
+           case when jsonb_typeof(attachments) = 'array' then attachments else '[]'::jsonb end \
+           || jsonb_build_array($2::jsonb) \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .bind(attachment)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// The ticket gate's hold stamp, written when the relevance judge decided a
 /// message is not the assigned agent's business. The message STAYS — the
 /// humans in the room read it — but the stamp is the durable record of the

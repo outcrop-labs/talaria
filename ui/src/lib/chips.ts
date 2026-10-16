@@ -11,7 +11,7 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question' | 'notice'
+export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question' | 'notice' | 'image'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -58,6 +58,12 @@ export interface ChatChip {
    *  states what happened to a row — "sent mid-turn" — so the pill stays
    *  short enough to read at a glance and the why waits for the pointer. */
   detail?: string
+  /** `image` chips only: the upload the chip shows. An agent that screenshots
+   *  a page posts the PNG to its own uploads door, which stamps it on the turn
+   *  and lands this chip; `href` serves the bytes through the ordinary
+   *  attachment check, and the id is what a renderer needs to tell two
+   *  screenshots of the same page apart. */
+  uploadId?: string
 }
 
 /** One answer the agent offered (the `ask` tool). */
