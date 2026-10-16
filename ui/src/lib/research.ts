@@ -14,6 +14,16 @@ export type ResearchMode = 'recon' | 'brief' | 'expedition'
  *  It still polls like an in-flight run — the answer can land any second. */
 export type ResearchStatus = 'queued' | 'running' | 'awaiting' | 'done' | 'error'
 
+/** THE THREE DIALS, 1–3 each: how hard to dig (rounds of searching), how wide
+ *  to cast (queries per round), how many sources to keep. A mode is a preset
+ *  over exactly these three — recon 1/1/1, brief 1/2/2, expedition 3/3/3 — so
+ *  a dial moves one axis of the mode and leaves the others where they were. */
+export interface ResearchDials {
+  effort: number
+  breadth: number
+  sources: number
+}
+
 export interface ResearchRun {
   id: string
   ownerUserId: string | null
@@ -34,6 +44,10 @@ export interface ResearchRun {
    *  rows predating eager conversations. */
   conversationId: string | null
   error: string | null
+  /** The dials the run actually ran at. Absent or null on a run an older
+   *  deploy started — which reads as "whatever the mode presets", not as
+   *  "no dials": the run had them, the row just never wrote them down. */
+  dials?: ResearchDials | null
   stats: { queries?: number; sources?: number; cited?: number }
   createdAt: string
   completedAt: string | null
@@ -92,12 +106,20 @@ export function useResearchRun(id: MaybeGetter<string | null>) {
   })
 }
 
-export async function startResearch(question: string, mode: ResearchMode, agentModel: string): Promise<ResearchRun> {
+/** Start a run. `dials` is PARTIAL on purpose: the body carries only the axes
+ *  the caller moved, and the server fills the rest from the mode's preset — so
+ *  a surface with one slider never has to invent values for the other two. */
+export async function startResearch(
+  question: string,
+  mode: ResearchMode,
+  agentModel: string,
+  dials?: Partial<ResearchDials>,
+): Promise<ResearchRun> {
   // 409 is an answer, not a failure: its body names the run already asking
   // this question. Every other non-2xx throws with the server's sentence.
   const j = await postJsonOr<{ run?: ResearchRun | null; duplicateOf?: string; error?: string }>(
     '/api/research',
-    { question, mode, agentModel },
+    { question, mode, agentModel, ...dials },
     [409],
   )
   if (j.duplicateOf) throw new Error('that question is already being researched')

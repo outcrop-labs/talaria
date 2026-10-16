@@ -6863,6 +6863,7 @@ dependencies = [
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-conversations",
  "talaria-db",
  "talaria-error",
  "talaria-github",

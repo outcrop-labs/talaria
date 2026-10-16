@@ -141,6 +141,14 @@ fn bool_schema(description: &str) -> Value {
     json!({ "type": "boolean", "description": description })
 }
 
+/// A DIAL: an integer the caller may move inside a closed range. `num_schema`
+/// would describe research's 1–3 knobs as any number at all, and the route
+/// refuses 0, 4 and 2.5 — the bounds belong in the schema so a model reads
+/// them before it spends a call learning them from a 400.
+fn dial_schema(description: &str, min: i64, max: i64) -> Value {
+    json!({ "type": "integer", "minimum": min, "maximum": max, "description": description })
+}
+
 fn strs_schema(description: &str) -> Value {
     json!({ "type": "array", "items": { "type": "string" }, "description": description })
 }
@@ -1128,7 +1136,13 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             description: "Start cited web research on a question in your field. Modes: 'recon' (one fast pass — a cited answer, ~1 min), 'brief' (planned angles → a briefing document, a few minutes), 'expedition' (iterative deep dive → a full report, can take a while). Runs in the background — you get a runId; poll research_status, then read the report with get_document. Every claim in the report carries [n] citations. Use recon for quick facts mid-task; brief/expedition for real questions worth a document.",
             parameters: json!({
                 "type": "object",
-                "properties": { "question": str_schema("What to research, in natural language — be specific"), "mode": one_of(&["recon", "brief", "expedition"], "Depth (default 'brief')") },
+                "properties": {
+                    "question": str_schema("What to research, in natural language — be specific"),
+                    "mode": one_of(&["recon", "brief", "expedition"], "Depth (default 'brief')"),
+                    "effort": dial_schema("How hard to dig — rounds of searching, 1–3 (default: the mode's)", 1, 3),
+                    "breadth": dial_schema("How wide to cast — queries per round, 1–3 (default: the mode's)", 1, 3),
+                    "sources": dial_schema("How many sources to keep, 1–3 (default: the mode's)", 1, 3),
+                },
                 "required": ["question"],
             }),
             assistant_only: false,

@@ -27,6 +27,13 @@ use tower::ServiceExt; // oneshot
 const PREFIX: &str = "tala38";
 const TAG: &str = "move";
 
+/// The two tests share one prefix-wide sweep (teams cascade from users, so a
+/// tag-scoped delete would strand rows), and cargo runs them concurrently:
+/// one's sweep deleting `team_members` under the other's deadlocked in CI
+/// (40P01) and, short of that, would have torn the sibling's fixtures out
+/// mid-assertion. Each test holds this for its whole body.
+static TEAMS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn app_state() -> AppState {
     let cfg = Config::from_parts(
         std::env::var("DATABASE_URL").expect("set DATABASE_URL (source ui/.env)"),
@@ -187,6 +194,7 @@ async fn sees_board(pg: &PgPool, board_id: &str, user_id: &str) -> bool {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL, REDIS_URL)"]
 async fn a_team_move_regrants_access_previews_loss_and_refuses_bad_movers() {
+    let _teams = TEAMS.lock().await;
     let state = app_state().await;
     let pg = state.pg.clone();
     sweep(&pg, TAG).await;
@@ -352,6 +360,7 @@ async fn a_team_move_regrants_access_previews_loss_and_refuses_bad_movers() {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL, REDIS_URL)"]
 async fn personal_board_moves_in_and_a_direct_row_detaches_out() {
+    let _teams = TEAMS.lock().await;
     let state = app_state().await;
     let pg = state.pg.clone();
     const TAG2: &str = "move2";
