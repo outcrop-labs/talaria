@@ -1566,6 +1566,17 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/agents/uploads",
+            // A screenshot rides as base64 in the body, so this route owns its
+            // own cap: the extractor's hidden 2 MB default would refuse every
+            // image worth sending before the handler could answer for it.
+            post(talaria_routes_fleet::agents::uploads::post)
+                .fallback(|| async { method_not_allowed("POST") })
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    talaria_routes_fleet::agents::uploads::ROUTE_BODY_LIMIT,
+                )),
+        )
+        .route(
             "/api/me/events",
             get(talaria_routes_integrations::account::me_events::get).fallback(|| async { method_not_allowed("GET") }),
         )

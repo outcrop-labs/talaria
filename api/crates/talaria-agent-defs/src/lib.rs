@@ -39,6 +39,84 @@ pub fn dept_ok(department: &str) -> bool {
         .is_match(department)
 }
 
+/// The Hermes toolsets Talaria governs — `toolsets.py`'s own TOOLSETS, in its
+/// order, minus the platform/integration ones (bot_room, discord*, feishu*,
+/// hermes-*, homeassistant, spotify, yuanbao) that no Talaria agent is ever
+/// wired to and that nobody here could switch on by naming them.
+///
+/// A name outside this list is a typo or a Hermes version nobody has read
+/// yet, and either way it reaches `agent.disabled_toolsets` in the rendered
+/// config.yaml, where Hermes IGNORES it in silence: the operator would see a
+/// toolset they believe is closed and an agent that still has it. The write
+/// path refuses the stranger instead — the same bar, for the same reason, as
+/// the alphabets above.
+pub const GOVERNED_TOOLSETS: &[&str] = &[
+    "browser",
+    "clarify",
+    "code_execution",
+    "coding",
+    "computer_use",
+    "connections",
+    "context_engine",
+    "cronjob",
+    "debugging",
+    "delegation",
+    "desktop_ui",
+    "file",
+    "image_gen",
+    "kanban",
+    "memory",
+    "project",
+    "safe",
+    "search",
+    "session_search",
+    "skills",
+    "terminal",
+    "todo",
+    "tts",
+    "video",
+    "video_gen",
+    "vision",
+    "web",
+    "x_search",
+];
+
+/// The two Talaria takes off every agent's table whatever a def says, because
+/// Talaria already does both jobs and only its versions reach a person: the
+/// MCP todo tool lands the chips someone can see and act on, and the MCP
+/// clarify tool puts a question in front of them. The renderer merges these
+/// ahead of an agent's own list (talaria-fleet-render's
+/// `fleet_disabled_toolsets`), so storing them per agent would be noise —
+/// they are the floor, not a choice.
+pub const MANDATORY_DISABLED: &[&str] = &["todo", "clarify"];
+
+/// The longest list a caller may hand us. Nothing can legitimately exceed
+/// GOVERNED_TOOLSETS' own length once duplicates are gone, so this is a bound
+/// on the WALK, not on the answer: a request cannot make this validate a
+/// thousand names before refusing them.
+const MAX_TOOLSETS: usize = 40;
+
+/// Clean and bless a disabled-toolsets list (fleet.defs.$id PATCH): trim each
+/// name, drop repeats keeping the first, and refuse anything outside
+/// [`GOVERNED_TOOLSETS`] — naming the first stranger, because an operator who
+/// mistyped one of eight names needs to know WHICH.
+pub fn validate_toolsets(names: &[String]) -> Result<Vec<String>, String> {
+    if names.len() > MAX_TOOLSETS {
+        return Err(format!("at most {MAX_TOOLSETS} toolsets"));
+    }
+    let mut out: Vec<String> = Vec::with_capacity(names.len());
+    for raw in names {
+        let name = raw.trim();
+        if !GOVERNED_TOOLSETS.contains(&name) {
+            return Err(format!("unknown toolset \"{name}\""));
+        }
+        if !out.iter().any(|kept| kept == name) {
+            out.push(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// A model target: which endpoint serves it and the upstream model id there.
 /// `contextLength`/`effort` are ABSENT when
 /// unset — skip_serializing_if, not null — so the jsonb round-trips only the
@@ -180,6 +258,10 @@ struct DefListRow {
     source: String,
     developer: bool,
     pinned_sessions: bool,
+    /// The jsonb list rides out as the Value it is stored as — a passthrough,
+    /// like `config` above it: the column is written only through
+    /// `set_disabled_toolsets`, so its shape is already the wire's.
+    disabled_toolsets: Value,
     ticket_template_id: Option<String>,
     plan_template_id: Option<String>,
     current_version: i32,
@@ -191,7 +273,7 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
     let defs: Vec<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
            owner_user_id::text, enabled, managed, source, developer, pinned_sessions, \
-           ticket_template_id::text, plan_template_id::text, \
+           disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs order by slug asc",
@@ -251,6 +333,7 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
                 "source": d.source,
                 "developer": d.developer,
                 "pinnedSessions": d.pinned_sessions,
+                "disabledToolsets": d.disabled_toolsets,
                 "ticketTemplateId": d.ticket_template_id,
                 "planTemplateId": d.plan_template_id,
                 "currentVersion": d.current_version,
@@ -281,6 +364,29 @@ pub async fn set_pinned_sessions(pg: &PgPool, id: &str, on: bool) -> Result<bool
     Ok(changed > 0)
 }
 
+/// Replace an agent's disabled-toolsets list (fleet.defs.$id PATCH), the list
+/// the renderer merges on top of [`MANDATORY_DISABLED`]. The caller passes it
+/// through [`validate_toolsets`] first — this writes what it is given. Whole
+/// list, not a delta: the UI edits a set of checkboxes and the column is what
+/// they show. Returns whether the stored value changed, for the audit row and
+/// for the roll (a re-save of the same set must not bounce a container).
+pub async fn set_disabled_toolsets(
+    pg: &PgPool,
+    id: &str,
+    names: &[String],
+) -> Result<bool, sqlx::Error> {
+    let changed = sqlx::query(
+        "update agent_defs set disabled_toolsets = $1, updated_at = now() \
+         where id = $2::uuid and disabled_toolsets is distinct from $1",
+    )
+    .bind(serde_json::json!(names))
+    .bind(id)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    Ok(changed > 0)
+}
+
 /// Whether the agent behind a model id is pinned — the chat path's question,
 /// asked by the identity it routes on. An unknown model is not pinned: the
 /// full-history path is the one every agent speaks.
@@ -300,7 +406,7 @@ pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, 
     let d: Option<DefListRow> = sqlx::query_as(
         "select id::text, slug, department, model, display_name, role, email_alias::text, \
            owner_user_id::text, enabled, managed, source, developer, pinned_sessions, \
-           ticket_template_id::text, plan_template_id::text, \
+           disabled_toolsets, ticket_template_id::text, plan_template_id::text, \
            current_version, (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
            (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
          from agent_defs where id = $1::uuid",
@@ -322,7 +428,8 @@ pub async fn get_agent_def_wire(pg: &PgPool, id: &str) -> Result<Option<Value>, 
             "managed": d.managed,
             "source": d.source,
             "developer": d.developer,
-                "pinnedSessions": d.pinned_sessions,
+            "pinnedSessions": d.pinned_sessions,
+            "disabledToolsets": d.disabled_toolsets,
             "ticketTemplateId": d.ticket_template_id,
             "planTemplateId": d.plan_template_id,
             "currentVersion": d.current_version,
@@ -687,6 +794,51 @@ mod tests {
         assert!(!dept_ok("Research"));
         assert!(!dept_ok("research_"));
         assert!(!dept_ok(&"d".repeat(42)));
+    }
+
+    #[test]
+    fn validate_toolsets_trims_dedupes_and_names_the_stranger() {
+        let got = validate_toolsets(&[
+            "  browser ".into(),
+            "memory".into(),
+            "browser".into(),
+            "memory".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            got,
+            vec!["browser".to_string(), "memory".to_string()],
+            "trimmed, first occurrence kept, order as asked"
+        );
+        assert_eq!(validate_toolsets(&[]).unwrap(), Vec::<String>::new());
+        // The message has to carry the name: eight checkboxes and one typo is
+        // otherwise a 400 the operator cannot act on.
+        assert_eq!(
+            validate_toolsets(&["browser".into(), "brower".into(), "nope".into()]).unwrap_err(),
+            "unknown toolset \"brower\"",
+            "the FIRST stranger is the one named"
+        );
+        // Hermes' platform toolsets are real names Talaria still refuses:
+        // nothing here is wired to Discord, so disabling it would be theatre.
+        assert_eq!(
+            validate_toolsets(&["discord".into()]).unwrap_err(),
+            "unknown toolset \"discord\""
+        );
+        // The cap is on the WALK: 41 repeats of a blessed name would dedupe to
+        // one, and still never get that far.
+        let many: Vec<String> = std::iter::repeat_n("todo".to_string(), MAX_TOOLSETS + 1).collect();
+        assert_eq!(validate_toolsets(&many).unwrap_err(), "at most 40 toolsets");
+        let at_cap: Vec<String> = std::iter::repeat_n("todo".to_string(), MAX_TOOLSETS).collect();
+        assert_eq!(
+            validate_toolsets(&at_cap).unwrap(),
+            vec!["todo".to_string()],
+            "the cap itself is in"
+        );
+        // The governed list is the floor's home too — the renderer merges
+        // MANDATORY_DISABLED, so both names must be nameable here as well.
+        for name in MANDATORY_DISABLED {
+            assert!(GOVERNED_TOOLSETS.contains(name), "{name} is not governed");
+        }
     }
 
     #[test]

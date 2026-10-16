@@ -3684,6 +3684,20 @@ alter table tasks drop column if exists conversation_id`,
   // aborts the client read, and the run keeps going until it idles. Null for
   // every row from an unpinned agent and for every user row.
   `alter table messages add column if not exists hermes_run_id text`,
+  // ── Which Hermes toolsets an agent does NOT get (2026-10-16). Hermes turns
+  // every built-in toolset on by default and `agent.disabled_toolsets` is its
+  // last word on availability, so naming a toolset here — and rendering it
+  // into config.yaml — is the only way to take one off an agent's table.
+  // Talaria already pins `todo` and `clarify` shut for every agent (its own
+  // versions are the ones a person can see and answer); this column is the
+  // operator's list ON TOP of that pair, and the first thing it governs is
+  // `browser`: a browsing agent costs a multi-minute Chromium install on
+  // every roll, so an agent that should not browse says so here and skips it.
+  //
+  // jsonb and not text[]: the def wire carries the list as a JSON array and
+  // the renderer merges it as one, so the column stores the shape both ends
+  // already speak. Empty default — no agent loses a toolset by migrating.
+  `alter table agent_defs add column if not exists disabled_toolsets jsonb not null default '[]'::jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

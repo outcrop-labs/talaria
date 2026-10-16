@@ -13,8 +13,8 @@ use serde_json::json;
 use talaria_agent_defs::agent_def_by_id;
 use talaria_api_facades::fleet::create::delete_agent_forever;
 use talaria_api_facades::fleet::docker::{
-    active_slot, fleet_remove, fleet_restart, fleet_stop, fleet_up, prune_bundled_skills,
-    wait_healthy,
+    active_slot, browser_enabled_for_department, fleet_remove, fleet_restart, fleet_stop, fleet_up,
+    install_browser, prune_bundled_skills, wait_healthy,
 };
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::fleet::render::render_fleet;
@@ -239,7 +239,11 @@ pub async fn post(
 }
 
 /// wait_healthy, then prune_bundled_skills on success — 120s health
-/// window, slot resolved per call.
+/// window, slot resolved per call. A browsing agent's Chromium rides along
+/// here: it is not in the image, the image's own browsers path is in the
+/// container layer, and this fresh container is the one that needs it. Both
+/// steps are best-effort and already detached, so the install's minutes cost
+/// the caller nothing.
 fn spawn_health_prune(pg: &sqlx::PgPool, department: &str) {
     let pg = pg.clone();
     let dept = department.to_string();
@@ -247,6 +251,9 @@ fn spawn_health_prune(pg: &sqlx::PgPool, department: &str) {
         if wait_healthy(&pg, &dept, 120_000).await {
             let slot = active_slot(&pg, &dept).await;
             prune_bundled_skills(&dept, slot).await;
+            if browser_enabled_for_department(&pg, &dept).await {
+                install_browser(&dept, slot).await;
+            }
         }
     });
 }

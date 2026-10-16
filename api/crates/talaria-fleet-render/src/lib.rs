@@ -57,6 +57,10 @@ pub struct RenderDef {
     /// The Developer Agent switch: dev sandbox, Oh My Pi, and the Workbench
     /// MCP tools.
     pub developer: bool,
+    /// Hermes toolsets this agent does NOT get, as the operator set them.
+    /// `fleet_disabled_toolsets` merges them on top of the pair Talaria always
+    /// suppresses and whatever the def's own config already listed.
+    pub disabled_toolsets: Vec<String>,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -74,7 +78,9 @@ pub struct RenderTarget {
     pub version: RenderVersion,
 }
 
-/// The managed_agents row shape, spelled once.
+/// The managed_agents row shape, spelled once. `disabled_toolsets` is the one
+/// jsonb column the def half carries, so it rides through sqlx's Json wrapper
+/// (a bare `Vec<String>` would decode as Postgres `text[]`, which this is not).
 type TargetTuple = (
     String,
     String,
@@ -85,6 +91,7 @@ type TargetTuple = (
     String,
     Option<String>,
     bool,
+    sqlx::types::Json<Vec<String>>,
     i32,
     String,
     Value,
@@ -102,11 +109,12 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             source: r.6,
             active_slot: r.7,
             developer: r.8,
+            disabled_toolsets: r.9.0,
         },
         version: RenderVersion {
-            version: r.9,
-            soul: r.10,
-            config: r.11,
+            version: r.10,
+            soul: r.11,
+            config: r.12,
         },
     }
 }
@@ -118,7 +126,7 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.developer, v.version, v.soul, v.config \
+         d.active_slot, d.developer, d.disabled_toolsets, v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -1063,7 +1071,7 @@ pub async fn render_fleet(
         routed.insert("plugins".into(), Value::Object(plugins));
 
         fleet_approvals(&mut routed);
-        fleet_disabled_toolsets(&mut routed);
+        fleet_disabled_toolsets(&mut routed, &def.disabled_toolsets);
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
@@ -1192,6 +1200,7 @@ pub async fn render_fleet(
                 talaria_fleet_layout::agent_key_var(&def.slug)
             )),
         );
+        fleet_browser_path(&mut env);
         // The app's origin as the fleet reaches it — the git credential
         // helper's URL, and anything else container-side that needs the app
         // rather than the gateway path. Derived from the app's own view of
@@ -1635,24 +1644,61 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
 /// availability (applied after everything else, at tool granularity), so this
 /// suppression holds whatever else a def says. Names a def already disabled
 /// stay: ours are added, never a replacement, and never twice.
-fn fleet_disabled_toolsets(routed: &mut Map<String, Value>) {
+///
+/// `def_disabled` is the operator's own list (agent_defs.disabled_toolsets) —
+/// `browser` above all, because a browsing agent costs a Chromium install on
+/// every roll. THE ORDER IS THE MERGE'S MEANING: the floor Talaria always
+/// suppresses, then what the operator closed, then whatever the authored
+/// config already carried. A reader of the rendered config.yaml can tell the
+/// three apart by where they sit, and a re-render of the same three lists
+/// emits the same bytes.
+fn fleet_disabled_toolsets(routed: &mut Map<String, Value>, def_disabled: &[String]) {
     let mut agent = routed
         .get("agent")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let mut disabled: Vec<Value> = agent
+    // Authored entries ride as the Values they are: a def that spelled one
+    // wrong keeps its own garbage rather than having this drop it silently —
+    // Hermes ignoring a name it does not know is the authored list's problem.
+    let authored: Vec<Value> = agent
         .get("disabled_toolsets")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for name in ["todo", "clarify"] {
-        if !disabled.iter().any(|v| v.as_str() == Some(name)) {
-            disabled.push(json!(name));
+    let mut disabled: Vec<Value> = Vec::new();
+    let ours = talaria_agent_defs::MANDATORY_DISABLED
+        .iter()
+        .map(|n| json!(n));
+    let theirs = def_disabled.iter().map(|n| json!(n));
+    for name in ours.chain(theirs).chain(authored) {
+        if !disabled.contains(&name) {
+            disabled.push(name);
         }
     }
     agent.insert("disabled_toolsets".into(), json!(disabled));
     routed.insert("agent".into(), Value::Object(agent));
+}
+
+/// Point Playwright at the department's state volume. The image's own
+/// `PLAYWRIGHT_BROWSERS_PATH` lives in the container layer, so the Chromium a
+/// browsing agent installs would vanish on the next roll and every browser
+/// turn after it would fail on a missing executable. `or_insert` and not an
+/// overwrite: a def whose chassis extras name their own path keeps it — those
+/// extras are already in `env` by the time this runs. (The Developer Agent
+/// overlay below DOES overwrite it, with its own harness dir on the same
+/// volume — one place for everything that agent's harness state persists in.)
+fn fleet_browser_path(env: &mut Map<String, Value>) {
+    env.entry("PLAYWRIGHT_BROWSERS_PATH".to_string())
+        .or_insert_with(|| json!(talaria_fleet_docker::AGENT_BROWSERS_PATH));
+}
+
+/// Whether this agent still holds Hermes' browser toolset — the switch behind
+/// the Chromium install the post-health sites run (talaria-fleet-docker's
+/// `install_browser`). Absence from the disabled list is the "yes": every
+/// built-in toolset is on until something names it.
+pub fn browser_enabled(def: &RenderDef) -> bool {
+    !def.disabled_toolsets.iter().any(|name| name == "browser")
 }
 
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
@@ -2196,11 +2242,12 @@ service:
 
     #[test]
     fn fleet_disabled_toolsets_suppresses_both_and_adds_to_a_def_list() {
-        // No authored agent block: both names land, in order, and nothing else
-        // appears under `agent`.
+        // No authored agent block and nothing closed by the operator: both
+        // mandatory names land, in order, and nothing else appears under
+        // `agent`.
         let mut routed = Map::new();
         routed.insert("model".into(), json!("x"));
-        fleet_disabled_toolsets(&mut routed);
+        fleet_disabled_toolsets(&mut routed, &[]);
         assert_eq!(
             routed.get("agent"),
             Some(&json!({ "disabled_toolsets": ["todo", "clarify"] }))
@@ -2210,37 +2257,106 @@ service:
         // idempotent, so a re-render never grows the list.
         let mut already = Map::new();
         already.insert("agent".into(), json!({ "disabled_toolsets": ["todo"] }));
-        fleet_disabled_toolsets(&mut already);
+        fleet_disabled_toolsets(&mut already, &[]);
         assert_eq!(
             already.get("agent"),
             Some(&json!({ "disabled_toolsets": ["todo", "clarify"] }))
         );
         let mut twice = already.clone();
-        fleet_disabled_toolsets(&mut twice);
+        fleet_disabled_toolsets(&mut twice, &[]);
         assert_eq!(twice, already, "the suppression is idempotent");
 
         // A def's own names survive, and so do its other agent keys: ours are
-        // appended, never a replacement.
+        // added, never a replacement. The mandatory pair leads — the merge's
+        // order is floor, then operator, then authored.
         let mut authored = Map::new();
         authored.insert(
             "agent".into(),
             json!({ "max_steps": 40, "disabled_toolsets": ["browser", "clarify"] }),
         );
-        fleet_disabled_toolsets(&mut authored);
+        fleet_disabled_toolsets(&mut authored, &[]);
         assert_eq!(
             authored.get("agent"),
             Some(&json!({
                 "max_steps": 40,
-                "disabled_toolsets": ["browser", "clarify", "todo"]
+                "disabled_toolsets": ["todo", "clarify", "browser"]
             }))
         );
+
+        // The operator's list sits between the two: after the floor, before
+        // the authored names, deduped against both. `browser` here is the
+        // switch that also skips the Chromium install.
+        let mut closed = Map::new();
+        closed.insert(
+            "agent".into(),
+            json!({ "disabled_toolsets": ["web", "memory"] }),
+        );
+        fleet_disabled_toolsets(
+            &mut closed,
+            &[
+                "browser".to_string(),
+                "memory".to_string(),
+                "todo".to_string(),
+            ],
+        );
+        assert_eq!(
+            closed.get("agent"),
+            Some(&json!({
+                "disabled_toolsets": ["todo", "clarify", "browser", "memory", "web"]
+            })),
+            "floor, then the operator's own order, then what only the config said"
+        );
+        let mut again = closed.clone();
+        fleet_disabled_toolsets(&mut again, &["browser".to_string(), "memory".to_string()]);
+        assert_eq!(again, closed, "a re-render emits the same list");
+
+        // The switch reads the def's list, not the rendered merge: `browser`
+        // closed is the one answer the install site acts on.
+        let def = |disabled: &[&str]| RenderDef {
+            id: "d1".into(),
+            slug: "analyst".into(),
+            department: "research".into(),
+            model: "analyst-research".into(),
+            display_name: "Analyst".into(),
+            role: None,
+            source: "created".into(),
+            active_slot: None,
+            developer: false,
+            disabled_toolsets: disabled.iter().map(|s| s.to_string()).collect(),
+        };
+        assert!(browser_enabled(&def(&[])), "every toolset is on by default");
+        assert!(browser_enabled(&def(&["memory", "web"])));
+        assert!(!browser_enabled(&def(&["browser"])));
+    }
+
+    #[test]
+    fn the_browser_path_lands_unless_a_def_named_its_own() {
+        // The uniform case: Playwright is pointed at the state volume, which
+        // is what survives the roll that installed Chromium.
+        let mut env = Map::new();
+        fleet_browser_path(&mut env);
+        assert_eq!(
+            env.get("PLAYWRIGHT_BROWSERS_PATH"),
+            Some(&json!("/opt/data/.playwright"))
+        );
+
+        // A def's chassis extras are already in `env` when this runs, so
+        // theirs is the value that stays.
+        let mut own = Map::new();
+        own.insert(
+            "PLAYWRIGHT_BROWSERS_PATH".into(),
+            json!("/opt/data/workbench/harness/playwright"),
+        );
+        let before = own.clone();
+        fleet_browser_path(&mut own);
+        assert_eq!(own, before, "a def's own path wins");
     }
 
     #[test]
     fn the_disabled_toolsets_round_trip_through_the_one_point_one_emitter() {
         let mut routed = Map::new();
         routed.insert("model".into(), json!("x"));
-        fleet_disabled_toolsets(&mut routed);
+        fleet_disabled_toolsets(&mut routed, &[]);
         let yaml = yaml11_emit(&Value::Object(routed.clone()));
         assert!(
             yaml.contains("agent:\n  disabled_toolsets:\n    - todo\n    - clarify\n"),
