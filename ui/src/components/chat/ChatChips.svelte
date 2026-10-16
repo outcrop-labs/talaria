@@ -1,10 +1,15 @@
 <script lang="ts">
-  import { Check, Info, Wrench, X } from '@lucide/svelte'
+  import { Check, ExternalLink, Info, Wrench, X } from '@lucide/svelte'
   import PlatformLinkChip from './PlatformLinkChip.svelte'
   import TodoPlan from './TodoPlan.svelte'
   import AskCard from './AskCard.svelte'
+  import { cardKindFor, sourceLabel, subagentGoal, subagentTone, summarizeChange } from './tool-cards'
   import Button from '@/components/ui/Button.svelte'
+  import Disclosure from '@/components/ui/Disclosure.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { focusGold } from '@/components/chat/chat-chrome'
+  import { attachmentUrl } from '@/lib/attachments'
+  import { openFileViewer } from '@/lib/file-viewer.svelte'
   import { cn } from '@/lib/cn'
   import {
     chipsBesideProse,
@@ -19,9 +24,14 @@
 
   // Persisted chips that are not already painted from the prose: exposed
   // tools, protected-action approvals, unlocks, notices about the row itself,
-  // and links the agent produced without pasting the URL. Clicking a tool (or
-  // an unlocked tool name) opens its inputs inline. Approve/deny stay on the
-  // approval chip; a notice has nothing to click.
+  // screenshots, delegated children, web sources, and links the agent produced
+  // without pasting the URL. Clicking a tool (or an unlocked tool name) opens
+  // its inputs inline. Approve/deny stay on the approval chip; a notice has
+  // nothing to click.
+  //
+  // Which SHAPE a chip takes is `cardKindFor` (tool-cards.ts), asked once per
+  // chip: four of them need a field the kind alone does not promise, and a
+  // card drawn without it is an empty frame.
   let {
     chips,
     content = '',
@@ -88,7 +98,105 @@
 {#if shown.length}
   <div class="mt-2 flex flex-wrap items-start gap-1.5">
     {#each shown as chip (chip.id)}
-      {#if chip.kind === 'link' && chip.href && chip.entity}
+      {@const card = cardKindFor(chip)}
+      {#if card === 'document'}
+        <!-- A document the agent EDITED, not merely one it linked. The link
+             alone makes the reader open the doc and diff it in their head, so
+             the card says what moved: a line per change, and the two strings
+             for a Replace, where the numbers alone say nothing. -->
+        <div class="w-full rounded-lg border border-line bg-surface px-3 py-2">
+          <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Edited</div>
+          <div class="mt-1 -ml-0.5">
+            <PlatformLinkChip href={chip.href ?? ''} entity={(chip.entity ?? 'document') as ChipEntity} title={chip.title} />
+          </div>
+          <!-- The list is BOUNDED, both ways. A batch edit can carry a dozen
+               changes and each preview up to 160 chars a side, which is a
+               card taller than the transcript it sits in: the list scrolls
+               past four or five rows, and each preview line clamps to two.
+               The whole text is one click away in the document the chip
+               links to — the card's job is the glance. -->
+          <ul class="mt-1.5 max-h-64 space-y-1.5 overflow-y-auto">
+            {#each chip.changes ?? [] as change, i (`${change.label}-${i}`)}
+              <li>
+                <div class="font-mono text-[11px] text-muted">{summarizeChange(change)}</div>
+                {#if change.preview}
+                  <div class="mt-0.5 rounded-lg border border-line-subtle bg-raised px-2 py-1 font-mono text-xs">
+                    <div class="line-clamp-2 whitespace-pre-wrap break-words text-[color:var(--theme-danger)]">−{change.preview.old}</div>
+                    <div class="line-clamp-2 whitespace-pre-wrap break-words text-[color:var(--theme-success)]">+{change.preview.new}</div>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {:else if card === 'image'}
+        <!-- A screenshot the agent took, inline like an attachment and opening
+             the same in-app viewer (never a new tab: a desktop webview has no
+             chrome to save from). -->
+        {@const url = attachmentUrl(chip.uploadId ?? '')}
+        <div class="w-full">
+          <button
+            type="button"
+            class={cn('block rounded-md', focusGold)}
+            title={chip.label || 'Open this image'}
+            onclick={() => openFileViewer({ url, title: chip.label || 'Screenshot', contentType: 'image/png' })}
+          >
+            <img src={url} alt={chip.label ?? ''} class="max-h-48 rounded-md border border-line object-cover" />
+          </button>
+        </div>
+      {:else if card === 'subagent'}
+        <!-- A child the agent delegated to, in the approval card's chrome: it
+             is several lines about work happening elsewhere, which is exactly
+             the thing a person waiting wants to read. The goal is a line of
+             its own only when the label is not already carrying it — the
+             producer writes "<role> · <goal>", so an unconditional second
+             line printed the same sentence twice. -->
+        {@const goal = subagentGoal(chip)}
+        <div
+          class="w-full rounded-lg border border-line bg-surface px-3 py-2"
+          role="group"
+          aria-label={chip.label ? `Delegated: ${chip.label}` : 'Delegated'}
+        >
+          <div class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            <span>Delegated</span>
+            <StatusDot
+              status={subagentTone(chip.status)}
+              pulse={chip.status === 'running'}
+              title={chip.status ?? 'unknown'}
+            />
+          </div>
+          <p class="mt-1 font-sans text-[13px] text-fg">{chip.label || 'A delegated agent'}</p>
+          {#if goal}<p class="mt-0.5 font-sans text-xs text-muted">{goal}</p>{/if}
+          {#if chip.summary}<p class="mt-1 font-sans text-xs text-fg">{chip.summary}</p>{/if}
+          {#if chip.tools?.length}
+            <Disclosure class="mt-1.5" title={`${chip.tools.length} ${chip.tools.length === 1 ? 'tool' : 'tools'}`}>
+              {#snippet icon()}<span>⚙</span>{/snippet}
+              <ul class="space-y-0.5 font-mono text-[11px] text-muted">
+                {#each chip.tools as name (name)}
+                  <li>{name}</li>
+                {/each}
+              </ul>
+            </Disclosure>
+          {/if}
+        </div>
+      {:else if card === 'source'}
+        <!-- A web page the search actually read. Off-platform, so this is the
+             one chip that leaves the app: a new tab, and the snippet on hover
+             the way a notice carries its sentence. -->
+        <a
+          href={chip.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={chip.detail || chip.href}
+          class={cn(
+            'inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1 font-sans text-xs text-muted transition-colors hover:border-line-strong hover:bg-hover hover:text-fg',
+            focusGold,
+          )}
+        >
+          <ExternalLink size={13} class="shrink-0 text-ink-dim" />
+          <span class="max-w-52 truncate">{sourceLabel(chip)}</span>
+        </a>
+      {:else if chip.kind === 'link' && chip.href && chip.entity}
         <PlatformLinkChip href={chip.href} entity={chip.entity as ChipEntity} title={chip.title} />
       {:else if chip.kind === 'tool'}
         {@const name = chip.tool ?? ''}
@@ -162,18 +270,25 @@
             </button>
           {/each}
         </div>
-      {:else if chip.kind === 'notice'}
+      {:else}
         <!-- A fact about the row, in the muted voice: what happened to this
              message, not something to do about it. So it is a span and not a
              button — a notice with an action would be an approval. The detail
              is the title, because the pill has to stay short enough to read
-             beside the words it belongs to. -->
+             beside the words it belongs to.
+
+             AND IT IS THE LAST RESORT, not only the `notice` branch. Every
+             chip above needs a field its kind does not promise — an upload,
+             an href, an entity — and a chip that reaches the end of the chain
+             with none of them used to render NOTHING AT ALL: the row the
+             server persisted simply was not on screen, which is a worse lie
+             than a muted pill saying the little it knows. -->
         <span
           class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1 font-sans text-xs text-muted"
           title={chip.detail || undefined}
         >
           <Info size={13} class="shrink-0 text-ink-dim" />
-          <span class="truncate">{chip.label}</span>
+          <span class="truncate">{chip.label || chip.title}</span>
         </span>
       {/if}
       {#if openTool === chip.id || (chip.kind === 'unlock' && openTool?.startsWith(`${chip.id}:`))}

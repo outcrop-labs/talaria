@@ -5,7 +5,9 @@
 // cannot invent two different shapes.
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use talaria_body::clip_chars;
 use talaria_notify::{NotifyDeps, fan_channel_event, fan_conversation_event};
 use talaria_realtime::{ChannelEvent, RealtimeDeps, publish_channel};
 
@@ -230,6 +232,42 @@ fn link_chip(link: &PlatformLink, title: Option<&str>) -> Value {
     })
 }
 
+/// THE DOCUMENT CHIP, written once because it has TWO PRODUCERS.
+///
+/// The edit route lands it the moment an agent edits a document, and the
+/// tool-events door lands it again from the tool result. That redundancy is
+/// deliberate: the plugin clamps a tool result to 4000 chars, so the round
+/// trip is best-effort by construction, while the route holds the change
+/// list in full. Both go through here, so both land the SAME chip — the id
+/// is the href, which is per DOCUMENT, and the second landing merges onto
+/// the first instead of adding a row.
+///
+/// `changes` is whatever the producer has (the route's `changes` array, or
+/// an `edit_document` result's) and is narrowed HERE, so neither producer
+/// can put a row on a chip that the other would have dropped.
+pub fn document_chip(id: &str, title: Option<&str>, changes: Option<&Value>) -> Value {
+    let mut chip = link_chip(
+        &PlatformLink {
+            href: format!("/artifacts?a={id}"),
+            entity: "document",
+            id: id.to_string(),
+            board_id: None,
+        },
+        title,
+    );
+    // WHAT THE EDIT DID, on the same chip rather than a second one. The way
+    // into the document is still the point; the changes are how a reader
+    // sees whether they need to go.
+    if let Some(rows) = changes
+        .and_then(Value::as_array)
+        .and_then(|rows| doc_change_rows(rows))
+        && let Some(obj) = chip.as_object_mut()
+    {
+        obj.insert("changes".into(), rows);
+    }
+    chip
+}
+
 fn approval_chip(action_id: &str, kind: &str, summary: &str) -> Value {
     json!({
         "id": format!("approval:{action_id}"),
@@ -309,13 +347,372 @@ fn first_title(v: &Value) -> Option<&str> {
         .or_else(|| str_field(v, "name"))
 }
 
+/// How many change rows a document chip carries. A surgical edit is a handful
+/// of anchors; a batch of fifty is a rewrite wearing an edit's clothes, and a
+/// chip is not where a person reads all of it.
+const MAX_DOC_CHANGES: usize = 20;
+
+/// How many pages one search lands on the row. Six is what a reader scans
+/// before the row stops being a trail and starts being the answer.
+const MAX_SOURCES: usize = 6;
+
+/// A source chip's snippet ceiling, with the clip mark inside it.
+const SNIPPET: usize = 200;
+
+/// A source chip's label ceiling. A page title is whatever the page says it
+/// is, and some pages say it in a paragraph.
+const LABEL: usize = 120;
+
+/// Longest URL worth putting on a chip.
+const MAX_URL: usize = 2048;
+
+fn num_field<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
+    v.get(key).filter(|n| n.is_number())
+}
+
+/// An edit's change rows, narrowed to the shape the chip states:
+/// `{label, added, removed}` (LINE deltas — `talaria_doc_edit::Change`),
+/// plus `preview: {old, new}` for a text replacement (a section edit has
+/// none).
+///
+/// A ROW THAT IS NOT THAT SHAPE IS DROPPED rather than passed through. The
+/// chip renders what it is handed, so a row missing its counts would render
+/// as a change of nothing — which reads as a fact about the document when it
+/// is a fact about the payload.
+fn doc_change_rows(rows: &[Value]) -> Option<Value> {
+    let mut out = Vec::new();
+    for row in rows {
+        if out.len() >= MAX_DOC_CHANGES {
+            break;
+        }
+        let Some(label) = str_field(row, "label") else {
+            continue;
+        };
+        let (Some(added), Some(removed)) = (num_field(row, "added"), num_field(row, "removed"))
+        else {
+            continue;
+        };
+        let mut entry = json!({ "label": label, "added": added, "removed": removed });
+        // `new` may be the empty string — that is a deletion — so the
+        // preview's sides are checked for their TYPE, not their length.
+        if let Some(p) = row.get("preview")
+            && let Some(old) = p.get("old").and_then(Value::as_str)
+            && let Some(fresh) = p.get("new").and_then(Value::as_str)
+            && let Some(obj) = entry.as_object_mut()
+        {
+            obj.insert("preview".into(), json!({ "old": old, "new": fresh }));
+        }
+        out.push(entry);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(Value::Array(out))
+    }
+}
+
+/// The tools that bring pages back from the open web. `web_search` is
+/// Talaria's own (dispatched in `talaria_capability_platform`); `search_web`
+/// is the other spelling the capability catalogue recognizes
+/// (`talaria_capability_reach`'s reach rules). Provider-prefixed names
+/// (`brave_web_search`, `exa_search`) are deliberately NOT guessed at here —
+/// a chip kind invented for a tool nobody calls is worse than none.
+fn is_web_search(tool: &str) -> bool {
+    matches!(tool, "web_search" | "search_web")
+}
+
+/// The authority of an absolute http(s) URL — the fallback label when a
+/// result carries no title, because a host says where a reader would be
+/// going and a bare URL makes them parse that themselves.
+///
+/// WHAT A READER RECOGNIZES, not what the URL spells: `www.` and a `:port`
+/// are machinery, and a chip that says `www.nytimes.com:443` reads as a
+/// different site from the `nytimes.com` the research report cites for the
+/// same page.
+fn host_of(url: &str) -> &str {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // `user:pass@host` → `host`: a chip label is not a place for credentials.
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    // An IPv6 literal's colons ARE the address — only the `]` ends it.
+    let host = if host.starts_with('[') {
+        host.find(']').map_or(host, |i| &host[..=i])
+    } else {
+        host.split(':').next().unwrap_or(host)
+    };
+    host.strip_prefix("www.").unwrap_or(host)
+}
+
+/// An absolute http(s) URL, or None. Everything else a result might carry —
+/// a relative path, a `data:` blob, a mail link — is not a page a reader can
+/// be sent to.
+fn web_url(s: &str) -> Option<&str> {
+    let t = s.trim();
+    if t.len() > MAX_URL || !(t.starts_with("http://") || t.starts_with("https://")) {
+        return None;
+    }
+    (!host_of(t).is_empty()).then_some(t)
+}
+
+/// A page's chip id: `source:` plus the first 16 hex of the URL's sha256.
+/// DERIVED FROM THE URL, never from its position in the list, so the same
+/// page found by two engines is one chip and a retried search re-lands the
+/// chips it already landed instead of stacking copies — the merge is
+/// first-wins on the id.
+fn source_id(url: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(url.as_bytes());
+    h.finalize()
+        .into_iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn source_chip(url: &str, title: Option<&str>, snippet: Option<&str>) -> Value {
+    let label = title
+        .map(|t| clip_chars(t.trim(), LABEL))
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| host_of(url).to_string());
+    let mut chip = json!({
+        "id": format!("source:{}", source_id(url)),
+        "kind": "source",
+        "label": label,
+        "href": url,
+    });
+    // ONE LINE. An engine's snippet arrives with the page's own line breaks
+    // and runs of spaces in it, and a chip has one line to say what the page
+    // is.
+    let detail = snippet
+        .map(|s| clip_chars(&s.split_whitespace().collect::<Vec<_>>().join(" "), SNIPPET))
+        .filter(|s| !s.is_empty());
+    if let Some(detail) = detail
+        && let Some(obj) = chip.as_object_mut()
+    {
+        obj.insert("detail".into(), json!(detail));
+    }
+    chip
+}
+
+/// Pages in a structured result, however the tool shaped them: any object
+/// carrying a `url`/`link`/`href` string is a hit, with `title`/`name` and
+/// `snippet`/`description`/`content` beside it when they are there.
+///
+/// KEYS RATHER THAN A SCHEMA, because the tool on the other end is usually an
+/// MCP server the platform does not own — exa, brave and tavily each spell
+/// this slightly differently, and a parser that only knew Talaria's own
+/// `SearchResult` would land no sources at all for any of them.
+fn walk_sources(v: &Value, seen: &mut Vec<String>, out: &mut Vec<Value>) {
+    if out.len() >= MAX_SOURCES {
+        return;
+    }
+    match v {
+        Value::Array(items) => {
+            for item in items {
+                walk_sources(item, seen, out);
+            }
+        }
+        Value::Object(map) => {
+            let hit = str_field(v, "url")
+                .or_else(|| str_field(v, "link"))
+                .or_else(|| str_field(v, "href"))
+                .and_then(web_url);
+            if let Some(url) = hit
+                && !seen.iter().any(|s| s == url)
+            {
+                seen.push(url.to_string());
+                out.push(source_chip(
+                    url,
+                    str_field(v, "title").or_else(|| str_field(v, "name")),
+                    str_field(v, "snippet")
+                        .or_else(|| str_field(v, "description"))
+                        .or_else(|| str_field(v, "content")),
+                ));
+            }
+            for child in map.values() {
+                walk_sources(child, seen, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The URLs in one line of prose, with the punctuation a sentence wraps them
+/// in trimmed back off.
+fn urls_in(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find("http") {
+        let at = from + rel;
+        let tail = &line[at..];
+        if tail.starts_with("http://") || tail.starts_with("https://") {
+            let end = tail
+                .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\'' | '`'))
+                .unwrap_or(tail.len());
+            let url = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}']);
+            if let Some(url) = web_url(url) {
+                out.push(url.to_string());
+            }
+            // `end` is at least the length of the scheme, so this always
+            // advances.
+            from = at + end;
+        } else {
+            from = at + "http".len();
+        }
+        if out.len() >= MAX_SOURCES {
+            break;
+        }
+    }
+    out
+}
+
+/// A list item's number or bullet, removed so a title line reads as a title.
+/// Digits are only an enumerator when a `.` or `)` follows them — "2026
+/// outlook" is a title that starts with a number.
+fn strip_enumerator(s: &str) -> &str {
+    let t = s.trim();
+    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+    if (1..=3).contains(&digits)
+        && let Some(rest) = t[digits..]
+            .strip_prefix(". ")
+            .or_else(|| t[digits..].strip_prefix(") "))
+    {
+        return rest.trim();
+    }
+    t.trim_start_matches(['-', '*', ' ']).trim()
+}
+
+/// Pages in a PROSE result. Talaria's own `web_search` answers the model in
+/// numbered title/url/snippet triples, and a Hermes tool reports whatever
+/// text it printed — so the common result never parses as JSON, and a parser
+/// that gave up there would leave the turn with no citations at all.
+///
+/// A URL ON ITS OWN LINE takes the line above as its title and the line below
+/// as its snippet, which is exactly that shape; a URL inside a sentence is
+/// carried alone, because the sentence around it is not a title.
+fn prose_sources(text: &str, seen: &mut Vec<String>, out: &mut Vec<Value>) {
+    let lines: Vec<&str> = text.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if out.len() >= MAX_SOURCES {
+            return;
+        }
+        let urls = urls_in(line);
+        let whole_line = urls.len() == 1 && line.trim() == urls[0];
+        for url in urls {
+            if out.len() >= MAX_SOURCES {
+                return;
+            }
+            if seen.iter().any(|s| s == &url) {
+                continue;
+            }
+            seen.push(url.clone());
+            let neighbour = |at: usize| -> Option<&str> {
+                let l = lines.get(at)?.trim();
+                (!l.is_empty() && urls_in(l).is_empty()).then_some(l)
+            };
+            let (title, snippet) = if whole_line {
+                (
+                    i.checked_sub(1).and_then(neighbour).map(strip_enumerator),
+                    neighbour(i + 1),
+                )
+            } else {
+                (None, None)
+            };
+            out.push(source_chip(&url, title, snippet));
+        }
+    }
+}
+
+/// The pages one web search found, structured form first and prose as the
+/// fallback. Bounded and deduped by URL: the row is a trail, not the result
+/// set.
+///
+/// STRUCTURED INCLUDES A TRUNCATED PAYLOAD. `/api/search` answers ten
+/// `{title, url, snippet, engine}` rows, pretty-printed by the MCP server —
+/// comfortably past the plugin's 4000-char clamp — so the common case is a
+/// payload that `serde_json` refuses. `parse_loose` has already rewound it to
+/// its last whole result, which is why prose is the LAST resort rather than
+/// the usual one: the prose walk can only label a chip by its host, and the
+/// snippet the engine wrote is the part a reader actually uses.
+fn sources_from(result_v: &Value, raw: &str) -> Vec<Value> {
+    let mut seen = Vec::new();
+    let mut out = Vec::new();
+    walk_sources(result_v, &mut seen, &mut out);
+    if out.is_empty() {
+        prose_sources(raw, &mut seen, &mut out);
+    }
+    out
+}
+
+/// A tool call's JSON, REPAIRED WHEN IT ARRIVES TRUNCATED.
+///
+/// Every tool result on this wire has already been cut to 4000 chars by the
+/// Hermes plugin (`_MAX_CHARS` in `talaria-events`), so a result that was
+/// JSON reaches this crate as a PREFIX of JSON — and `serde_json` refuses a
+/// prefix. Without the repair every structured reader below silently falls
+/// through to reading prose: a search's ten titled, snippeted results become
+/// ten bare hosts, and an edit's change list becomes nothing at all.
+///
+/// THE REPAIR IS A CUT, NEVER A GUESS. The text is rewound to the end of the
+/// last element that CLOSED while something was still open, and the open
+/// containers are closed in order. A half-written object is dropped whole;
+/// no field is invented, no string is completed.
+fn parse_loose(raw: &str) -> Value {
+    if let Ok(v) = serde_json::from_str::<Value>(raw) {
+        return v;
+    }
+    let bytes = raw.as_bytes();
+    let mut open: Vec<u8> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    // The byte index just past the last element that closed, with the
+    // delimiters that were still open at that moment.
+    let mut cut: Option<(usize, Vec<u8>)> = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => open.push(b),
+            b'}' | b']' => {
+                open.pop();
+                // Only an element INSIDE something still open is a cut: when
+                // the stack empties the value was whole, and a whole value
+                // that still failed to parse is not a truncation.
+                if !open.is_empty() {
+                    cut = Some((i + 1, open.clone()));
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some((at, still_open)) = cut else {
+        return Value::Null;
+    };
+    let mut text = raw[..at].to_string();
+    for b in still_open.iter().rev() {
+        text.push(if *b == b'{' { '}' } else { ']' });
+    }
+    serde_json::from_str(&text).unwrap_or(Value::Null)
+}
+
 /// Chips implied by one completed tool call. Link-producing tools always
 /// emit a link chip, even when the result text never pasted the URL.
 /// Protected tools emit an approval chip instead of pretending the action
 /// already happened.
 pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
-    let args_v = serde_json::from_str::<Value>(args).unwrap_or(Value::Null);
-    let result_v = serde_json::from_str::<Value>(result).unwrap_or(Value::Null);
+    let args_v = parse_loose(args);
+    let result_v = parse_loose(result);
     let mut out = Vec::new();
     walk_links(&result_v, None, &mut out);
     if let Some(link) = classify_href(result) {
@@ -335,15 +732,16 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
         // much of it the agent resent is not their problem.
         | "edit_document" => {
             if let Some(id) = id.filter(|s| is_id(s)) {
-                out.push(link_chip(
-                    &PlatformLink {
-                        href: format!("/artifacts?a={id}"),
-                        entity: "document",
-                        id: id.to_string(),
-                        board_id: None,
-                    },
-                    title,
-                ));
+                // Only `edit_document` reports changes — a full rewrite's
+                // "change" is the whole body, which is not a diff anyone
+                // wants on a chip. THE SAME CHIP THE EDIT ROUTE LANDS: this
+                // arm is the fallback for every other producer of an edit
+                // (a non-Talaria MCP client, a result replayed), and the
+                // shared id makes the two idempotent.
+                let changes = (tool == "edit_document")
+                    .then(|| result_v.get("changes"))
+                    .flatten();
+                out.push(document_chip(id, title, changes));
             }
         }
         "create_kb_doc" | "edit_kb_doc" => {
@@ -384,6 +782,13 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
                     title.or(str_field(&args_v, "question")),
                 ));
             }
+        }
+        // WHERE THE ANSWER CAME FROM. A search that only reaches the reader
+        // as prose leaves them with an assertion and no way to check it —
+        // the pages are the one part of a search a person can verify, so
+        // they land as chips they can click.
+        _ if is_web_search(tool) => {
+            out.extend(sources_from(&result_v, result));
         }
         _ if google_approval_for(tool).is_some() => {
             // A queued Google write answers `{ pending: { id }, message }`
@@ -464,6 +869,10 @@ fn dedupe(chips: Vec<Value>) -> Vec<Value> {
 /// latest, not the first. Keeping the first would pin the stream to a plan the
 /// agent had already moved past, which is worse than showing no plan at all,
 /// because it reads as current.
+///
+/// A KIND IS NOT THE WHOLE ANSWER: a document chip carrying `changes` is
+/// neither — `merge_doc_changes` below adds both edits' rows rather than
+/// choosing between them — so this predicate answers only "replace outright".
 fn snapshot_kind(kind: &str) -> bool {
     // `todo`: the plan, rewritten several times inside one turn.
     // `question`: keyed on the question's own words, so a collision means the
@@ -474,6 +883,41 @@ fn snapshot_kind(kind: &str) -> bool {
     // carries what came back. Keeping the start would leave a finished child
     // reading as still running, which is the one thing the chip exists to say.
     matches!(kind, "todo" | "question" | "subagent")
+}
+
+/// The change rows on a chip, or nothing.
+fn changes_on(chip: &Value) -> &[Value] {
+    chip.get("changes")
+        .and_then(Value::as_array)
+        .map_or(&[][..], |rows| rows.as_slice())
+}
+
+/// A document chip that says what an edit did — the OTHER case first-wins
+/// gets wrong, and it is not a snapshot either.
+///
+/// The chip's id is per DOCUMENT (`link:/artifacts?a={id}`), so two edits to
+/// one document in one turn — or a create and then an edit — are one id
+/// twice. First-wins drops the second edit's change list; last-wins hides
+/// the first. Both edits happened, so both stay: the rows are
+/// CONCATENATED, existing first, capped at the same ceiling one result's
+/// rows are.
+fn merge_doc_changes(existing: &Value, incoming: &Value) -> Value {
+    let mut chip = incoming.clone();
+    let mut rows: Vec<Value> = changes_on(existing).to_vec();
+    // A UNION, not a concatenation: the edit route lands this chip itself
+    // and the agent's tool-event round trip lands the SAME rows again a
+    // moment later, so a row already on the chip is the same edit reported
+    // twice, not a second edit.
+    for row in changes_on(incoming) {
+        if !rows.contains(row) {
+            rows.push(row.clone());
+        }
+    }
+    rows.truncate(MAX_DOC_CHANGES);
+    if let Some(obj) = chip.as_object_mut() {
+        obj.insert("changes".into(), Value::Array(rows));
+    }
+    chip
 }
 
 pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
@@ -491,12 +935,15 @@ pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
             .position(|c| c.get("id").and_then(Value::as_str) == Some(id));
         match at {
             // Already there: a snapshot is overwritten in PLACE (so it keeps
-            // its position in the row rather than jumping to the end), an
-            // event is left alone.
+            // its position in the row rather than jumping to the end), a
+            // document chip carrying changes takes the place over with BOTH
+            // edits' rows, and any other event is left alone.
             Some(i) => {
                 let kind = chip.get("kind").and_then(Value::as_str).unwrap_or("");
                 if snapshot_kind(kind) {
                     out[i] = chip.clone();
+                } else if !changes_on(chip).is_empty() {
+                    out[i] = merge_doc_changes(&out[i], chip);
                 }
             }
             None => out.push(chip.clone()),
@@ -600,12 +1047,16 @@ async fn speaking_target(pg: &PgPool, agent: &str) -> Result<Option<Landed>, sql
     }))
 }
 
-/// The chips of `chips` whose kind is a snapshot — the ones the write below
-/// is allowed to replace rather than skip.
+/// The chips the write below is allowed to REPLACE rather than skip: the
+/// snapshot kinds, plus a document chip carrying changes — the `merge_chips`
+/// rule, stated for the SQL that has to apply it on the row.
 fn snapshot_chips(chips: &[Value]) -> Vec<Value> {
     chips
         .iter()
-        .filter(|c| snapshot_kind(c.get("kind").and_then(Value::as_str).unwrap_or("")))
+        .filter(|c| {
+            snapshot_kind(c.get("kind").and_then(Value::as_str).unwrap_or(""))
+                || !changes_on(c).is_empty()
+        })
         .cloned()
         .collect()
 }
@@ -615,9 +1066,20 @@ fn snapshot_chips(chips: &[Value]) -> Vec<Value> {
 /// concurrently (a tool result and the plan it just rewrote), and the loser
 /// of that race would drop the winner's chip. `$2` is every incoming chip,
 /// appended when its id is new; `$3` is the snapshot subset, which REPLACES
-/// the chip already sitting at that id, in its place in the row. The
-/// ordinality keeps that position: a plan that jumped to the end of the row
-/// on every rewrite would drag the reader's eye with it.
+/// the chip already sitting at that id, in its place in the row; `$4` is the
+/// change-row ceiling. The ordinality keeps that position: a plan that jumped
+/// to the end of the row on every rewrite would drag the reader's eye with
+/// it.
+///
+/// THE `changes` ARM IS `merge_doc_changes`, in SQL. When the chip already on
+/// the row and the one replacing it both carry change rows — and the chip is
+/// not a snapshot kind, which replaces outright, as the Rust does — the
+/// replacement carries the UNION of both lists (`group by` the row's value,
+/// keeping its first position): the row already there first, then the new
+/// edit's rows that are not already on it, capped at `$4`. Replacing outright would hide the first of two edits to
+/// one document inside one turn, which is the bug this arm exists for; the
+/// two implementations are the contract, so a change to either is a change
+/// to both.
 ///
 /// A macro over the table name because the statement has to stay a LITERAL —
 /// sqlx refuses a built SQL string by type, and the two tables carrying chips
@@ -630,7 +1092,24 @@ macro_rules! merge_chips_sql {
             " set chips = ( \
                select coalesce(jsonb_agg(c order by ord), '[]'::jsonb) from ( \
                  select coalesce(( \
-                          select n.c from jsonb_array_elements($3::jsonb) n(c) \
+                          select case \
+                                   when jsonb_typeof(n.c->'changes') = 'array' \
+                                    and jsonb_typeof(e.c->'changes') = 'array' \
+                                    and (n.c->>'kind') not in ('todo', 'question', 'subagent') \
+                                   then jsonb_set(n.c, '{changes}', ( \
+                                          select coalesce(jsonb_agg(k.v order by k.ord), '[]'::jsonb) from ( \
+                                            select u.v, min(u.ord) as ord from ( \
+                                              select p.v, p.ord \
+                                                from jsonb_array_elements(e.c->'changes') with ordinality p(v, ord) \
+                                              union all \
+                                              select q.v, 1000000 + q.ord \
+                                                from jsonb_array_elements(n.c->'changes') with ordinality q(v, ord) \
+                                            ) u group by u.v order by ord limit $4::bigint \
+                                          ) k \
+                                        )) \
+                                   else n.c \
+                                 end \
+                            from jsonb_array_elements($3::jsonb) n(c) \
                            where n.c->>'id' = e.c->>'id' limit 1 \
                         ), e.c) as c, e.ord \
                    from jsonb_array_elements(chips) with ordinality e(c, ord) \
@@ -665,6 +1144,10 @@ async fn write_chips(pg: &PgPool, landed: &Landed, chips: &[Value]) -> Result<()
         .bind(&landed.message_id)
         .bind(&incoming)
         .bind(&snapshots)
+        // The one ceiling, bound rather than spelled into the statement: a
+        // literal in the SQL is a second number to keep in step with
+        // `MAX_DOC_CHANGES`.
+        .bind(MAX_DOC_CHANGES as i64)
         .execute(pg)
         .await?;
     Ok(())
@@ -1118,20 +1601,27 @@ mod tests {
     }
 
     #[test]
-    fn only_snapshot_chips_reach_the_replacing_leg_of_the_write() {
+    fn only_replaceable_chips_reach_the_replacing_leg_of_the_write() {
         // The subset bound as `$3`. Too wide and a re-landed approval gets
-        // overwritten; too narrow and a plan or a finished child freezes at
-        // the version that landed first.
+        // overwritten; too narrow and a plan, a finished child, or the
+        // second of two edits to one document freezes at the version that
+        // landed first.
         let chips = vec![
             json!({ "id": "subagent:c1", "kind": "subagent" }),
             json!({ "id": "approval:p1", "kind": "approval" }),
             json!({ "id": "todo", "kind": "todo" }),
             json!({ "id": "link:/boards/b-1", "kind": "link" }),
+            json!({ "id": "link:/artifacts?a=d1", "kind": "link",
+                    "changes": [{ "label": "x", "added": 1, "removed": 0 }] }),
         ];
         let subset = snapshot_chips(&chips);
-        assert_eq!(subset.len(), 2, "{subset:?}");
+        assert_eq!(subset.len(), 3, "{subset:?}");
         assert_eq!(subset[0]["id"], "subagent:c1");
         assert_eq!(subset[1]["id"], "todo");
+        assert_eq!(
+            subset[2]["id"], "link:/artifacts?a=d1",
+            "the document chip replaces — and the SQL concatenates its rows"
+        );
     }
 
     #[test]
@@ -1242,6 +1732,362 @@ mod tests {
         assert_eq!(
             chips[0]["href"],
             "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"
+        );
+    }
+
+    #[test]
+    fn an_edited_document_carries_what_the_edit_did() {
+        let chips = chips_from_tool(
+            "edit_document",
+            r#"{"documentId":"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"}"#,
+            r###"{"artifact":{"id":"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2","title":"Runbook"},
+                "changes":[
+                  {"label":"the old line","added":12,"removed":9,
+                   "preview":{"old":"the old line","new":"the new line"}},
+                  {"label":"## Rollback","added":40,"removed":31}
+                ]}"###,
+        );
+        let doc = chips
+            .iter()
+            .find(|c| c["entity"] == "document")
+            .expect("the way into the document is still the chip");
+        assert_eq!(
+            doc["href"], "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "id, kind and href unchanged: {doc}"
+        );
+        assert_eq!(doc["title"], "Runbook");
+        let changes = doc["changes"].as_array().expect("changes carried");
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0]["preview"]["old"], "the old line");
+        assert_eq!(changes[0]["preview"]["new"], "the new line");
+        assert_eq!(changes[0]["added"], 12);
+        // A section edit has no honest before/after, and the key is absent
+        // rather than null — one absence to test for, not two.
+        assert_eq!(changes[1]["label"], "## Rollback");
+        assert!(changes[1].get("preview").is_none(), "{}", changes[1]);
+    }
+
+    #[test]
+    fn a_malformed_change_row_is_dropped_and_a_full_rewrite_carries_none() {
+        let chips = chips_from_tool(
+            "edit_document",
+            "{}",
+            r#"{"artifact":{"id":"doc-1"},"changes":[
+                 {"label":"kept","added":1,"removed":0},
+                 {"added":1,"removed":0},
+                 {"label":"no counts"},
+                 {"label":"string counts","added":"1","removed":"0"},
+                 {"label":"bad preview","added":1,"removed":1,"preview":{"old":"x"}}
+               ]}"#,
+        );
+        let doc = chips
+            .iter()
+            .find(|c| c["entity"] == "document")
+            .expect("chip");
+        let changes = doc["changes"].as_array().expect("changes");
+        assert_eq!(changes.len(), 2, "only the well-formed rows: {doc}");
+        assert_eq!(changes[0]["label"], "kept");
+        assert_eq!(changes[1]["label"], "bad preview");
+        assert!(
+            changes[1].get("preview").is_none(),
+            "half a preview is none"
+        );
+
+        // update_document rewrites the body; there is no diff to show.
+        let rewrite = chips_from_tool(
+            "update_document",
+            "{}",
+            r#"{"artifact":{"id":"doc-1"},"changes":[{"label":"x","added":1,"removed":1}]}"#,
+        );
+        let plain = rewrite
+            .iter()
+            .find(|c| c["entity"] == "document")
+            .expect("chip");
+        assert!(plain.get("changes").is_none(), "{plain}");
+    }
+
+    /// THE ROUND TRIP IS LOSSY BY CONSTRUCTION — the plugin clamps a tool
+    /// result to 4000 chars — so an `edit_document` result that still
+    /// carried the document body arrived as a prefix of JSON and landed NO
+    /// chip at all: no id, no changes, nothing. Rewound to its last whole
+    /// element, the id is there and so are the change rows that survived.
+    ///
+    /// The edit route lands this chip itself now (`document_chip`), which is
+    /// what makes the full list reliable; this is the fallback still being
+    /// worth something.
+    #[test]
+    fn a_truncated_edit_result_still_lands_the_document_chip() {
+        let id = "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2";
+        let rows: Vec<String> = (0..10)
+            .map(|i| {
+                format!(
+                    r#"{{"label":"anchor {i}","added":2,"removed":1,"preview":{{"old":"was {i}","new":"now {i}"}}}}"#
+                )
+            })
+            .collect();
+        // The shape before the route went slim — and the shape any other
+        // producer of this result may still send.
+        let full = format!(
+            r#"{{"artifact":{{"id":"{id}","title":"Runbook","body":"{}"}},"changes":[{}]}}"#,
+            "x".repeat(3_500),
+            rows.join(",")
+        );
+        let clamped: String = full.chars().take(4000).collect();
+        assert!(
+            serde_json::from_str::<Value>(&clamped).is_err(),
+            "truncated"
+        );
+
+        let chips = chips_from_tool(
+            "edit_document",
+            &format!(r#"{{"documentId":"{id}"}}"#),
+            &clamped,
+        );
+        let doc = chips
+            .iter()
+            .find(|c| c["entity"] == "document")
+            .expect("the chip the reader clicks, from a result cut mid-flight");
+        assert_eq!(doc["href"], format!("/artifacts?a={id}"));
+        assert_eq!(doc["title"], "Runbook");
+        let changes = doc["changes"].as_array().expect("the rows that survived");
+        assert!(
+            !changes.is_empty() && changes.len() < rows.len(),
+            "some of the list, not all of it and not none: {}",
+            changes.len()
+        );
+        assert_eq!(changes[0]["label"], "anchor 0");
+        assert!(
+            changes
+                .iter()
+                .all(|c| c["added"].is_number() && c["removed"].is_number()),
+            "and no half-written row rode along: {doc}"
+        );
+    }
+
+    /// TWO EDITS IN ONE TURN. The chip's id is per document, so the second
+    /// edit's chip lands on the first one's id — and first-wins would drop
+    /// what the second edit did while last-wins would hide the first.
+    #[test]
+    fn two_edits_to_one_document_keep_both_change_sets() {
+        let chip = |label: &str| {
+            json!({
+                "id": "link:/artifacts?a=doc-1",
+                "kind": "link",
+                "href": "/artifacts?a=doc-1",
+                "entity": "document",
+                "title": "Runbook",
+                "changes": [{ "label": label, "added": 1, "removed": 1 }],
+            })
+        };
+        let merged = merge_chips(
+            &Value::Array(vec![chip("first edit")]),
+            &[chip("second edit")],
+        );
+        let arr = merged.as_array().expect("array");
+        assert_eq!(arr.len(), 1, "one document, one chip: {merged}");
+        let changes = arr[0]["changes"].as_array().expect("changes");
+        assert_eq!(changes.len(), 2, "{merged}");
+        assert_eq!(
+            changes[0]["label"], "first edit",
+            "in the order they happened"
+        );
+        assert_eq!(changes[1]["label"], "second edit");
+
+        // And the ceiling holds: a turn of edits cannot grow the row without
+        // bound.
+        let many: Vec<Value> = (0..MAX_DOC_CHANGES + 5)
+            .map(|i| json!({ "label": format!("row {i}"), "added": 1, "removed": 0 }))
+            .collect();
+        let mut big = chip("later");
+        big["changes"] = Value::Array(many);
+        let capped = merge_chips(&merged, &[big]);
+        let rows = capped[0]["changes"].as_array().expect("changes");
+        assert_eq!(rows.len(), MAX_DOC_CHANGES, "{capped}");
+        assert_eq!(rows[0]["label"], "first edit", "the oldest rows are kept");
+
+        // A link chip with NO changes is still an event: first-wins, so a
+        // re-landed link cannot blank the list.
+        let plain = json!({ "id": "link:/artifacts?a=doc-1", "kind": "link",
+                            "href": "/artifacts?a=doc-1", "entity": "document" });
+        let after = merge_chips(&merged, &[plain]);
+        assert_eq!(
+            after[0]["changes"].as_array().expect("still there").len(),
+            2,
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn the_same_edit_reported_twice_is_one_set_of_rows() {
+        // The edit route lands the chip, then the agent's tool-event round
+        // trip lands the SAME chip: a union, so the card shows each change
+        // once; a genuinely new row still appends.
+        let first = document_chip(
+            "d1",
+            Some("Doc"),
+            Some(&json!([{"label":"a","added":1,"removed":1}])),
+        );
+        let merged = merge_chips(
+            &Value::Array(vec![first.clone()]),
+            std::slice::from_ref(&first),
+        );
+        assert_eq!(changes_on(&merged[0]).len(), 1, "{merged}");
+        let second = document_chip(
+            "d1",
+            Some("Doc"),
+            Some(&json!([
+                {"label":"a","added":1,"removed":1},
+                {"label":"b","added":2,"removed":0},
+            ])),
+        );
+        let merged = merge_chips(&merged, &[second]);
+        assert_eq!(changes_on(&merged[0]).len(), 2, "{merged}");
+        assert_eq!(changes_on(&merged[0])[1]["label"], "b");
+    }
+
+    #[test]
+    fn a_web_search_lands_one_source_chip_per_page() {
+        let chips = chips_from_tool(
+            "web_search",
+            r#"{"query":"talaria"}"#,
+            r#"[{"title":"A page","url":"https://example.com/a","snippet":"what it says"},
+                {"title":"B page","url":"https://example.com/b"},
+                {"title":"A again","url":"https://example.com/a","snippet":"a second engine"}]"#,
+        );
+        assert_eq!(chips.len(), 2, "deduped by url: {chips:?}");
+        assert_eq!(chips[0]["kind"], "source");
+        // The id is the first 16 hex of the url's sha256 — the same handle
+        // every time the same page comes back.
+        assert_eq!(chips[0]["id"], "source:2dce0a4c50441bfc");
+        assert_eq!(chips[0]["label"], "A page");
+        assert_eq!(chips[0]["href"], "https://example.com/a");
+        assert_eq!(chips[0]["detail"], "what it says");
+        assert_eq!(chips[1]["id"], "source:d7fe568b31ae0fb9");
+        assert!(chips[1].get("detail").is_none(), "no snippet, no detail");
+    }
+
+    #[test]
+    fn a_search_lands_at_most_six_sources() {
+        let rows: Vec<String> = (0..20)
+            .map(|i| format!(r#"{{"title":"p{i}","url":"https://example.com/{i}"}}"#))
+            .collect();
+        let result = format!(r#"{{"results":[{}]}}"#, rows.join(","));
+        let chips = chips_from_tool("web_search", "{}", &result);
+        assert_eq!(chips.len(), 6, "{chips:?}");
+        assert!(chips.iter().all(|c| c["kind"] == "source"));
+    }
+
+    #[test]
+    fn a_prose_search_result_still_lands_its_pages() {
+        // Talaria's own web_search answers the model in numbered triples,
+        // which never parse as JSON.
+        let text = "1. The gate\n   https://ex.org/page?q=1\n   How the gate works\n\n\
+                    2. Elsewhere\n   https://example.com/b\n   Another one";
+        let chips = chips_from_tool("search_web", "{}", text);
+        assert_eq!(chips.len(), 2, "{chips:?}");
+        assert_eq!(chips[0]["id"], "source:85c990dc49e499db");
+        assert_eq!(chips[0]["label"], "The gate", "the line above is the title");
+        assert_eq!(chips[0]["detail"], "How the gate works");
+        assert_eq!(chips[1]["label"], "Elsewhere");
+    }
+
+    #[test]
+    fn a_url_in_a_sentence_falls_back_to_its_host() {
+        let chips = chips_from_tool("web_search", "{}", "I found it at https://ex.org/page?q=1.");
+        assert_eq!(chips.len(), 1, "{chips:?}");
+        assert_eq!(chips[0]["label"], "ex.org");
+        assert_eq!(
+            chips[0]["href"], "https://ex.org/page?q=1",
+            "the sentence's full stop is not part of the url"
+        );
+    }
+
+    /// A titleless source reads as the site a person recognizes — the
+    /// spelling the research report's citations already use. `www.` and a
+    /// port are machinery, and a label that carries them reads as a
+    /// different site.
+    #[test]
+    fn a_titleless_source_is_labelled_by_the_site_not_the_authority() {
+        let labelled = |url: &str| {
+            let chips = chips_from_tool("web_search", "{}", &format!("see {url} for it"));
+            assert_eq!(chips.len(), 1, "{url}: {chips:?}");
+            chips[0]["label"].as_str().expect("a label").to_string()
+        };
+        assert_eq!(
+            labelled("https://www.nytimes.com/2026/01/01/a.html"),
+            "nytimes.com"
+        );
+        assert_eq!(labelled("http://localhost:3000/doc"), "localhost");
+        assert_eq!(labelled("https://www.example.com:8443/x"), "example.com");
+        // Not a prefix match: `wwwx.` is somebody's hostname.
+        assert_eq!(labelled("https://wwwx.example.org/x"), "wwwx.example.org");
+        // The href is untouched — the label is for reading, the link is for
+        // going.
+        let chips = chips_from_tool("web_search", "{}", "see https://www.nytimes.com:443/a now");
+        assert_eq!(chips[0]["href"], "https://www.nytimes.com:443/a");
+    }
+
+    /// THE CLAMP IS THE NORMAL CASE for a search. `/api/search` answers ten
+    /// rows and the MCP server pretty-prints them, so the payload that
+    /// reaches the tool-events door is a prefix of JSON. Read as prose it
+    /// yields six chips labelled by host with no snippet; repaired, it
+    /// yields the engine's own titles and snippets.
+    #[test]
+    fn a_truncated_search_payload_keeps_its_titles_and_snippets() {
+        let results: Vec<Value> = (0..10)
+            .map(|i| {
+                json!({
+                    "title": format!("Result {i} — what the page calls itself"),
+                    "url": format!("https://example.com/page/{i}"),
+                    "snippet": format!("{} (result {i})", "a sentence of the page's own words, as the engine returned them, ".repeat(4)),
+                    "engine": "searxng",
+                })
+            })
+            .collect();
+        let body = serde_json::to_string_pretty(&json!({
+            "query": "talaria",
+            "results": results,
+            "via": Value::Null,
+        }))
+        .expect("plain data");
+        assert!(
+            body.chars().count() > 4000,
+            "the real payload is past the plugin's clamp: {} chars",
+            body.chars().count()
+        );
+        let clamped: String = body.chars().take(4000).collect();
+        assert!(
+            serde_json::from_str::<Value>(&clamped).is_err(),
+            "and the clamp leaves it unparseable"
+        );
+
+        let chips = chips_from_tool("web_search", r#"{"query":"talaria"}"#, &clamped);
+        assert_eq!(chips.len(), MAX_SOURCES, "{chips:?}");
+        assert!(chips.iter().all(|c| c["kind"] == "source"));
+        assert_eq!(chips[0]["label"], "Result 0 — what the page calls itself");
+        assert_eq!(chips[0]["href"], "https://example.com/page/0");
+        assert!(
+            chips[0]["detail"]
+                .as_str()
+                .expect("the engine's snippet")
+                .starts_with("a sentence of the page's own words"),
+            "{}",
+            chips[0]
+        );
+        assert!(
+            chips.iter().all(|c| c["label"] != "example.com"),
+            "no chip fell through to the prose walk: {chips:?}"
+        );
+    }
+
+    #[test]
+    fn a_search_that_found_nothing_lands_nothing() {
+        assert!(chips_from_tool("web_search", "{}", "No results for \"talaria\".").is_empty());
+        assert!(chips_from_tool("web_search", "{}", "[]").is_empty());
+        assert!(
+            chips_from_tool("web_search", "{}", r#"[{"title":"x","url":"/local/path"}]"#)
+                .is_empty(),
+            "a relative path is not a page to send a reader to"
         );
     }
 

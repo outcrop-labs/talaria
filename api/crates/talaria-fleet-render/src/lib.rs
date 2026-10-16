@@ -1242,7 +1242,6 @@ pub async fn render_fleet(
                 talaria_fleet_layout::agent_key_var(&def.slug)
             )),
         );
-        fleet_browser_path(&mut env);
         // The app's origin as the fleet reaches it — the git credential
         // helper's URL, and anything else container-side that needs the app
         // rather than the gateway path. Derived from the app's own view of
@@ -1749,21 +1748,8 @@ fn fleet_disabled_toolsets(routed: &mut Map<String, Value>, def_disabled: &[Stri
     routed.insert("agent".into(), Value::Object(agent));
 }
 
-/// Point Playwright at the department's state volume. The image's own
-/// `PLAYWRIGHT_BROWSERS_PATH` lives in the container layer, so the Chromium a
-/// browsing agent installs would vanish on the next roll and every browser
-/// turn after it would fail on a missing executable. `or_insert` and not an
-/// overwrite: a def whose chassis extras name their own path keeps it — those
-/// extras are already in `env` by the time this runs. (The Developer Agent
-/// overlay below DOES overwrite it, with its own harness dir on the same
-/// volume — one place for everything that agent's harness state persists in.)
-fn fleet_browser_path(env: &mut Map<String, Value>) {
-    env.entry("PLAYWRIGHT_BROWSERS_PATH".to_string())
-        .or_insert_with(|| json!(talaria_fleet_docker::AGENT_BROWSERS_PATH));
-}
-
 /// Whether this agent still holds Hermes' browser toolset — the switch behind
-/// the Chromium install the post-health sites run (talaria-fleet-docker's
+/// the browser setup the post-health sites run (talaria-fleet-docker's
 /// `install_browser`). Absence from the disabled list is the "yes": every
 /// built-in toolset is on until something names it.
 pub fn browser_enabled(def: &RenderDef) -> bool {
@@ -2462,29 +2448,6 @@ service:
         assert!(browser_enabled(&def(&[])), "every toolset is on by default");
         assert!(browser_enabled(&def(&["memory", "web"])));
         assert!(!browser_enabled(&def(&["browser"])));
-    }
-
-    #[test]
-    fn the_browser_path_lands_unless_a_def_named_its_own() {
-        // The uniform case: Playwright is pointed at the state volume, which
-        // is what survives the roll that installed Chromium.
-        let mut env = Map::new();
-        fleet_browser_path(&mut env);
-        assert_eq!(
-            env.get("PLAYWRIGHT_BROWSERS_PATH"),
-            Some(&json!("/opt/data/.playwright"))
-        );
-
-        // A def's chassis extras are already in `env` when this runs, so
-        // theirs is the value that stays.
-        let mut own = Map::new();
-        own.insert(
-            "PLAYWRIGHT_BROWSERS_PATH".into(),
-            json!("/opt/data/workbench/harness/playwright"),
-        );
-        let before = own.clone();
-        fleet_browser_path(&mut own);
-        assert_eq!(own, before, "a def's own path wins");
     }
 
     #[test]

@@ -81,6 +81,31 @@ describe('chipsBesideProse', () => {
   it('drops a link chip the prose already paints and keeps the approval', () => {
     expect(chipsBesideProse([link, approval], 'open /boards/b-1')).toEqual([approval])
   })
+
+  it('keeps an edited-document chip even when the prose paints its URL', () => {
+    // The card says what the edit moved; the prose's pill says only that the
+    // document exists. Dropping it would take the change list with it.
+    const edited: ChatChip = {
+      id: 'd',
+      kind: 'link',
+      href: '/artifacts?a=file-3',
+      entity: 'document',
+      title: 'Rollout',
+      changes: [{ label: 'Appended a section', added: 6, removed: 0 }],
+    }
+    expect(chipsBesideProse([edited], 'updated /artifacts?a=file-3')).toEqual([edited])
+  })
+
+  it('keeps a source chip, which is off-platform and never painted by the markdown', () => {
+    const source: ChatChip = {
+      id: 'source:9f2c1a',
+      kind: 'source',
+      label: 'Retry budgets',
+      href: 'https://example.com/retry',
+      detail: 'A budget caps the retries a request may spend.',
+    }
+    expect(chipsBesideProse([source], 'see https://example.com/retry')).toEqual([source])
+  })
 })
 
 describe('unlock and invoke', () => {

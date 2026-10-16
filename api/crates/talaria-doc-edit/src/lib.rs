@@ -51,8 +51,44 @@ pub enum Edit {
 pub struct Change {
     /// The section's heading, or a short quote of what was replaced.
     pub label: String,
+    /// LINES, in and out — not bytes.
+    ///
+    /// Every reader of these two numbers reads them as lines: the chat's
+    /// document card renders `+N −M` beside a diff, and `agent-refine`
+    /// reports the same fact in the same words. They were byte lengths once,
+    /// which made a one-word fix read as "+12 −9" — a plausible number, and
+    /// the worst kind of wrong, because nothing about it looks broken.
+    ///
+    /// A non-empty string is at least one line; an empty one is none, so a
+    /// deletion is `+0` and a section emptied is `+0` too.
     pub added: usize,
     pub removed: usize,
+    /// The before and after of a `Replace`, clipped to one line — what a
+    /// chat row can show so a person sees the change without opening the
+    /// document and diffing two versions.
+    ///
+    /// NONE FOR A SECTION, deliberately. A section's "before" is its whole
+    /// body and its "after" is the whole replacement; a 160-char window on
+    /// either end of that is a tease rather than a preview, and the heading
+    /// the caller addressed is already the honest summary of what moved.
+    pub preview: Option<ChangePreview>,
+}
+
+/// A clipped before/after of one `Replace` — the text as the edit spelled
+/// it, cut on a char boundary with the clip mark standing in for the rest. A
+/// glance, not a copy of the document: this rides in a tool result and onto
+/// a chip.
+///
+/// ONE LINE EACH, with `⏎` where the newlines were — the same mapping
+/// `quote` makes for a label, and for the same reason: the row this renders
+/// into has one line, so a multi-line preview either reflows into prose
+/// nobody can read as a diff or pushes the rest of the row off the screen.
+/// The flattening happens BEFORE the clip, so 160 chars of preview are 160
+/// chars a reader can see.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangePreview {
+    pub old: String,
+    pub new: String,
 }
 
 /// A successful batch. The body is the whole new document; nothing is written
@@ -100,19 +136,32 @@ pub enum EditError {
 /// the text, short enough that a tool result is not a copy of the document.
 const QUOTE: usize = 60;
 
-/// A clipped, single-line rendering of a needle for error text and labels.
-/// Newlines become `⏎` because a multi-line error message in a tool result
-/// reads as several errors.
-fn quote(s: &str) -> String {
-    let flat: String = s
-        .chars()
+/// TEXT AS ONE LINE. Newlines become `⏎` because a multi-line error message
+/// in a tool result reads as several errors, and a multi-line preview in a
+/// chat row reads as several changes. Shared by `quote` and by the change
+/// preview so both spell a line break the same way.
+fn one_line(s: &str) -> String {
+    s.chars()
         .map(|c| match c {
             '\n' => '⏎',
             '\r' => ' ',
             '\t' => ' ',
             c => c,
         })
-        .collect();
+        .collect()
+}
+
+/// How many lines a piece of text is — the standard count, where a trailing
+/// break terminates the last line rather than opening another: "" → 0,
+/// "drop\n" → 1, "a\nb" → 2, "a\nb\n" → 2. A needle that deletes one line
+/// has to carry that line's break, and that break is not a second line.
+fn lines_of(s: &str) -> usize {
+    s.lines().count()
+}
+
+/// A clipped, single-line rendering of a needle for error text and labels.
+fn quote(s: &str) -> String {
+    let flat: String = one_line(s);
     // Char-wise, not byte-wise: the quote is for a person and a model to read,
     // and slicing a multi-byte char in half panics.
     if flat.chars().count() <= QUOTE {
@@ -121,6 +170,13 @@ fn quote(s: &str) -> String {
     let head: String = flat.chars().take(QUOTE).collect();
     format!("{head}…")
 }
+
+/// How much of each side of a change preview to carry. The clip mark is
+/// INSIDE the ceiling (159 chars plus it — `talaria_body::clip_chars`)
+/// because this number is a contract the route, the chip and the UI all
+/// state as "at most 160 chars", and a limit that is sometimes 161 is not a
+/// limit.
+const PREVIEW: usize = 160;
 
 impl std::fmt::Display for EditError {
     /// WRITTEN FOR THE MODEL THAT HAS TO RECOVER. Each one names the rule it
@@ -243,8 +299,15 @@ fn replace_once(
             body.replace_range(at..at + form.len(), new);
             return Ok(Change {
                 label: quote(old),
-                added: new.len(),
-                removed: form.len(),
+                added: lines_of(new),
+                removed: lines_of(&form),
+                // The needle as the caller wrote it, not the CRLF-expanded
+                // form that matched: the `\r` is invisible to the reader and
+                // would only eat into the clip.
+                preview: Some(ChangePreview {
+                    old: talaria_body::clip_chars(&one_line(old), PREVIEW),
+                    new: talaria_body::clip_chars(&one_line(new), PREVIEW),
+                }),
             });
         }
         if count > 1 {
@@ -365,7 +428,12 @@ fn replace_section(
     // renaming it here would be an edit they did not ask for — and a model
     // that wants a new name has oldString/newString for it.
     let after_heading = hit.line.end;
-    let removed = end - after_heading;
+    // THE SECTION'S OWN LINES, not the range's: the range starts at the
+    // newline after the heading and runs to the start of the next heading
+    // line, so it carries the blank lines that separate the section from
+    // both of them. Counting those would report every section edit as two
+    // lines more than it is, on both sides of the ledger.
+    let removed = lines_of(body[after_heading..end].trim_matches(['\n', '\r']));
 
     // A MODEL WILL OFTEN RE-EMIT THE HEADING, because it is writing the
     // section and the heading is the first line of a section. Taken
@@ -386,11 +454,15 @@ fn replace_section(
     } else {
         format!("\n\n{body_text}{tail}")
     };
+    // The lines the section HAS now, counted before the framing newlines go
+    // back on, for the same reason `removed` is.
+    let added = lines_of(body_text);
     body.replace_range(after_heading..end, &replacement);
     Ok(Change {
         label: format!("{} {}", "#".repeat(hit.level), hit.text),
-        added: replacement.len(),
+        added,
         removed,
+        preview: None,
     })
 }
 
@@ -683,11 +755,124 @@ mod tests {
         assert!(msg.contains('…'), "{msg}");
     }
 
+    /// THE NUMBERS ARE LINES. They were byte lengths, which every reader
+    /// downstream rendered as `+12 −9` for a one-word fix: a figure that
+    /// looks like a measurement and is not one.
     #[test]
-    fn changes_report_what_moved() {
+    fn changes_report_what_moved_in_lines() {
         let out = apply("one two\n", &[replace("one", "three")]).expect("match");
-        assert_eq!(out.changes[0].removed, 3);
-        assert_eq!(out.changes[0].added, 5);
+        assert_eq!(out.changes[0].removed, 1, "one line out");
+        assert_eq!(out.changes[0].added, 1, "one line in — not five bytes");
         assert_eq!(out.changes[0].label, "one");
+
+        // A multi-line replacement counts its lines on both sides, and the
+        // last line counts even with no break after it.
+        let multi = apply("a\nb\nc\n", &[replace("a\nb", "x\ny\nz")]).expect("match");
+        assert_eq!(multi.changes[0].removed, 2);
+        assert_eq!(multi.changes[0].added, 3);
+
+        // A deletion adds nothing.
+        let gone = apply("keep\ndrop\n", &[replace("drop\n", "")]).expect("match");
+        assert_eq!(
+            gone.changes[0].removed, 1,
+            "the needle's own break is the line's terminator, not a second line"
+        );
+        assert_eq!(gone.changes[0].added, 0);
+
+        // CRLF: the document's spelling does not change the count.
+        let crlf = apply("a\r\nb\r\n", &[replace("a\nb", "one")]).expect("match");
+        assert_eq!(crlf.changes[0].removed, 2);
+        assert_eq!(crlf.changes[0].added, 1);
+
+        // A SECTION counts its body's lines, not the blank lines that stand
+        // it off from its heading and the next one.
+        let sec = apply(
+            "## Rollback\n\none\ntwo\n\n## Next\n\ntail\n",
+            &[section("Rollback", "only this")],
+        )
+        .expect("match");
+        assert_eq!(sec.changes[0].removed, 2, "{:?}", sec.changes[0]);
+        assert_eq!(sec.changes[0].added, 1);
+        let emptied =
+            apply("## Rollback\n\none\ntwo\n", &[section("Rollback", "")]).expect("match");
+        assert_eq!(emptied.changes[0].added, 0, "an emptied section adds none");
+    }
+
+    #[test]
+    fn a_replace_carries_a_clipped_preview_and_a_section_does_not() {
+        // The before/after is what a chat row shows instead of making a
+        // person diff two versions — and it is CLIPPED, because the preview
+        // travels in a tool result and onto a chip, where a pasted paragraph
+        // is the whole document again.
+        let long_old = "x".repeat(400);
+        let long_new = "y".repeat(400);
+        let body = format!("head\n{long_old}\ntail\n");
+        let out = apply(
+            &body,
+            &[Edit::Replace {
+                old: long_old,
+                new: long_new,
+            }],
+        )
+        .expect("match");
+        let preview = out.changes[0]
+            .preview
+            .as_ref()
+            .expect("a replace carries its before and after");
+        assert_eq!(preview.old.chars().count(), PREVIEW, "clipped, not cut off");
+        assert!(preview.old.ends_with('\u{2026}'), "and the cut is marked");
+        assert_eq!(preview.new.chars().count(), PREVIEW);
+        assert!(preview.new.starts_with("yyy"));
+
+        // Short enough to carry whole: no mark, nothing lost.
+        let short = apply("one two\n", &[replace("one", "three")]).expect("match");
+        let p = short.changes[0].preview.as_ref().expect("still a preview");
+        assert_eq!(p.old, "one");
+        assert_eq!(p.new, "three");
+
+        // ONE LINE, flattened before the clip — a preview renders into a
+        // single row, and 160 chars of it have to be 160 chars a reader can
+        // see rather than 160 chars of which four are newlines.
+        let flat = apply("a\nb\nc\n", &[replace("a\nb", "x\ny")]).expect("match");
+        let p = flat.changes[0].preview.as_ref().expect("preview");
+        assert_eq!(p.old, "a⏎b");
+        assert_eq!(p.new, "x⏎y");
+        assert!(!p.old.contains('\n') && !p.new.contains('\n'));
+        // And the flattening comes FIRST: a needle of nothing but breaks
+        // still fills the window.
+        let breaks = "\n".repeat(400);
+        let body = format!("head{breaks}tail");
+        let long = apply(&body, &[replace(&breaks, "one")]).expect("match");
+        let p = long.changes[0].preview.as_ref().expect("preview");
+        assert_eq!(p.old.chars().count(), PREVIEW);
+        assert!(p.old.starts_with("⏎⏎⏎"), "{}", p.old);
+
+        // A section's label IS its summary; a 160-char window on a whole
+        // section body would read as the change when it is a fragment of it.
+        let sec = apply(
+            "## Rollback\n\nold body\n",
+            &[section("Rollback", "new body")],
+        )
+        .expect("match");
+        assert_eq!(sec.changes[0].preview, None);
+        assert_eq!(sec.changes[0].label, "## Rollback");
+    }
+
+    #[test]
+    fn a_multibyte_preview_is_clipped_on_a_char_boundary() {
+        // Byte slicing here would panic rather than clip.
+        let long_old = "é".repeat(400);
+        let body = format!("head\n{long_old}\n");
+        let out = apply(
+            &body,
+            &[Edit::Replace {
+                old: long_old,
+                new: "fin".into(),
+            }],
+        )
+        .expect("match");
+        let preview = out.changes[0].preview.as_ref().expect("preview");
+        assert_eq!(preview.old.chars().count(), PREVIEW);
+        assert_eq!(preview.new, "fin");
     }
 }

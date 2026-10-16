@@ -1305,6 +1305,150 @@ mod tests {
         }
     }
 
+    /// `messages.tools` — the shape this crate persists and re-serves. The
+    /// drain loop is a stream plus a database, but the FOLD inside it is the
+    /// two lines below, so the vocabulary that lands in the column is testable
+    /// without either: parse the frames, merge them, read the words.
+    mod persisted_tools {
+        use super::*;
+
+        /// Exactly what the drain loop does with a tool event, at lines 820
+        /// and 959: parse, then merge by id.
+        fn fold(body: &str) -> Vec<ToolCall> {
+            let mut parser = AgentStreamParser::new();
+            let mut tools: Vec<ToolCall> = Vec::new();
+            let mut events = parser.feed(body.as_bytes());
+            events.extend(parser.finish());
+            for ev in events {
+                if let AgentStreamEvent::Tool {
+                    id,
+                    name,
+                    label,
+                    status,
+                } = ev
+                {
+                    tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+                }
+            }
+            tools
+        }
+
+        /// A failed call persists as `error`, carrying Hermes' reason as its
+        /// label — the row used to say "completed", which read as a tool that
+        /// worked and left the failure invisible in history.
+        #[test]
+        fn a_failed_tool_persists_as_error_with_its_reason() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"🧠 remember"}"#,
+                "\n\n",
+                "event: tool.failed\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"memory: write refused"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "error");
+            assert_eq!(tools[0].label, "memory: write refused");
+            assert_eq!(
+                serde_json::to_value(&tools).unwrap(),
+                json!([{
+                    "id": "m1:memory#1",
+                    "name": "memory",
+                    "label": "memory: write refused",
+                    "status": "error"
+                }])
+            );
+        }
+
+        /// `error` is terminal in the column too: a straggler progress frame
+        /// addressed to the same call — Hermes keeps the ordinal open after a
+        /// failure — must not walk the row back to "running" and leave it
+        /// spinning in history forever.
+        #[test]
+        fn a_straggler_frame_never_reopens_a_failed_row() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"🖥 ls"}"#,
+                "\n\n",
+                "event: tool.failed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"exit 1"}"#,
+                "\n\n",
+                "event: tool.progress\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","delta":"still talking"}"#,
+                "\n\n",
+                "event: tool.completed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":""}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "error");
+        }
+
+        /// AND THE SAME FOR A COMPLETION. `tool.progress` addresses the call
+        /// still open — the ordinal does not advance when a call ends — so a
+        /// straggler frame after `tool.completed` would persist the row as
+        /// "running" and leave history showing a tool that never finished.
+        /// One terminality rule for both endings, shared with the client's
+        /// fold (`ui/src/lib/sse-parse.ts`).
+        #[test]
+        fn a_straggler_frame_never_reopens_a_completed_row() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"🖥 ls"}"#,
+                "\n\n",
+                "event: tool.completed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":""}"#,
+                "\n\n",
+                "event: tool.progress\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","delta":"still talking"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "completed");
+            assert_eq!(
+                tools[0].label, "still talking",
+                "the chatter still lands; only the verdict is fixed"
+            );
+        }
+
+        /// The completions arm's own telemetry, same verdict: a failure rides
+        /// `hermes.tool.progress` with a status word, and it lands as `error`.
+        #[test]
+        fn the_completions_arm_persists_error_too() {
+            let tools = fold(concat!(
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool":"search","toolCallId":"c1","emoji":"🔎","status":"running"}"#,
+                "\n\n",
+                "event: hermes.tool.progress\n",
+                r#"data: {"tool":"search","toolCallId":"c1","label":"quota exhausted","status":"error"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].status, "error");
+            assert_eq!(tools[0].label, "quota exhausted");
+        }
+
+        /// The three words, and only the three: a completed call still
+        /// completes, and a call still open still says running.
+        #[test]
+        fn the_other_two_words_are_unchanged() {
+            let tools = fold(concat!(
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":"🖥 ls"}"#,
+                "\n\n",
+                "event: tool.completed\n",
+                r#"data: {"message_id":"m1","tool_name":"terminal","preview":""}"#,
+                "\n\n",
+                "event: tool.started\n",
+                r#"data: {"message_id":"m1","tool_name":"memory","preview":"🧠 remember"}"#,
+                "\n\n",
+            ));
+            assert_eq!(tools.len(), 2, "{tools:?}");
+            assert_eq!(tools[0].status, "completed");
+            assert_eq!(tools[1].status, "running");
+        }
+    }
+
     /// The silence ceiling parses like a knob: unset defaults to ten minutes,
     /// garbage falls back to the same, and the floor holds at a minute.
     #[test]

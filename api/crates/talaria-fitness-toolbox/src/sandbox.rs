@@ -953,12 +953,24 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             }
             w.documents[idx].markdown = applied.body;
             w.documents[idx].versions += 1;
+            // The shape the real route answers with — changes FIRST, each
+            // row with its one-line preview when the edit has one — so a
+            // fixture that reads this result reads what the model gets in
+            // production (artifacts_id_edit.rs's `changes_json`).
             Ok(json!({
+                "changes": applied.changes.iter().take(20)
+                    .map(|c| {
+                        let mut row = json!({ "label": c.label, "added": c.added, "removed": c.removed });
+                        if let Some(p) = &c.preview
+                            && let Some(obj) = row.as_object_mut()
+                        {
+                            obj.insert("preview".into(), json!({ "old": p.old, "new": p.new }));
+                        }
+                        row
+                    })
+                    .collect::<Vec<_>>(),
                 "ok": true,
                 "version": w.documents[idx].versions,
-                "changes": applied.changes.iter()
-                    .map(|c| json!({ "label": c.label, "added": c.added, "removed": c.removed }))
-                    .collect::<Vec<_>>(),
             }))
         }
 

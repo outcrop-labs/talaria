@@ -11,7 +11,17 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question' | 'notice' | 'image' | 'subagent'
+export type ChipKind =
+  | 'link'
+  | 'tool'
+  | 'approval'
+  | 'unlock'
+  | 'todo'
+  | 'question'
+  | 'notice'
+  | 'image'
+  | 'subagent'
+  | 'source'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -26,6 +36,20 @@ export interface ChipField {
   label: string
   type: 'string' | 'text'
   required?: boolean
+}
+
+/** One edit `edit_document` made, as the route reported it.
+ *
+ *  `added` and `removed` are LINE counts — the same unit the refine notice
+ *  counts in, so a one-word swap is 1 and 1 rather than a pair of character
+ *  totals that look like a rewrite. `preview` is present only for a Replace,
+ *  where showing the two strings is the only way a reader can tell what moved;
+ *  a section replacement carries none, because its heading is the summary. */
+export interface DocChange {
+  label: string
+  added: number
+  removed: number
+  preview?: { old: string; new: string }
 }
 
 export interface ChatChip {
@@ -70,6 +94,11 @@ export interface ChatChip {
    *  attachment check, and the id is what a renderer needs to tell two
    *  screenshots of the same page apart. */
   uploadId?: string
+  /** `link` chips with entity `document` only: what an `edit_document` call
+   *  changed, copied from the route result. The chip then renders as a
+   *  document card rather than a bare link — a reader who was not watching
+   *  wants to know what moved, and the link alone does not say. */
+  changes?: DocChange[]
 }
 
 /** One answer the agent offered (the `ask` tool). */
@@ -318,10 +347,15 @@ export function findPlatformLinks(text: string): Array<{ start: number; end: num
 
 /** Link chips already painted from the prose stay out of the row, so a URL
  *  the agent wrote does not appear twice. Tool, approval, and unlock chips
- *  always stay — they are not in the prose. */
+ *  always stay — they are not in the prose.
+ *
+ *  A link carrying `changes` stays too: it renders as the document card, which
+ *  says what the edit MOVED, and the prose's pill says nothing of the kind.
+ *  Dropping it because the agent happened to paste the URL would silently take
+ *  the change list with it. */
 export function chipsBesideProse(chips: ChatChip[] | undefined, content: string): ChatChip[] {
   if (!chips?.length) return []
-  return chips.filter((c) => c.kind !== 'link' || !c.href || !content.includes(c.href))
+  return chips.filter((c) => c.kind !== 'link' || !!c.changes?.length || !c.href || !content.includes(c.href))
 }
 
 const titleCache = new Map<string, string>()

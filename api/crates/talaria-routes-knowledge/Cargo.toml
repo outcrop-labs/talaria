@@ -18,6 +18,7 @@ talaria-doc-edit = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-body = { workspace = true }
+talaria-chips = { workspace = true }
 talaria-error = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-office = { workspace = true }

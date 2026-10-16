@@ -41,6 +41,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+import stat
 import queue
 import threading
 import time
@@ -65,6 +67,13 @@ _UPLOADS_PATH = "/api/agents/uploads"
 # dropped here rather than posted to be refused.
 _VISION_TOOL = "browser_vision"
 _MAX_SHOT_BYTES = 5 * 1024 * 1024
+# Any other browser tool (browser_exec above all — the browser-use harness the
+# skill steers the model toward saves screenshots to a file and PRINTS the
+# path) hands over an image only as a fresh PNG it names: on disk, a regular
+# file, written within this window. A stale path mentioned in prose is not
+# an offer of an image.
+_FRESH_SHOT_SECONDS = 180
+_recent_shots: dict[str, float] = {}
 
 _queue: "queue.Queue[dict]" = queue.Queue(maxsize=_QUEUE_CAP)
 _started = False
@@ -219,13 +228,55 @@ def _shot_path(result: Any) -> str | None:
     return None
 
 
-def _screenshot_event(result: Any) -> dict | None:
+_PNG_TOKEN = re.compile(r"(?<![\w/])(/[^\s\"'`<>|]+\.png)\b", re.IGNORECASE)
+
+
+def _fresh_shot_path(tool_name: str, args: Any, result: Any) -> str | None:
+    """For a browser tool other than browser_vision: the newest PNG the call
+    names (in its result or its arguments) that exists, is a regular file,
+    fits the door's ceiling and was written inside the freshness window —
+    and that this process has not already forwarded at that mtime. Absolute
+    paths only: the harness prints them that way, and a relative token has
+    no cwd this hook could trust."""
+    if not tool_name.startswith("browser_"):
+        return None
+    text = " ".join(
+        part if isinstance(part, str) else json.dumps(part, default=str)
+        for part in (result, args)
+        if part is not None
+    )
+    now = time.time()
+    best: tuple[float, str] | None = None
+    for token in set(_PNG_TOKEN.findall(text)):
+        try:
+            st = os.stat(token)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_size == 0 or st.st_size > _MAX_SHOT_BYTES:
+            continue
+        if now - st.st_mtime > _FRESH_SHOT_SECONDS:
+            continue
+        if _recent_shots.get(token) == st.st_mtime:
+            continue
+        if best is None or st.st_mtime > best[0]:
+            best = (st.st_mtime, token)
+    if best is None:
+        return None
+    # Forget shots older than the window so the map cannot grow for the life
+    # of the container.
+    for key in [k for k, m in _recent_shots.items() if now - m > _FRESH_SHOT_SECONDS]:
+        _recent_shots.pop(key, None)
+    _recent_shots[best[1]] = best[0]
+    return best[1]
+
+
+def _screenshot_event(result: Any, path: str | None = None) -> dict | None:
     """The uploads POST for a screenshot tool's PNG, or None. The bytes have
     to travel because the file does not: it lives in this container, and the
     container is thrown away on the next roll. Bounded by the door's own
     ceiling, and every failure to read is a dropped image rather than a raised
     exception inside the agent's tool loop."""
-    path = _shot_path(result)
+    path = path or _shot_path(result)
     if not path:
         return None
     try:
@@ -281,8 +332,11 @@ def on_post_tool_call(
     # The image rides AFTER its tool event, deliberately: the event is what
     # the run watch and the failure streak read, and several MB of base64
     # must never be the thing standing in front of it in the queue.
-    if status == "completed" and tool_name == _VISION_TOOL:
-        shot = _screenshot_event(result)
+    if status == "completed" and tool_name.startswith("browser_"):
+        if tool_name == _VISION_TOOL:
+            shot = _screenshot_event(result)
+        else:
+            shot = _screenshot_event(result, _fresh_shot_path(tool_name, args, result))
         if shot is not None:
             _enqueue(shot)
 
