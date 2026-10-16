@@ -3779,6 +3779,49 @@ alter table tasks drop column if exists conversation_id`,
   // never has to invent a number — the column always says what the fleet runs
   // on.
   `alter table agent_defs add column if not exists max_children integer not null default 3`,
+  // ── MCP catalog mirror (2026-10-16) ─────────────────────────────────────
+  // The marketplace used to query the official MCP registry LIVE on every
+  // keystroke; the registry stalls for 10-30s at a time and its search is a
+  // name-substring match, so "search is broken" was the honest description.
+  // The catalog is now mirrored here by the scheduler (a full cursor walk once,
+  // `updated_since` incrementals after) and searched with Postgres full text.
+  // One row per registry name (latest version only); `entry` is the wire shape
+  // the picker renders, the other columns exist for ranking and filtering.
+  // `source` says where a row came from: 'registry' (the official feed),
+  // 'curated' (a documented endpoint the registry lacks, e.g. GitHub), or
+  // 'well-known' (a publisher's /.well-known/mcp.json).
+  `create table if not exists mcp_library_entries (
+     registry_name text primary key,
+     source text not null default 'registry',
+     title text not null,
+     description text,
+     domain text,
+     domains text[] not null default '{}',
+     tier smallint not null default 2,
+     kind text not null default 'hosted',
+     entry jsonb not null,
+     registry_updated_at timestamptz,
+     synced_at timestamptz not null default now(),
+     search tsvector generated always as (
+       setweight(to_tsvector('simple', coalesce(title, '')), 'A') ||
+       setweight(to_tsvector('simple', coalesce(domain, '')), 'A') ||
+       setweight(to_tsvector('simple', replace(replace(registry_name, '/', ' '), '.', ' ')), 'B') ||
+       setweight(to_tsvector('simple', coalesce(description, '')), 'C')
+     ) stored
+   )`,
+  `create index if not exists mcp_library_entries_search_idx on mcp_library_entries using gin (search)`,
+  `create index if not exists mcp_library_entries_tier_idx on mcp_library_entries (tier, title)`,
+  `create index if not exists mcp_library_entries_domains_idx on mcp_library_entries using gin (domains)`,
+  // WHAT THE LAST DISCOVERY SAID about a registered server: {state, detail, at}
+  // with state ok | auth-required | unreachable | error. The card reads it to
+  // say "needs an API key" instead of "Discover tools" forever; null = never
+  // probed.
+  `alter table mcp_servers add column if not exists last_probe jsonb`,
+  // Hosted servers registered through the api carried a jsonb \`null\` in
+  // \`package\` (the insert bound Value::Null instead of SQL NULL), which read
+  // as "is a package" to every \`is_some()\` check. The api now binds NULL and
+  // reads \`null\` as none; this clears the rows already written.
+  `update mcp_servers set package = null where package = 'null'::jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

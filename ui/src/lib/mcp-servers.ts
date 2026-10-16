@@ -21,7 +21,11 @@ export interface ServerOrigin {
  *  them; you do not register or point them anywhere.
  *
  *  External servers are third-party endpoints somebody registered — a URL, a
- *  credential and a trust decision.
+ *  credential and a trust decision. A marketplace PACKAGE install is one of
+ *  these too: its URL is the `talaria-pkg://` routing token (there is no
+ *  hostname to point at), but it is third-party code someone chose to run,
+ *  and it is added and removed exactly like a hosted server — so it lives on
+ *  the External tab, not among the platform's own.
  *
  *  The SCHEME test is what catches the Workbench, which is in-process like an
  *  app server but carries neither flag. Testing the scheme rather than matching
@@ -29,4 +33,4 @@ export interface ServerOrigin {
  *  itself talaria-workbench.evil.example, and substring matching would have
  *  filed it under our own tools. */
 export const isInternalServer = (s: ServerOrigin): boolean =>
-  s.builtin || !!s.appSlug || !/^https?:\/\//i.test(s.url)
+  s.builtin || !!s.appSlug || (!/^https?:\/\//i.test(s.url) && !/^talaria-pkg:\/\//i.test(s.url))

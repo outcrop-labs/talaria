@@ -46,7 +46,7 @@ const ROW: &str = "id::text, name, label, description, url, headers, timeout_sec
                    required_headers, (oauth is not null) as oauth_enabled, builtin, \
                    app_slug::text, created_by, \
                    (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
-                   package, env_enc::text";
+                   package, env_enc::text, last_probe";
 
 /// A registry row, every column. The jsonb columns ride
 /// as the raw Value — pg owns their key order and the wire answer must carry
@@ -85,6 +85,10 @@ pub struct McpServer {
     pub package: Option<Value>,
     /// SecretBox-sealed env values + filled run-args (`pkg::SealedDoc`).
     pub env_enc: Option<String>,
+    /// What the last discovery said: `{state, detail, at}` with state
+    /// ok | auth-required | unreachable | error; None = never probed. The
+    /// card reads it to say "needs an API key" instead of "Discover tools".
+    pub last_probe: Option<Value>,
 }
 
 /// A registry row as it comes off the wire, in ROW order. A derived struct,
@@ -112,6 +116,15 @@ struct ServerRow {
     created_ms: i64,
     package: Option<Value>,
     env_enc: Option<String>,
+    last_probe: Option<Value>,
+}
+
+impl McpServer {
+    /// A marketplace package install (a document, not a jsonb `null` left by
+    /// an older insert).
+    pub fn is_package(&self) -> bool {
+        self.package.as_ref().is_some_and(Value::is_object)
+    }
 }
 
 fn server_of_row(r: ServerRow) -> McpServer {
@@ -134,8 +147,10 @@ fn server_of_row(r: ServerRow) -> McpServer {
         app_slug: r.app_slug,
         created_by: r.created_by,
         created_ms: r.created_ms,
-        package: r.package,
+        // Older inserts stored jsonb `null` for "no package"; read it as none.
+        package: r.package.filter(Value::is_object),
         env_enc: r.env_enc,
+        last_probe: r.last_probe,
     }
 }
 
@@ -163,7 +178,50 @@ pub fn server_wire(s: &McpServer) -> Value {
         "createdAt": epoch_ms_to_iso(s.created_ms),
         // Declarations only — env_enc is never serialized to any wire.
         "package": s.package,
+        "probe": s.last_probe,
     })
+}
+
+/// The discovery states a row remembers. `AuthRequired` is the one the card
+/// turns into an action (set a key, or connect OAuth).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeState {
+    Ok,
+    AuthRequired,
+    Unreachable,
+    Error,
+}
+
+impl ProbeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeState::Ok => "ok",
+            ProbeState::AuthRequired => "auth-required",
+            ProbeState::Unreachable => "unreachable",
+            ProbeState::Error => "error",
+        }
+    }
+}
+
+/// Remember what discovery just found. Best-effort: a failed write must not
+/// turn a successful discovery into a failure, so the error is logged, not
+/// returned.
+pub async fn record_probe(pg: &PgPool, id: &str, state: ProbeState, detail: &str) {
+    let probe = serde_json::json!({
+        "state": state.as_str(),
+        "detail": utf16_slice(detail, 300),
+        "at": epoch_ms_to_iso(talaria_agent_auth::now_ms()),
+    });
+    if let Err(e) = sqlx::query(
+        "update mcp_servers set last_probe = $2, updated_at = now() where id::text = $1",
+    )
+    .bind(id)
+    .bind(&probe)
+    .execute(pg)
+    .await
+    {
+        tracing::warn!("[mcp] probe record failed for {id}: {e}");
+    }
 }
 
 /// By id OR name, one row.
@@ -295,6 +353,9 @@ struct OrgReply {
     json: Option<Value>,
     session: Option<String>,
     status: u16,
+    /// The upstream's WWW-Authenticate, when it answered 401/403 — the one
+    /// sentence it offers about what it wants.
+    www_authenticate: Option<String>,
 }
 
 /// One POST of the conversation: org headers plus session plus (on OAuth
@@ -403,10 +464,15 @@ async fn org_call(
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let www_authenticate = headers
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     Ok(OrgReply {
         json: parse_mcp_response(&text),
         session,
         status,
+        www_authenticate,
     })
 }
 
@@ -603,7 +669,9 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
         .bind(input.auth_mode)
         .bind(Value::Array(declared))
         .bind(input.created_by)
-        .bind(input.package.cloned().unwrap_or(Value::Null))
+        // SQL NULL, never a jsonb `null`: a hosted server has NO package
+        // document, and every `package.is_some()` reader means exactly that.
+        .bind(input.package.cloned())
         .bind(&input.env_enc)
         .fetch_optional(pg)
         .await
@@ -626,6 +694,10 @@ pub struct ServerPatch {
     pub enabled: Option<bool>,
     pub all_agents: Option<bool>,
     pub auth_mode: Option<String>,
+    /// Set these keys (a null value removes the key), keep every other
+    /// stored header — the credentials editor's write, which never sees the
+    /// stored values (GET masks them) and so can never send the whole map.
+    pub merge_headers: Option<Map<String, Value>>,
 }
 
 pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Result<(), String> {
@@ -641,6 +713,7 @@ pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Re
     if builtin
         && (patch.url.is_some()
             || patch.headers.is_some()
+            || patch.merge_headers.is_some()
             || patch.enabled.is_some()
             || patch.all_agents.is_some()
             || patch.auth_mode.is_some())
@@ -652,6 +725,7 @@ pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Re
     if app_slug.is_some()
         && (patch.url.is_some()
             || patch.headers.is_some()
+            || patch.merge_headers.is_some()
             || patch.enabled.is_some()
             || patch.auth_mode.is_some())
     {
@@ -699,6 +773,31 @@ pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Re
             .execute(pg)
             .await
             .map_err(|e| e.to_string())?;
+    }
+    if let Some(merge) = &patch.merge_headers {
+        let set: Map<String, Value> = merge
+            .iter()
+            .filter(|(_, v)| v.is_string())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let remove: Vec<String> = merge
+            .iter()
+            .filter(|(_, v)| v.is_null())
+            .map(|(k, _)| k.clone())
+            .collect();
+        // `||` overlays the set keys; `-` drops the removed ones. A changed
+        // credential invalidates nothing else — the catalog stays; the next
+        // discovery re-proves it.
+        sqlx::query(
+            "update mcp_servers set headers = (headers || $2::jsonb) - $3::text[], updated_at = now() \
+             where id::text = $1",
+        )
+        .bind(id)
+        .bind(Value::Object(set))
+        .bind(&remove)
+        .execute(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     }
     if let Some(enabled) = patch.enabled {
         sqlx::query("update mcp_servers set enabled = $2, updated_at = now() where id::text = $1")
@@ -1314,8 +1413,16 @@ pub async fn refresh_mcp_tools(
     } else {
         None
     };
+    // An org-auth OAuth server nobody has connected yet cannot be asked
+    // anything: say so instead of relaying the 401 it would answer.
+    if server.oauth_enabled && server.auth_mode == "org" && bearer.is_none() && !server.builtin {
+        let msg = "this server authenticates with OAuth and the org account is not connected yet \
+                   — Connect on the server card first";
+        record_probe(pg, id, ProbeState::AuthRequired, msg).await;
+        return Err(msg.into());
+    }
     let run = async {
-        let init = org_call(
+        let init = match org_call(
             &server,
             bearer.as_deref(),
             &serde_json::json!({
@@ -1330,9 +1437,23 @@ pub async fn refresh_mcp_tools(
             }),
             None,
         )
-        .await?;
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                record_probe(pg, id, ProbeState::Unreachable, &e).await;
+                return Err(e);
+            }
+        };
+        if init.status == 401 || init.status == 403 {
+            return Err(
+                auth_required(pg, &server, init.status, init.www_authenticate.as_deref()).await,
+            );
+        }
         if init.status >= 400 {
-            return Err(format!("upstream {}", init.status));
+            let msg = format!("upstream {}", init.status);
+            record_probe(pg, id, ProbeState::Error, &msg).await;
+            return Err(msg);
         }
         let list = org_call(
             &server,
@@ -1360,9 +1481,63 @@ pub async fn refresh_mcp_tools(
             })
             .unwrap_or_default();
         store_catalog(pg, id, &Value::Array(tools.clone())).await?;
+        record_probe(pg, id, ProbeState::Ok, &format!("{} tool(s)", tools.len())).await;
         Ok(tools)
     };
     run.await
+}
+
+/// A 401/403 from discovery, turned into the one sentence that says what to
+/// do. The server's own challenge header is quoted when it sent one. On a
+/// server not yet known to speak OAuth, this is also the moment to find out:
+/// a server registered while it was unreachable, or one that only started
+/// advertising OAuth later, gets its config discovered here and the sentence
+/// points at Connect instead of at a key field.
+async fn auth_required(
+    pg: &PgPool,
+    server: &McpServer,
+    status: u16,
+    www_authenticate: Option<&str>,
+) -> String {
+    let challenge = www_authenticate
+        .map(|w| utf16_slice(w.trim(), 200))
+        .filter(|w| !w.is_empty());
+    let quoted = challenge
+        .as_ref()
+        .map(|c| format!(" (it said: {c})"))
+        .unwrap_or_default();
+    let discovered_oauth = !server.oauth_enabled
+        && !server.builtin
+        && server.package.is_none()
+        && matches!(
+            talaria_mcp_oauth::ensure_oauth_config(pg, &server.id, &server.url).await,
+            Ok(Some(_))
+        );
+    let msg = if discovered_oauth || server.oauth_enabled {
+        if server.auth_mode == "per-user" {
+            format!(
+                "the server requires authentication ({status}) and speaks OAuth: each person connects \
+                 their own account under Settings → Connections{quoted}"
+            )
+        } else {
+            format!(
+                "the server requires authentication ({status}) and speaks OAuth: Connect the org \
+                 account on the server card{quoted}"
+            )
+        }
+    } else if server.auth_mode == "per-user" {
+        format!(
+            "the server requires authentication ({status}): each person connects their own \
+             credentials under Settings → Connections{quoted}"
+        )
+    } else {
+        format!(
+            "the server requires authentication ({status}): set its API key or auth header under \
+             Credentials on the server card{quoted}"
+        )
+    };
+    record_probe(pg, &server.id, ProbeState::AuthRequired, &msg).await;
+    msg
 }
 
 async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), String> {
@@ -1438,7 +1613,10 @@ pub async fn servers_for_agent(
         } else if oauth_enabled && !has_oauth_tokens(pg, &id, "org").await? {
             continue; // org account not connected yet — keep it out of configs
         } else if let Some(owner) = &owner {
-            // A PA skips servers its owner is explicitly denied.
+            // A PA skips servers its owner is denied — by a person rule, or by
+            // a team rule with no allow beside it: the same verdict
+            // `effective_mcp_for` reaches at call time, so a config never
+            // lists a server the gateway then refuses.
             let access: Option<(bool,)> = sqlx::query_as(
                 "select allowed from mcp_user_access where server_id::text = $1 and user_id::text = $2",
             )
@@ -1447,6 +1625,21 @@ pub async fn servers_for_agent(
             .fetch_optional(pg)
             .await?;
             if access.is_some_and(|(allowed,)| !allowed) {
+                continue;
+            }
+            let team_rows: Vec<(bool,)> = sqlx::query_as(
+                "select a.allowed from mcp_team_access a \
+                 join team_members m on m.team_id = a.team_id \
+                 where a.server_id::text = $1 and m.user_id::text = $2",
+            )
+            .bind(&id)
+            .bind(owner)
+            .fetch_all(pg)
+            .await?;
+            let any_deny = team_rows.iter().any(|(a,)| !*a);
+            let any_allow = team_rows.iter().any(|(a,)| *a);
+            let user_allow = access.is_some_and(|(allowed,)| allowed);
+            if any_deny && !any_allow && !user_allow {
                 continue;
             }
         }

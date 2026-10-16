@@ -35,6 +35,8 @@ use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_secretbox::SecretBox;
 
+pub mod guides;
+
 // ── Domain pinning ──────────────────────────────────────────────────────────
 
 // An approximation of the public suffix list: enough multi-label suffixes
@@ -401,6 +403,60 @@ pub async fn ensure_oauth_config(
     Ok(None)
 }
 
+/// Re-run discovery against the live server and replace the stored config,
+/// keeping a registered/manual client and a scopes override. The card's
+/// "Re-detect auth": a server registered while it was down, or one that
+/// started speaking OAuth after it was registered, is fixed here. A server
+/// that no longer advertises OAuth keeps a MANUAL client (an admin typed it
+/// on purpose) and otherwise drops its config.
+pub async fn redetect_oauth_config(
+    pg: &PgPool,
+    server_id: &str,
+    server_url: &str,
+) -> Result<Option<Value>, String> {
+    let existing = stored_oauth(pg, server_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let fresh = discover_oauth(server_url).await;
+    let keep_client = existing.as_ref().and_then(|o| o.get("client").cloned());
+    let keep_scopes = existing
+        .as_ref()
+        .and_then(|o| o.get("scopesOverride").cloned());
+    let manual = keep_client.is_some()
+        && existing
+            .as_ref()
+            .and_then(|o| o.get("registrationEndpoint"))
+            .is_none_or(Value::is_null);
+    let next = match (fresh, existing) {
+        (Some(mut cfg), _) => {
+            let o = cfg
+                .as_object_mut()
+                .expect("discover_oauth answers an object");
+            if let Some(c) = keep_client {
+                o.insert("client".into(), c);
+            }
+            if let Some(sc) = keep_scopes {
+                o.insert("scopesOverride".into(), sc);
+            }
+            Some(cfg)
+        }
+        (None, Some(old)) if manual => Some(old),
+        (None, _) => None,
+    };
+    match &next {
+        Some(cfg) => store_oauth(pg, server_id, cfg).await,
+        None => sqlx::query(
+            "update mcp_servers set oauth = null, updated_at = now() where id::text = $1",
+        )
+        .bind(server_id)
+        .execute(pg)
+        .await
+        .map(|_| ()),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(next)
+}
+
 /// The refusal sentence for a failed dynamic registration: the upstream's own
 /// code and description kept (they say why), then the way out — the exact
 /// callback to register on a dashboard app. Pure so the tests can pin it.
@@ -619,8 +675,13 @@ pub async fn start_oauth(
         "resource",
         &str_field(&config, "resource").unwrap_or_default(),
     );
-    let scopes: Vec<String> = config
-        .get("scopes")
+    // An admin-set override (manual apps often need an explicit scope list)
+    // beats the discovered set.
+    let scopes_source = config
+        .get("scopesOverride")
+        .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        .or_else(|| config.get("scopes"));
+    let scopes: Vec<String> = scopes_source
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
@@ -929,18 +990,31 @@ pub async fn oauth_token_for(
     ))
 }
 
-/// Store admin-provided OAuth app credentials (providers without dynamic
+/// Admin-provided OAuth app credentials (providers without dynamic
 /// registration — GitHub). The redirect URI must be registered with the
 /// provider exactly as shown in the UI.
+pub struct ManualClient<'a> {
+    pub client_id: &'a str,
+    pub client_secret: Option<&'a str>,
+    pub redirect_uri: &'a str,
+    /// An explicit scope list; None/empty = use what the provider advertised.
+    pub scopes: Option<&'a [String]>,
+}
+
+/// Store a manual client on the server's OAuth config.
 pub async fn set_manual_oauth_client(
     pg: &PgPool,
     sb: &SecretBox,
     server_id: &str,
     server_url: &str,
-    client_id: &str,
-    client_secret: Option<&str>,
-    redirect_uri: &str,
+    client: &ManualClient<'_>,
 ) -> Result<(), String> {
+    let ManualClient {
+        client_id,
+        client_secret,
+        redirect_uri,
+        scopes,
+    } = *client;
     let Some(config) = ensure_oauth_config(pg, server_id, server_url).await? else {
         return Err("this server doesn't advertise OAuth".into());
     };
@@ -950,6 +1024,17 @@ pub async fn set_manual_oauth_client(
     let mut next = config;
     let next_obj = next.as_object_mut().expect("the config is an object");
     next_obj.remove("dcrRejected"); // a manual client supersedes any refusal
+    match scopes.filter(|s| !s.is_empty()) {
+        Some(s) => {
+            next_obj.insert(
+                "scopesOverride".into(),
+                Value::Array(s.iter().map(|x| Value::String(x.clone())).collect()),
+            );
+        }
+        None => {
+            next_obj.remove("scopesOverride");
+        }
+    }
     next_obj.insert(
         "client".into(),
         serde_json::json!({
@@ -967,7 +1052,7 @@ pub async fn set_manual_oauth_client(
 /// Surface the flags the UI needs: is this OAuth, does it self-register, is a
 /// client configured, has a registration been refused. Pure so the tests can
 /// drive it directly.
-fn meta_of(oauth: &Value) -> Value {
+fn meta_of(oauth: &Value, server_url: &str) -> Value {
     serde_json::json!({
         "dcr": !oauth.get("registrationEndpoint").map(Value::is_null).unwrap_or(true),
         "clientSet": oauth.get("client").is_some(),
@@ -977,12 +1062,21 @@ fn meta_of(oauth: &Value) -> Value {
         // The upstream's error code when it refused our registration (Vercel:
         // "invalid_redirect_uri"); null when never refused or since cleared.
         "dcrRejected": oauth.get("dcrRejected").and_then(Value::as_str),
+        // What the provider advertised, and what an admin pinned instead.
+        "scopes": oauth.get("scopes").cloned().filter(Value::is_array).unwrap_or_else(|| Value::Array(Vec::new())),
+        "scopesOverride": oauth.get("scopesOverride").cloned().filter(Value::is_array),
+        // Where the OAuth app gets created, for providers we have a row for.
+        "guide": guides::guide_for(server_url, oauth.get("authorizationEndpoint").and_then(Value::as_str)),
     })
 }
 
 pub async fn oauth_meta(pg: &PgPool, server_id: &str) -> Result<Option<Value>, sqlx::Error> {
-    let oauth = stored_oauth(pg, server_id).await?;
-    Ok(oauth.as_ref().map(meta_of))
+    let row: Option<(Option<Value>, String)> =
+        sqlx::query_as("select oauth, url from mcp_servers where id::text = $1")
+            .bind(server_id)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row.and_then(|(oauth, url)| oauth.filter(Value::is_object).map(|o| meta_of(&o, &url))))
 }
 
 #[cfg(test)]
@@ -1103,32 +1197,56 @@ mod tests {
     #[test]
     fn meta_of_flags_dcr_refusals_and_manual_clients() {
         // Plain DCR provider: registrable, no client, never refused.
-        let m = meta_of(&serde_json::json!({
-            "registrationEndpoint": "https://api.vercel.com/login/oauth/register"
-        }));
+        let url = "https://mcp.vercel.com/";
+        let m = meta_of(
+            &serde_json::json!({
+                "registrationEndpoint": "https://api.vercel.com/login/oauth/register"
+            }),
+            url,
+        );
         assert_eq!(m["dcr"], Value::Bool(true));
         assert_eq!(m["clientSet"], Value::Bool(false));
         assert_eq!(m["dcrRejected"], Value::Null);
+        assert_eq!(m["scopes"], serde_json::json!([]));
+        assert_eq!(m["scopesOverride"], Value::Null);
+        assert_eq!(
+            m["guide"]["domain"], "vercel.com",
+            "the portal row rides along"
+        );
         // Vercel after a refused connect: refused, no client.
-        let m = meta_of(&serde_json::json!({
-            "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
-            "dcrRejected": "invalid_redirect_uri"
-        }));
+        let m = meta_of(
+            &serde_json::json!({
+                "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+                "dcrRejected": "invalid_redirect_uri"
+            }),
+            url,
+        );
         assert_eq!(
             m["dcrRejected"],
             Value::String("invalid_redirect_uri".into())
         );
         // Manual client saved: the refusal is cleared, clientSet wins.
-        let m = meta_of(&serde_json::json!({
-            "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
-            "client": { "id": "cl_x", "redirectUri": "https://talaria.example.com/api/mcp/oauth/callback" }
-        }));
+        let m = meta_of(
+            &serde_json::json!({
+                "registrationEndpoint": "https://api.vercel.com/login/oauth/register",
+                "client": { "id": "cl_x", "redirectUri": "https://talaria.example.com/api/mcp/oauth/callback" },
+                "scopesOverride": ["read"]
+            }),
+            url,
+        );
         assert_eq!(m["clientSet"], Value::Bool(true));
         assert_eq!(m["dcrRejected"], Value::Null);
-        // GitHub shape: no registration endpoint at all.
+        assert_eq!(m["scopesOverride"], serde_json::json!(["read"]));
+        // GitHub shape: no registration endpoint at all — and the guide
+        // resolves through the issuer, not the MCP host.
         let m = meta_of(
             &serde_json::json!({ "authorizationEndpoint": "https://github.com/login/oauth/authorize" }),
+            "https://api.githubcopilot.com/mcp/",
         );
         assert_eq!(m["dcr"], Value::Bool(false));
+        assert_eq!(m["guide"]["domain"], "github.com");
+        // Nobody we have a row for: guide is null, everything else intact.
+        let m = meta_of(&serde_json::json!({}), "https://mcp.example.com/mcp");
+        assert_eq!(m["guide"], Value::Null);
     }
 }

@@ -10,7 +10,6 @@ use serde::Deserialize;
 use talaria_api_facades::mcp::oauth::start_oauth;
 use talaria_api_facades::mcp::registry::get_mcp_server;
 use talaria_error::{house_error, internal};
-use talaria_instance::instance_base_url;
 use talaria_session::require_user;
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
@@ -50,13 +49,9 @@ pub async fn get(
     }
     let sb = secretbox_or_500(&state, "[mcp/oauth] secretbox unavailable").await?;
     // A verified hosting domain gives every OAuth app ONE stable callback
-    // URL, whatever origin the admin happens to browse from.
-    let origin = talaria_api_facades::google::oauth::resolve_origin(
-        talaria_auth_config::get_auth_config().public_url.as_deref(),
-        &headers,
-        &uri,
-    );
-    let base = instance_base_url(&state.pg).await.unwrap_or(origin);
+    // URL, whatever origin the admin happens to browse from — the same base
+    // the server card shows and the manual-client save stores.
+    let base = super::oauth_callback_base(&state, &headers, &uri).await;
     Ok(
         match start_oauth(
             &state.pg,

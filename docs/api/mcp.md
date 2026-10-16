@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-9 routes.
+10 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -16,6 +16,7 @@
 | [`/api/mcp/gw/{server}`](#apimcpgwserver) | POST | `agent` |
 | [`/api/mcp/icon`](#apimcpicon) | GET | `session` |
 | [`/api/mcp/library`](#apimcplibrary) | GET | `session` + `perm:agents.manage` |
+| [`/api/mcp/library/sync`](#apimcplibrarysync) | POST | `session` + `perm:agents.manage` |
 | [`/api/mcp/oauth/callback`](#apimcpoauthcallback) | GET | `public` |
 | [`/api/mcp/oauth/start`](#apimcpoauthstart) | GET | `session` + `perm:agents.manage` |
 | [`/api/mcp/servers`](#apimcpservers) | GET | `session` + `perm:agents.manage` |
@@ -72,14 +73,28 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_icon.rs`](../../api/crates
 Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
 
 > /api/mcp/library.
-> GET ?q= → the MCP server library (the official registry, live, filtered to
-> remote-capable servers). Backs the Add-server picker. BOTH arms answer
-> `{servers}` — featured shelf and search alike; the picker indexes
+> GET → the MCP server catalog, served from the LOCAL MIRROR of the official
+> registry (`talaria_mcp_library::catalog`): `?featured=1` is the editorial
+> shelf, `?q=` searches title/domain/name/description with full text, and
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `perm:agents.manage` | — | `{servers}` | 200 | — |
+| GET | `session` + `perm:agents.manage` | — | `{servers, catalog}` | 200 | — |
+
+## `/api/mcp/library/sync`
+
+Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_library.rs)
+
+> /api/mcp/library.
+> GET → the MCP server catalog, served from the LOCAL MIRROR of the official
+> registry (`talaria_mcp_library::catalog`): `?featured=1` is the editorial
+> shelf, `?q=` searches title/domain/name/description with full text, and
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `perm:agents.manage` | — | `{ok, catalog}` | 200 | — |
 
 ## `/api/mcp/oauth/callback`
 
@@ -139,9 +154,10 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers.rs`](../../api/cra
 Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs`](../../api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs)
 
 > /api/mcp/servers/{id}.
-> One registry server: PUT patches config / assignment / user access / team
-> access / tool refresh in one idempotent surface; DELETE unregisters
-> (assignments, user access, and connected accounts cascade). Fleet re-renders after mutations.
+> One registry server: PUT patches config / credentials (`mergeHeaders`: set
+> keys, null removes, the rest kept) / assignment / user access / team access
+> / tool refresh / OAuth client (`oauthClient` with optional `scopes`) /
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -160,7 +176,9 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_servers_id.rs`](../../api/
 | `enabled` | `bool?` |  |
 | `allAgents` | `bool?` |  |
 | `authMode` | `enum(org|per-user)?` |  |
+| `mergeHeaders` | `merge_headers` |  |
 | `refreshTools` | `bool?` |  |
+| `redetectAuth` | `bool?` |  |
 | `assign` | `assign` |  |
 | `unassign` | `optional_string_member_max` |  |
 | `userAccess` | `user_access` |  |

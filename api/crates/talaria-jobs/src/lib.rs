@@ -646,12 +646,16 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_scheduler::register_job(talaria_workbench_mcp::teardown::job_sweep_spec(
         state.pg.clone(),
     ));
-    // The optional trio. mcp-library-refresh is per-instance cache warming
-    // and arms on every Rust instance; update-check and update-reconcile
+    // The optional trio. mcp-library-refresh mirrors the official MCP
+    // registry into the catalog table (leased: one walker per interval);
+    // update-check and update-reconcile
     // self-gate by install mode (a quiet no-op on checkout/dev/off) and by
     // adoption — the engine acts only on instances that handed over the
     // keys (the minute hand's reconcile is one settings-row read when idle).
-    talaria_mcp_library::register_mcp_library_refresh_job(talaria_mcp_library::library());
+    talaria_mcp_library::register_mcp_library_refresh_job(
+        state.pg.clone(),
+        talaria_mcp_library::library(),
+    );
     talaria_mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
     talaria_update_job::register_update_check_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),

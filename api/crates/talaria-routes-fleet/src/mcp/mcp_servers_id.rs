@@ -1,7 +1,10 @@
 // /api/mcp/servers/{id}.
-// One registry server: PUT patches config / assignment / user access / team
-// access / tool refresh in one idempotent surface; DELETE unregisters
-// (assignments, user access, and connected accounts cascade). Fleet re-renders after mutations.
+// One registry server: PUT patches config / credentials (`mergeHeaders`: set
+// keys, null removes, the rest kept) / assignment / user access / team access
+// / tool refresh / OAuth client (`oauthClient` with optional `scopes`) /
+// `redetectAuth` (re-run OAuth discovery against the live server) in one
+// idempotent surface; DELETE unregisters (assignments, user access, and
+// connected accounts cascade). Fleet re-renders after mutations.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -12,7 +15,9 @@ use talaria_api_facades::mcp::apply::{
     carriers_for_server, enqueue_rolls, roll_agent_for_model, roll_agent_for_user,
     roll_agents_for_server,
 };
-use talaria_api_facades::mcp::oauth::{ensure_oauth_config, set_manual_oauth_client};
+use talaria_api_facades::mcp::oauth::{
+    ManualClient, ensure_oauth_config, redetect_oauth_config, set_manual_oauth_client,
+};
 use talaria_api_facades::mcp::registry::{
     ServerPatch, WORKBENCH_SERVER, delete_mcp_server, get_mcp_server, refresh_mcp_tools,
     remove_assignment, set_assignment, set_team_access, set_user_access, update_mcp_server,
@@ -31,6 +36,7 @@ pub async fn put(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
     let user = require_perm(&state, &headers, "agents.manage").await?;
@@ -46,16 +52,31 @@ pub async fn put(
     let actor = actor_of(&user);
     let sb = secretbox_or_500(&state, "[mcp] secretbox unavailable").await?;
 
-    // Self-heal: failed/aged discovery re-probes and backfills on any touch.
-    if let Err(e) = ensure_oauth_config(&state.pg, &server.id, &server.url).await {
-        // a self-heal throw is the route's 500, not a 400.
-        return Ok(internal("[mcp] oauth self-heal failed", e));
-    }
-
     let patch = match parse_patch(obj) {
         Ok(p) => p,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // An explicit re-detect replaces the stored discovery (keeping a client);
+    // otherwise the self-heal re-probes only a never/half-discovered row.
+    // Neither applies to the in-process rows (toolkit, workbench, packages,
+    // apps): there is no upstream to ask.
+    let discoverable = !server.builtin
+        && server.app_slug.is_none()
+        && server.package.is_none()
+        && server.url.starts_with("http");
+    if discoverable && patch.redetect_auth {
+        if let Err(e) = redetect_oauth_config(&state.pg, &server.id, &server.url).await {
+            return Ok(house_error(
+                StatusCode::BAD_GATEWAY,
+                &format!("auth detection failed: {e}"),
+            ));
+        }
+    } else if discoverable
+        && let Err(e) = ensure_oauth_config(&state.pg, &server.id, &server.url).await
+    {
+        // a self-heal throw is the route's 500, not a 400.
+        return Ok(internal("[mcp] oauth self-heal failed", e));
+    }
     // Who may use the Workbench is each agent's Developer Agent switch, not a
     // registry grant. A row written here would be ignored, so refuse it
     // rather than let the page look like it did something.
@@ -72,23 +93,23 @@ pub async fn put(
         ));
     }
     if let Some(oauth_client) = &patch.oauth_client {
-        // `{origin}/api/mcp/oauth/callback` — the callback this instance
-        // registers with the provider. Callers come through the frontend
-        // hop, so the request's ORIGIN HEADER is the browser-facing origin —
-        // not this API's own.
-        let origin = headers
-            .get(axum::http::header::ORIGIN)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .unwrap_or_else(|| String::from("http://127.0.0.1:5274"));
+        // The callback this instance registers with the provider — the ONE
+        // spelling the start route and the card share (super::
+        // oauth_callback_base), so what the admin registered on the
+        // provider's dashboard is what the authorize request then names.
+        let callback =
+            super::oauth_callback_url(&super::oauth_callback_base(&state, &headers, &uri).await);
         if let Err(e) = set_manual_oauth_client(
             &state.pg,
             &sb,
             &server.id,
             &server.url,
-            &oauth_client.client_id,
-            oauth_client.client_secret.as_deref(),
-            &format!("{origin}/api/mcp/oauth/callback"),
+            &ManualClient {
+                client_id: &oauth_client.client_id,
+                client_secret: oauth_client.client_secret.as_deref(),
+                redirect_uri: &callback,
+                scopes: oauth_client.scopes.as_deref(),
+            },
         )
         .await
         {
@@ -114,6 +135,7 @@ pub async fn put(
         || patch.description.is_some()
         || patch.url.is_some()
         || patch.headers.is_some()
+        || patch.merge_headers.is_some()
         || patch.timeout_secs.is_some()
         || patch.enabled.is_some()
         || patch.all_agents.is_some()
@@ -132,6 +154,7 @@ pub async fn put(
                 enabled: patch.enabled,
                 all_agents: patch.all_agents,
                 auth_mode: patch.auth_mode.clone(),
+                merge_headers: patch.merge_headers.clone(),
             },
         )
         .await
@@ -164,6 +187,27 @@ pub async fn put(
             audit_after.insert(
                 "headers".into(),
                 Value::Array(h.keys().map(|k| Value::String(k.clone())).collect()),
+            );
+        }
+        if let Some(h) = &patch.merge_headers {
+            // Keys only, never values — and which way each went.
+            audit_after.insert(
+                "headersSet".into(),
+                Value::Array(
+                    h.iter()
+                        .filter(|(_, v)| v.is_string())
+                        .map(|(k, _)| Value::String(k.clone()))
+                        .collect(),
+                ),
+            );
+            audit_after.insert(
+                "headersRemoved".into(),
+                Value::Array(
+                    h.iter()
+                        .filter(|(_, v)| v.is_null())
+                        .map(|(k, _)| Value::String(k.clone()))
+                        .collect(),
+                ),
             );
         }
         if let Some(timeout) = &patch.timeout_secs {
@@ -441,6 +485,9 @@ struct TeamAccessPatch {
 struct OauthClientPatch {
     client_id: String,
     client_secret: Option<String>,
+    /// An explicit scope list for the manual app; None/empty = use what the
+    /// provider advertised.
+    scopes: Option<Vec<String>>,
 }
 
 struct Patch {
@@ -452,7 +499,12 @@ struct Patch {
     enabled: Option<bool>,
     all_agents: Option<bool>,
     auth_mode: Option<String>,
+    /// Set these header keys (null removes), keep the rest — the credentials
+    /// editor's write.
+    merge_headers: Option<Map<String, Value>>,
     refresh_tools: bool,
+    /// Re-run OAuth discovery against the live server.
+    redetect_auth: bool,
     assign: Option<AssignPatch>,
     unassign: Option<String>,
     user_access: Option<UserAccessPatch>,
@@ -477,6 +529,38 @@ fn optional_headers_member(
         };
         if talaria_body::utf16_len(s) > 2000 {
             return Err(talaria_body::too_big_msg(2000));
+        }
+    }
+    Ok(Some(m.clone()))
+}
+
+/// `z.record(z.string(), z.string().max(2000).nullable())` — the merge shape:
+/// a string sets the key, null removes it.
+fn merge_headers_member(
+    obj: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<Map<String, Value>>, String> {
+    let Some(v) = obj.get(key) else {
+        return Ok(None);
+    };
+    let Value::Object(m) = v else {
+        return Err(talaria_body::record_msg(zod_type_name(v)));
+    };
+    if m.len() > 32 {
+        return Err("Too big: expected record to have <=32 entries".into());
+    }
+    for (k, v) in m {
+        if k.trim().is_empty() || talaria_body::utf16_len(k) > 120 {
+            return Err("Invalid input: a header name is 1-120 characters".into());
+        }
+        match v {
+            Value::Null => {}
+            Value::String(s) => {
+                if talaria_body::utf16_len(s) > 2000 {
+                    return Err(talaria_body::too_big_msg(2000));
+                }
+            }
+            other => return Err(string_msg(zod_type_name(other))),
         }
     }
     Ok(Some(m.clone()))
@@ -575,9 +659,15 @@ fn oauth_client_member(
         .ok_or_else(|| talaria_body::object_msg(zod_type_name(v)))?;
     let client_id = talaria_body::string_member(m, "clientId", 1, 200)?;
     let client_secret = talaria_body::nullable_optional_string_member(m, "clientSecret", 500)?;
+    // `z.array(z.string().min(1).max(200)).max(30).nullish()`
+    let scopes = match m.get("scopes") {
+        None | Some(Value::Null) => None,
+        Some(_) => optional_string_array_member(m, "scopes", 1, 200, 30)?,
+    };
     Ok(Some(OauthClientPatch {
         client_id,
         client_secret,
+        scopes,
     }))
 }
 
@@ -618,7 +708,9 @@ fn parse_patch(obj: &Map<String, Value>) -> Result<Patch, String> {
     let enabled = optional_boolean_member(obj, "enabled")?;
     let all_agents = optional_boolean_member(obj, "allAgents")?;
     let auth_mode = optional_enum_member(obj, "authMode", &["org", "per-user"])?;
+    let merge_headers = merge_headers_member(obj, "mergeHeaders")?;
     let refresh_tools = optional_boolean_member(obj, "refreshTools")?.unwrap_or(false);
+    let redetect_auth = optional_boolean_member(obj, "redetectAuth")?.unwrap_or(false);
     let assign = assign_member(obj, "assign")?;
     let unassign = optional_string_member_max(obj, "unassign", 200)?;
     let user_access = user_access_member(obj, "userAccess")?;
@@ -633,7 +725,9 @@ fn parse_patch(obj: &Map<String, Value>) -> Result<Patch, String> {
         enabled,
         all_agents,
         auth_mode,
+        merge_headers,
         refresh_tools,
+        redetect_auth,
         assign,
         unassign,
         user_access,
