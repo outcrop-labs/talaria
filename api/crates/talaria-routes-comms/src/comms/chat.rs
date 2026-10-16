@@ -312,14 +312,33 @@ pub async fn post(
         }
         // Creating one of the shared surfaces is a permission; talking in one
         // you were added to is membership, checked above.
-        if let Some((perm, refusal)) = match kind.as_str() {
-            "plan" => Some(("plans.create", "no permission to create plans")),
-            "work" => Some(("work.sessions", "no permission to start work sessions")),
+        //
+        // EITHER PERMISSION OPENS A WORK SESSION, and the arm lists both.
+        // The merged surface starts a work session where the Plan surface
+        // used to start a plan, so a person holding plans.create and not
+        // work.sessions could begin a plan yesterday and can begin nothing
+        // today. The plan kind keeps its single permission: plans.create is
+        // what it always was.
+        if let Some((perms, refusal)) = match kind.as_str() {
+            "plan" => Some((&["plans.create"][..], "no permission to create plans")),
+            "work" => Some((
+                &["work.sessions", "plans.create"][..],
+                "no permission to start a session — needs work.sessions or plans.create",
+            )),
             _ => None,
         } {
-            let allowed = has_perm(&state.pg, &user.id, &user.role, perm)
-                .await
-                .unwrap_or(false);
+            // `has_perm` is a read per permission, so this is a loop and not
+            // an `any` — it stops at the first one that holds.
+            let mut allowed = false;
+            for perm in perms {
+                if has_perm(&state.pg, &user.id, &user.role, perm)
+                    .await
+                    .unwrap_or(false)
+                {
+                    allowed = true;
+                    break;
+                }
+            }
             if !allowed {
                 return Ok(house_error(StatusCode::FORBIDDEN, refusal));
             }

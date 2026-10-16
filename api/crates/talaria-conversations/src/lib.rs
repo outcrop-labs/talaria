@@ -965,6 +965,12 @@ pub async fn remove_plan_team(
 /// the weakest form of this guarantee; it is here because the two queries
 /// answer different shapes (a count, and the rows) and have no third place to
 /// share.
+///
+/// `kind` is a parameter rather than a list for the same reason: Work's badge
+/// is this read with `"work"` and nothing else, because the shared-kind
+/// scoping below already spans plans and work sessions — a session someone
+/// else started and shared with you counts here without a predicate of its
+/// own.
 pub async fn conversation_unread_total(
     pg: &PgPool,
     user_id: &str,
@@ -1359,11 +1365,27 @@ pub fn title_from(s: &str) -> String {
     mechanical_from(s)
 }
 
-/// The row /api/chat inserts for a brand-new conversation. An explicit plan
-/// template (plan surface only) is the highest link in the template
-/// resolution chain — null falls through to the agent's binding — and a
-/// non-plan kind never carries one: `plan_template_id` binds only for
-/// kind='plan', decided here so no caller re-decides it.
+/// Which session kinds carry a plan template on their row.
+///
+/// THE LIVING DOCUMENT DECIDES IT, not the name of the column. A plan and a
+/// work session are both served the document beside the chat, and both offer
+/// the template picker on a new session's zero state, so both must keep what
+/// was chosen there. The kinds with no document — chat, ticket, research —
+/// would be storing an id nothing ever reads.
+pub fn kind_carries_plan_template(kind: &str) -> bool {
+    kind == "plan" || kind == "work"
+}
+
+/// The row /api/chat inserts for a brand-new conversation. An explicit
+/// template is the highest link in the template resolution chain — null falls
+/// through to the agent's binding — and only a document-bearing kind carries
+/// one: the bind goes through `kind_carries_plan_template`, decided here so no
+/// caller re-decides it.
+///
+/// THE 'work' KIND IS IN THAT SET DELIBERATELY. The first turn is what creates
+/// the conversation, so this insert is the only place a template chosen on a
+/// new work session can land — binding for kind='plan' alone threw the choice
+/// away, and the person who made it saw nothing to say it had been ignored.
 pub async fn create_conversation(
     pg: &PgPool,
     user_id: &str,
@@ -1372,7 +1394,7 @@ pub async fn create_conversation(
     kind: &str,
     plan_template_id: Option<&str>,
 ) -> Result<String, sqlx::Error> {
-    let template = if kind == "plan" {
+    let template = if kind_carries_plan_template(kind) {
         plan_template_id
     } else {
         None
@@ -1412,6 +1434,20 @@ mod tests {
             author_user_id: None,
             author_label: None,
             reactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_document_bearing_kind_carries_a_plan_template() {
+        // Both surfaces that serve the living document keep the picker's
+        // choice — a work session's template was being dropped at the insert.
+        assert!(kind_carries_plan_template("plan"));
+        assert!(kind_carries_plan_template("work"));
+        for kind in ["chat", "ticket", "research", ""] {
+            assert!(
+                !kind_carries_plan_template(kind),
+                "{kind} has no document to seed"
+            );
         }
     }
 

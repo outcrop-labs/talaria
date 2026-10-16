@@ -119,23 +119,29 @@ export const { p, navigate, isActive, preload, route } = createRouter({
         layout: () => import('./routes/app/boards/BoardLayout.svelte'),
       },
     },
-    // The work session is a path for the same reason the plan is: it is the
-    // thing the page is about. `/work` is the session list; `/work/:sessionId`
-    // is one session, and both render the same component — the view keeps the
-    // rail and swaps the stage, exactly as Plan and Research do.
+    // ONE SURFACE FOR EVERY SESSION, at three addresses. Work, Plan and
+    // Research were three views of one shape and are now the work harness:
+    // `/work` is the session list, `/work/:sessionId` is one session.
+    //
+    // The other two paths still resolve, because a URL somebody linked,
+    // bookmarked or was mailed is a promise. `/plan/:planId` names a session
+    // id, and the harness reads the selection out of either path.
+    // `/research/:runId` names a RUN rather than a conversation, so the
+    // harness resolves the run's own discussion and replaces the address with
+    // `/work/<conversationId>` — or, for a run that has no discussion to open,
+    // renders its report alone. A bare `/plan` or `/research` is the harness
+    // with nothing selected; the first selection moves the URL to `/work`.
     '/work': {
-      '/': () => import('./routes/app/Work.svelte'),
-      '/:sessionId': () => import('./routes/app/Work.svelte'),
+      '/': () => import('./routes/app/WorkHarness.svelte'),
+      '/:sessionId': () => import('./routes/app/WorkHarness.svelte'),
     },
-    // The selected plan / run is a path, not a query: it is the thing the page
-    // is about, and a link to it should look like one.
     '/plan': {
-      '/': () => import('./routes/app/Plan.svelte'),
-      '/:planId': () => import('./routes/app/Plan.svelte'),
+      '/': () => import('./routes/app/WorkHarness.svelte'),
+      '/:planId': () => import('./routes/app/WorkHarness.svelte'),
     },
     '/research': {
-      '/': () => import('./routes/app/Research.svelte'),
-      '/:runId': () => import('./routes/app/Research.svelte'),
+      '/': () => import('./routes/app/WorkHarness.svelte'),
+      '/:runId': () => import('./routes/app/WorkHarness.svelte'),
     },
     // Space then doc — genuinely hierarchical, so it reads as a path.
     // `/knowledge?doc=<id>` still resolves: it is the by-id permalink for

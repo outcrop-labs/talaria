@@ -34,7 +34,13 @@ export function planRowMenu(
 }
 
 /** Rename and remove, for a run the caller may manage. No archive: a run is
- *  ephemeral, and delete is already its stop. */
+ *  ephemeral, and delete is already its stop.
+ *
+ *  NOT DEAD CODE with no caller in sight: the work rail hands a research-origin
+ *  row this menu instead of a session's (ConversationSidebar's `rowMenu`), so
+ *  the one place a run is now listed still offers the run's own actions. The
+ *  link stays the run's permalink — `/research/:runId` is the address that was
+ *  mailed around, and it still finds the run. */
 export function researchRowMenu(
   id: string,
   open: () => void,

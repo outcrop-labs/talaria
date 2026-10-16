@@ -12,8 +12,8 @@
 // missing conversation and an inaccessible one — never leaking which.
 // The ownership rule now also admits RESEARCH conversations (their access
 // follows the run), which this surface must refuse: a research discussion is
-// not a plan, so `draftable_conversation` re-narrows to the kinds that have
-// always drafted here — plans, and the chats the rule has always admitted.
+// not a plan, so `draftable_conversation` re-narrows to the kinds that draft
+// here — plans, the chats the rule has always admitted, and work sessions.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -33,12 +33,23 @@ use talaria_routes_comms::comms::channels_id_plan::{validate_save_body, validate
 use talaria_session::require_user;
 use talaria_state::AppState;
 
+// WHICH KINDS DRAFT TICKETS HERE, and the list is a judgement rather than a
+// convenience. A WORK SESSION earns its place: it is a person and an agent
+// writing one document together, and the tickets that fall out of that
+// document are the same artifact a plan's walk produces — the same review,
+// the same boards API doing the creating — so refusing them would have sent
+// the Work surface off to build a second drafting path for the identical
+// thing. Research stays out for the reason the header gives: its access
+// follows the run, not the conversation, and a research discussion is not a
+// plan. A kind missing here reads as "plan not found", which is the right
+// answer for a conversation that was never a drafting surface.
 async fn draftable_conversation(pg: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
-    let row: Option<(bool,)> =
-        sqlx::query_as("select kind in ('chat', 'plan') from conversations where id = $1::uuid")
-            .bind(id)
-            .fetch_optional(pg)
-            .await?;
+    let row: Option<(bool,)> = sqlx::query_as(
+        "select kind in ('chat', 'plan', 'work') from conversations where id = $1::uuid",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await?;
     Ok(row.map(|(draftable,)| draftable).unwrap_or(false))
 }
 
