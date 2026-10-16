@@ -7,6 +7,15 @@ that: pre/post_tool_call enqueue one small JSON record each, and a daemon
 thread POSTs them to the Talaria api, which appends them to the live run's
 watch stream and transcript.
 
+It carries a second report on the same wire: a CRON turn's final text.
+A cron fires the agent's own loop from inside the container, so its answer
+reaches no Talaria surface at all — `api_server` is a non-push origin (the
+gateway has nowhere to deliver to) and `on_session_end` carries no text,
+only the session's end. `post_llm_call` is the one hook that holds both
+halves of what the platform needs: `assistant_response`, the turn's final
+text, and the cron task id (`cron:<job>:<execution>`) that names which
+schedule — and so which conversation — this output belongs to.
+
 Deliberately defensive: a hook must never block or break the agent's tool
 loop. Everything is best-effort — bounded queue (oldest events drop first
 under pressure), one in-flight POST at a time, short timeouts, and any
@@ -25,8 +34,14 @@ import urllib.request
 from typing import Any
 
 _MAX_CHARS = 4000
+# A cron turn is prose, not a tool argument: the api stores it as a message
+# and clamps it to the same figure at the boundary.
+_MAX_TEXT = 20000
 _QUEUE_CAP = 512
 _POST_TIMEOUT = 4.0
+
+_TOOL_EVENTS_PATH = "/api/agents/tool-events"
+_CRON_OUTPUT_PATH = "/api/agents/cron-output"
 
 _queue: "queue.Queue[dict]" = queue.Queue(maxsize=_QUEUE_CAP)
 _started = False
@@ -39,7 +54,7 @@ def _config() -> tuple[str, dict[str, str]] | None:
     name = os.environ.get("API_SERVER_MODEL_NAME", "")
     if not base or not key or not name:
         return None
-    return base + "/api/agents/tool-events", {
+    return base, {
         "Content-Type": "application/json",
         "X-Agent-Name": name,
         "X-Api-Key": key,
@@ -78,7 +93,10 @@ def _poster() -> None:
         cfg = _config()
         if cfg is None:
             continue
-        url, headers = cfg
+        base, headers = cfg
+        # Two doors, one queue: the event names its own path and the key is
+        # popped before the body is built, so nothing extra reaches the api.
+        url = base + event.pop("url", _TOOL_EVENTS_PATH)
         try:
             req = urllib.request.Request(
                 url, data=json.dumps(event).encode("utf-8"), headers=headers, method="POST"
@@ -167,12 +185,41 @@ def on_post_tool_call(
     _enqueue(event)
 
 
+def on_post_llm_call(
+    *,
+    session_id: str = "",
+    task_id: str = "",
+    turn_id: str = "",
+    assistant_response: Any = None,
+    platform: str = "",
+    **_: Any,
+) -> None:
+    # CRON ONLY. Every chat and work-session turn already reaches the
+    # platform through the gateway's own stream, so reporting them here
+    # would double every reply; `platform` is the scheduler's own marker for
+    # the turns no other wire carries.
+    if platform != "cron":
+        return
+    if not isinstance(assistant_response, str) or not assistant_response.strip():
+        return
+    _enqueue(
+        {
+            "url": _CRON_OUTPUT_PATH,
+            "sessionId": session_id,
+            "taskId": task_id,
+            "turnId": turn_id,
+            "text": assistant_response[:_MAX_TEXT],
+        }
+    )
+
+
 def register(ctx) -> None:
     """The loader's entry point — Hermes refuses a plugin without it
     ("Plugin 'talaria-events' has no register() function", the line that
     spent a deploy silently tool-event-dark). The hook names are the
-    loader's own spelling, on_pre_tool_call / on_post_tool_call — the
-    functions above; the yaml's pre/post section is documentation, not
-    the registration."""
+    loader's own spelling, on_pre_tool_call / on_post_tool_call /
+    on_post_llm_call — the functions above; the yaml's hooks section is
+    documentation, not the registration."""
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    ctx.register_hook("post_llm_call", on_post_llm_call)
