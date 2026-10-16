@@ -276,7 +276,9 @@ pub fn upstream_error_message(status: u16) -> String {
 pub fn sanitized_upstream_body(status: u16, body: &str) -> String {
     let tokens = upstream_tokens(body);
     let error = OpenAiErrorBody {
-        message: account_limit(&tokens).unwrap_or_else(|| upstream_error_message(status)),
+        message: account_limit(&tokens)
+            .or_else(|| reasoning_required(&tokens))
+            .unwrap_or_else(|| upstream_error_message(status)),
         kind: cap(tokens.kind),
         code: cap(tokens.code),
     };
@@ -348,6 +350,48 @@ fn account_limit(t: &UpstreamTokens) -> Option<String> {
         );
     }
     None
+}
+
+// ── The provider's "thinking cannot be turned off", said in our words ──
+// A model whose reasoning is always on refuses a request that asks for none
+// (Z.ai's GLM-5.3: "This model always engages in thinking and cannot be
+// disabled; please use low, high, or max"). The caller can fix that itself —
+// Hermes steps its effort up to the floor and retries — but only if the
+// refusal still READS as one past this boundary; "upstream error (400)"
+// reads as a malformed request and the agent gives up. The classification
+// is structural: a reasoning field named in the message, next to a word
+// that says it is required. The provider's prose stays on this side.
+
+/// The reasoning-field tokens a provider names in such a refusal.
+const REASONING_FIELDS: [&str; 6] = [
+    "reasoning_effort",
+    "reasoning.effort",
+    "reasoning",
+    "thinking",
+    "enable_thinking",
+    "think",
+];
+/// The words that make it a REQUIRED-reasoning refusal rather than a
+/// rejected field.
+const REASONING_REQUIRED_MARKERS: [&str; 7] = [
+    "mandatory",
+    "cannot be disabled",
+    "can't be disabled",
+    "must be enabled",
+    "always enabled",
+    "always engages",
+    "cannot be turned off",
+];
+
+/// Our sentence for a required-reasoning refusal, or None.
+fn reasoning_required(t: &UpstreamTokens) -> Option<String> {
+    let msg = t.message.as_deref()?.to_ascii_lowercase();
+    let names_field = REASONING_FIELDS.iter().any(|f| msg.contains(f));
+    let says_required = REASONING_REQUIRED_MARKERS.iter().any(|m| msg.contains(m));
+    (names_field && says_required).then(|| {
+        "reasoning is mandatory for this model and cannot be disabled — send a reasoning effort of low or higher"
+            .to_string()
+    })
 }
 
 /// The reset instant out of that sentence, accepted only when its tail IS an
@@ -424,6 +468,36 @@ pub fn log_upstream_error(where_: &str, status: impl std::fmt::Display, body: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A model that will not switch its thinking off says so in prose the
+    /// boundary never forwards — so the boundary says it in ITS words,
+    /// which still read as the refusal they are (Hermes steps its effort up
+    /// and retries on exactly those words). Anything else about reasoning,
+    /// or a required-marker next to no reasoning field, stays the fixed
+    /// sentence.
+    #[test]
+    fn a_required_reasoning_refusal_crosses_in_our_words() {
+        let zai = r#"{"error":{"code":"1210","message":"This model always engages in thinking and cannot be disabled; please use low, high, or max"}}"#;
+        let body = sanitized_upstream_body(400, zai);
+        assert!(
+            body.contains("reasoning is mandatory for this model and cannot be disabled"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("always engages"),
+            "the provider's prose must not cross: {body}"
+        );
+        assert!(body.contains(r#""code":"1210""#), "{body}");
+
+        let portal = r#"{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled"}}"#;
+        assert!(sanitized_upstream_body(400, portal).contains("reasoning is mandatory"));
+
+        let unrelated = r#"{"error":{"message":"The field tool_choice is mandatory here"}}"#;
+        assert!(sanitized_upstream_body(400, unrelated).contains("upstream error (400)"));
+        let rejected =
+            r#"{"error":{"message":"Unrecognized request argument supplied: reasoning_effort"}}"#;
+        assert!(sanitized_upstream_body(400, rejected).contains("upstream error (400)"));
+    }
 
     #[test]
     fn house_envelope_is_exact() {

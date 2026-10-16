@@ -1116,6 +1116,8 @@ impl PersonaTurn {
                 });
             }
             AgentStreamEvent::Reasoning { .. } => {}
+            // The persona transport never steers or stops a run.
+            AgentStreamEvent::RunStarted { .. } => {}
             AgentStreamEvent::Error { message } => {
                 if self.error.is_none() {
                     self.error = Some(message);
@@ -1215,7 +1217,7 @@ fn watch_line(ev: &talaria_gateway::fleet_chat::AgentStreamEvent) -> Option<Stri
             }
             serde_json::Value::Object(frame)
         }
-        AgentStreamEvent::Usage { .. } => return None,
+        AgentStreamEvent::Usage { .. } | AgentStreamEvent::RunStarted { .. } => return None,
         AgentStreamEvent::Error { message } => {
             serde_json::json!({ "t": "err", "v": message })
         }

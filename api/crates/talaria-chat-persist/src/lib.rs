@@ -12,18 +12,21 @@ use futures_util::StreamExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use sqlx::PgPool;
 use talaria_agent_auth::now_ms;
+use talaria_agent_defs::pinned_sessions_for_model;
 use talaria_body::utf16_len;
 use talaria_conversations::{
     active_streaming_assistant, content_js_length, insert_streaming_assistant,
     last_user_message_effort, mark_message_resumed, message_still_errored, next_seq,
-    prior_messages, resurrect_streaming_assistant, set_message_guard, touch_conversation,
-    update_assistant,
+    pinned_history_fits, prior_messages, resurrect_streaming_assistant, set_message_guard,
+    set_message_run_id, touch_conversation, update_assistant,
 };
 use talaria_fleet_agents::routed_model_for;
 use talaria_fleet_layout::describe_agent;
 use talaria_gateway::fleet_chat::{
-    AgentStreamEvent, AgentStreamParser, ToolCall, chat_payload, merge_tool, proxy_chat,
+    AgentStreamEvent, AgentStreamParser, ChatStream, ToolCall, chat_payload, merge_tool,
+    proxy_chat, proxy_session_turn,
 };
 use talaria_gateway::guard::{
     Finding, GuardMode, Spread, guard_chat_reply, needs_redaction, redact_findings, redact_secrets,
@@ -257,6 +260,126 @@ impl TurnDeath {
 /// when a reply finishes and when a queued message lands with nothing in
 /// flight; chains until the conversation goes quiet. No-op unless the last
 /// message is the user's.
+/// Whether THIS turn goes through the agent's pinned Hermes session.
+///
+/// Two things have to hold: the agent is pinned (its def says so), and the
+/// conversation's history is one Hermes can answer from — fresh, or driven
+/// through the session before. A conversation that ran on the full-history
+/// path before the flip stays there: Hermes never saw that transcript, and a
+/// turn that sent only the new message would answer from an empty room.
+pub async fn pinned_turn(
+    pg: &PgPool,
+    agent_model: &str,
+    conversation_id: &str,
+    resume_row: Option<&str>,
+) -> bool {
+    match pinned_sessions_for_model(pg, agent_model).await {
+        Ok(true) => pinned_history_fits(pg, conversation_id, resume_row)
+            .await
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// The pinned turn, cut out of the full-history message list the chat path
+/// already builds: the system rows fold into one ephemeral system message
+/// (Hermes takes it per turn, so the mode prompt, the sender block and the
+/// handle note ride exactly as they did), the trailing run of user rows is
+/// the message, and everything between — the history — is Hermes' to hold.
+///
+/// The trailing RUN, not the last row: two messages queued while a reply
+/// was streaming are both unanswered, and the chained turn covers both.
+/// A string run joins with blank lines; a run whose last row is content
+/// parts (an image turn) keeps the parts and carries the earlier text as a
+/// leading text part.
+pub fn session_turn_parts(messages: &[Value]) -> (Option<String>, Value) {
+    let system: Vec<&str> = messages
+        .iter()
+        .filter(|m| m["role"] == "system")
+        .filter_map(|m| m["content"].as_str())
+        .filter(|c| !c.trim().is_empty())
+        .collect();
+    let system_message = (!system.is_empty()).then(|| system.join("\n\n"));
+    let tail: Vec<&Value> = messages
+        .iter()
+        .rev()
+        .take_while(|m| m["role"] == "user")
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let message = match tail.split_last() {
+        None => Value::String(String::new()),
+        Some((last, earlier)) => {
+            let earlier_text: Vec<&str> = earlier
+                .iter()
+                .filter_map(|m| m["content"].as_str())
+                .filter(|c| !c.trim().is_empty())
+                .collect();
+            match &last["content"] {
+                Value::Array(parts) => {
+                    let mut out: Vec<Value> = Vec::new();
+                    if !earlier_text.is_empty() {
+                        out.push(json!({ "type": "text", "text": earlier_text.join("\n\n") }));
+                    }
+                    out.extend(parts.iter().cloned());
+                    Value::Array(out)
+                }
+                other => {
+                    let mut texts = earlier_text;
+                    let last_text = other.as_str().unwrap_or_default();
+                    if !last_text.trim().is_empty() {
+                        texts.push(last_text);
+                    }
+                    Value::String(texts.join("\n\n"))
+                }
+            }
+        }
+    };
+    (system_message, message)
+}
+
+/// Send the turn the way the agent takes it: through its pinned session, or
+/// as the full-history completion every agent speaks. Returns the stream and
+/// how many characters of prompt actually left — the ledger's estimate when
+/// no usage frame comes back.
+pub async fn send_turn(
+    pinned: bool,
+    agent_model: &str,
+    routed_model: &str,
+    conversation_id: &str,
+    messages: &[Value],
+    effort: Option<&str>,
+) -> (ChatStream, usize) {
+    if pinned {
+        let (system_message, message) = session_turn_parts(messages);
+        let prompt_chars = system_message
+            .as_deref()
+            .map(|s| s.encode_utf16().count())
+            .unwrap_or(0)
+            + content_js_length(&message);
+        let upstream = proxy_session_turn(
+            agent_model,
+            conversation_id,
+            system_message.as_deref(),
+            &message,
+            None,
+        )
+        .await;
+        return (upstream, prompt_chars);
+    }
+    let prompt_chars: usize = messages
+        .iter()
+        .map(|m| content_js_length(&m["content"]))
+        .sum();
+    let upstream = proxy_chat(
+        &chat_payload(routed_model, &Value::Array(messages.to_vec()), effort),
+        None,
+    )
+    .await;
+    (upstream, prompt_chars)
+}
+
 pub async fn continue_conversation(state: &AppState, conversation_id: &str, meta: &TurnMeta) {
     guarded_drive(state, conversation_id, meta, None).await;
 }
@@ -362,6 +485,9 @@ async fn continue_inner(
     // above already ran — a resume that lost the race to a newer turn stops
     // here silently, the error row it was going to revive left as the honest
     // record.
+    // Decided before the row below exists: a fresh conversation's first
+    // assistant row is the one being made here, and it must not count.
+    let pinned = pinned_turn(&state.pg, &meta.agent_model, conversation_id, resume).await;
     let assistant_id = match resume {
         Some(row) => match resurrect_streaming_assistant(&state.pg, row).await {
             Ok(()) => row.to_string(),
@@ -393,13 +519,13 @@ async fn continue_inner(
         Some(e) if efforts_for_model(&state.pg, &routed).await.contains(&e) => Some(e),
         _ => None,
     };
-    let prompt_chars: usize = messages
-        .iter()
-        .map(|m| content_js_length(&m["content"]))
-        .sum();
-    let upstream = proxy_chat(
-        &chat_payload(&routed, &Value::Array(messages), honored.as_deref()),
-        None,
+    let (upstream, prompt_chars) = send_turn(
+        pinned,
+        &meta.agent_model,
+        &routed,
+        conversation_id,
+        &messages,
+        honored.as_deref(),
     )
     .await;
     // The row is marked error and the chain STOPS
@@ -617,6 +743,12 @@ pub async fn persist_assistant_stream(
                         AgentStreamEvent::Error { message } => {
                             frame_error = frame_error.or(Some(message));
                         }
+                        // Stamped the moment the session names its run: a
+                        // stop or a steer that arrives mid-turn needs it,
+                        // and mid-turn is the only time either makes sense.
+                        AgentStreamEvent::RunStarted { run_id } => {
+                            let _ = set_message_run_id(&state.pg, &message_id, &run_id).await;
+                        }
                     }
                 }
                 // Stamped per CHUNK, not per parsed event: a keep-alive-only
@@ -651,6 +783,9 @@ pub async fn persist_assistant_stream(
             }
             AgentStreamEvent::Error { message } => {
                 frame_error = frame_error.or(Some(message));
+            }
+            AgentStreamEvent::RunStarted { run_id } => {
+                let _ = set_message_run_id(&state.pg, &message_id, &run_id).await;
             }
         }
     }
@@ -885,6 +1020,68 @@ fn maybe_resume(state: &AppState, conversation_id: &str, message_id: &str, meta:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pinned turn is cut from the same list the full-history path
+    /// sends: system rows fold into the ephemeral system message, the
+    /// history in the middle is dropped (Hermes has it), and the tail is
+    /// the message.
+    mod session_turn {
+        use super::*;
+
+        #[test]
+        fn system_rows_fold_and_history_is_dropped() {
+            let messages = vec![
+                json!({ "role": "system", "content": "mode prompt" }),
+                json!({ "role": "system", "content": "sender: Jon" }),
+                json!({ "role": "user", "content": "earlier question" }),
+                json!({ "role": "assistant", "content": "earlier answer" }),
+                json!({ "role": "user", "content": "the new one" }),
+            ];
+            let (system, message) = session_turn_parts(&messages);
+            assert_eq!(system.as_deref(), Some("mode prompt\n\nsender: Jon"));
+            assert_eq!(message, json!("the new one"));
+        }
+
+        /// Two messages queued during one reply are both unanswered; the
+        /// chained turn carries both, oldest first.
+        #[test]
+        fn a_trailing_run_of_user_rows_joins() {
+            let messages = vec![
+                json!({ "role": "assistant", "content": "reply" }),
+                json!({ "role": "user", "content": "first queued" }),
+                json!({ "role": "user", "content": "second queued" }),
+            ];
+            let (system, message) = session_turn_parts(&messages);
+            assert_eq!(system, None);
+            assert_eq!(message, json!("first queued\n\nsecond queued"));
+        }
+
+        /// An image turn keeps its parts; earlier queued text rides ahead
+        /// of them as a text part rather than being flattened away.
+        #[test]
+        fn content_parts_survive_with_earlier_text_ahead() {
+            let messages = vec![
+                json!({ "role": "user", "content": "look at this" }),
+                json!({ "role": "user", "content": [
+                    { "type": "text", "text": "what is it?" },
+                    { "type": "image_url", "image_url": { "url": "data:x" } }
+                ] }),
+            ];
+            let (_, message) = session_turn_parts(&messages);
+            let parts = message.as_array().expect("parts");
+            assert_eq!(parts.len(), 3);
+            assert_eq!(parts[0]["text"], "look at this");
+            assert_eq!(parts[2]["type"], "image_url");
+        }
+
+        #[test]
+        fn no_user_tail_is_an_empty_message() {
+            let messages = vec![json!({ "role": "system", "content": "only prompt" })];
+            let (system, message) = session_turn_parts(&messages);
+            assert_eq!(system.as_deref(), Some("only prompt"));
+            assert_eq!(message, json!(""));
+        }
+    }
 
     /// The silence ceiling parses like a knob: unset defaults to ten minutes,
     /// garbage falls back to the same, and the floor holds at a minute.

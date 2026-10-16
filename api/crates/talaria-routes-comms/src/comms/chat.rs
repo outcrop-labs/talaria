@@ -12,7 +12,6 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_api_facades::fleet::{routed_model_for, usable_agent_gate};
-use talaria_api_facades::gateway::fleet_chat::{chat_payload, proxy_chat};
 use talaria_api_facades::model::efforts::efforts_for_model;
 use talaria_api_facades::retrieval::index::IndexDoc;
 use talaria_api_facades::retrieval::sources::index_activity;
@@ -24,7 +23,8 @@ use talaria_body::{
     optional_uuid_member, string_member, uuid_member, zod_type_name,
 };
 use talaria_chat_persist::{
-    PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream,
+    PersistMeta, PlanMeta, TurnMeta, continue_conversation, persist_assistant_stream, pinned_turn,
+    send_turn,
 };
 use talaria_conversations::{
     accessible_conversation, active_streaming_assistant, create_conversation,
@@ -640,6 +640,10 @@ pub async fn post(
             .map(|m| json!({ "role": m.role, "content": m.content })),
     );
     messages.push(json!({ "role": "user", "content": user_content }));
+    // Pinned or not is decided BEFORE the assistant row below exists: on a
+    // fresh conversation that row would otherwise be the one assistant row
+    // with no run id, and the conversation would read as legacy forever.
+    let pinned = pinned_turn(&state.pg, &agent_model, &conv_id, None).await;
     let assistant_id =
         match insert_streaming_assistant(&state.pg, &conv_id, user_seq + 1, &json!({})).await {
             Ok(id) => id,
@@ -659,13 +663,13 @@ pub async fn post(
         });
     }
 
-    let upstream = proxy_chat(
-        &chat_payload(
-            &routed_model,
-            &Value::Array(messages.clone()),
-            effort.as_deref(),
-        ),
-        None,
+    let (upstream, prompt_chars) = send_turn(
+        pinned,
+        &agent_model,
+        &routed_model,
+        &conv_id,
+        &messages,
+        effort.as_deref(),
     )
     .await;
 
@@ -673,10 +677,6 @@ pub async fn post(
     // channel — a client hang-up is a send error it ignores, exactly what a
     // tee does to its other branch), one persists server-side, detached, so
     // it completes even if the client disconnects.
-    let prompt_chars: usize = messages
-        .iter()
-        .map(|m| talaria_conversations::content_js_length(&m["content"]))
-        .sum();
     let persist_meta = PersistMeta {
         agent_model: agent_model.clone(),
         prompt_chars,

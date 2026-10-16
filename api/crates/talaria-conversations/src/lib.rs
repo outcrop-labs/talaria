@@ -1068,6 +1068,57 @@ pub async fn insert_streaming_assistant(
     Ok(id)
 }
 
+/// Stamp the Hermes run behind a streaming assistant row, the moment the
+/// stream names it (`run.started`). It is the handle a stop or a steer needs:
+/// Hermes addresses a running turn by its own run id, and nothing else in the
+/// row says which one that is.
+pub async fn set_message_run_id(
+    pg: &PgPool,
+    message_id: &str,
+    run_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update messages set hermes_run_id = $2 where id = $1::uuid")
+        .bind(message_id)
+        .bind(run_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Whether a conversation can be driven through a pinned Hermes session.
+///
+/// Hermes holds the history for a pinned conversation, so a conversation
+/// whose earlier turns went through the full-history path has a transcript
+/// Hermes never saw; sending it only the new message would answer from an
+/// empty room. The row itself says which it is: an assistant row with a run
+/// id was pinned-driven, a conversation with no assistant rows at all is
+/// fresh, and assistant rows without one are the legacy transcript — which
+/// stays on the full-history path, flip or no flip.
+pub async fn pinned_history_fits(
+    pg: &PgPool,
+    conversation_id: &str,
+    // The row to leave out — the auto-resume names the dead attempt's own
+    // row, which is in the table already and says nothing about how the
+    // conversation was driven before it. None everywhere else.
+    exclude: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let (assistants, pinned): (i64, i64) = sqlx::query_as(
+        "select count(*), count(hermes_run_id) from messages \
+         where conversation_id = $1::uuid and role = 'assistant' \
+           and ($2::text is null or id::text <> $2)",
+    )
+    .bind(conversation_id)
+    .bind(exclude)
+    .fetch_one(pg)
+    .await?;
+    Ok(pinned_history_fits_counts(assistants, pinned))
+}
+
+/// The rule behind `pinned_history_fits`, on the two counts.
+pub fn pinned_history_fits_counts(assistant_rows: i64, pinned_rows: i64) -> bool {
+    assistant_rows == 0 || pinned_rows > 0
+}
+
 /// Flush accumulated assistant state — throttled during streaming, final at
 /// end. Every flush also stamps `streamed_at`, which is the row's liveness
 /// signal everywhere liveness is asked about (the sweep above, the sidebar's

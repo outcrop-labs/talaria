@@ -1063,6 +1063,7 @@ pub async fn render_fleet(
         routed.insert("plugins".into(), Value::Object(plugins));
 
         fleet_approvals(&mut routed);
+        fleet_disabled_toolsets(&mut routed);
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
@@ -1623,6 +1624,37 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
     routed.insert("approvals".into(), Value::Object(cfg));
 }
 
+/// Hermes' own `todo` and `clarify` toolsets are the two Talaria has to take
+/// off the table, because Talaria already does both jobs and only its versions
+/// reach a person: the MCP todo tool is what lands the chips someone can see
+/// and act on, and the MCP clarify tool is what puts a question in front of
+/// them. Hermes' clarify has no callback on the API platform — the question
+/// comes back undelivered, so the agent waits on an answer nobody was ever
+/// asked for — and two todo tools leave a model guessing which list is the
+/// real one. `agent.disabled_toolsets` is Hermes' last word on tool
+/// availability (applied after everything else, at tool granularity), so this
+/// suppression holds whatever else a def says. Names a def already disabled
+/// stay: ours are added, never a replacement, and never twice.
+fn fleet_disabled_toolsets(routed: &mut Map<String, Value>) {
+    let mut agent = routed
+        .get("agent")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut disabled: Vec<Value> = agent
+        .get("disabled_toolsets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for name in ["todo", "clarify"] {
+        if !disabled.iter().any(|v| v.as_str() == Some(name)) {
+            disabled.push(json!(name));
+        }
+    }
+    agent.insert("disabled_toolsets".into(), json!(disabled));
+    routed.insert("agent".into(), Value::Object(agent));
+}
+
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
 /// before user services start.
 const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
@@ -2160,6 +2192,62 @@ service:
                 "unattended_mode": "approve", "cron_mode": "approve"
             }))
         );
+    }
+
+    #[test]
+    fn fleet_disabled_toolsets_suppresses_both_and_adds_to_a_def_list() {
+        // No authored agent block: both names land, in order, and nothing else
+        // appears under `agent`.
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_disabled_toolsets(&mut routed);
+        assert_eq!(
+            routed.get("agent"),
+            Some(&json!({ "disabled_toolsets": ["todo", "clarify"] }))
+        );
+
+        // A def that already disabled todo gets exactly one todo — the add is
+        // idempotent, so a re-render never grows the list.
+        let mut already = Map::new();
+        already.insert("agent".into(), json!({ "disabled_toolsets": ["todo"] }));
+        fleet_disabled_toolsets(&mut already);
+        assert_eq!(
+            already.get("agent"),
+            Some(&json!({ "disabled_toolsets": ["todo", "clarify"] }))
+        );
+        let mut twice = already.clone();
+        fleet_disabled_toolsets(&mut twice);
+        assert_eq!(twice, already, "the suppression is idempotent");
+
+        // A def's own names survive, and so do its other agent keys: ours are
+        // appended, never a replacement.
+        let mut authored = Map::new();
+        authored.insert(
+            "agent".into(),
+            json!({ "max_steps": 40, "disabled_toolsets": ["browser", "clarify"] }),
+        );
+        fleet_disabled_toolsets(&mut authored);
+        assert_eq!(
+            authored.get("agent"),
+            Some(&json!({
+                "max_steps": 40,
+                "disabled_toolsets": ["browser", "clarify", "todo"]
+            }))
+        );
+    }
+
+    #[test]
+    fn the_disabled_toolsets_round_trip_through_the_one_point_one_emitter() {
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_disabled_toolsets(&mut routed);
+        let yaml = yaml11_emit(&Value::Object(routed.clone()));
+        assert!(
+            yaml.contains("agent:\n  disabled_toolsets:\n    - todo\n    - clarify\n"),
+            "the block Hermes reads is missing from:\n{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(routed), "round-trip must be lossless");
     }
 
     #[test]
