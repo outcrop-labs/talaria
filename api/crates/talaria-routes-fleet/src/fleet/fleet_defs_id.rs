@@ -19,7 +19,7 @@ use talaria_body::{
     too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
+use talaria_session::{actor_of, require_agent_manager};
 use talaria_state::AppState;
 use talaria_templates::set_agent_templates;
 
@@ -216,13 +216,20 @@ pub async fn patch(
     // delegation cap at start, so either change lands by rolling the agent
     // (blue/green; the roll re-renders the incoming slot). ONE roll even when
     // both changed — the render it picks up carries everything. Fire-and-forget,
-    // never the caller's problem.
+    // never the caller's problem — the switch is already stored, so a secretbox
+    // the api cannot open is logged, not a 500 (CI tripped exactly that).
     if developer_changed || max_children_changed {
-        let sb = secretbox_or_500(&state, "[fleet/defs] secretbox unavailable").await?;
-        let (pg, model) = (state.pg.clone(), def_model.clone());
-        tokio::spawn(async move {
-            roll_agent_for_model(&pg, &sb, &model).await;
-        });
+        match state.secretbox().await {
+            Ok(sb) => {
+                let (pg, model) = (state.pg.clone(), def_model.clone());
+                tokio::spawn(async move {
+                    roll_agent_for_model(&pg, &sb, &model).await;
+                });
+            }
+            Err(e) => tracing::warn!(
+                "[fleet/defs] {def_id}: switch stored but the roll could not start — secretbox unavailable: {e}"
+            ),
+        }
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }
