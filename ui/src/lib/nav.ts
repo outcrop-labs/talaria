@@ -13,7 +13,6 @@ import {
   Activity,
   BookOpen,
   Bot,
-  CalendarRange,
   Cpu,
   FileBox,
   Hexagon,
@@ -24,7 +23,6 @@ import {
   NotebookPen,
   PlugZap,
   Settings2,
-  Telescope,
   Users,
 } from '@lucide/svelte'
 
@@ -35,10 +33,10 @@ export interface NavItem {
    *  (their manifest `icon`) — renderers must handle both. */
   icon: LucideIcon | string
   adminOnly?: boolean
-  /** Which rail badge this item carries, if any — the /api/unreads arm its
+  /** Which rail badge this item carries, if any — the /api/unreads field its
    *  count comes from. `/home` deliberately has none here: its badge is the
    *  inbox-focus plane, a different query with its own doctrine. */
-  badge?: 'comms' | 'plan' | 'research'
+  badge?: 'comms' | 'sessions' | 'work' | 'plan' | 'research'
 }
 
 // Views an admin can grant/revoke per user. Home and Settings are always
@@ -48,9 +46,15 @@ export interface NavItem {
 export const GATEABLE_VIEWS: { to: string; label: string }[] = [
   { to: '/comms', label: 'Comms' },
   { to: '/work', label: 'Work' },
-  { to: '/plan', label: 'Plan' },
+  // LEGACY DENIAL KEYS. Plan and Research are the work harness now — one rail
+  // entry, one route — but a denial is stored per user against the path it was
+  // granted against, and `/plan` / `/research` still resolve (the harness
+  // reads the selection out of either). Leaving them offerable keeps an
+  // existing denial meaningful: AppLayout bounces the old address for someone
+  // it was denied to, which a dropped row would silently re-open.
+  { to: '/plan', label: 'Plan (legacy)' },
   { to: '/boards', label: 'Boards' },
-  { to: '/research', label: 'Research' },
+  { to: '/research', label: 'Research (legacy)' },
   { to: '/knowledge', label: 'Knowledge' },
   { to: '/artifacts', label: 'Files' },
 ]
@@ -91,6 +95,14 @@ export const NAV: NavSection[] = [
       // lighting nothing.
       { to: '/home', label: 'Inbox', icon: Inbox },
       { to: '/comms', label: 'Comms', icon: MessageCircle, badge: 'comms' },
+      // ONE ENTRY FOR EVERY SESSION. Work, Plan and Research were three items
+      // pointing at three views of one shape, and the person had to decide
+      // which filing cabinet a thought belonged in before they could have it.
+      // The harness holds all three (routes/app/WorkHarness.svelte), so the
+      // rail holds one item — and its badge is the `sessions` sum, because a
+      // single entry that counted only work sessions would read as "nothing
+      // waiting" over an unread plan turn.
+      //
       // The section's `id` is also 'work' — they do not collide in the UI
       // because this section renders NO header (see the note above): the only
       // "Work" a person ever sees is this item. The icon is a notebook being
@@ -98,10 +110,8 @@ export const NAV: NavSection[] = [
       // two-pane glyph drew the arrangement instead, which is the least
       // interesting thing about it. Distinct from FileBox (Files is a
       // container) and BookOpen (Knowledge is for reading).
-      { to: '/work', label: 'Work', icon: NotebookPen },
-      { to: '/plan', label: 'Plan', icon: CalendarRange, badge: 'plan' },
+      { to: '/work', label: 'Work', icon: NotebookPen, badge: 'sessions' },
       { to: '/boards', label: 'Boards', icon: LayoutGrid },
-      { to: '/research', label: 'Research', icon: Telescope, badge: 'research' },
       { to: '/knowledge', label: 'Knowledge', icon: BookOpen },
       { to: '/artifacts', label: 'Files', icon: FileBox },
     ],

@@ -32,6 +32,7 @@ const SURFACES: Array<{ prefix: string; id: string; label: string }> = [
   { prefix: '/channels', id: 'comms', label: 'Comms' },
   { prefix: '/inbox', id: 'inbox', label: 'Inbox' },
   { prefix: '/boards', id: 'boards', label: 'Boards' },
+  { prefix: '/work', id: 'work', label: 'Work' },
   { prefix: '/plan', id: 'plan', label: 'Plan' },
   { prefix: '/research', id: 'research', label: 'Research' },
   { prefix: '/knowledge', id: 'knowledge', label: 'Knowledge' },

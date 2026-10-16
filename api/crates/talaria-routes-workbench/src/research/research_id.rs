@@ -5,7 +5,8 @@
 // `where title is null`, so a rename is not overwritten by the sweep or by
 // the fire-and-forget name that may still be in flight.
 // DELETE → owner/admin, cancelling the run first so the driver stops
-// spending on a report nobody will open.
+// spending on a report nobody will open, and taking the run's discussion
+// thread with it — one session, two rows.
 //
 // No archive. A run is ephemeral: delete is its stop, and a second state
 // beside queued/running/awaiting/done/error would be a list nobody reads.
@@ -79,9 +80,10 @@ pub async fn delete(
     if run.owner_user_id.as_deref() != Some(user.id.as_str()) && user.role != "admin" {
         return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
     }
-    // Cancels the run FIRST, then deletes the record — see the comment on
-    // `delete_research_run`. The report artifact survives either way: deleting
-    // a run clears the queue entry, not the knowledge.
+    // Cancels the run FIRST, then deletes the record and the conversation it
+    // was discussed in, in one transaction — see the comment on
+    // `delete_research_run`. The report artifact survives either way:
+    // deleting a run clears the queue entry, not the knowledge.
     if let Err(e) = delete_research_run(&state, &id).await {
         return Ok(internal("[research] delete failed", e));
     }

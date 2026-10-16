@@ -197,7 +197,7 @@ pub fn limit_inbox_model_history(turns: &[OwnedTurn]) -> Vec<OwnedTurn> {
 // the question as being about the queue. The client sends an ID, not a
 // sentence: prose from the request body would be a free write into the
 // system prompt, and an id the server must recognise is not.
-const SURFACE_BRIEFS: [(&str, &str); 19] = [
+const SURFACE_BRIEFS: [(&str, &str); 20] = [
     (
         "inbox",
         "the Inbox focus queue — the decisions Talaria has lined up for them",
@@ -212,6 +212,10 @@ const SURFACE_BRIEFS: [(&str, &str); 19] = [
         "Comms — channels, group threads and direct messages",
     ),
     ("boards", "Boards — ticket boards and the tickets on them"),
+    (
+        "work",
+        "Work — a work session, where they and an agent write one document together: the conversation stream on the left, the document beside it, and writes out to Google queued for their approval",
+    ),
     (
         "plan",
         "Plan — a shared planning document they work on with teammates and agents",

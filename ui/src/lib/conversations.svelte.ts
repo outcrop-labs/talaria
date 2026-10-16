@@ -182,8 +182,16 @@ export const markConversationRead = async (
     seq === undefined ? {} : { seq },
   )
 
+/** The user's conversations of one kind, or of the merged session set.
+ *
+ *  'sessions' is the work harness's own question — work sessions, plans and
+ *  research threads as ONE list, ordered once by the server (see
+ *  `list_conversations_in`). It is a named kind rather than a composed filter
+ *  because the server owns what is in the set: the audience predicate is per
+ *  row kind, and a client that could ask for arbitrary combinations could ask
+ *  for one nobody wrote that predicate for. */
 export function useConversations(
-  kind: MaybeGetter<'chat' | 'plan' | 'work'> = 'chat',
+  kind: MaybeGetter<'chat' | 'plan' | 'work' | 'research' | 'sessions'> = 'chat',
   archived: MaybeGetter<boolean> = false,
 ) {
   return createQuery(() => {
