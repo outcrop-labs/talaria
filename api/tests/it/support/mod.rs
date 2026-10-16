@@ -178,15 +178,22 @@ pub async fn minted_member_with_email(
     (id, format!("talaria_session={sid}"))
 }
 
-/// One request through the REAL router. Returns the status and the body as
-/// JSON (Null when the body is not JSON).
-pub async fn call_json(
+/// One request through the REAL router, answered RAW: the status, the
+/// response headers, and the body bytes.
+///
+/// `call_json` is this function with the body parsed and the headers thrown
+/// away, which is everything a JSON route's test needs and nothing a
+/// file-serving route's test can use: a document download is proven by its
+/// bytes (a zip is a zip) and by what the headers say it is (a .docx served
+/// as application/json saves as a broken file). Both answers come from the
+/// same request, so they live in one function.
+pub async fn call_bytes(
     state: &talaria_state::AppState,
     method: &str,
     path: &str,
     cookie: Option<&str>,
     body: Option<serde_json::Value>,
-) -> (axum::http::StatusCode, serde_json::Value) {
+) -> (axum::http::StatusCode, axum::http::HeaderMap, Vec<u8>) {
     use tower::ServiceExt;
     let mut req = axum::http::Request::builder().method(method).uri(path);
     if let Some(c) = cookie {
@@ -204,9 +211,23 @@ pub async fn call_json(
         .await
         .unwrap();
     let status = res.status();
+    let headers = res.headers().clone();
     let raw = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
+    (status, headers, raw.to_vec())
+}
+
+/// One request through the REAL router. Returns the status and the body as
+/// JSON (Null when the body is not JSON).
+pub async fn call_json(
+    state: &talaria_state::AppState,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> (axum::http::StatusCode, serde_json::Value) {
+    let (status, _headers, raw) = call_bytes(state, method, path, cookie, body).await;
     (
         status,
         serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null),

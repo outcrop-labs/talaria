@@ -10,6 +10,7 @@ pub mod artifacts_id;
 pub mod artifacts_id_comments;
 pub mod artifacts_id_duplicate;
 pub mod artifacts_id_edit;
+pub mod artifacts_id_export;
 pub mod artifacts_id_export_google;
 pub mod artifacts_id_links;
 pub mod artifacts_id_pull_google;

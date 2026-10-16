@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-18 routes.
+19 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -28,6 +28,7 @@
 | [`/api/artifacts/{id}/comments`](#apiartifactsidcomments) | POST | `session` |
 | [`/api/artifacts/{id}/duplicate`](#apiartifactsidduplicate) | POST | `session` |
 | [`/api/artifacts/{id}/edit`](#apiartifactsidedit) | POST | `dual` |
+| [`/api/artifacts/{id}/export`](#apiartifactsidexport) | GET | `dual` |
 | [`/api/artifacts/{id}/export/google`](#apiartifactsidexportgoogle) | POST | `dual` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | POST | `session` |
 | [`/api/artifacts/{id}/links`](#apiartifactsidlinks) | DELETE | `session` |
@@ -245,6 +246,20 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_edit.rs`](.
 Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
 through the `crate::body` member vocabulary — the field set lives in the route
 source.
+
+## `/api/artifacts/{id}/export`
+
+Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_export.rs`](../../api/crates/talaria-routes-knowledge/src/files/artifacts_id_export.rs)
+
+> /api/artifacts/{id}/export?format=docx|xlsx. Download an artifact as an
+> Office file.
+>
+> The twin of the Google export without Google: the same read gate, but no
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `dual` | — | `…` | 400, 403, 404 | — |
 
 ## `/api/artifacts/{id}/export/google`
 

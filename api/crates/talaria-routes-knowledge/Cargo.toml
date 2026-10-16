@@ -20,6 +20,7 @@ talaria-audit = { workspace = true }
 talaria-body = { workspace = true }
 talaria-error = { workspace = true }
 talaria-notify = { workspace = true }
+talaria-office = { workspace = true }
 talaria-params = { workspace = true }
 talaria-permissions = { workspace = true }
 talaria-personal-agent = { workspace = true }

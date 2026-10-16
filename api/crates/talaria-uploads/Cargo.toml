@@ -19,6 +19,7 @@ talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
 talaria-error = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-office = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-storage = { workspace = true }
 tokio = { workspace = true }
