@@ -202,6 +202,7 @@ jobs:
       cli: ${{ steps.d.outputs.cli }}
       api: ${{ steps.d.outputs.api }}
       desktop: ${{ steps.d.outputs.desktop }}
+      mobile: ${{ steps.d.outputs.mobile }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -278,6 +279,7 @@ jobs:
           surface cli     'cli/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface api     'api/*' '.github/workflows/ci.yml' '.github/actions/**'
           surface desktop 'desktop/*' '.github/workflows/ci.yml' '.github/actions/**'
+          surface mobile  'mobile/*' '.github/workflows/ci.yml' '.github/actions/**'
 
   # Deliberately FIRST and deliberately dependency-free: it needs no install,
   # so it reports in well under a minute and a PR that re-introduces a known bug
@@ -564,3 +566,114 @@ jobs:
       - name: Typecheck
         working-directory: desktop
         run: bun run typecheck
+
+  # The surface gate, on Linux: what `bun run mobile:check` runs, and what a
+  # devbox runs. `--no-daemon` because a CI runner is thrown away afterwards and
+  # a lingering daemon only costs it memory.
+  mobile:
+    name: test + assemble (mobile)
+    needs: [changes]
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      # JDK 21: AGP and Gradle both fully support it, and newer JDKs lead AGP
+      # by months. mobile/tools/devbox-install.sh installs the same major.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner image ships an Android SDK; this adds only what the project
+      # pins. API 37 exists ONLY as a dotted minor (37.0/.1/.2) — there is no
+      # plain `android-37` — and AndroidX Compose 1.12 refuses to compile
+      # against anything below 37, failing in checkDebugAarMetadata a long way
+      # from the cause. The provisioner knows the same thing.
+      - name: Android platform the project pins
+        run: |
+          set -eu
+          sdkmanager=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
+          [ -x "$sdkmanager" ] || { echo "no sdkmanager on this runner" >&2; exit 1; }
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" --install 'platforms;android-37.2' 'build-tools;37.0.0' >/dev/null
+
+      # The shared module's tests INCLUDE the headless UI ones: runComposeUiTest
+      # composes the real tree against Skia's software renderer, so there is no
+      # emulator and no display here. iOS is the next job's business — Kotlin/
+      # Native cannot build Apple targets off macOS.
+      - name: Test (shared, including the headless UI suite)
+        working-directory: mobile
+        run: ./gradlew :shared:jvmTest --no-daemon
+
+      - name: Assemble (android)
+        working-directory: mobile
+        run: ./gradlew :androidApp:assembleDebug --no-daemon
+
+  # THE APPLE LEG, and the only place it exists. Kotlin/Native needs Xcode's
+  # linker, so `iosArm64` and `iosSimulatorArm64` are declared on every host and
+  # buildable on exactly one — `kotlin.native.ignoreDisabledTargets` is what
+  # lets a Linux box configure this build rather than fail it. Until this job
+  # runs, those targets have never been compiled at all.
+  #
+  # BLOCKING, as of the run that first proved it works: both targets compiled
+  # and `linkDebugFrameworkIosSimulatorArm64` succeeded on PR #540. It was
+  # briefly `continue-on-error` for the honest reason that a job which had never
+  # been green must not gate the Android work being tested on real devices — and
+  # that reason expired the moment it went green.
+  #
+  # It has to be blocking rather than advisory, because this is the ONLY place
+  # the Apple targets are ever built: nobody compiles them locally (Kotlin/
+  # Native needs Xcode), so an advisory cross here means commonMain quietly
+  # stops being multiplatform and nobody finds out until somebody wants an iOS
+  # build. LINKING is checked for the same reason — a klib can compile and still
+  # fail to link, and linking is what an `iosApp/` project will depend on.
+  mobile-ios:
+    name: compile + link (mobile ios)
+    needs: [changes]
+    if: needs.changes.outputs.mobile == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Needed even though nothing Android is built here: `:shared` declares an
+      # android target, so Gradle must be able to CONFIGURE it before it will
+      # compile anything at all.
+      - name: Android platform (to configure :shared)
+        run: |
+          set -eu
+          sdkmanager=$(command -v sdkmanager || echo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager")
+          [ -x "$sdkmanager" ] || { echo "no sdkmanager on this runner" >&2; exit 1; }
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          "$sdkmanager" --install 'platforms;android-37.2' 'build-tools;37.0.0' >/dev/null
+
+      # Device and Apple-silicon simulator. NOT iosX64: Compose Multiplatform
+      # 1.12 no longer publishes an Intel-simulator variant, so declaring it
+      # fails resolution for every Compose-dependent source set.
+      - name: Compile the Apple targets
+        working-directory: mobile
+        run: ./gradlew :shared:compileKotlinIosArm64 :shared:compileKotlinIosSimulatorArm64 --no-daemon
+
+      # The framework Swift will consume. Linking is a separate failure mode
+      # from compiling — a klib can compile and still fail to link — and it is
+      # what an iosApp/ Xcode project will depend on.
+      - name: Link the shared framework
+        working-directory: mobile
+        run: ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 --no-daemon
