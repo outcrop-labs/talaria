@@ -1,8 +1,19 @@
 // `talaria setup` — first-time dev setup: blank machine → ready-to-run
-// stack. Idempotent: existing files are left alone; run it again any time.
-// Port of scripts/setup.sh. Follow it with `bun talaria dev`.
+// stack. Port of scripts/setup.sh. Follow it with `bun talaria dev`.
+//
+// RE-RUNNABLE ON A LIVE INSTALL, AND THAT IS A CONTRACT: every step below is
+// gated on its own artifact, so on a checkout that is already set up the
+// command regenerates nothing, pulls nothing, builds nothing — it refreshes
+// the `talaria` PATH shim and the git wiring and verifies what is there. The
+// reason this is spelled out rather than left to "idempotent": the shim is
+// the thing people come back to setup FOR (a fresh shell, a new machine user,
+// a checkout that moved), and a re-run that also re-pulled six images and
+// rebuilt two packages taught everyone to never run it again — which is how
+// installs ended up with no `talaria` on PATH at all. Secrets are never
+// regenerated once ui/.env exists; a missing piece (no mcp/dist, an image not
+// yet pulled) is added, and only that piece.
 
-import { accessSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, constants } from 'node:fs'
+import { accessSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, constants } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -11,11 +22,19 @@ import type { Leaf } from '../cli'
 import { envValue } from '../envfile'
 import { composeArgs, ensureNetwork, stackComposeFiles } from '../compose'
 import { PG_PORT, REDIS_PORT, SEARCH_PORT } from '../ports'
+import { mcpToolkit, ompAuthBridge } from './dev'
 
 const rand = (bytes: number): string => randomBytes(bytes).toString('hex')
 
 export async function runSetup(ctx: Ctx): Promise<number> {
   const root = ctx.root
+  // The one fact that decides the re-run posture. ui/.env is the first thing
+  // setup creates and the one file nothing else can recreate (it holds the
+  // encryption root), so its presence IS "this checkout was set up".
+  const existing = existsSync(join(root, 'ui/.env'))
+  if (existing) {
+    ctx.log.say('Existing install (ui/.env present) — nothing is regenerated; only what is missing is added')
+  }
 
   ctx.log.say('Checking prerequisites')
   const need = async (cmd: string, args: string[], how: string) => {
@@ -56,6 +75,61 @@ export async function runSetup(ctx: Ctx): Promise<number> {
     }
   }
   ctx.log.ok(`docker, compose, node ${process.versions.node}, bun ${bunVersion}`)
+
+  // THE SHIM AND THE GIT WIRING COME FIRST, before anything that can take
+  // minutes or die. They are cheap, they touch nothing inside the checkout
+  // but git config, and on an existing install they are the whole point of
+  // the re-run — a `talaria` that only lands after six image pulls and two
+  // package builds succeed is a `talaria` most re-runs never reach.
+  ctx.log.say('`talaria` on your PATH')
+  // The docs spell `bun talaria …` because that form works on any fresh
+  // checkout with no setup step; this shim is the convenience setup leaves
+  // behind — plain `talaria …` from anywhere. It points at the PRIMARY
+  // checkout (a linked worktree is temporary — see shimTarget), and is a
+  // plain sh script so nothing about it needs bun to read.
+  const target = shimTarget(ctx)
+  if (target !== root) ctx.log.say(`linked worktree — the shim keeps pointing at the primary checkout ${target}`)
+  const shim = installShim(ctx, target)
+  ctx.log.ok(shim)
+  if (!(ctx.env.PATH ?? '').split(':').includes(dirname(shim))) {
+    ctx.log.warn(`${dirname(shim)} is not on your PATH — add it, or set TALARIA_BIN_DIR and re-run`)
+  }
+
+  ctx.log.say('Git convenience')
+  // `git wt <name>` → an isolated dev worktree (own DB seeded from main).
+  // Using this instead of a plain `git worktree add` keeps a second app off
+  // your main DB.
+  try {
+    await ctx.exec('git', ['config', 'alias.wt', '!bun cli/bin/talaria.ts worktree'])
+    ctx.log.ok('git wt → talaria worktree')
+  } catch {
+    ctx.log.skip('git alias')
+  }
+
+  // The branch-flow guard, wired where git will actually run it: `git push`
+  // then refuses a push to a long-lived branch from a working copy, naming the
+  // rule and the way to do it instead — the same policy CI runs
+  // (.github/workflows/flow.yml; docs/BRANCHES.md). Installed by setup rather
+  // than by hand because a guard most clones never install is a guard that does
+  // not exist, and this is the mistake nobody notices until it is on main.
+  //
+  // Repository-scoped on purpose: linked worktrees (`git wt`) share the repo
+  // config, and git resolves a relative core.hooksPath against the top of the
+  // working tree — so one setting covers every worktree of this clone.
+  const hooksPath = 'scripts/hooks'
+  const currentHooks = await ctx
+    .exec('git', ['config', '--get', 'core.hooksPath'])
+    .then((r) => r.stdout.trim())
+    // Unset exits 1. That is the normal first run, not a failure.
+    .catch(() => '')
+  if (currentHooks === hooksPath) {
+    ctx.log.skip(`git hooks (already ${hooksPath})`)
+  } else if ((await ctx.run('git', ['config', 'core.hooksPath', hooksPath])) === 0) {
+    if (currentHooks) ctx.log.warn(`core.hooksPath was ${currentHooks} — this repo's hooks replace it`)
+    ctx.log.ok(`git hooks → ${hooksPath} (pre-push refuses a push to main or rc)`)
+  } else {
+    ctx.log.skip('git hooks')
+  }
 
   const pgPort = ctx.env.TALARIA_PG_PORT ?? PG_PORT
   const redisPort = ctx.env.TALARIA_REDIS_PORT ?? REDIS_PORT
@@ -180,14 +254,27 @@ LLM_MODEL=
     const net = await ensureNetwork(ctx, 'talaria')
     if (net === 'created') ctx.log.ok('network talaria')
     else ctx.log.skip('network talaria (exists, kept)')
-    const pull = await ctx.run('docker', [
-      'compose',
-      ...composeArgs({ files: stackComposeFiles(root, 'docker/dev-compose.yml') }),
-      'pull',
-      '-q',
-    ])
-    if (pull === 0) ctx.log.ok('infra images ready (postgres, redis, qdrant, embeddings, storage, searxng)')
-    else ctx.log.warn('image pull incomplete — `talaria dev` will retry; see errors above')
+    // ONLY THE IMAGES THE DAEMON DOES NOT HAVE. `compose pull` with no
+    // service list contacts the registry for all six on every run — minutes
+    // on a slow link, and a refusal with the network down — for images that
+    // are already here. Ask compose which images the stack resolves to, ask
+    // the daemon which of those exist, pull the rest.
+    const files = stackComposeFiles(root, 'docker/dev-compose.yml')
+    const missing = await missingImageServices(ctx, files)
+    if (missing === null) {
+      // Could not enumerate (compose too old for --format json, or the
+      // daemon answered oddly): the pre-check is an optimisation, not a
+      // gate, so fall back to pulling everything — the old behaviour.
+      const pull = await ctx.run('docker', ['compose', ...composeArgs({ files }), 'pull', '-q'])
+      if (pull === 0) ctx.log.ok('infra images ready (postgres, redis, qdrant, embeddings, storage, searxng)')
+      else ctx.log.warn('image pull incomplete — `talaria dev` will retry; see errors above')
+    } else if (missing.length === 0) {
+      ctx.log.skip('infra images (all present, kept)')
+    } else {
+      const pull = await ctx.run('docker', ['compose', ...composeArgs({ files }), 'pull', '-q', ...missing])
+      if (pull === 0) ctx.log.ok(`infra images pulled: ${missing.join(', ')}`)
+      else ctx.log.warn('image pull incomplete — `talaria dev` will retry; see errors above')
+    }
   } catch {
     /* daemon check already warned */
   }
@@ -205,80 +292,20 @@ LLM_MODEL=
   // fleet's Talaria toolkit, spawned by the Rust api (api/src/mcp/service.rs).
   // dist is gitignored, so a fresh clone has no toolkit at all until this
   // runs. Not optional: without it every agent's tool calls fail and the only
-  // trace is one stderr line from the mcp service.
+  // trace is one stderr line from the mcp service. The same predicate
+  // `talaria dev` runs on every boot decides whether anything happens here:
+  // dist missing or older than any source → build; otherwise nothing.
   ctx.log.say('Fleet toolkit (mcp/)')
-  if (!existsSync(join(root, 'mcp/node_modules'))) {
-    const code = await ctx.run('bun', ['install'], { cwd: join(root, 'mcp') })
-    if (code !== 0) ctx.log.die('bun install failed in mcp/')
-    ctx.log.ok('bun install (mcp)')
-  } else {
-    ctx.log.skip('mcp/node_modules (exists, kept)')
-  }
-  const build = await ctx.run('bun', ['run', 'build'], { cwd: join(root, 'mcp') })
-  if (build !== 0) ctx.log.die('mcp/ failed to build — the fleet toolkit will not start; fix mcp/src and re-run')
-  ctx.log.ok('mcp/dist built')
+  await mcpToolkit(ctx)
 
   // omp-auth/ is the coding-account auth bridge: a self-contained bundle the
   // Rust api spawns to run Oh My Pi's own OAuth flows and token refreshes.
   // NON-FATAL, unlike the toolkit above — coding accounts are opt-in behind an
   // admin toggle, so a setup that cannot build this still yields a working
-  // instance; only that one feature reports the bridge as missing.
+  // instance; only that one feature reports the bridge as missing. Same
+  // staleness predicate as dev, same answer: a fresh bundle is left alone.
   ctx.log.say('Coding-account auth bridge (omp-auth/)')
-  if (!existsSync(join(root, 'omp-auth/node_modules'))) {
-    const code = await ctx.run('bun', ['install'], { cwd: join(root, 'omp-auth') })
-    if (code !== 0) ctx.log.warn('bun install failed in omp-auth/ — coding accounts will be unavailable')
-  }
-  const bridge = await ctx.run('bun', ['run', 'build'], { cwd: join(root, 'omp-auth') })
-  if (bridge !== 0) ctx.log.warn('omp-auth/ failed to build — coding accounts will be unavailable')
-  else ctx.log.ok('omp-auth/dist built')
-
-  ctx.log.say('Git convenience')
-  // `git wt <name>` → an isolated dev worktree (own DB seeded from main).
-  // Using this instead of a plain `git worktree add` keeps a second app off
-  // your main DB.
-  try {
-    await ctx.exec('git', ['config', 'alias.wt', '!bun cli/bin/talaria.ts worktree'])
-    ctx.log.ok('git wt → talaria worktree')
-  } catch {
-    ctx.log.skip('git alias')
-  }
-
-  // The branch-flow guard, wired where git will actually run it: `git push`
-  // then refuses a push to a long-lived branch from a working copy, naming the
-  // rule and the way to do it instead — the same policy CI runs
-  // (.github/workflows/flow.yml; docs/BRANCHES.md). Installed by setup rather
-  // than by hand because a guard most clones never install is a guard that does
-  // not exist, and this is the mistake nobody notices until it is on main.
-  //
-  // Repository-scoped on purpose: linked worktrees (`git wt`) share the repo
-  // config, and git resolves a relative core.hooksPath against the top of the
-  // working tree — so one setting covers every worktree of this clone.
-  const hooksPath = 'scripts/hooks'
-  const currentHooks = await ctx
-    .exec('git', ['config', '--get', 'core.hooksPath'])
-    .then((r) => r.stdout.trim())
-    // Unset exits 1. That is the normal first run, not a failure.
-    .catch(() => '')
-  if (currentHooks === hooksPath) {
-    ctx.log.skip(`git hooks (already ${hooksPath})`)
-  } else if ((await ctx.run('git', ['config', 'core.hooksPath', hooksPath])) === 0) {
-    if (currentHooks) ctx.log.warn(`core.hooksPath was ${currentHooks} — this repo's hooks replace it`)
-    ctx.log.ok(`git hooks → ${hooksPath} (pre-push refuses a push to main or rc)`)
-  } else {
-    ctx.log.skip('git hooks')
-  }
-
-  ctx.log.say('`talaria` on your PATH')
-  // The docs spell `bun talaria …` because that form works on any fresh
-  // checkout with no setup step; this shim is the convenience setup leaves
-  // behind — plain `talaria …` from anywhere. It points at THIS checkout
-  // (re-running setup elsewhere repoints it), and is a plain sh script so
-  // nothing about it needs bun to read.
-  const shim = installShim(ctx)
-  ctx.log.ok(shim)
-  if (!(ctx.env.PATH ?? '').split(':').includes(dirname(shim))) {
-    ctx.log.warn(`${dirname(shim)} is not on your PATH — add it, or set TALARIA_BIN_DIR and re-run`)
-  }
+  await ompAuthBridge(ctx)
 
   // ── Verify what we just produced ─────────────────────────────────────────
   // This block exists because an install once shipped with a ui/.env that
@@ -328,7 +355,7 @@ LLM_MODEL=
   }
   ctx.log.ok('database + redis configured')
 
-  ctx.log.say('Setup complete.')
+  ctx.log.say(existing ? 'Setup verified — nothing regenerated, nothing rebuilt that was current.' : 'Setup complete.')
   ctx.log.raw(`
   Start everything:   talaria dev           (or: bun talaria dev)
   App:                http://localhost:5273
@@ -358,11 +385,33 @@ export function shimDir(ctx: Ctx): string {
   return existsSync(join(home, '.bun/bin')) ? join(home, '.bun/bin') : join(home, '.local/bin')
 }
 
+/** The checkout the shim should run: this one — unless this one is a LINKED
+ *  git worktree (its `.git` is a file naming the primary's gitdir), in which
+ *  case the primary. `talaria worktree` checkouts are torn down when their
+ *  pull request merges, and a shim pointed at one is a `talaria` that stops
+ *  working the day the task is done. Any shape this cannot read (a bare
+ *  `.git` dir, a gitdir line that does not look like a worktree's, a primary
+ *  with no CLI in it) falls back to this checkout. */
+export function shimTarget(ctx: Ctx): string {
+  const dotGit = join(ctx.root, '.git')
+  try {
+    if (!statSync(dotGit).isFile()) return ctx.root
+    const gitdir = readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+?)\s*$/m)?.[1]
+    if (!gitdir) return ctx.root
+    // <primary>/.git/worktrees/<name> → <primary>
+    const primary = gitdir.replace(/\/\.git\/worktrees\/[^/]+\/?$/, '')
+    if (primary === gitdir || !existsSync(join(primary, 'cli/bin/talaria.ts'))) return ctx.root
+    return primary
+  } catch {
+    return ctx.root
+  }
+}
+
 /** Write the `talaria` command: a two-line sh shim that execs bun against
- *  THIS checkout's CLI. Overwrites (repointing) on re-run by design. */
-export function installShim(ctx: Ctx): string {
-  const root = ctx.root
-  if (root.includes("'")) ctx.log.die(`refusing to write the PATH shim: repo path ${root} contains a single quote`)
+ *  `target`'s CLI (this checkout by default — shimTarget picks). Overwrites
+ *  (repointing) on re-run by design. */
+export function installShim(ctx: Ctx, target: string = ctx.root): string {
+  if (target.includes("'")) ctx.log.die(`refusing to write the PATH shim: repo path ${target} contains a single quote`)
   const dir = shimDir(ctx)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'talaria')
@@ -370,11 +419,39 @@ export function installShim(ctx: Ctx): string {
     path,
     `#!/bin/sh
 # Installed by \`talaria setup\`; re-run setup in a checkout to repoint it.
-exec bun '${root}/cli/bin/talaria.ts' "$@"
+exec bun '${target}/cli/bin/talaria.ts' "$@"
 `,
   )
   chmodSync(path, 0o755)
   return path
+}
+
+/** The services of `files` whose resolved image the daemon does not hold —
+ *  the pull list. Null when the question could not be answered (compose
+ *  without `config --format json`, unparseable output): the caller then
+ *  pulls everything, which is the answer that is never wrong, only slow.
+ *  A service with no `image:` (a build-only one) is not an image to pull. */
+export async function missingImageServices(ctx: Ctx, files: string[]): Promise<string[] | null> {
+  let services: Record<string, { image?: unknown }>
+  try {
+    const out = (await ctx.exec('docker', ['compose', ...composeArgs({ files }), 'config', '--format', 'json'])).stdout
+    const parsed: unknown = JSON.parse(out)
+    const s = (parsed as { services?: unknown } | null)?.services
+    if (!s || typeof s !== 'object') return null
+    services = s as Record<string, { image?: unknown }>
+  } catch {
+    return null
+  }
+  const missing: string[] = []
+  for (const [name, svc] of Object.entries(services)) {
+    if (typeof svc?.image !== 'string' || !svc.image) continue
+    try {
+      await ctx.exec('docker', ['image', 'inspect', svc.image])
+    } catch {
+      missing.push(name)
+    }
+  }
+  return missing
 }
 
 /** An install that predates TALARIA_SECRET_KEY has been wrapping its secrets
@@ -414,7 +491,7 @@ TALARIA_SECRET_KEY=${existing}
 export const setupCommand: Leaf = {
   kind: 'leaf',
   name: 'setup',
-  summary: 'first-run dev bootstrap: secrets, fleet config, images, deps',
+  summary: 'first-run dev bootstrap (secrets, fleet config, images, deps); re-run on a live install refreshes only the PATH shim + git wiring',
   usage: 'talaria setup',
   run: runSetup,
 }
