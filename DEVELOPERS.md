@@ -23,8 +23,11 @@ talaria dev                 # dev infra + the app → http://localhost:5273
 Setup also puts a bare `talaria` command on your PATH — a two-line sh shim in bun's bin dir
 (`~/.local/bin` if bun's isn't there; `TALARIA_BIN_DIR` overrides) that runs this checkout's
 CLI from anywhere. It points at the checkout that most recently ran setup, so re-running
-setup elsewhere repoints it. The rest of this repo spells `bun talaria …` because that form
-works on any fresh checkout with no setup step.
+setup in another clone repoints it (a linked `talaria worktree` keeps it pointed at the
+primary — worktrees are temporary). **Re-run setup any time**: on a checkout that is already
+set up it regenerates nothing, pulls nothing and rebuilds nothing that is current — it
+refreshes the shim and the git wiring and adds only what is missing. The rest of this repo
+spells `bun talaria …` because that form works on any fresh checkout with no setup step.
 
 Then:
 
