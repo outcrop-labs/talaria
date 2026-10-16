@@ -12,6 +12,7 @@ import {
   selectRemoval,
   verdict,
   worktreeName,
+  worktreeProjectOwner,
 } from './cleanup-sweep.mjs'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -74,6 +75,13 @@ check('a stale clean worktree is removable; dirty or unpushed is only flagged', 
 check('old scratch is removable; yesterday is not', () => {
   eq(classify(stale({ kind: 'tmp', ageMs: POLICY.tmpStaleMs + 1 })), 'remove')
   eq(classify(stale({ kind: 'tmp', ageMs: POLICY.tmpStaleMs - 1 })), 'keep')
+})
+
+check("a worktree's fleet project belongs to the worktree, not to a worktree named -fleet", () => {
+  eq(worktreeProjectOwner('talaria-wt-agent-todo'), 'agent-todo')
+  eq(worktreeProjectOwner('talaria-wt-agent-todo-fleet'), 'agent-todo')
+  eq(worktreeProjectOwner('talaria-dogfood-fleet'), null)
+  eq(worktreeProjectOwner('talaria'), null)
 })
 
 check('an orphan compose project is removable even if it looks live', () => {

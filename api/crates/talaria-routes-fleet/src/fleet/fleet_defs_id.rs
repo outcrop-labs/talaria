@@ -8,7 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
-use talaria_agent_defs::{AgentMetaPatch, update_agent_meta};
+use talaria_agent_defs::{AgentMetaPatch, set_pinned_sessions, update_agent_meta};
 use talaria_api_facades::mcp::apply::roll_agent_for_model;
 use talaria_api_facades::workbench::set_developer;
 use talaria_audit::{AuditEntry, log_audit};
@@ -101,6 +101,12 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Pinned sessions: one Hermes session per conversation, Hermes holding the
+    // history, so its compaction and session search see the whole thread. Talaria-side only — no roll.
+    let pinned_sessions = match optional_boolean_member(obj, "pinnedSessions") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
 
     // The def read: the columns this route touches. The body parses BEFORE
     // the lookup, so a bad body on an unknown id is the 400, not the 404.
@@ -138,6 +144,13 @@ pub async fn patch(
         },
         None => false,
     };
+    let pinned_changed = match pinned_sessions {
+        Some(on) => match set_pinned_sessions(&state.pg, &def_id, on).await {
+            Ok(changed) => changed,
+            Err(e) => return Ok(internal("[fleet/defs] pinned sessions set failed", e)),
+        },
+        None => false,
+    };
     if ticket_template_id.is_some() || plan_template_id.is_some() {
         // Template binds key on the agent's MODEL, not its id — the same
         // identity the chain resolves by.
@@ -165,6 +178,35 @@ pub async fn patch(
         },
     )
     .await;
+    if pinned_changed && let Some(on) = pinned_sessions {
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "agent.pinned_sessions",
+                target_type: "agent",
+                target_id: Some(&def_id),
+                target_label: Some(&def_display_name),
+                before: Some(json!({ "pinnedSessions": !on })),
+                after: Some(json!({ "pinnedSessions": on })),
+            },
+        )
+        .await;
+    }
+    // The pinned flip changes how TALARIA drives the agent — which Hermes
+    // endpoint the next turn goes to — and nothing in the container, so it
+    // takes effect on the next turn with no roll. The Developer switch is
+    // the one that rolls: a running Hermes wires its MCP servers and
+    // container env at start, so that change lands by re-rendering the
+    // incoming slot (blue/green). Fire-and-forget, never the caller's
+    // problem.
+    if developer_changed {
+        let sb = secretbox_or_500(&state, "[fleet/defs] secretbox unavailable").await?;
+        let (pg, model) = (state.pg.clone(), def_model.clone());
+        tokio::spawn(async move {
+            roll_agent_for_model(&pg, &sb, &model).await;
+        });
+    }
     if developer_changed && let Some(on) = developer {
         log_audit(
             &state.pg,
@@ -179,15 +221,6 @@ pub async fn patch(
             },
         )
         .await;
-        // A running Hermes wires its MCP servers and container env at start,
-        // so the switch lands by rolling the agent (blue/green; the roll
-        // re-renders the incoming slot). Fire-and-forget, never the caller's
-        // problem.
-        let sb = secretbox_or_500(&state, "[fleet/defs] secretbox unavailable").await?;
-        let (pg, model) = (state.pg.clone(), def_model.clone());
-        tokio::spawn(async move {
-            roll_agent_for_model(&pg, &sb, &model).await;
-        });
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }

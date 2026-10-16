@@ -56,6 +56,9 @@ export interface AgentDef {
   source: 'imported' | 'created'
   /** The Developer Agent switch: dev sandbox + Oh My Pi + the Workbench tools. */
   developer: boolean
+  /** Pinned sessions: one Hermes session per conversation, Hermes holding the
+   *  history, so its compaction and session search cover the whole thread. */
+  pinnedSessions: boolean
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
   planTemplateId: string | null
@@ -272,7 +275,7 @@ export function useFleetHires(enabled: MaybeGetter<boolean>) {
 /** Update an agent's editable identity (role, display name, template bindings). */
 export async function patchAgentMeta(
   id: string,
-  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean },
+  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean; pinnedSessions?: boolean },
 ): Promise<{ ok?: boolean; error?: string }> {
   try {
     return await patchJson<{ ok: boolean }>(`/api/fleet/defs/${id}`, patch)

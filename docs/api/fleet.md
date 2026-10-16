@@ -255,6 +255,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
 | `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
+| `pinnedSessions` | `bool?` | Pinned sessions: one Hermes session per conversation, Hermes holding the history, so its compaction and session search see the whole thread. Talaria-side only — no roll. |
 
 ## `/api/fleet/defs/{id}/edit`
 

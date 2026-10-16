@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, Wrench, X } from '@lucide/svelte'
+  import { Check, Info, Wrench, X } from '@lucide/svelte'
   import PlatformLinkChip from './PlatformLinkChip.svelte'
   import TodoPlan from './TodoPlan.svelte'
   import AskCard from './AskCard.svelte'
@@ -18,9 +18,10 @@
   } from '@/lib/chips'
 
   // Persisted chips that are not already painted from the prose: exposed
-  // tools, protected-action approvals, unlocks, and links the agent produced
-  // without pasting the URL. Clicking a tool (or an unlocked tool name)
-  // opens its inputs inline. Approve/deny stay on the approval chip.
+  // tools, protected-action approvals, unlocks, notices about the row itself,
+  // and links the agent produced without pasting the URL. Clicking a tool (or
+  // an unlocked tool name) opens its inputs inline. Approve/deny stay on the
+  // approval chip; a notice has nothing to click.
   let {
     chips,
     content = '',
@@ -161,6 +162,19 @@
             </button>
           {/each}
         </div>
+      {:else if chip.kind === 'notice'}
+        <!-- A fact about the row, in the muted voice: what happened to this
+             message, not something to do about it. So it is a span and not a
+             button — a notice with an action would be an approval. The detail
+             is the title, because the pill has to stay short enough to read
+             beside the words it belongs to. -->
+        <span
+          class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-1 font-sans text-xs text-muted"
+          title={chip.detail || undefined}
+        >
+          <Info size={13} class="shrink-0 text-ink-dim" />
+          <span class="truncate">{chip.label}</span>
+        </span>
       {/if}
       {#if openTool === chip.id || (chip.kind === 'unlock' && openTool?.startsWith(`${chip.id}:`))}
         {@const name = chip.kind === 'tool' ? (chip.tool ?? '') : (openTool?.split(':').pop() ?? '')}

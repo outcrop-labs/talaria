@@ -4363,6 +4363,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-defs",
  "talaria-body",
  "talaria-conversations",
  "talaria-fleet-agents",
