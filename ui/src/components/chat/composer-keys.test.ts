@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, test } from 'vitest'
-import { menuHandlesKey, shouldSendOnEnter } from './composer-keys'
+import { menuHandlesKey, shouldSendNowOnModEnter, shouldSendOnEnter } from './composer-keys'
 
 // The composer's Enter contract, encoded as pure decisions the .svelte layers
 // call: TALA-5 — Enter was intermittently swallowed because the suggestion
@@ -45,5 +45,28 @@ describe("shouldSendOnEnter — the send keymap's decision", () => {
 
   test('composition already ended — Enter sends again', () => {
     assert.equal(shouldSendOnEnter({ inCodeBlock: false, compositionActive: false }), true)
+  })
+})
+
+describe('shouldSendNowOnModEnter — ⌘/Ctrl+⏎ is the mid-turn send', () => {
+  const ctx = (over: Partial<Parameters<typeof shouldSendNowOnModEnter>[0]> = {}) =>
+    shouldSendNowOnModEnter({ offered: true, hasText: true, ...over })
+
+  test('a reply is streaming and the well has words — the press steers', () => {
+    assert.equal(ctx(), true)
+  })
+
+  test('nothing streaming: the binding is not ours and falls through to the editor', () => {
+    // No host offer means no steer to make, so the press keeps whatever it
+    // has always done in the well (StarterKit’s hard break).
+    assert.equal(ctx({ offered: false }), false)
+  })
+
+  test('an empty well is not a steer — a steer carries the composer’s words', () => {
+    assert.equal(ctx({ hasText: false }), false)
+  })
+
+  test('an Enter that belongs to a composition never steers, same as plain Enter', () => {
+    assert.equal(ctx({ compositionActive: true }), false)
   })
 })

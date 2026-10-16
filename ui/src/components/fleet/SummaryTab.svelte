@@ -8,6 +8,7 @@
   import { useFleet, relativeTime } from '@/lib/fleet'
   import { patchAgentMeta, type AgentDef, type ModelTarget } from '@/lib/fleet-defs'
   import DeveloperAgentControl from './DeveloperAgentControl.svelte'
+  import PinnedSessionsControl from './PinnedSessionsControl.svelte'
   import Stat from './Stat.svelte'
   import TemplateBindings from './TemplateBindings.svelte'
 
@@ -178,6 +179,8 @@
   {/if}
   <!-- Developer Agent: one switch for sandbox, Oh My Pi, Workbench tools. -->
   <DeveloperAgentControl {def} {canManage} />
+  <!-- Pinned sessions: the conversation is the Hermes session. -->
+  <PinnedSessionsControl {def} {canManage} />
   <div class="grid grid-cols-2 gap-3">
     <Stat label="Model id" value={def.model} />
     <Stat label="Department" value={def.department} />

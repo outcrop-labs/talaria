@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-26 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -27,6 +27,7 @@
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
+| [`/api/agents/uploads`](#apiagentsuploads) | POST | `agent` |
 | [`/api/gaps`](#apigaps) | GET | `session` |
 | [`/api/gaps/{id}`](#apigapsid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/muse`](#apimuse) | POST | `session` |
@@ -300,6 +301,28 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/tool_events.rs`](../../api/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `agent` | — | `{ok, landed}` | 200, 400 | — |
+
+## `/api/agents/uploads`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/uploads.rs`](../../api/crates/talaria-routes-fleet/src/agents/uploads.rs)
+
+> POST /api/agents/uploads.
+>
+> THE DOOR FOR BYTES THE AGENT MADE ITSELF. A persona that takes a browser
+> screenshot holds a PNG inside its own container and no other wire can carry
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentsuploads-body) | `{ok, uploadId, landed}` | 200, 400, 409, 500 | — |
+
+### POST `/api/agents/uploads` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `filename` | `string trimmed(1, 200)` |  |
+| `mime` | `string(1, 100)` |  |
+| `dataBase64` | `string(1)` |  |
 
 ## `/api/gaps`
 

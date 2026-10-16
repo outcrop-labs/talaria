@@ -305,20 +305,49 @@ pub struct ConversationListRow {
     pub position: Option<i32>,
 }
 
-/// The user's conversations of a given kind, newest activity first. Plans
-/// and work sessions are multiplayer: your own AND ones shared with you;
-/// chats stay strictly your own. `archived` selects
-/// the retired set (`true`) or the live one (`false`) — the same flag the
-/// list has always filtered, now a parameter so a plan the owner archived
-/// can be found again. Decay only ever sets it on kind = 'chat'.
-///
-/// THE ORDER IS THE VIEWER'S: their pinned threads first, then the slots they
-/// placed by hand, then newest activity — which is the order this list has
-/// always had and the one every unorganised row still falls back to.
+/// The user's conversations of a given kind, newest activity first.
 pub async fn list_conversations(
     pg: &PgPool,
     user_id: &str,
     kind: &str,
+    archived: bool,
+) -> Result<Vec<ConversationListRow>, sqlx::Error> {
+    list_conversations_in(pg, user_id, &[kind], archived).await
+}
+
+/// The user's conversations across a SET of kinds, newest activity first.
+///
+/// WHY A SET. One surface lists work sessions, plans and research threads
+/// together, and three queries merged client-side would sort three pages
+/// independently and then have to re-sort them — with the unread counts and
+/// the "shared with you" rows already computed per query. One query answers
+/// the question the surface is actually asking.
+///
+/// WHO CAN SEE WHAT, per kind. Plans and work sessions are multiplayer: your
+/// own AND ones shared with you, by member or by team. Research threads follow
+/// the RUN's audience — owner, member, or a team the run was shared with —
+/// because a thread about a report must not be readable by anyone who cannot
+/// read the report. Chats stay strictly your own.
+///
+/// THE MEMBERSHIP TEST READS THE ROW'S KIND, not the requested filter, and
+/// that is the fix a set made necessary: `$2 in ('plan','work')` was asking
+/// "did the caller ask for plans", which is the same question only while the
+/// filter holds exactly one kind. Ask for plans AND chats together under the
+/// old form and every chat in the org became visible to anyone with a
+/// membership row. The two are indistinguishable at one kind, which is why it
+/// read as correct for as long as it did.
+///
+/// `archived` selects the retired set (`true`) or the live one (`false`) — the
+/// same flag the list has always filtered, now a parameter so a plan the owner
+/// archived can be found again. Decay only ever sets it on kind = 'chat'.
+///
+/// THE ORDER IS THE VIEWER'S: their pinned threads first, then the slots they
+/// placed by hand, then newest activity — which is the order this list has
+/// always had and the one every unorganised row still falls back to.
+pub async fn list_conversations_in(
+    pg: &PgPool,
+    user_id: &str,
+    kinds: &[&str],
     archived: bool,
 ) -> Result<Vec<ConversationListRow>, sqlx::Error> {
     #[allow(clippy::type_complexity)] // the select's own columns, one each
@@ -366,18 +395,32 @@ pub async fn list_conversations(
          left join conversation_reads cr on cr.conversation_id = c.id and cr.user_id = $1::uuid \
          left join conversation_layout l \
                 on l.conversation_id = c.id and l.user_id = $1::uuid \
-         where c.archived = $3 and c.kind = $2 \
-           and (c.user_id = $1::uuid or ($2 in ('plan', 'work') and ( \
+         where c.archived = $3 and c.kind = any($2) \
+           and (c.user_id = $1::uuid \
+             or (c.kind in ('plan', 'work') and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
              or exists(select 1 from conversation_teams ct \
                        join team_members tm on tm.team_id = ct.team_id \
-                       where ct.conversation_id = c.id and tm.user_id = $1::uuid)))) \
+                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
+             or (c.kind = 'research' and exists( \
+               select 1 from research_runs r \
+                 left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
+                where r.conversation_id = c.id \
+                  and (r.owner_user_id = $1::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $1::uuid))))) \
          order by coalesce(l.pinned, false) desc, l.position asc nulls last, \
                   c.updated_at desc",
     )
     .bind(user_id)
-    .bind(kind)
+    .bind(
+        kinds
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect::<Vec<String>>(),
+    )
     .bind(archived)
     .fetch_all(pg)
     .await?;
@@ -940,9 +983,23 @@ pub async fn remove_plan_team(
 }
 
 /// The caller's total unread messages across conversations of one kind — a
-/// rail badge's number. The SAME predicate `list_conversations` counts per
-/// thread (keep the two in lockstep), including the plan/work membership
-/// scoping and the -1 no-cursor floor.
+/// rail badge's number. The SAME audience predicate `list_conversations_in`
+/// filters by, including the plan/work membership scoping, the research run's
+/// own audience, and the -1 no-cursor floor.
+///
+/// KEEP THE TWO IN LOCKSTEP, and the research arm is why that instruction had
+/// teeth: without it a badge counted only the research threads you OWN while
+/// the list showed every one shared with you, so the number under the icon
+/// disagreed with the rows behind it. A comment asking a human to remember is
+/// the weakest form of this guarantee; it is here because the two queries
+/// answer different shapes (a count, and the rows) and have no third place to
+/// share.
+///
+/// `kind` is a parameter rather than a list for the same reason: Work's badge
+/// is this read with `"work"` and nothing else, because the shared-kind
+/// scoping below already spans plans and work sessions — a session someone
+/// else started and shared with you counts here without a predicate of its
+/// own.
 pub async fn conversation_unread_total(
     pg: &PgPool,
     user_id: &str,
@@ -956,12 +1013,21 @@ pub async fn conversation_unread_total(
            and m.seq > coalesce(cr.last_read_seq, -1) \
            and m.status = 'complete' \
            and (m.role = 'assistant' or m.author_user_id is distinct from $1::uuid) \
-           and (c.user_id = $1::uuid or ($2 in ('plan', 'work') and ( \
+           and (c.user_id = $1::uuid \
+             or (c.kind in ('plan', 'work') and ( \
              exists(select 1 from conversation_members cm \
                     where cm.conversation_id = c.id and cm.user_id = $1::uuid) \
              or exists(select 1 from conversation_teams ct \
                        join team_members tm on tm.team_id = ct.team_id \
-                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))))",
+                       where ct.conversation_id = c.id and tm.user_id = $1::uuid))) \
+             or (c.kind = 'research' and exists( \
+               select 1 from research_runs r \
+                 left join research_members rm on rm.run_id = r.id and rm.user_id = $1::uuid \
+                where r.conversation_id = c.id \
+                  and (r.owner_user_id = $1::uuid or rm.user_id is not null \
+                    or exists(select 1 from research_teams rt \
+                              join team_members tm on tm.team_id = rt.team_id \
+                              where rt.run_id = r.id and tm.user_id = $1::uuid)))))",
     )
     .bind(user_id)
     .bind(kind)
@@ -1097,6 +1163,127 @@ pub async fn insert_streaming_assistant(
     Ok(id)
 }
 
+/// Stamp the Hermes run behind a streaming assistant row, the moment the
+/// stream names it (`run.started`). It is the handle a stop or a steer needs:
+/// Hermes addresses a running turn by its own run id, and nothing else in the
+/// row says which one that is.
+pub async fn set_message_run_id(
+    pg: &PgPool,
+    message_id: &str,
+    run_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("update messages set hermes_run_id = $2 where id = $1::uuid")
+        .bind(message_id)
+        .bind(run_id)
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// The conversation's in-flight assistant row and the Hermes run behind it —
+/// what a stop or a steer has to name. `None` is "nothing is streaming", which
+/// is the whole of the refusal both routes answer with.
+///
+/// A PLAIN READ, deliberately unlike `active_streaming_assistant`: that one
+/// sweeps a row that has gone quiet for fifteen minutes into an error, because
+/// its question is "may a NEW turn start". This one's question is "what is the
+/// reader looking at right now", and the reader is looking at a spinner over
+/// exactly this row — killing it out from under a stop would answer "nothing is
+/// streaming" to a person who can see that something is. The run id is absent
+/// for a turn that went through the full-history chat arm, which Hermes
+/// addresses by nothing either route could name.
+pub async fn streaming_run(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "select id::text, hermes_run_id from messages \
+         where conversation_id = $1::uuid and role = 'assistant' and status = 'streaming' \
+         order by seq desc limit 1",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row)
+}
+
+/// Does a user row that is still OWED AN ANSWER sit after this one? The
+/// tail chain's question, asked before it fires: a message queued while this
+/// reply streamed is owed the next turn, but a steer the running agent
+/// ACCEPTED was answered inside this very turn — firing the chain on it would
+/// answer it twice. And a stopped turn with nobody having spoken since must
+/// leave the chain quiet: an empty stopped row is invisible to
+/// `prior_messages`, so the chain would re-ask the message the stopped turn
+/// was answering, forever. A row that is not there answers false (the
+/// subselect is null, so the comparison is), which is the direction that
+/// stays quiet.
+pub async fn unanswered_user_after(
+    pg: &PgPool,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let (after,): (bool,) = sqlx::query_as(
+        "select exists ( \
+            select 1 from messages \
+            where conversation_id = $1::uuid and role = 'user' \
+              and seq > (select seq from messages where id = $2::uuid) \
+              and not (coalesce(metadata, '{}'::jsonb) @> '{\"steer_accepted\": true}'::jsonb))",
+    )
+    .bind(conversation_id)
+    .bind(message_id)
+    .fetch_one(pg)
+    .await?;
+    Ok(after)
+}
+
+/// The steer route's stamp once Hermes took the words: the row was answered
+/// by the turn it was said into, so `unanswered_user_after` leaves it alone.
+pub async fn mark_steer_accepted(pg: &PgPool, message_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages \
+         set metadata = coalesce(metadata, '{}'::jsonb) || '{\"steer_accepted\": true}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Whether a conversation can be driven through a pinned Hermes session.
+///
+/// Hermes holds the history for a pinned conversation, so a conversation
+/// whose earlier turns went through the full-history path has a transcript
+/// Hermes never saw; sending it only the new message would answer from an
+/// empty room. The row itself says which it is: an assistant row with a run
+/// id was pinned-driven, a conversation with no assistant rows at all is
+/// fresh, and assistant rows without one are the legacy transcript — which
+/// stays on the full-history path, flip or no flip.
+pub async fn pinned_history_fits(
+    pg: &PgPool,
+    conversation_id: &str,
+    // The row to leave out — the auto-resume names the dead attempt's own
+    // row, which is in the table already and says nothing about how the
+    // conversation was driven before it. None everywhere else.
+    exclude: Option<&str>,
+) -> Result<bool, sqlx::Error> {
+    let (assistants, pinned): (i64, i64) = sqlx::query_as(
+        "select count(*), count(hermes_run_id) from messages \
+         where conversation_id = $1::uuid and role = 'assistant' \
+           and ($2::text is null or id::text <> $2)",
+    )
+    .bind(conversation_id)
+    .bind(exclude)
+    .fetch_one(pg)
+    .await?;
+    Ok(pinned_history_fits_counts(assistants, pinned))
+}
+
+/// The rule behind `pinned_history_fits`, on the two counts.
+pub fn pinned_history_fits_counts(assistant_rows: i64, pinned_rows: i64) -> bool {
+    assistant_rows == 0 || pinned_rows > 0
+}
+
 /// Flush accumulated assistant state — throttled during streaming, final at
 /// end. Every flush also stamps `streamed_at`, which is the row's liveness
 /// signal everywhere liveness is asked about (the sweep above, the sidebar's
@@ -1161,6 +1348,25 @@ pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), s
     Ok(())
 }
 
+/// Stamp a turn as STOPPED — a person pressed stop, or the doom-loop guard
+/// pulled the plug on an agent calling the same thing over and over. The row
+/// itself lands COMPLETE, not errored: whatever the agent managed to say is
+/// what the person chose to keep, and an error status would put a retry
+/// affordance on a turn nobody wants retried. This stamp is what tells the
+/// difference, and the UI reads it to mark the reply as cut short. Merged like
+/// every metadata stamp.
+pub async fn mark_message_stopped(pg: &PgPool, message_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages \
+         set metadata = coalesce(metadata, '{}'::jsonb) || '{\"stopped\": true}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// The resume gate's re-read: is the row still the errored turn the backoff
 /// left behind — neither nudged complete by some other writer, nor already
 /// resumed once? Key-existence, not a cast of the value: the stamp is written
@@ -1190,6 +1396,77 @@ pub async fn set_message_guard(
         .bind(serde_json::to_value(findings).unwrap_or(Value::Null))
         .execute(pg)
         .await?;
+    Ok(())
+}
+
+/// Land chips on ONE named message row, merging by chip id.
+///
+/// `talaria_chips::surface_tool_chips` is the usual writer, and it cannot serve
+/// here: it resolves which row to write by asking where the agent is currently
+/// speaking, while a caller inside the persist already holds the row's id and
+/// must not land its chip on whatever row that lookup happens to pick. The
+/// merge is the same one that writer uses — a chip whose id is already on the
+/// row is left alone, so a guard that fires again inside one turn does not
+/// stack duplicates.
+pub async fn merge_message_chips(
+    pg: &PgPool,
+    message_id: &str,
+    chips: &[Value],
+) -> Result<(), sqlx::Error> {
+    if chips.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "update messages set chips = ( \
+           select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
+             select c from jsonb_array_elements(chips) c \
+             union all \
+             select c from jsonb_array_elements($2::jsonb) c \
+             where not exists ( \
+               select 1 from jsonb_array_elements(chips) e \
+               where e->>'id' = c->>'id' \
+             ) \
+           ) s \
+         ) where id = $1::uuid",
+    )
+    .bind(message_id)
+    .bind(Value::Array(chips.to_vec()))
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// Append ONE upload to a message's `attachments`, keeping whatever is
+/// already stamped there.
+///
+/// The stamp is what makes an upload readable at all: `can_access_upload`
+/// answers "may this reader see these bytes" by probing the attachments JSON
+/// of the rows the reader can reach, so an upload nobody's message points at
+/// is stored and invisible — the owner sees it, the conversation does not.
+/// The agent uploads door writes through here once the bytes are saved, with
+/// the same `{id, filename, mime, size}` object /api/chat stamps for a
+/// person's attachment; one shape, because the probe and the renderer both
+/// read it.
+///
+/// The concatenation is type-guarded because `jsonb || jsonb` on two objects
+/// is a MERGE: a row whose column somehow held an object rather than an array
+/// would have the attachment folded into it instead of added to it, quietly
+/// rewriting the stamp rather than extending it.
+pub async fn append_message_attachment(
+    pg: &PgPool,
+    message_id: &str,
+    attachment: &Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages set attachments = \
+           case when jsonb_typeof(attachments) = 'array' then attachments else '[]'::jsonb end \
+           || jsonb_build_array($2::jsonb) \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .bind(attachment)
+    .execute(pg)
+    .await?;
     Ok(())
 }
 
@@ -1328,11 +1605,27 @@ pub fn title_from(s: &str) -> String {
     mechanical_from(s)
 }
 
-/// The row /api/chat inserts for a brand-new conversation. An explicit plan
-/// template (plan surface only) is the highest link in the template
-/// resolution chain — null falls through to the agent's binding — and a
-/// non-plan kind never carries one: `plan_template_id` binds only for
-/// kind='plan', decided here so no caller re-decides it.
+/// Which session kinds carry a plan template on their row.
+///
+/// THE LIVING DOCUMENT DECIDES IT, not the name of the column. A plan and a
+/// work session are both served the document beside the chat, and both offer
+/// the template picker on a new session's zero state, so both must keep what
+/// was chosen there. The kinds with no document — chat, ticket, research —
+/// would be storing an id nothing ever reads.
+pub fn kind_carries_plan_template(kind: &str) -> bool {
+    kind == "plan" || kind == "work"
+}
+
+/// The row /api/chat inserts for a brand-new conversation. An explicit
+/// template is the highest link in the template resolution chain — null falls
+/// through to the agent's binding — and only a document-bearing kind carries
+/// one: the bind goes through `kind_carries_plan_template`, decided here so no
+/// caller re-decides it.
+///
+/// THE 'work' KIND IS IN THAT SET DELIBERATELY. The first turn is what creates
+/// the conversation, so this insert is the only place a template chosen on a
+/// new work session can land — binding for kind='plan' alone threw the choice
+/// away, and the person who made it saw nothing to say it had been ignored.
 pub async fn create_conversation(
     pg: &PgPool,
     user_id: &str,
@@ -1341,7 +1634,7 @@ pub async fn create_conversation(
     kind: &str,
     plan_template_id: Option<&str>,
 ) -> Result<String, sqlx::Error> {
-    let template = if kind == "plan" {
+    let template = if kind_carries_plan_template(kind) {
         plan_template_id
     } else {
         None
@@ -1381,6 +1674,20 @@ mod tests {
             author_user_id: None,
             author_label: None,
             reactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_document_bearing_kind_carries_a_plan_template() {
+        // Both surfaces that serve the living document keep the picker's
+        // choice — a work session's template was being dropped at the insert.
+        assert!(kind_carries_plan_template("plan"));
+        assert!(kind_carries_plan_template("work"));
+        for kind in ["chat", "ticket", "research", ""] {
+            assert!(
+                !kind_carries_plan_template(kind),
+                "{kind} has no document to seed"
+            );
         }
     }
 

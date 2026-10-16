@@ -24,6 +24,8 @@ pub mod conversations;
 pub mod conversations_id;
 pub mod conversations_id_messages_msgid_reactions;
 pub mod conversations_id_read;
+pub mod conversations_id_steer;
+pub mod conversations_id_stop;
 pub mod conversations_id_todo;
 pub mod dms;
 pub mod me_sent;

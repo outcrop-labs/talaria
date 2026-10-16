@@ -4,7 +4,7 @@
 // so you can hack in it without any risk of breaking your primary dev stack.
 // Port of scripts/worktree.sh.
 
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Ctx } from '../ctx'
 import type { Leaf } from '../cli'
@@ -195,9 +195,41 @@ TALARIA_API_PORT=${slot.api}
 # derives it when no env names it, so an inherited line would win over the
 # port above.
 TALARIA_RUST_API_URL=http://127.0.0.1:${slot.api}
+# The fleet THIS worktree renders. Its agents call back over the docker host
+# bridge to this app's port — the gateway for their thinking, the MCP gateway
+# for their tools — and run under their own compose project, so neither the
+# main fleet nor the cleanup sweep reads them as something else's. dev.ts
+# lifts both into the api (the renderer reads them; nothing else does).
+TALARIA_GATEWAY_SELF_URL=http://host.docker.internal:${slot.app}/api/llm/v1
+TALARIA_FLEET_PROJECT=${project}-fleet
 `,
   )
   ctx.log.ok('ui/.env written')
+
+  // The fleet config plane, as `talaria setup` seeds it for the primary
+  // checkout: the renderer writes into it, and a hire against a missing
+  // fleet/.env fails honestly rather than inventing one. The chassis is
+  // user-owned config, so an existing one is kept.
+  ctx.log.say('Fleet config plane (fleet/)')
+  for (const d of ['fleet/skills', 'fleet/hooks', 'fleet/agents']) mkdirSync(join(wt, d), { recursive: true })
+  const chassisTemplate = join(root, 'scripts/chassis.template.yml')
+  if (!existsSync(join(wt, 'fleet/chassis.yml')) && existsSync(chassisTemplate)) {
+    copyFileSync(chassisTemplate, join(wt, 'fleet/chassis.yml'))
+  }
+  if (!existsSync(join(wt, 'fleet/.env'))) {
+    writeFileSync(
+      join(wt, 'fleet/.env'),
+      `# Fleet env — compose interpolation + per-agent HERMES_KEY_* (Talaria appends
+# those automatically when you create agents). The gateway brain is
+# provisioned here by the first render.
+LLM_BASE_URL=
+LLM_API_KEY=
+LLM_MODEL=
+`,
+      { mode: 0o600 },
+    )
+  }
+  ctx.log.ok('fleet/ seeded')
 
   ctx.log.say('Sharing node_modules')
   if (!existsSync(join(wt, 'ui/node_modules'))) {

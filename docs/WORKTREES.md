@@ -71,11 +71,15 @@ It prints the exact `talaria dev` command and the teardown steps.
   it could not decrypt the seeded secrets — and if it then wrote to a *shared* DB
   it would orphan them. (This is exactly what broke the env once. The fix:
   `talaria setup` now writes a dedicated, stable `TALARIA_SECRET_KEY`; keep it constant.)
-- **The worktree's fleet is separate.** Fleet renders resolve to the worktree's
-  own `fleet/` dir; a worktree does not manage your main agents.
-- **Agent LLM calls** still flow through the *main* gateway if you're testing chat
-  — the fleet agents point at whatever `LLM_BASE_URL` they were rendered with.
-  Isolated worktrees are for app/UI iteration, not for re-rendering the live fleet.
+- **The worktree's fleet is separate, and it runs.** Fleet renders resolve to the
+  worktree's own `fleet/` dir (seeded by `talaria worktree` the way `talaria setup`
+  seeds the primary's), its agents run under their own compose project
+  (`talaria-wt-<name>-fleet`), and they call back to *this* app's port — the
+  worktree's gateway for their thinking, its MCP gateway for their tools
+  (`TALARIA_GATEWAY_SELF_URL`, `TALARIA_FLEET_PROJECT` and `PORT` in `ui/.env`,
+  lifted into the api by `talaria dev`). A worktree never manages your main
+  agents, and the cleanup sweep knows a worktree's fleet project is the
+  worktree's own. Hiring an agent still needs the Hermes image on the host.
 - **Clean up** with the two teardown commands the script prints, from the primary
   checkout; `-v` drops the isolated volumes so nothing lingers. A worktree left past
   that is what [`bun talaria cleanup`](../.claude/skills/cleanup/SKILL.md) flags, and

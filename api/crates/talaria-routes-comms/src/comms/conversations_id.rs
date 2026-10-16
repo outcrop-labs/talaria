@@ -307,7 +307,21 @@ pub async fn delete(
         {
             return Ok(internal("[conversations] draft sweep failed", e));
         }
-        if let Err(e) = sqlx::query("delete from conversations where id = $1::uuid")
+        // A RESEARCH SESSION IS ONE THING WITH TWO ROWS. The FK from the run
+        // to its conversation is ON DELETE SET NULL, so a bare delete here
+        // would leave the run alive and orphaned — its driver still spending,
+        // its report reachable only by an id nobody holds any more. When the
+        // thread belongs to a run, the run's own delete takes both (it cancels
+        // first, then removes run and conversation in one transaction).
+        let run_id = talaria_research::research_run_for_conversation(&state.pg, &id)
+            .await
+            .ok()
+            .flatten();
+        if let Some(run_id) = run_id {
+            if let Err(e) = talaria_research::delete_research_run(&state, &run_id).await {
+                return Ok(internal("[conversations] research delete failed", e));
+            }
+        } else if let Err(e) = sqlx::query("delete from conversations where id = $1::uuid")
             .bind(&id)
             .execute(&state.pg)
             .await

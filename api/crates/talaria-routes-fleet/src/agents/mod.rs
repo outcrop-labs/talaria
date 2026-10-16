@@ -17,4 +17,5 @@ pub mod skills;
 pub mod skills_marketplace;
 pub mod skills_owner_name;
 pub mod tool_events;
+pub mod uploads;
 pub mod vision_describe;
