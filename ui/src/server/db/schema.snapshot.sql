@@ -109,7 +109,8 @@ CREATE TABLE public.agent_defs (
     workbench_models jsonb DEFAULT '{}'::jsonb NOT NULL,
     proactive boolean DEFAULT false NOT NULL,
     email_alias text,
-    developer boolean DEFAULT false NOT NULL
+    developer boolean DEFAULT false NOT NULL,
+    max_children integer DEFAULT 3 NOT NULL
 );
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,

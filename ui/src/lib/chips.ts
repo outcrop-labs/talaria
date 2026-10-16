@@ -11,7 +11,7 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question'
+export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question' | 'subagent'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -31,6 +31,12 @@ export interface ChipField {
 export interface ChatChip {
   id: string
   kind: ChipKind
+  /** `subagent` chips only: what the child was asked to do. One chip per
+   *  child `delegate_task` spawned, keyed by the child's session id so its
+   *  stop overwrites its start; `summary` and `tools` below carry what came
+   *  back, and `status` reads running | done | error. The renderer lands
+   *  separately. */
+  goal?: string
   href?: string
   entity?: ChipEntity
   title?: string
@@ -42,7 +48,7 @@ export interface ChatChip {
   actionId?: string
   actionKind?: string
   summary?: string
-  status?: 'pending' | 'approved' | 'denied'
+  status?: 'pending' | 'approved' | 'denied' | 'running' | 'done' | 'error'
   tools?: string[]
   approvalId?: string
   /** `todo` chips only: the agent's plan as it stood when this chip landed.

@@ -1,6 +1,7 @@
 // /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
-// display name, send alias) plus the Developer Agent switch and template
-// binds. Not versioned: this is identity, not config. Admin only.
+// display name, send alias) plus the Developer Agent switch, the delegation
+// cap and template binds. Not versioned: this is identity, not config. Admin
+// only.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -8,13 +9,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
-use talaria_agent_defs::{AgentMetaPatch, update_agent_meta};
+use talaria_agent_defs::{AgentMetaPatch, set_max_children, update_agent_meta};
 use talaria_api_facades::mcp::apply::roll_agent_for_model;
 use talaria_api_facades::workbench::set_developer;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    optional_boolean_member, parse, present_nullable_max_string_member,
-    present_nullable_uuid_member, string_msg, too_big_msg, too_small_msg, utf16_len, zod_type_name,
+    NumKind, optional_boolean_member, optional_number_member, parse,
+    present_nullable_max_string_member, present_nullable_uuid_member, string_msg, too_big_msg,
+    too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_agent_manager, secretbox_or_500};
@@ -101,11 +103,19 @@ pub async fn patch(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // How many subagents this agent may run at once; 0 means it delegates to
+    // nobody. The ceiling is the box's, not the agent's — the roll applies it.
+    let max_children = match optional_number_member(obj, "maxChildren", NumKind::Int, 0.0, 16.0) {
+        // Narrowed here, once: the member reader speaks f64 for every numeric
+        // shape, and the column, the audit and the renderer all want the int.
+        Ok(v) => v.map(|n| n as i32),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
 
     // The def read: the columns this route touches. The body parses BEFORE
     // the lookup, so a bad body on an unknown id is the 400, not the 404.
-    let def: Option<(String, String, String)> = match sqlx::query_as(
-        "select id::text, model, display_name from agent_defs where id = $1::uuid",
+    let def: Option<(String, String, String, i32)> = match sqlx::query_as(
+        "select id::text, model, display_name, max_children from agent_defs where id = $1::uuid",
     )
     .bind(&id)
     .fetch_optional(&state.pg)
@@ -114,7 +124,7 @@ pub async fn patch(
         Ok(row) => row,
         Err(e) => return Ok(internal("[fleet/defs] def read failed", e)),
     };
-    let Some((def_id, def_model, def_display_name)) = def else {
+    let Some((def_id, def_model, def_display_name, def_max_children)) = def else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
 
@@ -135,6 +145,13 @@ pub async fn patch(
         Some(on) => match set_developer(&state.pg, &def_id, on).await {
             Ok(changed) => changed,
             Err(e) => return Ok(internal("[fleet/defs] developer set failed", e)),
+        },
+        None => false,
+    };
+    let max_children_changed = match max_children {
+        Some(n) => match set_max_children(&state.pg, &def_id, n).await {
+            Ok(changed) => changed,
+            Err(e) => return Ok(internal("[fleet/defs] max children set failed", e)),
         },
         None => false,
     };
@@ -179,10 +196,28 @@ pub async fn patch(
             },
         )
         .await;
-        // A running Hermes wires its MCP servers and container env at start,
-        // so the switch lands by rolling the agent (blue/green; the roll
-        // re-renders the incoming slot). Fire-and-forget, never the caller's
-        // problem.
+    }
+    if max_children_changed && let Some(n) = max_children {
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "agent.max_children",
+                target_type: "agent",
+                target_id: Some(&def_id),
+                target_label: Some(&def_display_name),
+                before: Some(json!({ "maxChildren": def_max_children })),
+                after: Some(json!({ "maxChildren": n })),
+            },
+        )
+        .await;
+    }
+    // A running Hermes wires its MCP servers, its container env and its
+    // delegation cap at start, so either change lands by rolling the agent
+    // (blue/green; the roll re-renders the incoming slot). ONE roll even when
+    // both changed — the render it picks up carries everything. Fire-and-forget,
+    // never the caller's problem.
+    if developer_changed || max_children_changed {
         let sb = secretbox_or_500(&state, "[fleet/defs] secretbox unavailable").await?;
         let (pg, model) = (state.pg.clone(), def_model.clone());
         tokio::spawn(async move {

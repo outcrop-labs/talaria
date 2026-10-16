@@ -1553,6 +1553,10 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/agents/subagent-events",
+            post(talaria_routes_fleet::agents::subagent_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/me/events",
             get(talaria_routes_integrations::account::me_events::get).fallback(|| async { method_not_allowed("GET") }),
         )

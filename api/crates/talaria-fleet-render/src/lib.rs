@@ -57,6 +57,9 @@ pub struct RenderDef {
     /// The Developer Agent switch: dev sandbox, Oh My Pi, and the Workbench
     /// MCP tools.
     pub developer: bool,
+    /// How many subagents this agent may run at once — the cap the emitted
+    /// config.yaml hands Hermes as `delegation.max_concurrent_children`.
+    pub max_children: i32,
 }
 
 /// The version's render-facing columns (the full version shape lives in
@@ -86,6 +89,7 @@ type TargetTuple = (
     Option<String>,
     bool,
     i32,
+    i32,
     String,
     Value,
 );
@@ -102,11 +106,12 @@ fn target_of(r: TargetTuple) -> RenderTarget {
             source: r.6,
             active_slot: r.7,
             developer: r.8,
+            max_children: r.9,
         },
         version: RenderVersion {
-            version: r.9,
-            soul: r.10,
-            config: r.11,
+            version: r.10,
+            soul: r.11,
+            config: r.12,
         },
     }
 }
@@ -118,7 +123,7 @@ pub async fn managed_agents(pg: &PgPool) -> Result<Vec<RenderTarget>, sqlx::Erro
     // Literal SQL: one auditable statement, columns spelled once.
     let rows: Vec<TargetTuple> = sqlx::query_as(
         "select d.id::text, d.slug, d.department, d.model, d.display_name, d.role, d.source, \
-         d.active_slot, d.developer, v.version, v.soul, v.config \
+         d.active_slot, d.developer, d.max_children, v.version, v.soul, v.config \
          from agent_defs d \
          join agent_versions v on v.agent_id = d.id and v.version = d.current_version \
          where d.managed and d.enabled \
@@ -1063,6 +1068,7 @@ pub async fn render_fleet(
         routed.insert("plugins".into(), Value::Object(plugins));
 
         fleet_approvals(&mut routed);
+        fleet_delegation(&mut routed, def.max_children);
 
         let cfg_path = agent_dir.join("config.yaml");
         let cfg_text = format!(
@@ -1623,6 +1629,22 @@ fn fleet_approvals(routed: &mut Map<String, Value>) {
     routed.insert("approvals".into(), Value::Object(cfg));
 }
 
+/// How many subagents this agent may run at once — the def's `max_children`,
+/// under the one key Hermes reads for the delegation cap. The cap is an
+/// operator's decision about the box the fleet runs on, not the agent's about
+/// its own work, so it is written from the column every render and a def
+/// cannot author its way past it. Every OTHER delegation key a def set is left
+/// alone: the rest of that block is the agent's to tune.
+fn fleet_delegation(routed: &mut Map<String, Value>, max_children: i32) {
+    let mut cfg = routed
+        .get("delegation")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    cfg.insert("max_concurrent_children".into(), json!(max_children));
+    routed.insert("delegation".into(), Value::Object(cfg));
+}
+
 /// s6 cont-init path. Lexicographic: after Hermes's `02-reconcile-profiles`,
 /// before user services start.
 const HARNESS_OWN_HOOK: &str = "/etc/cont-init.d/03-talaria-workbench-own";
@@ -2160,6 +2182,46 @@ service:
                 "unattended_mode": "approve", "cron_mode": "approve"
             }))
         );
+    }
+
+    #[test]
+    fn fleet_delegation_writes_the_cap_and_leaves_the_rest_of_the_block() {
+        // No authored delegation block: the cap alone appears.
+        let mut routed = Map::new();
+        routed.insert("model".into(), json!("x"));
+        fleet_delegation(&mut routed, 3);
+        assert_eq!(
+            routed.get("delegation"),
+            Some(&json!({ "max_concurrent_children": 3 }))
+        );
+
+        // An authored block keeps its own keys, and a def that tried to raise
+        // the cap itself is overridden — the column is the operator's word.
+        let mut authored = Map::new();
+        authored.insert(
+            "delegation".into(),
+            json!({ "max_concurrent_children": 99, "child_timeout": 600, "roles": ["eng"] }),
+        );
+        fleet_delegation(&mut authored, 0);
+        assert_eq!(
+            authored.get("delegation"),
+            Some(&json!({
+                "max_concurrent_children": 0,
+                "child_timeout": 600,
+                "roles": ["eng"]
+            })),
+            "0 is a real setting: this agent delegates to nobody"
+        );
+
+        // And the emitted bytes are what Hermes' 1.1 reader needs: an
+        // unquoted integer under the key it looks for, parsing back unchanged.
+        let yaml = yaml11_emit(&Value::Object(authored.clone()));
+        assert!(
+            yaml.contains("max_concurrent_children: 0"),
+            "the cap must emit as a number, not a quoted string:\n{yaml}"
+        );
+        let back: Value = serde_yaml_ng::from_str(&yaml).expect("emitted yaml parses");
+        assert_eq!(back, Value::Object(authored));
     }
 
     #[test]

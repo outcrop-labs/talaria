@@ -240,8 +240,9 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/cr
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs)
 
 > /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
-> display name, send alias) plus the Developer Agent switch and template
-> binds. Not versioned: this is identity, not config. Admin only.
+> display name, send alias) plus the Developer Agent switch, the delegation
+> cap and template binds. Not versioned: this is identity, not config. Admin
+> only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -255,6 +256,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `ticketTemplateId` | `uuid? nullable` | Template overrides: uuid binds, null clears, omitted leaves unchanged. |
 | `planTemplateId` | `uuid? nullable` |  |
 | `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
+| `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's — the roll applies it. |
 
 ## `/api/fleet/defs/{id}/edit`
 
