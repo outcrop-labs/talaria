@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-27 routes.
+30 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -50,6 +50,9 @@
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | DELETE | `session` |
 | [`/api/conversations/{id}/messages/{msgId}/reactions`](#apiconversationsidmessagesmsgidreactions) | POST | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
+| [`/api/conversations/{id}/schedule`](#apiconversationsidschedule) | POST | `session` + `agent-manager` |
+| [`/api/conversations/{id}/schedules`](#apiconversationsidschedules) | GET | `session` |
+| [`/api/conversations/{id}/schedules/{jobId}`](#apiconversationsidschedulesjobid) | DELETE | `session` + `agent-manager` |
 | [`/api/conversations/{id}/steer`](#apiconversationsidsteer) | POST | `session` |
 | [`/api/conversations/{id}/stop`](#apiconversationsidstop) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
@@ -532,6 +535,62 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs`](.
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `seq` | `number?(0, 9007)` | seq: optional integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
+
+## `/api/conversations/{id}/schedule`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_schedule.rs)
+
+> /api/conversations/{id}/schedule.
+> POST { name, schedule, prompt } → a standing cron on this thread's agent
+> whose turns come back INTO this thread. The fleet's own cron door
+> (/api/fleet/agents/{id}/crons) creates the same job and reports nowhere;
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` + `agent-manager` | [body](#post-apiconversationsidschedule-body) | `{ok, jobId}` | 200, 400, 403, 404 | audit |
+
+**POST** — Put this conversation's agent on a timer: a cron job on the agent itself whose every run posts its answer back into this thread.
+
+### POST `/api/conversations/{id}/schedule` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `name` | `string trimmed(1, 80)` | The same bounds the fleet door takes, because it is the same job. |
+| `schedule` | `string trimmed(1, 120)` |  |
+| `prompt` | `string trimmed(1, 20000)` |  |
+
+## `/api/conversations/{id}/schedules`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_schedules.rs)
+
+> /api/conversations/{id}/schedules.
+> GET → what this thread has put its agent on a timer for. Two halves: the
+> rows Talaria wrote when the schedule was created (name, schedule, when,
+> which job), and the live state only the agent's own jobs.json knows — is it
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{schedules}` | 200, 404 | — |
+
+**GET** — The cron jobs this conversation has scheduled on its agent, each with the live job state when the agent's container can be read.
+
+## `/api/conversations/{id}/schedules/{jobId}`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules_jobid.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_schedules_jobid.rs)
+
+> /api/conversations/{id}/schedules/{jobId}.
+> DELETE → take a thread's schedule away: the job leaves the agent's own
+> scheduler and the row that made this thread its listener goes with it. The
+> same two gates as creating one — seeing the thread (404 for one you cannot
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400, 403, 404 | audit |
+
+**DELETE** — Remove a schedule this conversation created: the job and its listener row.
 
 ## `/api/conversations/{id}/steer`
 

@@ -453,6 +453,15 @@ CREATE TABLE public.conversation_reads (
     last_read_seq integer DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.conversation_schedules (
+    agent_model text NOT NULL,
+    job_id text NOT NULL,
+    conversation_id uuid NOT NULL,
+    name text NOT NULL,
+    schedule text NOT NULL,
+    created_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.conversation_teams (
     conversation_id uuid NOT NULL,
     team_id uuid NOT NULL,
@@ -1510,6 +1519,8 @@ ALTER TABLE ONLY public.conversation_members
     ADD CONSTRAINT conversation_members_pkey PRIMARY KEY (conversation_id, user_id);
 ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_pkey PRIMARY KEY (conversation_id, user_id);
+ALTER TABLE ONLY public.conversation_schedules
+    ADD CONSTRAINT conversation_schedules_pkey PRIMARY KEY (agent_model, job_id);
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_pkey PRIMARY KEY (conversation_id, team_id);
 ALTER TABLE ONLY public.conversation_todos
@@ -1752,6 +1763,7 @@ CREATE UNIQUE INDEX channels_dm_key_idx ON public.channels USING btree (dm_key) 
 CREATE UNIQUE INDEX channels_task_idx ON public.channels USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE UNIQUE INDEX chat_approvals_external_idx ON public.chat_approvals USING btree (external_id) WHERE ((external_id IS NOT NULL) AND (status = 'pending'::text));
 CREATE INDEX chat_approvals_pending_idx ON public.chat_approvals USING btree (status, created_at DESC);
+CREATE INDEX conversation_schedules_conversation_idx ON public.conversation_schedules USING btree (conversation_id);
 CREATE INDEX conversations_user_agent_idx ON public.conversations USING btree (user_id, agent_model, updated_at DESC);
 CREATE INDEX daily_brief_entries_batch_idx ON public.daily_brief_entries USING btree (brief_id, batch);
 CREATE INDEX daily_brief_entries_key_idx ON public.daily_brief_entries USING btree (brief_id, source_key);
@@ -1938,6 +1950,10 @@ ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_reads
     ADD CONSTRAINT conversation_reads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_schedules
+    ADD CONSTRAINT conversation_schedules_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.conversation_schedules
+    ADD CONSTRAINT conversation_schedules_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.conversation_teams
     ADD CONSTRAINT conversation_teams_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.conversation_teams
