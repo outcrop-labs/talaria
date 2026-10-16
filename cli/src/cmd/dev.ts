@@ -24,7 +24,7 @@ const DEV_COMPOSE = 'docker/dev-compose.yml'
  *  it (`find -newer` semantics: a checkout of an older src still triggers,
  *  because its mtime is the checkout time). TALARIA_SKIP_MCP_BUILD=1 gets
  *  past a build you are mid-way through fixing. */
-async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
+export async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
   if (ctx.env.TALARIA_SKIP_MCP_BUILD === '1') {
     ctx.log.say('toolkit MCP — skipped (TALARIA_SKIP_MCP_BUILD=1); mcp/dist may be stale')
     return
@@ -73,7 +73,7 @@ async function mcpToolkit(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Pr
  *  should not be blocked by a bundle it will never spawn. So a failure warns
  *  and carries on, and the feature's own routes say the bridge is not running
  *  if someone does turn it on. TALARIA_SKIP_OMP_AUTH_BUILD=1 skips it. */
-async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
+export async function ompAuthBridge(ctx: Ctx, opts: { quietWhenFresh?: boolean } = {}): Promise<void> {
   if (ctx.env.TALARIA_SKIP_OMP_AUTH_BUILD === '1') {
     ctx.log.say('omp auth bridge — skipped (TALARIA_SKIP_OMP_AUTH_BUILD=1)')
     return
