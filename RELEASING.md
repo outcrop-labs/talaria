@@ -60,6 +60,32 @@ again once the re-run is green:
 gh release edit v0.2.0-rc.1 --draft=false
 ```
 
+## Surface releases: desktop and mobile
+
+Two surfaces version themselves alongside the platform rather than inside it,
+in their own tag namespaces, because each produces an artifact a person
+installs and each needs a version an installer can compare:
+
+| Surface | Namespace | Auto | Manual door |
+|---|---|---|---|
+| Desktop | `desktop-v*` | a `desktop/` push to main mints `desktop-vX.Y.0` (minor+1 across **both** `v*` and `desktop-v*`) and attaches the installers | dispatch `desktop-package.yml` with `version` + `publish=true` |
+| Mobile | `mobile-v*` | a `mobile/` push to main mints `mobile-vX.Y.0` (minor+1 within `mobile-v*` only; first is `0.1.0`) and attaches the Android APK | dispatch `mobile-package.yml` with `version` + `publish=true` |
+
+Neither edits a file to do it: both inject the resolved version into the build
+the same way a platform release does, so the rule above holds — **releasing
+never edits a file.**
+
+The one place they differ from each other is what they count. Desktop tracks
+the platform's version line, so its auto-minor reads the app's `v*` tags too.
+Mobile is its own artifact on its own cadence and reads only `mobile-v*` —
+which is also why its first mint is `0.1.0` rather than wherever the platform
+happens to be.
+
+**Every mobile release is a prerelease.** The APK is debug-signed with the
+keystore that ships inside every Android SDK: sideloadable, not distributable.
+`/releases/latest` must never resolve to one. A Play-signed build is a second
+job in that workflow once store credentials exist.
+
 ## Promoting to stable
 
 An RC becoming stable is two steps, in this order: the promotion, then the tag.

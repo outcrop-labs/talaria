@@ -1172,25 +1172,35 @@ fn js_cell_string(v: &serde_json::Value) -> String {
     }
 }
 
+/// A sheet's stored body as rows of cell strings (`string[][]`, row 0 =
+/// header), by the one cell rule the whole platform renders a sheet with.
+/// `None` is a body that is not a JSON array at all — a sheet may hold
+/// unstructured text, and its callers each decide what to do with that.
+///
+/// Public because the .xlsx export wants the CELLS where the KB mirror wants a
+/// markdown table: two renderings of one grid, which must not become two
+/// parses of one body.
+pub fn sheet_grid(body: &str) -> Option<Vec<Vec<String>>> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let raw = parsed.as_array()?;
+    Some(
+        raw.iter()
+            .map(|r| {
+                r.as_array()
+                    .map(|cells| cells.iter().map(js_cell_string).collect())
+                    .unwrap_or_default()
+            })
+            .collect(),
+    )
+}
+
 /// A sheet's JSON grid (`string[][]`, row 0 = header) → a GFM markdown table.
 /// A body that does not parse (or is not an array) passes through verbatim —
 /// the sheet may hold unstructured text; a grid with no rows renders empty.
 fn sheet_to_markdown_table(body: &str) -> String {
-    let parsed: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return body.to_string(),
-    };
-    let Some(raw) = parsed.as_array() else {
+    let Some(grid) = sheet_grid(body) else {
         return body.to_string();
     };
-    let grid: Vec<Vec<String>> = raw
-        .iter()
-        .map(|r| {
-            r.as_array()
-                .map(|cells| cells.iter().map(js_cell_string).collect())
-                .unwrap_or_default()
-        })
-        .collect();
     if grid.is_empty() {
         return String::new();
     }

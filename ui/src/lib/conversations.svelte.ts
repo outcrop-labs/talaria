@@ -21,6 +21,15 @@ export interface Conversation {
   ownerLabel?: string | null
   /** Landed messages past your read cursor — the rail pill. */
   unreadCount?: number
+  /** Your own pin — a pinned thread leads the rail however old it is. Per
+   *  viewer, never per thread: a collaborator's pin on a shared plan is
+   *  invisible to its owner. List rows only. */
+  pinned?: boolean
+  /** The heading this thread sits under in your rail; null until you file it. */
+  group?: string | null
+  /** A hand-placed slot — lower first, and threads with none fall back to
+   *  newest activity. */
+  position?: number | null
   /** The document pane's memory, on the detail read. Absent on list rows. */
   pinnedFiles?: PinnedFile[]
 }

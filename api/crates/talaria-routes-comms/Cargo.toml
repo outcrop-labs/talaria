@@ -24,6 +24,7 @@ talaria-channels = { workspace = true }
 talaria-chat-persist = { workspace = true }
 talaria-chips = { workspace = true }
 talaria-comms-decay = { workspace = true }
+talaria-conversation-layout = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-daily-brief = { workspace = true }
 talaria-error = { workspace = true }
