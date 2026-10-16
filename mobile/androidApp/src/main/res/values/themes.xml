@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A platform theme, not a Material Components one: Compose draws every
+         pixel of this app, so pulling in the View-world Material library would
+         be a dependency that styles nothing.
+
+         windowBackground is the one thing that matters here. It is what the OS
+         paints between launch and the first composed frame, so it is Mercury's
+         ground (docs/design/mercury-spec.md) — otherwise a dark app opens on a
+         white flash. -->
+    <color name="mercury_ground">#090A09</color>
+
+    <style name="Theme.Talaria" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/mercury_ground</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>

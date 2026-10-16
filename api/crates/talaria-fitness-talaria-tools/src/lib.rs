@@ -293,6 +293,28 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
+        // ORGANISING THE SESSION ITSELF, which is the one thing an agent could
+        // see the person ask for and had no way to do. Pin/group/position are
+        // PER VIEWER in production, so the sandbox records what the agent asked
+        // for and a fixture grades whether it archived something unasked.
+        SandboxTool {
+            name: "organize_session",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Comms,
+            description: "Organise THIS conversation the way the person asks: rename it, pin it to the top of the list, file it under a group, or put it away. Use it when they say what should happen to the thread — call it something else, pin it, file it under Billing, put it away now that the work is finished — or when you finish a piece of work they asked you to file. NEVER archive a conversation unasked: putting one away takes it out of their list, and that is theirs to decide. Pass only the fields you are changing, and at least one of them: title renames it, pinned lifts it to the top, group files it under a name (null takes it out of its group), archived puts it away or, as false, brings it back. It always acts on the conversation you are in — there is no id to pass, so you cannot organise somebody else's thread by mistake.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": str_schema("A new name for the conversation — what they called it, or a short line saying what it is about"),
+                    "pinned": bool_schema("true keeps it at the top of their list, false lets it fall back into date order"),
+                    "group": str_schema("File it under this group, e.g. Billing. null takes it out of the group it is in."),
+                    "archived": bool_schema("true puts the conversation away, false brings one back. Only ever when they ask."),
+                },
+                "required": [],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
         SandboxTool {
             name: "expose_tools",
             caller: ToolCaller::Hermes,
@@ -1798,9 +1820,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 84);
+        assert_eq!(TALARIA_TOOLS.len(), 85);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 84);
+        assert_eq!(names.len(), 85);
     }
 
     #[test]

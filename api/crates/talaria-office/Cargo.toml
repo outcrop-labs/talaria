@@ -1,0 +1,18 @@
+[package]
+name = "talaria-office"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# flate2 is never called here. It is named so that a build of this crate alone
+# still has a deflate backend: zip declares flate2 with default-features off
+# and chooses none, and the workspace's one spec (miniz_oxide) is the choice
+# every other crate in the tree already compiles against.
+flate2 = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }

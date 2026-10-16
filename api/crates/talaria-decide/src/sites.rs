@@ -732,6 +732,7 @@ mod tests {
             ("action-select", FLOOR_CERTAINTY, 0.80),
             ("research-scope", FLOOR_LEAN, 0.70),
             ("research-enough", FLOOR_LEAN, 0.75),
+            ("rerank", FLOOR_LEAN, 0.0),
         ];
         for (id, reads, floor) in expect {
             let d = def_of(id).unwrap_or_else(|| panic!("{id} left the census"));
@@ -745,7 +746,7 @@ mod tests {
         // And the census covers every site the ledger can group by.
         assert_eq!(
             DECIDE_SITES.len(),
-            11,
+            12,
             "a site was added without a census entry"
         );
     }

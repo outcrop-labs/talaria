@@ -771,6 +771,21 @@ server.registerTool(
 )
 
 server.registerTool(
+  'organize_session',
+  {
+    description:
+      "Organise THIS conversation the way the person asks: rename it, pin it to the top of the list, file it under a group, or put it away. Use it when they say what should happen to the thread — call it something else, pin it, file it under Billing, put it away now that the work is finished — or when you finish a piece of work they asked you to file. NEVER archive a conversation unasked: putting one away takes it out of their list, and that is theirs to decide. Pass only the fields you are changing, and at least one of them: title renames it, pinned lifts it to the top, group files it under a name (null takes it out of its group), archived puts it away or, as false, brings it back. It always acts on the conversation you are in — there is no id to pass, so you cannot organise somebody else's thread by mistake.",
+    inputSchema: {
+      title: z.string().min(1).max(120).optional().describe('A new name for the conversation — what they called it, or a short line saying what it is about'),
+      pinned: z.boolean().optional().describe('true keeps it at the top of their list, false lets it fall back into date order'),
+      group: z.string().max(40).nullable().optional().describe('File it under this group, e.g. Billing. null takes it out of the group it is in.'),
+      archived: z.boolean().optional().describe('true puts the conversation away, false brings one back. Only ever when they ask.'),
+    },
+  },
+  async ({ title, pinned, group, archived }) => ok(await api('POST', '/api/agent/organize', { title, pinned, group, archived })),
+)
+
+server.registerTool(
   'list_documents',
   {
     description: 'List the documents (artifacts) you can access — the workspace-visible ones plus any shared with you.',

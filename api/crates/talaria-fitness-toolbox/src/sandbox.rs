@@ -998,6 +998,64 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             Ok(json!({ "ok": true, "summary": talaria_agent_todo::summary(&items) }))
         }
 
+        // ORGANISING THE SESSION IT IS IN. The three layout fields go through
+        // `talaria_conversation_layout`, the validator the route uses, for the
+        // same reason the plan's do: a sandbox that accepts a 50-character
+        // group production refuses would certify a model that cannot use the
+        // tool. The title bound is the route's own (1..120), and `archived` is
+        // recorded rather than enforced — whether the agent put a conversation
+        // away UNASKED is the thing a fixture is grading, not something the
+        // sandbox should prevent.
+        "organize_session" => {
+            let obj = a
+                .as_object()
+                .ok_or_else(|| refuse("arguments must be an object"))?;
+            let mut changed: Vec<&str> = Vec::new();
+            if let Some(v) = obj.get("title") {
+                let title = v
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(|| refuse("a title is a line of text, and not a blank one"))?;
+                if title.chars().count() > 120 {
+                    return Err(refuse("a title is 120 characters at most"));
+                }
+                w.layout.title = Some(title.to_string());
+                changed.push("title");
+            }
+            if ["pinned", "group", "position"]
+                .iter()
+                .any(|k| obj.contains_key(*k))
+            {
+                let patch = talaria_conversation_layout::patch_from(obj).map_err(refuse)?;
+                if let Some(pinned) = patch.pinned {
+                    w.layout.pinned = Some(pinned);
+                    changed.push("pinned");
+                }
+                if let Some(group) = patch.group {
+                    w.layout.group = group;
+                    changed.push("group");
+                }
+                if let Some(position) = patch.position {
+                    w.layout.position = position;
+                    changed.push("position");
+                }
+            }
+            if let Some(v) = obj.get("archived") {
+                let archived = v
+                    .as_bool()
+                    .ok_or_else(|| refuse("\"archived\" is true or false"))?;
+                w.layout.archived = Some(archived);
+                changed.push("archived");
+            }
+            if changed.is_empty() {
+                return Err(refuse(
+                    "nothing to change — give a title, pinned, group, position or archived",
+                ));
+            }
+            Ok(json!({ "ok": true, "changed": changed }))
+        }
+
         "list_documents" => Ok(json!({ "documents": w.documents.iter()
             .map(|d| json!({ "id": d.id, "title": d.title, "folder": d.folder, "visibility": d.visibility, "kind": d.kind }))
             .collect::<Vec<_>>() })),
@@ -1923,6 +1981,7 @@ pub const BACKED_TOOLS: &[&str] = &[
     "update_document",
     "edit_document",
     "todo",
+    "organize_session",
     "ask",
     "list_documents",
     "get_document",
@@ -2664,6 +2723,46 @@ mod tests {
                 .is_error
         );
         assert!(s.world.todo.is_empty());
+    }
+
+    #[test]
+    fn organises_the_session_it_is_in_and_refuses_a_call_that_asks_for_nothing() {
+        let mut s = sb();
+        let args =
+            json!({ "title": "Billing migration", "pinned": true, "group": "Billing" }).to_string();
+        let done = s.dispatch("organize_session", &args);
+        assert!(!done.is_error, "{}", done.text);
+        // `changed` is what the model may claim it did, so a fixture can hold
+        // it to the fields that actually moved.
+        assert!(done.text.contains("title"), "{}", done.text);
+        assert_eq!(s.world.layout.title.as_deref(), Some("Billing migration"));
+        assert_eq!(s.world.layout.pinned, Some(true));
+        assert_eq!(s.world.layout.group.as_deref(), Some("Billing"));
+        // Nothing said about putting it away, so nothing was put away —
+        // archiving unasked is the failure this tool is watched for.
+        assert_eq!(s.world.layout.archived, None);
+
+        // An empty call is a model reaching for the tool with no instruction
+        // behind it, which the route answers 400 for.
+        let nothing = s.dispatch("organize_session", "{}");
+        assert!(nothing.is_error);
+        assert!(
+            nothing.text.contains("nothing to change"),
+            "{}",
+            nothing.text
+        );
+
+        // A group name is a shelf label: the 40-character bound is production's
+        // and the sandbox must not be kinder about it.
+        let long = json!({ "group": "g".repeat(50) }).to_string();
+        let refused = s.dispatch("organize_session", &long);
+        assert!(refused.is_error);
+        assert!(refused.text.contains("40"), "{}", refused.text);
+        assert_eq!(
+            s.world.layout.group.as_deref(),
+            Some("Billing"),
+            "a refused call changes nothing"
+        );
     }
 
     #[test]
@@ -3446,7 +3545,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            84,
+            85,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }
