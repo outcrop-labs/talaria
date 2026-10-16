@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+29 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -25,6 +25,7 @@
 | [`/api/agents`](#apiagents) | GET | `session` |
 | [`/api/agents/{id}/conversations`](#apiagentsidconversations) | GET | `session` |
 | [`/api/agents/{id}/heartbeat`](#apiagentsidheartbeat) | GET | `fleet` |
+| [`/api/agents/cron-output`](#apiagentscron-output) | POST | `agent` |
 | [`/api/agents/register`](#apiagentsregister) | POST | `fleet` |
 | [`/api/agents/subagent-events`](#apiagentssubagent-events) | POST | `agent` |
 | [`/api/agents/tool-events`](#apiagentstool-events) | POST | `agent` |
@@ -269,6 +270,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agents_id_heartbeat.rs`](..
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `fleet` | — | `{work_items}` | 200, 401, 403, 404 | — |
+
+## `/api/agents/cron-output`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/cron_output.rs`](../../api/crates/talaria-routes-fleet/src/agents/cron_output.rs)
+
+> POST /api/agents/cron-output. The other inbound half of the talaria-events
+> Hermes plugin: a cron run's FINAL TEXT, landed in the conversation that
+> scheduled the job, as an ordinary agent turn.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | — | `{ok, messageId}` | 200, 400, 404 | — |
 
 ## `/api/agents/register`
 

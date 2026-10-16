@@ -1,4 +1,4 @@
-"""Talaria tool-event, delegation and screenshot reporting.
+"""Talaria tool-event, delegation, cron-output and screenshot reporting.
 
 Every tool call's lifecycle (name, arguments, RESULT) is visible here and
 nowhere else on the platform's wire — the chat-completions SSE the work
@@ -13,6 +13,15 @@ under its own session id, so its tool events carry a correlation the parent's
 reader cannot join, and the parent's stream shows a minutes-long silence that
 reads as a hang. Those two hooks go to their own door, which lands one chip
 per child on the turn that delegated.
+
+It carries a second report on the same wire: a CRON turn's final text.
+A cron fires the agent's own loop from inside the container, so its answer
+reaches no Talaria surface at all — `api_server` is a non-push origin (the
+gateway has nowhere to deliver to) and `on_session_end` carries no text,
+only the session's end. `post_llm_call` is the one hook that holds both
+halves of what the platform needs: `assistant_response`, the turn's final
+text, and the cron task id (`cron:<job>:<execution>`) that names which
+schedule — and so which conversation — this output belongs to.
 
 A screenshot is the same gap with bytes in it. `browser_vision` writes a PNG
 inside this container and reports its PATH — a path that means nothing to the
@@ -40,10 +49,16 @@ from typing import Any
 
 _MAX_CHARS = 4000
 _MAX_TOOLS = 40
+# A cron turn is prose, not a tool argument: the api stores it as a message
+# and clamps it to the same figure at the boundary.
+_MAX_TEXT = 20000
 _QUEUE_CAP = 512
 _POST_TIMEOUT = 4.0
+# The platform's three doors. Tool events are the default; the other two are
+# named per event (see `_poster`).
 _TOOL_EVENTS_PATH = "/api/agents/tool-events"
 _SUBAGENT_EVENTS_PATH = "/api/agents/subagent-events"
+_CRON_OUTPUT_PATH = "/api/agents/cron-output"
 _UPLOADS_PATH = "/api/agents/uploads"
 # The tool that hands back a screenshot, and the ceiling its door enforces.
 # Reading the file is bounded by the same number so an oversized image is
@@ -117,9 +132,11 @@ def _poster() -> None:
         if cfg is None:
             continue
         url, headers = cfg
-        # A per-event destination, defaulting to the tool-events door. The key
-        # is POPPED rather than posted: a tool event carries none at all, so
-        # its body stays byte-identical to the wire the platform parses today.
+        # Three doors, one queue: a per-event destination, defaulting to the
+        # tool-events door. The key is POPPED rather than posted: a tool event
+        # carries none at all, so its body stays byte-identical to the wire
+        # the platform parses today, and a cron turn's or a screenshot's body
+        # reaches its own door with nothing extra in it.
         url = event.pop("url", None) or url
         try:
             req = urllib.request.Request(
@@ -353,6 +370,30 @@ def on_subagent_stop(
             "tools": _tool_names(tool_call_history),
             "url": _door(_SUBAGENT_EVENTS_PATH),
             "at": int(time.time() * 1000),
+def on_post_llm_call(
+    *,
+    session_id: str = "",
+    task_id: str = "",
+    turn_id: str = "",
+    assistant_response: Any = None,
+    platform: str = "",
+    **_: Any,
+) -> None:
+    # CRON ONLY. Every chat and work-session turn already reaches the
+    # platform through the gateway's own stream, so reporting them here
+    # would double every reply; `platform` is the scheduler's own marker for
+    # the turns no other wire carries.
+    if platform != "cron":
+        return
+    if not isinstance(assistant_response, str) or not assistant_response.strip():
+        return
+    _enqueue(
+        {
+            "url": _door(_CRON_OUTPUT_PATH),
+            "sessionId": session_id,
+            "taskId": task_id,
+            "turnId": turn_id,
+            "text": assistant_response[:_MAX_TEXT],
         }
     )
 
@@ -361,12 +402,14 @@ def register(ctx) -> None:
     """The loader's entry point — Hermes refuses a plugin without it
     ("Plugin 'talaria-events' has no register() function", the line that
     spent a deploy silently tool-event-dark). The hook names are the
-    loader's own spelling, on_pre_tool_call / on_post_tool_call — the
-    functions above; the yaml's pre/post section is documentation, not
-    the registration. The delegation pair is registered the same way:
-    subagent_start / subagent_stop are the names in hermes_cli's VALID_HOOKS,
-    fired by the delegate_task tool around every child it spawns."""
+    loader's own spelling, on_pre_tool_call / on_post_tool_call /
+    on_post_llm_call — the functions above; the yaml's hooks section is
+    documentation, not the registration. The delegation pair is registered
+    the same way: subagent_start / subagent_stop are the names in
+    hermes_cli's VALID_HOOKS, fired by the delegate_task tool around every
+    child it spawns."""
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
+    ctx.register_hook("post_llm_call", on_post_llm_call)
     ctx.register_hook("subagent_start", on_subagent_start)
     ctx.register_hook("subagent_stop", on_subagent_stop)

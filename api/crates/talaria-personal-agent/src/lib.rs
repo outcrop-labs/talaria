@@ -481,6 +481,13 @@ async fn rename_agent_slug(
             "update usage_events set agent_model = $1 where agent_model = $2",
             vec![new_model.as_str(), def.model.as_str()],
         ),
+        // The threads listening to this agent's cron jobs are keyed by its
+        // model too; left behind, every scheduled run would post into
+        // nothing after a rename.
+        (
+            "update conversation_schedules set agent_model = $1 where agent_model = $2",
+            vec![new_model.as_str(), def.model.as_str()],
+        ),
         (
             "update rag_collection_access set principal_id = $1 \
              where principal_type = 'agent' and principal_id = $2",

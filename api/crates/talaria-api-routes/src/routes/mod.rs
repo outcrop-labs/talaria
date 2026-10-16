@@ -502,6 +502,21 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/conversations/{id}/schedule",
+            post(talaria_routes_comms::comms::conversations_id_schedule::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/schedules",
+            get(talaria_routes_comms::comms::conversations_id_schedules::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/conversations/{id}/schedules/{jobId}",
+            delete(talaria_routes_comms::comms::conversations_id_schedules_jobid::delete)
+                .fallback(|| async { method_not_allowed("DELETE") }),
+        )
+        .route(
             "/api/dms",
             post(talaria_routes_comms::comms::dms::post).fallback(|| async { method_not_allowed("POST") }),
         )
@@ -1576,6 +1591,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents/subagent-events",
             post(talaria_routes_fleet::agents::subagent_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/cron-output",
+            post(talaria_routes_fleet::agents::cron_output::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agents/uploads",
