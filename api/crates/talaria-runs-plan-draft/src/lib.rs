@@ -27,6 +27,8 @@ use talaria_harness_defs::defs::channel_plan::{Effort, Priority, TicketProposal}
 use talaria_runs_define::{RunDefinition, RunStepContext, StepResult, audience, register_run};
 use talaria_state::AppState;
 
+mod dupe;
+
 pub const PLAN_DRAFT_KIND: &str = "plan-draft";
 
 /// Everything the driver hands the step, camelCase as the row's input column
@@ -61,6 +63,20 @@ pub struct StoredProposal {
     pub depends_on: Vec<usize>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// The index IN THIS BATCH of the proposal that is this one's epic, or
+    /// null for a top-level ticket. The review walk renders the batch as a
+    /// tree from this, and the create path makes the parents first.
+    #[serde(default)]
+    pub parent: Option<usize>,
+    /// Board member user ids, as the model picked them off the rendered
+    /// member list. Empty when the discussion named nobody.
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// The open ticket this proposal re-proposes, when something decided it
+    /// does: the model reading the board's open-ticket list, or the dedup
+    /// pass below. The reviewer sees the match and makes the call.
+    #[serde(default)]
+    pub duplicate_of: Option<String>,
     pub include: bool,
 }
 
@@ -69,6 +85,16 @@ pub struct StoredProposal {
 /// the empty one, so the normalize left to do is the one field the reviewed
 /// shape adds.
 fn normalize(p: TicketProposal) -> StoredProposal {
+    // A FLAGGED DUPLICATE STARTS UNTICKED, and that is the whole act of the
+    // flag: the reviewer is reading a list of things to create, and the one
+    // answer a duplicate needs is "not this one, it is already on the board".
+    // Nothing is dropped — the row is still there, still retitleable, still
+    // tickable by the person who decides the match was wrong. Everything else
+    // starts ticked, because the default answer to a drafted ticket is yes.
+    //
+    // Read before the fields move, so the flag and the tick cannot drift apart
+    // behind a clone.
+    let include = p.duplicate_of.is_none();
     StoredProposal {
         title: p.title,
         description: p.description,
@@ -76,12 +102,15 @@ fn normalize(p: TicketProposal) -> StoredProposal {
         effort: p.effort,
         depends_on: p.depends_on,
         tags: p.tags,
-        include: true,
+        parent: p.parent,
+        assignees: p.assignees,
+        duplicate_of: p.duplicate_of,
+        include,
     }
 }
 
-/// The step's two edges, each overridable, so tests drive a draft with no
-/// database and no model.
+/// The step's three edges, each overridable, so tests drive a draft with no
+/// database, no model and no decision port.
 pub type DraftTicketsFn =
     Arc<dyn Fn(&PlanDraftInput) -> BoxFuture<'static, Result<PlanOutcome, String>> + Send + Sync>;
 pub type SaveResultFn = Arc<
@@ -89,10 +118,18 @@ pub type SaveResultFn = Arc<
         + Send
         + Sync,
 >;
+/// The dedup edge: a board id and the normalized batch, back with whatever
+/// the pass flagged. Its own edge rather than a call inside the step, because
+/// the step has no AppState — the deps hold it — and because a test that
+/// drives a draft must be able to drive one that asks nobody anything.
+pub type FlagDuplicatesFn = Arc<
+    dyn Fn(String, Vec<StoredProposal>) -> BoxFuture<'static, Vec<StoredProposal>> + Send + Sync,
+>;
 
 #[derive(Clone)]
 pub struct PlanDraftDeps {
     pub draft_tickets: DraftTicketsFn,
+    pub flag_duplicates: FlagDuplicatesFn,
     pub save_result: SaveResultFn,
 }
 
@@ -100,6 +137,7 @@ pub struct PlanDraftDeps {
 /// harness assembly the draft runs over.
 pub fn real_plan_draft_deps(state: AppState) -> PlanDraftDeps {
     let state_for_draft = state.clone();
+    let state_for_dupes = state.clone();
     let state_for_save = state;
     PlanDraftDeps {
         draft_tickets: Arc::new(move |input: &PlanDraftInput| {
@@ -131,6 +169,15 @@ pub fn real_plan_draft_deps(state: AppState) -> PlanDraftDeps {
                 }
             })
         }),
+        flag_duplicates: Arc::new(
+            move |board_id: String, mut proposals: Vec<StoredProposal>| {
+                let state = state_for_dupes.clone();
+                Box::pin(async move {
+                    dupe::flag_duplicates(&state, &board_id, &mut proposals).await;
+                    proposals
+                })
+            },
+        ),
         save_result: Arc::new(
             move |id: &str, proposals: Vec<StoredProposal>, note: Option<String>| {
                 let pg = state_for_save.pg.clone();
@@ -176,7 +223,17 @@ async fn plan_draft_step(ctx: RunStepContext, deps: &PlanDraftDeps) -> Result<St
     } else {
         None
     };
-    let stored: Vec<StoredProposal> = out.proposals.into_iter().map(normalize).collect();
+    let mut stored: Vec<StoredProposal> = out.proposals.into_iter().map(normalize).collect();
+    // DEDUP HERE, between the model and the row: the proposals the review
+    // reads must already carry their flags, because the review is where the
+    // untick has to be visible, and re-asking on every GET would spend a
+    // decision call per reload. A draft with no board has nothing to compare
+    // against — the board's open tickets ARE the candidate list.
+    if let Some(board_id) = input.board_id.clone().filter(|b| !b.trim().is_empty())
+        && !stored.is_empty()
+    {
+        stored = (deps.flag_duplicates)(board_id, stored).await;
+    }
     let count = stored.len();
     (deps.save_result)(&ctx.run.id, stored, note.map(str::to_string)).await?;
     Ok(StepResult::Done {
@@ -289,7 +346,17 @@ mod tests {
             effort: None,
             depends_on: Vec::new(),
             tags: Vec::new(),
+            parent: None,
+            assignees: Vec::new(),
+            duplicate_of: None,
         }
+    }
+
+    /// The dedup edge a test that is not about dedup wants: the batch back
+    /// untouched. A draft with no board never reaches it anyway, and the one
+    /// test that does have a board says so by replacing this.
+    fn no_dedup() -> FlagDuplicatesFn {
+        Arc::new(|_board, proposals| Box::pin(async move { proposals }))
     }
 
     /// Where recording deps land their save: the batch and the note, once.
@@ -308,6 +375,7 @@ mod tests {
                 let raw = raw.clone();
                 Box::pin(async move { Ok(PlanOutcome { proposals, raw }) })
             }),
+            flag_duplicates: no_dedup(),
             save_result: Arc::new(move |id, proposals, note| {
                 let saved_for_write = saved_for_write.clone();
                 let id = id.to_string();
@@ -405,15 +473,73 @@ mod tests {
         let mut p = ticket("T");
         p.tags = vec!["billing".into()];
         p.depends_on = vec![0];
+        p.parent = Some(0);
+        p.assignees = vec!["u-1".into()];
         let s = normalize(p);
         assert_eq!(s.title, "T");
         assert_eq!(s.tags, vec!["billing"]);
         assert_eq!(s.depends_on, vec![0]);
+        assert_eq!(s.parent, Some(0));
+        assert_eq!(s.assignees, vec!["u-1"]);
+        assert_eq!(s.duplicate_of, None);
         assert!(s.include);
         // And round-trips: the row column is this exact shape, camelCase.
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["dependsOn"], serde_json::json!([0]));
+        assert_eq!(json["parent"], serde_json::json!(0));
+        assert_eq!(json["assignees"], serde_json::json!(["u-1"]));
+        assert_eq!(json["duplicateOf"], serde_json::Value::Null);
         assert_eq!(json["include"], true);
+    }
+
+    #[test]
+    fn a_flagged_duplicate_starts_unticked_and_names_what_it_matched() {
+        // The model read the board's open-ticket list and said "this is that
+        // ticket again". Nothing is dropped — the proposal is still in the
+        // batch, still editable — but the tick that would create it starts
+        // off, because the reviewer's answer to a duplicate is almost always
+        // no and the one it is not is a tick away.
+        let mut p = ticket("Fix the billing webhook");
+        p.duplicate_of = Some("t-1".into());
+        let s = normalize(p);
+        assert_eq!(s.duplicate_of.as_deref(), Some("t-1"));
+        assert!(!s.include, "a flagged duplicate must start unticked");
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["duplicateOf"], serde_json::json!("t-1"));
+        assert_eq!(json["include"], false);
+        // And a batch whose duplicate the model did NOT flag is untouched:
+        // every other proposal starts ticked, as it always has.
+        assert!(normalize(ticket("Something new")).include);
+    }
+
+    #[tokio::test]
+    async fn the_dedup_pass_runs_only_when_the_draft_has_a_board() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // The board's open tickets ARE the candidate list, so a draft with no
+        // board has nobody to ask about and must not spend a call finding out.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        let (mut deps, saved) = recording_deps(vec![ticket("First")], "…");
+        deps.flag_duplicates = Arc::new(move |board_id: String, mut proposals| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(board_id, "b-1");
+            proposals[0].duplicate_of = Some("t-9".into());
+            proposals[0].include = false;
+            Box::pin(async move { proposals })
+        });
+        plan_draft_step(ctx(input_json()), &deps).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no board, no dedup");
+        assert!(saved.lock().unwrap().clone().unwrap().0[0].include);
+
+        let mut with_board = input_json();
+        with_board["boardId"] = serde_json::json!("b-1");
+        plan_draft_step(ctx(with_board), &deps).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // And what the pass flagged is what the row gets: the review reads
+        // its untick off this column, not off a second call.
+        let (proposals, _) = saved.lock().unwrap().clone().unwrap();
+        assert_eq!(proposals[0].duplicate_of.as_deref(), Some("t-9"));
+        assert!(!proposals[0].include);
     }
 
     #[tokio::test]
@@ -422,6 +548,7 @@ mod tests {
         let saved_for_write = saved.clone();
         let deps = PlanDraftDeps {
             draft_tickets: Arc::new(|_input| Box::pin(async { Err("gateway error 502".into()) })),
+            flag_duplicates: no_dedup(),
             save_result: Arc::new(move |_id, _p, _n| {
                 let saved_for_write = saved_for_write.clone();
                 Box::pin(async move {

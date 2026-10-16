@@ -44,10 +44,22 @@ const urls = new Map<string, string>()
 const polls = new Map<string, ReturnType<typeof setTimeout>>()
 const saves = new Map<string, ReturnType<typeof setTimeout>>()
 
-const normalizeProposal = (p: Proposal): Proposal => ({
+/** Fill in what a stored row (or a terse model reply) left out, so every
+ *  reader downstream gets a whole Proposal and no card has to guess. Exported
+ *  because these defaults ARE the contract between this client and the
+ *  drafting agent's JSON — plan-modal.test.ts pins them.
+ *
+ *  `include` is read, never computed: a proposal flagged as a possible
+ *  duplicate arrives unticked FROM THE SERVER, and recomputing that here would
+ *  silently re-drop the duplicate a reviewer had just decided to keep, on the
+ *  next poll after their edit round-trips. */
+export const normalizeProposal = (p: Proposal): Proposal => ({
   ...p,
   dependsOn: p.dependsOn ?? [],
   tags: p.tags ?? [],
+  parent: p.parent ?? null,
+  assignees: p.assignees ?? [],
+  duplicateOf: p.duplicateOf ?? null,
   include: p.include ?? true,
 })
 
