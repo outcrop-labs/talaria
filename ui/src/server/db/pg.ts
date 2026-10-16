@@ -3761,6 +3761,11 @@ alter table tasks drop column if exists conversation_id`,
   // The thread's own question — "what did I schedule here" — reads by
   // conversation, which the (agent_model, job_id) key does not serve.
   `create index if not exists conversation_schedules_conversation_idx on conversation_schedules(conversation_id)`,
+  // THE DIALS A RUN WAS STARTED WITH — effort, breadth and sources, each 1..3.
+  // The mode is a preset over these three, so a run that set one of them is no
+  // longer described by its mode alone: NULL means "the mode's preset", which
+  // is every run that predates the column.
+  `alter table research_runs add column if not exists dials jsonb`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

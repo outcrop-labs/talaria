@@ -50,6 +50,7 @@ mod profile_live;
 mod push_live;
 mod realtime;
 mod realtime_fan;
+mod research_dials_live;
 mod research_live;
 mod run_control_live;
 mod runs_decide;

@@ -31,14 +31,14 @@ Source: [`api/crates/talaria-routes-workbench/src/research/research.rs`](../../a
 
 > /api/research.
 > GET → recent runs scoped to the viewer + the mode catalog. POST { question,
-> mode?, agentModel? } → start a run. Humans and agents both start research;
-> an agent researches AS ITSELF, pinned to its own model. An agent-started
+> mode?, agentModel?, conversationId?, effort?, breadth?, sources? } → start a
+> run. The three dials override the mode's preset one at a time; a
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `dual` | — | `{runs, modes}` | 200 | — |
-| POST | `dual` | [body](#post-apiresearch-body) | `{run}` | 200, 400, 403, 409 | — |
+| POST | `dual` | [body](#post-apiresearch-body) | `{run}` | 200, 400, 403, 404, 409 | — |
 
 ### POST `/api/research` body
 
@@ -46,7 +46,11 @@ Source: [`api/crates/talaria-routes-workbench/src/research/research.rs`](../../a
 | :--- | :--- | :--- |
 | `question` | `string(8, 4000)` |  |
 | `agentModel` | `string?(200)` |  |
+| `conversationId` | `uuid?` | The thread the run reports into, instead of one of its own. |
 | `mode` | `enum(recon|brief|expedition)` |  |
+| `effort` | `number?(1, 3)` | How hard the run works the question: rounds of searching. |
+| `breadth` | `number?(1, 3)` | How wide each round casts: queries planned per round. |
+| `sources` | `number?(1, 3)` | How many sources the report may end up citing. |
 
 ## `/api/research/{id}`
 

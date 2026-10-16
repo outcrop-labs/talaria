@@ -1027,7 +1027,8 @@ CREATE TABLE public.research_runs (
     completed_at timestamp with time zone,
     title text,
     conversation_id uuid,
-    parent_run_id uuid
+    parent_run_id uuid,
+    dials jsonb
 );
 CREATE TABLE public.research_sources (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

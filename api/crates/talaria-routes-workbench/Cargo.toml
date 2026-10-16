@@ -16,6 +16,7 @@ talaria-audit = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-coding-accounts = { workspace = true }
 talaria-body = { workspace = true }
+talaria-conversations = { workspace = true }
 talaria-db = { workspace = true }
 talaria-error = { workspace = true }
 talaria-github = { workspace = true }

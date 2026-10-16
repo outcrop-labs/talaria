@@ -85,6 +85,23 @@ fn opt_str(v: &Value) -> Option<&str> {
     v.as_str().filter(|s| !s.trim().is_empty())
 }
 
+/// A RESEARCH DIAL: absent, or an integer in 1..=3. The refusal names the
+/// dial, because a call carries three of them and "out of range" tells a
+/// model nothing about which one to move. Production's route refuses the same
+/// three values the same way — a sandbox that accepted effort 5 would teach
+/// a model a call the API answers with a 400.
+fn opt_dial(v: &Value, field: &str) -> Result<Option<u64>, ToolRefusal> {
+    if v.is_null() {
+        return Ok(None);
+    }
+    match v.as_u64() {
+        Some(n) if (1..=3).contains(&n) => Ok(Some(n)),
+        _ => Err(refuse(format!(
+            "\"{field}\" is a dial from 1 to 3 — leave it out to take the mode's own"
+        ))),
+    }
+}
+
 fn ticket_of<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxTicket, ToolRefusal> {
     let id = id.as_str().unwrap_or("");
     w.tickets.iter().find(|t| t.id == id).ok_or_else(|| {
@@ -1659,6 +1676,15 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     "\"question\" needs to be a real question — be specific about what to look up",
                 ));
             }
+            // THE DIALS, read before the run is queued: a refused call must
+            // leave the world exactly as it was, or a fixture's next
+            // `list_research` would show a run the API never started.
+            let mut dials = serde_json::Map::new();
+            for field in ["effort", "breadth", "sources"] {
+                if let Some(n) = opt_dial(&a[field], field)? {
+                    dials.insert(field.to_string(), json!(n));
+                }
+            }
             let run_id = next_id("run", w.research.len());
             let mode = opt_str(&a["mode"]).unwrap_or("brief");
             // QUEUED, NOT DONE. The tool is documented as running in the
@@ -1669,8 +1695,18 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 "runId": run_id, "question": question, "mode": mode,
                 "status": "queued", "phase": "planning", "documentId": null, "sources": 0, "error": null
             })).expect("a queued run deserializes"));
-            Ok(json!({ "ok": true, "runId": run_id, "status": "queued",
-                "note": "running in the background — poll research_status, then read the report with get_document" }))
+            // Echoed back so a fixture can see the depth the run was queued
+            // at; null means no dial was moved, which is the mode's own
+            // preset — the server fills those in, not the caller.
+            let asked = if dials.is_empty() {
+                Value::Null
+            } else {
+                Value::Object(dials)
+            };
+            Ok(
+                json!({ "ok": true, "runId": run_id, "status": "queued", "dials": asked,
+                "note": "running in the background — poll research_status, then read the report with get_document" }),
+            )
         }
 
         "list_research" => Ok(json!({ "runs": w.research.iter()
@@ -3186,6 +3222,47 @@ mod tests {
         assert_eq!(s.world.research[1].status, "queued");
         let status = s.dispatch("research_status", r#"{"runId":"run-2"}"#);
         assert!(status.text.contains("\"phase\":\"planning\""));
+    }
+
+    #[test]
+    fn queues_a_run_at_the_dials_asked_for_and_names_a_dial_off_the_scale() {
+        let mut s = sb();
+        let asked = s.dispatch(
+            "research",
+            r#"{"question":"What do competitors charge for seats?","effort":3,"sources":1}"#,
+        );
+        assert!(asked.text.contains("\"effort\":3"), "{}", asked.text);
+        assert!(asked.text.contains("\"sources\":1"), "{}", asked.text);
+        // A dial nobody moved is not invented here: the mode's preset is the
+        // server's to fill in, so the ack says nothing about breadth.
+        assert!(!asked.text.contains("breadth"), "{}", asked.text);
+
+        // Off the scale, wrong type, and zero — each refused by name, and
+        // each leaving the world as it was.
+        let before = s.world.research.len();
+        for (args, field) in [
+            (
+                r#"{"question":"Who audits the auditors?","effort":4}"#,
+                "effort",
+            ),
+            (
+                r#"{"question":"Who audits the auditors?","breadth":0}"#,
+                "breadth",
+            ),
+            (
+                r#"{"question":"Who audits the auditors?","sources":"x"}"#,
+                "sources",
+            ),
+        ] {
+            let r = s.dispatch("research", args);
+            assert!(r.is_error, "{}", r.text);
+            assert!(r.text.contains(field), "{}", r.text);
+        }
+        assert_eq!(
+            s.world.research.len(),
+            before,
+            "a refused start queues nothing"
+        );
     }
 
     #[test]
