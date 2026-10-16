@@ -14,6 +14,7 @@
 
 use sqlx::PgPool;
 
+use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_fleet_docker::{docker_exec, managed_container};
 use talaria_gateway::settings::get_setting;
 
@@ -482,6 +483,235 @@ pub async fn create_fleet_crons(
     Ok(results)
 }
 
+// ── Schedules a conversation owns ───────────────────────────────────────────
+// Everything above creates a job for an AGENT: it fires, the agent answers
+// itself, and nothing reports. A job created from a CONVERSATION is that
+// thread's standing request ("check this every morning"), so its turns have to
+// come back into the thread — and `conversation_schedules` is the only pointer
+// that can carry them. jobs.json lives inside the agent and knows nothing
+// about Talaria's conversations; all a finished cron turn carries back out is
+// the task id its scheduler stamped on it, `cron:<job>:<execution>`.
+
+/// One `conversation_schedules` row — what Talaria knows about a cron it
+/// created from a thread, before the live state from the container is merged
+/// on top of it.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleRow {
+    pub job_id: String,
+    pub conversation_id: String,
+    pub name: String,
+    pub schedule: String,
+    /// ISO, like every other timestamp this api serves.
+    pub created_at: String,
+}
+
+/// The managed, enabled def that answers for a model. A conversation names its
+/// agent by model and every `hermes cron` call needs the def id, so this is
+/// the one translation both doors of the thread-schedule feature go through.
+async fn managed_def_for_model(pg: &PgPool, model: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select id::text from agent_defs where model = $1 and managed and enabled limit 1",
+    )
+    .bind(model)
+    .fetch_optional(pg)
+    .await
+}
+
+/// Create a cron on this conversation's agent and record the thread as its
+/// listener. Returns the job id Hermes assigned.
+pub async fn schedule_from_conversation(
+    pg: &PgPool,
+    conversation_id: &str,
+    created_by: &str,
+    name: &str,
+    schedule: &str,
+    prompt: &str,
+) -> Result<String, String> {
+    let model: Option<String> =
+        sqlx::query_scalar("select agent_model from conversations where id = $1::uuid")
+            .bind(conversation_id)
+            .fetch_optional(pg)
+            .await
+            .map_err(|e| e.to_string())?;
+    // A thread with no agent, a thread that is gone, and a thread whose agent
+    // was retired all land on the same sentence: the only thing the caller can
+    // do about any of them is pick a different thread.
+    let model = model.unwrap_or_default();
+    let Some(def_id) = managed_def_for_model(pg, &model)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("this conversation's agent is not a running managed agent".to_string());
+    };
+    // Every refusal the fleet door answers with — the flag/newline guards, the
+    // frequency floor, Hermes' own schedule parser — this door answers with
+    // too, verbatim, because it is the same call.
+    let Some(job) = create_cron_job(pg, &def_id, name, schedule, prompt).await? else {
+        return Err("the agent did not report a job id".to_string());
+    };
+    // The trimmed text, so the row and jobs.json agree about what was asked
+    // for: create_cron_job trims before handing it to Hermes.
+    let written = sqlx::query(
+        "insert into conversation_schedules \
+           (agent_model, job_id, conversation_id, name, schedule, created_by) \
+         values ($1, $2, $3::uuid, $4, $5, $6::uuid)",
+    )
+    .bind(&model)
+    .bind(&job)
+    .bind(conversation_id)
+    .bind(name.trim())
+    .bind(schedule.trim())
+    .bind(created_by)
+    .execute(pg)
+    .await;
+    if let Err(e) = written {
+        // The job is already in the container's jobs.json by now, and a job
+        // with no row pointing at a conversation is spend nobody reads: it
+        // fires forever, reaches the cron-output door, finds no listener and
+        // is dropped. Take it back out rather than leave it ticking. A failed
+        // undo is only logged — the caller is owed the write that failed, not
+        // the cleanup that followed it, and the job is still visible on the
+        // agent's own cron list.
+        if let Err(undo) = remove_cron_job(pg, &def_id, &job).await {
+            tracing::error!("[crons] orphan job {job} on {model} could not be removed: {undo}");
+        }
+        return Err(e.to_string());
+    }
+    Ok(job)
+}
+
+/// Take a thread's schedule away: the job goes out of the agent's own
+/// scheduler and the row that made the thread its listener goes with it.
+/// The row is deleted even when the container cannot be reached — a row
+/// pointing at a job that no longer fires lists forever with nothing to
+/// show; the job that outlives its row is the one `schedule_from_conversation`
+/// guards against, and here the person asked for exactly that removal.
+pub async fn unschedule_from_conversation(
+    pg: &PgPool,
+    conversation_id: &str,
+    job_id: &str,
+) -> Result<(), String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select agent_model from conversation_schedules \
+         where conversation_id = $1::uuid and job_id = $2",
+    )
+    .bind(conversation_id)
+    .bind(job_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((model,)) = row else {
+        return Err("this thread has no such schedule".to_string());
+    };
+    let removed = match managed_def_for_model(pg, &model)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        Some(def_id) => remove_cron_job(pg, &def_id, job_id).await,
+        None => Err("this conversation's agent is not a running managed agent".to_string()),
+    };
+    if let Err(e) = &removed {
+        tracing::warn!("[crons] {conversation_id}: job {job_id} stays in the container: {e}");
+    }
+    sqlx::query(
+        "delete from conversation_schedules where conversation_id = $1::uuid and job_id = $2",
+    )
+    .bind(conversation_id)
+    .bind(job_id)
+    .execute(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Which conversation, if any, is listening to this agent's job — the lookup
+/// the agent's own call back makes, keyed the way the row is keyed.
+pub async fn conversation_for_job(
+    pg: &PgPool,
+    agent_model: &str,
+    job_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select conversation_id::text from conversation_schedules \
+         where agent_model = $1 and job_id = $2",
+    )
+    .bind(agent_model)
+    .bind(job_id)
+    .fetch_optional(pg)
+    .await
+}
+
+/// What this thread has scheduled, oldest first.
+pub async fn schedules_for_conversation(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Vec<ScheduleRow>, sqlx::Error> {
+    // created_at crosses as epoch millis and is formatted on this side: sqlx
+    // carries no timestamptz decoder here by design (the same idiom as
+    // agent_keys.last_used_at).
+    type Row = (String, String, String, String, i64);
+    let rows: Vec<Row> = sqlx::query_as(
+        "select job_id, conversation_id::text, name, schedule, \
+                (extract(epoch from created_at) * 1000)::bigint \
+         from conversation_schedules where conversation_id = $1::uuid \
+         order by created_at",
+    )
+    .bind(conversation_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(job_id, conversation_id, name, schedule, created_ms)| ScheduleRow {
+                job_id,
+                conversation_id,
+                name,
+                schedule,
+                created_at: epoch_ms_to_iso(created_ms),
+            },
+        )
+        .collect())
+}
+
+/// One model's live jobs, as the container reports them — the half of a
+/// thread's schedule list that only jobs.json knows (still ticking? when did
+/// it last run?). Keyed by model, because that is how a conversation names its
+/// agent; a down container is an Err the caller may degrade past.
+pub async fn live_jobs_for_model(pg: &PgPool, agent_model: &str) -> Result<Vec<CronJob>, String> {
+    let Some(def_id) = managed_def_for_model(pg, agent_model)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Err("this conversation's agent is not a running managed agent".to_string());
+    };
+    list_cron_jobs(pg, &def_id).await
+}
+
+/// The task id a cron turn carries, split back into the job and the execution
+/// it names: `cron:<job>:<execution>`. None for anything else — a persona
+/// turn's task id, an id too short to be a job id, a fourth segment — because
+/// the door behind this refuses what it cannot recognise rather than guess
+/// which thread a turn belongs to.
+pub fn job_id_of_task(task_id: &str) -> Option<(String, String)> {
+    let mut parts = task_id.split(':');
+    let kind = parts.next()?;
+    let job = parts.next()?;
+    let execution = parts.next()?;
+    if parts.next().is_some() || kind != "cron" || !job_id_ok(job) {
+        return None;
+    }
+    // Execution ids are hex too, but any length — Hermes picks the width.
+    if execution.is_empty()
+        || !execution
+            .chars()
+            .all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+    {
+        return None;
+    }
+    Some((job.to_string(), execution.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +764,23 @@ mod tests {
         assert!(!job_id_ok("ABC123")); // uppercase is not [a-f]
         assert!(!job_id_ok("abc12")); // too short
         assert!(!job_id_ok("a".repeat(33).as_str()));
+    }
+
+    #[test]
+    fn cron_task_ids_split_into_job_and_execution() {
+        assert_eq!(
+            job_id_of_task("cron:abc123:f00dface"),
+            Some(("abc123".to_string(), "f00dface".to_string()))
+        );
+        // A persona turn's task id names no job.
+        assert_eq!(job_id_of_task("task:abc123:f00d"), None);
+        assert_eq!(job_id_of_task("abc123"), None);
+        // Too short to be a job id — the same grammar `hermes cron` prints.
+        assert_eq!(job_id_of_task("cron:abc12:f00d"), None);
+        // Trailing garbage: a fourth segment, a non-hex execution, nothing.
+        assert_eq!(job_id_of_task("cron:abc123:f00d:extra"), None);
+        assert_eq!(job_id_of_task("cron:abc123:f00d!"), None);
+        assert_eq!(job_id_of_task("cron:abc123:"), None);
+        assert_eq!(job_id_of_task("cron:abc123"), None);
     }
 }

@@ -7,6 +7,7 @@ pub mod agent_whoami;
 pub mod agents;
 pub mod agents_id_heartbeat;
 pub mod agents_register;
+pub mod cron_output;
 pub mod gaps;
 pub mod gaps_id;
 pub mod muse;

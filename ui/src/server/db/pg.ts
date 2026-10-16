@@ -3728,6 +3728,39 @@ alter table tasks drop column if exists conversation_id`,
      updated_at timestamptz not null default now(),
      primary key (user_id, conversation_id)
    )`,
+  // WHAT A THREAD IS WAITING ON. A cron created from the fleet page is the
+  // agent's own job and reports nowhere; one created from a conversation is
+  // that thread's standing request, so its turns have to come back into the
+  // thread. This table is the only pointer that can carry them: jobs.json
+  // lives inside the agent and knows nothing about Talaria's conversations,
+  // and all a finished cron turn carries back out is the task id the
+  // scheduler stamped on it (`cron:<job>:<execution>`).
+  //
+  // KEYED (agent_model, job_id), not by job id alone — a job id is unique
+  // only within one agent's own jobs.json, so two agents can hand out the
+  // same one. The model is how a conversation names its agent, and it is what
+  // the agent's own authenticated call back carries.
+  //
+  // `name` and `schedule` are copies of what Hermes was told, so the list a
+  // thread shows still reads when the container is down and the live half of
+  // the answer is missing. Cascade-deleted with the conversation: a schedule
+  // has no meaning without the thread it posts into.
+  //
+  // AT THE END, not beside the conversations table: MIGRATIONS is append-only
+  // and keyed by INDEX.
+  `create table if not exists conversation_schedules (
+     agent_model text not null,
+     job_id text not null,
+     conversation_id uuid not null references conversations(id) on delete cascade,
+     name text not null,
+     schedule text not null,
+     created_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (agent_model, job_id)
+   )`,
+  // The thread's own question — "what did I schedule here" — reads by
+  // conversation, which the (agent_model, job_id) key does not serve.
+  `create index if not exists conversation_schedules_conversation_idx on conversation_schedules(conversation_id)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -29,6 +29,7 @@ mod conversation_audience_live;
 mod conversation_layout_live;
 mod conversation_reactions_live;
 mod conversation_reads;
+mod conversation_schedules_live;
 mod decide_shadow_live;
 mod developer_agent_live;
 mod fitness_arming;
