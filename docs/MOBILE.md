@@ -293,9 +293,11 @@ How it registers:
   still fail to link, and linking is what an `iosApp/` Xcode project will depend on. Both are
   selected by the `changes` job and listed in
   [`docs/BRANCHES.md`](./BRANCHES.md)'s protection recipe — **re-run that recipe for them to become
-  required.**   **`compile + link (mobile ios)` is `continue-on-error` and not a required check** — Android is
-  being tested on real devices first, and a macOS job that has never been green must not hold that
-  up. It still runs and still reports; it becomes blocking the day it passes.
+  required.** Both mobile contexts are **blocking**: `compile + link (mobile ios)` earned that the
+  run it first went green, and it has to be blocking rather than advisory because it is the only
+  place the Apple targets are ever built — nobody compiles them locally, so an advisory cross means
+  `commonMain` quietly stops being multiplatform and nobody finds out until somebody wants an iOS
+  build.
 - [`mobile-package.yml`](../.github/workflows/mobile-package.yml) builds the APK and, on a main
   push, mints its release. See **Releases** below.
 

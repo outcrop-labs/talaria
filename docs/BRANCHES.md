@@ -164,6 +164,7 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/main/protection" \
       "fmt + clippy + test (api)",
       "fmt + clippy + test + typecheck (desktop)",
       "test + assemble (mobile)",
+      "compile + link (mobile ios)",
       "pr target (main takes rc only)",
       "promotion gate (rc verified)"
     ]
@@ -197,7 +198,8 @@ gh api -X PUT "repos/outcrop-labs/talaria/branches/rc/protection" \
       "typecheck + test (cli)",
       "fmt + clippy + test (api)",
       "fmt + clippy + test + typecheck (desktop)",
-      "test + assemble (mobile)"
+      "test + assemble (mobile)",
+      "compile + link (mobile ios)"
     ]
   },
   "enforce_admins": true,
