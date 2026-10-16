@@ -1,11 +1,16 @@
 // /api/research.
 // GET → recent runs scoped to the viewer + the mode catalog. POST { question,
-// mode?, agentModel? } → start a run. Humans and agents both start research;
-// an agent researches AS ITSELF, pinned to its own model. An agent-started
-// run carries the attribution ladder's user as its owner — the PA's owner,
-// the chatting human mid-chat, the hirer otherwise — while an org agent's run
-// stays org-readable however owned (org-ness is derived from the row
-// downstream, never from the owner's presence).
+// mode?, agentModel?, conversationId?, effort?, breadth?, sources? } → start a
+// run. The three dials override the mode's preset one at a time; a
+// conversationId points the run at a thread the caller already has, which it
+// discusses and reports into instead of making one of its own.
+//
+// Humans and agents both start research; an agent researches AS ITSELF, pinned
+// to its own model. An agent-started run carries the attribution ladder's user
+// as its owner — the PA's owner, the chatting human mid-chat, the hirer
+// otherwise — while an org agent's run stays org-readable however owned
+// (org-ness is derived from the row downstream, never from the owner's
+// presence).
 
 use axum::Json;
 use axum::extract::State;
@@ -14,8 +19,12 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::fleet::usable_agent_gate;
-use talaria_api_facades::runs::defs::research::research_modes;
-use talaria_body::{optional_string_member, parse, string_member};
+use talaria_api_facades::runs::defs::research::{Dials, research_modes};
+use talaria_body::{
+    NumKind, optional_number_member, optional_string_member, optional_uuid_member, parse,
+    string_member,
+};
+use talaria_conversations::accessible_conversation;
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_harness_defs::defs::research::ResearchDepth;
 use talaria_permissions::has_perm;
@@ -37,6 +46,46 @@ fn mode_member(obj: &serde_json::Map<String, serde_json::Value>) -> Result<Resea
         "expedition" => ResearchDepth::Expedition,
         _ => ResearchDepth::Brief,
     })
+}
+
+/// THE THREE DIALS the mode is a preset over, or `None` for "whatever the mode
+/// says". Each is `z.number().int().min(1).max(3).optional()`, and the field
+/// name goes on the message: three members share one bound, so "expected
+/// number to be <=3" on its own leaves a caller guessing which dial it got
+/// wrong.
+///
+/// ANY ONE GIVEN FILLS THE OTHER TWO from the mode's own preset. A caller who
+/// wants more sources on a brief says so about sources; they are not made to
+/// restate the two dials they were happy with.
+fn dials_member(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    mode: ResearchDepth,
+) -> Result<Option<Dials>, String> {
+    // How hard the run works the question: rounds of searching.
+    let effort = optional_number_member(obj, "effort", NumKind::Int, 1.0, 3.0)
+        .map_err(|msg| format!("effort: {msg}"))?;
+    // How wide each round casts: queries planned per round.
+    let breadth = optional_number_member(obj, "breadth", NumKind::Int, 1.0, 3.0)
+        .map_err(|msg| format!("breadth: {msg}"))?;
+    // How many sources the report may end up citing.
+    let sources = optional_number_member(obj, "sources", NumKind::Int, 1.0, 3.0)
+        .map_err(|msg| format!("sources: {msg}"))?;
+    if effort.is_none() && breadth.is_none() && sources.is_none() {
+        // ABSENT IS NOT A DIAL SETTING. `None` stays None all the way to the
+        // run's input, so a run started without them keeps reading as its mode
+        // rather than as three numbers that happen to match today's preset.
+        return Ok(None);
+    }
+    let preset = Dials::from_mode(mode);
+    // Validated even though every member is already bounded 1..=3: the bound
+    // lives in two places now, and `validate` is the one that owns it.
+    Dials {
+        effort: effort.map_or(preset.effort, |n| n as u8),
+        breadth: breadth.map_or(preset.breadth, |n| n as u8),
+        sources: sources.map_or(preset.sources, |n| n as u8),
+    }
+    .validate()
+    .map(Some)
 }
 
 /// The mode catalog the picker renders: [{mode, blurb}].
@@ -104,6 +153,15 @@ pub async fn post(
         Ok(a) => a,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // The thread the run reports into, instead of one of its own.
+    let conversation_id = match optional_uuid_member(obj, "conversationId") {
+        Ok(c) => c,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let dials = match dials_member(obj, mode) {
+        Ok(d) => d,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
 
     let caller = agent_caller(&state.pg, &headers).await?;
     let (agent_model, owner_user_id, requested_by) = if let Some(caller) = caller.as_ref() {
@@ -162,6 +220,68 @@ pub async fn post(
         )
     };
 
+    // ── MAY THIS CALLER POINT A RUN AT THAT THREAD? ──────────────────────────
+    //
+    // THE SAME DOOR THE CHAT ROUTE USES, and it has to be: the run posts its
+    // scoping question, its progress and its report into this conversation,
+    // and everyone who can read the run can then read the thread. A caller who
+    // could name a conversation they cannot open would be writing into
+    // somebody else's room.
+    //
+    // GATED AS THE OWNER STAMP, which is the same person on both legs — a
+    // human's own id on the session path, and on the agent path the
+    // attribution ladder's responsible user, the person the agent is answering
+    // for. An agent with no responsible user has nobody whose access could be
+    // checked, so it cannot name a conversation at all; it still gets a run,
+    // just the thread-less kind it has always had.
+    if let Some(conversation) = conversation_id.as_deref() {
+        let reachable = match owner_user_id.as_deref() {
+            Some(user_id) => {
+                match accessible_conversation(&state.pg, user_id, conversation).await {
+                    Ok(c) => c.is_some(),
+                    Err(e) => {
+                        return Ok(internal(
+                            "[research] conversation access read on start failed",
+                            e,
+                        ));
+                    }
+                }
+            }
+            None => false,
+        };
+        if !reachable {
+            // NOT FOUND, never forbidden — the run's own routes answer the
+            // same way. A caller who cannot see a conversation must not learn
+            // from the status code that it exists.
+            return Ok(house_error(StatusCode::NOT_FOUND, "conversation not found"));
+        }
+        // ONE LIVE RUN PER THREAD. The conversation-keyed readers hand back
+        // one run (the newest), and the discussion beside it narrates one
+        // run's progress; a second run working under the same thread would
+        // have two scopers, two report-ready turns and one rail row to show
+        // for them. A finished run is a different matter — the next question
+        // in the same session is the newest, and the readers follow it.
+        let live: Option<(String,)> = match sqlx::query_as(
+            "select id::text from research_runs \
+             where conversation_id = $1::uuid and status in ('queued', 'running', 'awaiting') \
+             limit 1",
+        )
+        .bind(conversation)
+        .fetch_optional(&state.pg)
+        .await
+        {
+            Ok(l) => l,
+            Err(e) => return Ok(internal("[research] live-run read on start failed", e)),
+        };
+        if let Some((id,)) = live {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(json!({ "run": null, "duplicateOf": id })),
+            )
+                .into_response());
+        }
+    }
+
     // A queued/running duplicate of the same question is a double-click —
     // answered by a raw column scan, not the projection's run-aware CASE
     // (`active_research_on`).
@@ -218,6 +338,8 @@ pub async fn post(
             owner_user_id,
             requested_by,
             parent_run_id: parent_run_id.clone(),
+            conversation_id: conversation_id.clone(),
+            dials,
         },
     )
     .await
@@ -237,4 +359,114 @@ pub async fn post(
         remember_research_origin(&state, &run.id, origin).await;
     }
     Ok(Json(json!({ "run": run })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        v.as_object().expect("a body").clone()
+    }
+
+    #[test]
+    fn no_dials_in_the_body_is_not_a_dial_setting() {
+        // The run's input keeps `None`, so a run started off a mode button
+        // reads as that mode for ever rather than as three numbers that
+        // happened to be the preset on the day it ran.
+        let body = obj(json!({ "question": "does pg17 vacuum faster?" }));
+        assert!(
+            dials_member(&body, ResearchDepth::Brief)
+                .expect("nothing to validate")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn one_dial_given_fills_the_other_two_from_the_mode() {
+        // A caller who wants a wider sweep on a brief says so about breadth;
+        // the other two come from the preset rather than from a default of
+        // this route's own invention — two spellings of the preset is how they
+        // come to disagree.
+        for mode in [
+            ResearchDepth::Recon,
+            ResearchDepth::Brief,
+            ResearchDepth::Expedition,
+        ] {
+            let preset = Dials::from_mode(mode);
+            let got = dials_member(&obj(json!({ "breadth": 3 })), mode)
+                .expect("3 is in range")
+                .expect("a dial was given");
+            assert_eq!(got.breadth, 3);
+            assert_eq!(got.effort, preset.effort, "{mode:?} effort");
+            assert_eq!(got.sources, preset.sources, "{mode:?} sources");
+        }
+    }
+
+    #[test]
+    fn all_three_given_are_all_three_taken() {
+        let got = dials_member(
+            &obj(json!({ "effort": 1, "breadth": 2, "sources": 3 })),
+            ResearchDepth::Recon,
+        )
+        .expect("all in range")
+        .expect("dials were given");
+        assert_eq!((got.effort, got.breadth, got.sources), (1, 2, 3));
+    }
+
+    #[test]
+    fn an_out_of_range_dial_names_itself_in_the_message() {
+        // THE FIELD NAME IS THE POINT. Three members share one bound, so a
+        // bare "expected number to be <=3" would leave the caller to guess
+        // which of the three they got wrong.
+        let msg = dials_member(&obj(json!({ "sources": 7 })), ResearchDepth::Brief)
+            .expect_err("7 is out of range");
+        assert!(msg.starts_with("sources: "), "{msg}");
+        assert!(msg.contains("<=3"), "{msg}");
+
+        let msg = dials_member(&obj(json!({ "effort": 0 })), ResearchDepth::Brief)
+            .expect_err("0 is below the range");
+        assert!(msg.starts_with("effort: "), "{msg}");
+        assert!(msg.contains(">=1"), "{msg}");
+    }
+
+    #[test]
+    fn a_dial_is_an_int_and_null_is_not_a_dial() {
+        // zod's order, and zod's words: the int guard answers before the
+        // bounds, and an `.optional()`-only member refuses a present null
+        // rather than folding it into "absent".
+        let msg = dials_member(&obj(json!({ "breadth": 1.5 })), ResearchDepth::Brief)
+            .expect_err("1.5 is not an int");
+        assert_eq!(msg, "breadth: Invalid input: expected int, received number");
+
+        let msg = dials_member(
+            &obj(json!({ "effort": serde_json::Value::Null })),
+            ResearchDepth::Brief,
+        )
+        .expect_err("null is a type error here");
+        assert_eq!(msg, "effort: Invalid input: expected number, received null");
+
+        let msg = dials_member(&obj(json!({ "sources": "3" })), ResearchDepth::Brief)
+            .expect_err("a string is not a number");
+        assert_eq!(
+            msg,
+            "sources: Invalid input: expected number, received string"
+        );
+    }
+
+    #[test]
+    fn the_mode_member_defaults_and_then_closes_the_set() {
+        // Absent is the default mode; a present value must be one of the
+        // three. Pinned beside the dials because the dials READ the mode —
+        // a body that got the mode wrong must not reach a preset lookup.
+        assert_eq!(
+            mode_member(&obj(json!({}))).expect("absent is the default"),
+            ResearchDepth::Brief
+        );
+        assert_eq!(
+            mode_member(&obj(json!({ "mode": "expedition" }))).expect("one of the three"),
+            ResearchDepth::Expedition
+        );
+        assert!(mode_member(&obj(json!({ "mode": "deep" }))).is_err());
+    }
 }

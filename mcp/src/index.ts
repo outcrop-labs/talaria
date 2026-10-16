@@ -1444,6 +1444,11 @@ server.registerTool(
 // ── Research (Recon / Brief / Expedition) ────────────────────────────────────
 // Cited web research, run server-side by YOUR persona + a search model — your
 // chat context stays clean. Results are org-visible report documents.
+//
+// The mode is still the choice to make; the three dials are that choice taken
+// apart, one axis each, for the question that doesn't sit on a preset — a
+// recon that needs twelve sources, an expedition over a single narrow angle.
+// Pass only the dial you mean to move: the rest stay the mode's own.
 server.registerTool(
   'research',
   {
@@ -1452,9 +1457,13 @@ server.registerTool(
     inputSchema: {
       question: z.string().min(8).max(4000).describe('What to research, in natural language — be specific'),
       mode: z.enum(['recon', 'brief', 'expedition']).optional().describe("Depth (default 'brief')"),
+      effort: z.number().int().min(1).max(3).optional().describe("How hard to dig — rounds of searching, 1–3 (default: the mode's)"),
+      breadth: z.number().int().min(1).max(3).optional().describe("How wide to cast — queries per round, 1–3 (default: the mode's)"),
+      sources: z.number().int().min(1).max(3).optional().describe("How many sources to keep, 1–3 (default: the mode's)"),
     },
   },
-  async ({ question, mode }) => ok(await api('POST', '/api/research', { question, mode })),
+  async ({ question, mode, effort, breadth, sources }) =>
+    ok(await api('POST', '/api/research', { question, mode, effort, breadth, sources })),
 )
 
 server.registerTool(
