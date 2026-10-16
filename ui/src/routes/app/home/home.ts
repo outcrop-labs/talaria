@@ -5,7 +5,11 @@ import { createQuery } from '@tanstack/svelte-query'
 import { getJson, getJsonOr } from '@/lib/fetch-json'
 import type { DotStatus } from '@/components/ui/chip'
 
-export const HOME_TABS = ['inbox', 'boards', 'comms', 'plans', 'research', 'docs'] as const
+// 'work' is one tab over three old ones: plans and research runs are sessions
+// in the work harness now, so Home previews them in one panel (WorkTab). The
+// retired names fall through `tabFromPath`'s fallback to the Inbox, which is
+// what it is for.
+export const HOME_TABS = ['inbox', 'boards', 'comms', 'work', 'docs'] as const
 export type HomeTab = (typeof HOME_TABS)[number]
 
 export interface WorkItem {
@@ -89,8 +93,8 @@ export const QUEUE_META: Record<QueueKey, { label: string; hint: string; dot: Do
 }
 
 // ── Research: runs in flight and fresh reports ──────────────────────────────
-// `awaiting` shares running's accent but not its pulse (ResearchTab keys pulse
-// on status === 'running') — waiting on you, not working.
+// `awaiting` shares running's accent but not its pulse (WorkTab keys pulse on
+// status === 'running') — waiting on you, not working.
 export const RUN_DOT: Record<string, DotStatus> = {
   queued: 'warn',
   running: 'accent',

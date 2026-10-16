@@ -13,11 +13,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-artifacts = { workspace = true }
+talaria-boards = { workspace = true }
 talaria-channels = { workspace = true }
 talaria-conversations = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-harness = { workspace = true }
 talaria-harness-defs = { workspace = true }
+talaria-labels = { workspace = true }
 talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
 talaria-templates = { workspace = true }
 talaria-workflows = { workspace = true }
+tracing = { workspace = true }

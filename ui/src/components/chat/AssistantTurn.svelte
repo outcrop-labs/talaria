@@ -139,7 +139,15 @@
     {#if !live && message.resumed}
       <div class="font-mono text-[10px] tracking-[0.05em] text-ink-dim">↻ resumed after a dropped stream</div>
     {/if}
-    {#if !live && message.status === 'error'}
+    <!-- A stop is a decision, not a fault: the reader chose to end the turn,
+        so it says so in the muted voice. It used to arrive as danger-red "·
+        interrupted" — the typography of something going wrong — and an empty
+        stop drew the routing-error line, which blamed the model's config for
+        a key the person pressed. A turn the SERVER wrote a reason into still
+        shows that reason: it is news, and stopping does not explain it. -->
+    {#if !live && message.stopped && agentErrorNote === null}
+      <div class="font-mono text-[11px] text-muted">· stopped</div>
+    {:else if !live && message.status === 'error'}
       <div class="text-xs" style:color="var(--theme-danger)">
         {#if agentErrorNote}
           {agentErrorNote}

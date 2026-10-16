@@ -186,12 +186,12 @@ Source: [`api/crates/talaria-routes-comms/src/activity/push.rs`](../../api/crate
 Source: [`api/crates/talaria-routes-comms/src/activity/unreads.rs`](../../api/crates/talaria-routes-comms/src/activity/unreads.rs)
 
 > /api/unreads. The rail badges' one read: how much is waiting in each part
-> of the app, as { comms, plan, research, notifications }. Comms is rooms
-> plus agent chats — both unread planes under one badge — and the counts are
-> the SAME predicates the pills themselves ride (list_channels per room,
+> of the app, as { comms, plan, work, research, notifications }. Comms is
+> rooms plus agent chats — both unread planes under one badge — and the
+> counts are the SAME predicates the pills themselves ride (list_channels per
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{comms, plan, research, notifications}` | 200 | — |
+| GET | `session` | — | `{comms, plan, work, research, notifications}` | 200 | — |
 

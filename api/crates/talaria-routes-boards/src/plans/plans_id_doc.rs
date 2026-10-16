@@ -37,7 +37,10 @@ pub async fn get(
     let Some(conv) = conv.filter(|c| c.kind == "plan" || c.kind == "work") else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
-    // A work session's document takes no plan template — see sync_plan_doc.
+    // A work session's document takes no IMPLICIT plan template (the agent's
+    // binding is plan-only — see sync_plan_doc), but a template the person
+    // picked by name seeds either surface, so the explicit id goes through for
+    // both kinds and only the agent argument stays gated.
     let is_work = conv.kind == "work";
     let label = user
         .name
@@ -58,11 +61,7 @@ pub async fn get(
             } else {
                 Some(&conv.agent_model)
             },
-            if is_work {
-                None
-            } else {
-                conv.plan_template_id.as_deref()
-            },
+            conv.plan_template_id.as_deref(),
         )
         .await
         {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ChatEvent, ChatMeta } from '@/lib/chat'
-import { queueChatMessage, streamChat } from '@/lib/chat'
+import { queueChatMessage, steerChat, stopChat, streamChat } from '@/lib/chat'
+import { HttpError } from '@/lib/fetch-json'
 
 // streamChat is where the `queued` ChatEvent actually comes from — the parser
 // never produces it (see sse-parse.test.ts). Only `fetch` is stubbed; the SSE
@@ -98,5 +99,50 @@ describe('queueChatMessage', () => {
   it('rejects with the server message on failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonRes({ error: 'conversation is gone' }, 404)))
     await expect(queueChatMessage({ model: 'm', conversationId: 'c1', content: 'x' })).rejects.toThrow('conversation is gone')
+  })
+})
+
+describe('stopChat — the half of a stop that reaches the run', () => {
+  it('posts to the conversation and reports whether a Hermes run was stopped', async () => {
+    const fetchMock = vi.fn(async () => jsonRes({ ok: true, hermes: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await stopChat('c1')).toEqual({ ok: true, hermes: true })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/conversations/c1/stop')
+    expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('same-origin')
+  })
+
+  it('rejects when nothing is streaming — the caller fires and forgets', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonRes({ error: 'nothing is streaming' }, 409)))
+    await expect(stopChat('c1')).rejects.toThrow('nothing is streaming')
+  })
+})
+
+describe('steerChat — send now', () => {
+  it('sends the content and reports a steer into the live turn', async () => {
+    const fetchMock = vi.fn(async () => jsonRes({ steered: true, messageId: 'm7' }))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await steerChat({ conversationId: 'c1', content: 'actually, target rc' })).toEqual({
+      steered: true,
+      messageId: 'm7',
+    })
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/conversations/c1/steer')
+    // The wire carries the words and nothing else — no model, tier or
+    // attachments: this is the running turn's own message.
+    expect(JSON.parse(init.body as string)).toEqual({ content: 'actually, target rc' })
+  })
+
+  it('reports a queue when the window had already closed (202)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonRes({ queued: true, messageId: 'm8' }, 202)))
+    expect(await steerChat({ conversationId: 'c1', content: 'x' })).toEqual({ queued: true, messageId: 'm8' })
+  })
+
+  it('carries the 409 status out, which is what the fall-back-to-send decision reads', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonRes({ error: 'nothing is streaming' }, 409)))
+    const e = await steerChat({ conversationId: 'c1', content: 'x' }).catch((err: unknown) => err)
+    expect(e).toBeInstanceOf(HttpError)
+    expect((e as HttpError).status).toBe(409)
   })
 })

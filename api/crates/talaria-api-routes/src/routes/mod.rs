@@ -488,6 +488,19 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::conversations_id_read::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // Run control on the reply that is streaming NOW: stop it, or say
+        // something into it. Both address the Hermes run the assistant row
+        // names, and both are gated by the conversation's own access rule.
+        .route(
+            "/api/conversations/{id}/stop",
+            post(talaria_routes_comms::comms::conversations_id_stop::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/steer",
+            post(talaria_routes_comms::comms::conversations_id_steer::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/dms",
             post(talaria_routes_comms::comms::dms::post).fallback(|| async { method_not_allowed("POST") }),
@@ -1559,6 +1572,17 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agents/tool-events",
             post(talaria_routes_fleet::agents::tool_events::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/agents/uploads",
+            // A screenshot rides as base64 in the body, so this route owns its
+            // own cap: the extractor's hidden 2 MB default would refuse every
+            // image worth sending before the handler could answer for it.
+            post(talaria_routes_fleet::agents::uploads::post)
+                .fallback(|| async { method_not_allowed("POST") })
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    talaria_routes_fleet::agents::uploads::ROUTE_BODY_LIMIT,
+                )),
         )
         .route(
             "/api/me/events",
