@@ -4,6 +4,11 @@
 // keeps the transcript — we do, as a `messages` array, or the agent does, as
 // a session we send one message at a time.
 //
+// A session turn can also be reached while it runs: steer_run pushes words
+// into it and stop_run interrupts it, both naming the run id the stream
+// announced. They live here because they go through the same door with the
+// same bearer as the turn itself.
+//
 // Every Hermes persona turn in the tree is sent from here to the agent's own
 // container, which then talks to a provider we do not control the request
 // assembly for — the door that matters most, because a persona holds
@@ -24,6 +29,7 @@ use crate::provider::http;
 use crate::vault::{SecretVault, seal_content};
 use talaria_fleet_layout::{ManifestEntry, describe_agent, read_manifest};
 
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -35,6 +41,13 @@ pub type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<By
 /// and a long context — or a mid-task compaction — can hold that for minutes.
 /// Only silence past this reads as "not serving yet".
 const HEADERS_WINDOW: Duration = Duration::from_secs(300);
+/// The bound on a steer or a stop. A control call names a run that is live
+/// at this instant and the container answers it in milliseconds or not at
+/// all; the drain loop fires these from inside a stream it must keep
+/// reading, and a route answers a person who just pressed the button.
+/// Neither can wait the turn's five minutes on a container that accepted
+/// TCP and went quiet.
+const CONTROL_WINDOW: Duration = Duration::from_secs(10);
 
 /// One OpenAI-style streamed reply, or a canned one. `status` is the upstream
 /// (or canned = 200) status; the body is raw SSE bytes the caller parses with
@@ -394,6 +407,113 @@ fn canned_chat_stream(text: &str, canned: &'static str) -> ChatStream {
     }
 }
 
+// ── Run control ──────────────────────────────────────────────────────────────
+
+/// What a steer did. A steer is a message pushed INTO a run that is already
+/// going, so the three answers are the three things a caller has to tell a
+/// person apart: the words landed, the run was past taking them, or the
+/// attempt never got there.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SteerOutcome {
+    Accepted,
+    NotAccepting,
+    Failed(String),
+}
+
+/// Steer a live run: Hermes hands the text to the agent mid-turn, so what it
+/// does next accounts for it.
+///
+/// NO HOLD LOOP, unlike a turn. A steer is now or never — it names a run that
+/// is running at this instant, and a container we had to wait two minutes for
+/// is a container whose run ended while we waited. That is also why a 409 is
+/// an ordinary answer rather than a failure: `run_not_accepting_steer` when
+/// the run already finished, `steer_not_accepted` when the agent declined it,
+/// and either way the run is simply past steering. The headers window is the
+/// same bound the session create uses — an answer at all arrives in
+/// milliseconds, and the ceiling is there for a container that accepts TCP
+/// and then says nothing.
+///
+/// The text is sealed through a per-call vault, the same one a turn's message
+/// goes through: a steer is a person typing into a running agent, which is
+/// exactly the pasted-credential moment.
+pub async fn steer_run(agent_model: &str, run_id: &str, text: &str) -> SteerOutcome {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return SteerOutcome::Failed("no such agent".into());
+    };
+    let mut vault = SecretVault::default();
+    let body = steer_body(text, &mut vault);
+    report_sealed(&vault, agent_model);
+
+    let sent = tokio::time::timeout(
+        CONTROL_WINDOW,
+        agent_post(&entry, &format!("/v1/runs/{run_id}/steer"))
+            .json(&body)
+            .send(),
+    )
+    .await;
+    match sent {
+        Ok(Ok(res)) if res.status().is_success() => SteerOutcome::Accepted,
+        Ok(Ok(res)) if res.status() == reqwest::StatusCode::CONFLICT => SteerOutcome::NotAccepting,
+        Ok(Ok(res)) => SteerOutcome::Failed(control_failure(res).await),
+        Ok(Err(e)) => SteerOutcome::Failed(e.to_string()),
+        Err(_) => SteerOutcome::Failed("the agent did not answer the steer".into()),
+    }
+}
+
+/// The steer's request body, sealed. `input` is the key Hermes reads (it takes
+/// `message` and `text` too; one key is one thing to get wrong).
+fn steer_body(text: &str, vault: &mut SecretVault) -> Value {
+    json!({ "input": seal_content(&json!(text), vault) })
+}
+
+/// Stop a live run. Hermes answers `stopping` and then hard-interrupts the
+/// agent, so this `Ok` means THE INTERRUPT WAS ACCEPTED, not that the turn is
+/// over: the end of the turn arrives on the session stream — an
+/// `assistant.completed` carrying whatever the run managed to say, then
+/// `run.cancelled` — and the drain loop still owns that ending. Same door,
+/// same bearer and same window as the steer above.
+pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
+    let Some(entry) = agent_entry(agent_model).await else {
+        return Err("no such agent".into());
+    };
+    let sent = tokio::time::timeout(
+        CONTROL_WINDOW,
+        agent_post(&entry, &format!("/v1/runs/{run_id}/stop")).send(),
+    )
+    .await;
+    match sent {
+        Ok(Ok(res)) if res.status().is_success() => Ok(()),
+        Ok(Ok(res)) => Err(control_failure(res).await),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("the agent did not answer the stop".into()),
+    }
+}
+
+/// This agent's manifest row, looked up once. The control calls do not hold
+/// for a container coming up the way a turn does, so a missing row is the
+/// answer here rather than something to wait out.
+async fn agent_entry(model: &str) -> Option<ManifestEntry> {
+    read_manifest().await.into_iter().find(|m| m.model == model)
+}
+
+/// A refused control call as a reason a caller can show: the status, plus the
+/// error code when the body names one (`run_not_found`, `invalid_steer_input`
+/// — a closed vocabulary Hermes owns). THE BODY'S PROSE NEVER TRAVELS: an
+/// agent's own words can be in there, and this string goes back into a chat.
+async fn control_failure(res: reqwest::Response) -> String {
+    let status = res.status().as_u16();
+    match res
+        .json::<Value>()
+        .await
+        .ok()
+        .and_then(|body| body["error"]["code"].as_str().map(str::to_string))
+        .filter(|code| !code.is_empty())
+    {
+        Some(code) => format!("{status} {code}"),
+        None => status.to_string(),
+    }
+}
+
 // ── The stream parser ────────────────────────────────────────────────────────
 
 /// One parsed agent-stream event. The comms loop consumes content (the reply),
@@ -426,6 +546,12 @@ pub enum AgentStreamEvent {
     RunStarted {
         run_id: String,
     },
+    /// The stream saying this run was INTERRUPTED — a person pressed stop, or
+    /// Talaria did on their behalf. Internal, and not an error: nothing
+    /// failed, and the content that landed before it is the turn's real
+    /// reply, so a consumer ends the turn on this rather than replacing what
+    /// was said with a reason.
+    Stopped,
 }
 
 /// The shape persisted into `messages.tools` and rendered beside the reply.
@@ -489,6 +615,13 @@ pub fn merge_tool(
 #[derive(Default)]
 pub struct AgentStreamParser {
     buffer: String,
+    /// How many times each (message, tool) has STARTED on this stream. Hermes
+    /// names no call id on a session's tool frames, so the id is synthesised
+    /// — and a tool the agent runs three times in one reply is three calls,
+    /// three rows, not one row rewritten three times: `tool.started` bumps
+    /// the count and every progress or completion frame for that tool reads
+    /// the current one, which is the call still in flight.
+    calls: HashMap<String, u32>,
     /// Whether any `assistant.delta` carried text on THIS stream. The session
     /// arm's final frame repeats the whole reply, so one bit of history is
     /// what tells a turn that already streamed its words (do not land them
@@ -506,7 +639,11 @@ impl AgentStreamParser {
         let mut events = Vec::new();
         while let Some(sep) = self.buffer.find("\n\n") {
             let frame: String = self.buffer.drain(..sep + 2).collect();
-            events.extend(parse_frame(&frame[..frame.len() - 2], &mut self.streamed));
+            events.extend(parse_frame(
+                &frame[..frame.len() - 2],
+                &mut self.streamed,
+                &mut self.calls,
+            ));
         }
         events
     }
@@ -514,11 +651,15 @@ impl AgentStreamParser {
     /// End of body: parse whatever the final frame left behind.
     pub fn finish(&mut self) -> Vec<AgentStreamEvent> {
         let rest = std::mem::take(&mut self.buffer);
-        parse_frame(&rest, &mut self.streamed)
+        parse_frame(&rest, &mut self.streamed, &mut self.calls)
     }
 }
 
-fn parse_frame(frame: &str, streamed: &mut bool) -> Vec<AgentStreamEvent> {
+fn parse_frame(
+    frame: &str,
+    streamed: &mut bool,
+    calls: &mut HashMap<String, u32>,
+) -> Vec<AgentStreamEvent> {
     let mut event_name = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
     for line in frame.split('\n') {
@@ -548,7 +689,7 @@ fn parse_frame(frame: &str, streamed: &mut bool) -> Vec<AgentStreamEvent> {
     // that names its failure frame still reads through `error_message_of`.
     let session_stamped = json.get("run_id").is_some() || json.get("session_id").is_some();
     if (event_name != "error" || session_stamped)
-        && let Some(events) = parse_session_frame(&event_name, &json, streamed)
+        && let Some(events) = parse_session_frame(&event_name, &json, streamed, calls)
     {
         return events;
     }
@@ -685,6 +826,7 @@ fn parse_session_frame(
     name: &str,
     json: &Value,
     streamed: &mut bool,
+    calls: &mut HashMap<String, u32>,
 ) -> Option<Vec<AgentStreamEvent>> {
     let str_of = |k: &str| json.get(k).and_then(Value::as_str).unwrap_or("");
     match name {
@@ -729,7 +871,7 @@ fn parse_session_frame(
             // Any other tool's progress is its own chatter, and the frame
             // carries it as `delta`, not `preview` — the label is the chatter,
             // clamped, so a long-running call shows what it is doing.
-            let mut ev = session_tool(json, "running");
+            let mut ev = session_tool(json, "running", calls, false);
             if let AgentStreamEvent::Tool { label, .. } = &mut ev {
                 let delta = str_of("delta").trim();
                 if !delta.is_empty() {
@@ -738,11 +880,13 @@ fn parse_session_frame(
             }
             Some(vec![ev])
         }
-        "tool.started" => Some(vec![session_tool(json, "running")]),
+        "tool.started" => Some(vec![session_tool(json, "running", calls, true)]),
         // A failure is still a FINISHED call — the persisted vocabulary is two
         // words, running and completed — so the preview is where a failure has
         // to read, and Hermes writes the reason into it.
-        "tool.completed" | "tool.failed" => Some(vec![session_tool(json, "completed")]),
+        "tool.completed" | "tool.failed" => {
+            Some(vec![session_tool(json, "completed", calls, false)])
+        }
         "assistant.commentary" => {
             let text = str_of("text");
             let already = json
@@ -774,9 +918,9 @@ fn parse_session_frame(
             events.extend(session_usage(json));
             Some(events)
         }
-        // The run's own verdict, after the reply: the counts ride here, and
-        // a failed or cancelled run ends the turn as an ERROR so the chain
-        // does not re-fire an unanswered message forever. (A failed run's
+        // The run's own verdict, after the reply: the counts ride here, and a
+        // FAILED run ends the turn as an ERROR so the chain does not re-fire
+        // an unanswered message forever. (A failed run's
         // `assistant.completed` carries Hermes' apology sentence as its
         // content; the error row's reason wins over it.)
         "run.completed" => Some(session_usage(json)),
@@ -786,9 +930,15 @@ fn parse_session_frame(
                 m => m,
             },
         }]),
-        "run.cancelled" => Some(vec![AgentStreamEvent::Error {
-            message: "the run was stopped".to_string(),
-        }]),
+        // A CANCELLED run is the other thing entirely: somebody meant to stop
+        // it. Reading that as an error cost the turn the words it had already
+        // said — the reason overwrote them — so the interrupt says only that
+        // it happened, and the partial reply stands as the reply.
+        "run.cancelled" => Some(vec![AgentStreamEvent::Stopped]),
+        // Hermes acknowledging a steer it took. The steered words themselves
+        // come back as the run's own frames from here on, so the
+        // acknowledgement is nothing to land.
+        "run.steered" => Some(Vec::new()),
         "run.queued" => Some(Vec::new()),
         "error" => Some(vec![AgentStreamEvent::Error {
             message: session_error_message(json),
@@ -819,7 +969,12 @@ fn session_usage(json: &Value) -> Vec<AgentStreamEvent> {
 /// no tool-call id on these frames, so the id is synthesised from the message
 /// and the tool — stable across a started/completed pair, which is exactly
 /// what folds them into one row instead of two.
-fn session_tool(json: &Value, status: &str) -> AgentStreamEvent {
+fn session_tool(
+    json: &Value,
+    status: &str,
+    calls: &mut HashMap<String, u32>,
+    started: bool,
+) -> AgentStreamEvent {
     let str_of = |k: &str| json.get(k).and_then(Value::as_str).unwrap_or("");
     let name = match str_of("tool_name") {
         "" => "tool",
@@ -831,7 +986,17 @@ fn session_tool(json: &Value, status: &str) -> AgentStreamEvent {
         .map(str::to_string)
         .or_else(|| {
             let message = str_of("message_id");
-            (!message.is_empty()).then(|| format!("{message}:{name}"))
+            if message.is_empty() {
+                return None;
+            }
+            // `#n` is the call's ordinal within its message: a started frame
+            // opens the next one, everything else addresses the one open.
+            let key = format!("{message}:{name}");
+            let n = calls.entry(key.clone()).or_insert(0);
+            if started || *n == 0 {
+                *n += 1;
+            }
+            Some(format!("{key}#{n}"))
         });
     AgentStreamEvent::Tool {
         id,
@@ -1068,11 +1233,11 @@ mod tests {
         events.extend(
             p.feed(
                 concat!(
-                    "event: tool.progress\n",
-                    r#"data: {"message_id":"msg_1","tool_name":"terminal","preview":"ls -la","args":{}}"#,
-                    "\n\n",
                     "event: tool.started\n",
                     r#"data: {"message_id":"msg_1","tool_name":"terminal","preview":"🖥 ls -la","args":{}}"#,
+                    "\n\n",
+                    "event: tool.progress\n",
+                    r#"data: {"message_id":"msg_1","tool_name":"terminal","preview":"ls -la","args":{}}"#,
                     "\n\n",
                     "event: tool.completed\n",
                     r#"data: {"message_id":"msg_1","tool_name":"terminal","preview":"","args":{}}"#,
@@ -1122,25 +1287,25 @@ mod tests {
                     text: "weighing it".into()
                 },
                 AgentStreamEvent::Tool {
-                    id: Some("msg_1:terminal".into()),
-                    name: "terminal".into(),
-                    label: "ls -la".into(),
-                    status: Some("running".into()),
-                },
-                AgentStreamEvent::Tool {
-                    id: Some("msg_1:terminal".into()),
+                    id: Some("msg_1:terminal#1".into()),
                     name: "terminal".into(),
                     label: "🖥 ls -la".into(),
                     status: Some("running".into()),
                 },
                 AgentStreamEvent::Tool {
-                    id: Some("msg_1:terminal".into()),
+                    id: Some("msg_1:terminal#1".into()),
+                    name: "terminal".into(),
+                    label: "ls -la".into(),
+                    status: Some("running".into()),
+                },
+                AgentStreamEvent::Tool {
+                    id: Some("msg_1:terminal#1".into()),
                     name: "terminal".into(),
                     label: String::new(),
                     status: Some("completed".into()),
                 },
                 AgentStreamEvent::Tool {
-                    id: Some("msg_1:memory".into()),
+                    id: Some("msg_1:memory#1".into()),
                     name: "memory".into(),
                     label: "memory: write refused".into(),
                     status: Some("completed".into()),
@@ -1244,7 +1409,7 @@ mod tests {
                     text: "still fine".into()
                 },
                 AgentStreamEvent::Tool {
-                    id: Some("m1:terminal".into()),
+                    id: Some("m1:terminal#1".into()),
                     name: "terminal".into(),
                     label: "ls -la".into(),
                     status: Some("running".into()),
@@ -1311,12 +1476,63 @@ mod tests {
 
         let mut p = AgentStreamParser::new();
         let events = p.feed("event: run.cancelled\ndata: {\"run_id\":\"r1\"}\n\n".as_bytes());
-        assert_eq!(
-            events,
-            vec![AgentStreamEvent::Error {
-                message: "the run was stopped".into()
-            }]
+        assert_eq!(events, vec![AgentStreamEvent::Stopped]);
+    }
+
+    /// Three runs of one tool inside one reply are three calls — three ids,
+    /// three rows — and each call's completion folds into ITS row.
+    #[test]
+    fn repeated_calls_of_one_tool_get_their_own_ids() {
+        let mut p = AgentStreamParser::new();
+        let mut tools: Vec<ToolCall> = Vec::new();
+        let frames = concat!(
+            "event: tool.started\n",
+            r#"data: {"message_id":"m1","tool_name":"terminal","preview":"date"}"#,
+            "\n\n",
+            "event: tool.completed\n",
+            r#"data: {"message_id":"m1","tool_name":"terminal","preview":"date"}"#,
+            "\n\n",
+            "event: tool.started\n",
+            r#"data: {"message_id":"m1","tool_name":"terminal","preview":"date"}"#,
+            "\n\n",
+            "event: tool.progress\n",
+            r#"data: {"message_id":"m1","tool_name":"terminal","delta":"1792"}"#,
+            "\n\n",
+            "event: tool.completed\n",
+            r#"data: {"message_id":"m1","tool_name":"terminal","preview":"date"}"#,
+            "\n\n",
+            "event: tool.started\n",
+            r#"data: {"message_id":"m1","tool_name":"terminal","preview":"date"}"#,
+            "\n\n",
         );
+        let mut ids = Vec::new();
+        for ev in p.feed(frames.as_bytes()) {
+            if let AgentStreamEvent::Tool {
+                id,
+                name,
+                label,
+                status,
+            } = ev
+            {
+                ids.push(id.clone().unwrap());
+                tools = merge_tool(&tools, id.as_deref(), &name, &label, status.as_deref());
+            }
+        }
+        assert_eq!(
+            ids,
+            vec![
+                "m1:terminal#1",
+                "m1:terminal#1",
+                "m1:terminal#2",
+                "m1:terminal#2",
+                "m1:terminal#2",
+                "m1:terminal#3"
+            ]
+        );
+        assert_eq!(tools.len(), 3, "{tools:?}");
+        assert_eq!(tools[0].status, "completed");
+        assert_eq!(tools[1].status, "completed");
+        assert_eq!(tools[2].status, "running");
     }
 
     #[test]
@@ -1347,7 +1563,7 @@ mod tests {
         assert_eq!(
             tools,
             vec![ToolCall {
-                id: Some("msg_1:terminal".into()),
+                id: Some("msg_1:terminal#1".into()),
                 name: "terminal".into(),
                 label: "🖥 ls -la".into(),
                 status: "completed".into(),
@@ -1409,6 +1625,76 @@ mod tests {
         // reads a null as a prompt.
         let bare = session_turn_body(&json!("hello"), None, &mut vault);
         assert_eq!(bare, json!({ "message": "hello" }));
+    }
+
+    /// A stop is a verdict, not a failure. Hermes ends the stream with the
+    /// words the run managed to say and then `run.cancelled`, so both have to
+    /// survive this parser: the partial reply is what the person who pressed
+    /// stop asked to keep.
+    #[test]
+    fn a_stopped_run_keeps_the_words_it_managed_to_say() {
+        let mut p = AgentStreamParser::new();
+        let events = p.feed(
+            concat!(
+                "event: assistant.completed\n",
+                r#"data: {"session_id":"c1","message_id":"m1","content":"Half an answ","completed":false}"#,
+                "\n\n",
+                "event: run.cancelled\n",
+                r#"data: {"session_id":"c1","run_id":"r1","interrupted":true,"completed":false,"partial":true}"#,
+                "\n\n",
+                "event: done\n",
+                "data: {}\n\n",
+            )
+            .as_bytes(),
+        );
+        assert_eq!(
+            events,
+            vec![
+                AgentStreamEvent::Content {
+                    text: "Half an answ".into()
+                },
+                AgentStreamEvent::Stopped,
+            ]
+        );
+    }
+
+    /// `run.steered` is informational — the steered words arrive as the run's
+    /// own frames afterwards, so the acknowledgement itself lands nothing.
+    #[test]
+    fn a_steer_acknowledgement_lands_nothing() {
+        let mut p = AgentStreamParser::new();
+        assert!(
+            p.feed(
+                concat!(
+                    "event: run.steered\n",
+                    r#"data: {"session_id":"c1","run_id":"r1","accepted":true}"#,
+                    "\n\n",
+                )
+                .as_bytes()
+            )
+            .is_empty()
+        );
+    }
+
+    /// NO HTTP MOCK EXISTS IN THIS CRATE: what a control call SENDS is tested
+    /// where it is assembled — the body here, the bearer and the url in the
+    /// `agent_post` door both arms of the turn transport already use — and the
+    /// statuses are read, not mocked.
+    ///
+    /// The body is the one key Hermes reads, and the text goes through the
+    /// same sealer a turn's message does: a steer is a person typing into a
+    /// running agent, so a pasted credential is as likely here as in a turn.
+    #[test]
+    fn a_steer_seals_the_text_it_carries() {
+        let mut vault = SecretVault::default();
+        let body = steer_body("use sk-ant-aaaaaaaaaaaaaaaaaaaaaaaaaa now", &mut vault);
+        let input = body["input"].as_str().expect("input is a string");
+        assert_eq!(body.as_object().map(serde_json::Map::len), Some(1));
+        assert!(!input.contains("sk-ant-"), "{input}");
+        assert_eq!(vault.sealed.len(), 1);
+        // The handle replaces the credential and nothing else.
+        assert!(input.starts_with("use «secret:"), "{input}");
+        assert!(input.ends_with(" now"), "{input}");
     }
 
     #[tokio::test]

@@ -488,6 +488,19 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::conversations_id_read::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // Run control on the reply that is streaming NOW: stop it, or say
+        // something into it. Both address the Hermes run the assistant row
+        // names, and both are gated by the conversation's own access rule.
+        .route(
+            "/api/conversations/{id}/stop",
+            post(talaria_routes_comms::comms::conversations_id_stop::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/steer",
+            post(talaria_routes_comms::comms::conversations_id_steer::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/dms",
             post(talaria_routes_comms::comms::dms::post).fallback(|| async { method_not_allowed("POST") }),

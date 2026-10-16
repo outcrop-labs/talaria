@@ -1085,6 +1085,76 @@ pub async fn set_message_run_id(
     Ok(())
 }
 
+/// The conversation's in-flight assistant row and the Hermes run behind it —
+/// what a stop or a steer has to name. `None` is "nothing is streaming", which
+/// is the whole of the refusal both routes answer with.
+///
+/// A PLAIN READ, deliberately unlike `active_streaming_assistant`: that one
+/// sweeps a row that has gone quiet for fifteen minutes into an error, because
+/// its question is "may a NEW turn start". This one's question is "what is the
+/// reader looking at right now", and the reader is looking at a spinner over
+/// exactly this row — killing it out from under a stop would answer "nothing is
+/// streaming" to a person who can see that something is. The run id is absent
+/// for a turn that went through the full-history chat arm, which Hermes
+/// addresses by nothing either route could name.
+pub async fn streaming_run(
+    pg: &PgPool,
+    conversation_id: &str,
+) -> Result<Option<(String, Option<String>)>, sqlx::Error> {
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        "select id::text, hermes_run_id from messages \
+         where conversation_id = $1::uuid and role = 'assistant' and status = 'streaming' \
+         order by seq desc limit 1",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row)
+}
+
+/// Does a user row that is still OWED AN ANSWER sit after this one? The
+/// tail chain's question, asked before it fires: a message queued while this
+/// reply streamed is owed the next turn, but a steer the running agent
+/// ACCEPTED was answered inside this very turn — firing the chain on it would
+/// answer it twice. And a stopped turn with nobody having spoken since must
+/// leave the chain quiet: an empty stopped row is invisible to
+/// `prior_messages`, so the chain would re-ask the message the stopped turn
+/// was answering, forever. A row that is not there answers false (the
+/// subselect is null, so the comparison is), which is the direction that
+/// stays quiet.
+pub async fn unanswered_user_after(
+    pg: &PgPool,
+    conversation_id: &str,
+    message_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let (after,): (bool,) = sqlx::query_as(
+        "select exists ( \
+            select 1 from messages \
+            where conversation_id = $1::uuid and role = 'user' \
+              and seq > (select seq from messages where id = $2::uuid) \
+              and not (coalesce(metadata, '{}'::jsonb) @> '{\"steer_accepted\": true}'::jsonb))",
+    )
+    .bind(conversation_id)
+    .bind(message_id)
+    .fetch_one(pg)
+    .await?;
+    Ok(after)
+}
+
+/// The steer route's stamp once Hermes took the words: the row was answered
+/// by the turn it was said into, so `unanswered_user_after` leaves it alone.
+pub async fn mark_steer_accepted(pg: &PgPool, message_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages \
+         set metadata = coalesce(metadata, '{}'::jsonb) || '{\"steer_accepted\": true}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// Whether a conversation can be driven through a pinned Hermes session.
 ///
 /// Hermes holds the history for a pinned conversation, so a conversation
@@ -1183,6 +1253,25 @@ pub async fn mark_message_resumed(pg: &PgPool, message_id: &str) -> Result<(), s
     Ok(())
 }
 
+/// Stamp a turn as STOPPED — a person pressed stop, or the doom-loop guard
+/// pulled the plug on an agent calling the same thing over and over. The row
+/// itself lands COMPLETE, not errored: whatever the agent managed to say is
+/// what the person chose to keep, and an error status would put a retry
+/// affordance on a turn nobody wants retried. This stamp is what tells the
+/// difference, and the UI reads it to mark the reply as cut short. Merged like
+/// every metadata stamp.
+pub async fn mark_message_stopped(pg: &PgPool, message_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update messages \
+         set metadata = coalesce(metadata, '{}'::jsonb) || '{\"stopped\": true}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(message_id)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
 /// The resume gate's re-read: is the row still the errored turn the backoff
 /// left behind — neither nudged complete by some other writer, nor already
 /// resumed once? Key-existence, not a cast of the value: the stamp is written
@@ -1212,6 +1301,43 @@ pub async fn set_message_guard(
         .bind(serde_json::to_value(findings).unwrap_or(Value::Null))
         .execute(pg)
         .await?;
+    Ok(())
+}
+
+/// Land chips on ONE named message row, merging by chip id.
+///
+/// `talaria_chips::surface_tool_chips` is the usual writer, and it cannot serve
+/// here: it resolves which row to write by asking where the agent is currently
+/// speaking, while a caller inside the persist already holds the row's id and
+/// must not land its chip on whatever row that lookup happens to pick. The
+/// merge is the same one that writer uses — a chip whose id is already on the
+/// row is left alone, so a guard that fires again inside one turn does not
+/// stack duplicates.
+pub async fn merge_message_chips(
+    pg: &PgPool,
+    message_id: &str,
+    chips: &[Value],
+) -> Result<(), sqlx::Error> {
+    if chips.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "update messages set chips = ( \
+           select coalesce(jsonb_agg(c), '[]'::jsonb) from ( \
+             select c from jsonb_array_elements(chips) c \
+             union all \
+             select c from jsonb_array_elements($2::jsonb) c \
+             where not exists ( \
+               select 1 from jsonb_array_elements(chips) e \
+               where e->>'id' = c->>'id' \
+             ) \
+           ) s \
+         ) where id = $1::uuid",
+    )
+    .bind(message_id)
+    .bind(Value::Array(chips.to_vec()))
+    .execute(pg)
+    .await?;
     Ok(())
 }
 

@@ -322,12 +322,15 @@ fn cap(token: Option<String>) -> Option<String> {
 
 /// Codes that mean "this account is out of quota", as the
 /// OpenAI-compatible providers spell it.
-const QUOTA_CODES: [&str; 5] = [
+const QUOTA_CODES: [&str; 6] = [
     "insufficient_quota",
     "quota_exceeded",
     "usage_limit_reached",
     "billing_hard_limit_reached",
     "credit_balance_too_low",
+    // Z.ai spells it with a number: 1113 is "insufficient balance or no
+    // resource package" — a 429 that no amount of waiting fixes.
+    "1113",
 ];
 
 /// Anthropic's monthly-limit sentence, whose tail is the reset instant.
@@ -475,6 +478,17 @@ mod tests {
     /// and retries on exactly those words). Anything else about reasoning,
     /// or a required-marker next to no reasoning field, stays the fixed
     /// sentence.
+    #[test]
+    fn zai_out_of_balance_reads_as_the_account_limit_it_is() {
+        let zai = r#"{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}"#;
+        let body = sanitized_upstream_body(429, zai);
+        assert!(
+            body.contains("out of credit or over its usage limit"),
+            "{body}"
+        );
+        assert!(!body.contains("recharge"), "{body}");
+    }
+
     #[test]
     fn a_required_reasoning_refusal_crosses_in_our_words() {
         let zai = r#"{"error":{"code":"1210","message":"This model always engages in thinking and cannot be disabled; please use low, high, or max"}}"#;

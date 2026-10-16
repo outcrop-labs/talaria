@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-25 routes.
+27 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -50,6 +50,8 @@
 | [`/api/conversations/{id}/members`](#apiconversationsidmembers) | DELETE | `session` |
 | [`/api/conversations/{id}/messages/{msgId}/reactions`](#apiconversationsidmessagesmsgidreactions) | POST | `session` |
 | [`/api/conversations/{id}/read`](#apiconversationsidread) | POST | `session` |
+| [`/api/conversations/{id}/steer`](#apiconversationsidsteer) | POST | `session` |
+| [`/api/conversations/{id}/stop`](#apiconversationsidstop) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | DELETE | `session` |
 | [`/api/conversations/{id}/todo`](#apiconversationsidtodo) | GET | `session` |
@@ -530,6 +532,44 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_read.rs`](.
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `seq` | `number?(0, 9007)` | seq: optional integer, min 0, no schema max — the ceiling is the safe-integer bound itself. |
+
+## `/api/conversations/{id}/steer`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_steer.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_steer.rs)
+
+> /api/conversations/{id}/steer.
+> POST { content } → say something to the agent WHILE it is replying, and have
+> it account for it in the turn it is already in. Hermes hands a steer to a
+> running agent mid-turn; without it, a correction typed over a streaming reply
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiconversationsidsteer-body) | `{steered, messageId}` | 200, 202, 400, 403, 409 | — |
+
+**POST** — Say something to the agent mid-reply. `steered` means the running turn took the words; `queued` (202) means it did not and the row waits in history for the next turn. Nothing is streaming → 409.
+
+### POST `/api/conversations/{id}/steer` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `content` | `string(1, 20000)` | content: what to say to the agent mid-turn — a sentence of redirection, not a document, which is what the small ceiling says. |
+
+## `/api/conversations/{id}/stop`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_stop.rs)
+
+> /api/conversations/{id}/stop.
+> POST → interrupt the reply that is streaming in this thread right now. The
+> stop button, server-side: Hermes addresses a running turn by its own run id,
+> and the assistant row is the only place that says which one this is.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{ok, hermes}` | 200, 403, 409, 502 | — |
+
+**POST** — Interrupt the reply streaming in this thread. `hermes` says whether the agent's own run was interrupted, or whether hanging up was the whole stop. Nothing is streaming → 409.
 
 ## `/api/conversations/{id}/teams`
 

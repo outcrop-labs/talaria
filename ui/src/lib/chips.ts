@@ -11,7 +11,7 @@ import { postJson } from '@/lib/fetch-json'
 
 export type ChipEntity = 'board' | 'ticket' | 'kb' | 'document' | 'channel' | 'plan' | 'research'
 
-export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question'
+export type ChipKind = 'link' | 'tool' | 'approval' | 'unlock' | 'todo' | 'question' | 'notice'
 
 export interface PlatformLink {
   /** App path, origin stripped, no trailing slash. */
@@ -54,6 +54,10 @@ export interface ChatChip {
    *  its own words through the composer, so the answer is an ordinary message
    *  rather than a second record of what was decided. */
   options?: AskOption[]
+  /** `notice` chips only: the sentence behind the label, on hover. A notice
+   *  states what happened to a row — "sent mid-turn" — so the pill stays
+   *  short enough to read at a glance and the why waits for the pointer. */
+  detail?: string
 }
 
 /** One answer the agent offered (the `ask` tool). */

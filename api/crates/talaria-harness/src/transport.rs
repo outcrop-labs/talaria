@@ -1116,8 +1116,10 @@ impl PersonaTurn {
                 });
             }
             AgentStreamEvent::Reasoning { .. } => {}
-            // The persona transport never steers or stops a run.
-            AgentStreamEvent::RunStarted { .. } => {}
+            // The persona transport never steers or stops a run — and nothing
+            // here can be stopped from outside, so the interruption is not news
+            // to a turn assembled from what did arrive.
+            AgentStreamEvent::RunStarted { .. } | AgentStreamEvent::Stopped => {}
             AgentStreamEvent::Error { message } => {
                 if self.error.is_none() {
                     self.error = Some(message);
@@ -1217,7 +1219,11 @@ fn watch_line(ev: &talaria_gateway::fleet_chat::AgentStreamEvent) -> Option<Stri
             }
             serde_json::Value::Object(frame)
         }
-        AgentStreamEvent::Usage { .. } | AgentStreamEvent::RunStarted { .. } => return None,
+        // Neither is a terminal line: usage is a count, and a run the watcher
+        // cannot stop has nothing to say about having been stopped.
+        AgentStreamEvent::Usage { .. }
+        | AgentStreamEvent::RunStarted { .. }
+        | AgentStreamEvent::Stopped => return None,
         AgentStreamEvent::Error { message } => {
             serde_json::json!({ "t": "err", "v": message })
         }

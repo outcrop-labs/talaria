@@ -919,9 +919,10 @@ async fn stream_reply(
                     } => usage = Some((prompt_tokens, completion_tokens)),
                     AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                     AgentStreamEvent::Reasoning { .. } => {}
-                    // A channel reply is one request with no steer or stop,
-                    // so the run id has nothing to be kept for.
-                    AgentStreamEvent::RunStarted { .. } => {}
+                    // A channel reply is one request with no steer or stop, so
+                    // the run id has nothing to be kept for — and nothing here
+                    // can be interrupted from outside either.
+                    AgentStreamEvent::RunStarted { .. } | AgentStreamEvent::Stopped => {}
                     AgentStreamEvent::Error { message } => {
                         frame_error = frame_error.or(Some(message));
                     }
@@ -944,7 +945,7 @@ async fn stream_reply(
                 } => usage = Some((prompt_tokens, completion_tokens)),
                 AgentStreamEvent::Tool { name, .. } => tool_names.push(name),
                 AgentStreamEvent::Reasoning { .. } => {}
-                AgentStreamEvent::RunStarted { .. } => {}
+                AgentStreamEvent::RunStarted { .. } | AgentStreamEvent::Stopped => {}
                 AgentStreamEvent::Error { message } => {
                     frame_error = frame_error.or(Some(message));
                 }
