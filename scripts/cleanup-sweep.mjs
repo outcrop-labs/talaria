@@ -113,6 +113,20 @@ export function worktreeName(branch, dirBasename) {
  * flag = a human has to decide (dirty, unpushed, or an oversized warm cache).
  * remove = the safe set. The executor refuses a path the classifier did not.
  */
+/** The worktree a compose project belongs to, or null for a project that is
+ *  not a worktree's. `talaria worktree <name>` names its stack
+ *  `talaria-wt-<name>`; the agents that worktree runs live in a SECOND
+ *  project, `talaria-wt-<name>-fleet` (the api's TALARIA_FLEET_PROJECT), so
+ *  `-fleet` is the worktree's own suffix before it is part of a name. Read
+ *  bare, that project parsed as the worktree `<name>-fleet`, no such checkout
+ *  ever exists, and the gate removed a live agent container at every turn
+ *  boundary. */
+export function worktreeProjectOwner(projectName) {
+  const wt = /^talaria-wt-([a-z0-9][a-z0-9-]*)$/.exec(projectName)
+  if (!wt) return null
+  return wt[1].endsWith('-fleet') ? wt[1].slice(0, -'-fleet'.length) : wt[1]
+}
+
 export function classify(artifact, policy = POLICY) {
   if (artifact.kind === 'target') {
     // The primary's build dir is a warm cache: named when oversized, never
@@ -632,9 +646,11 @@ export function inventory(root, now = Date.now()) {
     const sibling = dirname(primary)
     for (const row of projects) {
       const name = row.Name ?? ''
-      const wt = /^talaria-wt-([a-z0-9][a-z0-9-]*)$/.exec(name)
-      if (wt && !existsSync(join(sibling, `talaria-${wt[1]}`)) && !seenWorktree.has(wt[1])) {
-        artifacts.push(orphan(name))
+      const owner = worktreeProjectOwner(name)
+      if (owner) {
+        if (!existsSync(join(sibling, `talaria-${owner}`)) && !seenWorktree.has(owner)) {
+          artifacts.push(orphan(name))
+        }
         continue
       }
       const box = /^devbox-([a-z0-9][a-z0-9-]*)$/.exec(name)

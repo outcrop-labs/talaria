@@ -160,8 +160,13 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   // TALARIA_API_PORT is in this list because the api BINDS it (talaria-config
   // reads it, defaulting to 5274). Without the lift, a worktree's api would
   // dutifully bind the shared port while the proxy dialed the worktree's own —
-  // the two halves of the same setting have to agree.
-  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL']) {
+  // the two halves of the same setting have to agree. PORT and
+  // TALARIA_FLEET_PROJECT are the fleet renderer's: the MCP gateway URL it
+  // writes into every agent is built from the APP port, and the compose
+  // project it addresses is what keeps a worktree's agents apart from the
+  // main fleet — without the lift a worktree's agents would dial :5273 and
+  // its containers would land in the shared `talaria-fleet` project.
+  for (const varName of ['DATABASE_URL', 'REDIS_URL', 'TALARIA_SECRET_KEY', 'TALARIA_SECRET_KEY_FILE', 'AUTH_SECRET', 'TALARIA_SCHEDULER', 'SEARXNG_URL', 'TALARIA_API_PORT', 'TALARIA_API_BIND', 'TALARIA_GATEWAY_SELF_URL', 'PORT', 'TALARIA_FLEET_PROJECT']) {
     const val = ctx.env[varName] ?? envValue(uiEnv, varName)
     if (val) env[varName] = val
   }

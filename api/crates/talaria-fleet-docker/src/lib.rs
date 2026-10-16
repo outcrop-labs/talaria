@@ -505,9 +505,108 @@ pub async fn prune_bundled_skills(department: &str, slot: Slot) -> bool {
     .is_ok()
 }
 
+/// Where a container keeps its Playwright browsers. The hermes-agent image
+/// ships `PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright`, which is INSIDE
+/// the image layer: a Chromium installed there is gone the moment the slot
+/// rolls, and the next browsing turn fails on a missing executable. This path
+/// is on the department's state volume, which outlives every roll — the
+/// renderer puts it in the uniform container env so Hermes, Playwright and
+/// the install below all agree on one directory.
+pub const AGENT_BROWSERS_PATH: &str = "/opt/data/.playwright";
+
+/// The one-shot the install runs inside the container. The marker is the whole
+/// trick: `hermes tools post-setup agent_browser` is a multi-minute network
+/// download, and this fires after EVERY up and roll, so the second call has to
+/// cost nothing. `mkdir -p` because a def whose own env points
+/// PLAYWRIGHT_BROWSERS_PATH elsewhere (the Developer Agent's persisted harness
+/// dir) installs there and never creates this directory — the marker still
+/// belongs where every slot of this department will look for it.
+fn install_browser_script() -> String {
+    format!(
+        "test -e {AGENT_BROWSERS_PATH}/.talaria-installed || \
+         (hermes tools post-setup agent_browser && mkdir -p {AGENT_BROWSERS_PATH} \
+          && touch {AGENT_BROWSERS_PATH}/.talaria-installed)"
+    )
+}
+
+/// Install Chromium into a slot's browsers directory, once. Best-effort by
+/// contract, like `prune_bundled_skills`: a roll NEVER fails on this — an
+/// agent whose browser never landed is an agent that cannot browse, not a
+/// fleet that cannot serve. The 600s budget is the honest size of a Chromium
+/// download on a slow line; the call sites run it detached for that reason.
+pub async fn install_browser(department: &str, slot: Slot) -> bool {
+    let name = slot_container(department, slot);
+    // The operator's brake. A Chromium download per department is real
+    // network and disk, and a dev stack rolling agents to test something
+    // else should not pay it: TALARIA_BROWSER_INSTALL=off skips the install
+    // (the toolset stays on; the tools simply report no browser) and says so
+    // once per roll so the quiet is traceable.
+    if std::env::var("TALARIA_BROWSER_INSTALL").is_ok_and(|v| v.trim().eq_ignore_ascii_case("off"))
+    {
+        tracing::info!("[fleet] browser install skipped for {name}: TALARIA_BROWSER_INSTALL=off");
+        return false;
+    }
+    let script = install_browser_script();
+    match docker(
+        &["exec", &name, "sh", "-c", &script],
+        Duration::from_secs(600),
+    )
+    .await
+    {
+        Ok(_) => {
+            tracing::info!("[fleet] browser ready in {name}");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("[fleet] browser install in {name} failed: {e}");
+            false
+        }
+    }
+}
+
+/// Whether the department's managed agent still holds Hermes' `browser`
+/// toolset — the question the post-health sites ask before paying for the
+/// install above. The containment test is SQL's so the row is read once and
+/// the statement stays auditable as written: `@>` on the jsonb list asks
+/// exactly "is this name in it".
+///
+/// No row (nothing managed and enabled in that department) reads as NOT
+/// enabled: there is no agent there to install a browser for.
+pub async fn browser_enabled_for_department(pg: &PgPool, department: &str) -> bool {
+    let row: Option<(bool,)> = sqlx::query_as(
+        "select not (disabled_toolsets @> jsonb_build_array('browser')) from agent_defs \
+         where department = $1 and managed and enabled limit 1",
+    )
+    .bind(department)
+    .fetch_optional(pg)
+    .await
+    .ok()
+    .flatten();
+    row.is_some_and(|(on,)| on)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_browser_install_is_marker_guarded_on_the_state_volume() {
+        let script = install_browser_script();
+        // The marker sits on the volume, not in the image layer — that is the
+        // whole point of the path, and the only thing that keeps a roll from
+        // re-downloading Chromium.
+        assert!(script.starts_with("test -e /opt/data/.playwright/.talaria-installed ||"));
+        assert!(
+            script.contains("hermes tools post-setup agent_browser"),
+            "{script}"
+        );
+        // The marker is written only after the install succeeded: `&&`, never
+        // `;`, or a failed download would look installed forever.
+        assert!(
+            script.contains("agent_browser && mkdir -p /opt/data/.playwright && touch /opt/data/.playwright/.talaria-installed"),
+            "{script}"
+        );
+    }
 
     #[test]
     fn slot_names_carry_the_project_and_only_slot_b_gets_a_suffix() {

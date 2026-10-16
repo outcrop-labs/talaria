@@ -1,7 +1,7 @@
 // /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
 // display name, send alias) plus the Developer Agent switch, the delegation
-// cap and template binds. Not versioned: this is identity, not config. Admin
-// only.
+// cap, the toolsets the agent does not get, and template binds. Not
+// versioned: this is identity, not config. Admin only.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -9,12 +9,15 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::sync::OnceLock;
-use talaria_agent_defs::{AgentMetaPatch, set_max_children, update_agent_meta};
+use talaria_agent_defs::{
+    AgentMetaPatch, set_disabled_toolsets, set_max_children, set_pinned_sessions,
+    update_agent_meta, validate_toolsets,
+};
 use talaria_api_facades::mcp::apply::roll_agent_for_model;
 use talaria_api_facades::workbench::set_developer;
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
-    NumKind, optional_boolean_member, optional_number_member, parse,
+    NumKind, optional_boolean_member, optional_number_member, optional_string_array_member, parse,
     present_nullable_max_string_member, present_nullable_uuid_member, string_msg, too_big_msg,
     too_small_msg, utf16_len, zod_type_name,
 };
@@ -111,11 +114,26 @@ pub async fn patch(
         Ok(v) => v.map(|n| n as i32),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Pinned sessions: one Hermes session per conversation, Hermes holding the
+    // history, so its compaction and session search see the whole thread. Talaria-side only — no roll.
+    let pinned_sessions = match optional_boolean_member(obj, "pinnedSessions") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass:
+    // a stranger reaches the rendered config, is ignored in silence, and the toolset stays open. It rolls.
+    let disabled_toolsets = match optional_string_array_member(obj, "disabledToolsets", 1, 40, 40)
+        .and_then(|names| names.map(|n| validate_toolsets(&n)).transpose())
+    {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
 
     // The def read: the columns this route touches. The body parses BEFORE
     // the lookup, so a bad body on an unknown id is the 400, not the 404.
-    let def: Option<(String, String, String, i32)> = match sqlx::query_as(
-        "select id::text, model, display_name, max_children from agent_defs where id = $1::uuid",
+    let def: Option<(String, String, String, i32, Value)> = match sqlx::query_as(
+        "select id::text, model, display_name, max_children, disabled_toolsets from agent_defs \
+         where id = $1::uuid",
     )
     .bind(&id)
     .fetch_optional(&state.pg)
@@ -124,7 +142,7 @@ pub async fn patch(
         Ok(row) => row,
         Err(e) => return Ok(internal("[fleet/defs] def read failed", e)),
     };
-    let Some((def_id, def_model, def_display_name, def_max_children)) = def else {
+    let Some((def_id, def_model, def_display_name, def_max_children, def_disabled)) = def else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
 
@@ -155,6 +173,20 @@ pub async fn patch(
         },
         None => false,
     };
+    let pinned_changed = match pinned_sessions {
+        Some(on) => match set_pinned_sessions(&state.pg, &def_id, on).await {
+            Ok(changed) => changed,
+            Err(e) => return Ok(internal("[fleet/defs] pinned sessions set failed", e)),
+        },
+        None => false,
+    };
+    let toolsets_changed = match &disabled_toolsets {
+        Some(names) => match set_disabled_toolsets(&state.pg, &def_id, names).await {
+            Ok(changed) => changed,
+            Err(e) => return Ok(internal("[fleet/defs] disabled toolsets set failed", e)),
+        },
+        None => false,
+    };
     if ticket_template_id.is_some() || plan_template_id.is_some() {
         // Template binds key on the agent's MODEL, not its id — the same
         // identity the chain resolves by.
@@ -182,6 +214,66 @@ pub async fn patch(
         },
     )
     .await;
+    if pinned_changed && let Some(on) = pinned_sessions {
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "agent.pinned_sessions",
+                target_type: "agent",
+                target_id: Some(&def_id),
+                target_label: Some(&def_display_name),
+                before: Some(json!({ "pinnedSessions": !on })),
+                after: Some(json!({ "pinnedSessions": on })),
+            },
+        )
+        .await;
+    }
+    if toolsets_changed && let Some(names) = &disabled_toolsets {
+        log_audit(
+            &state.pg,
+            AuditEntry {
+                actor: &actor_of(&user),
+                action: "agent.toolsets",
+                target_type: "agent",
+                target_id: Some(&def_id),
+                target_label: Some(&def_display_name),
+                before: Some(json!({ "disabledToolsets": def_disabled })),
+                after: Some(json!({ "disabledToolsets": names })),
+            },
+        )
+        .await;
+    }
+    // The pinned flip changes how TALARIA drives the agent — which Hermes
+    // endpoint the next turn goes to — and nothing in the container, so it
+    // takes effect on the next turn with no roll. The Developer switch is
+    // the one that rolls: a running Hermes wires its MCP servers and
+    // container env at start, so that change lands by re-rendering the
+    // incoming slot (blue/green). Fire-and-forget, never the caller's
+    // problem.
+    //
+    // A toolset change rolls for the same reason and in the same stroke: the
+    // disabled list is read into the harness at start, and opening `browser`
+    // also has to pay for the Chromium install the post-health step runs on a
+    // fresh container. Both switches in one PATCH are still ONE roll.
+    //
+    // THE ROLL NEVER FAILS THE PATCH. The switch is already stored by the
+    // time the roll is queued, and a box the api cannot open is the roll's
+    // problem to log, not the caller's to see as a 500 for a change that
+    // landed — the next render picks the stored value up regardless.
+    if developer_changed || toolsets_changed || max_children_changed {
+        match state.secretbox().await {
+            Ok(sb) => {
+                let (pg, model) = (state.pg.clone(), def_model.clone());
+                tokio::spawn(async move {
+                    roll_agent_for_model(&pg, &sb, &model).await;
+                });
+            }
+            Err(e) => tracing::warn!(
+                "[fleet/defs] {def_id}: switch stored but the roll could not start — secretbox unavailable: {e}"
+            ),
+        }
+    }
     if developer_changed && let Some(on) = developer {
         log_audit(
             &state.pg,
@@ -211,25 +303,6 @@ pub async fn patch(
             },
         )
         .await;
-    }
-    // A running Hermes wires its MCP servers, its container env and its
-    // delegation cap at start, so either change lands by rolling the agent
-    // (blue/green; the roll re-renders the incoming slot). ONE roll even when
-    // both changed — the render it picks up carries everything. Fire-and-forget,
-    // never the caller's problem — the switch is already stored, so a secretbox
-    // the api cannot open is logged, not a 500 (CI tripped exactly that).
-    if developer_changed || max_children_changed {
-        match state.secretbox().await {
-            Ok(sb) => {
-                let (pg, model) = (state.pg.clone(), def_model.clone());
-                tokio::spawn(async move {
-                    roll_agent_for_model(&pg, &sb, &model).await;
-                });
-            }
-            Err(e) => tracing::warn!(
-                "[fleet/defs] {def_id}: switch stored but the roll could not start — secretbox unavailable: {e}"
-            ),
-        }
     }
     Ok(Json(json!({ "ok": true })).into_response())
 }

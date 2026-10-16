@@ -1,4 +1,4 @@
-"""Talaria tool-event and delegation reporting.
+"""Talaria tool-event, delegation and screenshot reporting.
 
 Every tool call's lifecycle (name, arguments, RESULT) is visible here and
 nowhere else on the platform's wire — the chat-completions SSE the work
@@ -14,6 +14,12 @@ reader cannot join, and the parent's stream shows a minutes-long silence that
 reads as a hang. Those two hooks go to their own door, which lands one chip
 per child on the turn that delegated.
 
+A screenshot is the same gap with bytes in it. `browser_vision` writes a PNG
+inside this container and reports its PATH — a path that means nothing to the
+platform and is gone with the next roll. When that tool answers with one, the
+bytes themselves ride to the uploads door, which stamps them on the turn the
+agent is answering so the person watching sees the page instead of a filename.
+
 Deliberately defensive: a hook must never block or break the agent's tool
 loop. Everything is best-effort — bounded queue (oldest events drop first
 under pressure), one in-flight POST at a time, short timeouts, and any
@@ -23,6 +29,7 @@ stores; the plugin only clamps to keep the POST small.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import queue
@@ -37,6 +44,12 @@ _QUEUE_CAP = 512
 _POST_TIMEOUT = 4.0
 _TOOL_EVENTS_PATH = "/api/agents/tool-events"
 _SUBAGENT_EVENTS_PATH = "/api/agents/subagent-events"
+_UPLOADS_PATH = "/api/agents/uploads"
+# The tool that hands back a screenshot, and the ceiling its door enforces.
+# Reading the file is bounded by the same number so an oversized image is
+# dropped here rather than posted to be refused.
+_VISION_TOOL = "browser_vision"
+_MAX_SHOT_BYTES = 5 * 1024 * 1024
 
 _queue: "queue.Queue[dict]" = queue.Queue(maxsize=_QUEUE_CAP)
 _started = False
@@ -57,9 +70,9 @@ def _config() -> tuple[str, dict[str, str]] | None:
 
 
 def _door(path: str) -> str:
-    """A full URL for one of the platform's event doors, for an event that
-    does not go to the default one. Read from the environment here rather
-    than passed in: the base is the container's own and fixed for its life."""
+    """A full URL for one of the platform's doors, for an event that does not
+    go to the default one. Read from the environment here rather than passed
+    in: the base is the container's own and fixed for its life."""
     return os.environ.get("TALARIA_API_URL", "").rstrip("/") + path
 
 
@@ -161,6 +174,60 @@ def _is_error_result(result: Any) -> bool:
     return isinstance(err, str) and bool(err.strip())
 
 
+def _shot_path(result: Any) -> str | None:
+    """The PNG a screenshot tool wrote, from the two shapes the persona uses:
+    a JSON result whose `data.path` names the file, or a `MEDIA:<path>` token
+    in text. Anything else is not an offer of an image — a tool that merely
+    mentions a .png in prose is reporting, not handing one over."""
+    parsed: Any = result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except (ValueError, TypeError):
+            parsed = None
+    if isinstance(parsed, dict):
+        data = parsed.get("data")
+        if isinstance(data, dict):
+            path = data.get("path")
+            if isinstance(path, str) and path.lower().endswith(".png"):
+                return path
+    text = result if isinstance(result, str) else ""
+    marker = "MEDIA:"
+    at = text.find(marker)
+    if at != -1:
+        rest = text[at + len(marker) :].split(maxsplit=1)
+        token = rest[0].strip("\"'") if rest else ""
+        if token.lower().endswith(".png"):
+            return token
+    return None
+
+
+def _screenshot_event(result: Any) -> dict | None:
+    """The uploads POST for a screenshot tool's PNG, or None. The bytes have
+    to travel because the file does not: it lives in this container, and the
+    container is thrown away on the next roll. Bounded by the door's own
+    ceiling, and every failure to read is a dropped image rather than a raised
+    exception inside the agent's tool loop."""
+    path = _shot_path(result)
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            # One byte past the ceiling, so an oversized file is recognised as
+            # oversized without reading all of it.
+            raw = handle.read(_MAX_SHOT_BYTES + 1)
+    except OSError:
+        return None
+    if not raw or len(raw) > _MAX_SHOT_BYTES:
+        return None
+    return {
+        "url": _door(_UPLOADS_PATH),
+        "filename": os.path.basename(path) or "screenshot.png",
+        "mime": "image/png",
+        "dataBase64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
 def on_post_tool_call(
     *,
     tool_name: str = "",
@@ -194,6 +261,13 @@ def on_post_tool_call(
     if result is not None:
         event["result"] = _clamp(result)
     _enqueue(event)
+    # The image rides AFTER its tool event, deliberately: the event is what
+    # the run watch and the failure streak read, and several MB of base64
+    # must never be the thing standing in front of it in the queue.
+    if status == "completed" and tool_name == _VISION_TOOL:
+        shot = _screenshot_event(result)
+        if shot is not None:
+            _enqueue(shot)
 
 
 def _tool_names(history: Any) -> list[str]:

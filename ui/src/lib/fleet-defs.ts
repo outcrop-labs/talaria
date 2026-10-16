@@ -59,6 +59,14 @@ export interface AgentDef {
   /** How many subagents this agent may run at once (0 = it delegates to
    *  nobody) — the cap the fleet render hands Hermes. */
   maxChildren: number
+  /** Pinned sessions: one Hermes session per conversation, Hermes holding the
+   *  history, so its compaction and session search cover the whole thread. */
+  pinnedSessions: boolean
+  /** Hermes toolsets this agent does NOT get. Empty for most agents; `browser`
+   *  here is what keeps a non-browsing agent from paying for a Chromium
+   *  install on every roll. `todo` and `clarify` are off for every agent
+   *  whatever this says — Talaria's own versions are the ones a person sees. */
+  disabledToolsets: string[]
   /** Template overrides — this agent always formats tickets/plans on these. */
   ticketTemplateId: string | null
   planTemplateId: string | null
@@ -275,7 +283,7 @@ export function useFleetHires(enabled: MaybeGetter<boolean>) {
 /** Update an agent's editable identity (role, display name, template bindings). */
 export async function patchAgentMeta(
   id: string,
-  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean; maxChildren?: number },
+  patch: { role?: string | null; displayName?: string; emailAlias?: string | null; ticketTemplateId?: string | null; planTemplateId?: string | null; developer?: boolean; pinnedSessions?: boolean; disabledToolsets?: string[]; maxChildren?: number },
 ): Promise<{ ok?: boolean; error?: string }> {
   try {
     return await patchJson<{ ok: boolean }>(`/api/fleet/defs/${id}`, patch)

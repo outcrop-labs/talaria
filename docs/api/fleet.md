@@ -241,8 +241,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 
 > /api/fleet/defs/{id}. PATCH → editable agent identity metadata (role,
 > display name, send alias) plus the Developer Agent switch, the delegation
-> cap and template binds. Not versioned: this is identity, not config. Admin
-> only.
+> cap, the toolsets the agent does not get, and template binds. Not
+> versioned: this is identity, not config. Admin only.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -257,6 +257,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id.rs`](../../api
 | `planTemplateId` | `uuid? nullable` |  |
 | `developer` | `bool?` | The Developer Agent switch: on sets the agent up end to end (sandbox, Oh My Pi, Workbench tools); the roll below applies it. |
 | `maxChildren` | `number?(0, 16)` | How many subagents this agent may run at once; 0 means it delegates to nobody. The ceiling is the box's, not the agent's — the roll applies it. |
+| `pinnedSessions` | `bool?` | Pinned sessions: one Hermes session per conversation, Hermes holding the history, so its compaction and session search see the whole thread. Talaria-side only — no roll. |
+| `disabledToolsets` | `string[]?(1, 40, 40)` | The Hermes toolsets this agent does NOT get — the whole list, or absent. Only governed names pass: a stranger reaches the rendered config, is ignored in silence, and the toolset stays open. It rolls. |
 
 ## `/api/fleet/defs/{id}/edit`
 
