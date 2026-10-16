@@ -20,9 +20,6 @@ export const REDIS_PORT = '6399'
  *  written before the engine swap keeps the port it already had. */
 export const STORAGE_PORT = '9010'
 
-/** TALARIA_SEARCH_PORT — the SearXNG host port. */
-export const SEARCH_PORT = '8888'
-
 /** TALARIA_API_PORT — the Rust api sidecar's in-box loopback bind. The api
  *  itself reads this variable for its bind (talaria-config, same default), and
  *  the app's proxy dials it, so the two halves stay one setting.

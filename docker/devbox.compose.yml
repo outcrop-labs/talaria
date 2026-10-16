@@ -12,8 +12,8 @@
 #   default (this project's own)  devbox + postgres + redis + qdrant + storage;
 #                                 nothing published; the app reaches its
 #                                 sidecars by service DNS.
-#   talaradev (external)          the primary dev stack's TEI embeddings +
-#                                 SearXNG — stateless, shared by every box.
+#   talaradev (external)          the primary dev stack's TEI embeddings —
+#                                 stateless, shared by every box.
 #   fleet                         this box's PRIVATE agent network (fixed
 #                                 name): spawned agents attach to it (the
 #                                 rendered fleet compose declares it external)
@@ -133,19 +133,17 @@ services:
       ROOT_ACCESS_KEY: ${BOX_S3_ACCESS_KEY:-talaria}
       ROOT_SECRET_KEY: ${BOX_S3_SECRET_KEY:-talaria-dev-secret}
 
-  # RESET, not overridden: a box runs NO retrieval plane of its own. TEI and
-  # SearXNG are stateless and identical for every box, so the primary dev stack
-  # hosts them once and every box dials them by container name — on the shared
-  # `talaradev` network below (TALARIA_EMBED_URL / SEARXNG_URL in compose.env).
-  # `!reset` drops the two services the shared file defines; without it a box
-  # would pull a second model and run a SearXNG carrying none of its settings.
+  # RESET, not overridden: a box runs NO embedding model of its own. TEI is
+  # stateless and identical for every box, so the primary dev stack hosts it
+  # once and every box dials it by container name — on the shared `talaradev`
+  # network below (TALARIA_EMBED_URL in compose.env). `!reset` drops the
+  # service the shared file defines; without it a box would pull a second model.
   embeddings: !reset null
-  searxng: !reset null
 
 networks:
   # The primary dev stack's network, joined read-only in spirit: boxes only
-  # ever dial the two stateless services on it (talaria-embeddings-dev,
-  # talaria-searxng-dev). The `devbox` service alias is therefore shared by
+  # ever dial the one stateless service on it (talaria-embeddings-dev).
+  # The `devbox` service alias is therefore shared by
   # every box on this network (round-robin if dialled) — nothing dials it from
   # here today; agents live on the box's own fleet network instead.
   talaradev:

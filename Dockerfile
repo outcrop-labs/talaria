@@ -1,7 +1,7 @@
 # Talaria — the whole app in one production container.
 #
 # Build from the REPO ROOT (the context needs ui/, mcp/, apps/, scripts/skills,
-# scripts/chassis.template.yml and docker/searxng/):
+# scripts/chassis.template.yml):
 #
 #   docker build -t talaria:latest .
 #
@@ -156,7 +156,6 @@ COPY --from=build /repo/omp-auth/dist ./omp-auth/dist
 # into the state dir on first boot.
 COPY scripts/skills ./scripts/skills
 COPY scripts/chassis.template.yml ./scripts/
-COPY docker/searxng/settings.template.yml ./docker/searxng/
 
 # Fixed uid so host-side ownership is documentable (state bind, docker group).
 RUN adduser -D -u 10001 talaria \

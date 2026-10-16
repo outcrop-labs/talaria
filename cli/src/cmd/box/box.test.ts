@@ -44,7 +44,6 @@ describe('box new — generated files', () => {
 DATABASE_URL=postgres://primary:5544/talaria
 REDIS_URL=redis://primary:6399
 PORT=5173
-SEARXNG_URL=http://127.0.0.1:8888
 TALARIA_QDRANT_URL=http://127.0.0.1:6333
 TALARIA_EMBED_URL=http://127.0.0.1:8080
 TALARIA_S3_BUCKET=primary-bucket

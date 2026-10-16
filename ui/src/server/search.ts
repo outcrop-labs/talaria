@@ -42,15 +42,15 @@
 // answering 403 while looking correctly configured.
 import { getSetting } from './audit'
 
-/** Where SearXNG lives. Env first so a self-host can point at an instance it
- *  already runs; the setting is the in-app override; the default is the service
- *  name in Talaria's own compose file. */
+/** Where the operator's search endpoint lives. Env first so a self-host can
+ *  point at an instance it already runs; the setting is the in-app override.
+ *  NO DEFAULT: nothing is bundled any more (the Rust twin, talaria-search, is
+ *  the authority and says why) — empty means no provider of this shape. */
 export const SEARCH_URL_KEY = 'search_url'
-const DEFAULT_URL = 'http://127.0.0.1:8888'
 
 export async function searchUrl(): Promise<string> {
   const configured = process.env.SEARXNG_URL ?? (await getSetting<string>(SEARCH_URL_KEY, ''))
-  return (configured || DEFAULT_URL).replace(/\/$/, '')
+  return configured.replace(/\/$/, '')
 }
 
 export interface SearchResult {

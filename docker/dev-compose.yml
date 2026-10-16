@@ -1,4 +1,4 @@
-# Talaria dev infrastructure — Postgres, Redis, and the retrieval plane
+# Talaria dev infrastructure — Postgres, Redis, object storage, and the retrieval plane
 # (Qdrant + a native CPU embedding model via TEI). The app itself runs on the
 # host (`bun talaria dev` → vite on :5273); agents render into fleet/ and run
 # under the separate `talaria-fleet` compose project.
@@ -82,32 +82,5 @@ services:
   #     - '127.0.0.1:${TALARIA_RERANK_PORT:-8056}:80'
   #   volumes:
   #     - tei-cache:/data
-  # LIVE WEB SEARCH — SearXNG, a metasearch aggregator that fans one query
-  # across dozens of engines. Talaria's own `web_search` tool talks to its JSON
-  # API; see ui/src/server/search.ts for why the client is ours rather than a
-  # third-party MCP bridge. The container itself (image, healthcheck, and the
-  # AGPL reasoning that keeps it unmodified upstream) is in
-  # docker/sidecars.compose.yml; the dev loop adds the loopback port, the base
-  # URL the HOST-side app dials, and its rendered settings file.
-  searxng:
-    container_name: ${TALARIA_SEARCH_CONTAINER:-talaria-searxng-dev}
-    ports:
-      # LOOPBACK ONLY, like storage. This instance has no authentication of any
-      # kind — that is the point of an internal metasearch — so the control that
-      # matters is that nothing off this machine can reach it. Publishing it on
-      # 0.0.0.0 would hand the network a free, unlogged search proxy.
-      - '127.0.0.1:${TALARIA_SEARCH_PORT:-8888}:8080'
-    environment:
-      # SearXNG builds absolute URLs from this; it must match how Talaria
-      # reaches it or the JSON payload carries links nobody can follow. The dev
-      # app runs on the host, so its URL is loopback (prod dials searxng:8080).
-      SEARXNG_BASE_URL: http://localhost:${TALARIA_SEARCH_PORT:-8888}/
-    volumes:
-      # The RENDERED file (settings.local.yml), not the template: the secret is
-      # generated per install and substituted by `talaria dev`.
-      - ../docker/searxng/settings.local.yml:/etc/searxng/settings.yml:ro
-
-volumes:
-  # The sidecars' five data volumes are declared in docker/sidecars.compose.yml
-  # (the services there reference them).
-  searxng-data: {}
+# The sidecars' five data volumes are declared in docker/sidecars.compose.yml
+# (the services there reference them).

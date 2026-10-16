@@ -74,9 +74,6 @@ ui/.omc/
 .claude/settings.local.json
 .claude/worktrees/
 
-# Rendered per install from docker/searxng/settings.template.yml (holds the
-# generated SEARXNG_SECRET).
-docker/searxng/settings.local.yml
 
 # Client POC apps — true subrepos with their own history (see apps/leadworks/README.md).
 # Gitignore does not affect the build-time apps glob; the apps compile and run

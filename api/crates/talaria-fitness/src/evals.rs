@@ -586,7 +586,7 @@ pub fn real_deps(state: &AppState) -> EvalDeps {
                 // second answer to "what does this install have". Talaria's
                 // own tools count: without the platform half the sweep would
                 // ask an empty MCP registry and run `research-search` with no
-                // search tool while SearXNG answered queries on the same box.
+                // search tool while a configured endpoint answered queries on the same box.
                 let reach = DbReach { pg: &pg };
                 let servers = reach.servers().await;
                 let providers = reach.providers().await;

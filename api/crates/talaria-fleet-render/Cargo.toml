@@ -25,6 +25,7 @@ talaria-mcp = { workspace = true }
 talaria-mcp-service = { workspace = true }
 talaria-org = { workspace = true }
 talaria-repo-env = { workspace = true }
+talaria-search = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-workbench = { workspace = true }
 talaria-workbench-harnesses = { workspace = true }

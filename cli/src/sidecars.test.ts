@@ -6,13 +6,12 @@
 //      file (compose merges by service name, the later file winning), so a
 //      stack's own container_name/ports/networks and a devbox's `!reset` only
 //      win from there. stackComposeFiles is the single spelling of that.
-//   2. ONE HOME. The six sidecars' images, healthchecks and data volumes are
+//   2. ONE HOME. The five sidecars' images, healthchecks and data volumes are
 //      defined in the fragment and NOWHERE else: a stack file that grew one
 //      back would drift from the other two on the next change.
-//   3. WHAT A BOX DOES NOT RUN. embeddings and searxng are the primary dev
-//      stack's, shared by every box (docker/devbox.compose.yml resets them
-//      out) — if that reset is lost, every box pulls a second model and runs a
-//      SearXNG with none of its settings.
+//   3. WHAT A BOX DOES NOT RUN. embeddings is the primary dev stack's, shared
+//      by every box (docker/devbox.compose.yml resets it out) — if that reset
+//      is lost, every box pulls a second model.
 
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'node:fs'
@@ -23,7 +22,7 @@ import { COMPOSE_BASE, composeArgs, composeFileArgs, composeFileEnv, SIDECARS_CO
 import { fakeCtx } from './testing'
 
 const ROOT = join(import.meta.dir, '..', '..')
-const SIDECARS = ['postgres', 'redis', 'qdrant', 'embeddings', 'storage', 'searxng']
+const SIDECARS = ['postgres', 'redis', 'qdrant', 'embeddings', 'storage']
 const STACKS = ['docker/compose.yml', 'docker/dev-compose.yml', 'docker/devbox.compose.yml']
 const FRAGMENT = join(ROOT, SIDECARS_COMPOSE)
 
@@ -121,7 +120,7 @@ describe('sidecar plane — merge order', () => {
 })
 
 describe('sidecar plane — one definition, in the fragment', () => {
-  test('the fragment declares exactly the six sidecars, fully specified', () => {
+  test('the fragment declares exactly the five sidecars, fully specified', () => {
     const blocks = serviceBlocks(FRAGMENT)
     expect(Object.keys(blocks).sort()).toEqual([...SIDECARS].sort())
     expect(SIDECARS.filter((n) => !/^ {4}image: /m.test(blocks[n]!))).toEqual([])
@@ -139,9 +138,8 @@ describe('sidecar plane — one definition, in the fragment', () => {
     for (const stack of STACKS) {
       const file = join(ROOT, stack)
       expect(offenders(file, SIDECARS, /^ {4}(image|restart|healthcheck|command):/m)).toEqual([])
-      // The data volumes too — except searxng's, which each stack mounts
-      // differently (prod a rendered named volume, dev a rendered bind).
-      expect(offenders(file, SIDECARS.filter((n) => n !== 'searxng'), /^ {4}volumes:/m)).toEqual([])
+      // The data volumes too.
+      expect(offenders(file, SIDECARS, /^ {4}volumes:/m)).toEqual([])
     }
   })
 
@@ -152,11 +150,11 @@ describe('sidecar plane — one definition, in the fragment', () => {
     }
   })
 
-  test('a box resets out the two services the primary stack hosts', () => {
+  test('a box resets out the one service the primary stack hosts', () => {
     const devbox = readFileSync(join(ROOT, 'docker/devbox.compose.yml'), 'utf8')
     const blocks = serviceBlocks(join(ROOT, 'docker/devbox.compose.yml'))
     expect(blocks.embeddings?.trim()).toBe('!reset null')
-    expect(blocks.searxng?.trim()).toBe('!reset null')
+    expect(blocks.searxng).toBeUndefined()
     // …and the fragment's TEI cache volume goes with the service.
     const volumes = /^volumes:\n([\s\S]*)$/m.exec(devbox)![1]!.split('\n').filter((l) => /^ {2}tei-cache:/.test(l))
     expect(volumes).toEqual(['  tei-cache: !reset null'])

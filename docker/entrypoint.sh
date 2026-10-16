@@ -14,10 +14,9 @@
 # into agent bind mounts, and the host daemon — not this container — resolves
 # them. A named volume would be invisible to the agents.
 #
-# Subcommands (same image, different roles — see docker/compose.yml):
-#   render-searxng   render the SearXNG settings file (one-shot init service;
-#                    SearXNG reads its secret from settings.yml, not the env)
-# With no argument: full boot — secrets, seeds, dependency gate, exec the app.
+# Full boot: secrets, seeds, dependency gate, exec the app. The state bind's
+# ownership is the `state-init` service's job (docker/compose.yml): docker
+# creates a missing bind source as root, and this script runs as the app user.
 #
 # POSIX sh (busybox ash): the runtime image has no bash, and nothing here
 # needs it — no brace expansion, no [[ ]], no arrays.
@@ -75,7 +74,6 @@ bootstrap_secrets() {
 
   ensure_secret TALARIA_SECRET_KEY 32   # encryption root — NEVER rotates
   ensure_secret AUTH_SECRET 32          # session signing — safe to rotate
-  ensure_secret SEARXNG_SECRET 32       # rendered into the searxng settings
   ensure_secret TALARIA_AGENT_KEY 32    # app's hop to the toolkit service
 
   # No admin is generated here: a fresh instance is CLAIMED in the app — the
@@ -120,68 +118,20 @@ EOF
   chmod 600 "$GEN_ENV" 2>/dev/null || true
 }
 
-# When the entrypoint runs as root (the searxng init service does, so it can
-# write the compose-created settings volume), hand everything it made back to
-# the app user: the app container runs unprivileged and must both read these
-# and write SIBLINGS (the renderer adds fleet/agents/<slug>/ at every render).
-# Non-recursive on purpose — uploads can be large; only the bootstrap leaves
-# (env dir + the state tree skeleton) are ours to fix.
-chown_state_if_root() {
-  [ "$(id -u)" = 0 ] || return 0
-  chown "$APP_UID:$APP_GID" \
-    "$STATE_DIR" \
-    "$STATE_DIR/uploads" \
-    "$STATE_DIR/fleet" \
-    "$STATE_DIR/fleet/agents" \
-    "$STATE_DIR/fleet/skills" \
-    "$STATE_DIR/fleet/hooks" \
-    "$STATE_DIR/apps" \
-    "$STATE_DIR/env" 2>/dev/null || true
-  chown -R "$APP_UID:$APP_GID" "$STATE_DIR/env" 2>/dev/null || true
-}
+# ── Boot ─────────────────────────────────────────────────────────────────────
+mkdir_state
+bootstrap_secrets
+export_generated
+seed_fleet
 
-# ── SearXNG settings render (init-service role) ─────────────────────────────
-render_searxng() {
-  target="${SEARXNG_SETTINGS_TARGET:-/etc/searxng/settings.yml}"
-  mkdir -p "$(dirname "$target")"
-  # Same substitution the dev stack's renderer performs (cli/src/searxng.ts);
-  # hex secrets cannot collide with the | delimiter. Always rendered (the
-  # init runs once per `up` — cheaper than freshness bookkeeping).
-  sed "s|__SEARXNG_SECRET__|${SEARXNG_SECRET:?SEARXNG_SECRET unset and not generated}|g" \
-    "$APP_DIR/docker/searxng/settings.template.yml" > "$target"
-  chmod 644 "$target"
-  say "rendered $target"
-}
+# The claim replaces generated credentials: an operator reading the logs
+# on a first boot needs the one-line version of "where do I sign in".
+# Stateless (no marker) on purpose — a restored backup gets the same
+# pointer, and unlike a password it can never be stale or wrong.
+say "first boot: claim the admin account at /claim once the app is up"
 
-# ── Dispatch ─────────────────────────────────────────────────────────────────
-case "${1:-}" in
-  render-searxng)
-    # Init service: the FIRST thing to touch state on a fresh host, so it
-    # owns first-boot generation; the app then depends_on its completion and
-    # finds everything present (no two writers, no race).
-    mkdir_state
-    bootstrap_secrets
-    export_generated
-    render_searxng
-    chown_state_if_root
-    exit 0
-    ;;
-  *)
-    mkdir_state
-    bootstrap_secrets
-    export_generated
-    seed_fleet
+say "waiting for dependencies (postgres, redis)"
+bun "$APP_DIR/docker/await-deps.mjs"
 
-    # The claim replaces generated credentials: an operator reading the logs
-    # on a first boot needs the one-line version of "where do I sign in".
-    # Stateless (no marker) on purpose — a restored backup gets the same
-    # pointer, and unlike a password it can never be stale or wrong.
-    say "first boot: claim the admin account at /claim once the app is up"
-
-    say "waiting for dependencies (postgres, redis)"
-    bun "$APP_DIR/docker/await-deps.mjs"
-
-    say "starting Talaria on :${PORT:-5273}"
-    exec bun server-entry.ts
-    ;;
-esac
+say "starting Talaria on :${PORT:-5273}"
+exec bun server-entry.ts

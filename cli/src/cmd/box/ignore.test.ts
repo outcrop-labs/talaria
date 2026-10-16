@@ -13,8 +13,7 @@ describe('secrets stay out of git', () => {
     // The canonical carriers: primary env, fleet env, the deploy compose
     // channel (docker/.env — `deploy up` writes the generated shared secrets
     // there), the devbox compose channels (the override carries provider
-    // tokens/--env values, compose.env carries S3 creds), and the rendered
-    // searxng secret.
+    // tokens/--env values, compose.env carries S3 creds).
     const paths = [
       'ui/.env',
       'mcp/.env',
@@ -26,7 +25,6 @@ describe('secrets stay out of git', () => {
       'docker-compose.override.yml',
       'devboxes/demo/compose.env', // TALARIA_DEVBOX_HOME inside the repo
       'devboxes/demo/compose.override.yml',
-      'docker/searxng/settings.local.yml',
     ]
     const cwd = repoRoot(import.meta.dir)
     const out = execFileSync('git', ['check-ignore', '--stdin'], {

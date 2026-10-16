@@ -26,8 +26,7 @@ branch on the host.
 ## What `new` actually does
 
 1. Ensures the primary dev stack is up (its Postgres is the seed source; the
-   shared embeddings/SearXNG are started non-fatally, the `talaria dev`
-   posture).
+   shared embeddings are started non-fatally, the `talaria dev` posture).
 2. Builds `talaria-devbox:latest` if missing (`docker/devbox.Dockerfile` —
    node 22 + bun + git + the docker CLI/compose + Claude Code + opencode).
 3. Clones the repo **locally** (hardlinked objects, near-free on btrfs) into
@@ -90,7 +89,7 @@ the symlink spelling never leaks into config the box must resolve.
                            │ default       │ talaradev     │ fleet
         ┌──────────────────▼──┐  ┌─────────▼──────────┐  ┌─▼─────────────────┐
         │ postgres redis      │  │ talaria-embeddings │  │ devbox-<name>-fleet│
-        │ qdrant    storage   │  │ talaria-searxng    │  │ (spawned agents)   │
+        │ qdrant    storage   │  │                    │  │ (spawned agents)   │
         │ (per box, private)  │  │ (shared, from the  │  │ (per box, private) │
         │ nothing published   │  │  primary dev stack)│  │                   │
         └─────────────────────┘  └────────────────────┘  └───────────────────┘
@@ -101,8 +100,8 @@ the symlink spelling never leaks into config the box must resolve.
   several of these services are unauthenticated, the box network is the
   boundary.
 - **talaradev** — the primary dev stack's network, joined read-only in
-  spirit. Boxes only dial the two stateless services on it
-  (`TALARIA_EMBED_URL`/`SEARXNG_URL` by container name).
+  spirit. Boxes only dial the one stateless service on it
+  (`TALARIA_EMBED_URL` by container name).
 - **fleet** — `devbox-<name>-fleet`, this box's private agent network.
   Spawned agents attach to it and reach the box container-to-container:
   `devbox:5273` for the MCP gateway (`TALARIA_MCP_GW_URL`), `devbox:5274` for

@@ -1,45 +1,23 @@
-// LIVE WEB SEARCH, SUPPLIED BY THE DEPLOYMENT.
+// LIVE WEB SEARCH THROUGH A SEARXNG-COMPATIBLE ENDPOINT THE OPERATOR POINTS US AT.
 //
-// WHY TALARIA OWNS THIS RATHER THAN REGISTERING SOMEBODY'S MCP SERVER. The
-// capability model already knows how to route around a model that cannot
-// search: `supplier_for('search', …)` finds a registered tool, and the
-// tool-search transport drives it so a blind model still produces cited
-// findings. What was missing was a tool to find. Every option was either a
-// hosted API with a key and a per-query bill, or a thin third-party MCP bridge —
-// a whole extra process and an unvetted dependency in the request path, for
-// about fifty lines of `fetch`.
+// This is the client half of ONE search provider shape — a SearXNG JSON API
+// (`/search?q=…&format=json`, `title/url/content/engine` per result) — and the
+// floor the capability model falls back to when no registered MCP server
+// supplies `search`. NOTHING IS BUNDLED ANY MORE. Talaria used to ship its own
+// SearXNG container in every stack so a fresh install could search on day
+// one; it was removed (2026-10) because the agents never needed it — Hermes
+// carries its own web-search providers, keyless tiers included — and the
+// sidecar cost an init service that built the app image twice, a per-install
+// secret render, DNS pins, and a canary query to notice when its engines were
+// CAPTCHA-walled, which on a fresh instance was most of them.
 //
-// So the ENGINE is SearXNG and the CLIENT is this file. SearXNG is a metasearch
-// aggregator: it fans one query across dozens of engines, needs no API key,
-// costs nothing per query, and no query leaves the operator's infrastructure.
-// Its JSON API returns `title/url/content/engine` per result, which is already
-// the shape `web_search::results_from_payload` walks.
-//
-// THE LICENCE DECIDED THE ARCHITECTURE, so it is written down here rather than
-// left for somebody to rediscover. Talaria is MIT; SearXNG is AGPL-3.0. Vendoring
-// AGPL source into an MIT codebase propagates the terms, so SearXNG runs as its
-// own container and Talaria talks to it over HTTP — the arrangement the fleet
-// MCP service already uses. Two consequences worth keeping:
-//
-//   DO NOT PATCH SEARXNG. AGPL §13 obliges anyone OFFERING it as a network
-//   service to offer its source to users of that service. Unmodified upstream
-//   satisfies that by pointing at the upstream repository; a local patch means
-//   publishing the patch.
-//
-//   DO NOT IMPORT ITS CODE. Configure it. Everything this file needs is on the
-//   documented JSON API.
-//
-// TWO CONFIGURATION FACTS that cost an afternoon each if you meet them cold, and
-// which docker/searxng/settings.yml sets for you: the JSON format is OFF by
-// default and a request for it 403s until `search.formats` includes `json`; and
-// the rate limiter throttles our own agents unless it is off for an internal
-// instance.
-//
-// BOTH LIVE IN A MOUNTED settings.yml, NOT IN ENV VARS, and that is worth
-// knowing before you try the obvious thing: SearXNG honours environment
-// variables for a short allow-list only (base URL, secret key). Setting
-// `SEARXNG_SEARCH_FORMATS` is silently ignored, and the instance goes on
-// answering 403 while looking correctly configured.
+// So the URL has NO DEFAULT. An operator who runs a SearXNG (or anything that
+// answers its JSON shape) sets SEARXNG_URL or Admin → Search; otherwise this
+// provider is absent, `platform_supply` withholds `search`, and every caller
+// is told honestly that the workspace cannot search. Two facts about a real
+// SearXNG that cost an afternoon each: the JSON format is OFF by default and
+// 403s until `search.formats` includes `json`, and that lives in its mounted
+// settings.yml — the env allow-list does not cover it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,13 +30,12 @@ use sqlx::PgPool;
 use talaria_gateway::provider::http;
 use talaria_gateway::settings::get_setting;
 
-/// Where SearXNG lives. Env first so a self-host can point at an instance it
-/// already runs; the setting is the in-app override; the default is the service
-/// name in Talaria's own compose file.
+/// Where the operator's search endpoint lives. Env first so a self-host can
+/// point at an instance it already runs; the setting is the in-app override.
+/// There is no default: EMPTY means no provider of this shape exists here.
 pub const SEARCH_URL_KEY: &str = "search_url";
-const DEFAULT_URL: &str = "http://127.0.0.1:8888";
 
-/// `searchUrl`: env leg first, then the setting, then the compose default.
+/// `searchUrl`: env leg first, then the setting; empty when neither is set.
 pub async fn search_url(pg: &PgPool) -> String {
     let configured = match std::env::var("SEARXNG_URL") {
         Ok(v) => Some(v),
@@ -71,17 +48,21 @@ pub async fn search_url(pg: &PgPool) -> String {
 }
 
 /// The precedence, pure. The env leg beats the setting even when SET BUT
-/// EMPTY — the empty value suppresses the setting read and falls straight to
-/// the default; the caller only reaches the setting leg when the env var is
-/// UNSET. Any empty resolution lands on the service name. ONE trailing slash
-/// comes off, not all of them — `http://host/` is the only shape operators
-/// type, and `//` is a path.
+/// EMPTY — the empty value suppresses the setting read; the caller only
+/// reaches the setting leg when the env var is UNSET. Any empty resolution
+/// is EMPTY (no provider), never a guessed address. ONE trailing slash comes
+/// off, not all of them — `http://host/` is the only shape operators type,
+/// and `//` is a path.
 fn resolve_search_url(configured: Option<String>) -> String {
-    let base = configured
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_URL.to_string());
+    let base = configured.unwrap_or_default();
     base.strip_suffix('/').unwrap_or(&base).to_string()
 }
+
+/// The sentence every caller gets when no endpoint is configured — a tool
+/// handler's error lands in an agent's transcript, so it names the two ways
+/// an operator fixes it rather than describing a connection that was never
+/// attempted.
+pub const NO_SEARCH_URL: &str = "no search endpoint is configured in this workspace: register a search provider, or point SEARXNG_URL (or Admin → Search) at a SearXNG-compatible JSON endpoint";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchResult {
@@ -172,6 +153,9 @@ pub async fn search_web(
         .min(MAX_LIMIT as f64)
         .max(1.0) as usize;
     let base = (deps.url)(pg.clone()).await;
+    if base.is_empty() {
+        return Err(NO_SEARCH_URL.into());
+    }
 
     // Form encoding: space is `+`, everything else percent-encoded —
     // `form_urlencoded`'s house style.
@@ -258,18 +242,29 @@ pub fn results_from(body: &Value) -> Vec<SearchResult> {
 /// "REACHABLE" MEANS "FINDS THINGS", NOT "ANSWERS THE PHONE", and the difference
 /// is the whole reason this function needed changing. A SearXNG whose every
 /// general engine is CAPTCHA-walled — the DEFAULT state of a fresh self-hosted
-/// instance, see the engines block in docker/searxng/settings.template.yml —
+/// instance —
 /// returns HTTP 200 with valid JSON and `results: []`. A check that asked only
 /// whether the call threw would report healthy while search found nothing for
 /// anybody, and `platform_supply` would go on advertising a `web_search` tool
 /// that could not search. A model handed an empty result set does not fail
-/// loudly; it answers from memory in the same confident voice.
+/// loudly; it answers from memory in the same confident voice. (The sentence
+/// below still names SearXNG because that is what an operator-pointed
+/// endpoint of this shape almost always is.)
 ///
 /// So a canary query that comes back EMPTY is a failure, and the sentence names
 /// the actual cause rather than the symptom. A false negative here costs a
 /// capability tag; a false positive costs an uncited research report.
 pub async fn search_reachable(pg: &PgPool, deps: &SearchDeps) -> SearchReach {
     let url = (deps.url)(pg.clone()).await;
+    // NO ENDPOINT IS NOT A FAILED PROBE: nothing was dialled, nothing timed
+    // out, and the admin surface should say "unset" rather than "down".
+    if url.is_empty() {
+        return SearchReach {
+            ok: false,
+            url,
+            error: Some(NO_SEARCH_URL.to_string()),
+        };
+    }
     match search_web(pg, CANARY, Some(1.0), deps).await {
         Ok(hits) if hits.is_empty() => {
             let error = Some(format!(
@@ -525,10 +520,10 @@ mod tests {
     }
 
     #[test]
-    fn url_resolution_defaults_blanks_and_strips_one_slash() {
+    fn url_resolution_keeps_blanks_blank_and_strips_one_slash() {
         // The env-empty case is the trap: SET BUT EMPTY is not UNSET, so it
-        // suppresses the setting — Some("") resolves to the default, never to
-        // the setting leg.
+        // suppresses the setting — Some("") resolves to EMPTY (no provider),
+        // never to the setting leg and never to a guessed address.
         assert_eq!(
             resolve_search_url(Some("http://env.test".into())),
             "http://env.test"
@@ -542,8 +537,25 @@ mod tests {
             resolve_search_url(Some("http://env.test//".into())),
             "http://env.test/"
         );
-        assert_eq!(resolve_search_url(Some(String::new())), DEFAULT_URL);
+        assert_eq!(resolve_search_url(Some(String::new())), "");
         assert_eq!(resolve_search_url(Some("   ".into())), "   ");
-        assert_eq!(resolve_search_url(None), DEFAULT_URL);
+        assert_eq!(resolve_search_url(None), "");
+    }
+
+    #[tokio::test]
+    async fn no_endpoint_is_a_named_absence_not_a_dead_connection() {
+        // Nothing is dialled: the fetch edge would panic if it were reached.
+        let deps = SearchDeps {
+            fetch: Arc::new(|_url: String| Box::pin(async { panic!("no endpoint, so no fetch") })),
+            url: Arc::new(|_pg| Box::pin(async { String::new() })),
+        };
+        assert_eq!(
+            search_web(&lazy_pg(), "q", None, &deps).await.unwrap_err(),
+            NO_SEARCH_URL
+        );
+        let r = search_reachable(&lazy_pg(), &deps).await;
+        assert!(!r.ok);
+        assert_eq!(r.url, "");
+        assert_eq!(r.error.as_deref(), Some(NO_SEARCH_URL));
     }
 }
