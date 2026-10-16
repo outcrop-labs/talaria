@@ -1220,6 +1220,14 @@ pub fn router(state: AppState) -> Router {
                 .post(talaria_routes_knowledge::files::artifacts_id_comments::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
+        // Download the artifact ITSELF as an Office file — the local twin of
+        // the Google export below, answering bytes where that one answers a
+        // Drive file. Same read gate, no connected account needed.
+        .route(
+            "/api/artifacts/{id}/export",
+            get(talaria_routes_knowledge::files::artifacts_id_export::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/artifacts/{id}/export/google",
             post(talaria_routes_knowledge::files::artifacts_id_export_google::post)

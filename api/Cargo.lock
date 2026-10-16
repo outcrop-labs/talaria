@@ -1975,6 +1975,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
 name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2387,6 +2399,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -3882,6 +3903,7 @@ dependencies = [
  "talaria-model-roles",
  "talaria-native-search",
  "talaria-notify",
+ "talaria-office",
  "talaria-org",
  "talaria-org-domains",
  "talaria-outreach",
@@ -6001,6 +6023,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-office"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "quick-xml",
+ "zip",
+]
+
+[[package]]
 name = "talaria-omp-auth"
 version = "0.1.0"
 dependencies = [
@@ -6786,6 +6817,7 @@ dependencies = [
  "talaria-doc-edit",
  "talaria-error",
  "talaria-notify",
+ "talaria-office",
  "talaria-params",
  "talaria-permissions",
  "talaria-personal-agent",
@@ -7526,6 +7558,7 @@ dependencies = [
  "talaria-body",
  "talaria-error",
  "talaria-gateway",
+ "talaria-office",
  "talaria-secretbox",
  "talaria-storage",
  "tokio",
@@ -8129,6 +8162,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "typed-path"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8704,6 +8743,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.4",
+]
+
+[[package]]
+name = "zip"
+version = "9.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2d98561b612a84ae525331a7a094429ef8a5772514ed507ff6db5f54badc971"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "indexmap",
+ "memchr",
+ "nix",
+ "typed-path",
 ]
 
 [[package]]
