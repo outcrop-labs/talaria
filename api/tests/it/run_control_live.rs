@@ -28,9 +28,17 @@ async fn dm(state: &AppState, owner: &str, streaming: bool) -> String {
     let conv = create_conversation(&state.pg, owner, "assistant-live", "live dm", "chat", None)
         .await
         .unwrap();
-    insert_user_message(&state.pg, &conv, 0, "hi", &json!([]), Some(owner), &json!({}))
-        .await
-        .unwrap();
+    insert_user_message(
+        &state.pg,
+        &conv,
+        0,
+        "hi",
+        &json!([]),
+        Some(owner),
+        &json!({}),
+    )
+    .await
+    .unwrap();
     if streaming {
         sqlx::query(
             "insert into messages (conversation_id, seq, role, content, status) \
@@ -108,14 +116,16 @@ async fn a_full_history_turn_is_stopped_by_the_client_and_steered_by_the_queue()
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(body["queued"], true);
-    let row = body["messageId"].as_str().expect("the row's id").to_string();
-    let (role, content, metadata): (String, String, serde_json::Value) = sqlx::query_as(
-        "select role, content, metadata from messages where id = $1::uuid",
-    )
-    .bind(&row)
-    .fetch_one(&state.pg)
-    .await
-    .unwrap();
+    let row = body["messageId"]
+        .as_str()
+        .expect("the row's id")
+        .to_string();
+    let (role, content, metadata): (String, String, serde_json::Value) =
+        sqlx::query_as("select role, content, metadata from messages where id = $1::uuid")
+            .bind(&row)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
     assert_eq!(role, "user");
     assert_eq!(content, "turn left");
     assert_eq!(metadata["steer"], true);
