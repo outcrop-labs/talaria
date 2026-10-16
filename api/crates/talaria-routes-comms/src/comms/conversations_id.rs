@@ -159,6 +159,19 @@ fn hard_delete(uri: &Uri) -> bool {
         == Some("1")
 }
 
+// doc: PATCH takes any of five writes. `title` (1..120, trimmed) renames the
+// doc: thread. `archived: false` restores one the owner archived — owner
+// doc: only, and archiving itself is DELETE. `pinnedFiles` replaces the
+// doc: document pane's list (at most 12 entries, each
+// doc: { kind: "google" | "artifact", id, title?, mime? }). And three fields
+// doc: that say where the CALLER keeps this thread rather than anything about
+// doc: the thread: `pinned` (bool), `group` (trimmed string, 40 characters at
+// doc: most) and `position` (whole number, 0 to 100000). On group and
+// doc: position, null is the explicit clear and an absent field is left
+// doc: alone; those three land in the caller's own layout row, so any role
+// doc: the GET would show may write them, collaborator included, while title
+// doc: and archived stay owner (or plan-collaborator) writes. A body naming
+// doc: none of the five is a 400.
 pub async fn patch(
     State(state): State<AppState>,
     headers: HeaderMap,

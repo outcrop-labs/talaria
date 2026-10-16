@@ -141,6 +141,14 @@ export interface FleetDefs {
   endpoints: LlmEndpoint[]
   brains?: AgentBrainHealth[]
   canHire: boolean
+  /** The toolset vocabulary, published by the server rather than restated
+   *  here: `governed` is every Hermes toolset Talaria will accept in a def's
+   *  `disabledToolsets` (alphabetical), and `mandatoryDisabled` is the floor
+   *  the renderer merges on top of any agent's list — off for every agent
+   *  whatever a def says, because Talaria's own versions of those tools are
+   *  the ones a person sees. Optional so a UI built against an older api
+   *  simply renders no toolset grid instead of an empty one. */
+  toolsets?: { governed: string[]; mandatoryDisabled: string[] }
 }
 
 export function useFleetDefs(enabled: MaybeGetter<boolean>) {

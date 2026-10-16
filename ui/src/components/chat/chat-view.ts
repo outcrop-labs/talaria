@@ -39,6 +39,12 @@ export interface DisplayMessage {
    *  row is still owed its own answer, and the server chains one. */
   steer?: boolean
   chips?: ChatChip[]
+  /** THE SCHEDULE THAT WROTE THIS TURN — the job id out of the server's cron
+   *  marker. A scheduled run posts an ordinary agent turn into the thread
+   *  (that is the whole design: the cron's output needs no client of its
+   *  own), so without this the row reads as the agent having spoken up by
+   *  itself. Absent on every turn somebody actually asked for. */
+  cronJobId?: string
   /** The persisted row's id — absent on synthetic rows until a sync stamps
    *  it. No id → no action bar (there is nothing to react to yet). */
   id?: string
@@ -63,6 +69,20 @@ export interface Viewer {
  *  what the server sends, and a cast here would have let the two drift. */
 const stamps = (m: StoredMessage): NonNullable<StoredMessage['metadata']> => m.metadata ?? {}
 
+/** THE CRON STAMP, out of the row's `marker` — the same `metadata` bag the
+ *  three stamps above ride in, and the key `post_agent_turn` writes as its
+ *  idempotency key. The server names a scheduled turn
+ *  `cron:<job>:<execution>:<turn>` (api cron_output.rs: the marker names the
+ *  execution, so a re-delivery of the same run is the same row), and the JOB
+ *  is the second field — the only part of it a reader has any use for. A
+ *  marker of any other shape, or one whose job field is empty, is not a
+ *  scheduled run and gets no stamp. */
+export function cronJobFromMarker(raw: string | undefined | null): string | undefined {
+  if (!raw?.startsWith('cron:')) return undefined
+  const job = raw.split(':')[1]?.trim()
+  return job || undefined
+}
+
 export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   role: m.role,
   content: m.content,
@@ -76,6 +96,7 @@ export const toDisplay = (m: StoredMessage): DisplayMessage => ({
   resumed: stamps(m).resumed === true,
   stopped: stamps(m).stopped === true,
   steer: stamps(m).steer === true,
+  cronJobId: cronJobFromMarker(stamps(m).marker),
   chips: m.chips,
   authorUserId: m.authorUserId,
   id: m.id,

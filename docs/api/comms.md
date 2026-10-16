@@ -439,6 +439,8 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id.rs`](../../
 | PATCH | `session` | [body](#patch-apiconversationsid-body) | `…` | 200, 400, 403, 404 | — |
 | DELETE | `session` | — | `…` | 200, 403, 404 | — |
 
+**PATCH** — PATCH takes any of five writes. `title` (1..120, trimmed) renames the thread. `archived: false` restores one the owner archived — owner only, and archiving itself is DELETE. `pinnedFiles` replaces the document pane's list (at most 12 entries, each { kind: "google" | "artifact", id, title?, mime? }). And three fields that say where the CALLER keeps this thread rather than anything about the thread: `pinned` (bool), `group` (trimmed string, 40 characters at most) and `position` (whole number, 0 to 100000). On group and position, null is the explicit clear and an absent field is left alone; those three land in the caller's own layout row, so any role the GET would show may write them, collaborator included, while title and archived stay owner (or plan-collaborator) writes. A body naming none of the five is a 400.
+
 ### PATCH `/api/conversations/{id}` body
 
 | field | schema | notes |

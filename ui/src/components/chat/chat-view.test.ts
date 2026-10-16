@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import type { StoredMessage } from '@/lib/conversations.svelte'
 import {
+  cronJobFromMarker,
   reactionChips,
   sendRoute,
   stampFromServer,
@@ -141,6 +142,41 @@ describe('toDisplay — the row stamps', () => {
     const d = toDisplay(stored())
     expect(d.stopped).toBe(false)
     expect(d.steer).toBe(false)
+  })
+})
+
+describe('cronJobFromMarker', () => {
+  // The server's shape is `cron:<job>:<execution>:<turn>` — the marker names
+  // the EXECUTION, so only the second field identifies the schedule.
+  it('reads the job out of the second field', () => {
+    expect(cronJobFromMarker('cron:abc123:ff01:t7')).toBe('abc123')
+  })
+
+  it('a marker with an empty turn field still names the job', () => {
+    expect(cronJobFromMarker('cron:abc123:ff01:')).toBe('abc123')
+  })
+
+  it('every other marker shape is not a scheduled run', () => {
+    for (const raw of ['cron:', 'cron::ff01:t7', 'research:r-1', 'cronjob:abc', '', undefined, null]) {
+      expect(cronJobFromMarker(raw)).toBeUndefined()
+    }
+  })
+})
+
+describe('toDisplay — the cron stamp', () => {
+  // `marker` rides the same metadata bag as the three stamps above — one
+  // jsonb row stamp, declared on the wire type beside them.
+  const marked = (marker: string): StoredMessage => ({ ...stored(), metadata: { marker } })
+
+  it('stamps the job a scheduled turn came from', () => {
+    expect(toDisplay(marked('cron:job-9:ff01:t2')).cronJobId).toBe('job-9')
+  })
+
+  it('a turn somebody asked for carries no job', () => {
+    expect(toDisplay(stored()).cronJobId).toBeUndefined()
+    // A marker from another engine is not a schedule either: the research
+    // driver stamps its own posts through the same idempotency key.
+    expect(toDisplay(marked('research:r-1:report')).cronJobId).toBeUndefined()
   })
 })
 
