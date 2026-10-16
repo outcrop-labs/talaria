@@ -370,6 +370,10 @@ def on_subagent_stop(
             "tools": _tool_names(tool_call_history),
             "url": _door(_SUBAGENT_EVENTS_PATH),
             "at": int(time.time() * 1000),
+        }
+    )
+
+
 def on_post_llm_call(
     *,
     session_id: str = "",
