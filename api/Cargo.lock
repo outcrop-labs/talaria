@@ -5826,6 +5826,7 @@ dependencies = [
 name = "talaria-mcp-library"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures-util",
  "regex",
  "reqwest",
@@ -5835,6 +5836,7 @@ dependencies = [
  "talaria-mcp-icons",
  "talaria-safe-fetch",
  "talaria-scheduler",
+ "talaria-settings",
  "tokio",
  "tracing",
  "url",

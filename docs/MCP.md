@@ -52,8 +52,13 @@ Per server:
   gateway, never echoed to the UI.
 - **OAuth 2.1** — discovered from the server's 401 challenge: protected-resource metadata →
   RFC 8414 authorization-server metadata (path-aware) → dynamic client registration → PKCE.
-  Providers without DCR (e.g. GitHub) get a manual OAuth-app flow with the callback URL to copy and
-  a link to the provider's app portal. Tokens are sealed per subject (`org` or a user), refreshed
+  Providers without DCR (e.g. GitHub), or whose DCR refuses hosted callbacks (Vercel), get a
+  manual OAuth-app flow: the provider's developer portal and the steps that matter there
+  (`talaria-mcp-oauth/src/guides.rs`, keyed by domain), the **one canonical callback URL** (the
+  verified hosting domain when set, else the request origin — computed by the api and shown
+  verbatim, never by the browser), client id/secret, and an optional explicit scope list.
+  Discovery re-runs on demand (**Re-detect auth**) and automatically when a header server starts
+  answering 401 with OAuth metadata. Tokens are sealed per subject (`org` or a user), refreshed
   silently, and a revocation forces a visible reconnect.
 - **Per-user servers** — each person connects their own account under Settings → Connections
   (OAuth or credential form driven by the server's declared headers). An assistant only carries the
@@ -64,10 +69,34 @@ see [ONBOARDING.md](./ONBOARDING.md).
 
 ## The marketplace
 
-Manage → MCP's add flow searches the official MCP registry (latest schema), ranked so real,
-remote-capable servers surface first, with brand icons, a featured shelf of business tools, and
-publisher resolution (`/.well-known/mcp.json`, documented endpoints) for names the registry lacks.
-Servers requiring credentials or OAuth get the setup treatment automatically from their metadata.
+Manage → MCP's add flow (and an agent's MCP tab) browses a **local mirror of the official MCP
+registry**. The scheduler job `mcp-library-refresh` walks the registry once
+(`/v0.1/servers`, cursor-paged, latest versions only) into `mcp_library_entries`, then pulls
+`updated_since` incrementals every 30 minutes; a sync can also be started from the picker
+("Sync now") or `POST /api/mcp/library/sync`. Search is Postgres full text over title, publisher
+domain, registry name and description, ranked brand match → title prefix → tier (official,
+verified, community) → text rank, with hosted/package and tier filters. The featured shelf is the
+same query over an editorial list of business publishers; publishers the registry lacks are
+resolved once per day through `/.well-known/mcp.json` or a documented endpoint (GitHub) and stored
+as `well-known` / `curated` rows. The live registry is consulted only while the first walk is
+still running — it stalls for tens of seconds at a time, which is why the mirror exists.
+
+Installing runs discovery in the same step. A server that answers 401 asks for its credentials
+right there (the registry's header declarations drive the form when it has them; free header
+rows otherwise), a server that speaks OAuth offers Connect, and one whose provider refuses to
+self-register shows the OAuth-app setup. Every server card carries the last discovery verdict
+(`probe`: ok, auth-required, unreachable, error, with the server's own words) and a
+**Credentials** editor that merges keys (`mergeHeaders`: set/remove, never echo) and re-tests.
+
+## An agent's MCP tab
+
+Agent settings → MCP is the same registry seen from one agent: every server it carries and why
+(org-wide, assigned, via a team, the Developer switch), a tool subset per assignment, the
+servers it could carry with one toggle, and the marketplace / custom form for whoever may
+install (`agents.manage`) — installing and assigning in one step. Assigning what already exists
+is the agent's managers' call (`GET`/`POST /api/fleet/defs/{id}/mcp`). Raw endpoints are never
+attached to an agent any more: the old `add` is refused, and leftover raw entries from before
+the gateway are listed for removal.
 
 ## Guardrails context
 

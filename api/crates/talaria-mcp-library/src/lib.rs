@@ -9,7 +9,13 @@
 // (npm/pypi/oci) also appear — the runtime in pkg.rs runs them as hardened
 // docker children. The featured shelf and brand pins stay hosted-only.
 //
-// SERVING STRATEGY — why this module has three layers of caching:
+// SERVING STRATEGY. The picker is served from the LOCAL MIRROR in Postgres
+// (`catalog` — synced by the scheduler, searched with full text); everything
+// below this line is the LIVE path, kept as the fallback for the minutes
+// before the first sync lands and as the edge the sync itself reads through.
+// Why the live path alone was never enough: measured 2026-10-16, one registry
+// search took 9.7s and the next three timed out at 15s — any stall rendered
+// as "No servers match". Its own three layers of caching:
 //   1. Bounded concurrency. The registry answers one search in ~100-400ms and
 //      THROTTLES bursts: the featured shelf used to resolve all 32 publishers
 //      through one unbounded fan-out, half the calls queued for 3-4.6s, and
@@ -35,13 +41,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use futures_util::future::BoxFuture;
 use futures_util::stream::{self, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use talaria_mcp_icons::IconKey;
+
+pub mod catalog;
 use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_scheduler::{JobName, JobSpec};
 
-const REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io/v0/servers";
+/// The registry's current list endpoint (v0.1 — cursor paging, `version=latest`,
+/// `updated_since`; `/v0/servers` still answers but is the older surface).
+const REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
 const CACHE_MS: i64 = 15 * 60 * 1000;
 /// Same number the icon warm uses; measured to stay under the registry's
 /// burst throttle (see the header). Applied by the `buffered` pool.
@@ -66,7 +77,7 @@ const SHARED_HOSTING_SUFFIXES: &[&str] = &[
     "deno.dev",
 ];
 
-fn on_shared_host(domain: Option<&str>) -> bool {
+pub(crate) fn on_shared_host(domain: Option<&str>) -> bool {
     domain.is_some_and(|d| {
         SHARED_HOSTING_SUFFIXES
             .iter()
@@ -86,7 +97,9 @@ pub const FEATURED_DOMAINS: &[&str] = &[
     "atlassian.com",
     "asana.com",
     "monday.com",
-    "notion.so",
+    // Notion publishes under the com.notion namespace; notion.so is the
+    // marketing site, and the shelf matches the verified namespace.
+    "notion.com",
     "airtable.com",
     "figma.com",
     "canva.com",
@@ -144,7 +157,8 @@ fn known_endpoints() -> &'static HashMap<&'static str, KnownEndpoint> {
 /// One entry of a header's `variables` map — an `Input` in the registry
 /// schema, carrying the same prompt metadata as a header but for a single
 /// `{template}` variable inside its `value`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryVariable {
     pub description: Option<String>,
     pub is_secret: bool,
@@ -153,7 +167,8 @@ pub struct LibraryVariable {
     pub choices: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryHeader {
     pub name: String,
     pub description: Option<String>,
@@ -169,7 +184,7 @@ pub struct LibraryHeader {
 }
 
 /// Declared order is the ranking: first-party < verified < community.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Tier {
     FirstParty,
@@ -177,11 +192,41 @@ pub enum Tier {
     Community,
 }
 
+impl Tier {
+    /// The mirror's column value — declared order, 0 = first-party.
+    pub fn rank(self) -> i16 {
+        match self {
+            Tier::FirstParty => 0,
+            Tier::Verified => 1,
+            Tier::Community => 2,
+        }
+    }
+
+    pub fn from_rank(n: i16) -> Tier {
+        match n {
+            0 => Tier::FirstParty,
+            1 => Tier::Verified,
+            _ => Tier::Community,
+        }
+    }
+
+    /// The query-string spelling the picker's tier filter sends.
+    pub fn parse(s: &str) -> Option<Tier> {
+        match s {
+            "first-party" | "official" => Some(Tier::FirstParty),
+            "verified" => Some(Tier::Verified),
+            "community" => Some(Tier::Community),
+            _ => None,
+        }
+    }
+}
+
 /// A registry PACKAGE — how the long tail ships: npm/pypi packages or oci
 /// images speaking stdio (or an in-container http port). Normalized here so
 /// the install POST can store it verbatim; the runtime (pkg.rs) turns it
 /// into a hardened `docker run` child.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryPackage {
     /// npm | pypi | oci (the registry's registryType, lowercased).
     pub kind: String,
@@ -203,7 +248,8 @@ pub struct LibraryPackage {
     pub declared_env: Vec<LibraryHeader>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryServer {
     /// Registry identity, e.g. "com.vercel/vercel-mcp".
     pub registry_name: String,
@@ -441,11 +487,13 @@ fn classify(e: &Value) -> Option<LibraryServer> {
         }
     }
     let remotes = server.get("remotes").and_then(Value::as_array);
+    // A real https endpoint — not a `https://{host}/mcp/{secret}` template,
+    // which a few entries publish and which nothing could ever connect to.
     let remote = remotes.into_iter().flatten().find(|x| {
         x.get("type").and_then(Value::as_str) == Some("streamable-http")
             && x.get("url")
                 .and_then(Value::as_str)
-                .is_some_and(|u| u.starts_with("https://"))
+                .is_some_and(|u| u.starts_with("https://") && !u.contains('{'))
     });
     let package = if remote.is_none() {
         Some(classify_package(server)?)
@@ -604,6 +652,15 @@ impl Library {
     }
 
     async fn registry_page(&self, params: &[(&str, &str)]) -> Result<Vec<Value>, String> {
+        self.registry_list(params).await.map(|(servers, _)| servers)
+    }
+
+    /// One page of the registry list: the entries and the cursor to the next
+    /// page (None on the last). The sync walks the whole feed through this.
+    pub(crate) async fn registry_list(
+        &self,
+        params: &[(&str, &str)],
+    ) -> Result<(Vec<Value>, Option<String>), String> {
         let mut url = reqwest::Url::parse(REGISTRY_URL).map_err(|e| e.to_string())?;
         {
             let mut pairs = url.query_pairs_mut();
@@ -616,11 +673,19 @@ impl Library {
         if !(200..300).contains(&r.status) {
             return Err(format!("registry {}", r.status));
         }
-        Ok(r.json
+        let servers = r
+            .json
             .get("servers")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        let cursor = r
+            .json
+            .pointer("/metadata/nextCursor")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string);
+        Ok((servers, cursor))
     }
 
     async fn well_known_server(&self, domain: &str) -> Option<Arc<LibraryServer>> {
@@ -941,35 +1006,33 @@ pub fn library() -> Arc<Library> {
 
 pub const MCP_REFRESH_EVERY_MS: u64 = 30 * 60_000;
 pub const MCP_REFRESH_FIRST_RUN_DELAY_MS: u64 = 10_000;
-pub const MCP_REFRESH_MAX_RUN_MS: u64 = 2 * 60_000;
+/// A full walk of the registry (~20k entries, 100 per page) takes a minute or
+/// two when the registry is quick and is resumable from its cursor when it is
+/// not; ten minutes is the outside before the lease calls a run hung.
+pub const MCP_REFRESH_MAX_RUN_MS: u64 = 10 * 60_000;
 
-pub fn mcp_library_refresh_job_spec(lib: Arc<Library>) -> JobSpec {
+/// The catalog sync job: mirrors the official registry into
+/// `mcp_library_entries` (see `catalog`). Leased, not per-instance — the rows
+/// are shared, so exactly one instance walks the feed per interval.
+pub fn mcp_library_refresh_job_spec(pg: sqlx::PgPool, lib: Arc<Library>) -> JobSpec {
     JobSpec {
         name: JobName::McpLibraryRefresh,
         every_ms: MCP_REFRESH_EVERY_MS,
-        // Early: it warms a cache, writes nothing anyone sees, and the whole
-        // point is to be done before the first user opens the marketplace.
+        // Early: the whole point is a searchable catalog before the first
+        // person opens the marketplace.
         first_run_delay_ms: Some(MCP_REFRESH_FIRST_RUN_DELAY_MS),
         max_run_ms: Some(MCP_REFRESH_MAX_RUN_MS),
-        // perInstance because the cache being warmed is THIS process's
-        // memory; the upstream work is read-only, so instances duplicating it
-        // is the intended behavior.
-        per_instance: true,
+        per_instance: false,
         run: Arc::new(move || {
             let lib = lib.clone();
-            Box::pin(async move {
-                let servers = lib.refresh_featured_once().await;
-                Ok(Some(format!(
-                    "{} featured marketplace server(s)",
-                    servers.len()
-                )))
-            })
+            let pg = pg.clone();
+            Box::pin(async move { catalog::sync_once(&pg, &lib).await.map(Some) })
         }),
     }
 }
 
-pub fn register_mcp_library_refresh_job(lib: Arc<Library>) {
-    talaria_scheduler::register_job(mcp_library_refresh_job_spec(lib));
+pub fn register_mcp_library_refresh_job(pg: sqlx::PgPool, lib: Arc<Library>) {
+    talaria_scheduler::register_job(mcp_library_refresh_job_spec(pg, lib));
 }
 
 #[cfg(test)]
@@ -1144,6 +1207,11 @@ mod tests {
                         "remotes": [{ "type": "streamable-http", "url": "http://insecure" }] }
         });
         assert!(classify(&e).is_none()); // http, not https
+        let e = json!({
+            "server": { "name": "com.acme/acme",
+                        "remotes": [{ "type": "streamable-http", "url": "https://{host}/mcp/{secret}" }] }
+        });
+        assert!(classify(&e).is_none()); // a template, not an endpoint
         let e = json!({
             "_meta": { "io.modelcontextprotocol.registry/official": { "status": "deleted" } },
             "server": { "name": "com.acme/acme",
@@ -1573,14 +1641,19 @@ mod tests {
         let state = state_with(registry);
         let (_t, now) = clock();
         let lib = Arc::new(Library::new(fake_edge(state), noop_warm(), now));
-        let spec = mcp_library_refresh_job_spec(lib);
+        // A lazy pool: nothing connects until a query runs, and the spec
+        // runs none.
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("a lazy pool builds without connecting");
+        let spec = mcp_library_refresh_job_spec(pg, lib);
         assert_eq!(spec.name.as_str(), "mcp-library-refresh");
         assert_eq!(spec.every_ms, 30 * 60_000);
         assert_eq!(spec.first_run_delay_ms, Some(10_000));
-        assert_eq!(spec.max_run_ms, Some(2 * 60_000));
+        assert_eq!(spec.max_run_ms, Some(10 * 60_000));
         assert!(
-            spec.per_instance,
-            "the cache being warmed is process memory"
+            !spec.per_instance,
+            "the mirror is shared rows, so the sync takes the lease"
         );
     }
 }

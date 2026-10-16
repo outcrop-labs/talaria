@@ -1,20 +1,34 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
+  import Disclosure from '@/components/ui/Disclosure.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
+  import McpHeaderRows from './McpHeaderRows.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import { composeHeaders, headerFields, literalHeaders, type HeaderField, type LibraryServerRow } from './mcp'
+  import {
+    composeHeaders,
+    emptyHeaderRow,
+    headerFields,
+    headersOfRows,
+    literalHeaders,
+    type HeaderField,
+    type HeaderRow,
+    type InstallOpts,
+    type LibraryServerRow,
+  } from './mcp'
 
   /** Credential capture for servers that declare what they need. Two
    *  shapes: HOSTED servers (a registry `value` template becomes one field
    *  per variable composed back into the final header; a value-less
    *  declaration prompts for the whole header; a fixed value applies
-   *  itself) and PACKAGE installs (npm/pypi/oci — the declared environment
-   *  variables use the exact same Input schema, plus a fill per required
-   *  run flag, plus an explicit acknowledgement that third-party code will
-   *  run in a container with the credentials typed here). */
+   *  itself — plus a folded "other headers" door, because the registry's
+   *  declarations are often incomplete) and PACKAGE installs (npm/pypi/oci —
+   *  the declared environment variables use the exact same Input schema,
+   *  plus a fill per required run flag, plus an explicit acknowledgement
+   *  that third-party code will run in a container with the credentials
+   *  typed here). */
   let {
     server: l,
     busy,
@@ -24,7 +38,7 @@
     server: LibraryServerRow
     busy: boolean
     onCancel: () => void
-    onInstall: (opts: { headers?: Record<string, string>; env?: Record<string, string>; argValues?: Record<string, string>; authMode?: 'org' | 'per-user' }) => void
+    onInstall: (opts: InstallOpts) => void
   } = $props()
 
   const isPkg = $derived(!!l.package)
@@ -47,6 +61,8 @@
     Object.fromEntries(fields.filter((f) => f.default).map((f) => [f.key, f.default!])),
   )
   let argValues = $state<Record<string, string>>({})
+  /** Headers the registry did not declare but the server may still want. */
+  let extraRows = $state<HeaderRow[]>([emptyHeaderRow()])
 
   // headerFields over env declarations — the Input shape is identical, so
   // the helpers compose env values exactly as they do header values.
@@ -67,7 +83,7 @@
         argValues: Object.fromEntries(Object.entries(argValues).filter(([, v]) => v.trim())),
       })
     } else if (authMode === 'org') {
-      const headers = composeHeaders(l.requiredHeaders, values)
+      const headers = { ...composeHeaders(l.requiredHeaders, values), ...headersOfRows(extraRows) }
       onInstall(Object.keys(headers).length ? { headers } : {})
     } else {
       // Fixed publisher-set headers ride on the org row in both modes; the
@@ -202,6 +218,17 @@
         <p class="mt-3 font-sans text-xs text-muted">
           Nobody gets access until they connect their own account in Settings → Connections. Their assistant then acts as them on this server.
         </p>
+      {/if}
+      {#if authMode === 'org'}
+        <!-- Registry declarations are what the publisher wrote down, which
+             is not always what the server checks. The door is folded so the
+             common case stays one field; after install, a 401 from discovery
+             asks for the rest on the card. -->
+        <Disclosure title="Other headers (if the server wants more)" class="mt-3">
+          <div class="p-2">
+            <McpHeaderRows bind:rows={extraRows} />
+          </div>
+        </Disclosure>
       {/if}
     {/if}
 

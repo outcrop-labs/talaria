@@ -795,6 +795,20 @@ CREATE TABLE public.llm_endpoints (
     anthropic_base text,
     archived_prices jsonb
 );
+CREATE TABLE public.mcp_library_entries (
+    registry_name text NOT NULL,
+    source text DEFAULT 'registry'::text NOT NULL,
+    title text NOT NULL,
+    description text,
+    domain text,
+    domains text[] DEFAULT '{}'::text[] NOT NULL,
+    tier smallint DEFAULT 2 NOT NULL,
+    kind text DEFAULT 'hosted'::text NOT NULL,
+    entry jsonb NOT NULL,
+    registry_updated_at timestamp with time zone,
+    synced_at timestamp with time zone DEFAULT now() NOT NULL,
+    search tsvector GENERATED ALWAYS AS ((((setweight(to_tsvector('simple'::regconfig, COALESCE(title, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(domain, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, replace(replace(registry_name, '/'::text, ' '::text), '.'::text, ' '::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED
+);
 CREATE TABLE public.mcp_oauth_states (
     state text NOT NULL,
     server_id uuid NOT NULL,
@@ -835,7 +849,8 @@ CREATE TABLE public.mcp_servers (
     oauth jsonb,
     app_slug text,
     package jsonb,
-    env_enc text
+    env_enc text,
+    last_probe jsonb
 );
 CREATE TABLE public.mcp_team_access (
     server_id uuid NOT NULL,
@@ -1584,6 +1599,8 @@ ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_name_key UNIQUE (name);
 ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.mcp_library_entries
+    ADD CONSTRAINT mcp_library_entries_pkey PRIMARY KEY (registry_name);
 ALTER TABLE ONLY public.mcp_oauth_states
     ADD CONSTRAINT mcp_oauth_states_pkey PRIMARY KEY (state);
 ALTER TABLE ONLY public.mcp_oauth_tokens
@@ -1788,6 +1805,9 @@ CREATE INDEX kb_comments_doc_idx ON public.kb_comments USING btree (doc_id, crea
 CREATE INDEX kb_docs_fts_idx ON public.kb_docs USING gin (to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(body, ''::text))));
 CREATE INDEX kb_docs_space_idx ON public.kb_docs USING btree (space_id, parent_id, sort);
 CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, item_id);
+CREATE INDEX mcp_library_entries_domains_idx ON public.mcp_library_entries USING gin (domains);
+CREATE INDEX mcp_library_entries_search_idx ON public.mcp_library_entries USING gin (search);
+CREATE INDEX mcp_library_entries_tier_idx ON public.mcp_library_entries USING btree (tier, title);
 CREATE INDEX messages_conv_idx ON public.messages USING btree (conversation_id, seq);
 CREATE INDEX messages_conversation_timeline_idx ON public.messages USING btree (conversation_id, created_at DESC, id DESC);
 CREATE INDEX messages_streaming_idx ON public.messages USING btree (created_at) WHERE (status = 'streaming'::text);

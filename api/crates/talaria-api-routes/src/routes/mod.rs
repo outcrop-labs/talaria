@@ -1543,11 +1543,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/fleet/defs/{id}/mcp",
-            post(talaria_routes_fleet::fleet::fleet_defs_id_mcp::post).fallback(|| async { method_not_allowed("POST") }),
+            get(talaria_routes_fleet::fleet::fleet_defs_id_mcp::get)
+                .post(talaria_routes_fleet::fleet::fleet_defs_id_mcp::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
             "/api/mcp/library",
             get(talaria_routes_fleet::mcp::mcp_library::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/library/sync",
+            post(talaria_routes_fleet::mcp::mcp_library::sync).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/mcp/icon",

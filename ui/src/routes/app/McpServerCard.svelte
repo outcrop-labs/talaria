@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { MoreHorizontal, RefreshCw } from '@lucide/svelte'
+  import { KeyRound, MoreHorizontal, RefreshCw } from '@lucide/svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
@@ -14,20 +14,26 @@
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import McpAccessModal from './McpAccessModal.svelte'
+  import McpCredentialsModal from './McpCredentialsModal.svelte'
   import McpOauthAppSetup from './McpOauthAppSetup.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import { connectPopup, patchServer, type McpServerRow } from './mcp'
+  import { connectPopup, isInternalServer, patchServer, serverStatus, type McpServerRow } from './mcp'
 
-  /** One registered server. Design grammar: a calm header (identity left, one
-   *  status cluster right, actions in a kebab), the tool strip, then a single
-   *  ACCESS table where every row reads the same — name · tools · remove — and
-   *  adders stay hidden behind ghost "+" buttons until asked for. */
+  /** One registered server. Design grammar: a calm header (identity left, ONE
+   *  status chip right that says what the server needs — and the one button
+   *  that gives it that — actions in a kebab), the tool strip, then a single
+   *  ACCESS line and a door to the table. The status is `serverStatus`'s
+   *  verdict over the row: lifecycle, then auth, then what the last discovery
+   *  found. */
   let { server: s }: { server: McpServerRow } = $props()
 
   const qc = useQueryClient()
   let error = $state<string | null>(null)
   let refreshing = $state(false)
+  let redetecting = $state(false)
   let accessOpen = $state(false)
+  let credentialsOpen = $state(false)
+  let oauthEditing = $state(false)
   const menu = useContextMenu()
   const refresh = () => qc.invalidateQueries({ queryKey: ['mcp-servers'] })
 
@@ -52,9 +58,33 @@
   // The Workbench is granted by each agent's Developer Agent switch, not from
   // here. The api refuses assignment and access rows for it.
   const isWorkbench = $derived(s.name === 'workbench')
+  const external = $derived(!isInternalServer(s))
+  const status = $derived(serverStatus(s))
+  const TONE: Record<typeof status.tone, string> = {
+    muted: 'border-line text-muted',
+    warning: 'border-warning/40 text-warning',
+    danger: 'border-danger/40 text-danger',
+    success: 'border-success/40 text-success',
+  }
+  const showOauthSetup = $derived(!!s.oauthMeta && (status.kind === 'needs-oauth-app' || oauthEditing))
 
   const cardMenu = (e: MouseEvent) =>
     menu.openMenu(e, [
+      ...(external && !s.package && s.authMode === 'org'
+        ? [{ label: Object.keys(s.headers).length ? 'Edit credentials…' : 'Set credentials…', onSelect: () => (credentialsOpen = true) }]
+        : []),
+      ...(external && !s.package
+        ? [
+            {
+              label: 'Re-detect auth',
+              onSelect: () => {
+                redetecting = true
+                void patch({ redetectAuth: true, refreshTools: true }).finally(() => (redetecting = false))
+              },
+            },
+          ]
+        : []),
+      ...(s.oauthEnabled && s.oauthMeta?.clientSet ? [{ label: 'OAuth app settings…', onSelect: () => (oauthEditing = true) }] : []),
       { label: s.enabled ? 'Disable server' : 'Enable server', onSelect: () => void patch({ enabled: !s.enabled }) },
       {
         label: s.authMode === 'org' ? 'Switch to per-user auth' : 'Switch to org auth',
@@ -85,24 +115,6 @@
         },
       },
     ])
-
-  // The one status the header needs: connection first, then lifecycle —
-  // for package installs the runtime state (pulling/ready/…) is the status.
-  const status = $derived(
-    !s.enabled
-      ? { label: 'disabled', cls: 'border-line text-muted' }
-      : s.pkgStatus === 'pulling'
-        ? { label: 'pulling image', cls: 'border-line text-muted' }
-        : s.pkgStatus === 'error'
-          ? { label: 'image failed', cls: 'border-danger/40 text-danger' }
-          : s.oauthEnabled && s.authMode === 'org' && !s.orgConnected
-            ? null // the Connect button IS the status
-            : s.oauthEnabled && s.authMode === 'per-user'
-              ? { label: 'per-user auth', cls: 'border-line text-muted' }
-              : s.oauthEnabled && s.orgConnected
-                ? { label: '✓ connected', cls: 'border-success/40 text-success' }
-                : null,
-  )
 </script>
 
 <Panel class={cn(!s.enabled && 'opacity-60')}>
@@ -136,15 +148,21 @@
         {:else if domain}
           <span class="truncate font-mono text-[11px] text-muted">{domain}</span>
         {/if}
+        {#if s.authMode === 'per-user' && !s.builtin}
+          <Chip class="shrink-0" title="Each person connects their own account; an assistant carries the server once its owner has.">per-user</Chip>
+        {/if}
       </div>
       {#if s.description}<div class="truncate font-sans text-xs text-muted">{s.description}</div>{/if}
     </div>
-    {#if status}
-      <span class={cn('shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em]', status.cls)}>
+    {#if !(status.kind === 'per-user' && s.authMode === 'per-user')}
+      <span
+        class={cn('shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em]', TONE[status.tone])}
+        title={status.detail ?? undefined}
+      >
         {status.label}
       </span>
     {/if}
-    {#if s.oauthEnabled && s.authMode === 'org' && !s.orgConnected && s.enabled && (s.oauthMeta?.clientSet || (s.oauthMeta?.dcr && !s.oauthMeta.dcrRejected))}
+    {#if status.action === 'connect' && s.enabled}
       <Button
         size="sm"
         variant="accent-soft"
@@ -154,6 +172,10 @@
       >
         Connect
       </Button>
+    {:else if status.action === 'set-credentials' && s.enabled}
+      <Button size="sm" variant="accent-soft" class="shrink-0 gap-1.5" onclick={() => (credentialsOpen = true)} title={status.detail ?? undefined}>
+        <KeyRound size={13} /> Set credentials
+      </Button>
     {/if}
     {#if !s.builtin}
       <IconButton size="sm" title="Server actions" onclick={cardMenu}>
@@ -162,8 +184,18 @@
     {/if}
   </div>
 
-  {#if s.oauthEnabled && s.oauthMeta && !s.oauthMeta.clientSet && (!s.oauthMeta.dcr || s.oauthMeta.dcrRejected)}
-    <McpOauthAppSetup serverId={s.id} {domain} docs={s.oauthMeta.documentation} rejected={!!s.oauthMeta.dcrRejected} onSaved={refresh} />
+  {#if showOauthSetup && s.oauthMeta}
+    <McpOauthAppSetup
+      serverId={s.id}
+      meta={s.oauthMeta}
+      rejected={!!s.oauthMeta.dcrRejected}
+      editing={oauthEditing}
+      onSaved={() => {
+        oauthEditing = false
+        void refresh()
+      }}
+      onCancel={() => (oauthEditing = false)}
+    />
   {/if}
 
   <!-- ── Tools strip ── -->
@@ -172,9 +204,9 @@
         refreshing = true
         void patch({ refreshTools: true }).finally(() => (refreshing = false))
       }}
-      
+      disabled={refreshing || redetecting}
       title="Ask the server for its tool catalog">
-      {#if refreshing}<WaitingMark site="mcp/server-refresh" size={11} />{:else}<RefreshCw size={11} />{/if}
+      {#if refreshing || redetecting}<WaitingMark site="mcp/server-refresh" size={11} />{:else}<RefreshCw size={11} />{/if}
       {s.tools.length ? `${s.tools.length} tools` : 'Discover tools'}
       {#if s.toolsRefreshedAt}<span class="normal-case text-ink-dim">· {relativeTime(s.toolsRefreshedAt)}</span>{/if}
     </Button>
@@ -189,6 +221,14 @@
       </span>
     {/if}
   </div>
+  <!-- What the last discovery said, when it is something to act on — the
+       server's own words, so a 401 reads as the server's 401. -->
+  {#if s.probe && s.probe.state !== 'ok' && s.enabled && status.detail}
+    <div class={cn('mt-2 font-sans text-[11px] leading-relaxed', status.tone === 'danger' ? 'text-danger' : 'text-muted')}>
+      {s.probe.detail}
+      <span class="text-ink-dim"> · {relativeTime(s.probe.at)}</span>
+    </div>
+  {/if}
 
   <!-- ── Access: the SHAPE of it, and a door to the table ──
        The full governance table (a row per agent, a row per person, tool
@@ -216,6 +256,9 @@
         {:else}
           no per-person rules
         {/if}
+        {#if s.teamAccess.length}
+          · {s.teamAccess.length} {s.teamAccess.length === 1 ? 'team' : 'teams'}
+        {/if}
       {/if}
     </span>
     {#if !isWorkbench}
@@ -225,5 +268,6 @@
 
   {#if error}<div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">{error}</div>{/if}
   {#if accessOpen}<McpAccessModal server={s} onClose={() => (accessOpen = false)} />{/if}
+  {#if credentialsOpen}<McpCredentialsModal server={s} onClose={() => (credentialsOpen = false)} />{/if}
   <ContextMenu {menu} />
 </Panel>

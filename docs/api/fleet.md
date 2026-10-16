@@ -34,6 +34,7 @@
 | [`/api/fleet/defs/{id}/google/connect`](#apifleetdefsidgoogleconnect) | GET | `session` + `agent-manager` |
 | [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/managers`](#apifleetdefsidmanagers) | PUT | `session` + `agent-manager` |
+| [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/mcp`](#apifleetdefsidmcp) | POST | `session` + `agent-manager` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | GET | `session` + `agent-reader` |
 | [`/api/fleet/defs/{id}/versions`](#apifleetdefsidversions) | POST | `session` + `agent-manager` |
@@ -345,18 +346,24 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_managers.rs`](
 
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs)
 
-> /api/fleet/defs/{id}/mcp. POST → add/remove MCP servers on an agent as a
-> NEW config version (same versioned-internals contract as model edits),
-> optionally applied live.
+> /api/fleet/defs/{id}/mcp. ONE AGENT'S VIEW OF THE ORG MCP REGISTRY.
+> GET → every enabled registry server with what it means for THIS agent:
+> whether the agent carries it and why (`via`: all-agents, assigned, team,
+> developer — or null), the per-agent tool subset if one is set, the server's
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
+| GET | `session` + `agent-reader` | — | `{agent, canInstall, servers, legacy}` | 200, 404 | — |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidmcp-body) | `…` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/mcp` body
 
 | field | schema | notes |
 | :--- | :--- | :--- |
+| `unassign` | `parse_names` |  |
+| `removeLegacy` | `parse_names` | `remove` is the old spelling of `removeLegacy`; both clean raw entries. |
+| `remove` | `parse_names` |  |
 | `apply` | `bool?` |  |
 
 ## `/api/fleet/defs/{id}/versions`

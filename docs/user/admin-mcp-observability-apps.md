@@ -14,9 +14,11 @@ and which people may use it, down to individual tools.
 
 | Do this | How |
 | :--- | :--- |
-| Add a server | **Custom server** (label, URL, auth mode, headers, timeout) or **Browse marketplace** |
-| See its tools | **{n} tools** on the card, or **Discover tools** to ask the server for its catalog |
-| Connect an OAuth server | **Connect** on the card — signs in the *org* account so agents can use it |
+| Add a server | **Custom server** (label, URL, auth mode, as many auth headers as it needs, timeout) or **Browse marketplace** |
+| See its tools | **{n} tools** on the card, or **Discover tools** to ask the server for its catalog — the card then says *ready*, *needs credentials*, *unreachable* or the server's own error |
+| Give it an API key | **Set credentials** on the card (or kebab → **Edit credentials…**): the publisher's declared fields, or free header rows; saving re-tests |
+| Connect an OAuth server | **Connect** on the card — signs in the *org* account so agents can use it. A provider that needs a registered app shows **Set up**: the provider's developer portal, the exact callback URL to register, client id/secret, scopes |
+| Re-check how it authenticates | Kebab → **Re-detect auth** (a server that was down at install, or that started speaking OAuth later) |
 | Carry it on every agent | In **Manage access**, check **all agents** — rows below become per-agent tool overrides |
 | Narrow one agent's tools | In **Manage access**, add that agent and pick a tool subset (**All tools** if untouched) |
 | Gate a person | In **Manage access**, add a person rule — everyone with an assigned agent may use it otherwise |
@@ -27,9 +29,16 @@ Cards say where a server came from: `built-in`, `app` (published by an app — l
 belongs to the Apps page), or a domain. **Switch to per-user auth** makes each person
 connect their own account instead of the org's.
 
-The marketplace lists hosted servers from the official registry — `official`, `verified`,
-and `community` tiers. Only servers with a hosted endpoint appear; packages that need a
-local process can't be one-click added.
+The marketplace is a local copy of the official registry (synced every half hour; **Sync now**
+if the status line says it has not synced yet). Search by publisher, name or description, and
+filter by tier (`official`, `verified`, `community`) or by hosted endpoint vs runnable package
+(npm/pypi/docker — Talaria runs those in a hardened container). Installing runs discovery in the
+same step: a server that wants a key asks for it right there, one that speaks OAuth offers
+Connect.
+
+**Per agent:** an agent's settings → **MCP** tab shows the same registry from that agent's side —
+toggle a server on or off for the agent, narrow its tools, and (with `agents.manage`) add from
+the marketplace straight onto the agent.
 
 ## Observability
 

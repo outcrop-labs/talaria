@@ -348,12 +348,21 @@ fn required_headers_member(
     Ok(Some(out))
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Result<Response, Response> {
     let _user = require_perm(&state, &headers, "agents.manage").await?;
     let servers = match list_mcp_servers(&state.pg).await {
         Ok(s) => s,
         Err(e) => return Ok(internal("[mcp] registry read failed", e)),
     };
+    // The callback every OAuth app must be registered with — computed once,
+    // the way the start route computes it, so the card never shows a URL the
+    // flow then contradicts.
+    let callback_url =
+        super::oauth_callback_url(&super::oauth_callback_base(&state, &headers, &uri).await);
     let mut detail = Vec::with_capacity(servers.len());
     for s in &servers {
         let mut wire = server_wire(s);
@@ -395,7 +404,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         } else {
             json!(null)
         };
-        let oauth_meta_v = if s.oauth_enabled {
+        let mut oauth_meta_v = if s.oauth_enabled {
             match oauth_meta(&state.pg, &s.id).await {
                 Ok(m) => m.unwrap_or(Value::Null),
                 Err(e) => return Ok(internal("[mcp] oauth meta read failed", e)),
@@ -403,6 +412,9 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         } else {
             Value::Null
         };
+        if let Some(m) = oauth_meta_v.as_object_mut() {
+            m.insert("callbackUrl".into(), json!(callback_url));
+        }
         if let Some(o) = wire.as_object_mut() {
             o.insert("assignments".into(), Value::Array(assignments));
             o.insert("userAccess".into(), Value::Array(user_access));

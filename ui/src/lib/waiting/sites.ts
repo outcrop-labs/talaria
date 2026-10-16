@@ -128,6 +128,7 @@ export const WAITING_SITES = {
   'mcp/search': { role: 'tool', slot: 'inline', note: 'Marketplace search in flight.' },
   'mcp/install': { role: 'submitting', slot: 'button', note: 'Installing a server from the marketplace.' },
   'mcp/server-refresh': { role: 'tool', slot: 'button', note: 'Re-probing a server card for its tool list.' },
+  'mcp/sync': { role: 'submitting', slot: 'button', note: 'Mirroring the official MCP registry into the local catalog.' },
   'skills/marketplace-search': { role: 'tool', slot: 'inline', note: 'Catalog search in flight.' },
   'skills/marketplace-install': { role: 'submitting', slot: 'button', note: 'Reading a repo or writing its skills into a destination.' },
 
