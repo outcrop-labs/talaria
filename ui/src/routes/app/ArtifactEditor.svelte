@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { ExternalLink, History, Maximize2, Minimize2, MoreHorizontal, Paperclip, Star, Trash2, Upload } from '@lucide/svelte'
+  import { Download, ExternalLink, History, Maximize2, Minimize2, MoreHorizontal, Paperclip, Star, Trash2, Upload } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Chip from '@/components/ui/Chip.svelte'
@@ -24,7 +24,7 @@
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import AgentRefineNotice from '@/components/kb/AgentRefineNotice.svelte'
-  import { deleteArtifact, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
+  import { deleteArtifact, officeExport, officeExportHref, saveArtifact, uploadFile, useArtifact } from '@/lib/artifacts'
   import { KIND_LABEL } from './artifacts'
   import ArtifactHistory from './ArtifactHistory.svelte'
   import FilePreview from './FilePreview.svelte'
@@ -129,6 +129,19 @@
       exporting = false
     }
   }
+  /** THE SAME EXPORT WITHOUT GOOGLE: a document becomes .docx, a sheet .xlsx,
+   *  built in process and answered as a download — no connected account and
+   *  nothing left behind. A `file` artifact gets nothing here, because its own
+   *  bytes already download through /api/uploads. */
+  const downloadOffice = async () => {
+    const spec = officeExport(artifact?.kind)
+    if (!artifact || !spec) return
+    try {
+      await downloadFile(officeExportHref(id, spec.format), `${artifact.title || 'download'}.${spec.format}`)
+    } catch (e) {
+      toastError('Could not download', e)
+    }
+  }
   let pulling = $state(false)
   const pullFromGoogle = async () => {
     if (!(await confirm({
@@ -155,6 +168,11 @@
       { label: showHistory ? 'Hide history' : 'Version history', icon: [History, { size: 13 }], onSelect: () => (showHistory = !showHistory) },
       { label: exporting ? 'Exporting' : googleLabel, icon: [Upload, { size: 13 }], disabled: exporting, onSelect: () => void exportToGoogle() },
     ]
+    // Beside the Google export, the offline twin of it.
+    const office = officeExport(artifact.kind)
+    if (office) {
+      entries.push({ label: `Download as ${office.label}`, icon: [Download, { size: 13 }], onSelect: () => void downloadOffice() })
+    }
     const driveUrl = artifact.googleFileUrl
     if (driveUrl) {
       entries.push({ label: 'Open in Google', icon: [ExternalLink, { size: 13 }], onSelect: () => window.open(driveUrl, '_blank', 'noopener,noreferrer') })
