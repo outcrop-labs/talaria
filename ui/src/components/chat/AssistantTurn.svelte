@@ -173,6 +173,15 @@
     {#if empty && live}<ChatWaiting id={String(turn)} role="submitting" class="my-1" />{/if}
     {#if !empty && !message.content && live}<ChatWaiting id={String(turn)} role="reasoning" class="my-1" />{/if}
     {#if message.content && live}<span class="gd-pulse ml-0.5 inline-block h-4 w-1.5 bg-accent align-middle"></span>{/if}
+    <!-- A SCHEDULED RUN IS STILL JUST A TURN, by design — the cron posts into
+         this thread rather than into a surface of its own — so the row says
+         where it came from in the same quiet mono voice "· stopped" uses.
+         Without it the agent reads as having spoken up unprompted. The job id
+         rides the tooltip: it is the handle on the schedule, not something to
+         paint across the transcript. -->
+    {#if message.cronJobId}
+      <div class="font-mono text-[11px] text-muted" title={`job ${message.cronJobId}`}>· scheduled run</div>
+    {/if}
     {#if !live && message.status === 'streaming'}
       <div class="font-mono text-[11px] text-muted">· saved (was in progress)</div>
     {/if}

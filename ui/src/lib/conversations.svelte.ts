@@ -76,8 +76,13 @@ export interface StoredMessage {
    *  doom-loop guard), `steer` a user row said INTO a reply that was already
    *  streaming. All three are written the same way — a merge into the row's
    *  jsonb — and travel the same way, so they are declared together here
-   *  rather than widened at the one surface that reads them. */
-  metadata?: { resumed?: boolean; stopped?: boolean; steer?: boolean } | null
+   *  rather than widened at the one surface that reads them.
+   *
+   *  `marker` is the fourth and the only one carrying a VALUE rather than a
+   *  flag: a named place in the transcript ("before the refactor") a person
+   *  or an agent dropped on a row so it can be jumped back to. Same bag, same
+   *  merge; a string because the name is the whole point. */
+  metadata?: { resumed?: boolean; stopped?: boolean; steer?: boolean; marker?: string } | null
   chips?: ChatChip[]
   /** The row's id — what a reaction toggles against. Absent on older
    *  payloads; a row without one shows no action bar. */
@@ -252,6 +257,34 @@ export async function renameConversation(
     return true
   } catch (e) {
     toastError('Rename failed', e)
+    return false
+  }
+}
+
+/** THE VIEWER'S OWN LAYOUT for one thread: pinned to the top of their rail,
+ *  filed under a group, held at a slot they chose. Per viewer, never per
+ *  thread — a collaborator's pin on a shared plan is invisible to its owner
+ *  (`talaria-conversation-layout` is the server half).
+ *
+ *  MERGE, NOT REPLACE, and the two nullable fields say it twice: an ABSENT
+ *  key leaves that field alone, and an explicit `null` is the clear a person
+ *  asked for (take it out of its group, give up its slot). So a reorder sends
+ *  `{ position }` alone and does not have to restate the group it is in.
+ *
+ *  Does not invalidate: the caller holds the query (a rail knows which kind
+ *  it listed, this does not), so it is the caller that settles the list —
+ *  optimistically first, if it wants the row to move under the cursor. */
+export async function patchConversation(
+  id: string,
+  patch: { pinned?: boolean; group?: string | null; position?: number | null },
+): Promise<boolean> {
+  try {
+    await patchJson(`/api/conversations/${id}`, patch)
+    return true
+  } catch (e) {
+    // One sentence for all three fields: a pin, a group and a slot are the
+    // same thing to the person doing it — the shape of their own list.
+    toastError('Could not update your list', e)
     return false
   }
 }

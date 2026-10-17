@@ -21,6 +21,8 @@
   import McpMarketplaceModal from '@/routes/app/McpMarketplaceModal.svelte'
   import McpServerMark from '@/routes/app/McpServerMark.svelte'
   import { ALL_TOOLS, withoutMissing, type ProbeRow } from '@/routes/app/mcp'
+  import { ALL_TOOLS, type ProbeRow } from '@/routes/app/mcp'
+  import ToolsetsControl from './ToolsetsControl.svelte'
 
   /** THIS AGENT'S MCP SERVERS — a view of the org registry scoped to one
    *  agent. Every server the agent carries, and why (org-wide, assigned here,
@@ -299,6 +301,11 @@
       {/if}
     {/snippet}
   </QueryState>
+
+  <!-- The agent's own harness tools, below the servers it is lent. Outside the
+       QueryState deliberately: it reads the fleet defs, not the MCP registry,
+       so an MCP read that fails must not take the toolsets with it. -->
+  <ToolsetsControl {def} {canManage} />
 
   {#if adding === 'marketplace'}
     <McpMarketplaceModal

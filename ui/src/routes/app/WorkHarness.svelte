@@ -23,6 +23,7 @@
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import ContextMenu from '@/components/ui/ContextMenu.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useContextMenu } from '@/components/ui/context-menu.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -38,6 +39,8 @@
   import LivingDocPane from '@/components/work/LivingDocPane.svelte'
   import ReportPane from '@/components/work/ReportPane.svelte'
   import ResearchComposer from '@/components/work/ResearchComposer.svelte'
+  import ScheduleButton from '@/components/work/ScheduleButton.svelte'
+  import SessionPalette from '@/components/work/SessionPalette.svelte'
   import WorkspacePane from '@/components/work/WorkspacePane.svelte'
   import { useAgents } from '@/lib/agents'
   import { useArtifact } from '@/lib/artifacts'
@@ -609,10 +612,17 @@
       if (c.id === selectedSessionId) setSelectedSessionId(null)
     })
   }
-  const openSessionMenu = (e: MouseEvent, c: Conversation, archivedRow: boolean) => {
-    menu.openMenu(
-      e,
-      planRowMenu(c, {
+  const openSessionMenu = (
+    e: MouseEvent,
+    c: Conversation,
+    archivedRow: boolean,
+    layout: ContextMenuEntry[] = [],
+  ) => {
+    // The rail's own pin/file entries ride along so the right-click menu
+    // mirrors what the row's hover control offers (UI-CONVENTIONS: a context
+    // menu is a shortcut to actions the surface already has).
+    menu.openMenu(e, [
+      ...planRowMenu(c, {
         path: `/work/${c.id}`,
         open: () => selectConversation(c),
         archived: archivedRow,
@@ -621,16 +631,22 @@
         onRestore: () => restoreSession(c),
         onDelete: () => deleteSession(c),
       }),
-    )
+      ...(layout.length ? (['sep' as const, ...layout] as ContextMenuEntry[]) : []),
+    ])
   }
   // A RESEARCH-ORIGIN ROW IS A RUN, and its menu acts on the run: renaming the
   // thread would leave the run's own name — the one every other research
   // surface reads — untouched, and removing the thread would leave the run
   // behind it. No Archive either: a run is ephemeral, and Remove is its stop.
-  const openRowMenu = (e: MouseEvent, c: Conversation, archivedRow: boolean) => {
+  const openRowMenu = (
+    e: MouseEvent,
+    c: Conversation,
+    archivedRow: boolean,
+    layout: ContextMenuEntry[] = [],
+  ) => {
     const run = runBySession.get(c.id)
     if (!run) {
-      openSessionMenu(e, c, archivedRow)
+      openSessionMenu(e, c, archivedRow, layout)
       return
     }
     menu.openMenu(
@@ -778,6 +794,17 @@
       </div>
     {/if}
     {@render researchToggle()}
+    <!-- PUTTING THIS SESSION'S AGENT ON A CLOCK. Session-level like the two
+         beside it, and the same shape as drafting tickets: the control belongs
+         to the thread, so it takes the conversation id and renders nothing
+         without one. Who may do it is the agent's own question — only its
+         managers — and the answer is not on this surface's roster read
+         (/api/agents carries no `canManage`), so the button is offered and the
+         route's 403 arrives as a toast rather than paying for the fleet
+         roster here to hide one icon. -->
+    <!-- A research thread is a run's discussion, not a standing session: a
+         cron posting into it would be noise beside the report. -->
+    <ScheduleButton conversationId={selectedRun ? null : selectedSessionId} />
     {#if !selectedRun}
       <!-- Drafting tickets reads a PLAN or a work session — `plans_id_draft`
            admits chat, plan and work kinds, and a research thread is none of
@@ -881,7 +908,18 @@
             org-visible documents your agents can retrieve later.
           </p>
         </div>
-        <ResearchComposer agentModel={selectedAgent} onStarted={onResearchStarted} />
+        <!-- THE RUN DISCUSSES WHERE IT WAS ASKED FOR. Opened over a selected
+             session, the ask points the run at that thread: its scope
+             question, its ack and its report-ready turn land in the
+             conversation the person is already reading, rather than opening a
+             second row beside it. From the empty stage there is no thread to
+             name, and the run makes its own — which is also the standalone
+             report's address, where `selectedSessionId` is null. -->
+        <ResearchComposer
+          agentModel={selectedAgent}
+          onStarted={onResearchStarted}
+          conversationId={selectedSessionId}
+        />
       </div>
     </div>
   </div>
@@ -1207,3 +1245,6 @@
 
   <ContextMenu {menu} />
 </RailSurface>
+
+<!-- ⌘K: jump to a session. The palette owns its shortcut and its open state. -->
+<SessionPalette {conversations} onSelect={(id) => setSelectedSessionId(id)} />

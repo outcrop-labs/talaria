@@ -227,14 +227,16 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_crons.rs`](../../api/c
 Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_defs.rs)
 
 > GET /api/fleet/defs. The harness registry: agent definitions (latest
-> version inline) + LLM endpoints + brain routability.
+> version inline) + LLM endpoints + brain routability + toolset vocabulary.
 >
 > Who sees what: `agents.manage` (and admins) read the whole fleet; everyone
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{defs, endpoints, brains, canHire}` | 200 | — |
+| GET | `session` | — | `{defs, endpoints, brains, canHire, toolsets}` | 200 | — |
+
+**GET** — The roster also carries `toolsets`, the agent editor's vocabulary: `governed`, every Hermes toolset an operator may disable on an agent (28 names, alphabetical), and `mandatoryDisabled`, the two Talaria takes off every agent's table whatever its def says — `todo` and `clarify`, because Talaria's own MCP versions are the ones a person sees. Both lists are the constants the `PATCH /api/fleet/defs/{id}` validator reads, so the picker cannot offer a name the write door would refuse.
 
 ## `/api/fleet/defs/{id}`
 

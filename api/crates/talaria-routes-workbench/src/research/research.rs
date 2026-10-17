@@ -276,7 +276,7 @@ pub async fn post(
         if let Some((id,)) = live {
             return Ok((
                 StatusCode::CONFLICT,
-                Json(json!({ "run": null, "duplicateOf": id })),
+                Json(json!({ "run": null, "duplicateOf": id, "reason": "thread" })),
             )
                 .into_response());
         }
@@ -299,7 +299,7 @@ pub async fn post(
     if let Some((id,)) = dupe {
         return Ok((
             StatusCode::CONFLICT,
-            Json(json!({ "run": null, "duplicateOf": id })),
+            Json(json!({ "run": null, "duplicateOf": id, "reason": "question" })),
         )
             .into_response());
     }
