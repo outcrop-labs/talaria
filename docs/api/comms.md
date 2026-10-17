@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-30 routes.
+31 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -53,6 +53,7 @@
 | [`/api/conversations/{id}/schedule`](#apiconversationsidschedule) | POST | `session` + `agent-manager` |
 | [`/api/conversations/{id}/schedules`](#apiconversationsidschedules) | GET | `session` |
 | [`/api/conversations/{id}/schedules/{jobId}`](#apiconversationsidschedulesjobid) | DELETE | `session` + `agent-manager` |
+| [`/api/conversations/{id}/session`](#apiconversationsidsession) | GET | `session` |
 | [`/api/conversations/{id}/steer`](#apiconversationsidsteer) | POST | `session` |
 | [`/api/conversations/{id}/stop`](#apiconversationsidstop) | POST | `session` |
 | [`/api/conversations/{id}/teams`](#apiconversationsidteams) | POST | `session` |
@@ -593,6 +594,22 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_schedules_j
 | DELETE | `session` + `agent-manager` | — | `{ok}` | 200, 400, 403, 404 | audit |
 
 **DELETE** — Remove a schedule this conversation created: the job and its listener row.
+
+## `/api/conversations/{id}/session`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_session.rs`](../../api/crates/talaria-routes-comms/src/comms/conversations_id_session.rs)
+
+> GET /api/conversations/{id}/session — what the agent is still holding of
+> this thread.
+>
+> A PINNED agent keeps the transcript itself: Talaria's conversation id IS the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{applies, compacted, since, sessionId, messageCount, partial, reachable}` | 200, 403 | — |
+
+**GET** — What the agent itself still holds of this thread: how many messages it has compacted away and how far back the surviving transcript reaches. `applies` is false — with zeros and nulls — for an agent that is not pinned, a thread Hermes never held, or a container that is not answering; the compacted summaries themselves never cross the wire.
 
 ## `/api/conversations/{id}/steer`
 

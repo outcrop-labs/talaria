@@ -13,8 +13,8 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    AgentDefRow, ConfigEdits, ModelTarget, add_version_if_changed, apply_config_edits,
-    list_versions,
+    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, add_version_if_changed,
+    apply_config_edits, list_versions,
 };
 use talaria_fleet_create::{CreateAgentInput, create_agent, ensure_agent_key, restamp_slug};
 use talaria_fleet_docker::{container_status, fleet_restart, fleet_up, wait_healthy};
@@ -624,6 +624,8 @@ pub async fn update_personal_agent(
                     main,
                     aliases: alias_list,
                     fallbacks,
+                    // A model patch turns no compaction knob.
+                    compression: CompressionEdits::default(),
                 },
             )
             .await?;

@@ -276,13 +276,27 @@ async fn hold_for_agent(model: &str, request: AgentRequest, wait_ms: Option<u64>
 /// key, which the renderer put in the container as its API_SERVER_KEY — so the
 /// key handling can only be got right or wrong once.
 fn agent_post(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
-    let mut req = http()
+    let req = http()
         .post(format!("{}{path}", entry.url))
         .header("content-type", "application/json");
-    if let Some(key) = entry.key.as_deref().filter(|k| !k.is_empty()) {
-        req = req.bearer_auth(key);
+    with_bearer(entry, req)
+}
+
+/// The same door, read-only — the session reads (`/api/sessions/{id}` and its
+/// messages) ask Hermes about a transcript it is already holding. Same bearer
+/// as the POST side for the same reason: one place to get the key right.
+fn agent_get(entry: &ManifestEntry, path: &str) -> reqwest::RequestBuilder {
+    with_bearer(entry, http().get(format!("{}{path}", entry.url)))
+}
+
+/// The manifest row's key as the request's bearer — the key the renderer put
+/// in the container as its API_SERVER_KEY. An empty key is no key: a local
+/// container with auth off takes the request bare.
+fn with_bearer(entry: &ManifestEntry, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match entry.key.as_deref().filter(|k| !k.is_empty()) {
+        Some(key) => req.bearer_auth(key),
+        None => req,
     }
-    req
 }
 
 /// Open the streamed response, or report that this agent isn't serving yet.
@@ -494,6 +508,137 @@ pub async fn stop_run(agent_model: &str, run_id: &str) -> Result<(), String> {
 /// answer here rather than something to wait out.
 async fn agent_entry(model: &str) -> Option<ManifestEntry> {
     read_manifest().await.into_iter().find(|m| m.model == model)
+}
+
+/// What Hermes is holding for one pinned conversation: how much of the
+/// transcript it has compacted away, and how far back what is left reaches.
+///
+/// `compacted` counts the rows Hermes projects as `display_kind: "hidden"` —
+/// a compaction carrier (and the odd diagnostic notice) keeps its id, role
+/// and timestamp but answers with empty content, because THE SUMMARY ITSELF
+/// NEVER CROSSES THE WIRE. So this is a count and a boundary, never a
+/// rendering of what the agent remembers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionOverview {
+    /// The Hermes session id — for a pinned agent, the conversation's own id.
+    pub session_id: String,
+    /// Hidden rows in the session: compaction carriers plus notices.
+    pub compacted: u32,
+    /// The first surviving (non-hidden) row's timestamp, verbatim as Hermes
+    /// answered it. None when nothing survives, or when the row carries a
+    /// timestamp that is not a string — this is a label, not arithmetic.
+    pub since: Option<String>,
+    /// Hermes' own `message_count` for the session, when it answered the
+    /// session read. The rows are the overview; the count is a nicety, and a
+    /// session read that fails leaves it absent rather than failing the call.
+    /// The 500-row page was not the whole session: `compacted` is a floor.
+    pub partial: bool,
+    pub message_count: Option<i64>,
+}
+
+/// One pinned conversation's compaction state, asked of the agent's own
+/// container. Two reads on the CONTROL window, never the turn's: a drawer is
+/// open and a person is waiting, so a container that accepted TCP and went
+/// quiet has to lose rather than hold the surface for five minutes.
+///
+/// `None` is every failure — no manifest row, a 404 (Hermes has no session
+/// under this id), a timeout, a body that is not the documented shape. The
+/// caller's answer for all of them is the same ("this does not apply here"),
+/// and the reason lands in `tracing::debug` where a developer can read it.
+pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Option<SessionOverview> {
+    let entry = agent_entry(agent_model).await?;
+    // Both reads at once, so the surface waits one control window and not
+    // two; the rows are load-bearing, the session read only fills the count.
+    let rows_path = format!("/api/sessions/{conversation_id}/messages?limit=500&order=oldest");
+    let session_path = format!("/api/sessions/{conversation_id}");
+    let (body, session) = tokio::join!(
+        control_get_json(&entry, &rows_path, agent_model),
+        control_get_json(&entry, &session_path, agent_model),
+    );
+    let body = body?;
+    // The id Hermes ANSWERED FOR, not the one asked about: a resume lineage
+    // can resolve one id to another, and numbers from some other session
+    // must not be hung on this thread.
+    let answered = body
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or(conversation_id);
+    if answered != conversation_id {
+        tracing::debug!(
+            "[fleet_chat] {agent_model}: session {conversation_id} resolved to {answered}; not this thread's"
+        );
+        return None;
+    }
+    let Some((compacted, since, partial)) = parse_session_rows(&body) else {
+        tracing::debug!(
+            "[fleet_chat] {agent_model}: session {conversation_id} messages read carried no data array"
+        );
+        return None;
+    };
+    let message_count = session.as_ref().and_then(parse_message_count);
+    Some(SessionOverview {
+        session_id: answered.to_string(),
+        compacted,
+        since,
+        partial,
+        message_count,
+    })
+}
+
+/// A read through the agent's own door, parsed as json — bounded by the
+/// control window. Only the STATUS of a refusal is logged: an agent's own
+/// words can be in that body, and this is a session's transcript.
+async fn control_get_json(entry: &ManifestEntry, path: &str, model: &str) -> Option<Value> {
+    match tokio::time::timeout(CONTROL_WINDOW, agent_get(entry, path).send()).await {
+        Ok(Ok(res)) if res.status().is_success() => match res.json::<Value>().await {
+            Ok(body) => Some(body),
+            Err(_) => {
+                tracing::debug!("[fleet_chat] {model}: {path} answered a body that is not json");
+                None
+            }
+        },
+        Ok(Ok(res)) => {
+            tracing::debug!("[fleet_chat] {model}: {path} answered {}", res.status());
+            None
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("[fleet_chat] {model}: {path} did not answer: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("[fleet_chat] {model}: {path} went quiet past the control window");
+            None
+        }
+    }
+}
+
+/// The messages page, reduced to (hidden count, first surviving timestamp).
+/// `None` when the body is not a page of rows at all — a 200 that does not
+/// carry `data` is a different API, not an empty session.
+/// (hidden rows, the first survivor's timestamp, whether the page was the
+/// whole session). One page of 500 oldest-first: `since` is exact either way;
+/// a count read off a partial page is a FLOOR, and the caller says so.
+fn parse_session_rows(body: &Value) -> Option<(u32, Option<String>, bool)> {
+    let rows = body.get("data")?.as_array()?;
+    let hidden = |row: &Value| row.get("display_kind").and_then(Value::as_str) == Some("hidden");
+    let compacted = rows.iter().filter(|row| hidden(row)).count() as u32;
+    let since = rows
+        .iter()
+        .find(|row| !hidden(row))
+        .and_then(|row| row.get("timestamp"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let partial = body
+        .get("pagination")
+        .and_then(|p| p.get("has_more"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some((compacted, since, partial))
+}
+
+/// Hermes' `message_count` off the session read, when it is a number.
+fn parse_message_count(body: &Value) -> Option<i64> {
+    body.get("message_count").and_then(Value::as_i64)
 }
 
 /// A refused control call as a reason a caller can show: the status, plus the
@@ -1865,6 +2010,93 @@ mod tests {
         // The handle replaces the credential and nothing else.
         assert!(input.starts_with("use «secret:"), "{input}");
         assert!(input.ends_with(" now"), "{input}");
+    }
+
+    /// The session overview is a COUNT AND A BOUNDARY: the hidden rows are
+    /// how much Hermes compacted away, and the first row it still renders is
+    /// how far back what is left reaches. The carriers' own content is empty
+    /// on the wire — there is no summary here to leak, and nothing in this
+    /// parser reaches for one.
+    #[test]
+    fn the_overview_counts_hidden_rows_and_dates_the_first_survivor() {
+        let body = serde_json::json!({
+            "object": "list",
+            "session_id": "c1",
+            "data": [
+                { "id": "m1", "role": "user", "display_kind": "hidden", "content": "",
+                  "timestamp": "2026-10-01T09:00:00.000Z" },
+                { "id": "m2", "role": "assistant", "display_kind": "hidden", "content": "",
+                  "timestamp": "2026-10-02T09:00:00.000Z" },
+                { "id": "m3", "role": "user", "display_kind": "message", "content": "still here",
+                  "timestamp": "2026-10-03T09:00:00.000Z" },
+                { "id": "m4", "role": "assistant", "display_kind": "message", "content": "yes",
+                  "timestamp": "2026-10-04T09:00:00.000Z" },
+            ],
+            "pagination": { "has_more": false },
+        });
+        assert_eq!(
+            parse_session_rows(&body),
+            Some((2, Some("2026-10-03T09:00:00.000Z".into()), false))
+        );
+    }
+
+    /// A page of nothing but carriers has no surviving row to date from, and
+    /// a row whose `display_kind` is absent is a visible row — the hidden
+    /// projection is the only thing that hides one.
+    #[test]
+    fn an_all_hidden_page_has_no_since_and_a_bare_row_counts_as_visible() {
+        let hidden_only = serde_json::json!({
+            "data": [{ "display_kind": "hidden", "timestamp": "2026-10-01T09:00:00.000Z" }],
+        });
+        assert_eq!(parse_session_rows(&hidden_only), Some((1, None, false)));
+
+        let bare = serde_json::json!({
+            "data": [{ "role": "user", "timestamp": "2026-10-05T09:00:00.000Z" }],
+        });
+        assert_eq!(
+            parse_session_rows(&bare),
+            Some((0, Some("2026-10-05T09:00:00.000Z".into()), false))
+        );
+    }
+
+    /// A 200 that carries no rows at all is not an empty session, it is a
+    /// different API — and the route's answer for it is the same "this does
+    /// not apply here" every other failure gets.
+    #[test]
+    fn a_partial_page_marks_the_count_as_a_floor() {
+        let body = serde_json::json!({
+            "session_id": "c1",
+            "data": [{ "id": "m1", "display_kind": "hidden", "timestamp": "2026-10-01T00:00:00.000Z" }],
+            "pagination": { "has_more": true }
+        });
+        assert_eq!(parse_session_rows(&body), Some((1, None, true)));
+    }
+
+    #[test]
+    fn a_body_without_rows_is_no_overview() {
+        assert_eq!(parse_session_rows(&serde_json::json!({})), None);
+        assert_eq!(
+            parse_session_rows(&serde_json::json!({ "data": "not a list" })),
+            None
+        );
+        // An empty session IS an overview: nothing compacted, nothing to date.
+        assert_eq!(
+            parse_session_rows(&serde_json::json!({ "data": [] })),
+            Some((0, None, false))
+        );
+    }
+
+    #[test]
+    fn the_message_count_is_read_only_when_it_is_a_number() {
+        assert_eq!(
+            parse_message_count(&serde_json::json!({ "message_count": 42 })),
+            Some(42)
+        );
+        assert_eq!(
+            parse_message_count(&serde_json::json!({ "message_count": null })),
+            None
+        );
+        assert_eq!(parse_message_count(&serde_json::json!({})), None);
     }
 
     #[tokio::test]

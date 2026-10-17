@@ -64,8 +64,8 @@ Source: [`api/crates/talaria-routes-comms/src/activity/history.rs`](../../api/cr
 
 > /api/history. Version history for agent internals, one API over two
 > stores:
->   snapshot store (internal_versions): skill, memory, kb-doc, kb-space, artifact
->   agent versions (agent_versions):    soul, config, personality
+>   snapshot store (internal_versions): skill, memory, profile, kb-doc,
+>                                       kb-space, artifact
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
