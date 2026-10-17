@@ -1,0 +1,4 @@
+# Playwright's run output and the minted session — never committed.
+.state/
+test-results/
+report/

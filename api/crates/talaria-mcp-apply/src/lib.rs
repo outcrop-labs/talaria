@@ -91,7 +91,13 @@ fn enqueue(departments: &[String], pg: &PgPool, sb: &SecretBox) {
     });
 }
 
-/// The departments whose managed agents carry this server right now.
+/// The departments whose managed agents carry this server right now — every
+/// grant `servers_for_agent` renders from: all-agents, an assignment row, or
+/// an allowed team grant for a team the agent is on. A team-granted agent
+/// left out here would keep its old session when the server changes under
+/// it (most visibly: the org account gets connected, and the agent stays on
+/// the gateway's in-house not-connected answer until something else rolls
+/// it).
 pub async fn carriers_for_server(pg: &PgPool, server_id: &str) -> Result<Vec<String>, sqlx::Error> {
     let all_agents: Option<(bool,)> =
         sqlx::query_as("select all_agents from mcp_servers where id::text = $1")
@@ -104,9 +110,13 @@ pub async fn carriers_for_server(pg: &PgPool, server_id: &str) -> Result<Vec<Str
             .await?
     } else {
         sqlx::query_as(
-            "select distinct d.department from mcp_server_agents a \
-             join agent_defs d on d.model = a.agent_model and d.managed and d.enabled \
-             where a.server_id::text = $1",
+            "select distinct d.department from agent_defs d \
+             where d.managed and d.enabled and ( \
+               exists (select 1 from mcp_server_agents a \
+                       where a.server_id::text = $1 and a.agent_model = d.model) \
+               or exists (select 1 from mcp_team_access t \
+                          join team_agents ta on ta.team_id = t.team_id \
+                          where t.server_id::text = $1 and t.allowed and ta.agent_model = d.model))",
         )
         .bind(server_id)
         .fetch_all(pg)

@@ -807,7 +807,16 @@ CREATE TABLE public.mcp_library_entries (
     entry jsonb NOT NULL,
     registry_updated_at timestamp with time zone,
     synced_at timestamp with time zone DEFAULT now() NOT NULL,
-    search tsvector GENERATED ALWAYS AS ((((setweight(to_tsvector('simple'::regconfig, COALESCE(title, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(domain, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, replace(replace(registry_name, '/'::text, ' '::text), '.'::text, ' '::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED
+    search tsvector GENERATED ALWAYS AS ((((setweight(to_tsvector('simple'::regconfig, COALESCE(title, ''::text)), 'A'::"char") || setweight(to_tsvector('simple'::regconfig, COALESCE(domain, ''::text)), 'A'::"char")) || setweight(to_tsvector('simple'::regconfig, replace(replace(registry_name, '/'::text, ' '::text), '.'::text, ' '::text)), 'B'::"char")) || setweight(to_tsvector('simple'::regconfig, COALESCE(description, ''::text)), 'C'::"char"))) STORED,
+    live_state text,
+    live_checked_at timestamp with time zone,
+    live_detail text
+);
+CREATE TABLE public.mcp_oauth_reconnect (
+    server_id uuid NOT NULL,
+    subject text NOT NULL,
+    detail text NOT NULL,
+    flagged_at timestamp with time zone DEFAULT now() NOT NULL
 );
 CREATE TABLE public.mcp_oauth_states (
     state text NOT NULL,
@@ -850,7 +859,9 @@ CREATE TABLE public.mcp_servers (
     app_slug text,
     package jsonb,
     env_enc text,
-    last_probe jsonb
+    last_probe jsonb,
+    headers_sealed text,
+    health_state text
 );
 CREATE TABLE public.mcp_team_access (
     server_id uuid NOT NULL,
@@ -858,6 +869,27 @@ CREATE TABLE public.mcp_team_access (
     allowed boolean DEFAULT true NOT NULL,
     tools text[]
 );
+CREATE TABLE public.mcp_tool_calls (
+    id bigint NOT NULL,
+    at timestamp with time zone DEFAULT now() NOT NULL,
+    server_id text NOT NULL,
+    server_name text NOT NULL,
+    agent text NOT NULL,
+    user_id text,
+    method text NOT NULL,
+    tool text,
+    outcome text NOT NULL,
+    status smallint,
+    latency_ms integer,
+    error text
+);
+CREATE SEQUENCE public.mcp_tool_calls_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+ALTER SEQUENCE public.mcp_tool_calls_id_seq OWNED BY public.mcp_tool_calls.id;
 CREATE TABLE public.mcp_user_access (
     server_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -1433,6 +1465,7 @@ CREATE TABLE public.workspace_secrets (
     secret_folder_id uuid
 );
 ALTER TABLE ONLY public.agent_coding_accounts ALTER COLUMN id SET DEFAULT nextval('public.agent_coding_accounts_id_seq'::regclass);
+ALTER TABLE ONLY public.mcp_tool_calls ALTER COLUMN id SET DEFAULT nextval('public.mcp_tool_calls_id_seq'::regclass);
 ALTER TABLE ONLY public.agent_coding_account_blocks
     ADD CONSTRAINT agent_coding_account_blocks_pkey PRIMARY KEY (account_id, provider_key, block_scope);
 ALTER TABLE ONLY public.agent_coding_accounts
@@ -1601,6 +1634,8 @@ ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_library_entries
     ADD CONSTRAINT mcp_library_entries_pkey PRIMARY KEY (registry_name);
+ALTER TABLE ONLY public.mcp_oauth_reconnect
+    ADD CONSTRAINT mcp_oauth_reconnect_pkey PRIMARY KEY (server_id, subject);
 ALTER TABLE ONLY public.mcp_oauth_states
     ADD CONSTRAINT mcp_oauth_states_pkey PRIMARY KEY (state);
 ALTER TABLE ONLY public.mcp_oauth_tokens
@@ -1613,6 +1648,8 @@ ALTER TABLE ONLY public.mcp_servers
     ADD CONSTRAINT mcp_servers_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_pkey PRIMARY KEY (server_id, team_id);
+ALTER TABLE ONLY public.mcp_tool_calls
+    ADD CONSTRAINT mcp_tool_calls_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
@@ -1805,9 +1842,14 @@ CREATE INDEX kb_comments_doc_idx ON public.kb_comments USING btree (doc_id, crea
 CREATE INDEX kb_docs_fts_idx ON public.kb_docs USING gin (to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(body, ''::text))));
 CREATE INDEX kb_docs_space_idx ON public.kb_docs USING btree (space_id, parent_id, sort);
 CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, item_id);
+CREATE INDEX mcp_library_entries_dead_idx ON public.mcp_library_entries USING btree (tier) WHERE (live_state = 'dead'::text);
 CREATE INDEX mcp_library_entries_domains_idx ON public.mcp_library_entries USING gin (domains);
+CREATE INDEX mcp_library_entries_live_idx ON public.mcp_library_entries USING btree (live_checked_at NULLS FIRST);
 CREATE INDEX mcp_library_entries_search_idx ON public.mcp_library_entries USING gin (search);
 CREATE INDEX mcp_library_entries_tier_idx ON public.mcp_library_entries USING btree (tier, title);
+CREATE INDEX mcp_tool_calls_agent_idx ON public.mcp_tool_calls USING btree (agent, at DESC);
+CREATE INDEX mcp_tool_calls_at_idx ON public.mcp_tool_calls USING btree (at DESC);
+CREATE INDEX mcp_tool_calls_server_idx ON public.mcp_tool_calls USING btree (server_id, at DESC);
 CREATE INDEX messages_conv_idx ON public.messages USING btree (conversation_id, seq);
 CREATE INDEX messages_conversation_timeline_idx ON public.messages USING btree (conversation_id, created_at DESC, id DESC);
 CREATE INDEX messages_streaming_idx ON public.messages USING btree (created_at) WHERE (status = 'streaming'::text);
@@ -2037,6 +2079,8 @@ ALTER TABLE ONLY public.kb_spaces
     ADD CONSTRAINT kb_spaces_rag_collection_id_fkey FOREIGN KEY (rag_collection_id) REFERENCES public.rag_collections(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.llm_api_keys
     ADD CONSTRAINT llm_api_keys_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_oauth_reconnect
+    ADD CONSTRAINT mcp_oauth_reconnect_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_oauth_states
     ADD CONSTRAINT mcp_oauth_states_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_oauth_tokens

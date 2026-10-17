@@ -11,6 +11,7 @@
     "build": "cd ui && bun run build",
     "start": "cd ui && bun run start",
     "test": "cd ui && bun run test",
+    "test:e2e": "cd ui && bun run test:e2e",
     "typecheck": "cd ui && bun run typecheck && cd ../mcp && bun run typecheck",
     "docs:api": "bun scripts/gen-docs.mjs",
     "api": "cargo run --quiet --manifest-path api/Cargo.toml",

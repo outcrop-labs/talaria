@@ -657,6 +657,8 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         talaria_mcp_library::library(),
     );
     talaria_mcp::pkg::register_pkg_reconcile_job(state.pg.clone());
+    talaria_mcp::calls::register_mcp_calls_prune_job(state.pg.clone());
+    talaria_mcp::health::register_mcp_health_job(state.pg.clone(), sb.clone(), rt.clone());
     talaria_update_job::register_update_check_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),
     }));
@@ -760,6 +762,14 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     // purpose — the completeness test drives register_all with a dead lazy
     // pool, and the plane's OnceLock must hold the real one or nothing.
     talaria_push::install_push_plane(state.pg.clone(), sb.clone());
+    // Seal org MCP headers still stored in plaintext — once per boot, after
+    // the old slot of a self-update has drained (it reads only plaintext),
+    // behind the response path; idempotent and race-safe across instances
+    // (each row's update is conditioned on the plaintext it read).
+    tokio::spawn(talaria_mcp::org_headers::seal_legacy_headers_after_grace(
+        state.pg.clone(),
+        sb.clone(),
+    ));
     // start_scheduler runs the missing-jobs boot check and logs the armed
     // summary itself; its return is that list again.
     let armed = scheduler::start_scheduler(conn);
@@ -820,6 +830,14 @@ mod tests {
         assert!(
             names.contains(&JobName::McpLibraryRefresh),
             "mcp-library-refresh fell out of the job table"
+        );
+        assert!(
+            names.contains(&JobName::McpHealth),
+            "mcp-health fell out of the job table — a revoked key or a dead MCP host would read healthy forever"
+        );
+        assert!(
+            names.contains(&JobName::McpCallsPrune),
+            "mcp-calls-prune fell out of the job table — mcp_tool_calls would grow without limit"
         );
         // The retired hold, pinned from the other side: update-check IS in
         // the table now (the update engine's restart topology landed with

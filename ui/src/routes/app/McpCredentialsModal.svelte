@@ -23,9 +23,10 @@
    *  same as the install dialog: a server that DECLARED its headers renders
    *  one field per declared variable and composes them back into the final
    *  header; one that did not gets free name/value rows. Stored keys show as
-   *  •••: GET never echoes a value, so this form writes a MERGE (set these
-   *  keys, remove those, keep the rest) and never has to see one. Saving
-   *  re-runs discovery, so the card's answer updates in the same breath. */
+   *  •••: the api answers key NAMES only (values are sealed and never leave
+   *  it), so this form writes a MERGE (set these keys, remove those, keep the
+   *  rest) and never has to see one. Saving re-runs discovery, so the card's
+   *  answer updates in the same breath. */
   let {
     server: s,
     onClose,
@@ -42,7 +43,7 @@
   const fields: HeaderField[] = declared.flatMap((h) => headerFields(h))
   const declaredNames = new Set(declared.map((h) => h.name))
   // svelte-ignore state_referenced_locally -- reason: see above
-  const storedKeys = Object.keys(s.headers ?? {})
+  const storedKeys = s.headerKeys ?? []
   // Stored keys the declared form does not already own — shown with their
   // own remove control, since no field will overwrite them.
   const extraStored = storedKeys.filter((k) => !declaredNames.has(k))

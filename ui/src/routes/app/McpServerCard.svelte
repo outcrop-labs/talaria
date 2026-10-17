@@ -17,7 +17,18 @@
   import McpCredentialsModal from './McpCredentialsModal.svelte'
   import McpOauthAppSetup from './McpOauthAppSetup.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import { connectPopup, isInternalServer, patchServer, serverStatus, type McpServerRow } from './mcp'
+  import { cardLine, panelHref, serverCalls, useMcpCallsSummary } from '@/components/observability/mcp-calls'
+  import { useSession } from '@/lib/session'
+  import {
+    checkedLine,
+    connectPopup,
+    healthChecked,
+    isInternalServer,
+    patchServer,
+    serverStatus,
+    staleAssignments,
+    type McpServerRow,
+  } from './mcp'
 
   /** One registered server. Design grammar: a calm header (identity left, ONE
    *  status chip right that says what the server needs — and the one button
@@ -28,8 +39,15 @@
   let { server: s }: { server: McpServerRow } = $props()
 
   const qc = useQueryClient()
+  // The last 24 hours at the gateway, in one line that opens the full record
+  // filtered to this server. One summary query for the whole page (every card
+  // shares the key); admins only, because the record is.
+  const session = useSession()
+  const callsDay = useMcpCallsSummary('24h', () => session.data?.role === 'admin')
+  const callsLine = $derived(callsDay.data ? cardLine(serverCalls(callsDay.data, s.id)) : null)
   let error = $state<string | null>(null)
   let refreshing = $state(false)
+  let checking = $state(false)
   let redetecting = $state(false)
   let accessOpen = $state(false)
   let credentialsOpen = $state(false)
@@ -66,12 +84,26 @@
     danger: 'border-danger/40 text-danger',
     success: 'border-success/40 text-success',
   }
+  // When the server was last asked — the hourly health pass or a person —
+  // and the one-click way to ask again (the same discovery PUT the tools
+  // strip sends). Only for servers the pass asks: the deployment's own and
+  // stdio packages are not probed, so their failure detail carries its own
+  // timestamp instead.
+  const probed = $derived(healthChecked(s))
+  const checked = $derived(probed ? checkedLine(s.probe, relativeTime) : null)
+  const checkNow = () => {
+    checking = true
+    void patch({ refreshTools: true }).finally(() => (checking = false))
+  }
+  // Assignments whose tool subset names a tool the catalog no longer offers;
+  // each agent's MCP tab offers the one-click fix.
+  const stale = $derived(staleAssignments(s.assignments, s.tools))
   const showOauthSetup = $derived(!!s.oauthMeta && (status.kind === 'needs-oauth-app' || oauthEditing))
 
   const cardMenu = (e: MouseEvent) =>
     menu.openMenu(e, [
       ...(external && !s.package && s.authMode === 'org'
-        ? [{ label: Object.keys(s.headers).length ? 'Edit credentials…' : 'Set credentials…', onSelect: () => (credentialsOpen = true) }]
+        ? [{ label: s.headerKeys?.length ? 'Edit credentials…' : 'Set credentials…', onSelect: () => (credentialsOpen = true) }]
         : []),
       ...(external && !s.package
         ? [
@@ -149,7 +181,7 @@
           <span class="truncate font-mono text-[11px] text-muted">{domain}</span>
         {/if}
         {#if s.authMode === 'per-user' && !s.builtin}
-          <Chip class="shrink-0" title="Each person connects their own account; an assistant carries the server once its owner has.">per-user</Chip>
+          <Chip class="shrink-0" title="Each person connects their own account; until they do, their assistant is told where to connect.">per-user</Chip>
         {/if}
       </div>
       {#if s.description}<div class="truncate font-sans text-xs text-muted">{s.description}</div>{/if}
@@ -168,9 +200,11 @@
         variant="accent-soft"
         class="shrink-0"
         onclick={() => void connectPopup(s.id, 'org')}
-        title="This server authenticates with OAuth. Connect the org account so agents can use it"
+        title={status.kind === 'reconnect'
+          ? 'The provider refused to refresh the org account. Sign in again so agents can use it'
+          : 'This server authenticates with OAuth. Connect the org account so agents can use it'}
       >
-        Connect
+        {status.kind === 'reconnect' ? 'Reconnect' : 'Connect'}
       </Button>
     {:else if status.action === 'set-credentials' && s.enabled}
       <Button size="sm" variant="accent-soft" class="shrink-0 gap-1.5" onclick={() => (credentialsOpen = true)} title={status.detail ?? undefined}>
@@ -226,8 +260,43 @@
   {#if s.probe && s.probe.state !== 'ok' && s.enabled && status.detail}
     <div class={cn('mt-2 font-sans text-[11px] leading-relaxed', status.tone === 'danger' ? 'text-danger' : 'text-muted')}>
       {s.probe.detail}
-      <span class="text-ink-dim"> · {relativeTime(s.probe.at)}</span>
+      {#if !probed && s.probe.at}<span class="text-ink-dim" title={new Date(s.probe.at).toLocaleString()}>· {relativeTime(s.probe.at)}</span>{/if}
     </div>
+  {/if}
+  {#if stale.length && s.enabled}
+    <div
+      class="mt-2 font-sans text-[11px] leading-relaxed text-warning"
+      title={stale.map((a) => `${a.agentModel}: ${a.missing.join(', ')}`).join('\n')}
+    >
+      {stale.length} agent{stale.length === 1 ? '' : 's'} name{stale.length === 1 ? 's' : ''} tools this server no longer offers
+      ({[...new Set(stale.flatMap((a) => a.missing))].join(', ')}). Drop them from each agent's MCP tab.
+    </div>
+  {/if}
+  {#if probed && s.enabled}
+    <div class="mt-1.5 flex items-center gap-2 font-mono text-[10px] tracking-[0.05em] text-ink-dim">
+      <span title={s.probe?.at ? new Date(s.probe.at).toLocaleString() : undefined}>{checked ?? 'Not checked yet'}</span>
+      <Button
+        variant="link"
+        size="xs"
+        class="gap-1 text-[10px]"
+        onclick={checkNow}
+        disabled={checking || refreshing || redetecting}
+        title="Ask the server again now: the handshake, its tool list, and whether the credentials still work"
+      >
+        {#if checking}<WaitingMark site="mcp/server-refresh" size={10} />{/if}
+        Check now
+      </Button>
+    </div>
+  {/if}
+
+  {#if callsLine}
+    <a
+      href={panelHref(s.name)}
+      class="mt-1.5 block w-fit font-mono text-[10px] tracking-[0.05em] text-ink-dim transition-colors hover:text-fg"
+      title="Open this server's calls in Observability"
+    >
+      {callsLine}
+    </a>
   {/if}
 
   <!-- ── Access: the SHAPE of it, and a door to the table ──

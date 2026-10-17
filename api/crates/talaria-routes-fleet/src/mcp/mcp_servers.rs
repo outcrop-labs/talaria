@@ -13,8 +13,9 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 use talaria_api_facades::mcp::oauth::{ensure_oauth_config, has_oauth_tokens, oauth_meta};
+use talaria_api_facades::mcp::org_headers::{header_keys, seal_legacy_headers_when_settled};
 use talaria_api_facades::mcp::registry::{
-    NewServer, create_mcp_server, get_mcp_server, list_assignments, list_mcp_servers,
+    McpServer, NewServer, create_mcp_server, get_mcp_server, list_assignments, list_mcp_servers,
     list_team_access, list_user_access, server_wire,
 };
 use talaria_audit::{AuditEntry, log_audit};
@@ -25,12 +26,13 @@ use talaria_body::{
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_secretbox::SecretBox;
-use talaria_session::{actor_of, require_perm};
+use talaria_session::{actor_of, require_perm, secretbox_or_500};
 use talaria_state::AppState;
 
 /// `z.record(z.string(), z.string().max(2000)).optional()` — any keys, string
-/// values bounded to 2000. Secrets live here, so the response never carries
-/// them back: GET answers every key masked.
+/// values bounded to 2000. Secrets live here, so they are sealed before the
+/// insert and the response never carries them back: every answer names the
+/// stored KEYS only (`headerKeys`).
 fn optional_headers_member(
     obj: &Map<String, Value>,
     key: &str,
@@ -354,6 +356,14 @@ pub async fn get(
     uri: axum::http::Uri,
 ) -> Result<Response, Response> {
     let _user = require_perm(&state, &headers, "agents.manage").await?;
+    let sb = secretbox_or_500(&state, "[mcp] secretbox unavailable").await?;
+    // The legacy sweep, again: boot seals every pre-sealing row once the old
+    // slot has drained, and this re-runs the same idempotent pass so a row
+    // restored from an old backup is sealed the next time an admin looks —
+    // one scan of a table of dozens of rows, matching nothing once
+    // everything is sealed. Inside the boot grace it is a no-op, for the same
+    // reason boot waits: an old slot may still be reading the plaintext.
+    seal_legacy_headers_when_settled(&state.pg, &sb).await;
     let servers = match list_mcp_servers(&state.pg).await {
         Ok(s) => s,
         Err(e) => return Ok(internal("[mcp] registry read failed", e)),
@@ -365,14 +375,7 @@ pub async fn get(
         super::oauth_callback_url(&super::oauth_callback_base(&state, &headers, &uri).await);
     let mut detail = Vec::with_capacity(servers.len());
     for s in &servers {
-        let mut wire = server_wire(s);
-        // Never echo secrets — every stored key answers masked.
-        if let Some(Value::Object(h)) = wire.get_mut("headers") {
-            let keys: Vec<String> = h.keys().cloned().collect();
-            for k in keys {
-                h.insert(k, json!("•••"));
-            }
-        }
+        let mut wire = server_wire(s, &wire_keys(&sb, s));
         let assignments = match list_assignments(&state.pg, &s.id).await {
             Ok(rows) => rows
                 .into_iter()
@@ -520,6 +523,7 @@ pub async fn post(
         .unwrap_or_else(|| "admin".into());
     let outcome = create_and_sniff(
         &state.pg,
+        &sb,
         &NewServer {
             name: &name,
             label: label.as_deref(),
@@ -572,23 +576,40 @@ pub async fn post(
             });
         }
     }
-    spawn_audit_and_render(&state.pg, &sb, &user, &server);
+    // The audit names the header KEYS an admin set, never a value.
+    let header_names: Vec<String> = headers_in
+        .as_ref()
+        .map(|h| h.keys().cloned().collect())
+        .unwrap_or_default();
+    spawn_audit_and_render(&state.pg, &sb, &user, &server, header_names);
     let meta = match oauth_meta(&state.pg, &server.id).await {
         Ok(m) => m,
         Err(e) => return Ok(bad_request(&e.to_string())),
     };
-    let mut wire = server_wire(&server);
+    let mut wire = server_wire(&server, &wire_keys(&sb, &server));
     wire.as_object_mut()
         .expect("server_wire is an object")
         .insert("oauthMeta".into(), meta.unwrap_or(Value::Null));
     Ok(Json(json!({ "server": wire })).into_response())
 }
 
+/// The stored org header NAMES for the wire. An unreadable seal (the
+/// encryption key changed under it) lists no keys rather than failing the
+/// whole registry page: the card then offers "Set credentials…", which is
+/// the fix, and the log line names the server.
+fn wire_keys(sb: &SecretBox, s: &McpServer) -> Vec<String> {
+    header_keys(sb, s).unwrap_or_else(|e| {
+        tracing::warn!("[mcp] org headers of {} unreadable: {e}", s.name);
+        Vec::new()
+    })
+}
+
 async fn create_and_sniff(
     pg: &PgPool,
+    sb: &SecretBox,
     input: &NewServer<'_>,
-) -> Result<talaria_api_facades::mcp::registry::McpServer, String> {
-    let mut server = create_mcp_server(pg, input).await?;
+) -> Result<McpServer, String> {
+    let mut server = create_mcp_server(pg, sb, input).await?;
     // Sniff the auth shape right away: a 401 challenge with resource
     // metadata marks the server OAuth and unlocks the Connect flow.
     if ensure_oauth_config(pg, &server.id, &server.url)
@@ -658,7 +679,8 @@ fn spawn_audit_and_render(
     pg: &PgPool,
     sb: &SecretBox,
     user: &talaria_session::SessionUser,
-    server: &talaria_api_facades::mcp::registry::McpServer,
+    server: &McpServer,
+    header_names: Vec<String>,
 ) {
     let pg = pg.clone();
     let sb = sb.clone();
@@ -677,7 +699,11 @@ fn spawn_audit_and_render(
                 target_id: Some(&audit_server_id),
                 target_label: Some(&audit_name),
                 before: None,
-                after: Some(json!({ "url": audit_url, "authMode": audit_auth_mode })),
+                after: Some(json!({
+                    "url": audit_url,
+                    "authMode": audit_auth_mode,
+                    "headers": header_names,
+                })),
             },
         )
         .await;

@@ -350,8 +350,8 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_mcp.rs`](../..
 
 > /api/fleet/defs/{id}/mcp. ONE AGENT'S VIEW OF THE ORG MCP REGISTRY.
 > GET → every enabled registry server with what it means for THIS agent:
-> whether the agent carries it and why (`via`: all-agents, assigned, team,
-> developer — or null), the per-agent tool subset if one is set, the server's
+> whether the agent carries it — exactly what its rendered config lists
+> (`servers_for_agent`) — and why (`via`: all-agents, assigned, team,
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

@@ -47,12 +47,32 @@ use serde_json::Value;
 use talaria_mcp_icons::IconKey;
 
 pub mod catalog;
+pub mod featured;
+pub mod liveness;
 use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_scheduler::{JobName, JobSpec};
 
 /// The registry's current list endpoint (v0.1 — cursor paging, `version=latest`,
 /// `updated_since`; `/v0/servers` still answers but is the older surface).
 const REGISTRY_URL: &str = "https://registry.modelcontextprotocol.io/v0.1/servers";
+
+/// The registry list endpoint this process walks: `TALARIA_MCP_REGISTRY_URL`
+/// when set (an end-to-end suite points the mirror at a stub registry so a
+/// run never depends on the real one's mood), else the official feed. Read
+/// once — the mirror's cursor and since-mark are only meaningful against one
+/// feed, so switching mid-process would mix two catalogs. The stub still goes
+/// through the SSRF guard: a loopback stub needs `TALARIA_FETCH_ALLOW_HOSTS`.
+pub fn registry_url() -> &'static str {
+    static URL: LazyLock<String> = LazyLock::new(|| {
+        std::env::var("TALARIA_MCP_REGISTRY_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| REGISTRY_URL.to_string())
+    });
+    &URL
+}
+
 const CACHE_MS: i64 = 15 * 60 * 1000;
 /// Same number the icon warm uses; measured to stay under the registry's
 /// burst throttle (see the header). Applied by the `buffered` pool.
@@ -661,7 +681,7 @@ impl Library {
         &self,
         params: &[(&str, &str)],
     ) -> Result<(Vec<Value>, Option<String>), String> {
-        let mut url = reqwest::Url::parse(REGISTRY_URL).map_err(|e| e.to_string())?;
+        let mut url = reqwest::Url::parse(registry_url()).map_err(|e| e.to_string())?;
         {
             let mut pairs = url.query_pairs_mut();
             for (k, v) in params {
@@ -1031,7 +1051,11 @@ pub fn mcp_library_refresh_job_spec(pg: sqlx::PgPool, lib: Arc<Library>) -> JobS
     }
 }
 
+/// Registers the catalog's two jobs: the sync and the liveness check that
+/// rides on its rows. One door, so the boot list cannot carry one without
+/// the other.
 pub fn register_mcp_library_refresh_job(pg: sqlx::PgPool, lib: Arc<Library>) {
+    talaria_scheduler::register_job(liveness::mcp_library_liveness_job_spec(pg.clone()));
     talaria_scheduler::register_job(mcp_library_refresh_job_spec(pg, lib));
 }
 

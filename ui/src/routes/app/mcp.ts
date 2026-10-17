@@ -3,7 +3,19 @@
 import { createQuery } from '@tanstack/svelte-query'
 import { errorMessage, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
 export { isInternalServer } from '@/lib/mcp-servers'
-export { catalogLine, emptyHint, serverStatus, type CatalogStatus, type ProbeRow, type ServerStatus } from '@/lib/mcp-status'
+export {
+  catalogLine,
+  checkedLine,
+  healthChecked,
+  emptyHint,
+  missingTools,
+  serverStatus,
+  staleAssignments,
+  withoutMissing,
+  type CatalogStatus,
+  type ProbeRow,
+  type ServerStatus,
+} from '@/lib/mcp-status'
 // The teams directory is one read app-wide (`@/lib/teams`); the MCP access
 // dialog reaches it through this module like the page's other shared helpers.
 export { useTeamsDirectory, type TeamDirectoryEntry } from '@/lib/teams'
@@ -16,6 +28,23 @@ export {
   type HeaderField,
 } from '@/lib/mcp-headers'
 import type { CatalogStatus, ProbeRow } from '@/lib/mcp-status'
+import type { CatalogLiveness, FeaturedConfigRow, FeaturedResponse, LibraryLive } from '@/lib/mcp-catalog'
+export {
+  addDomain,
+  deadLine,
+  featuredChips,
+  hiddenDeadLine,
+  isBareHost,
+  livenessLine,
+  showDeadLabel,
+  toggleChip,
+  type CatalogLiveness,
+  type FeaturedChip,
+  type FeaturedConfigRow,
+  type FeaturedResponse,
+  type LibraryLive,
+  type StandInRow,
+} from '@/lib/mcp-catalog'
 import type { HeaderDecl } from '@/lib/mcp-headers'
 
 /** A marketplace package install (npm/pypi/oci): how the runtime container
@@ -62,8 +91,9 @@ export interface McpServerRow {
   label: string
   description: string | null
   url: string
-  /** Keys only in practice — GET masks every value as •••. */
-  headers: Record<string, string>
+  /** The NAMES of the stored org headers. Values are sealed at rest and
+   *  never leave the api — not masked, absent. */
+  headerKeys: string[]
   timeoutSecs: number | null
   enabled: boolean
   allAgents: boolean
@@ -156,11 +186,15 @@ export interface LibraryServerRow {
   requiredHeaders: LibraryHeaderRow[]
   /** Package-shipping entries (no hosted endpoint): how to run them. */
   package: LibraryPackageRow | null
+  /** The liveness job's last verdict; null = never checked. */
+  live?: LibraryLive | null
 }
 
 export interface LibraryResponse {
   servers: LibraryServerRow[]
-  catalog: CatalogStatus
+  /** Matching servers left out because the liveness job found them dead. */
+  hiddenDead?: number
+  catalog: CatalogStatus & { liveness?: CatalogLiveness }
 }
 
 export type TierFilter = 'all' | 'official' | 'verified' | 'community'
@@ -168,9 +202,9 @@ export type KindFilter = 'all' | 'hosted' | 'package'
 
 /** The catalog read: the featured shelf for an empty query with no filters,
  *  a search otherwise. Both arms carry the catalog status. */
-export function useMcpLibrary(params: () => { q: string; tier: TierFilter; kind: KindFilter }) {
+export function useMcpLibrary(params: () => { q: string; tier: TierFilter; kind: KindFilter; includeDead?: boolean }) {
   return createQuery(() => {
-    const { q, tier, kind } = params()
+    const { q, tier, kind, includeDead = false } = params()
     const query = q.trim()
     const sp = new URLSearchParams()
     if (!query && tier === 'all' && kind === 'all') sp.set('featured', '1')
@@ -179,8 +213,9 @@ export function useMcpLibrary(params: () => { q: string; tier: TierFilter; kind:
       if (tier !== 'all') sp.set('tier', tier)
       if (kind !== 'all') sp.set('kind', kind)
     }
+    if (includeDead) sp.set('includeDead', '1')
     return {
-      queryKey: ['mcp-library', query, tier, kind],
+      queryKey: ['mcp-library', query, tier, kind, includeDead],
       queryFn: (): Promise<LibraryResponse> => getJson<LibraryResponse>(`/api/mcp/library?${sp.toString()}`),
       placeholderData: (prev: LibraryResponse | undefined) => prev,
       staleTime: 60_000,
@@ -197,6 +232,19 @@ export function useMcpCatalogStatus() {
 }
 
 export const syncCatalog = () => postJson<{ ok: true; catalog: CatalogStatus }>('/api/mcp/library/sync')
+
+/** Admin: the operator's featured-shelf edits. */
+export function useMcpFeatured() {
+  return createQuery(() => ({
+    queryKey: ['mcp-library-featured'],
+    queryFn: (): Promise<FeaturedResponse> => getJson<FeaturedResponse>('/api/mcp/library/featured'),
+  }))
+}
+
+export const saveFeatured = (cfg: FeaturedConfigRow) => putJson<FeaturedResponse>('/api/mcp/library/featured', cfg)
+
+/** Admin: one liveness batch now (the probes run behind the answer). */
+export const runLivenessCheck = () => postJson<{ ok: true; running: boolean }>('/api/mcp/library/liveness')
 
 export interface InstallOpts {
   headers?: Record<string, string>
