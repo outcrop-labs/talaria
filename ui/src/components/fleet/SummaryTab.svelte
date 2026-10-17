@@ -8,6 +8,7 @@
   import { useFleet, relativeTime } from '@/lib/fleet'
   import { patchAgentMeta, type AgentDef, type ModelTarget } from '@/lib/fleet-defs'
   import DeveloperAgentControl from './DeveloperAgentControl.svelte'
+  import MaxChildrenControl from './MaxChildrenControl.svelte'
   import PinnedSessionsControl from './PinnedSessionsControl.svelte'
   import Stat from './Stat.svelte'
   import TemplateBindings from './TemplateBindings.svelte'
@@ -181,6 +182,8 @@
   <DeveloperAgentControl {def} {canManage} />
   <!-- Pinned sessions: the conversation is the Hermes session. -->
   <PinnedSessionsControl {def} {canManage} />
+  <!-- The subagent cap: how many helpers this agent may run at once. -->
+  <MaxChildrenControl {def} {canManage} />
   <div class="grid grid-cols-2 gap-3">
     <Stat label="Model id" value={def.model} />
     <Stat label="Department" value={def.department} />

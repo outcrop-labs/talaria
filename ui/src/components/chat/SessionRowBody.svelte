@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Pencil } from '@lucide/svelte'
+  import { Pencil, Pin } from '@lucide/svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { DotStatus } from '@/components/ui/chip'
@@ -25,6 +25,7 @@
     metaClass,
     showUnread = true,
     draft = false,
+    pinned = false,
     waitingSite,
     status,
     pulse,
@@ -40,6 +41,12 @@
     /** A half-written message waits in this session's composer (the Comms
      *  rail's pencil). */
     draft?: boolean
+    /** The viewer pinned this thread — the glyph that says why the row is at
+     *  the top of the rail. A PROP rather than `conv.pinned`, because the pin
+     *  is only an explanation where the surface actually leads with pinned
+     *  rows; on a list that does not sort by it, a pin glyph is a claim about
+     *  an order nobody can see. */
+    pinned?: boolean
     /** While the session's agent is writing, show the waiting mark (this
      *  site) beside the title instead of the time. */
     waitingSite?: WaitingSiteKey
@@ -90,7 +97,8 @@
 <span class={cn('flex shrink-0 items-center gap-1.5', metaClass)}>
   <!-- The kind leads the meta line: what the row IS outranks what is waiting
        on it, and both outrank when it last moved. -->
-  {#if chip}<Chip>{chip}</Chip>{/if}
+  {#if chip}<Chip class="max-w-24 truncate">{chip}</Chip>{/if}
+  {#if pinned}<Pin size={10} class="shrink-0 text-muted" aria-label="Pinned" />{/if}
   {#if draft}<Pencil size={11} class="shrink-0 text-muted" aria-label="Draft" />{/if}
   {#if showUnread}<CountPill count={conv.unreadCount} />{/if}
   {#if waitingSite && conv.working && !conv.failed}
