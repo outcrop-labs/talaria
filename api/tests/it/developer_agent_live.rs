@@ -13,7 +13,7 @@ use sqlx::postgres::PgPool;
 use talaria_api::agent_auth::AgentSubject;
 use talaria_api::secretbox::SecretBox;
 use talaria_mcp::registry::{
-    WORKBENCH_SERVER, effective_mcp_for, ensure_builtin_mcp, servers_for_agent,
+    McpAccess, WORKBENCH_SERVER, effective_mcp_for, ensure_builtin_mcp, servers_for_agent,
 };
 use talaria_workbench::set_developer;
 
@@ -43,8 +43,9 @@ async fn has_workbench(pg: &PgPool, model: &str) -> (bool, bool) {
         WORKBENCH_SERVER,
     )
     .await
-    .unwrap()
-    .is_some();
+    .unwrap();
+    // Callable means ALLOWED — a granted-but-unconnected server is not.
+    let callable = matches!(callable, McpAccess::Allowed(_));
     (rostered, callable)
 }
 
