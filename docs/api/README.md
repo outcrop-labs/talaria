@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-323 routes across 23 groups.
+325 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -22,7 +22,7 @@
 | [`fleet`](./fleet.md) | The agent fleet: defs, containers, crons, federation. | 24 |
 | [`inbox`](./inbox.md) | The focus inbox and its command surface. | 7 |
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
-| [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, search. | 19 |
+| [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 21 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
 | [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 10 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |

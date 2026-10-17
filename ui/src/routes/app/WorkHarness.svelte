@@ -36,14 +36,19 @@
   import type { DotStatus } from '@/components/ui/chip'
   import ArtifactPane from '@/components/work/ArtifactPane.svelte'
   import DraftTicketsButton from '@/components/work/DraftTicketsButton.svelte'
+  import ExportButton from '@/components/work/ExportButton.svelte'
   import LivingDocPane from '@/components/work/LivingDocPane.svelte'
   import ReportPane from '@/components/work/ReportPane.svelte'
   import ResearchComposer from '@/components/work/ResearchComposer.svelte'
   import ScheduleButton from '@/components/work/ScheduleButton.svelte'
   import SessionPalette from '@/components/work/SessionPalette.svelte'
+  import StarterCards from '@/components/work/StarterCards.svelte'
+  import { sendsSeed, type StarterCard } from '@/components/work/starter-cards'
   import WorkspacePane from '@/components/work/WorkspacePane.svelte'
   import { useAgents } from '@/lib/agents'
   import { useArtifact } from '@/lib/artifacts'
+  import { streamChat } from '@/lib/chat'
+  import { toastError } from '@/lib/toast.svelte'
   import {
     archiveConversation,
     deleteConversation,
@@ -539,6 +544,71 @@
     void qc.invalidateQueries({ queryKey: ['conversations'] })
   }
 
+  // ── STARTING FROM A CARD ───────────────────────────────────────────────────
+  //
+  // A starter card's seed IS the first message, and the first message is what
+  // CREATES a session — there is no empty conversation to type into, because
+  // /api/chat writes the row. So this takes the same send path the composer's
+  // first submit takes (same route, same kind, the header's own tier and
+  // template picks) and hands the new id to the stage, where ChatView loads
+  // the thread and its live-resume poller animates the reply the server is
+  // already writing (see its `resuming` derivation: the last row being the
+  // user's is exactly this case).
+  //
+  // NOT A PREFILL, and that is a property of the code rather than a
+  // preference: ChatView takes no inbound text, and the composer's draft store
+  // is Comms' (ChatView passes no `draftKey`), so "put the words in the box
+  // and let them press Enter" is not something this surface can do without
+  // changing the stream's own components.
+  //
+  // The reader's own stream is abandoned the moment the ids arrive. That is
+  // safe and deliberate: an abort here is LOCAL (lib/chat's note on
+  // `stopChat`) — the server keeps writing the turn, which is what the stage
+  // is about to show.
+  let starting = $state(false)
+  const startFromSeed = async (seed: string, kind: 'work' | 'plan') => {
+    const model = selectedAgent
+    if (!model || starting) return
+    starting = true
+    const ctrl = new AbortController()
+    let landed: string | null = null
+    try {
+      const stream = streamChat(
+        { model, content: seed, kind, tier: sessionTier || undefined, templateId: templateId || null },
+        (m) => {
+          landed = m.conversationId
+          onCreated(m.conversationId)
+          ctrl.abort()
+        },
+        ctrl.signal,
+      )
+      // ONE PULL is what sends the request: `onMeta` above fires inside it,
+      // before the first event, which is the whole reason this reader exists.
+      await stream.next()
+    } catch (e) {
+      // The abort we asked for is not a failure. A refused send is, and the
+      // card is the only place the person could hear about it.
+      if (!landed) toastError('Could not start that session', e)
+    } finally {
+      starting = false
+      ctrl.abort()
+    }
+  }
+  const onStartCard = (card: StarterCard) => {
+    // Research is scoped by a question the composer asks for, not by a
+    // message, so its card opens the ask over the stage like the header's own
+    // toggle does.
+    if (!sendsSeed(card)) {
+      researchOpen = true
+      return
+    }
+    // The card's own kind: a plan card makes a plan session (its living
+    // document seeds from the template), everything else a work session. The
+    // server resolves the kind off the row from the second turn on, so this is
+    // the one place it is decided.
+    void startFromSeed(card.seed, card.kind === 'plan' ? 'plan' : 'work')
+  }
+
   // A deep link may reference a session whose AGENT isn't the sticky pick —
   // align the agent once the list resolves (the URL itself stays put).
   $effect(() => {
@@ -794,6 +864,11 @@
       </div>
     {/if}
     {@render researchToggle()}
+    <!-- THE SESSION AS A DOCUMENT, beside the clock: both are things you do to
+         the thread as a whole rather than to a turn in it. Offered for a
+         research thread too — the discussion is a transcript like any other,
+         and the report has its own pane. -->
+    <ExportButton conversationId={selectedSessionId} {agentLabel} />
     <!-- PUTTING THIS SESSION'S AGENT ON A CLOCK. Session-level like the two
          beside it, and the same shape as drafting tickets: the control belongs
          to the thread, so it takes the conversation id and renders nothing
@@ -1183,6 +1258,14 @@
                     hint={`Say what you are working on and the document builds here as you and ${agentLabel} talk.`}
                   />
                 </div>
+                <!-- THE WAYS IN, under the vignette and above the orphan runs:
+                     the empty state says what is absent, and these say what to
+                     do about it — here, where the agent is chosen and a card
+                     can actually start a session with it. `shrink-0` like the
+                     group below, so neither block squeezes the other. -->
+                <div class="shrink-0">
+                  <StarterCards onStart={onStartCard} disabledReason={starting ? 'Starting the session' : null} />
+                </div>
                 <div class="shrink-0">{@render orphanGroup()}</div>
               </div>
             </div>
@@ -1234,11 +1317,18 @@
            sessions and the stage is waiting to be pointed at one. The copy is
            the research page's, because the state is the same state — a filter
            turned off, not an absence of anything. -->
-      <div class="flex h-full min-h-0 flex-col overflow-y-auto">
-        <div class="min-h-48 flex-1">
-          <EmptyState icon="◎" title="Nothing open" hint="Pick an agent above, or start one. It lands here." />
+      <!-- `relative`, and the scroller is a child rather than this element:
+           the research ask floats over this stage too (a starter card opens
+           it), and an overlay inside the scroll box would scroll with the
+           content it is covering. -->
+      <div class="relative flex h-full min-h-0 flex-col">
+        {#if researchOpen}{@render researchAsk()}{/if}
+        <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div class="min-h-48 flex-1">
+            <EmptyState icon="◎" title="Nothing open" hint="Pick an agent above, or start one. It lands here." />
+          </div>
+          <div class="shrink-0">{@render orphanGroup()}</div>
         </div>
-        <div class="shrink-0">{@render orphanGroup()}</div>
       </div>
     {/if}
   </Stage>

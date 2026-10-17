@@ -921,6 +921,7 @@
     >
       <PendingAttachments items={attachments} onRemove={(id) => (attachments = attachments.filter((a) => a.id !== id))} />
       <ChatComposer
+        commands
         bind:this={composer}
         placeholder={kind === 'ticket' ? 'Message the room — @ to mention' : `What would you like ${agentLabel} to work on?`}
         {mentionables}

@@ -19,6 +19,7 @@ mod agent_managers;
 mod agent_reply_notify;
 mod artifacts_read;
 mod attribution;
+mod blueprints_live;
 mod board_agent_access;
 mod boards_store;
 mod brief_item_live;

@@ -1,4 +1,7 @@
-// KB spaces/docs/comments/search/public slugs and the RAG collections/search pair.
+// KB spaces/docs/comments/search/public slugs, the blueprint library, and the
+// RAG collections/search pair.
+pub mod blueprints;
+pub mod blueprints_id;
 pub mod kb_comments_id;
 pub mod kb_docs_id;
 pub mod kb_docs_id_backlinks;

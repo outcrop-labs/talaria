@@ -1695,6 +1695,21 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_knowledge::knowledge::templates_id::delete)
                 .fallback(|| async { method_not_allowed("PUT, DELETE") }),
         )
+        // The blueprint library: the asks a person sends again. Beside the
+        // templates pair because they share a permission — a SHARED blueprint
+        // is org-wide content, which is what templates.manage governs.
+        .route(
+            "/api/blueprints",
+            get(talaria_routes_knowledge::knowledge::blueprints::get)
+                .post(talaria_routes_knowledge::knowledge::blueprints::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/blueprints/{id}",
+            axum::routing::put(talaria_routes_knowledge::knowledge::blueprints_id::put)
+                .delete(talaria_routes_knowledge::knowledge::blueprints_id::delete)
+                .fallback(|| async { method_not_allowed("PUT, DELETE") }),
+        )
         // The org's skill library: the owner index with edit flags, and the
         // one-skill verbs (rename/copy/move ride POST).
         .route(
