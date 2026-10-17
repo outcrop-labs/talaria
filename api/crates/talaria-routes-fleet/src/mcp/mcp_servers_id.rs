@@ -144,6 +144,7 @@ pub async fn put(
         // An omitted headers field keeps the stored secrets; sending {} clears.
         if let Err(e) = update_mcp_server(
             &state.pg,
+            &sb,
             &server.id,
             &ServerPatch {
                 label: patch.label.clone(),

@@ -3,10 +3,20 @@
 // agree on what "needs a key" or "connected" means. In lib/ (not routes/) so
 // vitest can pin the matrix.
 
+import { isInternalServer, type ServerOrigin } from './mcp-servers'
+
 export interface ProbeRow {
-  state: 'ok' | 'auth-required' | 'unreachable' | 'error'
+  /** `reconnect` is the health pass's: the org OAuth account WAS connected
+   *  and the provider has since refused to refresh it. */
+  state: 'ok' | 'auth-required' | 'unreachable' | 'error' | 'reconnect'
   detail: string
   at: string
+  /** Health pass only: assignments whose tool subset names a tool the
+   *  catalog no longer offers. */
+  staleAssignments?: Array<{ agent: string; missing: string[] }>
+  /** Health pass only (per-user OAuth servers): connected accounts whose
+   *  refresh the provider rejected. */
+  reconnectAccounts?: number
 }
 
 /** The fields the verdict reads — structural, so lib/ imports nothing from
@@ -22,7 +32,6 @@ export interface StatusInput {
   orgConnected: boolean | null
   oauthMeta: { dcr: boolean; clientSet: boolean; dcrRejected: string | null } | null
   probe: ProbeRow | null
-  headers: Record<string, string>
   tools: Array<{ name: string }>
 }
 
@@ -31,6 +40,7 @@ export type StatusKind =
   | 'pulling'
   | 'image-failed'
   | 'needs-oauth-app'
+  | 'reconnect'
   | 'needs-connect'
   | 'needs-key'
   | 'per-user'
@@ -66,17 +76,27 @@ export function serverStatus(s: StatusInput): ServerStatus {
   if (s.pkgStatus === 'error') return chip('image-failed', 'image failed', 'danger', s.probe?.detail ?? null)
   const internal = s.builtin || !!s.appSlug
   if (s.oauthEnabled && s.authMode === 'org' && !s.orgConnected) {
+    // Connected once, refused since: the same Connect button, but the chip
+    // says the grant was lost — a first-time "connect" would read as if
+    // nobody had ever set it up.
+    if (s.probe?.state === 'reconnect') {
+      return chip('reconnect', 'reconnect org account', 'danger', s.probe.detail, 'connect')
+    }
     const manual = !!s.oauthMeta && !s.oauthMeta.clientSet && (!s.oauthMeta.dcr || !!s.oauthMeta.dcrRejected)
     return manual
       ? chip('needs-oauth-app', 'needs OAuth app', 'warning', 'Register an OAuth app with the provider, then connect.', 'setup-oauth-app')
       : chip('needs-connect', 'connect org account', 'warning', 'This server uses OAuth. Connect the org account so agents can use it.', 'connect')
   }
   if (s.authMode === 'per-user') {
+    // The health pass proves a per-user host answers (a 401 counts); when it
+    // does not, that outranks "each person connects" — nobody can.
+    if (s.probe?.state === 'unreachable') return chip('unreachable', 'unreachable', 'danger', s.probe.detail)
+    if (s.probe?.state === 'error') return chip('error', 'error', 'danger', s.probe.detail)
     return chip(
       'per-user',
       'per-user accounts',
       'muted',
-      'Each person connects their own account under Settings → Connections; an assistant carries the server once its owner has.',
+      'Each person connects their own account under Settings → Connections; until they do, their assistant is told where to connect.',
     )
   }
   if (s.probe?.state === 'auth-required' && !internal) {
@@ -90,6 +110,51 @@ export function serverStatus(s: StatusInput): ServerStatus {
   }
   if (internal || s.package) return chip('ready', 'ready', 'success')
   return chip('untested', 'not yet discovered', 'muted', 'Ask the server for its tools to prove the connection.')
+}
+
+/** Whether the hourly health pass asks this server — what the card's
+ *  "Checked …" line and Check now promise. The deployment's own servers
+ *  (builtin, app, the Workbench) are not asked, nor a stdio package: it has
+ *  no address, and its child spawns on first use. An oci-http package is,
+ *  at its container. The api's rule (`health::in_scope`) too. */
+export function healthChecked(s: ServerOrigin & { package: { transport: string } | null }): boolean {
+  if (isInternalServer(s)) return false
+  return !s.package || s.package.transport === 'http'
+}
+
+/** "Checked 5 minutes ago" — when the server was last asked (by the health
+ *  pass or a person), from the probe's own timestamp; null = never asked. */
+export function checkedLine(probe: ProbeRow | null, relative: (iso: string) => string): string | null {
+  return probe?.at ? `Checked ${relative(probe.at)}` : null
+}
+
+/** The subset entries a server's catalog no longer offers, in the subset's
+ *  order. An empty catalog proves nothing (never discovered, or the last
+ *  discovery failed), so it reports nothing missing — the api's rule too. */
+export function missingTools(subset: string[] | null, tools: Array<{ name: string }>): string[] {
+  if (!subset || tools.length === 0) return []
+  const offered = new Set(tools.map((t) => t.name))
+  return [...new Set(subset.filter((t) => !offered.has(t)))]
+}
+
+/** Every assignment on a server whose subset lost a tool — the card's
+ *  "N agents name tools this server no longer offers". */
+export function staleAssignments(
+  assignments: Array<{ agentModel: string; tools: string[] | null }>,
+  tools: Array<{ name: string }>,
+): Array<{ agentModel: string; missing: string[] }> {
+  return assignments
+    .map((a) => ({ agentModel: a.agentModel, missing: missingTools(a.tools, tools) }))
+    .filter((a) => a.missing.length > 0)
+}
+
+/** "Drop missing tools": the subset without the tools the server no longer
+ *  offers. Null when nothing would remain — the caller unassigns instead,
+ *  because an empty subset grants nothing and `null` would grant EVERY tool. */
+export function withoutMissing(subset: string[], missing: string[]): string[] | null {
+  const gone = new Set(missing)
+  const kept = subset.filter((t) => !gone.has(t))
+  return kept.length ? kept : null
 }
 
 export interface CatalogStatus {

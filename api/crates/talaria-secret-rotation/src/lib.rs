@@ -23,6 +23,7 @@ const CIPHER_TARGETS: &[(&str, &str, &[&str])] = &[
     ("google_connections", "refresh_token_enc", &["user_id"]),
     ("google_org_connection", "access_token_enc", &["id"]),
     ("google_org_connection", "refresh_token_enc", &["id"]),
+    ("mcp_servers", "headers_sealed", &["id"]),
 ];
 
 #[derive(serde::Serialize)]

@@ -7,6 +7,8 @@ export const OBS_TABS = [
   { id: 'host', label: 'Host' },
   { id: 'cost', label: 'Cost' },
   { id: 'audit', label: 'Audit' },
+  // The MCP gateway's call record: which agent called which tool, and how it went.
+  { id: 'mcp', label: 'MCP' },
   { id: 'alerts', label: 'Alerts' },
 ] as const
 export type ObsTab = (typeof OBS_TABS)[number]['id']
