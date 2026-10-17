@@ -204,7 +204,7 @@ async fn an_unpinned_agents_thread_does_not_apply() {
 }
 
 /// Pinned, with a fresh history, on a model no manifest names — the agent
-/// cannot be asked. That is `reachable: false` and a 200: the container being
+/// cannot be asked. That is `reachable: null` and a 200: the container being
 /// down is a fact about the fleet, not a failure of the person's request, and
 /// the route must not turn it into a console error on an ordinary chat.
 #[tokio::test]
