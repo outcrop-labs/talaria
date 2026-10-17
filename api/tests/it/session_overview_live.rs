@@ -124,7 +124,7 @@ async fn chat(pg: &PgPool, owner: &str, model: &str) -> String {
 /// shape, because the contract is that every "no" looks identical.
 fn assert_not_applicable(body: &Value) {
     assert_eq!(body["applies"], json!(false), "{body}");
-    assert_eq!(body["reachable"], json!(false), "{body}");
+    assert_eq!(body["reachable"], Value::Null, "{body}");
     assert_eq!(body["compacted"], json!(0), "{body}");
     assert_eq!(body["since"], Value::Null, "{body}");
     assert_eq!(body["sessionId"], Value::Null, "{body}");
