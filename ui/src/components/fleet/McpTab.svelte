@@ -21,7 +21,6 @@
   import McpMarketplaceModal from '@/routes/app/McpMarketplaceModal.svelte'
   import McpServerMark from '@/routes/app/McpServerMark.svelte'
   import { ALL_TOOLS, withoutMissing, type ProbeRow } from '@/routes/app/mcp'
-  import { ALL_TOOLS, type ProbeRow } from '@/routes/app/mcp'
   import ToolsetsControl from './ToolsetsControl.svelte'
 
   /** THIS AGENT'S MCP SERVERS — a view of the org registry scoped to one
