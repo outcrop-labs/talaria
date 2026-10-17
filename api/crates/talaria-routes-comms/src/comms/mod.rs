@@ -27,6 +27,7 @@ pub mod conversations_id_read;
 pub mod conversations_id_schedule;
 pub mod conversations_id_schedules;
 pub mod conversations_id_schedules_jobid;
+pub mod conversations_id_session;
 pub mod conversations_id_steer;
 pub mod conversations_id_stop;
 pub mod conversations_id_todo;

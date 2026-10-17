@@ -15,6 +15,27 @@ export interface ModelTarget {
   effort?: string | null
 }
 
+/** When Hermes compacts a pinned session. Both values are clearable, and a
+ *  cleared one is `null` — "use Hermes' own default" rather than zero, which
+ *  would mean "compact constantly".
+ *
+ *  `threshold` is a RATIO of the routed model's context window; Hermes floors
+ *  anything under 0.75 at 0.75 for models with less than 512K of context, so a
+ *  small number here is not honored everywhere. `thresholdTokens` is an
+ *  absolute ceiling, and whichever of the two is reached first fires. */
+/** The compaction knobs' bounds, the client's one spelling of the route's
+ *  (`fleet_defs_id_edit.rs`): the guards, the inputs and the copy read these,
+ *  so a change on the api side moves the whole form at once. */
+export const COMPACTION_BOUNDS = {
+  threshold: { min: 0.1, max: 1, step: 0.05 },
+  tokens: { min: 1_000, max: 10_000_000, step: 1_000 },
+} as const
+
+export interface AgentCompression {
+  threshold: number | null
+  thresholdTokens: number | null
+}
+
 export interface AgentConfig {
   main?: ModelTarget
   aliases?: Array<ModelTarget & { name: string }>
@@ -71,6 +92,12 @@ export interface AgentDef {
   ticketTemplateId: string | null
   planTemplateId: string | null
   currentVersion: number
+  /** The latest version's `raw.compression`, projected into camelCase by the
+   *  roster read — a def-level field rather than a member of `latest.config`,
+   *  because the wire's `config` is the stored jsonb verbatim and this is a
+   *  derived view of one block inside it. Null (or absent, on an older api)
+   *  means the def says nothing and Hermes' own defaults are in force. */
+  compression?: AgentCompression | null
   latest: AgentVersion | null
 }
 
@@ -227,14 +254,33 @@ export interface AgentEdit {
   fallbacks: ModelTarget[]
   note?: string
   apply?: boolean
+  /** Compaction, three-valued per field and that is the point: ABSENT leaves
+   *  the def's current value alone (the soul-only publish must not silently
+   *  reset it), a number writes it, and `null` CLEARS the key so Hermes'
+   *  default stands. Writes `raw.compression.threshold` /
+   *  `raw.compression.threshold_tokens`; every other raw key is kept. */
+  compression?: { threshold?: number | null; thresholdTokens?: number | null }
 }
 
 export async function saveAgentEdit(
   id: string,
   edit: AgentEdit,
-): Promise<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; error?: string }> {
+): Promise<{
+  ok?: boolean
+  version?: number
+  created?: boolean
+  applied?: boolean
+  /** The route's own remarks about what it did with the edit — e.g. a
+   *  threshold Hermes will floor on this model, or a change saved without a
+   *  roll. Optional: an api that reports none simply shows nothing. */
+  notes?: string[]
+  error?: string
+}> {
   try {
-    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean }>(`/api/fleet/defs/${id}/edit`, edit)
+    return await postJson<{ ok?: boolean; version?: number; created?: boolean; applied?: boolean; notes?: string[] }>(
+      `/api/fleet/defs/${id}/edit`,
+      edit,
+    )
   } catch (e) {
     return { error: errorMessage(e) }
   }

@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use talaria_agent_defs::{
-    AliasTarget, ConfigEdits, ModelTarget, NewVersion, add_version_if_changed, apply_config_edits,
-    list_versions,
+    AliasTarget, CompressionEdits, ConfigEdits, Knob, ModelTarget, NewVersion,
+    add_version_if_changed, apply_config_edits, list_versions,
 };
 use talaria_api_facades::fleet::reconcile::roll_agent;
 use talaria_api_facades::gateway::provider::catalog_models;
@@ -69,6 +69,75 @@ fn parse_target(m: &Map<String, Value>) -> Result<ModelTarget, String> {
         context_length,
         effort,
     })
+}
+
+/// What the answer says about a ratio Hermes will not honor as written. The
+/// save is NOT refused: 0.75 is Hermes' floor for models under 512K of
+/// context and nothing at all above that, so refusing the number would lie
+/// about the big-context case. The edit lands and the caller is told.
+const HERMES_FLOOR_NOTE: &str =
+    "Hermes raises a threshold under 0.75 to 0.75 for models with less than 512K context";
+
+/// One nullish number member as a three-way knob: absent leaves the stored
+/// key alone, null drops it, a number writes it. The bounds and their messages
+/// are the shared helper's, so a knob refuses in the same words every other
+/// number on this door does.
+fn knob_member<T>(
+    m: &Map<String, Value>,
+    key: &str,
+    kind: NumKind,
+    min: f64,
+    max: f64,
+    cast: impl Fn(f64) -> T,
+) -> Result<Knob<T>, String> {
+    match m.get(key) {
+        None => Ok(Knob::Keep),
+        Some(Value::Null) => Ok(Knob::Clear),
+        Some(_) => {
+            let n = nullable_number_member(m, key, kind, min, max)?
+                .ok_or("unreachable: present non-null read above")?;
+            Ok(Knob::Set(cast(n)))
+        }
+    }
+}
+
+/// `compression?: { threshold?: number | null, thresholdTokens?: number | null }`
+/// — the two compaction knobs, plus whatever the answer should say about them.
+/// An absent (or null) member says nothing about compression and the def's
+/// own block rides through untouched; every other key in that block is the
+/// author's either way.
+fn parse_compression(
+    obj: &Map<String, Value>,
+    key: &str,
+) -> Result<(CompressionEdits, Vec<String>), String> {
+    let Some(v) = obj.get(key).filter(|v| !v.is_null()) else {
+        return Ok((CompressionEdits::default(), Vec::new()));
+    };
+    let m = v
+        .as_object()
+        .ok_or_else(|| talaria_body::object_msg(zod_type_name(v)))?;
+    let threshold = knob_member(m, "threshold", NumKind::Float, 0.1, 1.0, |n| n)?;
+    let threshold_tokens = knob_member(
+        m,
+        "thresholdTokens",
+        NumKind::Int,
+        1_000.0,
+        10_000_000.0,
+        |n| n as i64,
+    )?;
+    let mut notes = Vec::new();
+    if let Knob::Set(ratio) = threshold
+        && ratio < 0.75
+    {
+        notes.push(HERMES_FLOOR_NOTE.to_string());
+    }
+    Ok((
+        CompressionEdits {
+            threshold,
+            threshold_tokens,
+        },
+        notes,
+    ))
 }
 
 /// A required Target member (`main: Target`) — an object, not an array.
@@ -145,6 +214,12 @@ pub async fn post(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     }
     .unwrap_or(false);
+    // The compaction knobs, and what the answer owes the caller about them.
+    // note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context
+    let (compression, notes) = match parse_compression(obj, "compression") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
 
     let def: Option<(String, String, bool, String)> = match sqlx::query_as(
         "select id::text, department, managed, display_name from agent_defs where id = $1::uuid",
@@ -239,6 +314,7 @@ pub async fn post(
         main,
         aliases,
         fallbacks,
+        compression,
     };
     let config = match apply_config_edits(&state.pg, &latest.config, &edits).await {
         Ok(c) => c,
@@ -295,14 +371,130 @@ pub async fn post(
                     "created": created,
                     "applied": false,
                     "warning": warning,
+                    "notes": notes,
                 }))
                 .into_response());
             }
             Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
         }
     }
-    Ok(
-        Json(json!({ "ok": true, "version": version, "created": created, "applied": applied }))
-            .into_response(),
-    )
+    // `notes` is always present and usually empty — one shape for the client,
+    // and the only thing in it today is what Hermes will do to a low ratio.
+    Ok(Json(json!({
+        "ok": true,
+        "version": version,
+        "created": created,
+        "applied": applied,
+        "notes": notes,
+    }))
+    .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(json: Value) -> Map<String, Value> {
+        json.as_object().cloned().expect("an object literal")
+    }
+
+    /// Absent is not null: one leaves the def's stored block alone, the other
+    /// is an instruction to drop a key. A door that collapsed them could not
+    /// express "stop overriding the default".
+    fn parse_compression_t(
+        m: &Map<String, Value>,
+    ) -> Result<(CompressionEdits, Vec<String>), String> {
+        parse_compression(m, "compression")
+    }
+
+    #[test]
+    fn an_absent_member_keeps_and_a_null_member_clears() {
+        let (edits, notes) = parse_compression_t(&body(json!({}))).unwrap();
+        assert_eq!(edits, CompressionEdits::default());
+        assert!(notes.is_empty());
+
+        // the member present but empty: still nothing said about either knob
+        let (edits, _) = parse_compression_t(&body(json!({ "compression": {} }))).unwrap();
+        assert_eq!(edits, CompressionEdits::default());
+
+        let (edits, _) = parse_compression_t(&body(
+            json!({ "compression": { "threshold": null, "thresholdTokens": null } }),
+        ))
+        .unwrap();
+        assert_eq!(
+            edits,
+            CompressionEdits {
+                threshold: Knob::Clear,
+                threshold_tokens: Knob::Clear,
+            }
+        );
+    }
+
+    #[test]
+    fn numbers_write_the_knobs_they_name() {
+        let (edits, notes) = parse_compression_t(&body(
+            json!({ "compression": { "threshold": 0.9, "thresholdTokens": 400000 } }),
+        ))
+        .unwrap();
+        assert_eq!(
+            edits,
+            CompressionEdits {
+                threshold: Knob::Set(0.9),
+                threshold_tokens: Knob::Set(400_000),
+            }
+        );
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    /// A ratio under Hermes' floor SAVES, and the answer says what Hermes
+    /// will do with it — the floor only applies under 512K of context, so
+    /// refusing the number would be wrong for the models above that.
+    #[test]
+    fn a_low_ratio_saves_and_the_answer_carries_the_note() {
+        let (edits, notes) =
+            parse_compression_t(&body(json!({ "compression": { "threshold": 0.5 } }))).unwrap();
+        assert_eq!(edits.threshold, Knob::Set(0.5));
+        assert_eq!(edits.threshold_tokens, Knob::Keep);
+        assert_eq!(notes, vec![HERMES_FLOOR_NOTE.to_string()]);
+
+        // exactly the floor is nothing to warn about
+        let (_, notes) =
+            parse_compression_t(&body(json!({ "compression": { "threshold": 0.75 } }))).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+
+    /// The bounds refuse in the shared helper's words — the same sentences
+    /// every other number on this door answers with.
+    #[test]
+    fn the_bounds_and_the_types_refuse_the_way_the_rest_of_the_door_does() {
+        let err = |b: Value| parse_compression_t(&body(b)).unwrap_err();
+        assert_eq!(
+            err(json!({ "compression": { "threshold": 0.05 } })),
+            "Too small: expected number to be >=0.1"
+        );
+        assert_eq!(
+            err(json!({ "compression": { "threshold": 1.5 } })),
+            "Too big: expected number to be <=1"
+        );
+        assert_eq!(
+            err(json!({ "compression": { "thresholdTokens": 999 } })),
+            "Too small: expected number to be >=1000"
+        );
+        assert_eq!(
+            err(json!({ "compression": { "thresholdTokens": 10_000_001 } })),
+            "Too big: expected number to be <=10000000"
+        );
+        assert_eq!(
+            err(json!({ "compression": { "thresholdTokens": 1000.5 } })),
+            "Invalid input: expected int, received number"
+        );
+        assert_eq!(
+            err(json!({ "compression": { "threshold": "high" } })),
+            "Invalid input: expected number, received string"
+        );
+        assert_eq!(
+            err(json!({ "compression": [] })),
+            "Invalid input: expected object, received array"
+        );
+    }
 }

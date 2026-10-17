@@ -355,3 +355,41 @@ export async function loadConversation(
     () => null,
   )
 }
+
+/** What Hermes has done to a pinned conversation's session, as the server
+ *  reads it back off the agent: `/api/conversations/{id}/session`.
+ *
+ *  `applies` is the one field to branch on. It is false — with zeros and
+ *  nulls behind it — for every conversation the question does not arise for:
+ *  an agent that does not run pinned sessions, a history that no longer fits
+ *  one, and an agent nobody can reach right now. A surface that read
+ *  `compacted` without it would claim "nothing was compacted" where the
+ *  honest answer is "nobody asked". */
+export interface SessionOverview {
+  applies: boolean
+  /** Compaction carriers in the session — rows Hermes folded away. Hermes
+   *  sends NO summary text over the wire, so this is a count and nothing
+   *  more; copy built on it must not imply a summary exists. */
+  compacted: number
+  /** ISO timestamp of the FIRST SURVIVING message — what the thread now
+   *  starts at. Null when there is nothing to date. */
+  since: string | null
+  sessionId: string | null
+  messageCount: number | null
+  /** The api read one 500-row page of a longer session: `compacted` is a
+   *  floor, and copy built on it says "at least". */
+  partial: boolean
+  /** True when the container answered. Null when nothing was asked (an
+   *  unpinned agent, a history that does not fit); false is reserved for an
+   *  asked-and-silent container, which this route cannot tell apart yet. */
+  reachable: boolean | null
+}
+
+// Imperative like `loadConversation` above, and non-throwing for the same
+// reason: ChatView calls it from an effect with no rejection handler. Every
+// failure — an unreachable api, a 403 on a conversation that is not yours,
+// a shape the server does not answer yet — reads as "no overview to show",
+// which renders as no row at all.
+export async function loadSessionOverview(id: string): Promise<SessionOverview | null> {
+  return getJson<SessionOverview>(`/api/conversations/${id}/session`).catch(() => null)
+}
