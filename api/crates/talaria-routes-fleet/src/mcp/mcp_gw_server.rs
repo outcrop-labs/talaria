@@ -9,17 +9,33 @@
 //   · ANSWERS a brace-led body that isn't valid JSON with JSON-RPC -32700,
 //     so a malformed tools/call cannot ride the raw pass-through around
 //     the two gates above
+//   · ANSWERS IN-HOUSE for a granted server nobody connected yet: a real
+//     handshake, the cached catalog, and -32001 with the one sentence that
+//     says who connects it and where (registry `McpAccess::NotConnected`,
+//     shapes in mcp::not_connected) — distinct from the 403 a refusal gets
+//   · REFUSES a JSON-RPC batch carrying tools/call or tools/list (-32600 per
+//     member): the tool gate, the spend boundary and the list filter read a
+//     single-object body, so a batch would ride past all three
+//   · RECORDS every tools/call it answers — and every refusal, a batch's
+//     members included — as one row in mcp_tool_calls (who, which server and
+//     tool, outcome, latency, the error sentence scrubbed of the arguments;
+//     never arguments or results), off the hot path (mcp::calls)
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
+use talaria_api_facades::mcp::calls::{
+    ACCESS_FAILED, BATCH_REFUSED, CallLog, Outcome, TappedStream, batch_needs_refusal,
+    classify_answer, recorded_members, upstream_text,
+};
 use talaria_api_facades::mcp::jsonrpc::rpc_error;
-use talaria_api_facades::mcp::registry::{effective_mcp_for, parse_mcp_response};
+use talaria_api_facades::mcp::not_connected::{NotConnected, browser_base, house_answer};
+use talaria_api_facades::mcp::registry::{McpAccess, effective_mcp_for, parse_mcp_response};
 use talaria_error::{house_error, internal, upstream_error_message};
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
@@ -60,6 +76,26 @@ fn gate(rpc: Option<&Value>, tools: Option<&Vec<String>>) -> Option<Response> {
         )
             .into_response(),
     )
+}
+
+/// The in-house answer for a granted server whose account is not connected,
+/// framed the way `gate` frames its refusal — a JSON-RPC body over HTTP 200,
+/// which every MCP client hands to the model as the call's error — and a 202
+/// with no body for a notification. Pure over its inputs so the framing is
+/// pinned by tests without a running stack.
+fn not_connected_reply(nc: &NotConnected, rpc: Option<&Value>, base: &str) -> Response {
+    match house_answer(nc, rpc, base) {
+        (status, None) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::ACCEPTED),
+            Body::empty(),
+        )
+            .into_response(),
+        (status, Some(out)) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+            Json(out),
+        )
+            .into_response(),
+    }
 }
 
 /// A body that starts (ignoring whitespace) with an opening brace is a
@@ -145,12 +181,54 @@ fn error_byte_offset(body: &[u8], err: &serde_json::Error) -> usize {
     (line_start + err.column()).min(body.len())
 }
 
+/// Write the call's row when this request is a recorded tools/call. Every
+/// branch that ANSWERS one writes through this; the streamed relay writes its
+/// own when the stream ends.
+fn note(call: &Option<CallLog>, outcome: Outcome, status: u16, error: Option<&str>) {
+    if let Some(c) = call {
+        c.finish(outcome, Some(status), error);
+    }
+}
+
+/// Did the spend boundary put a credential into this call?
+fn spent(call: &Option<CallLog>) -> bool {
+    call.as_ref().is_some_and(CallLog::spent)
+}
+
+/// The refusal for a batch the gateway will not relay (see
+/// `batch_needs_refusal`): a JSON-RPC batch answer over HTTP 200 — one
+/// -32600 per member that carries an id, none for a notification — or a
+/// single -32600 with a null id when no member could take a reply. None for
+/// anything else, which relays as before. Pure, so the shape is pinned
+/// without a running stack.
+fn batch_refusal(rpc: Option<&Value>) -> Option<Response> {
+    if !batch_needs_refusal(rpc) {
+        return None;
+    }
+    let replies: Vec<Value> = rpc
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("id"))
+        .map(|id| rpc_error(id, -32600, BATCH_REFUSED))
+        .collect();
+    let body = if replies.is_empty() {
+        rpc_error(&Value::Null, -32600, BATCH_REFUSED)
+    } else {
+        Value::Array(replies)
+    };
+    Some((StatusCode::OK, Json(body)).into_response())
+}
+
 pub async fn post(
     State(state): State<AppState>,
     Path(server_name): Path<String>,
     headers: HeaderMap,
+    uri: Uri,
     body: axum::body::Bytes,
 ) -> Result<Response, Response> {
+    // The call record's clock: the agent's whole wait at the gateway.
+    let started = std::time::Instant::now();
     let caller = require_agent(&state.pg, &headers).await?;
     // Pass the CALLER, never `caller.model`. `subject_model`/`subject_proven`
     // read a bare string as PROVEN, so downgrading to the name here throws
@@ -160,23 +238,110 @@ pub async fn post(
     // unthreaded callee genuinely needs the string.
     let subject = AgentSubject::Caller(caller.clone());
     let name = caller.model.clone();
-    let sb = secretbox_or_500(&state, "[mcp/gw] secretbox unavailable").await?;
-    let eff = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
-        Ok(e) => e,
-        Err(e) => return Ok(internal("[mcp/gw] effective resolution failed", e)),
+    // Parsed ONCE: the record, the in-house answer and the gate below all
+    // read this. A failure is kept for the parse-error answer further down.
+    let parsed = serde_json::from_slice::<Value>(&body);
+    // One log per tools/call the body carries — the body itself, or each
+    // tools/call member of a batch.
+    let members = recorded_members(parsed.as_ref().ok());
+    let logs: Vec<CallLog> = members
+        .iter()
+        .filter_map(|m| CallLog::begin(&state.pg, &subject, &server_name, Some(m), started))
+        .collect();
+    // A failure inside the gateway before access is known is still a call
+    // the agent made and did not get answered: an outage shows up in the
+    // record as a burst of these, not as silence.
+    let fail_all = |logs: &[CallLog]| {
+        for c in logs {
+            c.finish(Outcome::Error, Some(500), Some(ACCESS_FAILED));
+        }
     };
-    let Some(mut eff) = eff else {
-        return Ok(house_error(
-            StatusCode::FORBIDDEN,
-            "no access to this MCP server",
-        ));
+    let sb = match secretbox_or_500(&state, "[mcp/gw] secretbox unavailable").await {
+        Ok(sb) => sb,
+        Err(resp) => {
+            fail_all(&logs);
+            return Err(resp);
+        }
     };
+    let access = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
+        Ok(a) => a,
+        Err(e) => {
+            fail_all(&logs);
+            return Ok(internal("[mcp/gw] effective resolution failed", e));
+        }
+    };
+    let mut eff = match access {
+        McpAccess::Allowed(eff) => eff,
+        McpAccess::Denied => {
+            const NO_ACCESS: &str = "no access to this MCP server";
+            for c in &logs {
+                c.finish(Outcome::Denied, Some(403), Some(NO_ACCESS));
+            }
+            return Ok(house_error(StatusCode::FORBIDDEN, NO_ACCESS));
+        }
+        // Granted, but nobody connected the account it would speak as.
+        // Nothing is forwarded (so nothing is spent): the handshake and the
+        // catalog are answered here and every call carries the sentence that
+        // names the fix. The link is the instance's own address — the
+        // verified domain when there is one, else AUTH_PUBLIC_URL, else the
+        // origin this request arrived on (the OAuth callback's base) — as
+        // the PERSON's browser opens it: this request came from an agent
+        // container, whose origin for a host-run app is host.docker.internal.
+        McpAccess::NotConnected(nc) => {
+            let rpc = parsed.as_ref().ok();
+            let base = browser_base(&super::oauth_callback_base(&state, &headers, &uri).await);
+            let method = rpc
+                .and_then(|r| r.get("method"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if method == "tools/call" {
+                tracing::info!(
+                    "[mcp/gw:{server_name}] {name} called {} on a server that is not connected ({:?})",
+                    called_tool(rpc),
+                    nc.scope
+                );
+            }
+            // Each call's row carries the sentence its own answer handed
+            // the agent — a batch's members are answered one by one in-house.
+            for (member, c) in members.iter().zip(logs) {
+                let (status, out) = house_answer(&nc, Some(member), &base);
+                let sentence = out
+                    .as_ref()
+                    .and_then(|o| o.pointer("/error/message"))
+                    .and_then(Value::as_str);
+                c.with_server(&nc.server.id)
+                    .finish(Outcome::NotConnected, Some(status), sentence);
+            }
+            return Ok(not_connected_reply(&nc, rpc, &base));
+        }
+    };
+    let logs: Vec<CallLog> = logs
+        .into_iter()
+        .map(|c| c.with_server(&eff.server.id))
+        .collect();
+
+    // A batch that carries a tools/call or a tools/list would ride past the
+    // tool gate, the spend boundary and the catalog filter, which all read a
+    // single-object body — so it is refused here, before anything is
+    // forwarded, and each tools/call inside it is recorded as refused. (The
+    // 2025-06 MCP revision dropped batching; no current client sends one.)
+    if let Some(resp) = batch_refusal(parsed.as_ref().ok()) {
+        tracing::warn!(
+            "[mcp/gw:{server_name}] {name} sent a batch carrying tools/call or tools/list; refused"
+        );
+        for c in &logs {
+            c.finish(Outcome::Denied, Some(200), Some(BATCH_REFUSED));
+        }
+        return Ok(resp);
+    }
+    // From here the body is at most one tools/call.
+    let mut call: Option<CallLog> = logs.into_iter().next();
 
     // A body that parses runs the gate and the spend boundary below. One
     // that doesn't still passes through verbatim — EXCEPT a brace-led body,
     // a JSON-RPC attempt with a syntax error in it, which must not skip
     // them: it is answered as a JSON-RPC parse error instead (above).
-    let mut rpc: Option<Value> = match serde_json::from_slice(&body) {
+    let mut rpc: Option<Value> = match parsed {
         Ok(v) => Some(v),
         Err(err) => match parse_error_response(&body, &err, &server_name) {
             Some(resp) => return Ok(resp),
@@ -188,6 +353,15 @@ pub async fn post(
     // The call gate: reject disallowed tools before the upstream ever
     // hears about them.
     if let Some(resp) = gate(rpc.as_ref(), eff.tools.as_ref()) {
+        note(
+            &call,
+            Outcome::Denied,
+            200,
+            Some(&format!(
+                "tool \"{}\" is not available here",
+                called_tool(rpc.as_ref())
+            )),
+        );
         return Ok(resp);
     }
 
@@ -206,7 +380,15 @@ pub async fn post(
     if let Some(rpc_mut) = rpc.as_mut() {
         let spend = match spend_handles_in_tool_call(&state.pg, &sb, rpc_mut, &name).await {
             Ok(s) => s,
-            Err(e) => return Ok(internal("[mcp/gw] spend boundary failed", e)),
+            Err(e) => {
+                note(
+                    &call,
+                    Outcome::SpendError,
+                    500,
+                    Some("the credential spend boundary failed; the call was not forwarded"),
+                );
+                return Ok(internal("[mcp/gw] spend boundary failed", e));
+            }
         };
         let tool = called_tool(Some(rpc_mut));
         for u in &spend.used {
@@ -226,6 +408,11 @@ pub async fn post(
         }
         if spend.changed {
             body_text = serde_json::to_string(rpc_mut).unwrap_or_else(|_| body_text.clone());
+            // The arguments now hold a real credential, and an upstream that
+            // rejects one may quote it back: no reply text is kept for it.
+            if let Some(c) = call.as_mut() {
+                c.mark_spent();
+            }
         }
     }
 
@@ -245,6 +432,8 @@ pub async fn post(
             eff.tools.as_deref(),
         )
         .await;
+        let (outcome, error) = classify_answer(status.as_u16(), out.as_ref(), spent(&call));
+        note(&call, outcome, status.as_u16(), error.as_deref());
         return Ok(match out {
             None => (status, Body::empty()).into_response(),
             Some(out) => (status, Json(out)).into_response(),
@@ -267,7 +456,10 @@ pub async fn post(
             let url =
                 match talaria_api_facades::mcp::pkg::ensure_http(&sb, &eff.server, &spec).await {
                     Ok(u) => u,
-                    Err(e) => return Ok(house_error(StatusCode::BAD_GATEWAY, &e)),
+                    Err(e) => {
+                        note(&call, Outcome::UpstreamError, 502, Some(&e));
+                        return Ok(house_error(StatusCode::BAD_GATEWAY, &e));
+                    }
                 };
             eff.server = talaria_api_facades::mcp::registry::McpServer {
                 url,
@@ -285,17 +477,31 @@ pub async fn post(
                 )
                 .await
                 {
-                    Ok((status, out)) if out.is_null() => (
-                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
-                        Body::empty(),
-                    )
-                        .into_response(),
-                    Ok((status, out)) => (
-                        StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
-                        Json(out),
-                    )
-                        .into_response(),
-                    Err(e) => house_error(StatusCode::BAD_GATEWAY, &e),
+                    Ok((status, out)) if out.is_null() => {
+                        let (outcome, error) = classify_answer(status, None, spent(&call));
+                        note(&call, outcome, status, error.as_deref());
+                        (
+                            StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                            Body::empty(),
+                        )
+                            .into_response()
+                    }
+                    Ok((status, out)) => {
+                        let (outcome, error) = classify_answer(status, Some(&out), spent(&call));
+                        note(&call, outcome, status, error.as_deref());
+                        (
+                            StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                            Json(out),
+                        )
+                            .into_response()
+                    }
+                    Err(e) => {
+                        // The pump's sentence can carry the child's own
+                        // words about the arguments it was handed.
+                        let kept = upstream_text(&e, spent(&call));
+                        note(&call, Outcome::UpstreamError, 502, Some(&kept));
+                        house_error(StatusCode::BAD_GATEWAY, &e)
+                    }
                 },
             );
         }
@@ -306,12 +512,11 @@ pub async fn post(
     // never-port surface). `app-*` servers live there, not here; a direct
     // hit answers the boundary sentence instead of pretending to dispatch.
     if let Some(app_slug) = &eff.server.app_slug {
-        return Ok(house_error(
-            StatusCode::BAD_GATEWAY,
-            &format!(
-                "app \"{app_slug}\" dispatches in-process through the app runtime, which stays TS by rule 10 (docs/RUST-MIGRATION.md)"
-            ),
-        ));
+        let sentence = format!(
+            "app \"{app_slug}\" dispatches in-process through the app runtime, which stays TS by rule 10 (docs/RUST-MIGRATION.md)"
+        );
+        note(&call, Outcome::Error, 502, Some(&sentence));
+        return Ok(house_error(StatusCode::BAD_GATEWAY, &sentence));
     }
 
     // The builtin toolkit is a child of THIS process, spawned on demand —
@@ -339,10 +544,9 @@ pub async fn post(
             .await
             .is_err()
     {
-        return Ok(house_error(
-            StatusCode::BAD_GATEWAY,
-            "upstream URL refused (not a reachable external address)",
-        ));
+        const REFUSED: &str = "upstream URL refused (not a reachable external address)";
+        note(&call, Outcome::UpstreamError, 502, Some(REFUSED));
+        return Ok(house_error(StatusCode::BAD_GATEWAY, REFUSED));
     }
 
     // Header assembly order: content-type, accept,
@@ -391,10 +595,23 @@ pub async fn post(
                 "unreachable",
                 &e.to_string(),
             );
+            note(
+                &call,
+                Outcome::UpstreamError,
+                502,
+                Some("upstream unreachable"),
+            );
             return Ok(house_error(StatusCode::BAD_GATEWAY, "upstream unreachable"));
         }
     };
-    Ok(relay(upstream, rpc.as_ref(), eff.tools.as_deref(), &server_name).await)
+    Ok(relay(
+        upstream,
+        rpc.as_ref(),
+        eff.tools.as_deref(),
+        &server_name,
+        call,
+    )
+    .await)
 }
 
 /// GET — the streamable-HTTP notification stream (server → client): plain
@@ -408,15 +625,24 @@ pub async fn get(
     // Same rule as POST: the caller carries the proof, the string does not.
     let subject = AgentSubject::Caller(caller);
     let sb = secretbox_or_500(&state, "[mcp/gw] secretbox unavailable").await?;
-    let eff = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
-        Ok(e) => e,
+    let access = match effective_mcp_for(&state.pg, &sb, &subject, &server_name).await {
+        Ok(a) => a,
         Err(e) => return Ok(internal("[mcp/gw] effective resolution failed", e)),
     };
-    let Some(mut eff) = eff else {
-        return Ok(house_error(
-            StatusCode::FORBIDDEN,
-            "no access to this MCP server",
-        ));
+    let mut eff = match access {
+        McpAccess::Allowed(eff) => eff,
+        McpAccess::Denied => {
+            return Ok(house_error(
+                StatusCode::FORBIDDEN,
+                "no access to this MCP server",
+            ));
+        }
+        // A not-connected server has no upstream session to stream from; 405
+        // is the streamable-HTTP "no notification stream", which clients take
+        // in stride (the POST side carries the sentence).
+        McpAccess::NotConnected(_) => {
+            return Ok((StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response());
+        }
     };
     // App servers have no notification stream — decline politely.
     if eff.server.app_slug.is_some() {
@@ -519,11 +745,15 @@ pub async fn get(
         .unwrap_or_else(|e| internal("[fleet] response build failed", e)))
 }
 
+/// `call` is the tools/call's record, when this is one: a failed hop writes it
+/// here, and a 2xx answer carries it inside the streamed body, which writes it
+/// when the stream ends — the relay itself still never buffers.
 async fn relay(
     upstream: reqwest::Response,
     rpc: Option<&Value>,
     tools: Option<&[String]>,
     server_name: &str,
+    call: Option<CallLog>,
 ) -> Response {
     let status = upstream.status().as_u16();
     // HTTP-level failures never relay verbatim: their bodies are written by
@@ -534,9 +764,13 @@ async fn relay(
     if !(200..300).contains(&status) {
         let text = upstream.text().await.unwrap_or_default();
         talaria_error::log_upstream_error(&format!("mcp-gw:{server_name}"), status, &text);
+        let sentence = upstream_error_message(status);
+        if let Some(c) = &call {
+            c.finish(Outcome::UpstreamError, Some(status), Some(&sentence));
+        }
         return house_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
-            &upstream_error_message(status),
+            &sentence,
         );
     }
     let content_type = upstream
@@ -572,8 +806,17 @@ async fn relay(
             .body(Body::from(out))
             .unwrap_or_else(|e| internal("[fleet] response build failed", e));
     }
+    let body = match call {
+        Some(c) => Body::from_stream(TappedStream::new(
+            upstream.bytes_stream(),
+            c,
+            status,
+            &content_type,
+        )),
+        None => Body::from_stream(upstream.bytes_stream()),
+    };
     builder
-        .body(Body::from_stream(upstream.bytes_stream()))
+        .body(body)
         .unwrap_or_else(|e| internal("[fleet] response build failed", e))
 }
 
@@ -646,6 +889,139 @@ mod tests {
             "the answer is a JSON-RPC 2.0 envelope"
         );
         v
+    }
+
+    fn not_connected(scope: talaria_api_facades::mcp::not_connected::ConnectScope) -> NotConnected {
+        NotConnected {
+            scope,
+            server: talaria_api_facades::mcp::registry::McpServer {
+                id: "00000000-0000-0000-0000-000000000004".into(),
+                name: "notion".into(),
+                label: "Notion".into(),
+                description: None,
+                url: "https://mcp.notion.com/mcp".into(),
+                headers_plain: serde_json::Map::new(),
+                headers_sealed: None,
+                timeout_secs: None,
+                enabled: true,
+                all_agents: false,
+                auth_mode: "per-user".into(),
+                tools: json!([{ "name": "search", "description": "Search pages" }]),
+                tools_refreshed_ms: None,
+                required_headers: json!([]),
+                oauth_enabled: true,
+                builtin: false,
+                app_slug: None,
+                created_by: None,
+                created_ms: 0,
+                package: None,
+                env_enc: None,
+                last_probe: None,
+            },
+            tools: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_not_connected_call_is_framed_like_the_gate_with_the_connect_sentence() {
+        use talaria_api_facades::mcp::not_connected::{ConnectScope, NOT_CONNECTED_CODE};
+        let base = "http://localhost:5273";
+        for (scope, expected) in [
+            (
+                ConnectScope::PerUser,
+                "Your Notion account isn't connected to Talaria. Connect it at \
+                 http://localhost:5273/settings/connections, then try again.",
+            ),
+            (
+                ConnectScope::Org,
+                "The workspace's Notion connection isn't set up yet. An admin connects it on the \
+                 MCP page at http://localhost:5273/mcp/external.",
+            ),
+            (
+                ConnectScope::PerUserOnOrgAgent,
+                "Notion is a per-user server; only a personal assistant can use it.",
+            ),
+        ] {
+            let nc = not_connected(scope);
+            let call = json!({ "jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": { "name": "search" } });
+            let resp = not_connected_reply(&nc, Some(&call), base);
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "the gate's framing: HTTP 200"
+            );
+            let v = jsonrpc_of(resp).await;
+            assert_eq!(v.pointer("/id"), Some(&json!(11)));
+            assert_eq!(v.pointer("/error/code"), Some(&json!(NOT_CONNECTED_CODE)));
+            assert_eq!(
+                v.pointer("/error/message").and_then(Value::as_str),
+                Some(expected)
+            );
+
+            // The handshake succeeds, so the harness keeps the server.
+            let init = json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {} });
+            let resp = not_connected_reply(&nc, Some(&init), base);
+            assert_eq!(resp.status(), StatusCode::OK);
+            let v = jsonrpc_of(resp).await;
+            assert!(v.get("error").is_none(), "initialize is a handshake: {v}");
+            assert_eq!(v.pointer("/result/serverInfo/name"), Some(&json!("notion")));
+
+            // tools/list answers the cached catalog.
+            let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+            let v = jsonrpc_of(not_connected_reply(&nc, Some(&list), base)).await;
+            assert_eq!(v.pointer("/result/tools/0/name"), Some(&json!("search")));
+        }
+        // The initialized notification is a bodiless 202, like the in-process
+        // dispatchers answer it.
+        let nc = not_connected(ConnectScope::PerUser);
+        let resp = not_connected_reply(
+            &nc,
+            Some(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })),
+            base,
+        );
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(bytes.is_empty());
+
+        // A batch is answered with an array over HTTP 200 — one reply per
+        // request, none for the notification inside it.
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "tools/list" },
+            { "jsonrpc": "2.0", "method": "notifications/initialized" },
+            { "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "search" } },
+        ]);
+        let resp = not_connected_reply(&nc, Some(&batch), base);
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_of(resp).await;
+        let replies = v.as_array().expect("a batch answers a JSON array");
+        assert_eq!(replies.len(), 2);
+        assert_eq!(
+            replies[0].pointer("/result/tools/0/name"),
+            Some(&json!("search"))
+        );
+        assert_eq!(
+            replies[1].pointer("/error/code"),
+            Some(&json!(NOT_CONNECTED_CODE))
+        );
+    }
+
+    /// The connect link the agent repeats must open in the person's browser:
+    /// the agent-side alias of a host-run app becomes localhost.
+    #[tokio::test]
+    async fn the_connect_link_never_names_the_agents_docker_alias() {
+        use talaria_api_facades::mcp::not_connected::ConnectScope;
+        let nc = not_connected(ConnectScope::PerUser);
+        let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "search" } });
+        let base = browser_base("http://host.docker.internal:5303");
+        let v = jsonrpc_of(not_connected_reply(&nc, Some(&call), &base)).await;
+        let msg = v.pointer("/error/message").and_then(Value::as_str).unwrap();
+        assert!(
+            msg.contains("http://localhost:5303/settings/connections"),
+            "{msg}"
+        );
+        assert!(!msg.contains("host.docker.internal"), "{msg}");
     }
 
     #[tokio::test]
@@ -854,5 +1230,45 @@ mod tests {
             message.contains(" 0a "),
             "the walked window crosses the newline: {message}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_batch_carrying_a_tools_call_is_refused_per_member_never_relayed() {
+        // The finding's shape: an agent granted only ["echo"] hides
+        // delete_repo inside a batch, which gate() never inspected.
+        let batch = json!([
+            { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "delete_repo" } },
+            { "jsonrpc": "2.0", "method": "notifications/initialized" },
+            { "jsonrpc": "2.0", "id": "b", "method": "tools/list" },
+        ]);
+        let resp = batch_refusal(Some(&batch)).expect("the batch is refused, not relayed");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_of(resp).await;
+        let replies = v.as_array().expect("a batch answers a JSON array");
+        assert_eq!(replies.len(), 2, "one reply per member with an id: {v}");
+        assert_eq!(replies[0].pointer("/id"), Some(&json!(1)));
+        assert_eq!(replies[1].pointer("/id"), Some(&json!("b")));
+        for r in replies {
+            assert_eq!(r.pointer("/error/code"), Some(&json!(-32600)));
+            assert_eq!(
+                r.pointer("/error/message").and_then(Value::as_str),
+                Some(BATCH_REFUSED)
+            );
+        }
+        // A batch of id-less calls still gets an answer.
+        let silent =
+            json!([{ "jsonrpc": "2.0", "method": "tools/call", "params": { "name": "x" } }]);
+        let v = body_of(batch_refusal(Some(&silent)).unwrap()).await;
+        assert_eq!(v.pointer("/error/code"), Some(&json!(-32600)));
+        assert_eq!(v.pointer("/id"), Some(&Value::Null));
+        // Chatter and single requests relay as before.
+        let chatter = json!([{ "jsonrpc": "2.0", "id": 1, "method": "ping" }]);
+        assert!(batch_refusal(Some(&chatter)).is_none());
+        let single = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "echo" } });
+        assert!(
+            batch_refusal(Some(&single)).is_none(),
+            "a single call goes to the gate"
+        );
+        assert!(batch_refusal(None).is_none());
     }
 }

@@ -23,6 +23,9 @@
     requiredHeaders: HeaderDecl[]
     authKind: 'oauth' | 'headers'
     connected: boolean
+    /** Connected once, and the provider has since refused to refresh it
+     *  (found by the hourly MCP health check): sign in again. */
+    needsReconnect?: boolean
   }
 
   /** A server registered before it carried declarations: one auth header is
@@ -115,12 +118,23 @@
                   Disconnect
                 </Button>
               {:else if s.authKind === 'oauth'}
+                {#if s.needsReconnect}
+                  <span
+                    class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
+                    title="The provider refused to refresh your sign-in, so your assistant can no longer use this server as you."
+                  >
+                    <StatusDot status="warn" />
+                    expired
+                  </span>
+                {/if}
                 <Button
                   size="sm"
-                  title="Sign in with the provider. Your assistant then acts as you on this server."
+                  title={s.needsReconnect
+                    ? 'Your sign-in expired at the provider. Sign in again so your assistant can act as you here.'
+                    : 'Sign in with the provider. Your assistant then acts as you on this server.'}
                   onclick={() => void window.open(`/api/mcp/oauth/start?server=${s.id}&scope=me`, 'talaria-mcp-oauth', 'width=620,height=780')}
                 >
-                  Connect
+                  {s.needsReconnect ? 'Reconnect' : 'Connect'}
                 </Button>
               {:else}
                 <Button size="sm" onclick={() => toggle(s)}>

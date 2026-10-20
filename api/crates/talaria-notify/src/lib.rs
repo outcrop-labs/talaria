@@ -217,6 +217,10 @@ fn kind_class(kind: &str) -> Option<&'static str> {
         "agent-problem" | "workbench-repo-request" => "agent_blocked",
         // Outcomes.
         "research" | "task-status" | "board_access" => "work_complete",
+        // A capability agents lost: an MCP server the health pass saw go
+        // from ok to down. In-app by default — an admin fixes it from the
+        // MCP page; nothing is parked waiting on this minute.
+        "mcp_server_down" => "gap_reported",
         // `judge_escalation` and `gap_reported` are NOT here on purpose: their
         // writers name the CLASS as the kind, which `notify_class_of` accepts
         // directly. A kind that is already the class it belongs to has nothing
@@ -1847,6 +1851,9 @@ mod tests {
             // notification is news, not a door. Explicit so the quiet bucket
             // is a decision here, not the fall-through's default.
             ("board_access", "work_complete"),
+            // The MCP health pass's ok → down notification: in-app, like
+            // the capability gaps it is one of.
+            ("mcp_server_down", "gap_reported"),
             // Every class id is its own kind.
             ("judge_escalation", "judge_escalation"),
             ("gap_reported", "gap_reported"),

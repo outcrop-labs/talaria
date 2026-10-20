@@ -184,6 +184,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | Doc | What it covers |
 |---|---|
 | [`docs/WORKTREES.md`](./docs/WORKTREES.md) | Parallel-branch dev stacks |
+| [`docs/E2E.md`](./docs/E2E.md) | The MCP end-to-end suite: Playwright against a stack and a stub world (registry, open/key/OAuth servers) — running it against a worktree, and the CI job |
 | [`docs/DEVBOX.md`](./docs/DEVBOX.md) | Devboxes: a containerized dev environment per task, with the agent CLIs inside |
 | [`docs/DESKTOP.md`](./docs/DESKTOP.md) | Talaria Desktop: the Tauri shell — multitenant webviews, isolation model, security posture, the box-builds/host-runs dev split |
 | [`docs/MOBILE.md`](./docs/MOBILE.md) | Talaria Mobile (**scoped, not built**): the controller app — the scope line, Kotlin/Compose Multiplatform, what ships and what never will, and the two api gaps it opens |

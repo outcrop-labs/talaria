@@ -10,6 +10,7 @@
   import CostPanel from '@/components/observability/CostPanel.svelte'
   import AuditPanel from '@/components/observability/AuditPanel.svelte'
   import AlertsPanel from '@/components/observability/AlertsPanel.svelte'
+  import McpCallsPanel from '@/components/observability/McpCallsPanel.svelte'
   import OverviewPanel from './observability/OverviewPanel.svelte'
   import { OBS_TABS, type ObsTab } from './observability/observability'
 
@@ -45,6 +46,7 @@
         {#if tab === 'host'}<HostPanel />{/if}
         {#if tab === 'cost'}<CostPanel />{/if}
         {#if tab === 'audit'}<AuditPanel />{/if}
+        {#if tab === 'mcp'}<McpCallsPanel />{/if}
         {#if tab === 'alerts'}<AlertsPanel />{/if}
       </div>
     {/key}

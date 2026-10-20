@@ -7,5 +7,9 @@ pub fn workbench_tools() -> Vec<Value> {
     WORKBENCH_TOOLS.get().map(|f| f()).unwrap_or_default()
 }
 
+pub mod calls;
+pub mod health;
+pub mod not_connected;
+pub mod org_headers;
 pub mod pkg;
 pub mod registry;

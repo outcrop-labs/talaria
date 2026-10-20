@@ -26,6 +26,18 @@
 // entry is known by (namespace, website, endpoint) for brand matches and the
 // featured join, `tier` and `kind` are the filters.
 //
+// LIVENESS. `live_state` / `live_checked_at` / `live_detail` are written by
+// the liveness job (`liveness`): search sinks `dead` rows below everything
+// and the default answer leaves them out (counting them, so the picker can
+// offer "show N unreachable"); the featured shelf never shows one. A row the
+// sync rewrites with a changed entry loses its `live_checked_at` — the job
+// takes never-checked rows first, so the new endpoint is asked within a run.
+//
+// THE FEATURED LIST is the built-in `FEATURED_DOMAINS` merged with the
+// operator's edits (`featured`): added domains, hidden built-ins, and
+// stand-ins (source 'operator') that win over the registry and the
+// documented map for their domain.
+//
 // THE FALLBACK. Until the first full walk completes, the mirror may be empty
 // or partial; a search that finds nothing locally in that window asks the
 // live library (the old path) instead, so a fresh install's first minutes
@@ -40,9 +52,10 @@ use futures_util::stream::{self, StreamExt};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
+use crate::featured::{self, FeaturedConfig};
 use crate::{
-    FEATURED_DOMAINS, Library, LibraryServer, REGISTRY_CONCURRENCY, Tier, classify, host_of,
-    known_endpoints, strip_brand_label,
+    Library, LibraryServer, REGISTRY_CONCURRENCY, Tier, classify, host_of, known_endpoints,
+    strip_brand_label,
 };
 
 const SYNC_KEY: &str = "mcp_library_sync";
@@ -88,6 +101,10 @@ struct SyncState {
     last_attempt_at: Option<i64>,
     /// Epoch ms — the last publisher (well-known/curated) pass.
     publishers_checked_at: Option<i64>,
+    /// The featured config (as stored JSON) the last publisher pass applied —
+    /// an operator edit makes it differ, and the next sync re-runs the pass
+    /// instead of waiting out the 24h cadence.
+    publishers_config: Option<String>,
 }
 
 async fn load_state(pg: &PgPool) -> SyncState {
@@ -115,6 +132,20 @@ fn since_mark() -> String {
 
 // ── Status (what the picker shows) ──────────────────────────────────────────
 
+/// What the liveness job has said about the hosted rows so far.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivenessCounts {
+    /// Rows with a verdict on file.
+    pub checked: i64,
+    pub dead: i64,
+    pub unknown: i64,
+    /// Hosted https rows with no verdict yet (new, or their URL changed).
+    /// A row rewritten under the same URL keeps its verdict — it is
+    /// `checked`, and the job re-asks it first — so it is not counted twice.
+    pub pending: i64,
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogStatus {
@@ -128,13 +159,28 @@ pub struct CatalogStatus {
     /// A request may nudge a sync: the mirror is empty, nothing is running,
     /// and the last attempt is older than the nudge window.
     pub nudgeable: bool,
+    pub liveness: LivenessCounts,
 }
 
 pub async fn status(pg: &PgPool) -> CatalogStatus {
-    let count: i64 = sqlx::query_scalar("select count(*) from mcp_library_entries")
-        .fetch_one(pg)
-        .await
-        .unwrap_or(0);
+    // One scan for the total and the liveness counts. They partition on
+    // `live_state`, the column search hides by: `checked` is every row with
+    // a verdict (a rewritten row keeps its same-URL verdict while its
+    // re-check is due, and search still hides it if that verdict is dead),
+    // so dead and unknown are always subsets of it and checked + pending is
+    // every probe-able row — never "10 checked · 60 unreachable".
+    let (count, checked, dead, unknown, pending): (i64, i64, i64, i64, i64) = sqlx::query_as(
+        "select count(*)::int8, \
+           count(*) filter (where live_state is not null)::int8, \
+           count(*) filter (where live_state = 'dead')::int8, \
+           count(*) filter (where live_state = 'unknown')::int8, \
+           count(*) filter (where kind = 'hosted' and live_state is null \
+                            and entry->>'url' like 'https://%')::int8 \
+         from mcp_library_entries",
+    )
+    .fetch_one(pg)
+    .await
+    .unwrap_or((0, 0, 0, 0, 0));
     let st = load_state(pg).await;
     let syncing = st
         .in_flight_since
@@ -159,6 +205,12 @@ pub async fn status(pg: &PgPool) -> CatalogStatus {
         phase,
         error: st.last_error,
         nudgeable,
+        liveness: LivenessCounts {
+            checked,
+            dead,
+            unknown,
+            pending,
+        },
     }
 }
 
@@ -171,67 +223,178 @@ pub struct SearchFilters {
     /// hosted | package
     pub kind: Option<String>,
     pub limit: Option<i64>,
+    /// Include rows the liveness job found dead (sorted last, flagged).
+    pub include_dead: bool,
 }
 
-fn rows_to_servers(rows: Vec<(Value,)>) -> Vec<LibraryServer> {
-    rows.into_iter()
-        .filter_map(|(v,)| serde_json::from_value(v).ok())
-        .collect()
+/// The liveness verdict a row carries, as the picker reads it.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Liveness {
+    /// ok | auth | dead | unknown
+    pub state: String,
+    /// Epoch ms; None when the row changed since its verdict (a re-check is due).
+    pub checked_at: Option<i64>,
+    pub detail: Option<String>,
 }
 
-/// Search the mirror. Ranking, in order: the query names the publisher's
-/// brand (a `domains` hostname or its first label equals the query), the
-/// title starts with it, the tier, text rank, title. Falls back to the live
-/// library only while the first full walk is still running and the mirror
-/// answered nothing — see the header.
-pub async fn search(
-    pg: &PgPool,
-    lib: &Arc<Library>,
-    query: &str,
-    f: &SearchFilters,
-) -> Vec<LibraryServer> {
+/// One server the picker shows, with what the liveness job last said of it
+/// (None = never checked, or a live-fallback answer).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CatalogHit {
+    pub server: LibraryServer,
+    pub live: Option<Liveness>,
+}
+
+impl CatalogHit {
+    fn bare(server: LibraryServer) -> CatalogHit {
+        CatalogHit { server, live: None }
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.live.as_ref().is_some_and(|l| l.state == "dead")
+    }
+}
+
+/// A search page and how many matching rows were left out as dead.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchPage {
+    pub hits: Vec<CatalogHit>,
+    pub hidden_dead: i64,
+}
+
+fn liveness_of(
+    state: Option<String>,
+    checked_at: Option<i64>,
+    detail: Option<String>,
+) -> Option<Liveness> {
+    state.map(|state| Liveness {
+        state,
+        checked_at,
+        detail,
+    })
+}
+
+/// The wire shape of one hit: the server's own fields plus `live`.
+pub fn hit_wire(h: &CatalogHit) -> Value {
+    let mut v = serde_json::to_value(&h.server).unwrap_or(Value::Null);
+    if let Value::Object(o) = &mut v {
+        o.insert(
+            "live".into(),
+            serde_json::to_value(&h.live).unwrap_or(Value::Null),
+        );
+    }
+    v
+}
+
+/// The match predicate both search statements share — `$1` the lowered
+/// query, `$2` the tier ceiling, `$3` the kind — over `e` (the mirror) and
+/// `q` (the parsed query). One text, spliced in by `concat!` so both stay
+/// `&'static str` SQL, and the page and the dead count can never disagree
+/// about what matched.
+macro_rules! search_match {
+    () => {
+        "($1 = '' \
+           or e.search @@ q.tq \
+           or e.title ilike '%' || q.raw || '%' \
+           or e.domain ilike '%' || q.raw || '%' \
+           or e.registry_name ilike '%' || q.raw || '%') \
+         and ($2::int2 is null or e.tier <= $2::int2) \
+         and ($3::text is null or e.kind = $3::text)"
+    };
+}
+
+const SEARCH_PAGE_SQL: &str = concat!(
+    "with q as (select websearch_to_tsquery('simple', $1) as tq, $1::text as raw) \
+     select e.entry, e.live_state, \
+       (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
+     from mcp_library_entries e, q \
+     where ",
+    search_match!(),
+    " and ($5::bool or e.live_state is distinct from 'dead') \
+     order by \
+       (e.live_state is not distinct from 'dead') asc, \
+       exists (select 1 from unnest(e.domains) d \
+               where d = q.raw or split_part(d, '.', 1) = q.raw) desc, \
+       (e.title ilike q.raw || '%') desc, \
+       e.tier asc, \
+       ts_rank_cd(e.search, q.tq) desc, \
+       e.title asc \
+     limit $4"
+);
+
+const SEARCH_DEAD_SQL: &str = concat!(
+    "with q as (select websearch_to_tsquery('simple', $1) as tq, $1::text as raw) \
+     select count(*)::int8 from mcp_library_entries e, q \
+     where e.live_state = 'dead' and ",
+    search_match!()
+);
+
+/// Search the mirror. Ranking, in order: dead rows last (only present with
+/// `include_dead`), the query names the publisher's brand (a `domains`
+/// hostname or its first label equals the query), the title starts with it,
+/// the tier, text rank, title. Falls back to the live library only while
+/// the first full walk is still running and the mirror answered nothing —
+/// see the header.
+///
+/// TWO STATEMENTS, run together: the page is a plain ORDER BY … LIMIT, which
+/// Postgres answers with a top-N sort; the dead count reads only the dead
+/// rows (the partial `mcp_library_entries_dead_idx`). Folding the count into
+/// the page — a CTE over every match plus a window for the order — forced a
+/// full sort of every match and cost the filter-only view ~150 ms a toggle.
+pub async fn search(pg: &PgPool, lib: &Arc<Library>, query: &str, f: &SearchFilters) -> SearchPage {
     let q = query.trim().to_lowercase();
     let limit = f.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let max_tier: Option<i16> = f.max_tier.map(Tier::rank);
-    let rows: Result<Vec<(Value,)>, sqlx::Error> = sqlx::query_as(
-        "with q as (select websearch_to_tsquery('simple', $1) as tq, $1::text as raw) \
-         select e.entry from mcp_library_entries e, q \
-         where ($1 = '' \
-                or e.search @@ q.tq \
-                or e.title ilike '%' || q.raw || '%' \
-                or e.domain ilike '%' || q.raw || '%' \
-                or e.registry_name ilike '%' || q.raw || '%') \
-           and ($2::int2 is null or e.tier <= $2::int2) \
-           and ($3::text is null or e.kind = $3::text) \
-         order by \
-           exists (select 1 from unnest(e.domains) d \
-                   where d = q.raw or split_part(d, '.', 1) = q.raw) desc, \
-           (e.title ilike q.raw || '%') desc, \
-           e.tier asc, \
-           ts_rank_cd(e.search, q.tq) desc, \
-           e.title asc \
-         limit $4",
-    )
-    .bind(&q)
-    .bind(max_tier)
-    .bind(f.kind.as_deref())
-    .bind(limit)
-    .fetch_all(pg)
-    .await;
-    let local = match rows {
-        Ok(rows) => rows_to_servers(rows),
-        Err(e) => {
-            tracing::warn!("[mcp/catalog] search failed: {e}");
-            Vec::new()
+    type Row = (Value, Option<String>, Option<i64>, Option<String>);
+    let page_q = sqlx::query_as::<_, Row>(SEARCH_PAGE_SQL)
+        .bind(&q)
+        .bind(max_tier)
+        .bind(f.kind.as_deref())
+        .bind(limit)
+        .bind(f.include_dead)
+        .fetch_all(pg);
+    // With includeDead nothing is hidden, so there is nothing to count.
+    let dead_q = async {
+        if f.include_dead {
+            return Ok(0);
         }
+        sqlx::query_scalar::<_, i64>(SEARCH_DEAD_SQL)
+            .bind(&q)
+            .bind(max_tier)
+            .bind(f.kind.as_deref())
+            .fetch_one(pg)
+            .await
     };
-    if !local.is_empty() || q.is_empty() {
-        return local;
+    let (rows, dead) = tokio::join!(page_q, dead_q);
+    let mut page = SearchPage {
+        hidden_dead: dead.unwrap_or_else(|e| {
+            tracing::warn!("[mcp/catalog] dead count failed: {e}");
+            0
+        }),
+        ..SearchPage::default()
+    };
+    match rows {
+        Ok(rows) => {
+            for (entry, state, checked, detail) in rows {
+                let Ok(server) = serde_json::from_value(entry) else {
+                    continue;
+                };
+                page.hits.push(CatalogHit {
+                    server,
+                    live: liveness_of(state, checked, detail),
+                });
+            }
+        }
+        Err(e) => tracing::warn!("[mcp/catalog] search failed: {e}"),
+    }
+    if !page.hits.is_empty() || page.hidden_dead > 0 || q.is_empty() {
+        return page;
     }
     // Nothing local: only the still-syncing window asks upstream.
     let st = load_state(pg).await;
     if st.full_done_at.is_some() {
-        return local;
+        return page;
     }
     let mut live = lib.search(&q).await;
     if let Some(t) = f.max_tier {
@@ -241,45 +404,122 @@ pub async fn search(
         live.retain(|s| (s.package.is_some()) == (k == "package"));
     }
     live.truncate(limit as usize);
-    live
+    page.hits = live.into_iter().map(CatalogHit::bare).collect();
+    page
 }
 
-/// The featured shelf from the mirror: one hosted server per featured domain,
-/// in the editorial order — the PUBLISHER'S OWN entry: first-party tier (the
-/// verified namespace is the domain and the endpoint lives on it) or a
-/// stand-in row the publisher pass resolved, never a community entry whose
-/// "domain" is the GitHub repo it links to, never a third party that set the
-/// publisher's site as its website. Live fallback only before the first walk
-/// completes.
-pub async fn featured(pg: &PgPool, lib: &Arc<Library>) -> Vec<LibraryServer> {
-    let domains: Vec<String> = FEATURED_DOMAINS.iter().map(|d| d.to_string()).collect();
-    let rows: Vec<(String, Value)> = sqlx::query_as(
-        "select e.domain, e.entry from mcp_library_entries e \
+/// The featured shelf from the mirror: one hosted server per featured domain
+/// (the built-ins merged with the operator's edits), in the editorial order —
+/// the operator's stand-in when there is one, else the PUBLISHER'S OWN entry:
+/// first-party tier (the verified namespace is the domain and the endpoint
+/// lives on it) or a stand-in row the publisher pass resolved, never a
+/// community entry whose "domain" is the GitHub repo it links to, never a
+/// third party that set the publisher's site as its website. A row the
+/// liveness job found dead gives way to the domain's next candidate, and a
+/// domain with only dead rows leaves the shelf (counted in `hidden_dead`;
+/// `include_dead` puts them back, last). Live fallback only before the first
+/// walk completes.
+pub async fn featured(pg: &PgPool, lib: &Arc<Library>, include_dead: bool) -> SearchPage {
+    let cfg = featured::load(pg).await;
+    let domains = featured::merged_domains(&cfg);
+    type Row = (String, Value, Option<String>, Option<i64>, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "select e.domain, e.entry, e.live_state, \
+           (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
+         from mcp_library_entries e \
          where e.kind = 'hosted' and e.domain = any($1) \
            and (e.tier = 0 or e.source <> 'registry') \
-         order by e.tier asc, (e.source = 'registry') desc, e.title asc",
+         order by (e.source = 'operator') desc, e.tier asc, (e.source = 'registry') desc, e.title asc",
     )
     .bind(&domains)
     .fetch_all(pg)
     .await
     .unwrap_or_default();
-    let mut out: Vec<LibraryServer> = Vec::new();
-    for d in FEATURED_DOMAINS {
-        if let Some((_, entry)) = rows.iter().find(|(dom, _)| dom == d)
-            && let Ok(s) = serde_json::from_value::<LibraryServer>(entry.clone())
-            && !out.iter().any(|o| o.url == s.url)
-        {
-            out.push(s);
-        }
-    }
-    if !out.is_empty() {
-        return out;
+    let candidates: Vec<(String, CatalogHit)> = rows
+        .into_iter()
+        .filter_map(|(d, entry, state, checked, detail)| {
+            let server = serde_json::from_value::<LibraryServer>(entry).ok()?;
+            Some((
+                d,
+                CatalogHit {
+                    server,
+                    live: liveness_of(state, checked, detail),
+                },
+            ))
+        })
+        .collect();
+    let page = pick_shelf(&domains, &cfg, &candidates, include_dead);
+    if !page.hits.is_empty() || !candidates.is_empty() {
+        return page;
     }
     let st = load_state(pg).await;
     if st.full_done_at.is_some() {
-        return out;
+        return page;
     }
-    lib.featured().await
+    // Before the first walk: the live shelf (built-ins), minus what the
+    // operator hid, plus their stand-ins.
+    let mut out: Vec<CatalogHit> = lib
+        .featured()
+        .await
+        .into_iter()
+        .filter(|s| s.domain.as_ref().is_none_or(|d| domains.contains(d)))
+        .map(CatalogHit::bare)
+        .collect();
+    for d in &domains {
+        if !out.iter().any(|h| h.server.domain.as_ref() == Some(d))
+            && let Some(s) = featured::stand_in(&cfg, d)
+        {
+            out.push(CatalogHit::bare(s));
+        }
+    }
+    SearchPage {
+        hits: out,
+        hidden_dead: 0,
+    }
+}
+
+/// The shelf, pure: for each domain in order, its first candidate that is
+/// not dead (candidates arrive best-first), else — when the operator has a
+/// stand-in the mirror has not stored yet — that stand-in. A domain whose
+/// candidates are all dead is counted, and with `include_dead` shown last
+/// with its best dead row. One URL appears once.
+pub fn pick_shelf(
+    domains: &[String],
+    cfg: &FeaturedConfig,
+    candidates: &[(String, CatalogHit)],
+    include_dead: bool,
+) -> SearchPage {
+    let mut page = SearchPage::default();
+    let mut dead_tail: Vec<CatalogHit> = Vec::new();
+    fn seen(url: &str, page: &SearchPage, tail: &[CatalogHit]) -> bool {
+        page.hits.iter().chain(tail).any(|h| h.server.url == url)
+    }
+    for d in domains {
+        let mine: Vec<&CatalogHit> = candidates
+            .iter()
+            .filter(|(dom, _)| dom == d)
+            .map(|(_, h)| h)
+            .collect();
+        if let Some(h) = mine.iter().find(|h| !h.is_dead()) {
+            if !seen(&h.server.url, &page, &dead_tail) {
+                page.hits.push((*h).clone());
+            }
+        } else if let Some(h) = mine.first() {
+            page.hidden_dead += 1;
+            if include_dead && !seen(&h.server.url, &page, &dead_tail) {
+                dead_tail.push((*h).clone());
+            }
+        } else if let Some(s) = featured::stand_in(cfg, d)
+            && !seen(&s.url, &page, &dead_tail)
+        {
+            page.hits.push(CatalogHit::bare(s));
+        }
+    }
+    if include_dead {
+        page.hidden_dead = 0;
+        page.hits.extend(dead_tail);
+    }
+    page
 }
 
 // ── Write path: the sync ────────────────────────────────────────────────────
@@ -369,6 +609,9 @@ fn raw_name(raw: &Value) -> Option<&str> {
     raw.pointer("/server/name").and_then(Value::as_str)
 }
 
+/// Insert or refresh one row. A changed entry loses its liveness stamp (the
+/// job re-asks it first); a changed ENDPOINT also loses the verdict, which
+/// described a URL the row no longer names. The same entry re-walked keeps both.
 async fn upsert(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     source: &str,
@@ -385,7 +628,13 @@ async fn upsert(
            source = excluded.source, title = excluded.title, description = excluded.description, \
            domain = excluded.domain, domains = excluded.domains, tier = excluded.tier, \
            kind = excluded.kind, entry = excluded.entry, \
-           registry_updated_at = excluded.registry_updated_at, synced_at = now()",
+           registry_updated_at = excluded.registry_updated_at, synced_at = now(), \
+           live_checked_at = case when mcp_library_entries.entry is distinct from excluded.entry \
+             then null else mcp_library_entries.live_checked_at end, \
+           live_state = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
+             then null else mcp_library_entries.live_state end, \
+           live_detail = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
+             then null else mcp_library_entries.live_detail end",
     )
     .bind(&s.registry_name)
     .bind(source)
@@ -471,15 +720,59 @@ async fn fetch_page(
     ))
 }
 
+/// The operator's stand-ins → mirror rows (source 'operator', `op:<domain>`),
+/// and the ones they removed → gone. No network: the featured PUT calls this
+/// before it answers, so the next liveness batch already sees the new rows.
+pub async fn write_operator_stand_ins(pg: &PgPool, cfg: &FeaturedConfig) -> Result<usize, String> {
+    let servers: Vec<LibraryServer> = cfg
+        .stand_ins
+        .iter()
+        .map(featured::stand_in_server)
+        .collect();
+    let names: Vec<String> = servers.iter().map(|s| s.registry_name.clone()).collect();
+    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    sqlx::query(
+        "delete from mcp_library_entries where source = 'operator' and not (registry_name = any($1))",
+    )
+    .bind(&names)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    for s in &servers {
+        let mut domains = domains_of(None, s);
+        if let Some(d) = &s.domain {
+            for cand in [d.clone(), strip_brand_label(d).to_string()] {
+                if !domains.contains(&cand) {
+                    domains.push(cand);
+                }
+            }
+        }
+        upsert(&mut tx, "operator", s, &domains, None)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(servers.len())
+}
+
 /// Featured publishers the registry lacks, resolved live (well-known, then
 /// the documented map) and stored so they search and shelve like the rest.
-async fn publishers_pass(pg: &PgPool, lib: &Library) -> Result<usize, String> {
-    let mut wanted: Vec<String> = FEATURED_DOMAINS.iter().map(|d| d.to_string()).collect();
+/// The featured list is the merged one; a domain the operator gave a
+/// stand-in is theirs, so the pass neither resolves nor keeps another
+/// stand-in for it.
+async fn publishers_pass(
+    pg: &PgPool,
+    lib: &Library,
+    cfg: &FeaturedConfig,
+) -> Result<usize, String> {
+    let operator = write_operator_stand_ins(pg, cfg).await?;
+    let mut wanted: Vec<String> = featured::merged_domains(cfg);
     for k in known_endpoints().keys() {
         if !wanted.iter().any(|d| d == k) {
             wanted.push(k.to_string());
         }
     }
+    wanted.retain(|d| !cfg.stand_ins.iter().any(|s| &s.domain == d));
     // Which of them the registry already covers with the publisher's own
     // hosted server (same rule as the shelf: `domain`, not any hostname).
     let covered: Vec<(String,)> = sqlx::query_as(
@@ -495,7 +788,8 @@ async fn publishers_pass(pg: &PgPool, lib: &Library) -> Result<usize, String> {
         .into_iter()
         .filter(|d| !covered.contains(d))
         .collect();
-    // A domain the registry now covers drops its stand-in row.
+    // A domain the registry now covers (or the operator took over, or the
+    // list dropped) loses its stand-in row.
     sqlx::query(
         "delete from mcp_library_entries where source in ('well-known', 'curated') \
          and not (domain = any($1))",
@@ -518,7 +812,7 @@ async fn publishers_pass(pg: &PgPool, lib: &Library) -> Result<usize, String> {
         .collect()
         .await;
     let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
-    let mut n = 0;
+    let mut n = operator;
     for (d, hit) in resolved {
         let Some(s) = hit else { continue };
         let source = if s.registry_name.starts_with("wk:") {
@@ -534,6 +828,23 @@ async fn publishers_pass(pg: &PgPool, lib: &Library) -> Result<usize, String> {
     }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(n)
+}
+
+/// The featured config as the sync remembers having applied it.
+fn config_mark(cfg: &FeaturedConfig) -> String {
+    serde_json::to_string(cfg).unwrap_or_default()
+}
+
+/// Run the publisher pass and stamp what it applied.
+async fn run_publishers(pg: &PgPool, lib: &Library, st: &mut SyncState) -> usize {
+    let cfg = featured::load(pg).await;
+    let n = publishers_pass(pg, lib, &cfg).await.unwrap_or_else(|e| {
+        tracing::warn!("[mcp/catalog] publisher pass failed: {e}");
+        0
+    });
+    st.publishers_checked_at = Some(now_ms());
+    st.publishers_config = Some(config_mark(&cfg));
+    n
 }
 
 /// One sync pass. Full walk (resumable) until it completes, incrementals
@@ -611,11 +922,7 @@ async fn run_sync(pg: &PgPool, lib: &Library) -> Result<String, String> {
         st.full_done_at = Some(since_mark());
         st.since = Some(mark);
         st.cursor = None;
-        let publishers = publishers_pass(pg, lib).await.unwrap_or_else(|e| {
-            tracing::warn!("[mcp/catalog] publisher pass failed: {e}");
-            0
-        });
-        st.publishers_checked_at = Some(now_ms());
+        let publishers = run_publishers(pg, lib, &mut st).await;
         Ok(format!(
             "full walk: {pages} page(s), {upserted} entries, {pruned} pruned, {publishers} publisher stand-in(s)"
         ))
@@ -652,15 +959,14 @@ async fn run_sync(pg: &PgPool, lib: &Library) -> Result<String, String> {
         }
         st.since = Some(next_since);
         let mut publishers = 0;
-        if st
-            .publishers_checked_at
-            .is_none_or(|t| now_ms() - t > PUBLISHERS_EVERY_MS)
+        let edited = st.publishers_config.as_deref()
+            != Some(config_mark(&featured::load(pg).await).as_str());
+        if edited
+            || st
+                .publishers_checked_at
+                .is_none_or(|t| now_ms() - t > PUBLISHERS_EVERY_MS)
         {
-            publishers = publishers_pass(pg, lib).await.unwrap_or_else(|e| {
-                tracing::warn!("[mcp/catalog] publisher pass failed: {e}");
-                0
-            });
-            st.publishers_checked_at = Some(now_ms());
+            publishers = run_publishers(pg, lib, &mut st).await;
         }
         Ok(format!(
             "incremental since {since}: {pages} page(s), {upserted} upserted, {dropped} dropped, {publishers} publisher stand-in(s)"
@@ -699,7 +1005,8 @@ pub fn trigger_sync(pg: PgPool, lib: Arc<Library>) {
     });
 }
 
-/// `{count, syncedAt, syncing, phase, error}` — the picker's status line.
+/// `{count, syncedAt, syncing, phase, error, liveness: {checked, dead,
+/// unknown, pending}}` — the picker's status line.
 pub fn status_wire(s: &CatalogStatus) -> Value {
     json!({
         "count": s.count,
@@ -707,6 +1014,12 @@ pub fn status_wire(s: &CatalogStatus) -> Value {
         "syncing": s.syncing,
         "phase": s.phase,
         "error": s.error,
+        "liveness": {
+            "checked": s.liveness.checked,
+            "dead": s.liveness.dead,
+            "unknown": s.liveness.unknown,
+            "pending": s.liveness.pending,
+        },
     })
 }
 
@@ -824,6 +1137,166 @@ mod tests {
         // An empty/absent row is the default state.
         let empty: SyncState = serde_json::from_value(Value::Null).unwrap_or_default();
         assert!(empty.full_done_at.is_none());
+    }
+
+    fn hit(domain: &str, url: &str, state: Option<&str>) -> CatalogHit {
+        CatalogHit {
+            server: LibraryServer {
+                registry_name: format!("reg:{url}"),
+                title: domain.into(),
+                description: None,
+                url: url.into(),
+                domain: Some(domain.into()),
+                icon: None,
+                tier: Tier::FirstParty,
+                required_headers: Vec::new(),
+                package: None,
+            },
+            live: state.map(|s| Liveness {
+                state: s.into(),
+                checked_at: Some(1_000),
+                detail: Some(format!("{s} detail")),
+            }),
+        }
+    }
+
+    // Search's dead-last ORDER and its hidden-dead count are Postgres's to
+    // keep, so they are proven against a real database, not restated here:
+    // tests/catalog_live.rs (`cargo test -p talaria-mcp-library --test
+    // catalog_live -- --ignored`, house rule: never CI).
+
+    fn shelf_of(page: &SearchPage) -> Vec<String> {
+        page.hits.iter().map(|h| h.server.url.clone()).collect()
+    }
+
+    #[test]
+    fn the_shelf_skips_dead_rows_and_counts_dead_domains() {
+        let domains: Vec<String> = ["a.com", "b.com", "c.com", "d.com"]
+            .map(String::from)
+            .to_vec();
+        let candidates = vec![
+            // a.com: its best row is dead, the next one answers → the next one.
+            (
+                "a.com".to_string(),
+                hit("a.com", "https://dead.a.com/mcp", Some("dead")),
+            ),
+            (
+                "a.com".to_string(),
+                hit("a.com", "https://mcp.a.com/mcp", Some("ok")),
+            ),
+            // b.com: only a dead row → off the shelf, counted.
+            (
+                "b.com".to_string(),
+                hit("b.com", "https://mcp.b.com/mcp", Some("dead")),
+            ),
+            // c.com: never checked → shown.
+            (
+                "c.com".to_string(),
+                hit("c.com", "https://mcp.c.com/mcp", None),
+            ),
+        ];
+        let page = pick_shelf(&domains, &FeaturedConfig::default(), &candidates, false);
+        assert_eq!(
+            shelf_of(&page),
+            ["https://mcp.a.com/mcp", "https://mcp.c.com/mcp"]
+        );
+        assert_eq!(page.hidden_dead, 1);
+        // includeDead: the dead domain comes back, last, flagged.
+        let page = pick_shelf(&domains, &FeaturedConfig::default(), &candidates, true);
+        assert_eq!(
+            shelf_of(&page),
+            [
+                "https://mcp.a.com/mcp",
+                "https://mcp.c.com/mcp",
+                "https://mcp.b.com/mcp"
+            ]
+        );
+        assert!(page.hits.last().unwrap().is_dead());
+        assert_eq!(page.hidden_dead, 0);
+    }
+
+    #[test]
+    fn the_shelf_serves_an_unstored_stand_in_and_one_url_once() {
+        let cfg: FeaturedConfig = serde_json::from_value(json!({
+            "standIns": [{ "domain": "d.com", "title": "D", "url": "https://mcp.d.com/mcp" }]
+        }))
+        .unwrap();
+        let domains: Vec<String> = ["a.com", "b.com", "d.com"].map(String::from).to_vec();
+        let candidates = vec![
+            (
+                "a.com".to_string(),
+                hit("a.com", "https://shared.example/mcp", Some("ok")),
+            ),
+            (
+                "b.com".to_string(),
+                hit("b.com", "https://shared.example/mcp", Some("ok")),
+            ),
+        ];
+        let page = pick_shelf(&domains, &cfg, &candidates, false);
+        // b.com's row is a.com's endpoint again: shown once. d.com has no row
+        // yet — the operator's stand-in answers for it, unchecked.
+        assert_eq!(
+            shelf_of(&page),
+            ["https://shared.example/mcp", "https://mcp.d.com/mcp"]
+        );
+        assert_eq!(page.hits[1].server.registry_name, "op:d.com");
+        assert!(page.hits[1].live.is_none());
+    }
+
+    #[test]
+    fn a_hit_on_the_wire_is_the_server_plus_live() {
+        let w = hit_wire(&hit("a.com", "https://a.com/mcp", Some("dead")));
+        assert_eq!(w["url"], "https://a.com/mcp");
+        assert_eq!(w["registryName"], "reg:https://a.com/mcp");
+        assert_eq!(
+            w["live"],
+            json!({ "state": "dead", "checkedAt": 1000, "detail": "dead detail" })
+        );
+        let w = hit_wire(&hit("a.com", "https://a.com/mcp", None));
+        assert_eq!(w["live"], Value::Null);
+        assert!(w.as_object().unwrap().contains_key("live"));
+    }
+
+    #[test]
+    fn the_status_wire_carries_the_liveness_counts() {
+        let s = CatalogStatus {
+            count: 42,
+            synced_at: Some(7),
+            syncing: false,
+            phase: "ready",
+            error: None,
+            nudgeable: false,
+            liveness: LivenessCounts {
+                checked: 30,
+                dead: 12,
+                unknown: 3,
+                pending: 9,
+            },
+        };
+        assert_eq!(
+            status_wire(&s),
+            json!({
+                "count": 42,
+                "syncedAt": 7,
+                "syncing": false,
+                "phase": "ready",
+                "error": null,
+                "liveness": { "checked": 30, "dead": 12, "unknown": 3, "pending": 9 },
+            })
+        );
+    }
+
+    #[test]
+    fn the_config_mark_changes_with_any_edit() {
+        let a = FeaturedConfig::default();
+        let mut b = a.clone();
+        assert_eq!(config_mark(&a), config_mark(&b));
+        b.hidden.push("paypal.com".into());
+        assert_ne!(config_mark(&a), config_mark(&b));
+        // A sync state from before this field existed reads as "never applied",
+        // so the first sync after the upgrade runs the pass.
+        let old: SyncState = serde_json::from_value(json!({ "lastSyncedAt": 5 })).unwrap();
+        assert!(old.publishers_config.is_none());
     }
 
     #[test]
