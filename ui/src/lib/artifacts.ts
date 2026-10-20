@@ -65,8 +65,46 @@ export const useArtifact = (id: MaybeGetter<string | null>) =>
     }
   })
 
-export const createArtifact = (input: { kind?: ArtifactKind; title?: string }) =>
-  postJson<{ artifact: Artifact }>('/api/artifacts', input).then((r) => r.artifact)
+export const createArtifact = (input: {
+  kind?: ArtifactKind
+  title?: string
+  /** The body to save WITH the row, rather than an empty document and a
+   *  follow-up PUT. The route has always taken it (`parse_body`: body, up to
+   *  2,000,000 UTF-16 units) and saves it in the same request, so a caller
+   *  that already holds the whole document — a transcript, a generated report
+   *  — never shows an empty artifact for a beat. */
+  body?: string
+  /** A root folder BY NAME, find-or-create.
+   *
+   *  HONOURED FOR AN AGENT CALLER ONLY, which is the route's own split: an
+   *  agent files its output deliberately (or lands in its cabinet), while a
+   *  person's create lands where the browser made it. Passed through because
+   *  the wire takes it, not because this client has a user-facing use for it
+   *  yet. */
+  folder?: string
+}) => postJson<{ artifact: Artifact }>('/api/artifacts', input).then((r) => r.artifact)
+
+/** WHICH OFFICE FILE A KIND BECOMES, or null where there is nothing to render:
+ *  a `file` artifact's own bytes already download through /api/uploads, so
+ *  offering to build a document out of it would be offering the 400 the route
+ *  answers.
+ *
+ *  The format is the KIND's answer and never the caller's — a sheet is a grid
+ *  and a document is prose, and `/api/artifacts/{id}/export` refuses the
+ *  mismatch — so every surface that offers this reads it from here instead of
+ *  spelling out its own ternary. */
+export const officeExport = (
+  kind: ArtifactKind | null | undefined,
+): { format: 'docx' | 'xlsx'; label: string } | null =>
+  !kind || kind === 'file'
+    ? null
+    : kind === 'sheet'
+      ? { format: 'xlsx', label: 'Excel (.xlsx)' }
+      : { format: 'docx', label: 'Word (.docx)' }
+
+/** The download URL for one of those exports. */
+export const officeExportHref = (id: string, format: 'docx' | 'xlsx'): string =>
+  `/api/artifacts/${id}/export?format=${format}`
 
 export const saveArtifact = (
   id: string,
