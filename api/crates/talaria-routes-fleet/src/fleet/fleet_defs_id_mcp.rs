@@ -1,14 +1,18 @@
 // /api/fleet/defs/{id}/mcp. ONE AGENT'S VIEW OF THE ORG MCP REGISTRY.
 // GET → every enabled registry server with what it means for THIS agent:
-// whether the agent carries it and why (`via`: all-agents, assigned, team,
-// developer — or null), the per-agent tool subset if one is set, the server's
+// whether the agent carries it — exactly what its rendered config lists
+// (`servers_for_agent`) — and why (`via`: all-agents, assigned, team,
+// developer — or null; `withheld` when a grant exists but the config leaves
+// the server out), the per-agent tool subset if one is set, the server's
 // own state (tools, auth, connection) so the tab can say what a toggle will
 // actually give the agent — plus `legacy`: raw `mcp_servers` entries still in
 // the agent's Hermes config from before the gateway, which bypass it and
 // should go. `canInstall` says whether this viewer may add servers to the
 // registry (`agents.manage`); assigning an existing one is the agent's
-// managers' call. POST → `assign` / `unassign` registry servers on this agent
-// (a tool subset per assignment), `removeLegacy` raw entries; the agent rolls
+// managers' call. `assignedToolsMissing` names the subset entries the
+// server no longer offers (the tab's "Drop missing tools"). POST → `assign`
+// / `unassign` registry servers on this agent (a tool subset per
+// assignment), `removeLegacy` raw entries; the agent rolls
 // so a running Hermes picks the change up. Raw URL `add` is refused: an
 // agent reaches servers through the gateway or not at all.
 
@@ -22,9 +26,11 @@ use serde_json::{Map, Value, json};
 use talaria_agent_defs::{add_version_if_changed, list_versions};
 use talaria_agent_mcp::apply_mcp_edits;
 use talaria_api_facades::fleet::reconcile::roll_agent;
+use talaria_api_facades::mcp::health::{missing_tools, tool_names};
 use talaria_api_facades::mcp::oauth::has_oauth_tokens;
 use talaria_api_facades::mcp::registry::{
-    WORKBENCH_SERVER, get_mcp_server, list_mcp_servers, remove_assignment, set_assignment,
+    WORKBENCH_SERVER, get_mcp_server, list_mcp_servers, remove_assignment, servers_for_agent,
+    set_assignment,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -72,6 +78,23 @@ async fn load_def(pg: &sqlx::PgPool, id: &str) -> Result<Option<Def>, sqlx::Erro
 
 /// A hostname for the card: http(s) URLs only — routing tokens
 /// (talaria-pkg://, talaria-workbench://) have none.
+/// The probe as one agent's tab may see it. The health pass's
+/// `staleAssignments` names EVERY agent assigned to the server and the tool
+/// subsets they were given — assignment data about agents this reader may
+/// not read — so it stays on the registry's own (admin) surface; this tab
+/// has `assignedToolsMissing` for its own agent.
+fn agent_probe(probe: Option<&Value>) -> Value {
+    match probe {
+        Some(Value::Object(m)) => {
+            let mut m = m.clone();
+            m.remove("staleAssignments");
+            Value::Object(m)
+        }
+        Some(other) => other.clone(),
+        None => Value::Null,
+    }
+}
+
 fn domain_of(url: &str) -> Option<String> {
     reqwest::Url::parse(url)
         .ok()
@@ -127,11 +150,23 @@ pub async fn get(
         .filter(|(_, allowed)| *allowed)
         .map(|(s, _)| s.clone())
         .collect();
+    // What the agent's rendered config actually lists — `carried` answers
+    // from this, not from the grants alone, so the tab never shows a server
+    // the agent will not list (an all-agents per-user server on an org agent,
+    // a server a personal assistant's owner is denied) and never disagrees
+    // with the config about `needsConnection`.
+    let rendered: HashMap<String, bool> = match servers_for_agent(&state.pg, &def.model).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|r| (r.name, r.needs_connection))
+            .collect(),
+        Err(e) => return Ok(internal("[fleet/defs/mcp] rendered servers read failed", e)),
+    };
 
     let mut out = Vec::with_capacity(servers.len());
     for s in servers.iter().filter(|s| s.enabled) {
         let assignment = assigned.get(&s.id);
-        let via = if s.name == WORKBENCH_SERVER {
+        let granted = if s.name == WORKBENCH_SERVER {
             def.developer.then_some("developer")
         } else if s.all_agents || s.builtin {
             Some("all-agents")
@@ -142,8 +177,25 @@ pub async fn get(
         } else {
             None
         };
+        // The builtin toolkit and the Workbench ride their own render paths
+        // (servers_for_agent lists registry servers); for everything else the
+        // render is the truth, and a grant it does not honour says why.
+        let rides_render = !s.builtin && s.name != WORKBENCH_SERVER;
+        let carried = if rides_render {
+            rendered.contains_key(&s.name)
+        } else {
+            granted.is_some()
+        };
+        let via = if carried { granted } else { None };
+        let withheld = match (granted, carried) {
+            (Some(_), false) if def.owner_user_id.is_some() => Some("owner-denied"),
+            (Some(_), false) => Some("per-user-org-agent"),
+            _ => None,
+        };
         // A per-user server only reaches an assistant whose owner connected.
-        let needs_connection = if s.auth_mode == "per-user" {
+        let needs_connection = if let Some(n) = rendered.get(&s.name).filter(|_| rides_render) {
+            json!(n)
+        } else if s.auth_mode == "per-user" {
             match &def.owner_user_id {
                 Some(owner) => {
                     let connected = if s.oauth_enabled {
@@ -187,12 +239,25 @@ pub async fn get(
             "authMode": s.auth_mode,
             "oauthEnabled": s.oauth_enabled,
             "needsConnection": needs_connection,
-            "probe": s.last_probe,
+            "probe": agent_probe(s.last_probe.as_ref()),
             "tools": s.tools,
-            "carried": via.is_some(),
+            "carried": carried,
             "via": via,
+            // Granted, yet left out of the config: the owner of this personal
+            // assistant is denied the server, or it is a per-user server that
+            // reaches an org agent only by an assignment naming it.
+            "withheld": withheld,
             "assigned": assignment.is_some(),
             "assignedTools": assignment.cloned().flatten(),
+            // Subset entries the server's current catalog no longer offers —
+            // a renamed or retired tool the gateway can never let through.
+            // Live against the cached catalog (which the health pass keeps
+            // current), so the tab is right the moment either side changes;
+            // empty when no subset is set or the catalog was never read.
+            "assignedToolsMissing": assignment
+                .and_then(Option::as_deref)
+                .map(|subset| missing_tools(subset, &tool_names(&s.tools)))
+                .unwrap_or_default(),
         }));
     }
 
@@ -479,4 +544,24 @@ pub async fn post(
         out.insert("warning".into(), json!(w));
     }
     Ok(Json(Value::Object(out)).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_agent_tab_probe_never_names_other_agents() {
+        let probe = json!({
+            "state": "ok", "detail": "2 tool(s)", "at": "2026-10-16T00:00:00.000Z",
+            "staleAssignments": [{ "agent": "finance-ops", "missing": ["x"] }],
+        });
+        assert_eq!(
+            agent_probe(Some(&probe)),
+            json!({ "state": "ok", "detail": "2 tool(s)", "at": "2026-10-16T00:00:00.000Z" })
+        );
+        assert_eq!(agent_probe(None), Value::Null);
+        let plain = json!({ "state": "unreachable", "detail": "d", "at": "t" });
+        assert_eq!(agent_probe(Some(&plain)), plain);
+    }
 }

@@ -260,6 +260,17 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         });
     }
 
+    // ── External MCP servers the health pass found down (admins only) ────────
+    // The hourly `mcp-health` job (talaria-mcp health.rs) writes every
+    // external server's `last_probe`; a server that is not `ok` is a set of
+    // tools every agent carrying it calls into an error. Admins fix servers,
+    // so only admins see the line — one alert naming them all, not one each.
+    if is_admin(pg, user_id).await
+        && let Some(alert) = mcp_attention_alert(&mcp_servers_needing_attention(pg).await)
+    {
+        alerts.push(alert);
+    }
+
     // ── Tool plane: a failing tool streak the green dashboards never show ─────
     // This is the 2026-09-22 rot detector: a persona whose every tool call
     // fails sits "healthy" on every state-only surface while its sessions
@@ -691,6 +702,58 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
+/// The one admin warning for every external MCP server whose last probe is
+/// not ok — names them all, so a registry with three dead hosts is one line.
+fn mcp_attention_alert(labels: &[String]) -> Option<Alert> {
+    let n = labels.len();
+    if n == 0 {
+        return None;
+    }
+    let one = n == 1;
+    Some(Alert {
+        severity: AlertSeverity::Warning,
+        title: format!(
+            "{n} MCP server{} need{} attention",
+            if one { "" } else { "s" },
+            if one { "s" } else { "" }
+        ),
+        detail: format!(
+            "{}. The last health check could not use {}, so agents calling {} tools get errors. Each card on the MCP page says what it needs.",
+            labels.join(", "),
+            if one { "it" } else { "them" },
+            if one { "its" } else { "their" }
+        ),
+        href: "/mcp/external",
+    })
+}
+
+async fn is_admin(pg: &sqlx::PgPool, user_id: &str) -> bool {
+    sqlx::query_scalar::<_, String>("select role from users where id::text = $1")
+        .bind(user_id)
+        .fetch_optional(pg)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|r| r == "admin")
+}
+
+/// Labels of the enabled external servers whose last probe is not `ok` —
+/// the same scope the health pass asks (no builtin, app or Workbench row;
+/// an http(s) address). A never-probed server is not counted: nothing has
+/// said it is broken yet.
+async fn mcp_servers_needing_attention(pg: &sqlx::PgPool) -> Vec<String> {
+    sqlx::query_scalar(
+        "select label from mcp_servers \
+         where enabled and not builtin and app_slug is null and name <> 'workbench' \
+           and url ~* '^https?://' and last_probe is not null \
+           and coalesce(last_probe->>'state', 'ok') <> 'ok' \
+         order by label",
+    )
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default()
+}
+
 async fn probe_mcp() -> bool {
     let url = format!("http://127.0.0.1:{}/mcp", mcp_port());
     let client = reqwest::Client::new();
@@ -708,6 +771,24 @@ async fn probe_mcp() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_attention_is_one_warning_naming_every_server() {
+        assert!(mcp_attention_alert(&[]).is_none());
+        let one = mcp_attention_alert(&["DeepWiki".into()]).expect("one server alerts");
+        assert_eq!(one.severity, AlertSeverity::Warning);
+        assert_eq!(one.title, "1 MCP server needs attention");
+        assert_eq!(one.href, "/mcp/external");
+        assert!(
+            one.detail
+                .starts_with("DeepWiki. The last health check could not use it,")
+        );
+        let two = mcp_attention_alert(&["A".into(), "B".into()]).expect("two servers alert");
+        assert_eq!(two.title, "2 MCP servers need attention");
+        assert!(two.detail.starts_with(
+            "A, B. The last health check could not use them, so agents calling their tools"
+        ));
+    }
 
     #[test]
     fn minutes_matches_js_round() {

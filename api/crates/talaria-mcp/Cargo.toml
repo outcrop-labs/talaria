@@ -25,8 +25,12 @@ talaria-mcp-service = { workspace = true }
 talaria-safe-fetch = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-secretbox = { workspace = true }
+talaria-settings = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 talaria-undici = { workspace = true }
+talaria-update-layout = { workspace = true }
 talaria-users = { workspace = true }
+talaria-notify = { workspace = true }
+talaria-realtime = { workspace = true }

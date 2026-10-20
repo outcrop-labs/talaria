@@ -31,6 +31,8 @@ use talaria_safe_fetch::{SafeFetch, safe_fetch};
 use talaria_secretbox::SecretBox;
 use talaria_users::{assistant_owner_for, personal_assistant_owners};
 
+pub use crate::not_connected::{ConnectScope, NotConnected};
+
 /// The protocol revision Talaria speaks at the MCP handshake — one revision
 /// for both directions of the conversation (what our dispatchers answer and
 /// what every client asks). The literal lives in mcp::jsonrpc (the leaf
@@ -40,7 +42,8 @@ pub use talaria_mcp_jsonrpc::MCP_PROTOCOL_VERSION;
 
 /// The column list every full-row read spells — the wire's field order IS
 /// this order.
-const ROW: &str = "id::text, name, label, description, url, headers, timeout_secs::int8, enabled, \
+const ROW: &str = "id::text, name, label, description, url, headers, headers_sealed, \
+                   timeout_secs::int8, enabled, \
                    all_agents, auth_mode::text, tools, \
                    (trunc(extract(epoch from tools_refreshed_at) * 1000))::bigint as tools_refreshed_ms, \
                    required_headers, (oauth is not null) as oauth_enabled, builtin, \
@@ -58,8 +61,14 @@ pub struct McpServer {
     pub label: String,
     pub description: Option<String>,
     pub url: String,
-    /// PLAINTEXT jsonb — org-level headers an admin typed, sealed nowhere.
-    pub headers: Map<String, Value>,
+    /// LEGACY plaintext org headers — `{}` on every row written since the
+    /// headers were sealed; a pre-sealing row keeps its plaintext here until
+    /// `org_headers::seal_legacy_headers` reaches it. Never read directly:
+    /// `org_headers::open_headers` is the one reader of both columns.
+    pub headers_plain: Map<String, Value>,
+    /// The org headers an admin typed (API keys, auth headers), sealed whole
+    /// as one JSON object. None = no org headers.
+    pub headers_sealed: Option<String>,
     pub timeout_secs: Option<i64>,
     pub enabled: bool,
     pub all_agents: bool,
@@ -102,6 +111,7 @@ struct ServerRow {
     description: Option<String>,
     url: String,
     headers: Value,
+    headers_sealed: Option<String>,
     timeout_secs: Option<i64>,
     enabled: bool,
     all_agents: bool,
@@ -134,7 +144,8 @@ fn server_of_row(r: ServerRow) -> McpServer {
         label: r.label,
         description: r.description,
         url: r.url,
-        headers: r.headers.as_object().cloned().unwrap_or_default(),
+        headers_plain: r.headers.as_object().cloned().unwrap_or_default(),
+        headers_sealed: r.headers_sealed,
         timeout_secs: r.timeout_secs,
         enabled: r.enabled,
         all_agents: r.all_agents,
@@ -155,15 +166,17 @@ fn server_of_row(r: ServerRow) -> McpServer {
 }
 
 /// The row as the routes answer it — the ROW column order, timestamps as the
-/// ISO strings `JSON.stringify(new Date(...))` produces.
-pub fn server_wire(s: &McpServer) -> Value {
+/// ISO strings `JSON.stringify(new Date(...))` produces. Org headers answer
+/// as their KEY NAMES only (`header_keys`, from `org_headers::header_keys`):
+/// a value never leaves the api, so this function is never handed one.
+pub fn server_wire(s: &McpServer, header_keys: &[String]) -> Value {
     serde_json::json!({
         "id": s.id,
         "name": s.name,
         "label": s.label,
         "description": s.description,
         "url": s.url,
-        "headers": Value::Object(s.headers.clone()),
+        "headerKeys": header_keys,
         "timeoutSecs": s.timeout_secs,
         "enabled": s.enabled,
         "allAgents": s.all_agents,
@@ -183,13 +196,17 @@ pub fn server_wire(s: &McpServer) -> Value {
 }
 
 /// The discovery states a row remembers. `AuthRequired` is the one the card
-/// turns into an action (set a key, or connect OAuth).
+/// turns into an action (set a key, or connect OAuth). `Reconnect` is the
+/// health pass's: the org account WAS connected and the provider has since
+/// refused to refresh it (`health::run_health_pass`), so the action is a fresh
+/// sign-in, not a first one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProbeState {
     Ok,
     AuthRequired,
     Unreachable,
     Error,
+    Reconnect,
 }
 
 impl ProbeState {
@@ -199,6 +216,7 @@ impl ProbeState {
             ProbeState::AuthRequired => "auth-required",
             ProbeState::Unreachable => "unreachable",
             ProbeState::Error => "error",
+            ProbeState::Reconnect => "reconnect",
         }
     }
 }
@@ -207,11 +225,7 @@ impl ProbeState {
 /// turn a successful discovery into a failure, so the error is logged, not
 /// returned.
 pub async fn record_probe(pg: &PgPool, id: &str, state: ProbeState, detail: &str) {
-    let probe = serde_json::json!({
-        "state": state.as_str(),
-        "detail": utf16_slice(detail, 300),
-        "at": epoch_ms_to_iso(talaria_agent_auth::now_ms()),
-    });
+    let probe = probe_json(state, detail, talaria_agent_auth::now_ms(), None);
     if let Err(e) = sqlx::query(
         "update mcp_servers set last_probe = $2, updated_at = now() where id::text = $1",
     )
@@ -222,6 +236,27 @@ pub async fn record_probe(pg: &PgPool, id: &str, state: ProbeState, detail: &str
     {
         tracing::warn!("[mcp] probe record failed for {id}: {e}");
     }
+}
+
+/// The `last_probe` document: `{state, detail, at}`, plus whatever the health
+/// pass adds (`staleAssignments`) appended after them. One builder, so a
+/// discovery write and a health write can never disagree about the shape.
+pub fn probe_json(
+    state: ProbeState,
+    detail: &str,
+    at_ms: i64,
+    extra: Option<&Map<String, Value>>,
+) -> Value {
+    let mut m = Map::new();
+    m.insert("state".into(), Value::String(state.as_str().into()));
+    m.insert("detail".into(), Value::String(utf16_slice(detail, 300)));
+    m.insert("at".into(), Value::String(epoch_ms_to_iso(at_ms)));
+    if let Some(extra) = extra {
+        for (k, v) in extra {
+            m.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(m)
 }
 
 /// By id OR name, one row.
@@ -302,8 +337,10 @@ pub async fn call_mcp_tool(
     } else {
         None
     };
+    let org_headers = crate::org_headers::open_headers(sb, &server)?;
     let init = org_call(
         &server,
+        &org_headers,
         bearer.as_deref(),
         &serde_json::json!({
             "jsonrpc": "2.0",
@@ -326,6 +363,7 @@ pub async fn call_mcp_tool(
     }
     let res = org_call(
         &server,
+        &org_headers,
         bearer.as_deref(),
         &serde_json::json!({
             "jsonrpc": "2.0",
@@ -380,6 +418,7 @@ fn undici_safe_message(e: talaria_safe_fetch::SafeError) -> String {
 
 async fn org_call(
     server: &McpServer,
+    org_headers: &Map<String, Value>,
     bearer: Option<&str>,
     body: &Value,
     session_id: Option<&str>,
@@ -394,11 +433,7 @@ async fn org_call(
             "application/json, text/event-stream".into(),
         ),
     ];
-    for (k, v) in &server.headers {
-        if let Some(v) = v.as_str() {
-            pairs.push((k.clone(), v.to_string()));
-        }
-    }
+    pairs.extend(crate::org_headers::header_pairs(org_headers));
     if server.builtin {
         // The builtin toolkit authenticates with the fleet key as Talaria
         // itself — an empty key when the env is unset, not an absent header.
@@ -626,7 +661,15 @@ pub struct NewServer<'a> {
     pub env_enc: Option<String>,
 }
 
-pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<McpServer, String> {
+pub async fn create_mcp_server(
+    pg: &PgPool,
+    sb: &SecretBox,
+    input: &NewServer<'_>,
+) -> Result<McpServer, String> {
+    // Sealed before the insert: the plaintext column is written `{}` and a
+    // header value never touches a row in the clear.
+    let headers_sealed =
+        crate::org_headers::seal_headers(sb, &input.headers.cloned().unwrap_or_default())?;
     // The full InputWithVariables shape, with the nullish defaults baked in —
     // `value`/`variables` carry the registry's credential templates that
     // drive the connect forms.
@@ -654,17 +697,15 @@ pub async fn create_mcp_server(pg: &PgPool, input: &NewServer<'_>) -> Result<Mcp
         .unwrap_or_default();
     // AssertSqlSafe: the interpolation is this crate's ROW column list.
     let sql = format!(
-        "insert into mcp_servers (name, label, description, url, headers, timeout_secs, auth_mode, required_headers, created_by, package, env_enc) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning {ROW}"
+        "insert into mcp_servers (name, label, description, url, headers, headers_sealed, timeout_secs, auth_mode, required_headers, created_by, package, env_enc) \
+         values ($1, $2, $3, $4, '{{}}'::jsonb, $5, $6, $7, $8, $9, $10, $11) returning {ROW}"
     );
     let row: Option<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(input.name)
         .bind(input.label.unwrap_or(input.name))
         .bind(input.description)
         .bind(input.url)
-        .bind(serde_json::Value::Object(
-            input.headers.cloned().unwrap_or_default(),
-        ))
+        .bind(&headers_sealed)
         .bind(input.timeout_secs)
         .bind(input.auth_mode)
         .bind(Value::Array(declared))
@@ -696,11 +737,17 @@ pub struct ServerPatch {
     pub auth_mode: Option<String>,
     /// Set these keys (a null value removes the key), keep every other
     /// stored header — the credentials editor's write, which never sees the
-    /// stored values (GET masks them) and so can never send the whole map.
+    /// stored values (GET answers key names only) and so can never send the
+    /// whole map.
     pub merge_headers: Option<Map<String, Value>>,
 }
 
-pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Result<(), String> {
+pub async fn update_mcp_server(
+    pg: &PgPool,
+    sb: &SecretBox,
+    id: &str,
+    patch: &ServerPatch,
+) -> Result<(), String> {
     let row: Option<(bool, Option<String>)> =
         sqlx::query_as("select builtin, app_slug::text from mcp_servers where id::text = $1")
             .bind(id)
@@ -766,39 +813,19 @@ pub async fn update_mcp_server(pg: &PgPool, id: &str, patch: &ServerPatch) -> Re
         sqlx::query("update mcp_servers set url = $2, tools = '[]', tools_refreshed_at = null, updated_at = now() where id::text = $1")
             .bind(id).bind(url).execute(pg).await.map_err(|e| e.to_string())?;
     }
-    if let Some(headers) = &patch.headers {
-        sqlx::query("update mcp_servers set headers = $2, updated_at = now() where id::text = $1")
-            .bind(id)
-            .bind(Value::Object(headers.clone()))
-            .execute(pg)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(merge) = &patch.merge_headers {
-        let set: Map<String, Value> = merge
-            .iter()
-            .filter(|(_, v)| v.is_string())
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let remove: Vec<String> = merge
-            .iter()
-            .filter(|(_, v)| v.is_null())
-            .map(|(k, _)| k.clone())
-            .collect();
-        // `||` overlays the set keys; `-` drops the removed ones. A changed
-        // credential invalidates nothing else — the catalog stays; the next
-        // discovery re-proves it.
-        sqlx::query(
-            "update mcp_servers set headers = (headers || $2::jsonb) - $3::text[], updated_at = now() \
-             where id::text = $1",
-        )
-        .bind(id)
-        .bind(Value::Object(set))
-        .bind(&remove)
-        .execute(pg)
-        .await
-        .map_err(|e| e.to_string())?;
-    }
+    // Replace and/or merge, opened and re-sealed under the row lock. A
+    // changed credential invalidates nothing else — the catalog stays; the
+    // next discovery re-proves it.
+    crate::org_headers::write_headers(
+        pg,
+        sb,
+        id,
+        &crate::org_headers::HeaderWrite {
+            replace: patch.headers.as_ref(),
+            merge: patch.merge_headers.as_ref(),
+        },
+    )
+    .await?;
     if let Some(enabled) = patch.enabled {
         sqlx::query("update mcp_servers set enabled = $2, updated_at = now() where id::text = $1")
             .bind(id)
@@ -1133,24 +1160,40 @@ fn union_tool_lists(lists: impl IntoIterator<Item = Option<Vec<String>>>) -> Opt
     }
 }
 
+/// The gateway's verdict for one agent on one server — three answers, not
+/// two, because "you may not" and "nobody connected it yet" call for
+/// different replies: a refusal the agent should accept, and a sentence it
+/// should repeat to its person (see `not_connected`).
+pub enum McpAccess {
+    /// Speak upstream with these headers, inside this allowance.
+    Allowed(EffectiveMcp),
+    /// No grant, an explicit deny, a disabled or unknown server.
+    Denied,
+    /// Granted, but the account it would speak as is not connected.
+    NotConnected(NotConnected),
+}
+
 /// What one AGENT may do on one server: assignment ∪ team-agent grants,
 /// intersected (for a personal assistant) with its owner's user/team access —
-/// with the owner's credentials on per-user servers. None = no access at all.
+/// with the owner's credentials on per-user servers. Access is decided
+/// BEFORE credentials, so a server the agent may not use answers `Denied`
+/// whether or not anyone connected it, and only a granted one can answer
+/// `NotConnected`.
 pub async fn effective_mcp_for(
     pg: &PgPool,
     sb: &SecretBox,
     subject: &AgentSubject,
     server_name: &str,
-) -> Result<Option<EffectiveMcp>, String> {
+) -> Result<McpAccess, String> {
     let agent_model = subject_model(subject);
     let Some(server) = get_mcp_server(pg, server_name)
         .await
         .map_err(|e| e.to_string())?
     else {
-        return Ok(None);
+        return Ok(McpAccess::Denied);
     };
     if !server.enabled {
-        return Ok(None);
+        return Ok(McpAccess::Denied);
     }
 
     // The Workbench is granted by the agent's Developer Agent switch and by
@@ -1161,7 +1204,7 @@ pub async fn effective_mcp_for(
             .await
             .map_err(|e| e.to_string())?
         {
-            return Ok(None);
+            return Ok(McpAccess::Denied);
         }
         None
     } else {
@@ -1196,7 +1239,7 @@ pub async fn effective_mcp_for(
             if server.all_agents {
                 None
             } else if team_allow_lists.is_empty() {
-                return Ok(None);
+                return Ok(McpAccess::Denied);
             } else {
                 union_tool_lists(team_allow_lists)
             }
@@ -1209,11 +1252,6 @@ pub async fn effective_mcp_for(
         .await
         .map_err(|e| e.to_string())?;
     let mut user_tools: Option<Vec<String>> = None;
-    let mut upstream_headers: Vec<(String, String)> = server
-        .headers
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
-        .collect();
     if let Some(owner) = &owner {
         let access: Option<(bool, Option<Vec<String>>)> = sqlx::query_as(
             "select allowed, tools from mcp_user_access where server_id::text = $1 and user_id::text = $2",
@@ -1224,7 +1262,7 @@ pub async fn effective_mcp_for(
         .await
         .map_err(|e| e.to_string())?;
         if access.as_ref().is_some_and(|(allowed, _)| !allowed) {
-            return Ok(None);
+            return Ok(McpAccess::Denied);
         }
         let team_rows: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
             "select a.allowed, a.tools \
@@ -1241,7 +1279,7 @@ pub async fn effective_mcp_for(
         let any_team_allow = team_rows.iter().any(|(allowed, _)| *allowed);
         let user_allow = access.as_ref().is_some_and(|(allowed, _)| *allowed);
         if any_team_deny && !any_team_allow && !user_allow {
-            return Ok(None);
+            return Ok(McpAccess::Denied);
         }
         let mut allowed_lists = Vec::new();
         if user_allow {
@@ -1253,50 +1291,71 @@ pub async fn effective_mcp_for(
             }
         }
         user_tools = union_tool_lists(allowed_lists);
-        if server.auth_mode == "per-user" {
-            if server.oauth_enabled {
-                let Some(bearer) =
-                    talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, owner).await?
-                else {
-                    return Ok(None); // not connected — the server doesn't exist for this assistant yet
-                };
-                set_header(
-                    &mut upstream_headers,
-                    "authorization",
-                    &format!("Bearer {bearer}"),
-                );
-            } else {
-                let Some(creds) = get_user_credentials(pg, sb, &server.id, owner).await? else {
-                    return Ok(None);
-                };
-                for (k, v) in &creds {
-                    if let Some(v) = v.as_str() {
-                        set_header(&mut upstream_headers, k, v);
-                    }
-                }
-            }
-        }
     } else if server.auth_mode == "per-user" {
         // Org agents have no single acting user to be — per-user servers are
-        // personal-assistant territory by definition.
-        return Ok(None);
+        // personal-assistant territory by definition. Granted, so it is not a
+        // refusal; but nothing anyone connects will change it.
+        return Ok(McpAccess::NotConnected(NotConnected {
+            scope: ConnectScope::PerUserOnOrgAgent,
+            server,
+            tools: agent_tools,
+        }));
+    }
+    let tools = intersect(agent_tools, user_tools);
+
+    // The account the call speaks as: the owner's on per-user servers, the
+    // org's on org-auth OAuth servers. Missing → NotConnected, carrying the
+    // allowance so the in-house tools/list shows what the agent will get.
+    let mut speak_as: Vec<(String, String)> = Vec::new();
+    if let Some(owner) = &owner
+        && server.auth_mode == "per-user"
+    {
+        if server.oauth_enabled {
+            let Some(bearer) =
+                talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, owner).await?
+            else {
+                return Ok(McpAccess::NotConnected(NotConnected {
+                    scope: ConnectScope::PerUser,
+                    server,
+                    tools,
+                }));
+            };
+            speak_as.push(("authorization".into(), format!("Bearer {bearer}")));
+        } else {
+            let Some(creds) = get_user_credentials(pg, sb, &server.id, owner).await? else {
+                return Ok(McpAccess::NotConnected(NotConnected {
+                    scope: ConnectScope::PerUser,
+                    server,
+                    tools,
+                }));
+            };
+            speak_as.extend(crate::org_headers::header_pairs(&creds));
+        }
     }
     // Org-auth OAuth servers speak with the shared org connection.
     if server.auth_mode == "org" && server.oauth_enabled {
         let Some(bearer) = talaria_mcp_oauth::oauth_token_for(pg, sb, &server.id, "org").await?
         else {
-            return Ok(None); // nobody connected the org account yet
+            return Ok(McpAccess::NotConnected(NotConnected {
+                scope: ConnectScope::Org,
+                server,
+                tools,
+            }));
         };
-        set_header(
-            &mut upstream_headers,
-            "authorization",
-            &format!("Bearer {bearer}"),
-        );
+        speak_as.push(("authorization".into(), format!("Bearer {bearer}")));
     }
 
-    Ok(Some(EffectiveMcp {
+    // The org headers (publisher-fixed ones on per-user servers too) first,
+    // then the account's own over them — `{...org, ...account}`.
+    let mut upstream_headers =
+        crate::org_headers::header_pairs(&crate::org_headers::open_headers(sb, &server)?);
+    for (k, v) in &speak_as {
+        set_header(&mut upstream_headers, k, v);
+    }
+
+    Ok(McpAccess::Allowed(EffectiveMcp {
         server,
-        tools: intersect(agent_tools, user_tools),
+        tools,
         upstream_headers,
     }))
 }
@@ -1414,77 +1473,160 @@ pub async fn refresh_mcp_tools(
         None
     };
     // An org-auth OAuth server nobody has connected yet cannot be asked
-    // anything: say so instead of relaying the 401 it would answer.
+    // anything: say so instead of relaying the 401 it would answer. A grant
+    // the provider refused to refresh — under this very read, under the
+    // gateway's, or an earlier pass's — was dropped AND flagged at the drop
+    // (`oauth_token_for`), so the flag is what makes it a reconnect rather
+    // than a first connect.
     if server.oauth_enabled && server.auth_mode == "org" && bearer.is_none() && !server.builtin {
+        let gone = !has_oauth_tokens(pg, &server.id, "org")
+            .await
+            .unwrap_or(false);
+        if !gone {
+            // The grant is still there: the token endpoint did not answer
+            // the refresh, which says nothing about the account.
+            let msg = "the provider's token endpoint did not answer the refresh of the org \
+                       account; check again shortly";
+            record_probe(pg, id, ProbeState::Error, msg).await;
+            return Err(msg.into());
+        }
+        if crate::health::reconnect_flagged(pg, id, "org").await {
+            let msg = crate::health::REFRESH_REJECTED;
+            record_probe(pg, id, ProbeState::Reconnect, msg).await;
+            return Err(msg.into());
+        }
         let msg = "this server authenticates with OAuth and the org account is not connected yet \
                    — Connect on the server card first";
         record_probe(pg, id, ProbeState::AuthRequired, msg).await;
         return Err(msg.into());
     }
-    let run = async {
-        let init = match org_call(
-            &server,
-            bearer.as_deref(),
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": { "name": "talaria", "version": "1.0" },
-                },
-            }),
-            None,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                record_probe(pg, id, ProbeState::Unreachable, &e).await;
-                return Err(e);
-            }
-        };
-        if init.status == 401 || init.status == 403 {
-            return Err(
-                auth_required(pg, &server, init.status, init.www_authenticate.as_deref()).await,
-            );
+    let org_headers = crate::org_headers::open_headers(sb, &server)?;
+    match converse_catalog(&server, &org_headers, bearer.as_deref()).await {
+        Ok(tools) => {
+            store_catalog(pg, id, &Value::Array(tools.clone())).await?;
+            record_probe(pg, id, ProbeState::Ok, &format!("{} tool(s)", tools.len())).await;
+            Ok(tools)
         }
-        if init.status >= 400 {
-            let msg = format!("upstream {}", init.status);
+        Err(CatalogFailure::Unreachable(e)) => {
+            record_probe(pg, id, ProbeState::Unreachable, &e).await;
+            Err(e)
+        }
+        Err(CatalogFailure::Auth {
+            status,
+            www_authenticate,
+        }) => Err(auth_required(pg, &server, status, www_authenticate.as_deref()).await),
+        Err(CatalogFailure::Status(status)) => {
+            let msg = format!("upstream {status}");
             record_probe(pg, id, ProbeState::Error, &msg).await;
-            return Err(msg);
+            Err(msg)
         }
-        let list = org_call(
-            &server,
-            bearer.as_deref(),
-            &serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
-            init.session.as_deref(),
-        )
-        .await?;
-        let tools: Vec<Value> = list
-            .json
-            .as_ref()
-            .and_then(|j| j.pointer("/result/tools"))
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .map(|t| {
-                        let mut e = Map::new();
-                        e.insert("name".into(), t.get("name").cloned().unwrap_or(Value::Null));
-                        if let Some(d) = t.get("description").and_then(Value::as_str) {
-                            e.insert("description".into(), Value::String(utf16_slice(d, 300)));
-                        }
-                        Value::Object(e)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        store_catalog(pg, id, &Value::Array(tools.clone())).await?;
-        record_probe(pg, id, ProbeState::Ok, &format!("{} tool(s)", tools.len())).await;
-        Ok(tools)
-    };
-    run.await
+        // A tools/list that never answered after a good handshake was never
+        // recorded — the handshake already proved the server is there.
+        Err(CatalogFailure::List(e)) => Err(e),
+    }
+}
+
+/// Why a catalog conversation produced no catalog — the outcomes before
+/// anything is recorded, so discovery (a person pressed a button) and the
+/// health pass (the schedule did) each decide what to write.
+pub(crate) enum CatalogFailure {
+    /// `initialize` never got an answer: DNS, refused, TLS, timeout.
+    Unreachable(String),
+    /// `initialize` answered 401/403.
+    Auth {
+        status: u16,
+        www_authenticate: Option<String>,
+    },
+    /// `initialize` answered some other 4xx/5xx.
+    Status(u16),
+    /// `initialize` answered and `tools/list` did not.
+    List(String),
+}
+
+/// THE CATALOG CONVERSATION — `initialize` then `tools/list`, as the org,
+/// over the same `org_call` every platform conversation uses. Shared by
+/// discovery and the health pass so the two can never ask a server
+/// differently; writes nothing.
+pub(crate) async fn converse_catalog(
+    server: &McpServer,
+    org_headers: &Map<String, Value>,
+    bearer: Option<&str>,
+) -> Result<Vec<Value>, CatalogFailure> {
+    let init = initialize(server, org_headers, bearer)
+        .await
+        .map_err(CatalogFailure::Unreachable)?;
+    if init.status == 401 || init.status == 403 {
+        return Err(CatalogFailure::Auth {
+            status: init.status,
+            www_authenticate: init.www_authenticate,
+        });
+    }
+    if init.status >= 400 {
+        return Err(CatalogFailure::Status(init.status));
+    }
+    let list = org_call(
+        server,
+        org_headers,
+        bearer,
+        &serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }),
+        init.session.as_deref(),
+    )
+    .await
+    .map_err(CatalogFailure::List)?;
+    Ok(list
+        .json
+        .as_ref()
+        .and_then(|j| j.pointer("/result/tools"))
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .map(|t| {
+                    let mut e = Map::new();
+                    e.insert("name".into(), t.get("name").cloned().unwrap_or(Value::Null));
+                    if let Some(d) = t.get("description").and_then(Value::as_str) {
+                        e.insert("description".into(), Value::String(utf16_slice(d, 300)));
+                    }
+                    Value::Object(e)
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// The handshake alone — `(status, WWW-Authenticate)` or the transport
+/// sentence. The health pass's reachability probe for per-user servers,
+/// where a 401 is the expected answer and proves the host is there.
+pub(crate) async fn initialize_status(
+    server: &McpServer,
+    org_headers: &Map<String, Value>,
+) -> Result<u16, String> {
+    initialize(server, org_headers, None)
+        .await
+        .map(|r| r.status)
+}
+
+async fn initialize(
+    server: &McpServer,
+    org_headers: &Map<String, Value>,
+    bearer: Option<&str>,
+) -> Result<OrgReply, String> {
+    org_call(
+        server,
+        org_headers,
+        bearer,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "talaria", "version": "1.0" },
+            },
+        }),
+        None,
+    )
+    .await
 }
 
 /// A 401/403 from discovery, turned into the one sentence that says what to
@@ -1494,6 +1636,19 @@ pub async fn refresh_mcp_tools(
 /// advertising OAuth later, gets its config discovered here and the sentence
 /// points at Connect instead of at a key field.
 async fn auth_required(
+    pg: &PgPool,
+    server: &McpServer,
+    status: u16,
+    www_authenticate: Option<&str>,
+) -> String {
+    let msg = auth_required_message(pg, server, status, www_authenticate).await;
+    record_probe(pg, &server.id, ProbeState::AuthRequired, &msg).await;
+    msg
+}
+
+/// The sentence alone, unrecorded — the health pass writes its probe in one
+/// atomic swap of its own (`health::swap_probe`).
+pub(crate) async fn auth_required_message(
     pg: &PgPool,
     server: &McpServer,
     status: u16,
@@ -1513,7 +1668,7 @@ async fn auth_required(
             talaria_mcp_oauth::ensure_oauth_config(pg, &server.id, &server.url).await,
             Ok(Some(_))
         );
-    let msg = if discovered_oauth || server.oauth_enabled {
+    if discovered_oauth || server.oauth_enabled {
         if server.auth_mode == "per-user" {
             format!(
                 "the server requires authentication ({status}) and speaks OAuth: each person connects \
@@ -1535,12 +1690,10 @@ async fn auth_required(
             "the server requires authentication ({status}): set its API key or auth header under \
              Credentials on the server card{quoted}"
         )
-    };
-    record_probe(pg, &server.id, ProbeState::AuthRequired, &msg).await;
-    msg
+    }
 }
 
-async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), String> {
+pub(crate) async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), String> {
     sqlx::query(
         "update mcp_servers set tools = $2, tools_refreshed_at = now(), updated_at = now() where id::text = $1",
     )
@@ -1565,16 +1718,36 @@ async fn store_catalog(pg: &PgPool, id: &str, tools: &Value) -> Result<(), Strin
 pub struct AgentServer {
     pub name: String,
     pub timeout_secs: Option<i64>,
+    /// Carried, but the account it speaks as is not connected yet — the
+    /// gateway answers its handshake in-house and every call with the
+    /// connect sentence (`not_connected`).
+    pub needs_connection: bool,
 }
 
 /// Every server an agent should carry in its rendered config (gateway URLs).
+///
+/// A server NOBODY CONNECTED YET is carried too. The gateway answers its
+/// initialize in-house, so the harness keeps it, and a call answers with the
+/// sentence that says who connects it and where — the agent can relay that,
+/// where a missing server could only ever be silence. What stays out is what
+/// the gateway would REFUSE (a denied owner, no grant), and a per-user server
+/// on an org agent unless someone granted it to that agent by name: an
+/// all-agents per-user server is meant for personal assistants, and listing
+/// it on every org agent would only advertise tools none of them can use.
 pub async fn servers_for_agent(
     pg: &PgPool,
     agent_model: &str,
 ) -> Result<Vec<AgentServer>, sqlx::Error> {
-    // (name, timeout_secs, auth_mode, oauth_enabled, id)
-    let rows: Vec<(String, Option<i64>, String, bool, String)> = sqlx::query_as(
-        "select s.name, s.timeout_secs::int8, s.auth_mode, (s.oauth is not null), s.id::text \
+    // (name, timeout_secs, auth_mode, oauth_enabled, id, explicitly granted)
+    let rows: Vec<(String, Option<i64>, String, bool, String, bool)> = sqlx::query_as(
+        "select s.name, s.timeout_secs::int8, s.auth_mode, (s.oauth is not null), s.id::text, \
+           (exists ( \
+             select 1 from mcp_server_agents a where a.server_id = s.id and a.agent_model = $1 \
+           ) or exists ( \
+             select 1 from mcp_team_access t \
+             join team_agents ta on ta.team_id = t.team_id \
+             where t.server_id = s.id and ta.agent_model = $1 and t.allowed \
+           )) as explicit \
          from mcp_servers s \
          where s.enabled and not s.builtin and case when s.name = $2 then exists ( \
            select 1 from agent_defs d where d.model = $1 and d.enabled and d.developer \
@@ -1596,56 +1769,72 @@ pub async fn servers_for_agent(
         .get(agent_model)
         .cloned();
     let mut out = Vec::new();
-    for (name, timeout_secs, auth_mode, oauth_enabled, id) in rows {
-        if auth_mode == "per-user" {
-            // Only rendered once the acting user actually connected an account.
-            let Some(owner) = &owner else {
-                continue;
-            };
-            let connected = if oauth_enabled {
-                has_oauth_tokens(pg, &id, owner).await?
-            } else {
-                has_user_credentials(pg, &id, owner).await?
-            };
-            if !connected {
-                continue;
+    for (name, timeout_secs, auth_mode, oauth_enabled, id, explicit) in rows {
+        let per_user = auth_mode == "per-user";
+        let needs_connection = match &owner {
+            None if per_user => {
+                if !explicit {
+                    continue;
+                }
+                true // nobody to be — the gateway says so on every call
             }
-        } else if oauth_enabled && !has_oauth_tokens(pg, &id, "org").await? {
-            continue; // org account not connected yet — keep it out of configs
-        } else if let Some(owner) = &owner {
-            // A PA skips servers its owner is denied — by a person rule, or by
-            // a team rule with no allow beside it: the same verdict
-            // `effective_mcp_for` reaches at call time, so a config never
-            // lists a server the gateway then refuses.
-            let access: Option<(bool,)> = sqlx::query_as(
-                "select allowed from mcp_user_access where server_id::text = $1 and user_id::text = $2",
-            )
-            .bind(&id)
-            .bind(owner)
-            .fetch_optional(pg)
-            .await?;
-            if access.is_some_and(|(allowed,)| !allowed) {
-                continue;
+            None => oauth_enabled && !has_oauth_tokens(pg, &id, "org").await?,
+            Some(owner) => {
+                // A PA skips servers its owner is denied — by a person rule,
+                // or by a team rule with no allow beside it: the same verdict
+                // `effective_mcp_for` reaches at call time, BEFORE it looks
+                // at credentials, so a config never lists a server the
+                // gateway then refuses.
+                if owner_denied(pg, &id, owner).await? {
+                    continue;
+                }
+                if per_user {
+                    let connected = if oauth_enabled {
+                        has_oauth_tokens(pg, &id, owner).await?
+                    } else {
+                        has_user_credentials(pg, &id, owner).await?
+                    };
+                    !connected
+                } else {
+                    oauth_enabled && !has_oauth_tokens(pg, &id, "org").await?
+                }
             }
-            let team_rows: Vec<(bool,)> = sqlx::query_as(
-                "select a.allowed from mcp_team_access a \
-                 join team_members m on m.team_id = a.team_id \
-                 where a.server_id::text = $1 and m.user_id::text = $2",
-            )
-            .bind(&id)
-            .bind(owner)
-            .fetch_all(pg)
-            .await?;
-            let any_deny = team_rows.iter().any(|(a,)| !*a);
-            let any_allow = team_rows.iter().any(|(a,)| *a);
-            let user_allow = access.is_some_and(|(allowed,)| allowed);
-            if any_deny && !any_allow && !user_allow {
-                continue;
-            }
-        }
-        out.push(AgentServer { name, timeout_secs });
+        };
+        out.push(AgentServer {
+            name,
+            timeout_secs,
+            needs_connection,
+        });
     }
     Ok(out)
+}
+
+/// The owner-side deny `effective_mcp_for` applies: an explicit person deny,
+/// or a team deny with no allow (person or team) beside it.
+async fn owner_denied(pg: &PgPool, server_id: &str, owner: &str) -> Result<bool, sqlx::Error> {
+    let access: Option<(bool,)> = sqlx::query_as(
+        "select allowed from mcp_user_access where server_id::text = $1 and user_id::text = $2",
+    )
+    .bind(server_id)
+    .bind(owner)
+    .fetch_optional(pg)
+    .await?;
+    if access.is_some_and(|(allowed,)| !allowed) {
+        return Ok(true);
+    }
+    let team_rows: Vec<(bool,)> = sqlx::query_as(
+        "select a.allowed from mcp_team_access a \
+         join team_members m on m.team_id = a.team_id \
+         where a.server_id::text = $1 and m.user_id::text = $2",
+    )
+    .bind(server_id)
+    .bind(owner)
+    .fetch_all(pg)
+    .await?;
+    let any_deny = team_rows.iter().any(|(a,)| !*a);
+    let any_allow = team_rows.iter().any(|(a,)| *a);
+    let user_allow = access.is_some_and(|(allowed,)| allowed);
+    Ok(any_deny && !any_allow && !user_allow)
 }
 
 #[cfg(test)]
@@ -1737,6 +1926,60 @@ mod tests {
         let err = read_tool_result(Some(json!({ "error": { "message": "" } })), "exa", "search")
             .unwrap_err();
         assert_eq!(err, "MCP tool \"exa.search\" failed: ");
+    }
+
+    #[test]
+    fn server_wire_carries_header_keys_never_values() {
+        let kek = talaria_secretbox::derive_kek("server-wire-test");
+        let dek = talaria_secretbox::new_dek().expect("entropy");
+        let sb =
+            SecretBox::from_parts(kek, std::collections::HashMap::from([(1u32, dek)]), Some(1));
+        let mut sealed_map = Map::new();
+        sealed_map.insert("X-Api-Key".into(), json!("sk-sealed-value-1"));
+        let sealed = crate::org_headers::seal_headers(&sb, &sealed_map)
+            .unwrap()
+            .expect("non-empty seals");
+        let mut legacy = Map::new();
+        legacy.insert("Authorization".into(), json!("Bearer legacy-plain-2"));
+        let server = McpServer {
+            id: "00000000-0000-0000-0000-000000000003".into(),
+            name: "exa".into(),
+            label: "Exa".into(),
+            description: None,
+            url: "https://mcp.exa.ai/mcp".into(),
+            headers_plain: legacy,
+            headers_sealed: Some(sealed.clone()),
+            timeout_secs: None,
+            enabled: true,
+            all_agents: false,
+            auth_mode: "org".into(),
+            tools: json!([]),
+            tools_refreshed_ms: None,
+            required_headers: json!([]),
+            oauth_enabled: false,
+            builtin: false,
+            app_slug: None,
+            created_by: None,
+            created_ms: 0,
+            package: None,
+            env_enc: None,
+            last_probe: None,
+        };
+        let mut keys = crate::org_headers::header_keys(&sb, &server).unwrap();
+        keys.sort();
+        let wire = server_wire(&server, &keys);
+        let text = wire.to_string();
+        for leak in ["sk-sealed-value-1", "legacy-plain-2", sealed.as_str()] {
+            assert!(
+                !text.contains(leak),
+                "the wire must not carry {leak}: {text}"
+            );
+        }
+        assert_eq!(wire["headerKeys"], json!(["Authorization", "X-Api-Key"]));
+        assert!(
+            wire.get("headers").is_none(),
+            "no value-bearing headers member at all"
+        );
     }
 
     #[test]
