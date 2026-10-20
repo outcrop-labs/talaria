@@ -12,15 +12,21 @@
   import { errorMessage } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
+  import { useIsAdmin, useSession } from '@/lib/session'
   import McpCredentialsModal from './McpCredentialsModal.svelte'
+  import McpFeaturedEditor from './McpFeaturedEditor.svelte'
   import McpInstallDialog from './McpInstallDialog.svelte'
   import McpServerMark from './McpServerMark.svelte'
   import {
     TIER_BADGE,
     catalogLine,
     connectPopup,
+    deadLine,
     emptyHint,
+    hiddenDeadLine,
     installLibraryServer,
+    livenessLine,
+    showDeadLabel,
     syncCatalog,
     useMcpLibrary,
     useMcpServers,
@@ -78,11 +84,23 @@
   let installing = $state<LibraryServerRow | null>(null)
   let credentialsFor = $state<McpServerRow | null>(null)
   let syncing = $state(false)
+  // Unreachable servers (the liveness job's `dead`) are left out unless the
+  // person asks; a new query starts hidden again.
+  let includeDead = $state(false)
+  $effect(() => {
+    void [dq, tier, kind]
+    includeDead = false
+  })
+  let editingFeatured = $state(false)
+  const sessionQuery = useSession()
+  const isAdmin = $derived(useIsAdmin(sessionQuery.data))
 
-  const resultsQuery = useMcpLibrary(() => ({ q: dq, tier, kind }))
+  const resultsQuery = useMcpLibrary(() => ({ q: dq, tier, kind, includeDead }))
   const results = $derived(resultsQuery.data)
   const catalog = $derived(results?.catalog)
   const filtered = $derived(dq.trim() !== '' || tier !== 'all' || kind !== 'all')
+  const hiddenDead = $derived(hiddenDeadLine(results?.hiddenDead))
+  const shownDead = $derived(includeDead && (results?.servers ?? []).some((s) => s.live?.state === 'dead'))
 
   // Installed dedupe: hosted entries by endpoint; package entries by
   // registry identity (their url is a routing token, not an endpoint).
@@ -189,7 +207,8 @@
       <span class="flex-1"></span>
       <span class="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
         {#if catalog}
-          <span title={catalog.error ?? undefined}>{catalogLine(catalog, relativeTime)}</span>
+          {@const live = livenessLine(catalog.liveness)}
+          <span title={catalog.error ?? undefined}>{catalogLine(catalog, relativeTime)}{live ? ` · ${live}` : ''}</span>
           {#if catalog.phase !== 'ready' || catalog.error}
             <Button size="xs" variant="ghost" class="gap-1 normal-case tracking-normal" disabled={syncing || catalog.syncing} onclick={() => void sync()}>
               {#if syncing || catalog.syncing}<WaitingMark site="mcp/sync" size={11} />{:else}<RefreshCw size={11} />{/if}
@@ -197,13 +216,29 @@
             </Button>
           {/if}
         {/if}
-        <InfoTip text="The official MCP registry, mirrored into this instance and refreshed every half hour. Search covers titles, publishers, names and descriptions — hosted endpoints and runnable packages alike." />
+        <InfoTip text="The official MCP registry, mirrored into this instance and refreshed every half hour. Search covers titles, publishers, names and descriptions — hosted endpoints and runnable packages alike. Hosted endpoints are asked an MCP initialize every few hours; the ones that don't answer are hidden until you ask for them." />
       </span>
     </div>
     {#if !filtered}
       <div class="flex items-center gap-1.5">
         <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Featured</span>
         <InfoTip text="Companies publishing their own MCP server on their own verified domain: the official integrations. Search reaches the whole catalog, community servers included." />
+        {#if isAdmin}
+          <button type="button" onclick={() => (editingFeatured = true)} class="ml-1 text-xs text-accent hover:underline">Edit featured</button>
+        {/if}
+      </div>
+    {/if}
+    {#if hiddenDead || shownDead}
+      <div class="flex items-center gap-1.5 font-sans text-xs text-muted">
+        {#if hiddenDead}
+          <span>{hiddenDead}</span>
+          <span aria-hidden="true">·</span>
+          <button type="button" onclick={() => (includeDead = true)} class="text-accent hover:underline">show</button>
+        {:else}
+          <span>Showing unreachable servers last</span>
+          <span aria-hidden="true">·</span>
+          <button type="button" onclick={() => (includeDead = false)} class="text-accent hover:underline">hide them</button>
+        {/if}
       </div>
     {/if}
     {#if error}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{error}</div>{/if}
@@ -225,6 +260,16 @@
             </div>
           {/each}
         </div>
+      {:else if results.servers.length === 0 && hiddenDead}
+        <EmptyState
+          icon="⌁"
+          title="Only unreachable servers match"
+          hint="Every match failed its last liveness check — its endpoint 404'd, errored or didn't answer. They can still be installed if you know they're back."
+        >
+          {#snippet action()}
+            <Button size="sm" variant="outline" onclick={() => (includeDead = true)}>{showDeadLabel(results.hiddenDead)}</Button>
+          {/snippet}
+        </EmptyState>
       {:else if results.servers.length === 0}
         {@const e = emptyHint(catalog, dq)}
         <EmptyState icon="⌁" title={e.title} hint={e.hint}>
@@ -246,8 +291,12 @@
             {@const onAgent = !!serverId && carried.has(serverId)}
             {@const busy = busyAdd === l.registryName}
             {@const badge = TIER_BADGE[l.tier]}
+            {@const dead = deadLine(l.live, relativeTime)}
             <div
-              class="group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line dither-fill"
+              class={cn(
+                'group relative flex flex-col rounded-lg border border-line-subtle p-4 transition-colors hover:border-line dither-fill',
+                dead && 'opacity-70',
+              )}
             >
               <div class="flex items-center gap-3 pr-8">
                 <McpServerMark title={l.title} domain={l.domain} icon={l.icon} size={34} />
@@ -280,6 +329,9 @@
               <p class="mt-2.5 line-clamp-3 min-h-12 font-sans text-xs leading-relaxed text-muted">
                 {l.description ?? 'No description.'}
               </p>
+              {#if dead}
+                <p class="mt-1.5 font-sans text-[11px] text-ink-dim" title={l.live?.detail ?? undefined}>{dead}</p>
+              {/if}
               {#if addedState && addedState.state !== 'ok'}
                 <div class="mt-2 flex flex-wrap items-center gap-2 font-sans text-[11px]">
                   {#if addedState.state === 'connect'}
@@ -347,6 +399,9 @@
         onCancel={() => (installing = null)}
         onInstall={(opts) => void register(cur, opts)}
       />
+    {/if}
+    {#if editingFeatured}
+      <McpFeaturedEditor onClose={() => (editingFeatured = false)} />
     {/if}
     {#if credentialsFor}
       {@const cur = credentialsFor}

@@ -1556,12 +1556,42 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::mcp::mcp_library::sync).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/mcp/library/liveness",
+            post(talaria_routes_fleet::mcp::mcp_library::liveness).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/library/featured",
+            get(talaria_routes_fleet::mcp::mcp_library::featured_get)
+                .put(talaria_routes_fleet::mcp::mcp_library::featured_put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        // The gateway's per-call record, read back (admin): the newest calls
+        // under filters, and the per-server / per-agent summary.
+        .route(
+            "/api/mcp/calls",
+            get(talaria_routes_fleet::mcp::mcp_calls::get).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/calls/summary",
+            get(talaria_routes_fleet::mcp::mcp_calls::summary).fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/mcp/calls/retention",
+            get(talaria_routes_fleet::mcp::mcp_calls::retention_get)
+                .put(talaria_routes_fleet::mcp::mcp_calls::retention_put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/mcp/icon",
             get(talaria_routes_fleet::mcp::mcp_icon::get).fallback(|| async { method_not_allowed("GET") }),
         )
         .route(
             "/api/mcp/test",
             post(talaria_routes_fleet::mcp::mcp_test::post).fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/mcp/health",
+            post(talaria_routes_fleet::mcp::mcp_health::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/mcp/oauth/start",

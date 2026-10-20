@@ -6,7 +6,7 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-325 routes across 23 groups.
+331 routes across 23 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
@@ -24,7 +24,7 @@
 | [`integrations`](./integrations.md) | Connected accounts — Google Workspace and the rest. | 42 |
 | [`knowledge`](./knowledge.md) | Knowledge base, RAG collections, org templates, blueprints, search. | 21 |
 | [`llm`](./llm.md) | The OpenAI-compatible wire (llm.v1.*). | 2 |
-| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 10 |
+| [`mcp`](./mcp.md) | MCP servers, governance, gateway, OAuth. | 16 |
 | [`models`](./models.md) | Model providers, gateway API keys, local backends. | 5 |
 | [`plans`](./plans.md) | Living plans: draft doc, members. | 4 |
 | [`research`](./research.md) | Cited research reports and their conversations. | 6 |

@@ -3822,6 +3822,79 @@ alter table tasks drop column if exists conversation_id`,
   // as "is a package" to every \`is_some()\` check. The api now binds NULL and
   // reads \`null\` as none; this clears the rows already written.
   `update mcp_servers set package = null where package = 'null'::jsonb`,
+  // ── MCP catalog liveness (2026-10-16) ───────────────────────────────────
+  // The mirror holds every hosted entry the registry lists, and a good share
+  // of them no longer answer: abandoned demos, expired tunnels, hosts that
+  // 404. The \`mcp-library-liveness\` job POSTs one JSON-RPC initialize to each
+  // and records what came back — ok | auth (alive, wants credentials) | dead
+  // | unknown — so search can sink and hide the dead ones instead of offering
+  // an install that cannot work. Null = never checked; the job takes those
+  // first, then the oldest, which is what the index serves.
+  `alter table mcp_library_entries add column if not exists live_state text`,
+  `alter table mcp_library_entries add column if not exists live_checked_at timestamptz`,
+  `alter table mcp_library_entries add column if not exists live_detail text`,
+  `create index if not exists mcp_library_entries_live_idx on mcp_library_entries (live_checked_at nulls first)`,
+  // ── MCP org headers, sealed (2026-10-16) ────────────────────────────────
+  // The org-level headers an admin types into a server's Credentials form
+  // (API keys, auth headers) were plaintext jsonb in \`headers\`. They now
+  // live SecretBox-sealed here as one JSON object; the api writes
+  // \`headers = '{}'\` beside every sealed value and seals the rows still
+  // holding plaintext at boot (talaria-mcp org_headers::seal_legacy_headers).
+  `alter table mcp_servers add column if not exists headers_sealed text`,
+  // ── MCP catalog: the dead count's index (2026-10-16) ────────────────────
+  // Search answers how many matches it hid as dead beside every page; the
+  // dead rows are a small slice of ~42k, and this partial index lets that
+  // count read only them instead of scanning the mirror per keystroke.
+  `create index if not exists mcp_library_entries_dead_idx on mcp_library_entries (tier) where live_state = 'dead'`,
+  // ── MCP health pass (2026-10-16) ────────────────────────────────────────
+  // The hourly \`mcp-health\` job re-asks every external server and notifies
+  // the admins when one goes from ok to down. \`health_state\` is what the
+  // LAST HEALTH PASS saw — kept apart from \`last_probe\`, which a person's
+  // Check now also writes, so a manual check cannot swallow the transition
+  // the schedule exists to announce. Null = no pass has seen the server yet.
+  `alter table mcp_servers add column if not exists health_state text`,
+  // An OAuth grant the provider refused to refresh. The token row itself is
+  // deleted on that refusal (it is what forces the reconnect), so the flag
+  // lives beside it, keyed the same way: Settings → Connections reads it to
+  // say Reconnect instead of Connect, and the server card reads the org's
+  // as the \`reconnect\` probe state. Read only together with the absence of
+  // tokens; a fresh sign-in makes it moot and the next pass deletes it.
+  `create table if not exists mcp_oauth_reconnect (
+    server_id uuid not null references mcp_servers(id) on delete cascade,
+    subject text not null,
+    detail text not null,
+    flagged_at timestamptz not null default now(),
+    primary key (server_id, subject)
+  )`,
+  // ── MCP gateway call record (2026-10-16) ────────────────────────────────
+  // One row per tools/call the gateway answers — and per refusal — so "which
+  // agent called which tool, how often, did it fail" has an answer that is
+  // not a log grep. Who (agent, the acting human on a personal assistant),
+  // where (server id + name: the name survives the server's deletion), what
+  // (tool), how (outcome ok | error | denied | not_connected | upstream_error
+  // | spend_error, the HTTP status answered, latency) and the error sentence
+  // capped at 300 chars. NEVER arguments, results, headers or tokens. Written
+  // off the hot path by talaria-mcp calls.rs; pruned past app_settings
+  // \`mcp_calls_retention_days\` (default 30) by the \`mcp-calls-prune\` job.
+  `create table if not exists mcp_tool_calls (
+     id bigserial primary key,
+     at timestamptz not null default now(),
+     server_id text not null,
+     server_name text not null,
+     agent text not null,
+     user_id text,
+     method text not null,
+     tool text,
+     outcome text not null,
+     status smallint,
+     latency_ms integer,
+     error text
+   )`,
+  // The admin list reads newest first, whole or per server or per agent; the
+  // prune deletes oldest first. Three indexes, one per read.
+  `create index if not exists mcp_tool_calls_at_idx on mcp_tool_calls (at desc)`,
+  `create index if not exists mcp_tool_calls_server_idx on mcp_tool_calls (server_id, at desc)`,
+  `create index if not exists mcp_tool_calls_agent_idx on mcp_tool_calls (agent, at desc)`,
   // ── Blueprints (2026-10-16) ─────────────────────────────────────────────
   // THE ASKS SOMEBODY SENDS AGAIN. A person's useful prompts lived in their
   // own notes app: the composer could hold one message and remember nothing,

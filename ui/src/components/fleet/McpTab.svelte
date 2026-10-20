@@ -20,7 +20,7 @@
   import McpAddServerModal from '@/routes/app/McpAddServerModal.svelte'
   import McpMarketplaceModal from '@/routes/app/McpMarketplaceModal.svelte'
   import McpServerMark from '@/routes/app/McpServerMark.svelte'
-  import { ALL_TOOLS, type ProbeRow } from '@/routes/app/mcp'
+  import { ALL_TOOLS, withoutMissing, type ProbeRow } from '@/routes/app/mcp'
   import ToolsetsControl from './ToolsetsControl.svelte'
 
   /** THIS AGENT'S MCP SERVERS — a view of the org registry scoped to one
@@ -52,8 +52,13 @@
     tools: Array<{ name: string; description?: string }>
     carried: boolean
     via: 'all-agents' | 'assigned' | 'team' | 'developer' | null
+    /** Granted, but the rendered config leaves it out — and why. */
+    withheld: 'owner-denied' | 'per-user-org-agent' | null
     assigned: boolean
     assignedTools: string[] | null
+    /** Subset entries the server's catalog no longer offers (renamed or
+     *  retired upstream) — the gateway can never let them through. */
+    assignedToolsMissing: string[]
   }
   interface AgentMcp {
     agent: { id: string; model: string; slug: string; developer: boolean; personal: boolean }
@@ -103,17 +108,38 @@
     if (on) void edit({ assign: [{ serverId: s.id, tools: null }] })
     else void edit({ unassign: [s.id] })
   }
-  const canToggle = (s: AgentServer) => canManage && !s.workbench && !s.builtin && !(s.allAgents && !s.assigned && s.carried)
+  const canToggle = (s: AgentServer) =>
+    canManage && !s.workbench && !s.builtin && s.withheld !== 'owner-denied' && !(s.allAgents && !s.assigned && s.carried)
   const toggleHint = (s: AgentServer) =>
     s.workbench
       ? 'Granted by the Developer Agent switch'
       : s.builtin
         ? 'Every agent carries the toolkit'
-        : s.allAgents && !s.assigned
-          ? 'Org-wide: every agent carries it'
-          : s.via === 'team' && !s.assigned
-            ? 'Granted by a team; add a direct assignment to narrow tools'
-            : undefined
+        : s.withheld === 'owner-denied'
+          ? "This assistant's owner is denied this server (Manage → MCP → access), so the agent does not carry it"
+          : s.withheld === 'per-user-org-agent'
+            ? 'A per-user server reaches an org agent only by a direct assignment — turn it on to carry it here'
+            : s.allAgents && !s.assigned
+              ? 'Org-wide: every agent carries it'
+              : s.via === 'team' && !s.assigned
+                ? 'Granted by a team; add a direct assignment to narrow tools'
+                : undefined
+
+  // The one-click fix for a stale subset: re-post the assignment without the
+  // tools the server stopped offering. When nothing would remain, the subset
+  // granted nothing usable anyway — remove the assignment (asked first) rather
+  // than send an empty subset or a null that would widen it to every tool.
+  const dropMissing = async (s: AgentServer) => {
+    const kept = withoutMissing(s.assignedTools ?? [], s.assignedToolsMissing)
+    if (kept) return void edit({ assign: [{ serverId: s.id, tools: kept }] })
+    const ok = await confirm({
+      title: 'Remove the assignment',
+      message: `None of the tools picked for ${def.displayName} on "${s.label}" exist any more. Remove the assignment? Re-add it with the tools the server offers now.`,
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (ok) void edit({ unassign: [s.id] })
+  }
 
   const carriedIds = $derived((query.data?.servers ?? []).filter((s) => s.carried).map((s) => s.id))
   const onThisAgent = $derived((query.data?.servers ?? []).filter((s) => s.carried))
@@ -139,15 +165,25 @@
           <span
             class="rounded border border-warning/40 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
             title={s.authMode === 'per-user'
-              ? 'A per-user server: the agent carries it once its owner connects their account under Settings → Connections.'
-              : 'The org account is not connected yet — Connect on the MCP page.'}
+              ? 'A per-user server: the agent carries it now, and its calls work once its owner connects their account under Settings → Connections. Until then the agent is told where to connect.'
+              : s.probe?.state === 'reconnect'
+                ? 'The provider refused to refresh the org account, so the grant is gone. Reconnect on the MCP page; until then the agent is told an admin must connect it.'
+                : 'The org account is not connected yet — Connect on the MCP page. Until then the agent is told an admin must connect it.'}
           >
-            {s.authMode === 'per-user' ? 'owner must connect' : 'not connected'}
+            {s.authMode === 'per-user' ? 'owner must connect' : s.probe?.state === 'reconnect' ? 'reconnect needed' : 'not connected'}
           </span>
         {:else if s.probe && s.probe.state !== 'ok'}
           <span class="rounded border border-danger/40 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-danger" title={s.probe.detail}>
-            {s.probe.state === 'auth-required' ? 'needs credentials' : s.probe.state}
+            {s.probe.state === 'auth-required' ? 'needs credentials' : s.probe.state === 'reconnect' ? 'reconnect needed' : s.probe.state}
           </span>
+        {/if}
+        {#if s.assignedToolsMissing.length}
+          <Chip
+            tone="warn"
+            title={`The server no longer offers ${s.assignedToolsMissing.join(', ')}. This agent's tool subset still names ${s.assignedToolsMissing.length === 1 ? 'it' : 'them'}, and calls to ${s.assignedToolsMissing.length === 1 ? 'it' : 'them'} can only fail.`}
+          >
+            {s.assignedToolsMissing.length} missing tool{s.assignedToolsMissing.length === 1 ? '' : 's'}
+          </Chip>
         {/if}
       </div>
       {#if s.description}<div class="truncate font-sans text-xs text-muted">{s.description}</div>{/if}
@@ -174,6 +210,17 @@
           </span>
         {:else}
           <span class="font-mono text-[10px] text-ink-dim">no tools discovered yet</span>
+        {/if}
+        {#if s.assignedToolsMissing.length && canManage && s.assigned}
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={busy}
+            onclick={() => void dropMissing(s)}
+            title={`Remove ${s.assignedToolsMissing.join(', ')} from this agent's tool subset`}
+          >
+            Drop missing tools
+          </Button>
         {/if}
       </div>
     </div>

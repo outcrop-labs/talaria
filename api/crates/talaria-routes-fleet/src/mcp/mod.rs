@@ -28,7 +28,9 @@ pub(crate) async fn oauth_callback_base(
 pub(crate) fn oauth_callback_url(base: &str) -> String {
     format!("{}/api/mcp/oauth/callback", base.trim_end_matches('/'))
 }
+pub mod mcp_calls;
 pub mod mcp_gw_server;
+pub mod mcp_health;
 pub mod mcp_icon;
 pub mod mcp_library;
 pub mod mcp_oauth_callback;

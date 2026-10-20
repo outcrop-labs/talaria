@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { catalogLine, emptyHint, serverStatus, type StatusInput } from './mcp-status'
+import {
+  catalogLine,
+  checkedLine,
+  emptyHint,
+  healthChecked,
+  missingTools,
+  serverStatus,
+  staleAssignments,
+  withoutMissing,
+  type StatusInput,
+} from './mcp-status'
 
 const row = (over: Partial<StatusInput> = {}): StatusInput => ({
   enabled: true,
@@ -12,7 +22,6 @@ const row = (over: Partial<StatusInput> = {}): StatusInput => ({
   orgConnected: null,
   oauthMeta: null,
   probe: null,
-  headers: {},
   tools: [],
   ...over,
 })
@@ -67,6 +76,112 @@ describe('serverStatus', () => {
     const s = serverStatus(row())
     expect(s.kind).toBe('untested')
     expect(s.tone).toBe('muted')
+  })
+})
+
+describe('serverStatus — the health pass verdicts', () => {
+  const reconnect = { state: 'reconnect' as const, detail: 'the provider rejected the refresh of the connected account', at: '' }
+
+  it('an org OAuth grant the provider refused reads reconnect, danger, with Connect as the action', () => {
+    const s = serverStatus(row({ oauthEnabled: true, orgConnected: false, probe: reconnect }))
+    expect(s).toMatchObject({ kind: 'reconnect', tone: 'danger', action: 'connect' })
+    expect(s.detail).toContain('rejected the refresh')
+  })
+
+  it('reconnect outranks the OAuth-app setup prompt: the app existed, the grant is what went', () => {
+    const s = serverStatus(row({ oauthEnabled: true, orgConnected: false, oauthMeta: { dcr: false, clientSet: false, dcrRejected: null }, probe: reconnect }))
+    expect(s.kind).toBe('reconnect')
+  })
+
+  it('a stale reconnect probe after a fresh sign-in reads connected', () => {
+    expect(serverStatus(row({ oauthEnabled: true, orgConnected: true, probe: reconnect })).kind).toBe('connected')
+  })
+
+  it('disabled still outranks reconnect', () => {
+    expect(serverStatus(row({ enabled: false, oauthEnabled: true, orgConnected: false, probe: reconnect })).kind).toBe('disabled')
+  })
+
+  it('a per-user server the health pass could not reach says so instead of "per-user accounts"', () => {
+    expect(serverStatus(row({ authMode: 'per-user', probe: { state: 'unreachable', detail: 'fetch failed', at: '' } }))).toMatchObject({
+      kind: 'unreachable',
+      tone: 'danger',
+      detail: 'fetch failed',
+    })
+    expect(serverStatus(row({ authMode: 'per-user', probe: { state: 'error', detail: 'upstream 502', at: '' } }))).toMatchObject({ kind: 'error', tone: 'danger' })
+  })
+
+  it('a reachable per-user server stays per-user', () => {
+    expect(serverStatus(row({ authMode: 'per-user', probe: { state: 'ok', detail: 'reachable', at: '' } })).kind).toBe('per-user')
+  })
+
+  it('a probe that carries stale assignments is still ready — the drift is the tab’s warning, not the server’s', () => {
+    const s = serverStatus(row({ probe: { state: 'ok', detail: '2 tool(s)', at: '', staleAssignments: [{ agent: 'm', missing: ['x'] }] } }))
+    expect(s.kind).toBe('ready')
+  })
+})
+
+describe('checkedLine', () => {
+  const rel = () => '5 minutes ago'
+  it('says when the server was last asked, or nothing', () => {
+    expect(checkedLine({ state: 'ok', detail: '', at: '2026-10-16T10:00:00.000Z' }, rel)).toBe('Checked 5 minutes ago')
+    expect(checkedLine({ state: 'unreachable', detail: '', at: '2026-10-16T10:00:00.000Z' }, rel)).toBe('Checked 5 minutes ago')
+    expect(checkedLine(null, rel)).toBeNull()
+    expect(checkedLine({ state: 'ok', detail: '', at: '' }, rel)).toBeNull()
+  })
+})
+
+describe('healthChecked', () => {
+  const origin = (over: Partial<Parameters<typeof healthChecked>[0]> = {}) => ({
+    builtin: false,
+    appSlug: null,
+    url: 'https://mcp.deepwiki.com/mcp',
+    package: null,
+    ...over,
+  })
+  it('asks remotes and oci-http packages', () => {
+    expect(healthChecked(origin())).toBe(true)
+    expect(healthChecked(origin({ url: 'http://10.0.0.1/mcp' }))).toBe(true)
+    expect(healthChecked(origin({ url: 'talaria-pkg://x', package: { transport: 'http' } }))).toBe(true)
+  })
+  it('leaves stdio packages and the deployment\'s own servers alone', () => {
+    expect(healthChecked(origin({ url: 'talaria-pkg://x', package: { transport: 'stdio' } }))).toBe(false)
+    expect(healthChecked(origin({ builtin: true }))).toBe(false)
+    expect(healthChecked(origin({ appSlug: 'crm' }))).toBe(false)
+    expect(healthChecked(origin({ url: 'talaria-workbench://core' }))).toBe(false)
+  })
+})
+
+describe('missing tools', () => {
+  const tools = [{ name: 'read_wiki_structure' }, { name: 'ask_question' }]
+
+  it('missingTools is the subset minus the catalog, deduped, in order', () => {
+    expect(missingTools(['bogus', 'ask_question', 'gone', 'bogus'], tools)).toEqual(['bogus', 'gone'])
+    expect(missingTools(['ask_question'], tools)).toEqual([])
+  })
+
+  it('no subset, or no catalog, means nothing is missing', () => {
+    expect(missingTools(null, tools)).toEqual([])
+    expect(missingTools(['anything'], [])).toEqual([])
+    expect(missingTools([], tools)).toEqual([])
+  })
+
+  it('staleAssignments lists only the assignments that lost a tool', () => {
+    expect(
+      staleAssignments(
+        [
+          { agentModel: 'all', tools: null },
+          { agentModel: 'fine', tools: ['ask_question'] },
+          { agentModel: 'stale', tools: ['ask_question', 'bogus'] },
+        ],
+        tools,
+      ),
+    ).toEqual([{ agentModel: 'stale', missing: ['bogus'] }])
+  })
+
+  it('withoutMissing keeps the rest, and answers null when nothing would remain', () => {
+    expect(withoutMissing(['ask_question', 'bogus'], ['bogus'])).toEqual(['ask_question'])
+    expect(withoutMissing(['bogus'], ['bogus'])).toBeNull()
+    expect(withoutMissing(['a', 'b'], [])).toEqual(['a', 'b'])
   })
 })
 
