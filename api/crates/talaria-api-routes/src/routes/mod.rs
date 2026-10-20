@@ -1899,6 +1899,14 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_comms::comms::conversations_id_todo::get)
                 .fallback(|| async { method_not_allowed("GET") }),
         )
+        // What the agent itself still holds of the thread — the compaction
+        // count and the boundary, read off its own Hermes session. Same gate
+        // as the plan above.
+        .route(
+            "/api/conversations/{id}/session",
+            get(talaria_routes_comms::comms::conversations_id_session::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/conversations/{id}/members",
             get(talaria_routes_boards::plans::plans_id_members::get)

@@ -60,6 +60,7 @@ mod runs_run;
 mod runs_store;
 mod secretbox;
 mod sender_identity_live;
+mod session_overview_live;
 mod streamed_at_liveness;
 mod subagent_events_live;
 mod task_refs_live;

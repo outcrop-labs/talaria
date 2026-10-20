@@ -7,22 +7,35 @@
   import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
+  import Segmented from '@/components/ui/Segmented.svelte'
+  import type { SegmentedOption } from '@/components/ui/segmented'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import InternalEditor from '@/components/editor/InternalEditor.svelte'
   import type { InternalEditorHandle } from '@/components/editor/internal-editor'
+  import MemoryEntries from '@/components/memory/MemoryEntries.svelte'
   import { appendMemoryNote, memoryKey, saveMemory, useMemory } from '@/lib/memory'
   import { cn } from '@/lib/cn'
 
-  // MEMORY, EDITED AS WHAT IT IS: one file.
+  // MEMORY, IN THE SHAPE IT IS KEPT IN — and the file it is kept in.
   //
-  // The pane that used to live here split MEMORY.md into entries for a
-  // scanable sidebar — a READ-SIDE parse (`memory-doc.ts`, now gone) feeding a
-  // picker, with "Edit all" swapping the whole pane for a workbench. The split
-  // cost more than it gave: the file is the agent's own curated record, a
-  // person's edits are whole-file edits, and a parse that misread a row cost a
-  // confused picker without ever protecting the file. The editor IS the memory
-  // now — the workbench with its version rail and its Muse, a "remember" line
-  // that appends a dated fact, and one Save.
+  // Two views, and the ORDER is the point. Hermes stores a memory as a
+  // §-delimited list of entries, so ENTRIES is the default: search it, fix one
+  // entry, drop one entry (`MemoryEntries`, which owns the Memory/Profile
+  // switch because the entry model is the same for both files). WHOLE FILE is
+  // the escape hatch for everything a list cannot say — the workbench with its
+  // version rail and its Muse, a "remember" line that appends a dated fact,
+  // and one Save.
+  //
+  // The whole-file view deliberately stays MEMORY.md only. It is the hatch,
+  // not a second editor to keep in sync: a person who needs to rewrite the
+  // profile wholesale is a person who should see the list they are replacing.
+  //
+  // An earlier pane split this file into entries for a picker and got it
+  // backwards: that was a READ-SIDE parse (`memory-doc.ts`, now gone) over
+  // markdown headings, which could misread a row without protecting anything,
+  // because every write still replaced the whole file. The split here is the
+  // format the agent actually writes, and the writer round-trips it
+  // (`memory-entries.ts`) — that is what makes editing a piece of it safe.
   //
   // The remember line appends to WHAT YOU SEE — the editor's live text — and
   // stages the result straight back, so a fact just appended can never be
@@ -51,6 +64,13 @@
 
   const qc = useQueryClient()
   const query = useMemory(() => id)
+
+  type View = 'entries' | 'file'
+  const VIEWS: SegmentedOption<View>[] = [
+    { id: 'entries', label: 'Entries', title: 'The list the agent keeps, one card per entry' },
+    { id: 'file', label: 'Whole file', title: 'MEMORY.md as one document, with its version history' },
+  ]
+  let view = $state<View>('entries')
 
   let handle = $state<InternalEditorHandle | null>(null)
   let dirty = $state(false)
@@ -125,18 +145,31 @@
     <div class="mb-3 flex items-center gap-1.5 px-4 pt-4">
       <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Memory</span>
       <InfoTip text={tip} />
-      <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">{label} · MEMORY.md</span>
-      <!-- History, right-aligned on the title line — same place every record
-           surface keeps it. No delete: there is no record without this file. -->
-      <IconButton title="Version history" active={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
-        <History size={14} />
-      </IconButton>
+      <!-- A mode switch, not a tab: the same document, read two ways. -->
+      <Segmented options={VIEWS} value={view} onChange={(v) => (view = v)} class="ml-1" />
+      <!-- The entries view names its own file (it switches between two), so the
+           filename belongs to the whole-file view only. -->
+      <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">{label}{view === 'file' ? ' · MEMORY.md' : ''}</span>
+      {#if view === 'file'}
+        <!-- History, right-aligned on the title line — same place every record
+             surface keeps it. No delete: there is no record without this file.
+             It belongs to the whole-file view: the rail reverts the DOCUMENT,
+             which is not an action an entry card can offer honestly. -->
+        <IconButton title="Version history" active={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
+          <History size={14} />
+        </IconButton>
+      {/if}
     </div>
 
-    <!-- Never seed the editor from a read that has not landed: saving from an
-         empty seed would replace the real memory with an empty file. The click
-         is already answered — the header is here, the body is a skeleton. -->
-    {#if !query.data}
+    {#if view === 'entries'}
+      <!-- The list owns its scroll and its own read (one query key per file,
+           so the Memory side is the very read this header is already waiting
+           on — not a second request). -->
+      <MemoryEntries {id} {canEdit} class="min-h-0 flex-1" />
+      <!-- Never seed the editor from a read that has not landed: saving from an
+           empty seed would replace the real memory with an empty file. The click
+           is already answered — the header is here, the body is a skeleton. -->
+    {:else if !query.data}
       <SkeletonRows rows={8} />
     {:else}
       {#if canEdit}

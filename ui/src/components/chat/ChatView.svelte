@@ -15,6 +15,7 @@
   import { useProfilePrefs } from '@/lib/muse.svelte'
   import UserTurn from './UserTurn.svelte'
   import DayDivider from './DayDivider.svelte'
+  import CompactedRow from './CompactedRow.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
   import { useSession } from '@/lib/session'
   import { pushToast, toastError } from '@/lib/toast.svelte'
@@ -26,7 +27,13 @@
   import { queueChatMessage, steerChat, stopChat, streamChat, type ChatKind } from '@/lib/chat'
   import { HttpError } from '@/lib/fetch-json'
   import { mergeTool } from '@/lib/sse-parse'
-  import { loadConversation, markConversationRead, toggleConversationReaction } from '@/lib/conversations.svelte'
+  import {
+    loadConversation,
+    loadSessionOverview,
+    markConversationRead,
+    toggleConversationReaction,
+    type SessionOverview,
+  } from '@/lib/conversations.svelte'
   import { uploadFile, splitAttachments, type Attachment } from '@/lib/attachments'
   import {
     reactionChips,
@@ -146,6 +153,13 @@
   // True while an EXISTING conversation's history is being fetched — the pane
   // shows transcript-shaped skeletons, never the "Talk to X" hero.
   let loadingConversation = $state(false)
+  // What Hermes has done to this thread's pinned session, read ONCE per
+  // conversation beside the history. Deliberately not in the pollers: a
+  // compaction is not news arriving turn by turn, and the read goes out to
+  // the agent container — polling it would put a per-tick container call
+  // behind every open chat. Null covers both "not asked yet" and "could not
+  // ask", which render the same way: no row.
+  let sessionOverview = $state<SessionOverview | null>(null)
   let error = $state<string | null>(null)
   // Right-click a bubble → copy its text (the content is already markdown,
   // so one copy action covers both plain and markdown wants).
@@ -210,6 +224,9 @@
     held = []
     userStopped = false
     loadingConversation = false
+    // A fresh thread has no session behind it yet, so the previous thread's
+    // compaction row must not survive the switch.
+    sessionOverview = null
     error = null
   })
 
@@ -280,6 +297,7 @@
     userStopped = false
     let cancelled = false
     loadingConversation = true
+    sessionOverview = null
     loadConversation(conversationId)
       .then((res) => {
         if (!cancelled) messages = (res?.messages ?? []).map(toDisplay)
@@ -287,6 +305,12 @@
       .finally(() => {
         if (!cancelled) loadingConversation = false
       })
+    // The session overview rides the same guard but NOT the same spinner: the
+    // transcript must not wait on a container read, so a slow or unreachable
+    // agent simply means the row appears late or never.
+    loadSessionOverview(conversationId).then((o) => {
+      if (!cancelled) sessionOverview = o
+    })
     return () => {
       cancelled = true
     }
@@ -835,6 +859,11 @@
         class="mx-auto w-full max-w-[var(--converse-width)] space-y-5 px-6 py-6"
         style:padding-bottom="calc(var(--chat-composer, 0px) + 0.5rem)"
       >
+      <!-- The top of what is left: inside this branch on purpose, so it never
+           appears over the loading skeletons or above the zero state. Renders
+           itself away unless the thread runs a pinned session that Hermes has
+           actually compacted. -->
+      <CompactedRow overview={sessionOverview} />
       {#each messages as m, i (i)}
         {@const day = dividers.get(i)}
         {@const live = i === liveIndex}

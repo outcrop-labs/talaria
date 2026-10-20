@@ -335,14 +335,20 @@ Source: [`api/crates/talaria-routes-knowledge/src/knowledge/kb_spaces_id_docs.rs
 
 Source: [`api/crates/talaria-routes-knowledge/src/knowledge/memory_id.rs`](../../api/crates/talaria-routes-knowledge/src/knowledge/memory_id.rs)
 
-> /api/memory/{id}. One managed agent's MEMORY.md, read/written through its
+> /api/memory/{id}. One managed agent's memory, read/written through its
 > running container. This agent's managers, and admins — an agent's memory
 > is part of the agent (docs/PERMISSIONS.md, "Agent managers").
+>
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-manager` | — | `{content, container}` | 200, 400 | — |
 | PUT | `session` + `agent-manager` | [body](#put-apimemoryid-body) | `{ok}` | 200, 400 | — |
+
+**GET** — Read one of the agent's two memory files. `?file=memory` (the default) is MEMORY.md, what the agent has learned and kept; `?file=profile` is USER.md, its profile of the person it works for. Any other value is a 400. A file the agent has never written reads as empty, not as a miss.
+
+**PUT** — Replace one memory file whole, snapshotting the result to its own history (`?file=` as on the GET). Both files are §-delimited entry lists the agent's own memory tool round-trips, and the content is written byte for byte — a writer that reflows them costs the agent its ability to remember anything.
 
 ### PUT `/api/memory/{id}` body
 

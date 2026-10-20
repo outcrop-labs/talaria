@@ -274,7 +274,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied}` | 200, 400, 404 | audit |
+| POST | `session` + `agent-manager` | [body](#post-apifleetdefsidedit-body) | `{ok, version, created, applied, notes}` | 200, 400, 404 | audit |
 
 ### POST `/api/fleet/defs/{id}/edit` body
 
@@ -286,6 +286,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_edit.rs`](../.
 | `fallbacks` | `target_array` |  |
 | `note` | `string?(300)` |  |
 | `apply` | `bool?` | Re-render + restart the managed container so the edit takes effect now. |
+| `compression` | `parse_compression` | The compaction knobs, and what the answer owes the caller about them. note: `compression` — `{ threshold?: number|null (0.1..1), thresholdTokens?: number|null (1000..10000000) }`; null clears a knob, absent leaves it; a threshold under 0.75 saves and the answer's `notes` says Hermes raises it for models under 512K context |
 
 ## `/api/fleet/defs/{id}/google`
 

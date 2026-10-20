@@ -2,12 +2,14 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Generating from '@/components/ui/Generating.svelte'
+  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { submitOnEnter } from '@/components/ui/control'
   import InternalEditorModal from '@/components/fleet/InternalEditorModal.svelte'
   import TargetRow from '@/components/fleet/TargetRow.svelte'
   import { fade, listStagger, slide } from '@/lib/motion'
-  import { saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
+  import { pushToast } from '@/lib/toast.svelte'
+  import { COMPACTION_BOUNDS, saveAgentEdit, type AgentDef, type LlmEndpoint, type ModelTarget } from '@/lib/fleet-defs'
 
   type AliasRow = ModelTarget & { name: string }
 
@@ -28,6 +30,15 @@
   let main = $state<ModelTarget>(cfg?.main ?? { endpoint: endpoints[0]?.name ?? '', model: '' })
   let aliases = $state<AliasRow[]>(cfg?.aliases ?? [])
   let fallbacks = $state<ModelTarget[]>(cfg?.fallbacks ?? [])
+  // Compaction, seeded from the def's own projection of `raw.compression`
+  // (a def-level field, not a member of `latest.config`). Blank IS a value
+  // here — `null` clears the key and hands the decision back to Hermes — so
+  // these are `number | null` rather than numbers with a sentinel.
+  // svelte-ignore state_referenced_locally -- reason: version drafts seeded once; saving creates a new version, refetch must not clobber in-progress edits
+  let threshold = $state<number | null>(def.compression?.threshold ?? null)
+  // svelte-ignore state_referenced_locally -- reason: version drafts seeded once; saving creates a new version, refetch must not clobber in-progress edits
+  let thresholdTokens = $state<number | null>(def.compression?.thresholdTokens ?? null)
+  const touched = $state({ threshold: false, tokens: false })
   let note = $state('')
   let busy = $state<false | 'save' | 'apply'>(false)
   let soulOpen = $state(false)
@@ -35,13 +46,50 @@
 
   const save = async (apply: boolean) => {
     err = null
+    // A ratio outside the range is a typo, not an instruction: Hermes would
+    // read 50 as "fifty times the context" and never compact. Caught here
+    // rather than at the api so the form keeps the draft.
+    const B = COMPACTION_BOUNDS
+    if (threshold !== null && (!Number.isFinite(threshold) || threshold < B.threshold.min || threshold > B.threshold.max)) {
+      err = `Compaction threshold is a ratio between ${B.threshold.min} and ${B.threshold.max}. Leave it blank for the default.`
+      return
+    }
+    // The same window the route enforces — and whole tokens, as the route's
+    // int reader demands — so a typo is caught with the draft still in the
+    // form rather than as a 400 after the round trip.
+    if (
+      thresholdTokens !== null &&
+      (!Number.isFinite(thresholdTokens) || !Number.isInteger(thresholdTokens) || thresholdTokens < B.tokens.min || thresholdTokens > B.tokens.max)
+    ) {
+      err = `Token ceiling is a whole number of tokens between ${B.tokens.min.toLocaleString()} and ${B.tokens.max.toLocaleString()}. Leave it blank for no ceiling.`
+      return
+    }
     busy = apply ? 'apply' : 'save'
     try {
-      const r = await saveAgentEdit(def.id, { soul, main, aliases, fallbacks, note: note || undefined, apply })
+      const r = await saveAgentEdit(def.id, {
+        soul,
+        main,
+        aliases,
+        fallbacks,
+        // Only a knob the person TOUCHED travels: absent leaves the stored
+        // value alone, which is what keeps an ordinary model-change save from
+        // clearing a ceiling the wire could not project (a stored string or a
+        // float the projection reads as null). A touched blank is a clear.
+        compression: {
+          ...(touched.threshold ? { threshold } : {}),
+          ...(touched.tokens ? { thresholdTokens } : {}),
+        },
+        note: note || undefined,
+        apply,
+      })
       if (r.error) {
         err = r.error
         return
       }
+      // A toast rather than a line in the form, because `onSaved` is the
+      // manage modal's close: anything rendered in here is gone a frame later.
+      const said = r.notes ?? []
+      if (said.length > 0) pushToast({ title: `${def.displayName} · config saved`, body: said.join(' · ') })
       await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
       onSaved?.()
     } finally {
@@ -98,6 +146,47 @@
       <Button variant="outline" size="sm" onclick={() => (fallbacks = [...fallbacks, { endpoint: endpoints[0]?.name ?? '', model: '' }])}>
         + Add fallback
       </Button>
+    </div>
+  </section>
+
+  <section>
+    <div class="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+      Compaction
+      <InfoTip
+        text="Hermes folds the earlier part of a pinned session once the thread passes the threshold. The threshold is a ratio of the routed model's context window, and Hermes raises anything under 0.75 to 0.75 for models with less than 512K of context. The token ceiling is an absolute bound: whichever is reached first fires. Blank leaves Hermes' own default in place."
+      />
+    </div>
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <label class="flex items-center gap-2">
+        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Threshold</span>
+        <Input
+          size="sm"
+          type="number"
+          min={COMPACTION_BOUNDS.threshold.min}
+          max={COMPACTION_BOUNDS.threshold.max}
+          step={COMPACTION_BOUNDS.threshold.step}
+          bind:value={threshold}
+          oninput={() => (touched.threshold = true)}
+          placeholder="default"
+          title="Fraction of the model's context window at which the session is compacted (0.1 to 1); blank for Hermes' default"
+          class="w-24 font-[var(--font-mono)]"
+        />
+      </label>
+      <label class="flex items-center gap-2">
+        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Token ceiling</span>
+        <Input
+          size="sm"
+          type="number"
+          min={COMPACTION_BOUNDS.tokens.min}
+          max={COMPACTION_BOUNDS.tokens.max}
+          step={COMPACTION_BOUNDS.tokens.step}
+          bind:value={thresholdTokens}
+          oninput={() => (touched.tokens = true)}
+          placeholder="none"
+          title="Compact once the session passes this many tokens, whatever the ratio says (1,000 to 10,000,000); blank for no ceiling"
+          class="w-32 font-[var(--font-mono)]"
+        />
+      </label>
     </div>
   </section>
 

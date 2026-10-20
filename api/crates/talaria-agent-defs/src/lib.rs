@@ -141,12 +141,69 @@ pub struct AliasTarget {
     pub target: ModelTarget,
 }
 
+/// One nullable member of an edit: absent from the request (leave whatever is
+/// stored), null (drop the key), or a value (write it). The three-way
+/// distinction is the whole point — "the caller said nothing" and "the caller
+/// said none" are different instructions, and a plain `Option` can only carry
+/// one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Knob<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
+}
+
+/// The compaction knobs an editor turns on an agent's Hermes compression
+/// block (`raw.compression`): the ratio of the context window at which Hermes
+/// starts folding old turns away, and the absolute token ceiling that can trip
+/// it first. EVERY OTHER KEY IN THE BLOCK IS THE DEF AUTHOR'S — `enabled`,
+/// `protect_last_n`, `min_tail_user_messages`, `progress_notices` stay exactly
+/// as written, because the renderer emits the block verbatim and a form that
+/// rewrote it whole would silently revert hand-authored config.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CompressionEdits {
+    pub threshold: Knob<f64>,
+    pub threshold_tokens: Knob<i64>,
+}
+
 /// The structured edit a caller applies onto a previous config.
 #[derive(Debug, Clone)]
 pub struct ConfigEdits {
     pub main: ModelTarget,
     pub aliases: Vec<AliasTarget>,
     pub fallbacks: Vec<ModelTarget>,
+    /// The compaction knobs. Default is both `Keep`: a caller that says
+    /// nothing about compression leaves the stored block untouched.
+    pub compression: CompressionEdits,
+}
+
+/// The current compaction knobs off a stored config, for the editor that
+/// turns them: `{ threshold, thresholdTokens }`, or null when the def carries
+/// no `raw.compression` block at all. An absent block means Hermes' own
+/// defaults are in force (0.50 of the window, 256K tokens) and the form is
+/// what says so — this does not invent numbers the def never wrote. A member
+/// that is stored as something other than a number reads as null for the same
+/// reason: the wire type is a promise.
+pub fn compression_wire(config: &Value) -> Value {
+    let Some(block) = config
+        .get("raw")
+        .and_then(|raw| raw.get("compression"))
+        .and_then(Value::as_object)
+    else {
+        return Value::Null;
+    };
+    let num = |key: &str| {
+        block
+            .get(key)
+            .and_then(Value::as_f64)
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::Null, Value::Number)
+    };
+    serde_json::json!({
+        "threshold": num("threshold"),
+        "thresholdTokens": block.get("threshold_tokens").and_then(Value::as_i64).map_or(Value::Null, |n| serde_json::json!(n)),
+    })
 }
 
 /// A version row, the columns the create path reads (timestamps nothing
@@ -339,6 +396,10 @@ pub async fn list_agent_defs_wire(pg: &PgPool) -> Result<Vec<Value>, sqlx::Error
                 "ticketTemplateId": d.ticket_template_id,
                 "planTemplateId": d.plan_template_id,
                 "currentVersion": d.current_version,
+                // The compaction knobs off the latest version's config — the
+                // Config tab reads the current values from here, and null
+                // means "the def says nothing, Hermes' defaults are in force".
+                "compression": compression_wire(latest.get("config").unwrap_or(&Value::Null)),
                 "createdAt": epoch_ms_to_iso(d.created_ms),
                 "updatedAt": epoch_ms_to_iso(d.updated_ms),
                 "latest": latest,
@@ -550,6 +611,19 @@ pub fn canonical(v: &Value) -> String {
     }
 }
 
+/// One knob onto one key of a raw block: left alone, removed, or written.
+fn turn_knob<T: Into<Value>>(block: &mut Map<String, Value>, key: &str, knob: Knob<T>) {
+    match knob {
+        Knob::Keep => {}
+        Knob::Clear => {
+            block.remove(key);
+        }
+        Knob::Set(v) => {
+            block.insert(key.to_string(), v.into());
+        }
+    }
+}
+
 /// Structured edits applied onto a previous version's config
 /// (applyConfigEdits). The raw Hermes config is rebuilt in the same stroke so
 /// rendering reflects the edit: model/base_url/api_key come from the endpoint
@@ -644,6 +718,27 @@ pub fn apply_config_edits_over(
         fallbacks.push(block(ep_of(&f.endpoint)?, f, None));
     }
     raw.insert("fallback_providers".into(), Value::Array(fallbacks));
+
+    // raw.compression — the two knobs, turned inside the block the def author
+    // wrote. Clearing the last one takes the block with it: an empty
+    // `compression: {}` in the rendered config says nothing Hermes' defaults
+    // do not already say.
+    let mut compression = raw
+        .get("compression")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    turn_knob(&mut compression, "threshold", edits.compression.threshold);
+    turn_knob(
+        &mut compression,
+        "threshold_tokens",
+        edits.compression.threshold_tokens,
+    );
+    if compression.is_empty() {
+        raw.remove("compression");
+    } else {
+        raw.insert("compression".into(), Value::Object(compression));
+    }
 
     // `{...prev, main, aliases, fallbacks, raw}` — the structured fields
     // replace, every other key the previous config carried survives.
@@ -927,6 +1022,7 @@ mod tests {
             main: target("ollama", "m"),
             aliases: vec![],
             fallbacks: vec![],
+            compression: CompressionEdits::default(),
         };
         let out = apply_config_edits_over(&endpoints, &prev, &edits).unwrap();
         let raw = out.get("raw").unwrap();
@@ -966,6 +1062,7 @@ mod tests {
                 target: target("ollama", "new-deep"),
             }],
             fallbacks: vec![],
+            compression: CompressionEdits::default(),
         };
         let out = apply_config_edits_over(&endpoints, &prev, &edits).unwrap();
         let model = out["raw"]["model"].as_object().unwrap();
@@ -985,6 +1082,133 @@ mod tests {
         );
     }
 
+    /// The config the compression tests edit: one endpoint, a hand-authored
+    /// compression block with keys no form offers, and a sibling raw key.
+    fn prev_with_compression() -> Value {
+        serde_json::from_str(
+            r#"{"main":{"endpoint":"ollama","model":"m"},"aliases":[],"fallbacks":[],
+                "raw":{"model":{"provider":"ollama","model":"m"},
+                       "agent":{"name":"scout"},
+                       "compression":{"enabled":true,"threshold":0.5,
+                                      "threshold_tokens":256000,"protect_last_n":20}}}"#,
+        )
+        .unwrap()
+    }
+
+    fn edits_with(compression: CompressionEdits) -> ConfigEdits {
+        ConfigEdits {
+            main: target("ollama", "m"),
+            aliases: vec![],
+            fallbacks: vec![],
+            compression,
+        }
+    }
+
+    /// Setting the knobs writes exactly the two keys and leaves the rest of
+    /// the author's block — and the rest of raw — alone.
+    #[test]
+    fn the_compression_knobs_write_into_the_authors_block() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let out = apply_config_edits_over(
+            &endpoints,
+            &prev_with_compression(),
+            &edits_with(CompressionEdits {
+                threshold: Knob::Set(0.8),
+                threshold_tokens: Knob::Set(400_000),
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            out["raw"]["compression"],
+            serde_json::json!({"enabled": true, "threshold": 0.8,
+                               "threshold_tokens": 400_000, "protect_last_n": 20})
+        );
+        // the sibling raw key the renderer owns is untouched
+        assert_eq!(out["raw"]["agent"], serde_json::json!({"name": "scout"}));
+    }
+
+    /// `Clear` is the null in the request: the key goes, and only that key.
+    #[test]
+    fn clearing_a_knob_drops_its_key_and_nothing_else() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let out = apply_config_edits_over(
+            &endpoints,
+            &prev_with_compression(),
+            &edits_with(CompressionEdits {
+                threshold: Knob::Keep,
+                threshold_tokens: Knob::Clear,
+            }),
+        )
+        .unwrap();
+        let block = out["raw"]["compression"].as_object().unwrap();
+        assert!(!block.contains_key("threshold_tokens"), "{block:?}");
+        assert_eq!(block.get("threshold"), Some(&serde_json::json!(0.5)));
+        assert_eq!(block.get("enabled"), Some(&serde_json::json!(true)));
+    }
+
+    /// Saying nothing about compression changes nothing about compression —
+    /// the default every other caller of this function passes.
+    #[test]
+    fn an_edit_that_says_nothing_leaves_the_block_as_written() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let prev = prev_with_compression();
+        let out =
+            apply_config_edits_over(&endpoints, &prev, &edits_with(CompressionEdits::default()))
+                .unwrap();
+        assert_eq!(out["raw"]["compression"], prev["raw"]["compression"]);
+    }
+
+    /// Nothing authored and nothing asked for leaves no block at all: an
+    /// empty `compression: {}` would be a key in the rendered config that
+    /// says nothing Hermes' own defaults do not already say.
+    #[test]
+    fn clearing_the_last_knob_takes_the_block_with_it() {
+        let endpoints = vec![ep("ollama", "ollama", None, None)];
+        let prev: Value = serde_json::from_str(
+            r#"{"main":{"endpoint":"ollama","model":"m"},"aliases":[],"fallbacks":[],
+                "raw":{"compression":{"threshold":0.5}}}"#,
+        )
+        .unwrap();
+        let out = apply_config_edits_over(
+            &endpoints,
+            &prev,
+            &edits_with(CompressionEdits {
+                threshold: Knob::Clear,
+                threshold_tokens: Knob::Clear,
+            }),
+        )
+        .unwrap();
+        assert!(out["raw"].get("compression").is_none(), "{}", out["raw"]);
+        // and a def that never had a block does not grow an empty one
+        let bare: Value = serde_json::from_str(
+            r#"{"main":{"endpoint":"ollama","model":"m"},"aliases":[],"fallbacks":[]}"#,
+        )
+        .unwrap();
+        let out =
+            apply_config_edits_over(&endpoints, &bare, &edits_with(CompressionEdits::default()))
+                .unwrap();
+        assert!(out["raw"].get("compression").is_none(), "{}", out["raw"]);
+    }
+
+    /// The read side the Config tab uses: the stored block, camelCased, with
+    /// a non-number reading as absent rather than as itself.
+    #[test]
+    fn the_compression_wire_is_the_stored_block_or_null() {
+        assert_eq!(
+            compression_wire(&prev_with_compression()),
+            serde_json::json!({"threshold": 0.5, "thresholdTokens": 256_000})
+        );
+        assert_eq!(compression_wire(&serde_json::json!({})), Value::Null);
+        assert_eq!(
+            compression_wire(&serde_json::json!({"raw": {"compression": {}}})),
+            serde_json::json!({"threshold": null, "thresholdTokens": null})
+        );
+        assert_eq!(
+            compression_wire(&serde_json::json!({"raw": {"compression": {"threshold": "half"}}})),
+            serde_json::json!({"threshold": null, "thresholdTokens": null})
+        );
+    }
+
     #[test]
     fn an_unknown_endpoint_is_the_one_edit_error() {
         let out = apply_config_edits_over(
@@ -994,6 +1218,7 @@ mod tests {
                 main: target("nowhere", "m"),
                 aliases: vec![],
                 fallbacks: vec![],
+                compression: CompressionEdits::default(),
             },
         );
         assert_eq!(out.unwrap_err(), "unknown endpoint \"nowhere\"");

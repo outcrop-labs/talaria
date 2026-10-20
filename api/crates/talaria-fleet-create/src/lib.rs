@@ -9,9 +9,9 @@ use serde_json::Value;
 use sqlx::PgPool;
 
 use talaria_agent_defs::{
-    AgentDefRow, ConfigEdits, ModelTarget, NewVersion, UpsertDef, add_version_if_changed,
-    agent_def_by_id, agent_def_by_slug, apply_config_edits_over, dept_ok, list_versions, slug_ok,
-    upsert_agent_def,
+    AgentDefRow, CompressionEdits, ConfigEdits, ModelTarget, NewVersion, UpsertDef,
+    add_version_if_changed, agent_def_by_id, agent_def_by_slug, apply_config_edits_over, dept_ok,
+    list_versions, slug_ok, upsert_agent_def,
 };
 use talaria_gateway::registry::list_endpoints;
 
@@ -193,6 +193,9 @@ pub async fn create_agent(pg: &PgPool, input: &CreateAgentInput) -> Result<Creat
                 main: main.clone(),
                 aliases: Vec::new(),
                 fallbacks: Vec::new(),
+                // A hire turns no compaction knob — whatever the template's
+                // own `raw.compression` says rides through untouched.
+                compression: CompressionEdits::default(),
             };
             let bare = serde_json::json!({
                 "main": serde_json::to_value(&main).unwrap(),
