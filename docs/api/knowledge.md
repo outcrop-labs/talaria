@@ -7,10 +7,14 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-19 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
+| [`/api/blueprints`](#apiblueprints) | GET | `session` |
+| [`/api/blueprints`](#apiblueprints) | POST | `session` |
+| [`/api/blueprints/{id}`](#apiblueprintsid) | PUT | `session` |
+| [`/api/blueprints/{id}`](#apiblueprintsid) | DELETE | `session` |
 | [`/api/kb/comments/{id}`](#apikbcommentsid) | PATCH | `session` |
 | [`/api/kb/comments/{id}`](#apikbcommentsid) | DELETE | `session` |
 | [`/api/kb/docs/{id}`](#apikbdocsid) | GET | `dual` |
@@ -44,6 +48,52 @@
 | [`/api/templates`](#apitemplates) | POST | `session` + `perm:templates.manage` |
 | [`/api/templates/{id}`](#apitemplatesid) | PUT | `session` + `perm:templates.manage` |
 | [`/api/templates/{id}`](#apitemplatesid) | DELETE | `session` + `perm:templates.manage` |
+
+## `/api/blueprints`
+
+Source: [`api/crates/talaria-routes-knowledge/src/knowledge/blueprints.rs`](../../api/crates/talaria-routes-knowledge/src/knowledge/blueprints.rs)
+
+> /api/blueprints. The asks somebody sends again — a named piece of text a
+> person pastes into the composer. GET → the caller's own plus the shared
+> ones (any member). POST → create: a personal blueprint needs only a
+> session; a SHARED one (owner null, the org's) needs templates.manage.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{blueprints}` | 200 | — |
+| POST | `session` | [body](#post-apiblueprints-body) | `{blueprint}` | 200, 400 | — |
+
+### POST `/api/blueprints` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `shared` | `bool?` |  |
+| `name` | `string trimmed(1, 120)` |  |
+| `body` | `string?(20000)` | Max-only: the empty body is legal — a blueprint can start as a name and get its text in the editor. |
+
+## `/api/blueprints/{id}`
+
+Source: [`api/crates/talaria-routes-knowledge/src/knowledge/blueprints_id.rs`](../../api/crates/talaria-routes-knowledge/src/knowledge/blueprints_id.rs)
+
+> /api/blueprints/{id}. One blueprint: PUT → edit, DELETE → remove — your
+> own with a session alone, a SHARED one (owner null) with templates.manage.
+> Somebody else's personal blueprint answers 404 and never 403: a row you
+> cannot see does not exist, and a 403 would confirm the id is somebody's.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `session` | [body](#put-apiblueprintsid-body) | `{blueprint}` | 200, 400, 404 | — |
+| DELETE | `session` | — | `{ok}` | 200, 404 | — |
+
+### PUT `/api/blueprints/{id}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `shared` | `bool?` |  |
+| `name` | `optional_trimmed` |  |
+| `body` | `string?(20000)` |  |
 
 ## `/api/kb/comments/{id}`
 

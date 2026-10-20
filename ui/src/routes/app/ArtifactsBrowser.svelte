@@ -14,7 +14,7 @@
   import { cn } from '@/lib/cn'
   import { downloadFile } from '@/lib/download-file'
   import { fade, listStagger } from '@/lib/motion'
-  import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, updateFolder, type Artifact } from '@/lib/artifacts'
+  import { deleteArtifact, deleteFolder, duplicateArtifact, duplicateFolder, officeExport, officeExportHref, updateFolder, type Artifact } from '@/lib/artifacts'
   import { toastError } from '@/lib/toast.svelte'
   import { moveDriveFile, renameDriveFile, trashDriveFile } from '@/lib/google-drive'
   import ArtifactsRow from './ArtifactsRow.svelte'
@@ -508,6 +508,20 @@
 
   const downloadHref = (a: Artifact | null) => (a?.storageRef ? `/api/uploads/${a.storageRef}` : null)
 
+  /** DOWNLOAD IT AS AN OFFICE FILE — the twin of the Google export without
+   *  Google. Which format is the kind's answer (`officeExport`), and a `file`
+   *  row has no document to render: its own bytes are the Download above. */
+  const office = async (r: Row) => {
+    const spec = officeExport(r.artifact?.kind)
+    if (!r.artifact || !spec) return
+    const name = r.artifact.title || 'download'
+    try {
+      await downloadFile(officeExportHref(r.artifact.id, spec.format), `${name}.${spec.format}`)
+    } catch (e) {
+      toastError('Could not download', e)
+    }
+  }
+
   const rowMenu = (r: Row): ContextMenuEntry[] => {
     if (r.drive) {
       const items: ContextMenuEntry[] = [{ label: 'Open', onSelect: () => open(r) }]
@@ -538,6 +552,11 @@
       if (slug) items.push({ label: 'Copy public link', onSelect: () => copyAppLink(`/a/${slug}`) })
       const href = downloadHref(r.artifact)
       if (href) items.push({ label: 'Download', onSelect: () => void downloadFile(href, r.artifact?.title ?? 'download').catch((e) => toastError('Could not download', e)) })
+      // Beside it, the generated file: a document becomes .docx, a sheet
+      // .xlsx. Labelled "Download as", because on a row with no bytes of its
+      // own this entry stands alone and a bare format is not a verb.
+      const spec = officeExport(r.artifact?.kind)
+      if (spec) items.push({ label: `Download as ${spec.label}`, onSelect: () => void office(r) })
     }
     if (canOrganize) {
       items.push('sep')
@@ -791,6 +810,19 @@
             ).catch((e) => toastError('Could not download', e))}
         >
           Download
+        </button>
+      {/if}
+      {#if selectedRows.length === 1 && officeExport(selectedRows[0]!.artifact?.kind)}
+        {@const spec = officeExport(selectedRows[0]!.artifact?.kind)!}
+        <!-- In the same quiet voice as Download — which a doc or a sheet never
+             shows beside it (only a file carries a storageRef), so the verb has
+             to be here too: a bare format is not a verb. -->
+        <button
+          type="button"
+          class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
+          onclick={() => void office(selectedRows[0]!)}
+        >
+          Download as {spec.label}
         </button>
       {/if}
       {#if driveMode}

@@ -3895,6 +3895,48 @@ alter table tasks drop column if exists conversation_id`,
   `create index if not exists mcp_tool_calls_at_idx on mcp_tool_calls (at desc)`,
   `create index if not exists mcp_tool_calls_server_idx on mcp_tool_calls (server_id, at desc)`,
   `create index if not exists mcp_tool_calls_agent_idx on mcp_tool_calls (agent, at desc)`,
+  // ── Blueprints (2026-10-16) ─────────────────────────────────────────────
+  // THE ASKS SOMEBODY SENDS AGAIN. A person's useful prompts lived in their
+  // own notes app: the composer could hold one message and remember nothing,
+  // so the standing ask — the weekly rollup, the review checklist, the shape
+  // of a brief — got retyped from memory every time, a little differently
+  // each time. A blueprint is that text saved under a name, pasted into the
+  // composer and sent.
+  //
+  // `owner_user_id` NULL MEANS SHARED, which is the whole access model in one
+  // column: a row with an owner belongs to that person and nobody else reads
+  // it, and a row with no owner is the org's, readable by every member and
+  // writable only with `templates.manage` — the permission that already
+  // governs the org-wide skeletons everyone starts from. Two tables would
+  // have meant two reads, two routes and a move operation; one nullable
+  // owner means the list is one query and sharing is one UPDATE.
+  //
+  // CASCADE on the owner: a personal blueprint has no meaning without the
+  // person whose it was, and promoting it to the org on their way out would
+  // publish private notes. A shared row has no owner to lose.
+  //
+  // `surface` is which composer offers it ('work' today), and `sort` is the
+  // hand-order a picker shows; both carry defaults so a blueprint created
+  // from a name alone already sits somewhere.
+  //
+  // NOT templates: a template is a document skeleton an agent fills under
+  // guidance, resolved through a chain of bindings. A blueprint is the
+  // message a person sends. Same word in English, different rows.
+  `create table if not exists blueprints (
+     id uuid primary key default gen_random_uuid(),
+     name text not null,
+     body text not null default '',
+     owner_user_id uuid references users(id) on delete cascade,
+     surface text not null default 'work',
+     sort integer not null default 0,
+     created_by text,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  // The only read there is: "mine plus the shared ones, in picker order".
+  // owner_user_id leads because the WHERE clause is on it (the caller's id OR
+  // null), and sort/name follow because the ORDER BY never varies.
+  `create index if not exists blueprints_owner_idx on blueprints(owner_user_id, sort, name)`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
